@@ -30,6 +30,7 @@
 #include "ParseInt.h"
 #include "StackFrame.h"
 #include "VM.h"
+#include <wtf/SetForScope.h>
 #include <wtf/text/MakeString.h>
 
 namespace JSC {
@@ -320,35 +321,8 @@ String ErrorInstance::tryGetMessageForDebugging()
     return emptyString();
 }
 
-#if USE(BUN_JSC_ADDITIONS)
-extern "C" __attribute__((weak)) void Bun__errorInstance__finalize(void* bunNativePtr);
-
-class BunErrorInstanceFinalizer {
-public:
-    BunErrorInstanceFinalizer(JSC::ErrorInstance* errorInstance)
-        : m_errorInstance(errorInstance)
-    {
-    }
-
-    ~BunErrorInstanceFinalizer()
-    {
-        if (Bun__errorInstance__finalize && m_errorInstance->bunErrorData()) {
-            Bun__errorInstance__finalize(m_errorInstance->bunErrorData());
-        }
-    }
-
-private:
-    JSC::ErrorInstance* m_errorInstance;
-};
-#endif
-
 void ErrorInstance::finalizeUnconditionally(VM& vm, CollectionScope)
 {
-#if USE(BUN_JSC_ADDITIONS)
-    // Run this after we've computed the stack trace so that it can potentially be used there.
-    BunErrorInstanceFinalizer finalizer(this);
-#endif
-
     if (!m_stackTrace)
         return;
 
@@ -406,14 +380,40 @@ bool ErrorInstance::materializeErrorInfoIfNeeded(VM& vm)
 
 #if USE(BUN_JSC_ADDITIONS)
 
+    if (m_errorInfoMaterializing)
+        return false;
+
     auto& fn = vm.onComputeErrorInfoJSValue();
-    if (fn && m_stackTrace && !m_stackTrace->isEmpty()) {
-        m_errorInfoMaterialized = true;
+    if (fn && m_stackTrace) {
+        auto scope = DECLARE_THROW_SCOPE(vm);
+        RETURN_IF_EXCEPTION(scope, false);
+        SetForScope materializing(m_errorInfoMaterializing, true);
         DeferGCForAWhile deferGC(vm);
 
         JSValue stack;
         if (!m_stackPropertyAlreadyMaterialized)
             stack = fn(vm, *m_stackTrace.get(), m_lineColumn.line, m_lineColumn.column, m_sourceURL, this, this->bunErrorData());
+        RETURN_IF_EXCEPTION(scope, false);
+
+        auto attributes = static_cast<unsigned>(PropertyAttribute::DontEnum);
+        JSString* sourceURL = nullptr;
+        if (!m_sourceURL.isEmpty()) {
+            sourceURL = jsString(vm, m_sourceURL);
+            RETURN_IF_EXCEPTION(scope, false);
+        }
+
+        putDirect(vm, vm.propertyNames->line, jsNumber(m_lineColumn.line), attributes);
+        RETURN_IF_EXCEPTION(scope, false);
+        putDirect(vm, vm.propertyNames->column, jsNumber(m_lineColumn.column), attributes);
+        RETURN_IF_EXCEPTION(scope, false);
+        if (sourceURL) {
+            putDirect(vm, vm.propertyNames->sourceURL, sourceURL, attributes);
+            RETURN_IF_EXCEPTION(scope, false);
+        }
+        if (!m_stackPropertyAlreadyMaterialized) {
+            putDirect(vm, vm.propertyNames->stack, stack, attributes);
+            RETURN_IF_EXCEPTION(scope, false);
+        }
 
         {
             Locker locker { cellLock() };
@@ -421,16 +421,7 @@ bool ErrorInstance::materializeErrorInfoIfNeeded(VM& vm)
             m_stackTrace = nullptr;
             m_stackString = String();
         }
-
-        auto attributes = static_cast<unsigned>(PropertyAttribute::DontEnum);
-
-        putDirect(vm, vm.propertyNames->line, jsNumber(m_lineColumn.line), attributes);
-        putDirect(vm, vm.propertyNames->column, jsNumber(m_lineColumn.column), attributes);
-        if (!m_sourceURL.isEmpty())
-            putDirect(vm, vm.propertyNames->sourceURL, jsString(vm, WTF::move(m_sourceURL)), attributes);
-
-        if (!m_stackPropertyAlreadyMaterialized)
-            putDirect(vm, vm.propertyNames->stack, stack, attributes);
+        m_errorInfoMaterialized = true;
         return true;
     }
 
@@ -473,9 +464,11 @@ bool ErrorInstance::materializeErrorInfoIfNeeded(VM& vm, PropertyName propertyNa
 bool ErrorInstance::getOwnPropertySlot(JSObject* object, JSGlobalObject* globalObject, PropertyName propertyName, PropertySlot& slot)
 {
     VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
     ErrorInstance* thisObject = uncheckedDowncast<ErrorInstance>(object);
     thisObject->materializeErrorInfoIfNeeded(vm, propertyName);
-    return Base::getOwnPropertySlot(thisObject, globalObject, propertyName, slot);
+    RETURN_IF_EXCEPTION(scope, false);
+    RELEASE_AND_RETURN(scope, Base::getOwnPropertySlot(thisObject, globalObject, propertyName, slot));
 }
 
 void ErrorInstance::getOwnSpecialPropertyNames(JSObject* object, JSGlobalObject* globalObject, PropertyNameArrayBuilder&, DontEnumPropertiesMode mode)
@@ -511,11 +504,13 @@ bool ErrorInstance::put(JSCell* cell, JSGlobalObject* globalObject, PropertyName
 bool ErrorInstance::deleteProperty(JSCell* cell, JSGlobalObject* globalObject, PropertyName propertyName, DeletePropertySlot& slot)
 {
     VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
     ErrorInstance* thisObject = uncheckedDowncast<ErrorInstance>(cell);
     bool materializedProperties = thisObject->materializeErrorInfoIfNeeded(vm, propertyName);
+    RETURN_IF_EXCEPTION(scope, false);
     if (materializedProperties)
         slot.disableCaching();
-    return Base::deleteProperty(thisObject, globalObject, propertyName, slot);
+    RELEASE_AND_RETURN(scope, Base::deleteProperty(thisObject, globalObject, propertyName, slot));
 }
 
 } // namespace JSC

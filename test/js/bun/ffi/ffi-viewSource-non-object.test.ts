@@ -43,11 +43,11 @@ describe("FFI viewSource", () => {
     const src = viewSource({ foo: { args: ["i32"], returns: "i32" } });
     expect(src).toBeArray();
     expect(src).toHaveLength(1);
-    expect(src[0]).toContain("JSFunctionCall");
+    expect(src[0]).toContain("typedef int32_t (*BunForeignFunction)(int32_t arg0);");
 
     const cbSrc = viewSource({ args: ["i32"], returns: "i32" }, true);
     expect(typeof cbSrc).toBe("string");
-    expect(cbSrc).toContain("my_callback_function");
+    expect(cbSrc).toContain("typedef int32_t (*BunForeignFunction)(int32_t arg0);");
   });
 });
 

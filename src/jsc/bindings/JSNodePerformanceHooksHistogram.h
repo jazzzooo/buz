@@ -3,7 +3,6 @@
 #include "root.h"
 
 #include "BunClientData.h"
-#include "headers-handwritten.h"
 #include "wtf/Assertions.h"
 #include "wtf/Lock.h"
 #include "wtf/FastMalloc.h"
@@ -25,32 +24,6 @@ using namespace JSC;
 class JSNodePerformanceHooksHistogram;
 class JSNodePerformanceHooksHistogramPrototype;
 class JSNodePerformanceHooksHistogramConstructor;
-
-JSC_DECLARE_HOST_FUNCTION(jsNodePerformanceHooksHistogramProtoFuncRecord);
-JSC_DECLARE_HOST_FUNCTION(jsNodePerformanceHooksHistogramProtoFuncRecordDelta);
-JSC_DECLARE_HOST_FUNCTION(jsNodePerformanceHooksHistogramProtoFuncAdd);
-JSC_DECLARE_HOST_FUNCTION(jsNodePerformanceHooksHistogramProtoFuncReset);
-
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_count);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_countBigInt);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_min);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_minBigInt);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_max);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_maxBigInt);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_mean);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_stddev);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_exceeds);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_exceedsBigInt);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_percentiles);
-JSC_DECLARE_CUSTOM_GETTER(jsNodePerformanceHooksHistogramGetter_percentilesBigInt);
-
-JSC_DECLARE_HOST_FUNCTION(jsNodePerformanceHooksHistogramProtoFuncPercentile);
-JSC_DECLARE_HOST_FUNCTION(jsNodePerformanceHooksHistogramProtoFuncPercentileBigInt);
-
-JSC_DECLARE_HOST_FUNCTION(jsFunction_createHistogram);
-JSC_DECLARE_HOST_FUNCTION(jsFunction_monitorEventLoopDelay);
-JSC_DECLARE_HOST_FUNCTION(jsFunction_enableEventLoopDelay);
-JSC_DECLARE_HOST_FUNCTION(jsFunction_disableEventLoopDelay);
 
 class HistogramData {
 public:

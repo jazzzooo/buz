@@ -29,10 +29,9 @@
 #include "URLPatternComponent.h"
 #include "URLPatternInit.h"
 #include <wtf/Forward.h>
-#include <wtf/Ref.h>
-#include <wtf/RefCounted.h>
-#include <wtf/RefPtr.h>
-#include <wtf/TZoneMalloc.h>
+#include <memory>
+#include <wtf/FastMalloc.h>
+#include <wtf/Noncopyable.h>
 
 namespace WebCore {
 
@@ -48,17 +47,15 @@ namespace URLPatternUtilities {
 class URLPatternComponent;
 }
 
-class URLPattern final : public RefCounted<URLPattern> {
-    WTF_MAKE_TZONE_ALLOCATED(URLPattern);
+class URLPattern final {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(URLPattern);
+    WTF_MAKE_NONCOPYABLE(URLPattern);
 
 public:
     using URLPatternInput = Variant<String, URLPatternInit>;
 
-    static ExceptionOr<Ref<URLPattern>> create(ScriptExecutionContext&, URLPatternInput&&, String&& baseURL, URLPatternOptions&&);
-    static ExceptionOr<Ref<URLPattern>> create(ScriptExecutionContext&, std::optional<URLPatternInput>&&, URLPatternOptions&&);
-
-    using Compatible = Variant<String, URLPatternInit, RefPtr<URLPattern>>;
-    static ExceptionOr<Ref<URLPattern>> create(ScriptExecutionContext&, Compatible&&, const String&);
+    static ExceptionOr<std::unique_ptr<URLPattern>> create(ScriptExecutionContext&, URLPatternInput&&, String&& baseURL, URLPatternOptions&&);
+    static ExceptionOr<std::unique_ptr<URLPattern>> create(ScriptExecutionContext&, std::optional<URLPatternInput>&&, URLPatternOptions&&);
 
     ~URLPattern();
 
@@ -80,7 +77,7 @@ public:
 private:
     URLPattern();
     ExceptionOr<void> compileAllComponents(ScriptExecutionContext&, URLPatternInit&&, const URLPatternOptions&);
-    ExceptionOr<std::optional<URLPatternResult>> match(ScriptExecutionContext&, Variant<URL, URLPatternInput>&&, String&& baseURLString) const;
+    ExceptionOr<bool> match(ScriptExecutionContext&, URLPatternInput&&, String&& baseURLString, URLPatternResult*) const;
 
     URLPatternUtilities::URLPatternComponent m_protocolComponent;
     URLPatternUtilities::URLPatternComponent m_usernameComponent;

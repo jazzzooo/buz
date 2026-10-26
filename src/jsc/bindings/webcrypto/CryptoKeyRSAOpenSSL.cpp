@@ -189,43 +189,42 @@ static std::optional<uint32_t> exponentVectorToUInt32(const Vector<uint8_t>& exp
     return result;
 }
 
-void CryptoKeyRSA::generatePair(CryptoAlgorithmIdentifier algorithm, CryptoAlgorithmIdentifier hash, bool hasHash, unsigned modulusLength, const Vector<uint8_t>& publicExponent, bool extractable, CryptoKeyUsageBitmap usages, KeyPairCallback&& callback, VoidCallback&& failureCallback, ScriptExecutionContext*)
+ExceptionOr<CryptoKeyPair> CryptoKeyRSA::generatePair(CryptoAlgorithmIdentifier algorithm, CryptoAlgorithmIdentifier hash, bool hasHash, unsigned modulusLength, const Vector<uint8_t>& publicExponent, bool extractable, CryptoKeyUsageBitmap usages)
 {
     // OpenSSL doesn't report an error if the exponent is smaller than three or even.
     auto e = exponentVectorToUInt32(publicExponent);
     if (!e || *e < 3 || !(*e & 0x1)) {
-        failureCallback();
-        return;
+        return Exception { OperationError };
     }
 
     auto exponent = convertToBigNumber(publicExponent);
     auto privateRSA = RSAPtr(RSA_new());
-    if (!exponent || RSA_generate_key_ex(privateRSA.get(), modulusLength, exponent.get(), nullptr) <= 0) {
-        failureCallback();
-        return;
+    if (!exponent || !privateRSA)
+        return Exception { OutOfMemoryError };
+    if (RSA_generate_key_ex(privateRSA.get(), modulusLength, exponent.get(), nullptr) <= 0) {
+        return Exception { OperationError };
     }
 
     auto publicRSA = RSAPtr(RSAPublicKey_dup(privateRSA.get()));
     if (!publicRSA) {
-        failureCallback();
-        return;
+        return Exception { OperationError };
     }
 
     auto privatePKey = EvpPKeyPtr(EVP_PKEY_new());
+    if (!privatePKey) return Exception { OutOfMemoryError };
     if (EVP_PKEY_set1_RSA(privatePKey.get(), privateRSA.get()) <= 0) {
-        failureCallback();
-        return;
+        return Exception { OperationError };
     }
 
     auto publicPKey = EvpPKeyPtr(EVP_PKEY_new());
+    if (!publicPKey) return Exception { OutOfMemoryError };
     if (EVP_PKEY_set1_RSA(publicPKey.get(), publicRSA.get()) <= 0) {
-        failureCallback();
-        return;
+        return Exception { OperationError };
     }
 
     auto publicKey = CryptoKeyRSA::create(algorithm, hash, hasHash, CryptoKeyType::Public, WTF::move(publicPKey), true, usages);
     auto privateKey = CryptoKeyRSA::create(algorithm, hash, hasHash, CryptoKeyType::Private, WTF::move(privatePKey), extractable, usages);
-    callback(CryptoKeyPair { WTF::move(publicKey), WTF::move(privateKey) });
+    return CryptoKeyPair { WTF::move(publicKey), WTF::move(privateKey) };
 }
 
 RefPtr<CryptoKeyRSA> CryptoKeyRSA::importSpki(CryptoAlgorithmIdentifier identifier, std::optional<CryptoAlgorithmIdentifier> hash, Vector<uint8_t>&& keyData, bool extractable, CryptoKeyUsageBitmap usages)
@@ -311,17 +310,17 @@ auto CryptoKeyRSA::algorithm() const -> KeyAlgorithm
 
     if (m_restrictedToSpecificHash) {
         CryptoRsaHashedKeyAlgorithm result;
-        result.name = CryptoAlgorithmRegistry::singleton().name(algorithmIdentifier());
+        result.name = CryptoAlgorithmRegistry::name(algorithmIdentifier());
         result.modulusLength = modulusLength;
-        result.publicExponent = Uint8Array::tryCreate(publicExponent.begin(), publicExponent.size());
-        result.hash.name = CryptoAlgorithmRegistry::singleton().name(m_hash);
+        result.publicExponent = WTF::move(publicExponent);
+        result.hash.name = CryptoAlgorithmRegistry::name(m_hash);
         return result;
     }
 
     CryptoRsaKeyAlgorithm result;
-    result.name = CryptoAlgorithmRegistry::singleton().name(algorithmIdentifier());
+    result.name = CryptoAlgorithmRegistry::name(algorithmIdentifier());
     result.modulusLength = modulusLength;
-    result.publicExponent = Uint8Array::tryCreate(publicExponent.begin(), publicExponent.size());
+    result.publicExponent = WTF::move(publicExponent);
     return result;
 }
 

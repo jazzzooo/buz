@@ -77,7 +77,7 @@ function EventEmitter(opts) {
   }
 }
 Object.defineProperty(EventEmitter, "name", { value: "EventEmitter", configurable: true });
-const EventEmitterPrototype = (EventEmitter.prototype = {});
+const EventEmitterPrototype = (EventEmitter.prototype = {} as any);
 
 EventEmitterPrototype.setMaxListeners = function setMaxListeners(n) {
   validateNumber(n, "setMaxListeners", 0);
@@ -291,7 +291,7 @@ function overflowWarning(emitter, type, handlers) {
   handlers.warned = true;
   const warn = new Error(
     `Possible EventTarget memory leak detected. ${handlers.length} ${String(type)} listeners added to ${inspect!(emitter, { depth: -1 })}. MaxListeners is ${emitter._maxListeners}. Use events.setMaxListeners() to increase limit`,
-  );
+  ) as Error & { emitter: unknown; type: unknown; count: number };
   warn.name = "MaxListenersExceededWarning";
   warn.emitter = emitter;
   warn.type = type;
@@ -300,8 +300,8 @@ function overflowWarning(emitter, type, handlers) {
 }
 
 function _onceWrap(target, type, listener) {
-  const state = { fired: false, wrapFn: undefined, target, type, listener };
-  const wrapped = onceWrapper.bind(state);
+  const state = { fired: false, wrapFn: undefined as Function | undefined, target, type, listener };
+  const wrapped: any = onceWrapper.bind(state);
   wrapped.listener = listener;
   state.wrapFn = wrapped;
   return wrapped;
@@ -631,27 +631,23 @@ function on(emitter, event, options = kEmptyObject) {
 Object.defineProperty(on, "name", { value: "on" });
 
 function listenersController() {
-  const listeners = [];
+  const listeners: [emitter: any, event: any, handler: any, flags: any][] = [];
 
   return {
-    addEventListener(emitter, event, handler, flags) {
+    addEventListener(emitter, event, handler, flags?) {
       eventTargetAgnosticAddListener(emitter, event, handler, flags);
       listeners.push([emitter, event, handler, flags]);
     },
     removeAll() {
       while (listeners.length > 0) {
-        const [emitter, event, handler, flags] = listeners.pop();
+        const [emitter, event, handler, flags] = listeners.pop()!;
         eventTargetAgnosticRemoveListener(emitter, event, handler, flags);
       }
     },
   };
 }
 
-const getEventListenersForEventTarget = $newCppFunction(
-  "JSEventTargetNode.cpp",
-  "jsFunctionNodeEventsGetEventListeners",
-  1,
-);
+const getEventListenersForEventTarget = $bindgenFn("EventTarget.schema.zig", "getEventListeners");
 
 function getEventListeners(emitter, type) {
   if ($isCallable(emitter?.listeners)) {
@@ -682,11 +678,7 @@ function setMaxListeners(n = defaultMaxListeners, ...eventTargets) {
 }
 Object.defineProperty(setMaxListeners, "name", { value: "setMaxListeners" });
 
-const jsEventTargetGetEventListenersCount = $newCppFunction(
-  "JSEventTarget.cpp",
-  "jsEventTargetGetEventListenersCount",
-  2,
-);
+const jsEventTargetGetEventListenersCount = $bindgenFn("EventTarget.schema.zig", "getEventListenersCount");
 
 function listenerCount(emitter, type) {
   if ($isCallable(emitter.listenerCount)) {
@@ -747,7 +739,7 @@ function _getMaxListeners(emitter) {
   return emitter?._maxListeners ?? defaultMaxListeners;
 }
 
-let AsyncResource = null;
+let AsyncResource: (typeof import("./async_hooks.ts"))["default"]["AsyncResource"] | null = null;
 
 function getMaxListeners(emitterOrTarget) {
   if (typeof emitterOrTarget?.getMaxListeners === "function") {
@@ -788,7 +780,7 @@ function addAbortListener(signal, listener) {
   };
 }
 
-class EventEmitterAsyncResource extends EventEmitter {
+class EventEmitterAsyncResource extends (EventEmitter as unknown as typeof import("node:events").EventEmitter) {
   triggerAsyncId;
   asyncResource;
 
@@ -802,8 +794,8 @@ class EventEmitterAsyncResource extends EventEmitter {
     this.asyncResource = new AsyncResource(name, { triggerAsyncId, requireManualDestroy });
   }
 
-  emit(...args) {
-    this.asyncResource.runInAsyncScope(() => super.emit(...args));
+  emit(...args: [string | symbol, ...any[]]) {
+    return this.asyncResource.runInAsyncScope(() => super.emit(...args));
   }
 
   emitDestroy() {

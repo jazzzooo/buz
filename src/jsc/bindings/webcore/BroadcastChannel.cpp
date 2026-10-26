@@ -30,10 +30,10 @@
 #include "BunClientData.h"
 #include "EventNames.h"
 #include "MessageEvent.h"
+#include "JSDOMExceptionHandling.h"
 #include "SerializedScriptValue.h"
+#include "SchemaBindings.h"
 #include <wtf/TZoneMallocInlines.h>
-
-extern "C" void Bun__eventLoop__incrementRefConcurrently(void* bunVM, int delta);
 
 namespace WebCore {
 
@@ -85,11 +85,12 @@ void BroadcastChannel::dispatchMessage(Ref<SerializedScriptValue>&& message)
 
     Vector<RefPtr<MessagePort>> dummyPorts;
     auto event = MessageEvent::create(*globalObject, WTF::move(message), {}, {}, nullptr, WTF::move(dummyPorts));
-    if (scope.exception()) [[unlikely]] {
-        RELEASE_ASSERT(vm.hasPendingTerminationException());
+    if (auto* exception = scope.exception()) [[unlikely]] {
+        reportException(globalObject, exception);
         return;
     }
-    dispatchEvent(event.event);
+    if (event)
+        dispatchEvent(event->event);
 }
 
 void BroadcastChannel::close()
@@ -100,10 +101,9 @@ void BroadcastChannel::close()
     BunBroadcastChannelRegistry::singleton().unsubscribe(m_name, *this);
 }
 
-void BroadcastChannel::contextDestroyed()
+void BroadcastChannel::contextDestroyed(ScriptExecutionContext&)
 {
     close();
-    ContextDestructionObserver::contextDestroyed();
 }
 
 void BroadcastChannel::eventListenersDidChange()
@@ -131,7 +131,7 @@ void BroadcastChannel::jsRef(JSGlobalObject* lexicalGlobalObject)
 {
     if (!m_hasRef) {
         m_hasRef = true;
-        Bun__eventLoop__incrementRefConcurrently(WebCore::clientData(lexicalGlobalObject->vm())->bunVM, 1);
+        Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_eventLoopRefConcurrently(WebCore::clientData(lexicalGlobalObject->vm())->bunVM);
     }
 }
 
@@ -139,7 +139,7 @@ void BroadcastChannel::jsUnref(JSGlobalObject* lexicalGlobalObject)
 {
     if (m_hasRef) {
         m_hasRef = false;
-        Bun__eventLoop__incrementRefConcurrently(WebCore::clientData(lexicalGlobalObject->vm())->bunVM, -1);
+        Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_eventLoopUnrefConcurrently(WebCore::clientData(lexicalGlobalObject->vm())->bunVM);
     }
 }
 

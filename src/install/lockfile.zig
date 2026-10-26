@@ -76,8 +76,6 @@ pub const Scripts = struct {
         "postprepare",
     };
 
-    const RunCommand = @import("../cli/run_command.zig").RunCommand;
-
     preinstall: Entries = .empty,
     install: Entries = .empty,
     postinstall: Entries = .empty,
@@ -229,17 +227,19 @@ pub const LoadResult = union(enum) {
 pub fn loadFromCwd(
     this: *Lockfile,
     manager: ?*PackageManager,
+    parse_context: Dependency.ParseContext,
     allocator: Allocator,
     log: *logger.Log,
     comptime attempt_loading_from_other_lockfile: bool,
 ) LoadResult {
-    return loadFromDir(this, bun.FD.cwd(), manager, allocator, log, attempt_loading_from_other_lockfile);
+    return loadFromDir(this, bun.FD.cwd(), manager, parse_context, allocator, log, attempt_loading_from_other_lockfile);
 }
 
 pub fn loadFromDir(
     this: *Lockfile,
     dir: bun.FD,
     manager: ?*PackageManager,
+    parse_context: Dependency.ParseContext,
     allocator: Allocator,
     log: *logger.Log,
     comptime attempt_loading_from_other_lockfile: bool,
@@ -314,7 +314,7 @@ pub fn loadFromDir(
             };
         };
 
-        TextLockfile.parseIntoBinaryLockfile(this, allocator, json, source, log, manager) catch |err| {
+        TextLockfile.parseIntoBinaryLockfile(this, allocator, json, source, log, manager, parse_context) catch |err| {
             switch (err) {
                 error.OutOfMemory => bun.outOfMemory(),
                 else => {
@@ -341,7 +341,7 @@ pub fn loadFromDir(
         };
     }
 
-    const result = this.loadFromBytes(manager, buf, allocator, log);
+    const result = this.loadFromBytes(manager, parse_context, buf, allocator, log);
 
     switch (result) {
         .ok => {
@@ -366,7 +366,7 @@ pub fn loadFromDir(
                     Output.panic("failed to print valid json from binary lockfile: {s}", .{@errorName(err)});
                 };
 
-                TextLockfile.parseIntoBinaryLockfile(this, allocator, json, source, log, manager) catch |err| {
+                TextLockfile.parseIntoBinaryLockfile(this, allocator, json, source, log, manager, parse_context) catch |err| {
                     Output.panic("failed to parse text lockfile converted from binary lockfile: {s}", .{@errorName(err)});
                 };
 
@@ -379,12 +379,12 @@ pub fn loadFromDir(
     return result;
 }
 
-pub fn loadFromBytes(this: *Lockfile, pm: ?*PackageManager, buf: []u8, allocator: Allocator, log: *logger.Log) LoadResult {
+pub fn loadFromBytes(this: *Lockfile, pm: ?*PackageManager, parse_context: Dependency.ParseContext, buf: []u8, allocator: Allocator, log: *logger.Log) LoadResult {
     var stream = Stream.init(buf);
 
     this.initEmpty(allocator);
 
-    const load_result = Lockfile.Serializer.load(this, &stream, allocator, log, pm) catch |err| {
+    const load_result = Lockfile.Serializer.load(this, &stream, allocator, log, pm, parse_context) catch |err| {
         return LoadResult{ .err = .{ .step = .parse_file, .value = err, .lockfile_path = "bun.lockb", .format = .binary } };
     };
 
@@ -493,7 +493,7 @@ fn preprocessUpdateRequests(old: *Lockfile, manager: *PackageManager, updates: [
                                 sliced.slice,
                                 &sliced,
                                 null,
-                                manager,
+                                Dependency.ParseContext.fromPackageManager(manager),
                             ) orelse Dependency.Version{};
                         }
                     }
@@ -513,12 +513,7 @@ pub fn clean(
 ) !*Lockfile {
     // This is wasteful, but we rarely log anything so it's fine.
     var log = logger.Log.init(bun.default_allocator);
-    defer {
-        for (log.msgs.items) |*item| {
-            item.deinit(bun.default_allocator);
-        }
-        log.deinit();
-    }
+    defer log.deinit();
 
     return old.cleanWithLogger(manager, updates, &log, exact_versions, log_level);
 }
@@ -1035,6 +1030,7 @@ pub const Printer = struct {
 
     pub fn print(
         io: std.Io,
+        javascript_semantics: JavaScriptSemantics,
         allocator: Allocator,
         log: *logger.Log,
         input_lockfile_path: string,
@@ -1069,7 +1065,7 @@ pub const Printer = struct {
 
         var lockfile = try allocator.create(Lockfile);
 
-        const load_from_disk = lockfile.loadFromCwd(null, allocator, log, false);
+        const load_from_disk = lockfile.loadFromCwd(null, .{ .javascript_semantics = javascript_semantics }, allocator, log, false);
         switch (load_from_disk) {
             .err => |cause| {
                 switch (cause.step) {
@@ -1102,7 +1098,7 @@ pub const Printer = struct {
         }
 
         const writer = Output.writerBuffered();
-        printWithLockfile(allocator, lockfile, format, @TypeOf(writer), writer) catch |err| switch (err) {
+        printWithLockfile(io, allocator, lockfile, format, @TypeOf(writer), writer) catch |err| switch (err) {
             error.OutOfMemory => bun.outOfMemory(),
             error.BrokenPipe, error.WriteFailed => return,
             else => |e| return e,
@@ -1111,6 +1107,7 @@ pub const Printer = struct {
     }
 
     pub fn printWithLockfile(
+        io: std.Io,
         allocator: Allocator,
         lockfile: *Lockfile,
         format: Format,
@@ -1136,8 +1133,9 @@ pub const Printer = struct {
         };
 
         try env_loader.loadProcess();
-        try env_loader.load(root_dir, &[_][]u8{}, .production, false);
+        try env_loader.load(io, root_dir, &[_][]u8{}, .production, false);
         var log = logger.Log.init(allocator);
+        defer log.deinit();
         try options.load(
             allocator,
             &log,
@@ -1974,21 +1972,16 @@ pub fn resolvePackageFromNameAndVersion(this: *Lockfile, package_name: []const u
     return null;
 }
 
-const max_default_trusted_dependencies = 512;
-
-// TODO
 pub const default_trusted_dependencies_list: []const []const u8 = brk: {
     // This file contains a list of dependencies that Bun runs `postinstall` on by default.
     const data = @embedFile("./default-trusted-dependencies.txt");
     @setEvalBranchQuota(999999);
-    var buf: [max_default_trusted_dependencies][]const u8 = undefined;
-    var i: usize = 0;
     var iter = std.mem.tokenizeAny(u8, data, " \r\n\t");
-    while (iter.next()) |package_ptr| {
-        const package = package_ptr[0..].*;
-        buf[i] = &package;
-        i += 1;
-    }
+    var count: usize = 0;
+    while (iter.next() != null) count += 1;
+    var names: [count][]const u8 = undefined;
+    iter.reset();
+    for (&names) |*name| name.* = iter.next().?;
 
     const Sorter = struct {
         pub fn lessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
@@ -1997,43 +1990,30 @@ pub const default_trusted_dependencies_list: []const []const u8 = brk: {
     };
 
     // alphabetical so we don't need to sort in `bun pm trusted --default`
-    std.sort.pdq([]const u8, buf[0..i], {}, Sorter.lessThan);
+    std.sort.pdq([]const u8, &names, {}, Sorter.lessThan);
+    for (names, 0..) |name, i| {
+        if (i > 0 and std.mem.eql(u8, names[i - 1], name)) {
+            @compileError("Duplicate trusted dependency: " ++ name);
+        }
+    }
 
-    var names: [i][]const u8 = undefined;
-    @memcpy(names[0..i], buf[0..i]);
     const final = names;
     break :brk &final;
 };
 
-/// The default list of trusted dependencies is a static hashmap
-pub const default_trusted_dependencies = brk: {
-    const StringHashContext = struct {
-        pub fn hash(_: @This(), s: []const u8) u64 {
-            @setEvalBranchQuota(999999);
-            // truncate to u32 because Lockfile.trustedDependencies uses the same u32 string hash
-            return @intCast(@as(u32, @truncate(String.Builder.stringHash(s))));
-        }
-        pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
-            @setEvalBranchQuota(999999);
-            return std.mem.eql(u8, a, b);
-        }
-    };
+const default_trusted_dependencies = std.StaticStringMap(void).initComptime(brk: {
+    var entries: [default_trusted_dependencies_list.len]struct { []const u8 } = undefined;
+    for (default_trusted_dependencies_list, &entries) |name, *entry| entry.* = .{name};
+    break :brk entries;
+});
 
-    var map: StaticHashMap([]const u8, void, StringHashContext, max_default_trusted_dependencies) = .{};
-
-    for (default_trusted_dependencies_list) |dep| {
-        if (map.len == max_default_trusted_dependencies) {
-            @compileError("default-trusted-dependencies.txt is too large, please increase 'max_default_trusted_dependencies' in lockfile.zig");
-        }
-
-        const entry = map.getOrPutAssumeCapacity(dep);
-        if (entry.found_existing) {
-            @compileError("Duplicate trusted dependency: " ++ dep);
-        }
+pub const default_trusted_dependency_hashes = brk: {
+    @setEvalBranchQuota(999999);
+    var hashes: [default_trusted_dependencies_list.len]TruncatedPackageNameHash = undefined;
+    for (default_trusted_dependencies_list, &hashes) |name, *hash| {
+        hash.* = @truncate(String.Builder.stringHash(name));
     }
-
-    const final = map;
-    break :brk &final;
+    break :brk hashes;
 };
 
 pub fn hasTrustedDependency(this: *const Lockfile, name: []const u8, resolution: *const Resolution) bool {
@@ -2075,6 +2055,7 @@ const string = []const u8;
 const stringZ = [:0]const u8;
 
 const Dependency = @import("./dependency.zig");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 const DotEnv = @import("../dotenv/env_loader.zig");
 const Npm = @import("./npm.zig");
 const Path = @import("../paths/resolve_path.zig");
@@ -2083,7 +2064,6 @@ const migration = @import("./migration.zig");
 const std = @import("std");
 const Crypto = @import("../sha_hmac/sha.zig").Hashers;
 const Resolution = @import("./resolution.zig").Resolution;
-const StaticHashMap = @import("../collections/StaticHashMap.zig").StaticHashMap;
 const which = @import("../which/which.zig").which;
 const Allocator = std.mem.Allocator;
 

@@ -19,6 +19,7 @@ frontend_dev_server_agent: BunFrontendDevServerAgent = .{},
 http_server_agent: HTTPServerAgent = .{},
 must_block_until_connected: bool = false,
 thread: ?std.Thread = null,
+started: bool = false,
 startup_event: std.Io.Event = .unset,
 startup_result: StartupResult = .pending,
 stop_requested: std.atomic.Value(bool) = .init(false),
@@ -34,11 +35,6 @@ pub const StartupResult = union(enum) {
 };
 
 pub const log = Output.scoped(.debugger, .visible);
-
-extern "c" fn Bun__createJSDebugger(*JSGlobalObject) u32;
-extern "c" fn Bun__ensureDebugger(u32, bool) void;
-extern "c" fn Bun__startJSDebuggerThread(*JSGlobalObject, u32, *bun.String, c_int, bool) void;
-extern "c" fn Bun__teardownThreadJSCVM(*JSGlobalObject) void;
 
 pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) !void {
     const debugger = &(this.debugger orelse return);
@@ -61,8 +57,6 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) !void {
             .colors = Output.enable_ansi_colors_stderr,
             .duration_ns = @truncate(@as(u128, @intCast(bun.awakeNanoseconds(this.io) - bun.cli.start_time))),
         }});
-
-    Bun__ensureDebugger(debugger.script_execution_context_id, debugger.wait_for_connection != .off);
 
     // Sleep up to 30ms for automatic inspection.
     const wait_for_connection_delay_ms = 30;
@@ -130,26 +124,20 @@ pub fn waitForDebuggerIfNecessary(this: *VirtualMachine) !void {
     }
 }
 
-pub var has_created_debugger: bool = false;
 pub fn create(this: *VirtualMachine, globalObject: *JSGlobalObject) !void {
     log("create", .{});
-    jsc.markBinding(@src());
-    if (!has_created_debugger) {
-        std.mem.doNotOptimizeAway(&TestReporterAgent.Bun__TestReporterAgentDisable);
-        std.mem.doNotOptimizeAway(&LifecycleAgent.Bun__LifecycleAgentDisable);
-        std.mem.doNotOptimizeAway(&TestReporterAgent.Bun__TestReporterAgentEnable);
-        std.mem.doNotOptimizeAway(&LifecycleAgent.Bun__LifecycleAgentEnable);
-        var debugger = &this.debugger.?;
-        debugger.script_execution_context_id = Bun__createJSDebugger(globalObject);
-        has_created_debugger = true;
-        errdefer has_created_debugger = false;
-        debugger.thread = try std.Thread.spawn(.{}, startJSDebuggerThread, .{this});
-        this.eventLoop().ensureWaker();
+    const debugger = &this.debugger.?;
+    if (debugger.started) return;
+    debugger.script_execution_context_id = try bun.bindgen.Engine(CreateJSDebuggerShim).call(globalObject, .{
+        .pauseOnStart = debugger.wait_for_connection != .off,
+    });
+    debugger.thread = try std.Thread.spawn(.{}, startJSDebuggerThread, .{this});
+    debugger.started = true;
+    this.eventLoop().ensureWaker();
 
-        if (debugger.wait_for_connection != .off) {
-            debugger.poll_ref.ref(this);
-            debugger.must_block_until_connected = true;
-        }
+    if (debugger.wait_for_connection != .off) {
+        debugger.poll_ref.ref(this);
+        debugger.must_block_until_connected = true;
     }
 }
 
@@ -159,36 +147,96 @@ fn signalStartup(debugger: *Debugger, owner: *VirtualMachine, result: StartupRes
     owner.eventLoop().wakeup();
 }
 
+fn bindStart(args: bun.bindgen.Args(DebuggerStartSchema)) bun.bindgen.Return(DebuggerStartSchema) {
+    const owner: *VirtualMachine = @ptrCast(@alignCast(args.owner));
+    const vm = VirtualMachine.get();
+    start(owner) catch |err| {
+        const result: StartupResult = switch (err) {
+            error.OutOfMemory => .{ .failed = error.OutOfMemory },
+            error.JSTerminated => .stopped,
+            error.JSError => failed: {
+                vm.printFailureToConsole(err);
+                break :failed .{ .failed = error.DebuggerStartupFailed };
+            },
+        };
+        signalStartup(&owner.debugger.?, owner, result);
+    };
+    prepareDebuggerShutdown(owner, vm);
+}
+
+pub const InspectorConnection = struct {
+    bindgen_state: bun.bindgen.ClassState = .{},
+    channel: InspectorChannel,
+
+    pub fn destroy(this: *InspectorConnection) void {
+        this.channel.deinit();
+        bun.default_allocator.destroy(this);
+    }
+};
+
+fn createConnection(
+    context: bun.bindgen.CallContext(CreateConnectionSchema),
+    args: bun.bindgen.Args(CreateConnectionSchema),
+) bun.JSError!bun.bindgen.Return(CreateConnectionSchema) {
+    const callback = args.onMessage orelse return null;
+    const native = owned: {
+        var channel = try context.engineIn("BunDebugger", "createInspectorConnection").call(.{
+            .scriptId = args.scriptId,
+            .shouldNotRef = args.shouldNotRef,
+            .onMessage = callback.operand(context),
+        }) orelse return null;
+        errdefer channel.deinit();
+        const result = try bun.default_allocator.create(InspectorConnection);
+        result.* = .{ .channel = channel.take() };
+        break :owned result;
+    };
+    return try InspectorConnectionClass.adoptResult(native, context);
+}
+
+fn send(
+    context: bun.bindgen.CallContext(SendSchema),
+    args: bun.bindgen.Args(SendSchema),
+) bun.JSError!void {
+    const receiver = args.bindingThis orelse return;
+    const message = args.message orelse return;
+    const connection = receiver.get(InspectorConnection);
+    switch (message) {
+        .string => |value| try context.engineIn("BunDebugger", "sendInspectorMessages").call(.{
+            .connection = &connection.channel,
+            .messages = &.{value.operand()},
+        }),
+        .strings => |values| {
+            const operation = context.engineIn("BunDebugger", "sendInspectorMessages");
+            try operation.call(.{
+                .connection = &connection.channel,
+                .messages = try operation.argument("messages", values),
+            });
+        },
+    }
+}
+
+fn disconnect(
+    context: bun.bindgen.CallContext(DisconnectSchema),
+    args: bun.bindgen.Args(DisconnectSchema),
+) bun.JSError!void {
+    const receiver = args.bindingThis orelse return;
+    const connection = receiver.get(InspectorConnection);
+    try context.engineIn("BunDebugger", "disconnectInspectorConnection").call(.{ .connection = &connection.channel });
+}
+
 pub fn startJSDebuggerThread(other_vm: *VirtualMachine) void {
     const debugger = &other_vm.debugger.?;
     var arena = bun.MimallocArena.init();
+    defer arena.deinit();
+    defer bun.deleteAllPoolsForThreadExit();
+    defer jsc.wtf.prepareForThreadExit();
     Output.Source.configureNamedThread("Debugger");
     log("startJSDebuggerThread", .{});
-    jsc.markBinding(@src());
 
-    // Create a thread-local env_loader to avoid allocator threading violations
-    const thread_allocator = arena.allocator();
-    const env_map = thread_allocator.create(DotEnv.Map) catch @panic("Failed to create debugger env map");
-    env_map.* = DotEnv.Map.init(thread_allocator);
-    const env_loader = thread_allocator.create(DotEnv.Loader) catch @panic("Failed to create debugger env loader");
-    env_loader.* = DotEnv.Loader.init(env_map, thread_allocator);
-
-    var vm = VirtualMachine.init(.{
-        .allocator = thread_allocator,
-        .io = other_vm.pinned_threads.io(),
-        .pinned_threads = other_vm.pinned_threads,
-        .args = std.mem.zeroes(bun.schema.api.TransformOptions),
-        .store_fd = false,
-        .env_loader = env_loader,
-    }) catch |err| {
+    const vm = createDebuggerVM(other_vm, &arena) catch |err| {
         signalStartup(debugger, other_vm, .{ .failed = err });
-        jsc.wtf.prepareForThreadExit();
-        bun.deleteAllPoolsForThreadExit();
-        arena.deinit();
         return;
     };
-    vm.allocator = arena.allocator();
-    vm.arena = &arena;
 
     vm.transpiler.configureDefines() catch |err| {
         signalStartup(debugger, other_vm, .{ .failed = err });
@@ -202,35 +250,55 @@ pub fn startJSDebuggerThread(other_vm: *VirtualMachine) void {
     debugger.thread_vm = vm;
     debugger.thread_vm_mutex.unlock(io);
 
-    const callback = jsc.OpaqueWrap(VirtualMachine, start);
-    vm.global.vm().holdAPILock(other_vm, callback);
-    unreachable;
+    bun.bindgen.Engine(DebuggerRunWithAPILockShim).call(.{
+        .vm = @ptrCast(vm.global.vm()),
+        .owner = @ptrCast(other_vm),
+    });
+    teardownDebuggerVM(vm);
 }
 
-fn teardownDebuggerVM(owner: *VirtualMachine, vm: *VirtualMachine) noreturn {
+fn createDebuggerVM(owner: *VirtualMachine, arena: *bun.MimallocArena) !*VirtualMachine {
+    const allocator = arena.allocator();
+    const env_map = try allocator.create(DotEnv.Map);
+    env_map.* = DotEnv.Map.init(allocator);
+    const env_loader = try allocator.create(DotEnv.Loader);
+    env_loader.* = DotEnv.Loader.init(env_map, allocator);
+    const vm = try VirtualMachine.init(.{
+        .allocator = allocator,
+        .io = owner.pinned_threads.io(),
+        .pinned_threads = owner.pinned_threads,
+        .args = std.mem.zeroes(bun.schema.api.TransformOptions),
+        .store_fd = false,
+        .env_loader = env_loader,
+        .debugger = null,
+    });
+    vm.arena = arena;
+    return vm;
+}
+
+fn prepareDebuggerShutdown(owner: *VirtualMachine, vm: *VirtualMachine) void {
     const debugger = &owner.debugger.?;
     const io = owner.pinned_threads.io();
     debugger.thread_vm_mutex.lockUncancelable(io);
     debugger.thread_vm = null;
     debugger.thread_vm_mutex.unlock(io);
 
-    const arena = vm.arena;
+    vm.jsc_vm.clearHasTerminationRequest();
     vm.is_shutting_down = true;
     bun.assert(vm.stopChildThreads(null) == .completed);
     vm.onExit();
     vm.prepareForJSCDestruction();
+}
+
+fn teardownDebuggerVM(vm: *VirtualMachine) void {
     const loop = vm.uwsLoop();
-    Bun__teardownThreadJSCVM(vm.global);
-    loop.internal_loop_data.jsc_vm = null;
+    bun.bindgen.Engine(TeardownThreadJSCVMShim).call(.{ .globalObject = @ptrCast(vm.global) });
+    jsc.setLoopVM(loop, null);
     vm.gc_controller.deinit();
     if (comptime Environment.isWindows) {
         bun.windows.libuv.Loop.shutdown();
     }
     vm.deinit();
-    jsc.wtf.prepareForThreadExit();
-    bun.deleteAllPoolsForThreadExit();
-    arena.deinit();
-    bun.exitThread();
 }
 
 pub fn stopAndJoin(owner: *VirtualMachine) void {
@@ -250,7 +318,10 @@ pub fn stopAndJoin(owner: *VirtualMachine) void {
     bun.assert(debugger.thread_vm == null);
 }
 
-pub export fn Debugger__didConnect() void {
+fn bindDidConnect(
+    args: bun.bindgen.Args(DebuggerDidConnectSchema),
+) bun.bindgen.Return(DebuggerDidConnectSchema) {
+    _ = args;
     var this = VirtualMachine.get();
     if (this.debugger.?.wait_for_connection != .off) {
         this.debugger.?.wait_for_connection = .off;
@@ -259,37 +330,47 @@ pub export fn Debugger__didConnect() void {
     }
 }
 
-fn start(other_vm: *VirtualMachine) void {
-    jsc.markBinding(@src());
-
+fn start(other_vm: *VirtualMachine) bun.JSError!void {
     var this = VirtualMachine.get();
     const debugger = &other_vm.debugger.?;
     const loop = this.eventLoop();
 
     switch (debugger.startup_result) {
-        .failed => teardownDebuggerVM(other_vm, this),
+        .failed => return,
         else => {},
     }
 
     if (debugger.stop_requested.load(.acquire)) {
         signalStartup(debugger, other_vm, .stopped);
-        teardownDebuggerVM(other_vm, this);
+        return;
     }
 
     if (debugger.from_environment_variable.len > 0) {
-        var url = bun.String.cloneUTF8(debugger.from_environment_variable);
+        var bound_url = try bun.bindgen.DOMString.fromUTF8(debugger.from_environment_variable);
+        defer bound_url.deinit();
 
         loop.enter();
         defer loop.exit();
-        Bun__startJSDebuggerThread(this.global, debugger.script_execution_context_id, &url, 1, debugger.mode == .connect);
+        try bun.bindgen.Engine(StartJSDebuggerThreadShim).call(this.global, .{
+            .scriptId = debugger.script_execution_context_id,
+            .portOrPath = bound_url.operand(),
+            .isAutomatic = true,
+            .isURLServer = debugger.mode == .connect,
+        });
     }
 
     if (debugger.path_or_port) |path_or_port| {
-        var url = bun.String.cloneUTF8(path_or_port);
+        var bound_url = try bun.bindgen.DOMString.fromUTF8(path_or_port);
+        defer bound_url.deinit();
 
         loop.enter();
         defer loop.exit();
-        Bun__startJSDebuggerThread(this.global, debugger.script_execution_context_id, &url, 0, debugger.mode == .connect);
+        try bun.bindgen.Engine(StartJSDebuggerThreadShim).call(this.global, .{
+            .scriptId = debugger.script_execution_context_id,
+            .portOrPath = bound_url.operand(),
+            .isAutomatic = false,
+            .isURLServer = debugger.mode == .connect,
+        });
     }
 
     this.global.handleRejectedPromises();
@@ -304,7 +385,7 @@ fn start(other_vm: *VirtualMachine) void {
     signalStartup(debugger, other_vm, .ready);
 
     if (debugger.stop_requested.load(.acquire)) {
-        teardownDebuggerVM(other_vm, this);
+        return;
     }
     this.eventLoop().tick();
 
@@ -319,8 +400,6 @@ fn start(other_vm: *VirtualMachine) void {
         if (debugger.stop_requested.load(.acquire)) break;
         this.eventLoop().tickPossiblyForever();
     }
-
-    teardownDebuggerVM(other_vm, this);
 }
 
 pub const AsyncTaskTracker = struct {
@@ -359,83 +438,99 @@ pub const AsyncTaskTracker = struct {
     }
 };
 
-pub const AsyncCallType = enum(u8) {
-    DOMTimer = 1,
-    EventListener = 2,
-    PostMessage = 3,
-    RequestAnimationFrame = 4,
-    Microtask = 5,
-};
-extern fn Debugger__didScheduleAsyncCall(*JSGlobalObject, AsyncCallType, u64, bool) void;
-extern fn Debugger__didCancelAsyncCall(*JSGlobalObject, AsyncCallType, u64) void;
-extern fn Debugger__didDispatchAsyncCall(*JSGlobalObject, AsyncCallType, u64) void;
-extern fn Debugger__willDispatchAsyncCall(*JSGlobalObject, AsyncCallType, u64) void;
-
+pub const AsyncCallType = @FieldType(bun.bindgen.Args(DebuggerDidScheduleAsyncCallShim), "callType");
 pub fn didScheduleAsyncCall(globalObject: *JSGlobalObject, call: AsyncCallType, id: u64, single_shot: bool) void {
-    jsc.markBinding(@src());
-    Debugger__didScheduleAsyncCall(globalObject, call, id, single_shot);
+    bun.bindgen.Engine(DebuggerDidScheduleAsyncCallShim).call(globalObject, .{
+        .callType = call,
+        .callbackId = id,
+        .singleShot = single_shot,
+    });
 }
 pub fn didCancelAsyncCall(globalObject: *JSGlobalObject, call: AsyncCallType, id: u64) void {
-    jsc.markBinding(@src());
-    Debugger__didCancelAsyncCall(globalObject, call, id);
+    bun.bindgen.Engine(DebuggerDidCancelAsyncCallShim).call(globalObject, .{
+        .callType = call,
+        .callbackId = id,
+    });
 }
 pub fn didDispatchAsyncCall(globalObject: *JSGlobalObject, call: AsyncCallType, id: u64) void {
-    jsc.markBinding(@src());
-    Debugger__didDispatchAsyncCall(globalObject, call, id);
+    bun.bindgen.Engine(DebuggerDidDispatchAsyncCallShim).call(globalObject, .{
+        .callType = call,
+        .callbackId = id,
+    });
 }
 pub fn willDispatchAsyncCall(globalObject: *JSGlobalObject, call: AsyncCallType, id: u64) void {
-    jsc.markBinding(@src());
-    Debugger__willDispatchAsyncCall(globalObject, call, id);
+    bun.bindgen.Engine(DebuggerWillDispatchAsyncCallShim).call(globalObject, .{
+        .callType = call,
+        .callbackId = id,
+    });
 }
 
 pub const TestReporterAgent = struct {
     handle: ?*Handle = null,
     const debug = Output.scoped(.TestReporterAgent, .visible);
 
-    /// this enum is kept in sync with c++ InspectorTestReporterAgent.cpp `enum class BunTestStatus`
-    pub const TestStatus = enum(u8) {
-        pass,
-        fail,
-        timeout,
-        skip,
-        todo,
-        skipped_because_label,
-    };
-
-    pub const TestType = enum(u8) {
-        @"test" = 0,
-        describe = 1,
-    };
+    pub const TestStatus = @FieldType(bun.bindgen.Args(InspectorTestReporterAgentReportTestEndShim), "status");
+    pub const TestType = @FieldType(bun.bindgen.Args(InspectorTestReporterAgentReportTestFoundShim), "itemType");
 
     pub const Handle = opaque {
-        extern "c" fn Bun__TestReporterAgentReportTestFound(agent: *Handle, callFrame: *jsc.CallFrame, testId: c_int, name: *bun.String, item_type: TestType, parentId: c_int) void;
-        extern "c" fn Bun__TestReporterAgentReportTestFoundWithLocation(agent: *Handle, testId: c_int, name: *bun.String, item_type: TestType, parentId: c_int, sourceURL: *bun.String, line: c_int) void;
-        extern "c" fn Bun__TestReporterAgentReportTestStart(agent: *Handle, testId: c_int) void;
-        extern "c" fn Bun__TestReporterAgentReportTestEnd(agent: *Handle, testId: c_int, bunTestStatus: TestStatus, elapsed: f64) void;
-
-        pub fn reportTestFound(this: *Handle, callFrame: *jsc.CallFrame, testId: i32, name: *bun.String, item_type: TestType, parentId: i32) void {
-            Bun__TestReporterAgentReportTestFound(this, callFrame, testId, name, item_type, parentId);
+        pub fn reportTestFound(this: *Handle, caller_frame: *bun.bindgen.CallerFrameHandle, testId: i32, name: *bun.String, item_type: TestType, parentId: i32) void {
+            var bound_name = bun.bindgen.DOMString.fromBunString(name.dupeRef()) catch bun.outOfMemory();
+            defer bound_name.deinit();
+            bun.bindgen.Engine(InspectorTestReporterAgentReportTestFoundShim).call(.{
+                .agent = @ptrCast(this),
+                .callFrame = @ptrCast(caller_frame),
+                .testId = testId,
+                .name = bound_name.operand(),
+                .itemType = item_type,
+                .parentId = parentId,
+            });
         }
 
         pub fn reportTestFoundWithLocation(this: *Handle, testId: i32, name: *bun.String, item_type: TestType, parentId: i32, sourceURL: *bun.String, line: i32) void {
-            Bun__TestReporterAgentReportTestFoundWithLocation(this, testId, name, item_type, parentId, sourceURL, line);
+            var bound_name = bun.bindgen.DOMString.fromBunString(name.dupeRef()) catch bun.outOfMemory();
+            defer bound_name.deinit();
+            var bound_source_url = bun.bindgen.DOMString.fromBunString(sourceURL.dupeRef()) catch bun.outOfMemory();
+            defer bound_source_url.deinit();
+            bun.bindgen.Engine(InspectorTestReporterAgentReportTestFoundWithLocationShim).call(.{
+                .agent = @ptrCast(this),
+                .testId = testId,
+                .name = bound_name.operand(),
+                .itemType = item_type,
+                .parentId = parentId,
+                .sourceURL = bound_source_url.operand(),
+                .line = line,
+            });
         }
 
         pub fn reportTestStart(this: *Handle, testId: c_int) void {
-            Bun__TestReporterAgentReportTestStart(this, testId);
+            bun.bindgen.Engine(InspectorTestReporterAgentReportTestStartShim).call(.{
+                .agent = @ptrCast(this),
+                .testId = testId,
+            });
         }
 
         pub fn reportTestEnd(this: *Handle, testId: c_int, bunTestStatus: TestStatus, elapsed: f64) void {
-            Bun__TestReporterAgentReportTestEnd(this, testId, bunTestStatus, elapsed);
+            bun.bindgen.Engine(InspectorTestReporterAgentReportTestEndShim).call(.{
+                .agent = @ptrCast(this),
+                .testId = testId,
+                .status = bunTestStatus,
+                .elapsed = elapsed,
+            });
         }
     };
-    pub export fn Bun__TestReporterAgentEnable(agent: *Handle) void {
+    fn bindSetAgent(
+        args: bun.bindgen.Args(SetInspectorTestReporterAgentSchema),
+    ) bun.bindgen.Return(SetInspectorTestReporterAgentSchema) {
+        const agent: *Handle = @ptrCast(args.agent);
         if (VirtualMachine.get().debugger) |*debugger| {
-            debug("enable", .{});
-            debugger.test_reporter_agent.handle = agent;
-
-            // Retroactively report any tests that were already discovered before the debugger connected
-            retroactivelyReportDiscoveredTests(agent);
+            if (args.enabled) {
+                debug("enable", .{});
+                debugger.test_reporter_agent.handle = agent;
+                retroactivelyReportDiscoveredTests(agent);
+            } else if (debugger.test_reporter_agent.handle == agent) {
+                debug("disable", .{});
+                debugger.test_reporter_agent.handle = null;
+            }
         }
     }
 
@@ -454,7 +549,8 @@ pub const TestReporterAgent = struct {
 
         // Get the file path for source location info
         const file_path = runner.files.get(active_file.file_id).source.path.text;
-        var source_url = bun.String.init(file_path);
+        var source_url = bun.String.cloneUTF8(file_path);
+        defer source_url.deref();
 
         // Track the maximum ID we assign
         var max_id: i32 = 0;
@@ -476,7 +572,8 @@ pub const TestReporterAgent = struct {
                         const test_id = max_id.*;
                         // Assign the ID so start/end events will fire during execution
                         describe.base.test_id_for_debugger = test_id;
-                        var name = bun.String.init(describe.base.name orelse "(unnamed)");
+                        var name = bun.String.cloneUTF8(describe.base.name orelse "(unnamed)");
+                        defer name.deref();
                         agent.reportTestFoundWithLocation(
                             test_id,
                             &name,
@@ -499,7 +596,8 @@ pub const TestReporterAgent = struct {
                         const test_id = max_id.*;
                         // Assign the ID so start/end events will fire during execution
                         test_entry.base.test_id_for_debugger = test_id;
-                        var name = bun.String.init(test_entry.base.name orelse "(unnamed)");
+                        var name = bun.String.cloneUTF8(test_entry.base.name orelse "(unnamed)");
+                        defer name.deref();
                         agent.reportTestFoundWithLocation(
                             test_id,
                             &name,
@@ -515,20 +613,13 @@ pub const TestReporterAgent = struct {
     }
 
     const bun_test = jsc.Jest.bun_test;
-    pub export fn Bun__TestReporterAgentDisable(_: *Handle) void {
-        if (VirtualMachine.get().debugger) |*debugger| {
-            debug("disable", .{});
-            debugger.test_reporter_agent.handle = null;
-        }
-    }
-
     /// Caller must ensure that it is enabled first.
     ///
     /// Since we may have to call .deinit on the name string.
-    pub fn reportTestFound(this: TestReporterAgent, callFrame: *jsc.CallFrame, test_id: i32, name: *bun.String, item_type: TestType, parentId: i32) void {
+    pub fn reportTestFound(this: TestReporterAgent, caller_source_location: bun.bindgen.CallerSourceLocationView, test_id: i32, name: *bun.String, item_type: TestType, parentId: i32) void {
         debug("reportTestFound", .{});
 
-        this.handle.?.reportTestFound(callFrame, test_id, name, item_type, parentId);
+        this.handle.?.reportTestFound(caller_source_location.frameHandle(), test_id, name, item_type, parentId);
     }
 
     /// Caller must ensure that it is enabled first.
@@ -553,42 +644,52 @@ pub const LifecycleAgent = struct {
     const debug = Output.scoped(.LifecycleAgent, .visible);
 
     pub const Handle = opaque {
-        extern "c" fn Bun__LifecycleAgentReportReload(agent: *Handle) void;
-        extern "c" fn Bun__LifecycleAgentReportError(agent: *Handle, exception: *ZigException) void;
-        extern "c" fn Bun__LifecycleAgentPreventExit(agent: *Handle) void;
-        extern "c" fn Bun__LifecycleAgentStopPreventingExit(agent: *Handle) void;
-
-        pub fn preventExit(this: *Handle) void {
-            Bun__LifecycleAgentPreventExit(this);
-        }
-
-        pub fn stopPreventingExit(this: *Handle) void {
-            Bun__LifecycleAgentStopPreventingExit(this);
-        }
-
         pub fn reportReload(this: *Handle) void {
             debug("reportReload", .{});
-            Bun__LifecycleAgentReportReload(this);
+            bun.bindgen.Engine(InspectorLifecycleAgentReportReloadShim).call(.{ .agent = @ptrCast(this) });
         }
 
-        pub fn reportError(this: *Handle, exception: *ZigException) void {
+        pub fn reportError(this: *Handle, exception: *const Diagnostic.Value) bun.OOM!void {
             debug("reportError", .{});
-            Bun__LifecycleAgentReportError(this, exception);
+            const Frame = std.meta.Elem(bun.bindgen.EngineArgumentType(InspectorLifecycleAgentReportErrorShim, "frames"));
+            const Line = std.meta.Elem(bun.bindgen.EngineArgumentType(InspectorLifecycleAgentReportErrorShim, "sourceLines"));
+            const frames = try bun.default_allocator.alloc(Frame, exception.frames.len());
+            defer bun.default_allocator.free(frames);
+            for (exception.frames.slice(), frames) |*frame, *operand| operand.* = .{
+                .functionName = frame.functionName.operand(),
+                .sourceURL = frame.sourceURL.operand(),
+                .line = frame.line,
+                .column = frame.column,
+                .bytePosition = frame.bytePosition,
+                .codeType = frame.codeType,
+                .isAsync = frame.isAsync,
+                .remapped = frame.remapped,
+            };
+            const lines = try bun.default_allocator.alloc(Line, exception.sourceLines.len());
+            defer bun.default_allocator.free(lines);
+            for (exception.sourceLines.slice(), lines) |*line, *operand| operand.* = .{ .text = line.text.operand(), .line = line.line };
+            try bun.bindgen.Engine(InspectorLifecycleAgentReportErrorShim).call(.{
+                .agent = @ptrCast(this),
+                .message = exception.details.message.operand(),
+                .name = exception.details.name.operand(),
+                .frames = frames,
+                .sourceLines = lines,
+            });
         }
     };
 
-    pub export fn Bun__LifecycleAgentEnable(agent: *Handle) void {
+    fn bindSetAgent(
+        args: bun.bindgen.Args(SetInspectorLifecycleAgentSchema),
+    ) bun.bindgen.Return(SetInspectorLifecycleAgentSchema) {
+        const agent: *Handle = @ptrCast(args.agent);
         if (VirtualMachine.get().debugger) |*debugger| {
-            debug("enable", .{});
-            debugger.lifecycle_reporter_agent.handle = agent;
-        }
-    }
-
-    pub export fn Bun__LifecycleAgentDisable(agent: *Handle) void {
-        _ = agent; // autofix
-        if (VirtualMachine.get().debugger) |*debugger| {
-            debug("disable", .{});
-            debugger.lifecycle_reporter_agent.handle = null;
+            if (args.enabled) {
+                debug("enable", .{});
+                debugger.lifecycle_reporter_agent.handle = agent;
+            } else if (debugger.lifecycle_reporter_agent.handle == agent) {
+                debug("disable", .{});
+                debugger.lifecycle_reporter_agent.handle = null;
+            }
         }
     }
 
@@ -598,9 +699,9 @@ pub const LifecycleAgent = struct {
         }
     }
 
-    pub fn reportError(this: *LifecycleAgent, exception: *ZigException) void {
+    pub fn reportError(this: *LifecycleAgent, exception: *const Diagnostic.Value) bun.OOM!void {
         if (this.handle) |handle| {
-            handle.reportError(exception);
+            try handle.reportError(exception);
         }
     }
 
@@ -610,7 +711,8 @@ pub const LifecycleAgent = struct {
 };
 
 pub const DebuggerId = bun.GenericIndex(i32, Debugger);
-pub const BunFrontendDevServerAgent = @import("../runtime/server/InspectorBunFrontendDevServerAgent.zig").BunFrontendDevServerAgent;
+pub const BunFrontendDevServerAgentModule = @import("../runtime/server/InspectorBunFrontendDevServerAgentEngine.zig");
+pub const BunFrontendDevServerAgent = BunFrontendDevServerAgentModule.BunFrontendDevServerAgent;
 pub const HTTPServerAgent = @import("./HTTPServerAgent.zig");
 
 const DotEnv = @import("../dotenv/env_loader.zig");
@@ -625,4 +727,49 @@ const jsc = bun.jsc;
 const Debugger = jsc.Debugger;
 const JSGlobalObject = jsc.JSGlobalObject;
 const VirtualMachine = jsc.VirtualMachine;
-const ZigException = jsc.ZigException;
+const Diagnostic = jsc.Diagnostic;
+const JSCThreadTeardownBindings = bun.bindgen.Module("jsc_thread_teardown");
+const BunDebuggerBindings = bun.bindgen.Module("BunDebugger");
+const InspectorConnectionSchema = BunDebuggerBindings.class("InspectorConnection");
+const InspectorConnectionClass = bun.bindgen.Class(InspectorConnectionSchema, InspectorConnection);
+const InspectorChannel = @typeInfo(bun.bindgen.Return(BunDebuggerBindings.engineShim("createInspectorConnection"))).optional.child;
+const CreateConnectionSchema = BunDebuggerBindings.function("createConnection");
+const SendSchema = BunDebuggerBindings.function("send");
+const DisconnectSchema = BunDebuggerBindings.function("disconnect");
+const CreateConnectionBinding = bun.bindgen.Fn(CreateConnectionSchema, createConnection);
+const SendBinding = bun.bindgen.Fn(SendSchema, send);
+const DisconnectBinding = bun.bindgen.Fn(DisconnectSchema, disconnect);
+const InspectorAgentBindings = bun.bindgen.Module("inspector_agents");
+const CreateJSDebuggerShim = BunDebuggerBindings.engineShim("createJSDebugger");
+const StartJSDebuggerThreadShim = BunDebuggerBindings.engineShim("startJSDebuggerThread");
+const DebuggerRunWithAPILockShim = BunDebuggerBindings.engineShim("debuggerRunWithAPILock");
+const TeardownThreadJSCVMShim = JSCThreadTeardownBindings.engineShim("teardownThreadJSCVM");
+const DebuggerDidScheduleAsyncCallShim = BunDebuggerBindings.engineShim("debuggerDidScheduleAsyncCall");
+const DebuggerDidCancelAsyncCallShim = BunDebuggerBindings.engineShim("debuggerDidCancelAsyncCall");
+const DebuggerDidDispatchAsyncCallShim = BunDebuggerBindings.engineShim("debuggerDidDispatchAsyncCall");
+const DebuggerWillDispatchAsyncCallShim = BunDebuggerBindings.engineShim("debuggerWillDispatchAsyncCall");
+const InspectorLifecycleAgentReportReloadShim = InspectorAgentBindings.engineShim("inspectorLifecycleAgentReportReload");
+const InspectorLifecycleAgentReportErrorShim = InspectorAgentBindings.engineShim("inspectorLifecycleAgentReportError");
+const InspectorTestReporterAgentReportTestFoundShim = InspectorAgentBindings.engineShim("inspectorTestReporterAgentReportTestFound");
+const InspectorTestReporterAgentReportTestFoundWithLocationShim = InspectorAgentBindings.engineShim("inspectorTestReporterAgentReportTestFoundWithLocation");
+const InspectorTestReporterAgentReportTestStartShim = InspectorAgentBindings.engineShim("inspectorTestReporterAgentReportTestStart");
+const InspectorTestReporterAgentReportTestEndShim = InspectorAgentBindings.engineShim("inspectorTestReporterAgentReportTestEnd");
+const SetInspectorTestReporterAgentSchema = InspectorAgentBindings.nativeExport("setInspectorTestReporterAgent");
+const SetInspectorLifecycleAgentSchema = InspectorAgentBindings.nativeExport("setInspectorLifecycleAgent");
+const DebuggerDidConnectSchema = BunDebuggerBindings.nativeExport("debuggerDidConnect");
+const DebuggerStartSchema = BunDebuggerBindings.nativeExport("debuggerStart");
+const SetInspectorTestReporterAgentBinding = bun.bindgen.Fn(SetInspectorTestReporterAgentSchema, TestReporterAgent.bindSetAgent);
+const SetInspectorLifecycleAgentBinding = bun.bindgen.Fn(SetInspectorLifecycleAgentSchema, LifecycleAgent.bindSetAgent);
+const DebuggerDidConnectBinding = bun.bindgen.Fn(DebuggerDidConnectSchema, bindDidConnect);
+const DebuggerStartBinding = bun.bindgen.Fn(DebuggerStartSchema, bindStart);
+
+comptime {
+    _ = InspectorConnectionClass;
+    _ = CreateConnectionBinding;
+    _ = SendBinding;
+    _ = DisconnectBinding;
+    _ = SetInspectorTestReporterAgentBinding;
+    _ = SetInspectorLifecycleAgentBinding;
+    _ = DebuggerDidConnectBinding;
+    _ = DebuggerStartBinding;
+}

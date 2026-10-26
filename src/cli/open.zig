@@ -27,7 +27,7 @@ pub fn openURL(url: stringZ) void {
             .stdin = .inherit,
 
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                .loop = (bun.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null) catch break :maybe_fallback).parentEventLoop(),
             },
         }) catch break :maybe_fallback) {
             // don't fallback:
@@ -209,13 +209,14 @@ pub const Editor = enum(u8) {
         file: []const u8,
         line: ?string,
         column: ?string,
-        _: std.mem.Allocator,
     ) !void {
         var spawned = try default_allocator.create(SpawnedEditorContext);
         spawned.* = .{};
         var file_path_buf_writer = std.Io.Writer.fixed(&spawned.file_path_buf);
         var args_buf = &spawned.buf;
-        errdefer default_allocator.destroy(spawned);
+        errdefer spawned.destroy();
+        spawned.binary = try default_allocator.dupe(u8, binary);
+        const owned_binary = spawned.binary.?;
 
         var i: usize = 0;
 
@@ -223,7 +224,7 @@ pub const Editor = enum(u8) {
             args_buf[0] = opener;
             i += 1;
 
-            args_buf[i] = binary;
+            args_buf[i] = owned_binary;
             i += 1;
 
             if (Environment.isMac) {
@@ -232,7 +233,7 @@ pub const Editor = enum(u8) {
             }
         }
 
-        args_buf[i] = binary;
+        args_buf[i] = owned_binary;
         i += 1;
 
         if (editor == .vscode and line != null and line.?.len > 0) {
@@ -308,10 +309,16 @@ pub const Editor = enum(u8) {
         file_path_buf: [1024 + bun.MAX_PATH_BYTES]u8 = undefined,
         buf: [10]string = undefined,
         args_len: usize = 0,
+        binary: ?[]u8 = null,
+
+        fn destroy(this: *@This()) void {
+            if (this.binary) |binary| default_allocator.free(binary);
+            default_allocator.destroy(this);
+        }
     };
 
     fn autoClose(spawned: *SpawnedEditorContext) void {
-        defer bun.default_allocator.destroy(spawned);
+        defer spawned.destroy();
 
         Global.setThreadName("Open Editor");
         _ = bun.spawnSync(&.{
@@ -321,7 +328,7 @@ pub const Editor = enum(u8) {
             .stdout = .inherit,
             .stderr = .inherit,
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                .loop = (bun.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null) catch return).parentEventLoop(),
             },
         }) catch {};
     }
@@ -329,9 +336,24 @@ pub const Editor = enum(u8) {
 
 pub const EditorContext = struct {
     editor: ?Editor = null,
-    name: string = "",
+    name_storage: ?[]u8 = null,
     path: string = "",
     const Fs = @import("../resolver/fs.zig");
+
+    pub fn name(this: *const EditorContext) string {
+        return this.name_storage orelse "";
+    }
+
+    pub fn setName(this: *EditorContext, value: string) bun.OOM!void {
+        const owned = try default_allocator.dupe(u8, value);
+        if (this.name_storage) |previous| default_allocator.free(previous);
+        this.name_storage = owned;
+    }
+
+    pub fn deinit(this: *EditorContext) void {
+        if (this.name_storage) |name_storage| default_allocator.free(name_storage);
+        this.* = .{};
+    }
 
     pub fn openInEditor(this: *EditorContext, io: std.Io, editor_: Editor, blob: []const u8, id: string, tmpdir: std.Io.Dir, line: string, column: string) void {
         _openInEditor(this.path, io, editor_, blob, id, tmpdir, line, column) catch |err| {
@@ -362,7 +384,6 @@ pub const EditorContext = struct {
             try bun.getFdPath(opened.handle, &path_buf),
             line,
             column,
-            default_allocator,
         );
     }
 
@@ -375,17 +396,18 @@ pub const EditorContext = struct {
         var buf: bun.PathBuffer = undefined;
 
         var out: string = "";
+        const name_ = this.name();
         // first: choose from user preference
-        if (this.name.len > 0) {
+        if (name_.len > 0) {
             // /usr/bin/vim
-            if (std.fs.path.isAbsolute(this.name)) {
-                this.editor = Editor.byName(std.fs.path.basename(this.name)) orelse Editor.other;
-                this.path = this.name;
+            if (std.fs.path.isAbsolute(name_)) {
+                this.editor = Editor.byName(std.fs.path.basename(name_)) orelse Editor.other;
+                this.path = name_;
                 return;
             }
 
             // "vscode"
-            if (Editor.byName(std.fs.path.basename(this.name))) |editor_| {
+            if (Editor.byName(std.fs.path.basename(name_))) |editor_| {
                 if (Editor.byPATHForEditor(env, editor_, &buf, Fs.FileSystem.instance.top_level_dir, &out)) {
                     this.editor = editor_;
                     this.path = Fs.FileSystem.instance.dirname_store.append(string, out) catch unreachable;

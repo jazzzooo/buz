@@ -1,9 +1,9 @@
 #include "root.h"
+#include "SchemaBindings.h"
 
 #include "JavaScriptCore/JSGlobalObject.h"
 #include <JavaScriptCore/StructureInlines.h>
 #include <JavaScriptCore/ObjectPrototype.h>
-#include "headers-handwritten.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/ObjectConstructor.h>
 #include <JavaScriptCore/JSObjectInlines.h>
@@ -18,411 +18,358 @@
 #include "JavaScriptCore/ArgList.h"
 #include "JavaScriptCore/ArrayAllocationProfile.h"
 #include "JavaScriptCore/ExceptionScope.h"
+#include <JavaScriptCore/JSArrayBuffer.h>
+#include <JavaScriptCore/JSArrayBufferViewInlines.h>
 #include "JavaScriptCore/JSArrayBufferView.h"
 #include "JavaScriptCore/JSCast.h"
 #include "JavaScriptCore/JSGlobalObjectInlines.h"
 #include "JavaScriptCore/JSType.h"
 #include "JavaScriptCore/TypedArrayAdaptersForwardDeclarations.h"
+#include <span>
+#include <wtf/Vector.h>
 
 namespace Bun {
 using namespace JSC;
+using Bindgen::SQLDataCellNode;
+using Bindgen::SQLResultColumnSlot;
+using Bindgen::SQLResultLayoutFlags;
+using Bindgen::SQLResultMode;
+using Bindgen::SQLTypedArrayKind;
 
-typedef struct ExternColumnSlot {
-    uint8_t tag;
-    union {
-        uint32_t index;
-        BunString name;
-    };
-
-    bool isIndexedColumn() const { return tag == 1; }
-    bool isNamedColumn() const { return tag == 2; }
-    bool isNamedOffset() const { return tag == 3; }
-    bool isDuplicateColumn() const { return tag == 0; }
-} ExternColumnSlot;
-
-typedef struct DataCellArray {
-    struct DataCell* cells;
-    uint32_t length;
-    uint32_t cap;
-} DataCellArray;
-
-typedef struct DataCellRaw {
-    void* ptr;
-    uint64_t length;
-} DataCellRaw;
-
-typedef struct TypedArrayDataCell {
-    void* headPtr;
-    void* data;
-    uint32_t length;
-    uint32_t byteLength;
-    JSC::JSType type;
-} TypedArrayDataCell;
-
-typedef union DataCellValue {
-    uint8_t null_value;
-    WTF::StringImpl* string;
-    double number;
-    int32_t integer;
-    int64_t bigint;
-    uint64_t unsigned_bigint;
-    uint8_t boolean;
-    double date;
-    double date_with_time_zone;
-    size_t bytea[2];
-    WTF::StringImpl* json;
-    DataCellArray array;
-    TypedArrayDataCell typed_array;
-    DataCellRaw raw;
-    uint32_t unsigned_integer;
-} DataCellValue;
-
-enum class DataCellTag : uint8_t {
-    Null = 0,
-    String = 1,
-    Double = 2,
-    Integer = 3,
-    Bigint = 4,
-    Boolean = 5,
-    Date = 6,
-    DateWithTimeZone = 7,
-    Bytea = 8,
-    Json = 9,
-    Array = 10,
-    TypedArray = 11,
-    Raw = 12,
-    UnsignedInteger = 13,
-    UnsignedBigint = 14,
-};
-
-enum class BunResultMode : uint8_t {
-    Objects = 0,
-    Values = 1,
-    Raw = 2,
-};
-
-typedef struct DataCell {
-    DataCellTag tag;
-    DataCellValue value;
-    uint8_t freeValue;
-} DataCell;
-
-class BunStructureFlags {
-public:
-    uint32_t flags;
-
-    BunStructureFlags(uint32_t flags)
-        : flags(flags)
-    {
-    }
-
-    bool hasIndexedColumns() const { return flags & (1 << 0); }
-    bool hasNamedColumns() const { return flags & (1 << 1); }
-    bool hasDuplicateColumns() const { return flags & (1 << 2); }
-};
-
-static JSC::JSValue toJS(JSC::VM& vm, JSC::JSGlobalObject* globalObject, DataCell& cell)
+static WTF::String sqlLatin1String(std::span<const uint8_t> units)
 {
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    switch (cell.tag) {
-    case DataCellTag::Null:
-        return jsNull();
-        break;
-    case DataCellTag::Raw: {
-        Zig::GlobalObject* zigGlobal = uncheckedDowncast<Zig::GlobalObject>(globalObject);
-        auto* subclassStructure = zigGlobal->JSBufferSubclassStructure();
-        auto* uint8Array = JSC::JSUint8Array::createUninitialized(globalObject, subclassStructure, cell.value.raw.length);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (cell.value.raw.length > 0) {
-            memcpy(uint8Array->vector(), reinterpret_cast<void*>(cell.value.raw.ptr), cell.value.raw.length);
-        }
-        return uint8Array;
-    }
-    case DataCellTag::String: {
-        if (cell.value.string) {
-            return jsString(vm, WTF::String(cell.value.string));
-        }
-        return jsEmptyString(vm);
-    }
-    case DataCellTag::Double:
-        return jsNumber(cell.value.number);
-        break;
-    case DataCellTag::Integer:
-        return jsNumber(cell.value.integer);
-        break;
-    case DataCellTag::UnsignedInteger:
-        return jsNumber(cell.value.unsigned_integer);
-        break;
-    case DataCellTag::Bigint:
-        RELEASE_AND_RETURN(scope, JSC::JSBigInt::createFrom(globalObject, cell.value.bigint));
-        break;
-    case DataCellTag::UnsignedBigint:
-        RELEASE_AND_RETURN(scope, JSC::JSBigInt::createFrom(globalObject, cell.value.unsigned_bigint));
-        break;
-    case DataCellTag::Boolean:
-        return jsBoolean(cell.value.boolean);
-        break;
-    case DataCellTag::DateWithTimeZone:
-    case DataCellTag::Date: {
-        return JSC::DateInstance::create(vm, globalObject->dateStructure(), cell.value.date);
-        break;
-    }
-    case DataCellTag::Bytea: {
-        Zig::GlobalObject* zigGlobal = uncheckedDowncast<Zig::GlobalObject>(globalObject);
-        auto* subclassStructure = zigGlobal->JSBufferSubclassStructure();
-        auto* uint8Array = JSC::JSUint8Array::createUninitialized(globalObject, subclassStructure, cell.value.bytea[1]);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (cell.value.bytea[1] > 0) {
-            memcpy(uint8Array->vector(), reinterpret_cast<void*>(cell.value.bytea[0]), cell.value.bytea[1]);
-        }
-        return uint8Array;
-    }
-    case DataCellTag::Json: {
-        if (cell.value.json) {
-            auto str = WTF::String(cell.value.json);
-            JSC::JSValue json = JSC::JSONParseWithException(globalObject, str);
-            RETURN_IF_EXCEPTION(scope, {});
-            return json;
-        }
-        return jsNull();
-    }
-    case DataCellTag::Array: {
-        MarkedArgumentBuffer args;
-        uint32_t length = cell.value.array.length;
-        for (uint32_t i = 0; i < length; i++) {
-            JSValue result = toJS(vm, globalObject, cell.value.array.cells[i]);
-            RETURN_IF_EXCEPTION(scope, {});
-            args.append(result);
-        }
-        RELEASE_AND_RETURN(scope, JSC::constructArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), args));
-    }
-    case DataCellTag::TypedArray: {
-        JSC::JSType type = static_cast<JSC::JSType>(cell.value.typed_array.type);
-        uint32_t length = cell.value.typed_array.length;
-        switch (type) {
-        case JSC::JSType::Int32ArrayType: {
-            JSC::JSInt32Array* array = JSC::JSInt32Array::createUninitialized(globalObject, globalObject->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeInt32>(), length);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            if (length > 0) {
-                memcpy(array->vector(), reinterpret_cast<void*>(cell.value.typed_array.data), length * sizeof(int32_t));
-            }
-
-            return array;
-        }
-        case JSC::JSType::Uint32ArrayType: {
-            JSC::JSUint32Array* array = JSC::JSUint32Array::createUninitialized(globalObject, globalObject->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeUint32>(), length);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            if (length > 0) {
-                memcpy(array->vector(), reinterpret_cast<void*>(cell.value.typed_array.data), length * sizeof(uint32_t));
-            }
-            return array;
-        }
-        case JSC::JSType::Int16ArrayType: {
-            JSC::JSInt16Array* array = JSC::JSInt16Array::createUninitialized(globalObject, globalObject->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeInt16>(), length);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            if (length > 0) {
-                memcpy(array->vector(), reinterpret_cast<void*>(cell.value.typed_array.data), length * sizeof(int16_t));
-            }
-
-            return array;
-        }
-        case JSC::JSType::Uint16ArrayType: {
-            JSC::JSUint16Array* array = JSC::JSUint16Array::createUninitialized(globalObject, globalObject->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeUint16>(), length);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            if (length > 0) {
-                memcpy(array->vector(), reinterpret_cast<void*>(cell.value.typed_array.data), length * sizeof(uint16_t));
-            }
-            return array;
-        }
-        case JSC::JSType::Float16ArrayType: {
-            JSC::JSFloat16Array* array = JSC::JSFloat16Array::createUninitialized(globalObject, globalObject->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeFloat16>(), length);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            if (length > 0) {
-                memcpy(array->vector(), reinterpret_cast<void*>(cell.value.typed_array.data), length * 2); // sizeof(float16_t)
-            }
-            return array;
-        }
-        case JSC::JSType::Float32ArrayType: {
-            JSC::JSFloat32Array* array = JSC::JSFloat32Array::createUninitialized(globalObject, globalObject->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeFloat32>(), length);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            if (length > 0) {
-                memcpy(array->vector(), reinterpret_cast<void*>(cell.value.typed_array.data), length * sizeof(float));
-            }
-            return array;
-        }
-        case JSC::JSType::Float64ArrayType: {
-            JSC::JSFloat64Array* array = JSC::JSFloat64Array::createUninitialized(globalObject, globalObject->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeFloat64>(), length);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            if (length > 0) {
-                memcpy(array->vector(), reinterpret_cast<void*>(cell.value.typed_array.data), length * sizeof(double));
-            }
-            return array;
-        }
-        default: {
-            RELEASE_ASSERT_NOT_REACHED_WITH_MESSAGE("TODO: implement this typed array type");
-        }
-        }
-    }
-    default: {
-        RELEASE_ASSERT_NOT_REACHED();
-    }
-    }
+    return WTF::String(std::span<const Latin1Character> { reinterpret_cast<const Latin1Character*>(units.data()), units.size() });
 }
 
-static JSC::JSValue toJS(JSC::Structure* structure, DataCell* cells, uint32_t count, JSC::JSGlobalObject* globalObject, Bun::BunStructureFlags flags, BunResultMode result_mode, const ExternColumnSlot* slotsPtr, uint32_t slotsCount)
+static WTF::String sqlUTF16String(std::span<const uint16_t> units)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    switch (result_mode) {
-    case BunResultMode::Objects: // objects
+    return WTF::String(std::span<const char16_t> { reinterpret_cast<const char16_t*>(units.data()), units.size() });
+}
 
+class SQLDataCellCursor {
+public:
+    SQLDataCellCursor(JSGlobalObject* global, std::span<const SQLDataCellNode> nodes, ThrowScope& scope)
+        : m_global(global)
+        , m_vm(getVM(global))
+        , m_nodes(nodes)
+        , m_scope(scope)
     {
-        RELEASE_ASSERT(slotsCount == count && (!count || slotsPtr));
-        std::span<const ExternColumnSlot> slots(slotsPtr, slotsCount);
-        auto* object = structure ? JSC::constructEmptyObject(vm, structure) : JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), 0);
+    }
 
-        // Fast path: named columns only, no duplicate columns
-        if (flags.hasNamedColumns() && !flags.hasDuplicateColumns() && !flags.hasIndexedColumns()) {
-            for (uint32_t i = 0; i < count; i++) {
-                auto& cell = cells[i];
-                const auto& slot = slots[i];
-                JSValue value = toJS(vm, globalObject, cell);
+    JSValue materialize()
+    {
+        const auto& node = take();
+        switch (node.tag()) {
+        case SQLDataCellNode::Tag::null_value:
+            return jsNull();
+        case SQLDataCellNode::Tag::string_latin1:
+            return jsString(m_vm, sqlLatin1String(node.string_latin1().units));
+        case SQLDataCellNode::Tag::string_utf16:
+            return jsString(m_vm, sqlUTF16String(node.string_utf16().units));
+        case SQLDataCellNode::Tag::double_value:
+            return jsNumber(node.double_value());
+        case SQLDataCellNode::Tag::int32:
+            return jsNumber(node.int32());
+        case SQLDataCellNode::Tag::int64:
+            RELEASE_AND_RETURN(m_scope, JSBigInt::createFrom(m_global, node.int64()));
+        case SQLDataCellNode::Tag::boolean:
+            return jsBoolean(node.boolean());
+        case SQLDataCellNode::Tag::date:
+            return DateInstance::create(m_vm, m_global->dateStructure(), node.date().milliseconds);
+        case SQLDataCellNode::Tag::date_with_timezone:
+            return DateInstance::create(m_vm, m_global->dateStructure(), node.date_with_timezone().milliseconds);
+        case SQLDataCellNode::Tag::bytea:
+            return materializeBytes(node.bytea().bytes);
+        case SQLDataCellNode::Tag::json_null:
+            return jsNull();
+        case SQLDataCellNode::Tag::json_latin1: {
+            auto result = JSONParseWithException(m_global, sqlLatin1String(node.json_latin1().units));
+            RETURN_IF_EXCEPTION(m_scope, {});
+            return result;
+        }
+        case SQLDataCellNode::Tag::json_utf16: {
+            auto result = JSONParseWithException(m_global, sqlUTF16String(node.json_utf16().units));
+            RETURN_IF_EXCEPTION(m_scope, {});
+            return result;
+        }
+        case SQLDataCellNode::Tag::array:
+            return materializeArray(node.array().length);
+        case SQLDataCellNode::Tag::typed_array:
+            return materializeTypedArray(node.typed_array());
+        case SQLDataCellNode::Tag::raw:
+            return materializeBytes(node.raw().bytes);
+        case SQLDataCellNode::Tag::uint32:
+            return jsNumber(node.uint32());
+        case SQLDataCellNode::Tag::uint64:
+            RELEASE_AND_RETURN(m_scope, JSBigInt::createFrom(m_global, node.uint64()));
+        case SQLDataCellNode::Tag::none:
+            RELEASE_ASSERT_NOT_REACHED();
+        }
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+
+    bool atEnd() const { return m_index == m_nodes.size(); }
+
+    void skip()
+    {
+        const auto& node = take();
+        switch (node.tag()) {
+        case SQLDataCellNode::Tag::array: {
+            const uint32_t length = node.array().length;
+            RELEASE_ASSERT(length <= remaining());
+            for (uint32_t index = 0; index < length; ++index)
+                skip();
+            return;
+        }
+        case SQLDataCellNode::Tag::null_value:
+        case SQLDataCellNode::Tag::string_latin1:
+        case SQLDataCellNode::Tag::string_utf16:
+        case SQLDataCellNode::Tag::double_value:
+        case SQLDataCellNode::Tag::int32:
+        case SQLDataCellNode::Tag::int64:
+        case SQLDataCellNode::Tag::boolean:
+        case SQLDataCellNode::Tag::date:
+        case SQLDataCellNode::Tag::date_with_timezone:
+        case SQLDataCellNode::Tag::bytea:
+        case SQLDataCellNode::Tag::json_null:
+        case SQLDataCellNode::Tag::json_latin1:
+        case SQLDataCellNode::Tag::json_utf16:
+        case SQLDataCellNode::Tag::typed_array:
+        case SQLDataCellNode::Tag::raw:
+        case SQLDataCellNode::Tag::uint32:
+        case SQLDataCellNode::Tag::uint64:
+            return;
+        case SQLDataCellNode::Tag::none:
+            RELEASE_ASSERT_NOT_REACHED();
+        }
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+
+private:
+    const SQLDataCellNode& take()
+    {
+        RELEASE_ASSERT(m_index < m_nodes.size());
+        return m_nodes[m_index++];
+    }
+
+    size_t remaining() const { return m_nodes.size() - m_index; }
+
+    JSValue materializeBytes(std::span<const uint8_t> bytes)
+    {
+        auto* zigGlobal = uncheckedDowncast<Zig::GlobalObject>(m_global);
+        auto* array = JSUint8Array::createUninitialized(m_global, zigGlobal->JSBufferSubclassStructure(), bytes.size());
+        RETURN_IF_EXCEPTION(m_scope, {});
+        if (!bytes.empty())
+            memcpy(array->vector(), bytes.data(), bytes.size());
+        return array;
+    }
+
+    JSValue materializeArray(uint32_t length)
+    {
+        RELEASE_ASSERT(length <= remaining());
+        MarkedArgumentBuffer values;
+        for (uint32_t index = 0; index < length; ++index) {
+            values.append(materialize());
+            RETURN_IF_EXCEPTION(m_scope, {});
+        }
+        RELEASE_AND_RETURN(m_scope, constructArray(m_global, static_cast<ArrayAllocationProfile*>(nullptr), values));
+    }
+
+    JSValue materializeTypedArray(const Bindgen::SQLTypedArray& value)
+    {
+        constexpr size_t elementSize = sizeof(uint32_t);
+        static_assert(sizeof(size_t) > sizeof(uint32_t));
+        const size_t byteLength = static_cast<size_t>(value.length) * elementSize;
+        RELEASE_ASSERT(value.bytes.size() == byteLength);
+        switch (value.kind) {
+        case SQLTypedArrayKind::int32: {
+            auto* array = JSInt32Array::createUninitialized(m_global, m_global->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeInt32>(), value.length);
+            RETURN_IF_EXCEPTION(m_scope, {});
+            if (value.length)
+                memcpy(array->vector(), value.bytes.span().data(), value.bytes.size());
+            return array;
+        }
+        case SQLTypedArrayKind::float32: {
+            auto* array = JSFloat32Array::createUninitialized(m_global, m_global->typedArrayStructureWithTypedArrayType<TypedArrayType::TypeFloat32>(), value.length);
+            RETURN_IF_EXCEPTION(m_scope, {});
+            if (value.length)
+                memcpy(array->vector(), value.bytes.span().data(), value.bytes.size());
+            return array;
+        }
+        }
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+
+    JSGlobalObject* m_global;
+    VM& m_vm;
+    std::span<const SQLDataCellNode> m_nodes;
+    ThrowScope& m_scope;
+    size_t m_index { 0 };
+};
+
+static JSValue materializeResultRow(
+    Structure* structure,
+    SQLDataCellCursor& cells,
+    uint32_t count,
+    JSGlobalObject* globalObject,
+    const SQLResultLayoutFlags& flags,
+    SQLResultMode resultMode,
+    std::span<const SQLResultColumnSlot> slots,
+    ThrowScope& scope)
+{
+    auto& vm = getVM(globalObject);
+    switch (resultMode) {
+    case SQLResultMode::objects: {
+        RELEASE_ASSERT(slots.size() == count);
+        auto* object = structure ? constructEmptyObject(vm, structure) : constructEmptyObject(globalObject, globalObject->objectPrototype(), 0);
+
+        if (flags.has_named_columns && !flags.has_duplicate_columns && !flags.has_indexed_columns) {
+            for (uint32_t index = 0; index < count; ++index) {
+                const auto& slot = slots[index];
+                auto value = cells.materialize();
                 RETURN_IF_EXCEPTION(scope, {});
-                if (slot.isNamedColumn()) {
-                    object->putDirect(vm, Identifier::fromString(vm, slot.name.toWTFString()), value);
+                if (slot.is_named_latin1()) {
+                    object->putDirect(vm, Identifier::fromString(vm, sqlLatin1String(slot.named_latin1())), value);
+                } else if (slot.is_named_utf16()) {
+                    object->putDirect(vm, Identifier::fromString(vm, sqlUTF16String(slot.named_utf16())), value);
                 } else {
-                    RELEASE_ASSERT(slot.isNamedOffset());
-                    object->putDirectOffset(vm, slot.index, value);
+                    RELEASE_ASSERT(slot.is_named_offset());
+                    object->putDirectOffset(vm, slot.named_offset().value, value);
                 }
             }
-        } else if (flags.hasIndexedColumns() && !flags.hasNamedColumns() && !flags.hasDuplicateColumns()) {
-            for (uint32_t i = 0; i < count; i++) {
-                auto& cell = cells[i];
-                const auto& slot = slots[i];
-                JSValue value = toJS(vm, globalObject, cell);
+        } else if (flags.has_indexed_columns && !flags.has_named_columns && !flags.has_duplicate_columns) {
+            for (uint32_t index = 0; index < count; ++index) {
+                const auto& slot = slots[index];
+                auto value = cells.materialize();
                 RETURN_IF_EXCEPTION(scope, {});
-                RELEASE_ASSERT(slot.isIndexedColumn());
-                object->putDirectIndex(globalObject, slot.index, value);
+                RELEASE_ASSERT(slot.is_indexed());
+                object->putDirectIndex(globalObject, slot.indexed().value, value);
                 RETURN_IF_EXCEPTION(scope, {});
             }
         } else {
-            // slow path: named columns with duplicate columns or indexed columns
-            for (uint32_t i = 0; i < count; i++) {
-                auto& cell = cells[i];
-                const auto& slot = slots[i];
-                if (slot.isIndexedColumn()) {
-                    JSValue value = toJS(vm, globalObject, cell);
+            for (uint32_t index = 0; index < count; ++index) {
+                const auto& slot = slots[index];
+                if (slot.is_indexed()) {
+                    auto value = cells.materialize();
                     RETURN_IF_EXCEPTION(scope, {});
-                    object->putDirectIndex(globalObject, slot.index, value);
+                    object->putDirectIndex(globalObject, slot.indexed().value, value);
                     RETURN_IF_EXCEPTION(scope, {});
-                } else if (slot.isNamedColumn()) {
-                    JSValue value = toJS(vm, globalObject, cell);
+                } else if (slot.is_named_latin1()) {
+                    auto value = cells.materialize();
                     RETURN_IF_EXCEPTION(scope, {});
-                    object->putDirect(vm, Identifier::fromString(vm, slot.name.toWTFString()), value);
-                } else if (slot.isNamedOffset()) {
-                    JSValue value = toJS(vm, globalObject, cell);
+                    object->putDirect(vm, Identifier::fromString(vm, sqlLatin1String(slot.named_latin1())), value);
+                } else if (slot.is_named_utf16()) {
+                    auto value = cells.materialize();
                     RETURN_IF_EXCEPTION(scope, {});
-                    object->putDirectOffset(vm, slot.index, value);
+                    object->putDirect(vm, Identifier::fromString(vm, sqlUTF16String(slot.named_utf16())), value);
+                } else if (slot.is_named_offset()) {
+                    auto value = cells.materialize();
+                    RETURN_IF_EXCEPTION(scope, {});
+                    object->putDirectOffset(vm, slot.named_offset().value, value);
                 } else {
-                    RELEASE_ASSERT(slot.isDuplicateColumn());
+                    RELEASE_ASSERT(slot.is_duplicate());
+                    cells.skip();
                 }
             }
         }
         return object;
     }
-    case BunResultMode::Raw: // raw is just array mode with raw values
-    case BunResultMode::Values: // values
-    {
-        auto* array = JSC::constructEmptyArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), count);
+    case SQLResultMode::raw:
+    case SQLResultMode::values: {
+        auto* array = constructEmptyArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), count);
         RETURN_IF_EXCEPTION(scope, {});
-
-        for (uint32_t i = 0; i < count; i++) {
-            auto& cell = cells[i];
-            JSValue value = toJS(vm, globalObject, cell);
+        for (uint32_t index = 0; index < count; ++index) {
+            auto value = cells.materialize();
             RETURN_IF_EXCEPTION(scope, {});
-            array->putDirectIndex(globalObject, i, value);
+            array->putDirectIndex(globalObject, index, value);
             RETURN_IF_EXCEPTION(scope, {});
         }
         return array;
     }
-
-    default:
-        // not a valid result mode
-        ASSERT_NOT_REACHED();
-        return jsUndefined();
     }
+    RELEASE_ASSERT_NOT_REACHED();
 }
-static JSC::JSValue toJS(JSC::JSArray* array, JSC::Structure* structure, DataCell* cells, uint32_t count, JSC::JSGlobalObject* globalObject, Bun::BunStructureFlags flags, BunResultMode result_mode, const ExternColumnSlot* slotsPtr, uint32_t slotsCount)
+
+uint32_t Bindgen::Engine::bunBindgenEngine_SQLTypes_bindingValuesLength(
+    Bindgen::EngineCallContext&,
+    const Bindgen::Engine::BunBindgenEngine_SQLTypes_bindingValuesLength_Arguments& args)
 {
+    auto* values = dynamicDowncast<JSArray>(args.values);
+    RELEASE_ASSERT(values);
+    return values->length();
+}
+
+void Bindgen::Engine::bunBindgenEngine_SQLTypes_appendResultRow(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_SQLTypes_appendResultRow_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
+    auto* rows = dynamicDowncast<JSArray>(args.rows);
+    auto* structure = args.structure ? dynamicDowncast<Structure>(args.structure.value()) : nullptr;
+    RELEASE_ASSERT(rows);
+    RELEASE_ASSERT(!args.structure || structure);
+
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    JSValue value = toJS(structure, cells, count, globalObject, flags, result_mode, slotsPtr, slotsCount);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (array) {
-        array->push(globalObject, value);
-        RETURN_IF_EXCEPTION(scope, {});
-        return array;
-    }
-
-    auto* newArray = JSC::constructEmptyArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), 1);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    newArray->putDirectIndex(globalObject, 0, value);
-    RETURN_IF_EXCEPTION(scope, {});
-    return newArray;
+    SQLDataCellCursor cells(globalObject, args.nodes, scope);
+    JSValue row = materializeResultRow(structure, cells, args.count, globalObject, args.flags, args.resultMode, args.slots, scope);
+    RETURN_IF_EXCEPTION(scope, );
+    RELEASE_ASSERT(cells.atEnd());
+    rows->push(globalObject, row);
+    RETURN_IF_EXCEPTION(scope, );
 }
 
-extern "C" EncodedJSValue JSC__constructObjectFromDataCell(
-    JSC::JSGlobalObject* globalObject,
-    EncodedJSValue encodedArrayValue,
-    EncodedJSValue encodedStructureValue, DataCell* cells, uint32_t count, uint32_t flags, uint8_t result_mode, const ExternColumnSlot* slotsPtr, uint32_t slotsCount)
+JSC::JSValue Bindgen::Engine::bunBindgenEngine_SQLTypes_createResultRows(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_SQLTypes_createResultRows_Arguments& args)
 {
-    JSValue arrayValue = JSValue::decode(encodedArrayValue);
-    JSValue structureValue = JSValue::decode(encodedStructureValue);
-    auto* array = arrayValue ? dynamicDowncast<JSC::JSArray>(arrayValue) : nullptr;
-    auto* structure = dynamicDowncast<JSC::Structure>(structureValue);
-    return JSValue::encode(toJS(array, structure, cells, count, globalObject, Bun::BunStructureFlags(flags), BunResultMode(result_mode), slotsPtr, slotsCount));
+    auto* globalObject = &context.globalObject;
+    auto* structure = args.structure ? dynamicDowncast<Structure>(args.structure.value()) : nullptr;
+    RELEASE_ASSERT(!args.structure || structure);
+
+    auto& vm = JSC::getVM(globalObject);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    SQLDataCellCursor cells(globalObject, args.nodes, scope);
+    JSValue row = materializeResultRow(structure, cells, args.count, globalObject, args.flags, args.resultMode, args.slots, scope);
+    RETURN_IF_EXCEPTION(scope, {});
+    RELEASE_ASSERT(cells.atEnd());
+
+    auto* rows = JSC::constructEmptyArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), 1);
+    RETURN_IF_EXCEPTION(scope, {});
+    rows->putDirectIndex(globalObject, 0, row);
+    RETURN_IF_EXCEPTION(scope, {});
+    return rows;
 }
 
-extern "C" EncodedJSValue JSC__createStructure(JSC::JSGlobalObject* globalObject, JSC::JSCell* owner, uint32_t slotCount, const ExternColumnSlot* slotsPtr)
+std::optional<JSC::JSValue> Bindgen::Engine::bunBindgenEngine_SQLTypes_createObjectStructure(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_SQLTypes_createObjectStructure_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
 
     PropertyNameArrayBuilder propertyNames(vm, PropertyNameMode::Strings, PrivateSymbolMode::Exclude);
-    std::span<const ExternColumnSlot> slots(slotsPtr, slotCount);
-
-    for (const auto& slot : slots) {
-        if (slot.isNamedColumn()) {
-            propertyNames.add(Identifier::fromString(vm, slot.name.toWTFString()));
+    for (const auto& slot : args.slots) {
+        if (slot.is_named_latin1()) {
+            propertyNames.add(Identifier::fromString(vm, sqlLatin1String(slot.named_latin1())));
+        } else if (slot.is_named_utf16()) {
+            propertyNames.add(Identifier::fromString(vm, sqlUTF16String(slot.named_utf16())));
         }
     }
 
-    RELEASE_ASSERT(propertyNames.size() <= JSFinalObject::maxInlineCapacity);
+    if (propertyNames.size() > JSFinalObject::maxInlineCapacity)
+        return std::nullopt;
+
     Structure* structure = globalObject->structureCache().emptyObjectStructureForPrototype(globalObject, globalObject->objectPrototype(), propertyNames.size());
-    if (owner) {
-        vm.writeBarrier(owner, structure);
-    } else {
-        vm.writeBarrier(structure);
-    }
+    vm.writeBarrier(structure);
     ensureStillAliveHere(structure);
 
     if (propertyNames.size() > 0) {
         PropertyOffset offset = 0;
         uint32_t indexInPropertyNamesArray = 0;
         uint32_t propertyNamesSize = propertyNames.size();
-        for (const auto& slot : slots) {
-            if (slot.isNamedColumn()) {
+        for (const auto& slot : args.slots) {
+            if (slot.is_named_latin1() || slot.is_named_utf16()) {
                 structure = structure->addPropertyTransition(vm, structure, propertyNames[indexInPropertyNamesArray++], 0, offset);
                 if (indexInPropertyNamesArray == propertyNamesSize)
                     break;
@@ -430,28 +377,10 @@ extern "C" EncodedJSValue JSC__createStructure(JSC::JSGlobalObject* globalObject
         }
     }
 
-    return JSValue::encode(structure);
+    return structure;
 }
 
-extern "C" EncodedJSValue JSC__createEmptyObjectWithStructure(JSC::JSGlobalObject* globalObject, JSC::Structure* structure)
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto* object = JSC::constructEmptyObject(vm, structure);
-
-    ensureStillAliveHere(object);
-    vm.writeBarrier(object);
-
-    return JSValue::encode(object);
-}
-
-extern "C" void JSC__putDirectOffset(JSC::VM* vm, JSC::EncodedJSValue object, uint32_t offset, JSC::EncodedJSValue value)
-{
-    JSValue::decode(object).getObject()->putDirectOffset(*vm, offset, JSValue::decode(value));
-}
-extern "C" uint32_t JSC__JSObject__maxInlineCapacity = JSC::JSFinalObject::maxInlineCapacity;
-
-// PostgreSQL time formatting helpers - following WebKit's pattern
-extern "C" size_t Postgres__formatTime(int64_t microseconds, char* buffer, size_t bufferSize)
+static size_t formatPostgresTime(int64_t microseconds, char* buffer, size_t bufferSize)
 {
     // Convert microseconds since midnight to time components
     int64_t totalSeconds = microseconds / 1000000;
@@ -481,10 +410,10 @@ extern "C" size_t Postgres__formatTime(int64_t microseconds, char* buffer, size_
     return charactersWritten;
 }
 
-extern "C" size_t Postgres__formatTimeTz(int64_t microseconds, int32_t tzOffsetSeconds, char* buffer, size_t bufferSize)
+static size_t formatPostgresTimeTz(int64_t microseconds, int32_t tzOffsetSeconds, char* buffer, size_t bufferSize)
 {
     // Format time part first
-    size_t timeLen = Postgres__formatTime(microseconds, buffer, bufferSize);
+    size_t timeLen = formatPostgresTime(microseconds, buffer, bufferSize);
 
     // PostgreSQL convention: negative offset means positive UTC offset
     // Add timezone in ±HH or ±HH:MM format
@@ -500,5 +429,19 @@ extern "C" size_t Postgres__formatTimeTz(int64_t microseconds, int32_t tzOffsetS
     }
 
     return timeLen + tzLen;
+}
+
+size_t Bindgen::Engine::bunBindgenEngine_date_time_postgresFormatTime(
+    const Bindgen::Engine::BunBindgenEngine_date_time_postgresFormatTime_Arguments& args)
+{
+    RELEASE_ASSERT(!args.output.empty());
+    return formatPostgresTime(args.microseconds, reinterpret_cast<char*>(args.output.data()), args.output.size());
+}
+
+size_t Bindgen::Engine::bunBindgenEngine_date_time_postgresFormatTimeTz(
+    const Bindgen::Engine::BunBindgenEngine_date_time_postgresFormatTimeTz_Arguments& args)
+{
+    RELEASE_ASSERT(!args.output.empty());
+    return formatPostgresTimeTz(args.microseconds, args.tzOffsetSeconds, reinterpret_cast<char*>(args.output.data()), args.output.size());
 }
 }

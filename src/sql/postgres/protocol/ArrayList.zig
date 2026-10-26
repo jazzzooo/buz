@@ -1,3 +1,7 @@
+pub fn truncate(this: @This(), end: usize) void {
+    this.array.items.len = end;
+}
+
 array: *std.array_list.Managed(u8),
 
 pub fn offset(this: @This()) usize {

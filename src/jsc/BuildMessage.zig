@@ -1,203 +1,132 @@
 pub const BuildMessage = struct {
-    pub const js = jsc.Codegen.JSBuildMessage;
-    pub const toJS = js.toJS;
-    pub const fromJS = js.fromJS;
-    pub const fromJSDirect = js.fromJSDirect;
-
-    msg: logger.Msg,
-    // resolve_result: Resolver.Result,
-    allocator: std.mem.Allocator,
+    bindgen_state: bindgen.ClassState = .{},
+    message: logger.OwnedMessage,
     logged: bool = false,
 
-    pub fn constructor(globalThis: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!*BuildMessage {
-        return globalThis.throw("BuildMessage is not constructable", .{});
+    const Methods = @import("./DiagnosticFormatting.zig").BindingMethods(BuildMessage, BuildMessageSchema, "BuildMessage");
+
+    pub const Binding = BuildMessageClass;
+    pub const Ref = bindgen.ClassRef(BuildMessageSchema);
+
+    pub fn loggerMessage(this: *const BuildMessage) *const logger.OwnedMessage {
+        return &this.message;
     }
 
-    pub fn getNotes(this: *BuildMessage, globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-        const notes = this.msg.notes;
-        const array = try jsc.JSArray.createEmpty(globalThis, notes.len);
-        for (notes, 0..) |note, i| {
-            const cloned = try note.clone(bun.default_allocator);
-            try array.putDirectIndex(
-                globalThis,
-                @intCast(i),
-                try BuildMessage.create(globalThis, bun.default_allocator, logger.Msg{ .data = cloned, .kind = .note }),
-            );
-        }
-
-        return array.toJS();
-    }
-
-    pub fn toStringFn(this: *BuildMessage, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-        const text = std.fmt.allocPrint(default_allocator, "BuildMessage: {s}", .{this.msg.data.text}) catch {
-            return globalThis.throwOutOfMemoryValue();
-        };
-        var str = ZigString.init(text);
-        str.setOutputEncoding();
-        if (str.isUTF8()) {
-            const out = str.toJS(globalThis);
-            default_allocator.free(text);
-            return out;
-        }
-
-        return str.toExternalValue(globalThis);
-    }
-
-    pub fn create(
-        globalThis: *jsc.JSGlobalObject,
-        allocator: std.mem.Allocator,
+    pub fn createRef(
+        global: *jsc.JSGlobalObject,
         msg: logger.Msg,
-        // resolve_result: *const Resolver.Result,
-    ) bun.OOM!jsc.JSValue {
-        var build_error = try allocator.create(BuildMessage);
-        build_error.* = BuildMessage{
-            .msg = try msg.clone(allocator),
-            // .resolve_result = resolve_result.*,
-            .allocator = allocator,
+    ) bun.JSError!Ref {
+        const native = try createNative(msg);
+        return BuildMessageClass.adoptNativeRef(native, global);
+    }
+
+    pub fn createNative(
+        msg: logger.Msg,
+    ) bun.OOM!*BuildMessage {
+        const native = try default_allocator.create(BuildMessage);
+        errdefer default_allocator.destroy(native);
+        native.* = .{
+            .message = try logger.OwnedMessage.copy(msg),
         };
-
-        return build_error.toJS(globalThis);
+        return native;
     }
 
-    pub fn toString(
-        this: *BuildMessage,
-        globalThis: *jsc.JSGlobalObject,
-        _: *jsc.CallFrame,
-    ) bun.JSError!jsc.JSValue {
-        return this.toStringFn(globalThis);
+    pub fn adoptResult(native: *BuildMessage, context: anytype) bun.JSError!Ref {
+        return BuildMessageClass.adoptResult(native, context);
     }
 
-    pub fn toPrimitive(
+    pub fn getNotes(
         this: *BuildMessage,
-        globalThis: *jsc.JSGlobalObject,
-        callframe: *jsc.CallFrame,
-    ) bun.JSError!jsc.JSValue {
-        const args_ = callframe.arguments_old(1);
-        const args = args_.ptr[0..args_.len];
-        if (args.len > 0) {
-            if (!args[0].isString()) {
-                return jsc.JSValue.jsNull();
-            }
-
-            const str = try args[0].getZigString(globalThis);
-            if (str.eqlComptime("default") or str.eqlComptime("string")) {
-                return this.toStringFn(globalThis);
-            }
+        context: bindgen.CallContext(BuildMessageNotesSchema),
+        _: bindgen.Args(BuildMessageNotesSchema),
+    ) bun.JSError!bindgen.Return(BuildMessageNotesSchema) {
+        const Result = bindgen.Return(BuildMessageNotesSchema);
+        const notes = this.message.notes.slice();
+        var builder = try Result.Builder.init(notes.len);
+        errdefer builder.deinit();
+        for (notes) |*note| {
+            const native = try BuildMessage.createNative(.{ .data = note.view(), .kind = .note });
+            builder.appendOwned(try BuildMessage.adoptResult(native, context));
         }
-
-        return jsc.JSValue.jsNull();
+        return builder.finish();
     }
+
+    pub const toString = Methods.toString;
+
+    pub const inspectCustom = Methods.inspectCustom;
+
+    pub const toPrimitive = Methods.toPrimitive;
 
     pub fn toJSON(
         this: *BuildMessage,
-        globalThis: *jsc.JSGlobalObject,
-        _: *jsc.CallFrame,
-    ) bun.JSError!jsc.JSValue {
-        var object = jsc.JSObject.createEmpty(globalThis, 4);
-        object.putDirect(globalThis, ZigString.static("name"), try bun.String.static("BuildMessage").toJS(globalThis));
-        object.putDirect(globalThis, ZigString.static("position"), this.getPosition(globalThis));
-        object.putDirect(globalThis, ZigString.static("message"), this.getMessage(globalThis));
-        object.putDirect(globalThis, ZigString.static("level"), this.getLevel(globalThis));
-        return object.toJS();
+        _: bindgen.CallContext(BuildMessageToJSONSchema),
+        _: bindgen.Args(BuildMessageToJSONSchema),
+    ) bun.JSError!bindgen.Return(BuildMessageToJSONSchema) {
+        var name = try bindgen.DOMString.fromUTF8("BuildMessage");
+        errdefer name.deinit();
+        var message = try bindgen.DOMString.fromUTF8(this.message.data.text.slice());
+        errdefer message.deinit();
+        return .{
+            .name = name,
+            .position = try generatePosition(this.message.data.view().location),
+            .message = message,
+            .level = this.level(),
+        };
     }
 
-    pub fn generatePositionObject(msg: logger.Msg, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-        const location = msg.data.location orelse return jsc.JSValue.jsNull();
-        var object = jsc.JSObject.createEmpty(globalThis, 7);
-
-        object.putDirect(
-            globalThis,
-            ZigString.static("lineText"),
-            ZigString.init(location.line_text orelse "").withEncoding().toJS(globalThis),
-        );
-        object.putDirect(
-            globalThis,
-            ZigString.static("file"),
-            ZigString.init(location.file).toJS(globalThis),
-        );
-        object.putDirect(
-            globalThis,
-            ZigString.static("namespace"),
-            ZigString.init(location.namespace).toJS(globalThis),
-        );
-        object.putDirect(
-            globalThis,
-            ZigString.static("line"),
-            JSValue.jsNumber(location.line),
-        );
-        object.putDirect(
-            globalThis,
-            ZigString.static("column"),
-            JSValue.jsNumber(location.column),
-        );
-        object.putDirect(
-            globalThis,
-            ZigString.static("length"),
-            JSValue.jsNumber(location.length),
-        );
-        object.putDirect(
-            globalThis,
-            ZigString.static("offset"),
-            JSValue.jsNumber(location.offset),
-        );
-
-        return object.toJS();
+    pub fn generatePosition(value: ?logger.Location) bun.OOM!bindgen.Return(BuildMessagePositionSchema) {
+        const location = value orelse return null;
+        var line_text = try bindgen.DOMString.fromUTF8(location.line_text orelse "");
+        errdefer line_text.deinit();
+        var file = try bindgen.DOMString.fromUTF8(location.file);
+        errdefer file.deinit();
+        var namespace = try bindgen.DOMString.fromUTF8(location.namespace);
+        errdefer namespace.deinit();
+        return .{
+            .line_text = line_text,
+            .file = file,
+            .namespace_value = namespace,
+            .line = location.line,
+            .column = location.column,
+            .length = location.length,
+            .offset = location.offset,
+        };
     }
 
-    // https://github.com/oven-sh/bun/issues/2375#issuecomment-2121530202
-    pub fn getColumn(this: *BuildMessage, _: *jsc.JSGlobalObject) jsc.JSValue {
-        if (this.msg.data.location) |location| {
-            return jsc.JSValue.jsNumber(@max(location.column - 1, 0));
-        }
+    pub const getColumn = Methods.getColumn;
 
-        return jsc.JSValue.jsNumber(@as(i32, 0));
-    }
+    pub const getLine = Methods.getLine;
 
-    pub fn getLine(this: *BuildMessage, _: *jsc.JSGlobalObject) jsc.JSValue {
-        if (this.msg.data.location) |location| {
-            return jsc.JSValue.jsNumber(@max(location.line - 1, 0));
-        }
+    pub const getPosition = Methods.getPosition;
 
-        return jsc.JSValue.jsNumber(@as(i32, 0));
-    }
+    pub const getMessage = Methods.getMessage;
 
-    pub fn getPosition(
-        this: *BuildMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        return BuildMessage.generatePositionObject(this.msg, globalThis);
-    }
+    pub const getLevel = Methods.getLevel;
 
-    pub fn getMessage(
-        this: *BuildMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        return ZigString.init(this.msg.data.text).toJS(globalThis);
-    }
+    const level = Methods.level;
 
-    pub fn getLevel(
-        this: *BuildMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        return ZigString.init(this.msg.kind.string()).toJS(globalThis);
-    }
+    pub const destroy = deinit;
 
-    pub fn finalize(this: *BuildMessage) void {
-        this.msg.deinit(this.allocator);
-        this.allocator.destroy(this);
+    fn deinit(this: *BuildMessage) void {
+        this.message.deinit();
+        default_allocator.destroy(this);
     }
 };
-
-const string = []const u8;
-
-const std = @import("std");
-const Resolver = @import("../resolver/resolver.zig").Resolver;
 
 const bun = @import("bun");
 const default_allocator = bun.default_allocator;
 const logger = bun.logger;
 
 const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
+const bindgen = bun.bindgen;
+
+const BuildMessageBindingModule = bindgen.Module("BuildMessage");
+const BuildMessageSchema = BuildMessageBindingModule.class("BuildMessage");
+const BuildMessageNotesSchema = BuildMessageSchema.member("notes");
+const BuildMessagePositionSchema = BuildMessageSchema.member("position");
+const BuildMessageToJSONSchema = BuildMessageSchema.member("toJSON");
+const BuildMessageClass = bindgen.Class(BuildMessageSchema, BuildMessage);
+
+comptime {
+    _ = BuildMessageClass;
+}

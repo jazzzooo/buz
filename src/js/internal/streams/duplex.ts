@@ -37,8 +37,8 @@ function Duplex(options): void {
     // [destroyImpl.kDestroy]: undefined,
   };
 
-  this._readableState = new Readable.ReadableState(options, this, true);
-  this._writableState = new Writable.WritableState(options, this, true);
+  this._readableState = new (Readable as any).ReadableState(options, this, true);
+  this._writableState = new (Writable as any).WritableState(options, this, true);
 
   if (options) {
     this.allowHalfOpen = options.allowHalfOpen !== false;

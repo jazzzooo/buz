@@ -43,7 +43,7 @@ pub const Resolution = union(enum) {
         return .{ .err = location.newUnexpectedTokenError(tok.*) };
     }
 
-    pub fn tryFromToken(token: *const css.Token) css.Maybe(Resolution, void) {
+    pub fn tryFromToken(token: *const css.Token) css.Outcome(Resolution, void) {
         switch (token.*) {
             .dimension => |dim| {
                 const value = dim.num.value;

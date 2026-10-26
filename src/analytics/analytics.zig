@@ -27,7 +27,7 @@ pub fn isEnabled() bool {
 
 /// This answers, "What parts of bun are people actually using?"
 pub const Features = struct {
-    pub var builtin_modules: std.enums.EnumSet(bun.jsc.ModuleLoader.HardcodedModule) = .empty;
+    pub var builtin_modules: std.enums.EnumSet(HardcodedModule) = .empty;
 
     pub var @"Bun.stderr": usize = 0;
     pub var @"Bun.stdin": usize = 0;
@@ -93,14 +93,6 @@ pub const Features = struct {
     pub var webview_chrome: usize = 0;
     pub var webview_webkit: usize = 0;
 
-    comptime {
-        @export(&napi_module_register, .{ .name = "Bun__napi_module_register_count" });
-        @export(&process_dlopen, .{ .name = "Bun__process_dlopen_count" });
-        @export(&heap_snapshot, .{ .name = "Bun__Feature__heap_snapshot" });
-        @export(&webview_chrome, .{ .name = "Bun__Feature__webview_chrome" });
-        @export(&webview_webkit, .{ .name = "Bun__Feature__webview_webkit" });
-    }
-
     pub fn formatter() Formatter {
         return Formatter{};
     }
@@ -162,6 +154,36 @@ pub const Features = struct {
     };
 };
 
+fn bindRecordNapiModuleRegister(
+    _: bun.bindgen.Args(RecordNapiModuleRegisterSchema),
+) bun.bindgen.Return(RecordNapiModuleRegisterSchema) {
+    Features.napi_module_register += 1;
+}
+
+fn bindRecordProcessDlopen(
+    _: bun.bindgen.Args(RecordProcessDlopenSchema),
+) bun.bindgen.Return(RecordProcessDlopenSchema) {
+    Features.process_dlopen += 1;
+}
+
+fn bindRecordHeapSnapshot(
+    _: bun.bindgen.Args(RecordHeapSnapshotSchema),
+) bun.bindgen.Return(RecordHeapSnapshotSchema) {
+    Features.heap_snapshot += 1;
+}
+
+fn bindRecordWebViewChrome(
+    _: bun.bindgen.Args(RecordWebViewChromeSchema),
+) bun.bindgen.Return(RecordWebViewChromeSchema) {
+    Features.webview_chrome += 1;
+}
+
+fn bindRecordWebViewWebKit(
+    _: bun.bindgen.Args(RecordWebViewWebKitSchema),
+) bun.bindgen.Return(RecordWebViewWebKitSchema) {
+    Features.webview_webkit += 1;
+}
+
 pub fn validateFeatureName(name: []const u8) void {
     if (name.len > 64) @compileError("Invalid feature name: " ++ name);
     for (name) |char| {
@@ -213,176 +235,26 @@ pub fn packedFeatures() PackedFeatures {
     return bits;
 }
 
-pub const EventName = enum(u8) {
-    bundle_success,
-    bundle_fail,
-    bundle_start,
-    http_start,
-    http_build,
-};
-
-var random: std.rand.DefaultPrng = undefined;
-
-const platform_arch = if (Environment.isAarch64) analytics.Architecture.arm else analytics.Architecture.x64;
-
-// TODO: move this code somewhere more appropriate, and remove it from "analytics"
-// The following code is not currently even used for analytics, just feature-detection
-// in order to determine if certain APIs are usable.
-pub const GenerateHeader = struct {
-    pub const GeneratePlatform = struct {
-        var osversion_name: [32]u8 = undefined;
-        fn forMac() analytics.Platform {
-            @memset(&osversion_name, 0);
-
-            var platform = analytics.Platform{ .os = analytics.OperatingSystem.macos, .version = &[_]u8{}, .arch = platform_arch };
-            var len = osversion_name.len - 1;
-            // this previously used "kern.osrelease", which was the darwin xnu kernel version
-            // That is less useful than "kern.osproductversion", which is the macOS version
-            if (std.c.sysctlbyname("kern.osproductversion", &osversion_name, &len, null, 0) == -1) return platform;
-
-            platform.version = std.mem.sliceTo(&osversion_name, 0);
-            return platform;
-        }
-
-        pub var linux_os_name: std.c.utsname = undefined;
-        var platform_: analytics.Platform = undefined;
-        pub const Platform = analytics.Platform;
-        var linux_kernel_version: Semver.Version = undefined;
-        const InitState = enum(u8) { uninitialized, initializing, initialized };
-        var init_state = std.atomic.Value(InitState).init(.uninitialized);
-
-        fn initialize() void {
-            if (comptime Environment.isMac) {
-                platform_ = forMac();
-            } else if (comptime Environment.isLinux) {
-                platform_ = forLinux();
-
-                const release = std.mem.sliceTo(&linux_os_name.release, 0);
-                const sliced_string = Semver.SlicedString.init(release, release);
-                const result = Semver.Version.parse(sliced_string);
-                linux_kernel_version = result.version.min();
-            } else if (comptime Environment.isFreeBSD) {
-                platform_ = forFreeBSD();
-            } else if (Environment.isWindows) {
-                platform_ = Platform{
-                    .os = analytics.OperatingSystem.windows,
-                    .version = &[_]u8{},
-                    .arch = platform_arch,
-                };
-            }
-        }
-
-        fn fallbackPlatform() analytics.Platform {
-            return .{
-                .os = switch (Environment.os) {
-                    .mac => .macos,
-                    .linux => if (Environment.isAndroid) .android else .linux,
-                    .windows => .windows,
-                    .freebsd => .freebsd,
-                    .wasm => ._none,
-                },
-                .version = &.{},
-                .arch = platform_arch,
-            };
-        }
-
-        fn ensureInitialized() bool {
-            switch (init_state.load(.acquire)) {
-                .initialized => return true,
-                .initializing => return false,
-                .uninitialized => {},
-            }
-
-            if (init_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire) != null)
-                return init_state.load(.acquire) == .initialized;
-
-            initialize();
-            init_state.store(.initialized, .release);
-            return true;
-        }
-
-        pub fn forOS() analytics.Platform {
-            return if (ensureInitialized()) platform_ else fallbackPlatform();
-        }
-
-        // On macOS 13, tests that use sendmsg_x or recvmsg_x hang.
-        fn useMsgXOnMacOS14OrLater() bool {
-            const version = Semver.Version.parseUTF8(forOS().version);
-            return version.valid and version.version.max().major >= 14;
-        }
-
-        pub export fn Bun__doesMacOSVersionSupportSendRecvMsgX() i32 {
-            if (comptime !Environment.isMac) {
-                // this should not be used on non-mac platforms.
-                return 0;
-            }
-
-            return @intFromBool(useMsgXOnMacOS14OrLater());
-        }
-
-        pub fn kernelVersion() Semver.Version {
-            if (comptime !Environment.isLinux) {
-                @compileError("This function is only implemented on Linux");
-            }
-            return if (ensureInitialized()) linux_kernel_version else .{};
-        }
-
-        export fn Bun__isEpollPwait2SupportedOnLinuxKernel() i32 {
-            if (comptime !Environment.isLinux) {
-                return 0;
-            }
-
-            // https://man.archlinux.org/man/epoll_pwait2.2.en#HISTORY
-            const min_epoll_pwait2 = Semver.Version{
-                .major = 5,
-                .minor = 11,
-                .patch = 0,
-            };
-
-            return switch (kernelVersion().order(min_epoll_pwait2, "", "")) {
-                .gt => 1,
-                .eq => 1,
-                .lt => 0,
-            };
-        }
-
-        fn forLinux() analytics.Platform {
-            linux_os_name = std.mem.zeroes(@TypeOf(linux_os_name));
-
-            _ = std.c.uname(&linux_os_name);
-
-            // Confusingly, the "release" tends to contain the kernel version much more frequently than the "version" field.
-            const release = std.mem.sliceTo(&linux_os_name.release, 0);
-
-            if (comptime Environment.isAndroid) {
-                return analytics.Platform{ .os = analytics.OperatingSystem.android, .version = release, .arch = platform_arch };
-            }
-
-            // Linux DESKTOP-P4LCIEM 5.10.16.3-microsoft-standard-WSL2 #1 SMP Fri Apr 2 22:23:49 UTC 2021 x86_64 x86_64 x86_64 GNU/Linux
-            if (std.mem.indexOf(u8, release, "microsoft") != null) {
-                return analytics.Platform{ .os = analytics.OperatingSystem.wsl, .version = release, .arch = platform_arch };
-            }
-
-            return analytics.Platform{ .os = analytics.OperatingSystem.linux, .version = release, .arch = platform_arch };
-        }
-
-        // Zig std's `std.c.utsname` has no FreeBSD branch; use translate-c's.
-        var freebsd_os_name: if (Environment.isFreeBSD) bun.c.struct_utsname else void = undefined;
-        fn forFreeBSD() analytics.Platform {
-            freebsd_os_name = std.mem.zeroes(@TypeOf(freebsd_os_name));
-            _ = bun.c.uname(&freebsd_os_name);
-            return analytics.Platform{
-                .os = analytics.OperatingSystem.freebsd,
-                .version = std.mem.sliceTo(&freebsd_os_name.release, 0),
-                .arch = platform_arch,
-            };
-        }
-    };
-};
-
 const std = @import("std");
-const analytics = @import("./schema.zig").analytics;
 
 const bun = @import("bun");
-const Environment = bun.Environment;
-const Semver = bun.Semver;
+const HardcodedModule = @import("../resolve_builtins/HardcodedModule.zig").HardcodedModule;
+const AnalyticsBindings = bun.bindgen.Module("Analytics");
+const RecordNapiModuleRegisterSchema = AnalyticsBindings.nativeExport("recordNapiModuleRegister");
+const RecordProcessDlopenSchema = AnalyticsBindings.nativeExport("recordProcessDlopen");
+const RecordHeapSnapshotSchema = AnalyticsBindings.nativeExport("recordHeapSnapshot");
+const RecordWebViewChromeSchema = AnalyticsBindings.nativeExport("recordWebViewChrome");
+const RecordWebViewWebKitSchema = AnalyticsBindings.nativeExport("recordWebViewWebKit");
+const RecordNapiModuleRegisterBinding = bun.bindgen.Fn(RecordNapiModuleRegisterSchema, bindRecordNapiModuleRegister);
+const RecordProcessDlopenBinding = bun.bindgen.Fn(RecordProcessDlopenSchema, bindRecordProcessDlopen);
+const RecordHeapSnapshotBinding = bun.bindgen.Fn(RecordHeapSnapshotSchema, bindRecordHeapSnapshot);
+const RecordWebViewChromeBinding = bun.bindgen.Fn(RecordWebViewChromeSchema, bindRecordWebViewChrome);
+const RecordWebViewWebKitBinding = bun.bindgen.Fn(RecordWebViewWebKitSchema, bindRecordWebViewWebKit);
+
+comptime {
+    _ = RecordNapiModuleRegisterBinding;
+    _ = RecordProcessDlopenBinding;
+    _ = RecordHeapSnapshotBinding;
+    _ = RecordWebViewChromeBinding;
+    _ = RecordWebViewWebKitBinding;
+}

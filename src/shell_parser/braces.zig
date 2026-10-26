@@ -693,8 +693,9 @@ test Lexer {
 
 const SmolStr = @import("../string/string.zig").SmolStr;
 
-const Encoding = @import("../shell/shell.zig").StringEncoding;
-const NewChars = @import("../shell/shell.zig").ShellCharIter;
+const CharIterator = @import("./CharIterator.zig");
+const Encoding = CharIterator.StringEncoding;
+const NewChars = CharIterator.ShellCharIter;
 
 const bun = @import("bun");
 const assert = bun.assert;

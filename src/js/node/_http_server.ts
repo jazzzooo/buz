@@ -57,8 +57,8 @@ const { OutgoingMessage } = require("node:_http_outgoing");
 const { kIncomingMessage } = require("node:_http_common");
 const kConnectionsCheckingInterval = Symbol("http.server.connectionsCheckingInterval");
 
-const getBunServerAllClosedPromise = $newZigFunction("node_http_binding.zig", "getBunServerAllClosedPromise", 1);
-const sendHelper = $newZigFunction("node_cluster_binding.zig", "sendHelperChild", 3);
+const getBunServerAllClosedPromise = $bindgenFn("NodeHTTP.schema.zig", "getServerAllClosedPromise");
+const sendHelper = $bindgenFn("NodeCluster.schema.zig", "sendHelperChild");
 
 const kServerResponse = Symbol("ServerResponse");
 const kRejectNonStandardBodyWrites = Symbol("kRejectNonStandardBodyWrites");
@@ -68,6 +68,8 @@ const ObjectKeys = Object.keys;
 const MathMin = Math.min;
 
 let cluster;
+
+type Server = any;
 
 function emitCloseServer(self: Server) {
   callCloseCallback(self);
@@ -384,11 +386,12 @@ Server.prototype.listen = function () {
   if (arguments.length > 0) {
     if (($isObject(arguments[0]) || $isCallable(arguments[0])) && arguments[0] !== null) {
       // (options[...][, cb])
-      port = arguments[0].port;
-      host = arguments[0].host;
-      socketPath = arguments[0].path;
+      const listenOptions: any = arguments[0];
+      port = listenOptions.port;
+      host = listenOptions.host;
+      socketPath = listenOptions.path;
 
-      const otherTLS = arguments[0].tls;
+      const otherTLS = listenOptions.tls;
       if (otherTLS && $isObject(otherTLS)) {
         tls = normalizeServerTls({ ...otherTLS });
       }
@@ -483,7 +486,8 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
     if (tls) {
       this.serverName = tls.serverName || host || "localhost";
     }
-    this[serverSymbol] = Bun.serve<any>({
+    // The `fetch`-less internal shape (onNodeHTTPRequest) is not part of the public serve() options union.
+    this[serverSymbol] = (Bun.serve as (options: any) => Bun.Server<any>)({
       idleTimeout: 0, // nodejs dont have a idleTimeout by default
       tls,
       port,
@@ -645,58 +649,6 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
         return promise;
       },
 
-      // Be very careful not to access (web) Request object
-      // properties:
-      // - request.url
-      // - request.headers
-      //
-      // We want to avoid triggering the getter for these properties because
-      // that will cause the data to be cloned twice, which costs memory & performance.
-      // fetch(req, _server) {
-      //   var pendingResponse;
-      //   var pendingError;
-      //   var reject = err => {
-      //     if (pendingError) return;
-      //     pendingError = err;
-      //     if (rejectFunction) rejectFunction(err);
-      //   };
-      //   var reply = function (resp) {
-      //     if (pendingResponse) return;
-      //     pendingResponse = resp;
-      //     if (resolveFunction) resolveFunction(resp);
-      //   };
-      //   const prevIsNextIncomingMessageHTTPS = isNextIncomingMessageHTTPS;
-      //   isNextIncomingMessageHTTPS = isHTTPS;
-      //   const http_req = new RequestClass(req, {
-      //     [typeSymbol]: NodeHTTPIncomingRequestType.FetchRequest,
-      //   });
-      //   assignEventCallback(req, onRequestEvent.bind(http_req));
-      //   isNextIncomingMessageHTTPS = prevIsNextIncomingMessageHTTPS;
-
-      //   const upgrade = http_req.headers.upgrade;
-      //   const http_res = new ResponseClass(http_req, { [kDeprecatedReplySymbol]: reply });
-      //   http_req.socket[kInternalSocketData] = [server, http_res, req];
-      //   server.emit("connection", http_req.socket);
-      //   const rejectFn = err => reject(err);
-      //   http_req.once("error", rejectFn);
-      //   http_res.once("error", rejectFn);
-      //   if (upgrade) {
-      //     server.emit("upgrade", http_req, http_req.socket, kEmptyBuffer);
-      //   } else {
-      //     server.emit("request", http_req, http_res);
-      //   }
-
-      //   if (pendingError) {
-      //     throw pendingError;
-      //   }
-
-      //   if (pendingResponse) {
-      //     return pendingResponse;
-      //   }
-
-      //   var { promise, resolve: resolveFunction, reject: rejectFunction } = $newPromiseCapability(GlobalPromise);
-      //   return promise;
-      // },
     });
 
     getBunServerAllClosedPromise(this[serverSymbol]).$then(emitCloseNTServer.bind(this));
@@ -740,8 +692,8 @@ Server.prototype.setTimeout = function (msecs, callback) {
   return this;
 };
 
-function onServerRequestEvent(this: NodeHTTPServerSocket, event: NodeHTTPResponseAbortEvent) {
-  const socket: NodeHTTPServerSocket = this;
+function onServerRequestEvent(this: InstanceType<typeof NodeHTTPServerSocket>, event: number) {
+  const socket = this;
   switch (event) {
     case NodeHTTPResponseAbortEvent.abort: {
       if (!socket.destroyed) {
@@ -769,7 +721,7 @@ enum HttpParserError {
   HTTP_PARSER_ERROR_INVALID_METHOD = 9,
   HTTP_PARSER_ERROR_INVALID_HEADER_TOKEN = 10,
 }
-function onServerClientError(ssl: boolean, socket: unknown, errorCode: number, rawPacket: ArrayBuffer) {
+function onServerClientError(ssl: boolean, socket: unknown, errorCode: number, rawPacket: Buffer) {
   const self = this as Server;
   let err;
   switch (errorCode) {
@@ -817,8 +769,9 @@ const NodeHTTPServerSocket = class Socket extends Duplex {
   server: Server;
   _httpMessage;
   _secureEstablished = false;
+  declare encrypted: boolean;
   #pendingCallback = null;
-  constructor(server: Server, handle, encrypted) {
+  constructor(server: any, handle, encrypted) {
     super();
     this.server = server;
     this[kHandle] = handle;
@@ -902,6 +855,7 @@ const NodeHTTPServerSocket = class Socket extends Duplex {
         req.destroy();
       }
     }
+    this.destroy();
   }
   #onCloseForDestroy(closeCallback) {
     this.#onClose();
@@ -1059,7 +1013,7 @@ const NodeHTTPServerSocket = class Socket extends Duplex {
     return this;
   }
 
-  setEncoding(_encoding) {
+  setEncoding(_encoding): never {
     const err = new Error("Changing the socket encoding is not allowed per RFC7230 Section 3.");
     err.code = "ERR_HTTP_SOCKET_ENCODING";
     throw err;
@@ -1103,7 +1057,8 @@ const NodeHTTPServerSocket = class Socket extends Duplex {
   get [kInternalSocketData]() {
     return this[kHandle]?.response;
   }
-} as unknown as typeof import("node:net").Socket;
+} as unknown as typeof import("node:net").Socket &
+  (new (server: any, handle: any, encrypted?: boolean) => import("node:net").Socket);
 
 function _writeHead(statusCode, reason, obj, response) {
   const originalStatusCode = statusCode;
@@ -1587,7 +1542,7 @@ ServerResponse.prototype.writeHead = function (statusCode, statusMessage, header
 
 ServerResponse.prototype.assignSocket = function (socket) {
   if (socket._httpMessage) {
-    throw $ERR_HTTP_SOCKET_ASSIGNED("Socket already assigned");
+    throw $ERR_HTTP_SOCKET_ASSIGNED();
   }
   socket._httpMessage = this;
   socket.on("close", onServerResponseClose);

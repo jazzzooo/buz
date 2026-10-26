@@ -6,12 +6,7 @@ const Router = @This();
 // It does not handle the framework parts of rendering pages.
 // All it does is resolve URL paths to the appropriate entry point and parse URL params/query.
 
-pub const Param = struct {
-    name: string,
-    value: string,
-
-    pub const List = std.MultiArrayList(Param);
-};
+pub const Param = @import("./Param.zig");
 
 dir: FD = .invalid,
 routes: Routes,
@@ -90,16 +85,14 @@ pub const Routes = struct {
     // We put this here to avoid loading the FrameworkConfig for the client, on the server.
     client_framework_enabled: bool = false,
 
-    pub fn matchPageWithAllocator(this: *Routes, _: string, url_path: URLPath, params: *Param.List, allocator: std.mem.Allocator) ?Match {
+    pub fn normalizeMatchPath(input: string) string {
         // Trim trailing slash
-        var path = url_path.path;
-        var redirect = false;
+        var path = input;
 
         // Normalize trailing slash
         // "/foo/bar/index/" => "/foo/bar/index"
         if (path.len > 0 and path[path.len - 1] == '/') {
             path = path[0 .. path.len - 1];
-            redirect = true;
         }
 
         // Normal case: "/foo/bar/index" => "/foo/bar"
@@ -107,25 +100,26 @@ pub const Routes = struct {
         // Extremely pathological: "/index/index/index/index/index/index/index" => "index"
         while (strings.endsWith(path, "/index")) {
             path = path[0 .. path.len - "/index".len];
-            redirect = true;
         }
 
         if (strings.eqlComptime(path, "index")) {
             path = "";
-            redirect = true;
         }
 
         // one final time, trim trailing slash
         while (path.len > 0 and path[path.len - 1] == '/') {
             path = path[0 .. path.len - 1];
-            redirect = true;
         }
 
         if (strings.eqlComptime(path, ".")) {
             path = "";
-            redirect = false;
         }
 
+        return path;
+    }
+
+    pub fn matchPageWithAllocator(this: *Routes, _: string, url_path: URLPath, params: *Param.List, allocator: std.mem.Allocator) bun.OOM!?Match {
+        const path = normalizeMatchPath(url_path.path);
         if (path.len == 0) {
             if (this.index) |index| {
                 return Match{
@@ -149,7 +143,7 @@ pub const Routes = struct {
         var matcher = MatchContextType{ .params = params.* };
         defer params.* = matcher.params;
 
-        if (this.match(allocator, path, *MatchContextType, &matcher)) |route| {
+        if (try this.match(allocator, path, *MatchContextType, &matcher)) |route| {
             return Match{
                 .params = params,
                 .name = route.name,
@@ -165,14 +159,14 @@ pub const Routes = struct {
         return null;
     }
 
-    pub fn matchPage(this: *Routes, _: string, url_path: URLPath, params: *Param.List) ?Match {
+    pub fn matchPage(this: *Routes, _: string, url_path: URLPath, params: *Param.List) bun.OOM!?Match {
         return this.matchPageWithAllocator("", url_path, params, this.allocator);
     }
 
-    fn matchDynamic(this: *Routes, allocator: std.mem.Allocator, path: string, comptime MatchContext: type, ctx: MatchContext) ?*Route {
+    fn matchDynamic(this: *Routes, allocator: std.mem.Allocator, path: string, comptime MatchContext: type, ctx: MatchContext) bun.OOM!?*Route {
         // its cleaned, so now we search the big list of strings
         for (this.dynamic_names, this.dynamic_match_names, this.dynamic) |case_sensitive_name, name, route| {
-            if (Pattern.match(path, case_sensitive_name[1..], name, allocator, *@TypeOf(ctx.params), &ctx.params, true)) {
+            if (try Pattern.match(path, case_sensitive_name[1..], name, allocator, *@TypeOf(ctx.params), &ctx.params, true)) {
                 return route;
             }
         }
@@ -180,15 +174,15 @@ pub const Routes = struct {
         return null;
     }
 
-    fn match(this: *Routes, allocator: std.mem.Allocator, pathname_: string, comptime MatchContext: type, ctx: MatchContext) ?*Route {
+    fn match(this: *Routes, allocator: std.mem.Allocator, pathname_: string, comptime MatchContext: type, ctx: MatchContext) bun.OOM!?*Route {
         const pathname = std.mem.trimStart(u8, pathname_, "/");
 
         if (pathname.len == 0) {
             return this.index;
         }
 
-        return this.static.get(pathname) orelse
-            this.matchDynamic(allocator, pathname, MatchContext, ctx);
+        if (this.static.get(pathname)) |route| return route;
+        return this.matchDynamic(allocator, pathname, MatchContext, ctx);
     }
 };
 
@@ -204,34 +198,30 @@ const RouteLoader = struct {
     static_list: bun.StringHashMap(*Route),
     all_routes: std.ArrayListUnmanaged(*Route),
 
-    pub fn appendRoute(this: *RouteLoader, route: Route) void {
+    pub fn appendRoute(this: *RouteLoader, route: Route) bun.OOM!void {
+        try this.all_routes.ensureUnusedCapacity(this.allocator, 1);
         // /index.js
         if (strings.eqlComptime(route.name, Route.index_route_name)) {
-            const new_route = this.allocator.create(Route) catch unreachable;
+            const new_route = try this.allocator.create(Route);
             this.index = new_route;
             new_route.* = route;
-            this.all_routes.append(this.allocator, new_route) catch unreachable;
+            this.all_routes.appendAssumeCapacity(new_route);
             return;
         }
 
         // static route
         if (route.param_count == 0) {
-            const entry = this.static_list.getOrPut(route.match_name.slice()) catch unreachable;
-
-            if (entry.found_existing) {
+            if (this.static_list.get(route.match_name.slice())) |existing| {
                 const source = Logger.Source.initEmptyFile(route.abs_path.slice());
-                this.log.addErrorFmt(
+                try this.log.addErrorFmt(
                     &source,
                     Logger.Loc.Empty,
                     this.allocator,
                     "Route \"{s}\" is already defined by {s}",
-                    .{ route.name, entry.value_ptr.*.abs_path.slice() },
-                ) catch unreachable;
+                    .{ route.name, existing.abs_path.slice() },
+                );
                 return;
             }
-
-            const new_route = this.allocator.create(Route) catch unreachable;
-            new_route.* = route;
 
             // Handle static routes with uppercase characters by ensuring exact case still matches
             // Longer-term:
@@ -241,49 +231,49 @@ const RouteLoader = struct {
             // This hack is below the engineering quality bar I'm happy with.
             // It will cause unexpected behavior.
             if (route.has_uppercase) {
-                const static_entry = this.static_list.getOrPut(route.name[1..]) catch unreachable;
-                if (static_entry.found_existing) {
+                if (this.static_list.get(route.name[1..])) |existing| {
                     const source = Logger.Source.initEmptyFile(route.abs_path.slice());
-                    this.log.addErrorFmt(
+                    try this.log.addErrorFmt(
                         &source,
                         Logger.Loc.Empty,
                         this.allocator,
                         "Route \"{s}\" is already defined by {s}",
-                        .{ route.name, static_entry.value_ptr.*.abs_path.slice() },
-                    ) catch unreachable;
+                        .{ route.name, existing.abs_path.slice() },
+                    );
 
                     return;
                 }
-
-                static_entry.value_ptr.* = new_route;
             }
-
-            entry.value_ptr.* = new_route;
-            this.all_routes.append(this.allocator, new_route) catch unreachable;
+            try this.static_list.ensureUnusedCapacity(if (route.has_uppercase) 2 else 1);
+            const new_route = try this.allocator.create(Route);
+            new_route.* = route;
+            this.static_list.putAssumeCapacity(route.match_name.slice(), new_route);
+            if (route.has_uppercase) this.static_list.putAssumeCapacity(route.name[1..], new_route);
+            this.all_routes.appendAssumeCapacity(new_route);
 
             return;
         }
 
         {
-            const entry = this.dedupe_dynamic.getOrPut(route.name) catch unreachable;
-            if (entry.found_existing) {
+            if (this.dedupe_dynamic.get(route.name)) |existing| {
                 const source = Logger.Source.initEmptyFile(route.abs_path.slice());
-                this.log.addErrorFmt(
+                try this.log.addErrorFmt(
                     &source,
                     Logger.Loc.Empty,
                     this.allocator,
                     "Route \"{s}\" is already defined by {s}",
-                    .{ route.name, entry.value_ptr.* },
-                ) catch unreachable;
+                    .{ route.name, existing },
+                );
                 return;
             }
-            entry.value_ptr.* = route.abs_path.slice();
+            try this.dedupe_dynamic.ensureUnusedCapacity(1);
         }
 
         {
-            const new_route = this.allocator.create(Route) catch unreachable;
+            const new_route = try this.allocator.create(Route);
             new_route.* = route;
-            this.all_routes.append(this.allocator, new_route) catch unreachable;
+            this.dedupe_dynamic.putAssumeCapacity(route.name, route.abs_path.slice());
+            this.all_routes.appendAssumeCapacity(new_route);
         }
     }
 
@@ -295,8 +285,8 @@ const RouteLoader = struct {
         resolver: *ResolverType,
         root_dir_info: *const DirInfo,
         base_dir: []const u8,
-    ) Routes {
-        const relative_dir = bun.handleOom(std.fs.path.relative(allocator, base_dir, null, base_dir, config.dir));
+    ) bun.OOM!Routes {
+        const relative_dir = try std.fs.path.relative(allocator, base_dir, null, base_dir, config.dir);
         defer allocator.free(relative_dir);
         const root_public_dir = if (strings.hasPrefixComptime(relative_dir, ".."))
             ""
@@ -315,7 +305,15 @@ const RouteLoader = struct {
             .route_dirname_len = route_dirname_len,
         };
         defer this.dedupe_dynamic.deinit();
-        this.load(ResolverType, resolver, root_dir_info, root_public_dir);
+        defer this.all_routes.deinit(allocator);
+        errdefer {
+            this.static_list.deinit();
+            for (this.all_routes.items) |route| {
+                if (comptime Environment.isWindows) allocator.free(route.abs_path.slice());
+                allocator.destroy(route);
+            }
+        }
+        try this.load(ResolverType, resolver, root_dir_info, root_public_dir);
         if (this.all_routes.items.len == 0) return Routes{
             .static = this.static_list,
             .config = config,
@@ -325,7 +323,7 @@ const RouteLoader = struct {
         std.sort.pdq(*Route, this.all_routes.items, Route.Sorter{}, Route.Sorter.sortByName);
 
         var route_list = RouteIndex.List{};
-        route_list.setCapacity(allocator, this.all_routes.items.len) catch unreachable;
+        try route_list.setCapacity(allocator, this.all_routes.items.len);
 
         var dynamic_start: ?usize = null;
         for (this.all_routes.items) |route| {
@@ -370,7 +368,7 @@ const RouteLoader = struct {
         resolver: *ResolverType,
         root_dir_info: *const DirInfo,
         public_dir: []const u8,
-    ) void {
+    ) bun.OOM!void {
         var fs = this.fs;
 
         if (root_dir_info.getEntriesConst()) |entries| {
@@ -399,7 +397,7 @@ const RouteLoader = struct {
                                 .{std.fs.path.fmtJoin(&.{ public_dir, entry.base() })},
                             ) catch continue :outer;
 
-                            this.load(
+                            try this.load(
                                 ResolverType,
                                 resolver,
                                 dir_info,
@@ -415,7 +413,7 @@ const RouteLoader = struct {
 
                         for (this.config.extensions) |_extname| {
                             if (strings.eql(extname[1..], _extname)) {
-                                if (Route.parse(
+                                if (try Route.parse(
                                     entry.base(),
                                     extname,
                                     entry,
@@ -424,7 +422,7 @@ const RouteLoader = struct {
                                     public_dir,
                                     this.route_dirname_len,
                                 )) |route| {
-                                    this.appendRoute(route);
+                                    try this.appendRoute(route);
                                 }
                                 break;
                             }
@@ -447,8 +445,25 @@ pub fn loadRoutes(
     base_dir: []const u8,
 ) anyerror!void {
     if (this.loaded_routes) return;
-    this.routes = RouteLoader.loadAll(this.allocator, this.config, log, ResolverType, resolver, root_dir_info, base_dir);
+    this.routes = try RouteLoader.loadAll(this.allocator, this.config, log, ResolverType, resolver, root_dir_info, base_dir);
     this.loaded_routes = true;
+}
+
+test "route matching requires remaining segments and rolls back failed candidates" {
+    const allocator = std.testing.allocator;
+    var params: Param.List = .{};
+    defer params.deinit(allocator);
+    try params.append(allocator, .{ .name = "existing", .value = "preserved" });
+
+    for ([_][]const u8{ "[value]/fixed", "[value]/[...rest]" }) |pattern| {
+        try std.testing.expect(!try Pattern.match("one", pattern, pattern, allocator, *Param.List, &params, true));
+        try std.testing.expectEqual(@as(usize, 1), params.len);
+        try std.testing.expectEqualStrings("preserved", params.get(0).value);
+    }
+    const optional = "[value]/[[...rest]]";
+    try std.testing.expect(try Pattern.match("one", optional, optional, allocator, *Param.List, &params, true));
+    try std.testing.expectEqual(@as(usize, 2), params.len);
+    try std.testing.expectEqualStrings("one", params.get(1).value);
 }
 
 pub const TinyPtr = packed struct(u32) {
@@ -600,7 +615,7 @@ pub const Route = struct {
         allocator: std.mem.Allocator,
         public_dir_: string,
         routes_dirname_len: u16,
-    ) ?Route {
+    ) bun.OOM!?Route {
         var abs_path_str: string = if (entry.abs_path.isEmpty())
             ""
         else
@@ -658,11 +673,11 @@ pub const Route = struct {
         var validation_result = Pattern.ValidationResult{};
         var has_uppercase = false;
         if (name.len > 0) {
-            validation_result = Pattern.validate(
+            validation_result = (try Pattern.validate(
                 name[1..],
                 allocator,
                 log,
-            ) orelse return null;
+            )) orelse return null;
 
             var name_i: usize = 0;
             while (!has_uppercase and name_i < public_path.len) : (name_i += 1) {
@@ -672,11 +687,11 @@ pub const Route = struct {
             const name_offset = @intFromPtr(name.ptr) - @intFromPtr(public_path.ptr);
 
             if (has_uppercase) {
-                public_path = FileSystem.DirnameStore.instance.append(@TypeOf(public_path), public_path) catch unreachable;
+                public_path = try FileSystem.DirnameStore.instance.append(@TypeOf(public_path), public_path);
                 name = public_path[name_offset..][0..name.len];
-                match_name = FileSystem.DirnameStore.instance.appendLowerCase(@TypeOf(name[1..]), name[1..]) catch unreachable;
+                match_name = try FileSystem.DirnameStore.instance.appendLowerCase(@TypeOf(name[1..]), name[1..]);
             } else {
-                public_path = FileSystem.DirnameStore.instance.append(@TypeOf(public_path), public_path) catch unreachable;
+                public_path = try FileSystem.DirnameStore.instance.append(@TypeOf(public_path), public_path);
                 name = public_path[name_offset..][0..name.len];
                 match_name = name[1..];
             }
@@ -687,7 +702,7 @@ pub const Route = struct {
             name = Route.index_route_name;
             match_name = Route.index_route_name;
 
-            public_path = FileSystem.DirnameStore.instance.append(@TypeOf(public_path), public_path) catch unreachable;
+            public_path = try FileSystem.DirnameStore.instance.append(@TypeOf(public_path), public_path);
         }
 
         if (abs_path_str.len == 0) {
@@ -704,23 +719,23 @@ pub const Route = struct {
                 const buf = route_file_buf[0..abs_path_str.len :0];
                 file = bun.sys.open(buf, bun.O.RDONLY, 0).unwrap() catch |err| {
                     needs_close = false;
-                    log.addErrorFmt(null, Logger.Loc.Empty, allocator, "{s} opening route: {s}", .{ @errorName(err), abs_path_str }) catch unreachable;
+                    try log.addErrorFmt(null, Logger.Loc.Empty, allocator, "{s} opening route: {s}", .{ @errorName(err), abs_path_str });
                     return null;
                 };
                 FileSystem.setMaxFd(file.native());
             }
 
             const _abs = bun.getFdPath(file, route_file_buf) catch |err| {
-                log.addErrorFmt(null, Logger.Loc.Empty, allocator, "{s} resolving route: {s}", .{ @errorName(err), abs_path_str }) catch unreachable;
+                try log.addErrorFmt(null, Logger.Loc.Empty, allocator, "{s} resolving route: {s}", .{ @errorName(err), abs_path_str });
                 return null;
             };
 
-            abs_path_str = FileSystem.DirnameStore.instance.append(@TypeOf(_abs), _abs) catch unreachable;
+            abs_path_str = try FileSystem.DirnameStore.instance.append(@TypeOf(_abs), _abs);
             entry.abs_path = PathString.init(abs_path_str);
         }
 
         const abs_path = if (comptime Environment.isWindows)
-            bun.handleOom(allocator.dupe(u8, bun.path.platformToPosixBuf(u8, abs_path_str, &route_bufs.get().normalized_abs_path_buf)))
+            try allocator.dupe(u8, bun.path.platformToPosixBuf(u8, abs_path_str, &route_bufs.get().normalized_abs_path_buf))
         else
             PathString.init(abs_path_str);
 
@@ -769,7 +784,7 @@ pub fn match(app: *Router, comptime Server: type, server: Server, comptime Reque
     }
 
     params_list.shrinkRetainingCapacity(0);
-    if (app.routes.matchPage(app.config.dir, ctx.url, &params_list)) |route| {
+    if (try app.routes.matchPage(app.config.dir, ctx.url, &params_list)) |route| {
         if (route.redirect_path) |redirect| {
             try ctx.handleRedirect(redirect);
             return;
@@ -890,6 +905,7 @@ pub const Test = struct {
 
         const Resolver = @import("../resolver/resolver.zig").Resolver;
         var logger = Logger.Log.init(default_allocator);
+        defer logger.deinit();
         errdefer {
             logger.print(Output.errorWriter()) catch {};
         }
@@ -930,7 +946,7 @@ pub const Test = struct {
     }
 };
 
-const Pattern = struct {
+pub const Pattern = struct {
     value: Value,
     len: RoutePathInt = 0,
 
@@ -946,7 +962,23 @@ const Pattern = struct {
         comptime ParamsListType: type,
         params: ParamsListType,
         comptime allow_optional_catch_all: bool,
-    ) bool {
+    ) bun.OOM!bool {
+        const initial_length = params.len;
+        errdefer params.shrinkRetainingCapacity(initial_length);
+        const matched = try matchImpl(path, name, match_name, allocator, ParamsListType, params, allow_optional_catch_all);
+        if (!matched) params.shrinkRetainingCapacity(initial_length);
+        return matched;
+    }
+
+    fn matchImpl(
+        path: string,
+        name: string,
+        match_name: string,
+        allocator: std.mem.Allocator,
+        comptime ParamsListType: type,
+        params: ParamsListType,
+        comptime allow_optional_catch_all: bool,
+    ) bun.OOM!bool {
         var offset: RoutePathInt = 0;
         var path_ = path;
         while (offset < name.len) {
@@ -957,7 +989,6 @@ const Pattern = struct {
                 .static => |static_segment| {
                     const segment = path_[0 .. std.mem.indexOfScalar(u8, path_, '/') orelse path_.len];
                     if (!std.mem.eql(u8, static_segment, segment)) {
-                        params.shrinkRetainingCapacity(0);
                         return false;
                     }
 
@@ -969,49 +1000,45 @@ const Pattern = struct {
                     if (path_.len == 0 and pattern.isEnd(name)) return true;
                 },
                 .dynamic => |dynamic| {
+                    if (path_.len == 0) return false;
                     if (std.mem.indexOfScalar(u8, path_, '/')) |i| {
-                        params.append(allocator, .{
+                        try params.append(allocator, .{
                             .name = dynamic.str(name),
                             .value = path_[0..i],
-                        }) catch unreachable;
+                        });
                         path_ = path_[i + 1 ..];
 
                         if (pattern.isEnd(name)) {
-                            params.shrinkRetainingCapacity(0);
                             return false;
                         }
 
                         continue;
                     } else if (pattern.isEnd(name)) {
-                        params.append(allocator, .{
+                        try params.append(allocator, .{
                             .name = dynamic.str(name),
                             .value = path_,
-                        }) catch unreachable;
+                        });
                         return true;
-                    } else if (comptime allow_optional_catch_all) {
-                        pattern = Pattern.init(match_name, offset) catch unreachable;
-
-                        if (pattern.value == .optional_catch_all) {
-                            params.append(allocator, .{
-                                .name = dynamic.str(name),
-                                .value = path_,
-                            }) catch unreachable;
-                            path_ = "";
+                    } else {
+                        if (comptime allow_optional_catch_all) {
+                            pattern = Pattern.init(match_name, offset) catch unreachable;
+                            if (pattern.value == .optional_catch_all and pattern.isEnd(name)) {
+                                try params.append(allocator, .{
+                                    .name = dynamic.str(name),
+                                    .value = path_,
+                                });
+                                return true;
+                            }
                         }
-
-                        return true;
-                    }
-
-                    if (comptime !allow_optional_catch_all) {
-                        return true;
+                        return false;
                     }
                 },
                 .catch_all => |dynamic| {
                     if (path_.len > 0) {
-                        params.append(allocator, .{
+                        try params.append(allocator, .{
                             .name = dynamic.str(name),
                             .value = path_,
-                        }) catch unreachable;
+                        });
                         return true;
                     }
 
@@ -1019,10 +1046,10 @@ const Pattern = struct {
                 },
                 .optional_catch_all => |dynamic| {
                     if (comptime allow_optional_catch_all) {
-                        if (path_.len > 0) params.append(allocator, .{
+                        if (path_.len > 0) try params.append(allocator, .{
                             .name = dynamic.str(name),
                             .value = path_,
-                        }) catch unreachable;
+                        });
 
                         return true;
                     }
@@ -1042,16 +1069,16 @@ const Pattern = struct {
     /// Validate a Route pattern, returning the number of route parameters.
     /// `null` means invalid. Error messages are logged.
     /// That way, we can provide a list of all invalid routes rather than failing the first time.
-    pub fn validate(input: string, allocator: std.mem.Allocator, log: *Logger.Log) ?ValidationResult {
+    pub fn validate(input: string, allocator: std.mem.Allocator, log: *Logger.Log) bun.OOM!?ValidationResult {
         if (!strings.isAllASCII(input)) {
             const source = Logger.Source.initEmptyFile(input);
-            log.addErrorFmt(
+            try log.addErrorFmt(
                 &source,
                 Logger.Loc.Empty,
                 allocator,
                 "Route name must be plaintext",
                 .{},
-            ) catch unreachable;
+            );
             return null;
         }
 
@@ -1071,7 +1098,7 @@ const Pattern = struct {
                             allocator,
                             "Catch-all route must be at the end of the path",
                             .{},
-                        ) catch unreachable;
+                        ) catch return error.OutOfMemory;
                     },
                     error.InvalidCatchAllRoute => {
                         log.addErrorFmt(
@@ -1080,7 +1107,7 @@ const Pattern = struct {
                             allocator,
                             "Invalid catch-all route, e.g. should be [...param]",
                             .{},
-                        ) catch unreachable;
+                        ) catch return error.OutOfMemory;
                     },
                     error.InvalidOptionalCatchAllRoute => {
                         log.addErrorFmt(
@@ -1089,7 +1116,7 @@ const Pattern = struct {
                             allocator,
                             "Invalid optional catch-all route, e.g. should be [[...param]]",
                             .{},
-                        ) catch unreachable;
+                        ) catch return error.OutOfMemory;
                     },
                     error.InvalidRoutePattern => {
                         log.addErrorFmt(
@@ -1098,7 +1125,7 @@ const Pattern = struct {
                             allocator,
                             "Invalid dynamic route",
                             .{},
-                        ) catch unreachable;
+                        ) catch return error.OutOfMemory;
                     },
                     error.MissingParamName => {
                         log.addErrorFmt(
@@ -1107,7 +1134,7 @@ const Pattern = struct {
                             allocator,
                             "Route is missing a parameter name, e.g. [param]",
                             .{},
-                        ) catch unreachable;
+                        ) catch return error.OutOfMemory;
                     },
                     error.PatternMissingClosingBracket => {
                         log.addErrorFmt(
@@ -1116,7 +1143,7 @@ const Pattern = struct {
                             allocator,
                             "Route is missing a closing bracket]",
                             .{},
-                        ) catch unreachable;
+                        ) catch return error.OutOfMemory;
                     },
                 }
                 return null;
@@ -1384,9 +1411,10 @@ test "Pattern Match" {
     };
 
     const TestList = struct {
-        pub fn run(comptime list: anytype) usize {
+        pub fn run(comptime list: anytype) bun.OOM!usize {
             const ParamListType = std.MultiArrayList(Entry);
             var parameters = ParamListType{};
+            defer parameters.deinit(default_allocator);
             var failures: usize = 0;
             inline for (comptime std.meta.fieldNames(@TypeOf(list))) |pattern| {
                 parameters.shrinkRetainingCapacity(0);
@@ -1395,7 +1423,7 @@ test "Pattern Match" {
                 const pathname = part.@"0";
                 const entries = part.@"1";
                 fail: {
-                    if (!Pattern.match(pathname, pattern, pattern, default_allocator, *ParamListType, &parameters, true)) {
+                    if (!try Pattern.match(pathname, pattern, pattern, default_allocator, *ParamListType, &parameters, true)) {
                         Output.prettyErrorln("Expected pattern <b>\"{s}\"<r> to match <b>\"{s}\"<r>", .{ pattern, pathname });
                         failures += 1;
                         break :fail;
@@ -1427,8 +1455,8 @@ test "Pattern Match" {
         }
     };
 
-    if (TestList.run(regular_list) > 0) try expect(false);
-    if (TestList.run(optional_catch_all) > 0) try expect(false);
+    if (try TestList.run(regular_list) > 0) try expect(false);
+    if (try TestList.run(optional_catch_all) > 0) try expect(false);
 }
 
 test "Github API Route Loader" {

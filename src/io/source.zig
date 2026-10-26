@@ -9,123 +9,293 @@ pub const Source = union(enum) {
     const Pipe = uv.Pipe;
     const Tty = uv.uv_tty_t;
 
-    /// File source for async file I/O operations using libuv.
-    ///
-    /// Manages a single `uv_fs_t` through a state machine that ensures:
-    /// - Only one operation uses the `fs` field at a time
-    /// - The `fs` is properly deinitialized before reuse
-    /// - Cancellation is only attempted when an operation is in-flight
-    ///
-    /// Typical usage pattern:
-    /// 1. Check `canStart()` - returns true if ready for a new operation
-    /// 2. Call `prepare()` - marks fs as in-use
-    /// 3. Set up buffer and call `uv_fs_read()` or `uv_fs_write()`
-    /// 4. In callback, call `complete()` first to clean up
-    /// 5. Process the result
-    ///
-    /// Cancellation:
-    /// - Call `stop()` to cancel an in-flight operation
-    /// - The callback will still fire with UV_ECANCELED
-    /// - Always call `complete()` in the callback regardless of cancellation
-    ///
-    /// Cleanup:
-    /// - Call `detach()` if parent is destroyed before operation completes
-    /// - File will automatically close itself after the operation finishes
+    pub const StreamRead = struct {
+        const RefCount = bun.ptr.RefCount(@This(), "ref_count", destroy, .{});
+        pub const ref = RefCount.ref;
+        pub const deref = RefCount.deref;
+
+        ref_count: RefCount = .init(),
+        source: Source,
+        parent: ?*anyopaque,
+        pending_buffer: []u8 = &.{},
+        spare_buffer: []u8 = &.{},
+
+        pub fn create(source: Source, parent: *anyopaque) bun.OOM!*StreamRead {
+            bun.assert(source == .pipe or source == .tty);
+            const this = try bun.default_allocator.create(StreamRead);
+            this.* = .{ .source = source, .parent = parent };
+            source.setData(this);
+            return this;
+        }
+
+        pub fn allocate(this: *StreamRead, suggested_size: usize) bun.OOM![]u8 {
+            const length = @min(@max(suggested_size, 1), 64 * 1024);
+            if (this.pending_buffer.len == 0) this.pending_buffer = bun.take(&this.spare_buffer);
+            if (this.pending_buffer.len < length) {
+                const replacement = try bun.default_allocator.alloc(u8, length);
+                bun.default_allocator.free(this.pending_buffer);
+                this.pending_buffer = replacement;
+            }
+            return this.pending_buffer;
+        }
+
+        pub fn takeBuffer(this: *StreamRead, buffer: *const uv.uv_buf_t) []u8 {
+            if (buffer.len == 0) return &.{};
+            bun.assert(this.pending_buffer.ptr == buffer.base);
+            bun.assert(this.pending_buffer.len == buffer.len);
+            return bun.take(&this.pending_buffer);
+        }
+
+        pub fn recycle(this: *StreamRead, buffer: []u8) void {
+            if (buffer.len > this.spare_buffer.len) {
+                bun.default_allocator.free(this.spare_buffer);
+                this.spare_buffer = buffer;
+            } else {
+                bun.default_allocator.free(buffer);
+            }
+        }
+
+        pub fn detach(this: *StreamRead) void {
+            this.parent = null;
+            this.source.getHandle().close(onClose);
+        }
+
+        pub fn memoryCost(this: *const StreamRead) usize {
+            return @sizeOf(StreamRead) + this.pending_buffer.len + this.spare_buffer.len;
+        }
+
+        fn onClose(handle: *uv.Handle) callconv(.c) void {
+            const this = handle.getData(StreamRead).?;
+            this.deref();
+        }
+
+        fn destroy(this: *StreamRead) void {
+            // A canceled terminal read can suppress delivery of its allocated buffer.
+            bun.default_allocator.free(this.pending_buffer);
+            bun.default_allocator.free(this.spare_buffer);
+            switch (this.source) {
+                .pipe => |pipe| bun.default_allocator.destroy(pipe),
+                .tty => |tty| bun.default_allocator.destroy(tty),
+                else => unreachable,
+            }
+            bun.default_allocator.destroy(this);
+        }
+    };
+
+    pub const StreamWrite = struct {
+        request: uv.uv_write_t = std.mem.zeroes(uv.uv_write_t),
+        iov: uv.uv_buf_t = undefined,
+        stream: *uv.uv_stream_t,
+        bytes: []u8,
+        written: usize = 0,
+        parent: ?*anyopaque,
+        callback: *const fn (*anyopaque, uv.ReturnCode) void,
+
+        pub fn start(stream: *uv.uv_stream_t, bytes: []const u8, parent: *anyopaque, callback: *const fn (*anyopaque, uv.ReturnCode) void) bun.sys.Maybe(*StreamWrite) {
+            bun.assert(bytes.len != 0);
+            const this = bun.default_allocator.create(StreamWrite) catch return .{ .err = bun.sys.Error.fromCode(.NOMEM, .write) };
+            const snapshot = bun.default_allocator.dupe(u8, bytes) catch {
+                bun.default_allocator.destroy(this);
+                return .{ .err = bun.sys.Error.fromCode(.NOMEM, .write) };
+            };
+            this.* = .{ .stream = stream, .bytes = snapshot, .parent = parent, .callback = callback };
+            if (this.submit().toError(.write)) |err| {
+                this.destroy();
+                return .{ .err = err };
+            }
+            return .{ .result = this };
+        }
+
+        pub fn detach(this: *StreamWrite) void {
+            this.parent = null;
+        }
+
+        fn submit(this: *StreamWrite) uv.ReturnCode {
+            const remaining = this.bytes[this.written..];
+            this.iov = .init(remaining[0..@min(remaining.len, 1024 * 1024)]);
+            return uv.uv_write(&this.request, this.stream, @ptrCast(&this.iov), 1, onWrite);
+        }
+
+        fn onWrite(request: *uv.uv_write_t, status: uv.ReturnCode) callconv(.c) void {
+            const this: *StreamWrite = @fieldParentPtr("request", request);
+            if (this.parent == null) return this.destroy();
+            if (status.errEnum() != null) return this.finish(status);
+            this.written += this.iov.len;
+            if (this.written == this.bytes.len) return this.finish(.zero);
+            const result = this.submit();
+            if (result.errEnum() != null) this.finish(result);
+        }
+
+        fn finish(this: *StreamWrite, status: uv.ReturnCode) void {
+            defer this.destroy();
+            if (bun.take(&this.parent)) |parent| this.callback(parent, status);
+        }
+
+        fn destroy(this: *StreamWrite) void {
+            bun.default_allocator.free(this.bytes);
+            bun.default_allocator.destroy(this);
+        }
+    };
+
+    /// Owns the descriptor and request buffers through cancellation and callback delivery.
     pub const File = struct {
-        /// The fs_t for I/O operations (reads/writes) and state-machine-managed closes.
-        /// State machine ensures this is only used for one operation at a time.
-        fs: uv.fs_t,
-
-        /// Buffer descriptor for the current read operation (unused by writers).
-        iov: uv.uv_buf_t,
-
-        /// The file descriptor.
+        loop: *uv.Loop,
+        fs: uv.fs_t = std.mem.zeroes(uv.fs_t),
+        iov: uv.uv_buf_t = undefined,
         file: uv.uv_file,
-
-        /// Current state of the fs_t request.
+        io_buffer: []u8 = &.{},
+        write_length: usize = 0,
+        written: usize = 0,
+        write_callback: ?*const fn (*uv.fs_t) callconv(.c) void = null,
+        cancelled: bool = false,
         state: enum(u8) {
-            deinitialized, // fs.deinit() called, ready for next operation
-            operating, // read or write operation in progress
-            canceling, // cancel requested, waiting for callback
-            closing, // close operation in progress
+            deinitialized,
+            operating,
+            canceling,
+            delivering,
+            closing,
         } = .deinitialized,
+        detached: bool = false,
 
-        /// When true, file will close itself when the current operation completes.
-        close_after_operation: bool = false,
-
-        /// Get the File struct from an fs_t pointer using field offset.
         pub fn fromFS(fs: *uv.fs_t) *File {
             return @fieldParentPtr("fs", fs);
         }
 
-        /// Returns true if ready to start a new operation.
         pub fn canStart(this: *const File) bool {
-            return this.state == .deinitialized and this.fs.data != null;
+            return this.state == .deinitialized and !this.detached and this.fs.data != null;
         }
 
-        /// Mark the file as in-use for an operation.
-        /// Must only be called when canStart() returns true.
         pub fn prepare(this: *File) void {
-            bun.assert(this.state == .deinitialized);
-            bun.assert(this.fs.data != null);
+            bun.assert(this.canStart());
             this.state = .operating;
-            this.close_after_operation = false;
+            this.cancelled = false;
         }
 
-        /// Request cancellation of the current operation.
-        /// If successful, the callback will fire with UV_ECANCELED.
-        /// If cancel fails, the operation completes normally.
         pub fn stop(this: *File) void {
             if (this.state != .operating) return;
-
-            const cancel_result = uv.uv_cancel(@ptrCast(&this.fs));
-            if (cancel_result == 0) {
-                this.state = .canceling;
-            }
+            this.cancelled = true;
+            this.state = .canceling;
+            _ = uv.uv_cancel(@ptrCast(&this.fs));
         }
 
-        /// Detach from parent and schedule automatic cleanup.
-        /// If an operation is in progress, it will complete and then close the file.
-        /// If idle, closes the file immediately.
         pub fn detach(this: *File) void {
             this.fs.data = null;
-            this.close_after_operation = true;
+            this.detached = true;
             this.stop();
-
-            if (this.state == .deinitialized) {
-                this.close_after_operation = false;
-                this.startClose();
-            }
+            if (this.state == .deinitialized) this.startClose();
         }
 
-        /// Mark the operation as complete and clean up.
-        /// Must be called first in the callback before processing data.
-        pub fn complete(this: *File, was_canceled: bool) void {
+        pub fn beginDelivery(this: *File) void {
             bun.assert(this.state == .operating or this.state == .canceling);
-            if (was_canceled) {
-                bun.assert(this.state == .canceling);
-            }
-
             this.fs.deinit();
-            this.state = .deinitialized;
+            this.state = .delivering;
+        }
 
-            if (this.close_after_operation) {
-                this.close_after_operation = false;
+        /// A null result ends access to this File; close submission can free it.
+        pub fn endDelivery(this: *File) ?*anyopaque {
+            bun.assert(this.state == .delivering);
+            this.state = .deinitialized;
+            if (this.detached) {
                 this.startClose();
+                return null;
+            }
+            return this.fs.data;
+        }
+
+        pub fn complete(this: *File) void {
+            this.beginDelivery();
+            _ = this.endDelivery();
+        }
+
+        pub fn read(this: *File, offset: i64, callback: *const fn (*uv.fs_t) callconv(.c) void) bun.sys.Maybe(void) {
+            bun.assert(this.canStart());
+            const buffer = this.ensureBuffer(64 * 1024) catch return .{ .err = bun.sys.Error.fromCode(.NOMEM, .read) };
+            this.iov = .init(buffer);
+            this.prepare();
+            if (uv.uv_fs_read(this.loop, &this.fs, this.file, @ptrCast(&this.iov), 1, offset, callback).toError(.read)) |err| {
+                this.complete();
+                return .{ .err = err };
+            }
+            return .success;
+        }
+
+        fn ensureBuffer(this: *File, length: usize) bun.OOM![]u8 {
+            if (this.io_buffer.len < length) {
+                const replacement = try bun.default_allocator.alloc(u8, length);
+                bun.default_allocator.free(this.io_buffer);
+                this.io_buffer = replacement;
+            }
+            return this.io_buffer[0..length];
+        }
+
+        pub fn write(this: *File, bytes: []const u8, callback: *const fn (*uv.fs_t) callconv(.c) void) bun.sys.Maybe(void) {
+            bun.assert(this.canStart() and bytes.len != 0);
+            const buffer = this.ensureBuffer(bytes.len) catch return .{ .err = bun.sys.Error.fromCode(.NOMEM, .write) };
+            @memcpy(buffer, bytes);
+            this.write_length = bytes.len;
+            this.written = 0;
+            this.write_callback = callback;
+            this.prepare();
+            const result = this.submitWrite();
+            if (result.toError(.write)) |err| {
+                this.complete();
+                return .{ .err = err };
+            }
+            return .success;
+        }
+
+        fn submitWrite(this: *File) uv.ReturnCode {
+            const remaining = this.write_length - this.written;
+            this.iov = .init(this.io_buffer[this.written..][0..@min(remaining, 1024 * 1024)]);
+            return uv.uv_fs_write(this.loop, &this.fs, this.file, @ptrCast(&this.iov), 1, -1, onWrite);
+        }
+
+        fn onWrite(fs: *uv.fs_t) callconv(.c) void {
+            const this = File.fromFS(fs);
+            const callback = this.write_callback.?;
+            if (fs.result.errEnum() != null) return callback(fs);
+            const amount: usize = @intCast(fs.result.int());
+            if (amount == 0) {
+                fs.result = .init(uv.UV_EIO);
+                return callback(fs);
+            }
+            bun.assert(amount <= this.iov.len);
+            this.written += amount;
+            if (this.written == this.write_length) return callback(fs);
+            if (this.cancelled or this.detached) {
+                fs.result = .init(uv.UV_ECANCELED);
+                return callback(fs);
+            }
+            fs.deinit();
+            const result = this.submitWrite();
+            if (result.errEnum() != null) {
+                fs.result = .init(result.int());
+                callback(fs);
             }
         }
 
         fn startClose(this: *File) void {
             bun.assert(this.state == .deinitialized);
+            const fd = this.file;
+            this.file = -1;
             this.state = .closing;
-            _ = uv.uv_fs_close(uv.Loop.get(), &this.fs, this.file, onCloseComplete);
+            if (uv.uv_fs_close(this.loop, &this.fs, fd, onCloseComplete).errEnum() != null) {
+                this.fs.deinit();
+                _ = bun.FD.fromUV(fd).closeAllowingStandardIo(null);
+                this.destroy();
+            }
         }
 
         fn onCloseComplete(fs: *uv.fs_t) callconv(.c) void {
             const file = File.fromFS(fs);
             bun.assert(file.state == .closing);
             fs.deinit();
-            bun.default_allocator.destroy(file);
+            file.destroy();
+        }
+
+        fn destroy(this: *File) void {
+            bun.default_allocator.free(this.io_buffer);
+            bun.default_allocator.destroy(this);
         }
     };
 
@@ -134,6 +304,14 @@ pub const Source = union(enum) {
             .pipe => |pipe| pipe.isClosed(),
             .tty => |tty| tty.isClosed(),
             .sync_file, .file => |file| file.file == -1,
+        };
+    }
+
+    pub fn memoryCost(this: Source) usize {
+        return switch (this) {
+            .pipe => @sizeOf(Pipe),
+            .tty => @sizeOf(Tty),
+            .file, .sync_file => |file| @sizeOf(File) + file.io_buffer.len,
         };
     }
 
@@ -210,7 +388,8 @@ pub const Source = union(enum) {
 
     pub fn openPipe(loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(*Source.Pipe) {
         log("openPipe (fd = {f})", .{fd});
-        const pipe = bun.new(Source.Pipe, std.mem.zeroes(Source.Pipe));
+        const pipe = bun.default_allocator.create(Source.Pipe) catch return .{ .err = bun.sys.Error.fromCode(.NOMEM, .open) };
+        pipe.* = std.mem.zeroes(Source.Pipe);
         // we should never init using IPC here see ipc.zig
         switch (pipe.init(loop, false)) {
             .err => |err| {
@@ -230,45 +409,14 @@ pub const Source = union(enum) {
             .result => {},
         }
 
+        finishStreamAdoption(fd);
         return .{ .result = pipe };
     }
 
-    pub const StdinTTY = struct {
-        var data: uv.uv_tty_t = undefined;
-        var lock: std.Io.Mutex = .init;
-        var initialized = std.atomic.Value(bool).init(false);
-        const value: *uv.uv_tty_t = &data;
-
-        pub fn isStdinTTY(tty: *const Source.Tty) bool {
-            return tty == StdinTTY.value;
-        }
-
-        fn getStdinTTY(io: std.Io, loop: *uv.Loop) bun.sys.Maybe(*Source.Tty) {
-            StdinTTY.lock.lockUncancelable(io);
-            defer StdinTTY.lock.unlock(io);
-
-            if (StdinTTY.initialized.swap(true, .monotonic) == false) {
-                const rc = uv.uv_tty_init(loop, StdinTTY.value, 0, 0);
-                if (rc.toError(.open)) |err| {
-                    StdinTTY.initialized.store(false, .monotonic);
-                    return .{ .err = err };
-                }
-            }
-
-            return .{ .result = StdinTTY.value };
-        }
-    };
-
-    pub fn openTty(io: std.Io, loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(*Source.Tty) {
+    pub fn openTty(loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(*Source.Tty) {
         log("openTTY (fd = {f})", .{fd});
-
         const uv_fd = fd.uv();
-
-        if (uv_fd == 0) {
-            return StdinTTY.getStdinTTY(io, loop);
-        }
-
-        const tty = bun.default_allocator.create(Source.Tty) catch |err| bun.handleOom(err);
+        const tty = bun.default_allocator.create(Source.Tty) catch return .{ .err = bun.sys.Error.fromCode(.NOMEM, .open) };
         switch (tty.init(loop, uv_fd)) {
             .err => |err| {
                 bun.default_allocator.destroy(tty);
@@ -277,20 +425,25 @@ pub const Source = union(enum) {
             .result => {},
         }
 
+        finishStreamAdoption(fd);
         return .{ .result = tty };
     }
 
-    pub fn openFile(fd: bun.FD) *Source.File {
-        bun.assert(fd.isValid() and fd.uv() != -1);
-        log("openFile (fd = {f})", .{fd});
-        const file = bun.handleOom(bun.default_allocator.create(Source.File));
-
-        file.* = std.mem.zeroes(Source.File);
-        file.file = fd.uv();
-        return file;
+    fn finishStreamAdoption(fd: bun.FD) void {
+        // libuv duplicates descriptors 0–2; Source consumes the original descriptor too.
+        if (fd.uv() <= 2) _ = fd.closeAllowingStandardIo(null);
     }
 
-    pub fn open(io: std.Io, loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(Source) {
+    pub fn openFile(loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(*Source.File) {
+        bun.assert(fd.isValid() and fd.uv() != -1);
+        log("openFile (fd = {f})", .{fd});
+        const file = bun.default_allocator.create(Source.File) catch return .{ .err = bun.sys.Error.fromCode(.NOMEM, .open) };
+
+        file.* = .{ .loop = loop, .file = fd.uv() };
+        return .{ .result = file };
+    }
+
+    pub fn open(loop: *uv.Loop, fd: bun.FD) bun.sys.Maybe(Source) {
         const rc = bun.windows.libuv.uv_guess_handle(fd.uv());
         log("open(fd: {f}, type: {s})", .{ fd, @tagName(rc) });
 
@@ -302,26 +455,24 @@ pub const Source = union(enum) {
                 }
             },
             .tty => {
-                switch (openTty(io, loop, fd)) {
+                switch (openTty(loop, fd)) {
                     .result => |tty| return .{ .result = .{ .tty = tty } },
                     .err => |err| return .{ .err = err },
                 }
             },
             .file => {
-                return .{
-                    .result = .{
-                        .file = openFile(fd),
-                    },
+                return switch (openFile(loop, fd)) {
+                    .result => |file| .{ .result = .{ .file = file } },
+                    .err => |err| .{ .err = err },
                 };
             },
             else => {
                 const errno = bun.windows.getLastErrno();
 
                 if (errno == .SUCCESS) {
-                    return .{
-                        .result = .{
-                            .file = openFile(fd),
-                        },
+                    return switch (openFile(loop, fd)) {
+                        .result => |file| .{ .result = .{ .file = file } },
+                        .err => |err| .{ .err = err },
                     };
                 }
 
@@ -334,7 +485,7 @@ pub const Source = union(enum) {
         return switch (this) {
             .tty => |tty| {
                 if (tty
-                    .setMode(if (value) .raw else .normal)
+                    .setMode(if (value) .vt else .normal)
                     .toError(.uv_tty_set_mode)) |err|
                 {
                     return .{ .err = err };
@@ -352,24 +503,6 @@ pub const Source = union(enum) {
         };
     }
 };
-
-export fn Source__setRawModeStdin(raw: bool) c_int {
-    const vm = bun.jsc.VirtualMachine.get();
-    const tty = switch (Source.openTty(vm.io, vm.uvLoop(), .stdin())) {
-        .result => |tty| tty,
-        .err => |e| return e.errno,
-    };
-    // UV_TTY_MODE_RAW_VT is a variant of UV_TTY_MODE_RAW that enables control
-    // sequence processing on the TTY implementer side, rather than having libuv
-    // translate keypress events into control sequences, aligning behavior more
-    // closely with POSIX platforms. This is also required to support some
-    // control sequences at all on Windows, such as bracketed paste mode. The
-    // Node.js readline implementation handles differences between these modes.
-    if (tty.setMode(if (raw) .vt else .normal).toError(.uv_tty_set_mode)) |err| {
-        return err.errno;
-    }
-    return 0;
-}
 
 const bun = @import("bun");
 const std = @import("std");

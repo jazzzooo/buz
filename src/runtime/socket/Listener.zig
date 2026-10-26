@@ -1,6 +1,15 @@
 //! This is the code for the object returned by Bun.listen().
 
 const Listener = @This();
+const StrongSelf = bindgen.ClassWrapperHandle(ListenerClassSchema, .strong);
+
+pub fn connectForBinding(context: anytype, options: anytype) bindgen.CallError(@TypeOf(context))!void {
+    return connectFromBinding(context, null, null, options);
+}
+
+pub fn listenForBinding(context: anytype, options: anytype) bindgen.CallError(@TypeOf(context))!bindgen.Return(@TypeOf(context)) {
+    return listenFromBinding(context, options);
+}
 
 handlers: Handlers,
 listener: ListenerType = .none,
@@ -18,13 +27,146 @@ secure_ctx: ?*BoringSSL.SSL_CTX = null,
 ssl: bool = false,
 protos: ?[]const u8 = null,
 
-strong_data: jsc.Strong.Optional = .empty,
-strong_self: jsc.Strong.Optional = .empty,
+strong_data: bindgen.Root.Optional = .empty,
+strong_self: ?StrongSelf = null,
 
-pub const js = jsc.Codegen.JSListener;
-pub const toJS = js.toJS;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
+pub const JSBinding = struct {
+    bindgen_state: bindgen.ClassState = .{},
+    listener: bindgen.OwnedNative(Listener, .vm),
+
+    pub const new = bun.TrivialNew(@This());
+
+    pub const destroy = @This().deinit;
+
+    fn deinit(this: *JSBinding) void {
+        this.listener.deinit();
+        bun.destroy(this);
+    }
+
+    pub fn bindDispose(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerDisposeSchema),
+        _: bindgen.Args(ListenerDisposeSchema),
+    ) bun.JSError!void {
+        this.listener.get().doStop(true);
+    }
+
+    pub fn bindGetData(
+        this: *JSBinding,
+        context: bindgen.CallContext(ListenerDataGetterSchema),
+        _: bindgen.Args(ListenerDataGetterSchema),
+    ) bun.JSError!bindgen.Return(ListenerDataGetterSchema) {
+        return this.listener.get().strong_data.toResult(context) orelse
+            bindgen.Return(ListenerDataGetterSchema).initUndefined(context);
+    }
+
+    pub fn bindSetData(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerDataSetterSchema),
+        args: bindgen.Args(ListenerDataSetterSchema),
+    ) bun.JSError!void {
+        var value = try args.value.toRoot();
+        defer value.deinit();
+        this.listener.get().setDataRoot(&value);
+    }
+
+    pub fn bindGetFD(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerFDGetterSchema),
+        _: bindgen.Args(ListenerFDGetterSchema),
+    ) bun.JSError!i64 {
+        return this.listener.get().getFD();
+    }
+
+    pub fn bindGetSockNameNative(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerGetSockNameNativeSchema),
+        _: bindgen.Args(ListenerGetSockNameNativeSchema),
+    ) bun.JSError!bindgen.Return(ListenerGetSockNameNativeSchema) {
+        return this.listener.get().getSockName();
+    }
+
+    pub fn bindGetHostname(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerHostnameGetterSchema),
+        _: bindgen.Args(ListenerHostnameGetterSchema),
+    ) bun.JSError!?bindgen.DOMString {
+        return this.listener.get().getHostname();
+    }
+
+    pub fn bindGetPort(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerPortGetterSchema),
+        _: bindgen.Args(ListenerPortGetterSchema),
+    ) bun.JSError!?u16 {
+        return this.listener.get().getPort();
+    }
+
+    pub fn bindRef(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerRefSchema),
+        args: bindgen.Args(ListenerRefSchema),
+    ) bun.JSError!void {
+        try this.listener.get().doRef(args.bindingThis);
+    }
+
+    pub fn bindReload(
+        this: *JSBinding,
+        context: bindgen.CallContext(ListenerReloadSchema),
+        args: bindgen.Args(ListenerReloadSchema),
+    ) bindgen.CallError(ListenerReloadSchema)!void {
+        const listener = this.listener.get();
+        const options = args.options orelse return context.fail(.expected_options, {});
+        if (listener.listener == .none and listener.handlers.active_connections == 0) {
+            return context.fail(.expected_options, {});
+        }
+        const converted = try options.convert(context);
+        try listener.doReload(context, &converted.value);
+    }
+
+    pub fn bindStop(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerStopSchema),
+        args: bindgen.Args(ListenerStopSchema),
+    ) bun.JSError!void {
+        this.listener.get().doStop(args.force orelse false);
+    }
+
+    pub fn bindGetUnix(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerUnixGetterSchema),
+        _: bindgen.Args(ListenerUnixGetterSchema),
+    ) bun.JSError!?bindgen.DOMString {
+        return this.listener.get().getUnix();
+    }
+
+    pub fn bindUnref(
+        this: *JSBinding,
+        _: bindgen.CallContext(ListenerUnrefSchema),
+        _: bindgen.Args(ListenerUnrefSchema),
+    ) bun.JSError!void {
+        this.listener.get().doUnref();
+    }
+};
+
+pub const Handle = struct {
+    binding: ListenerClass.Handle,
+
+    pub fn get(this: *const Handle) *Listener {
+        return this.binding.get().listener.get();
+    }
+
+    pub fn deinit(this: *Handle) void {
+        this.binding.deinit();
+    }
+};
+
+pub const Ref = bindgen.ClassRef(ListenerClassSchema);
+
+pub fn toRef(this: *Listener, globalObject: *jsc.JSGlobalObject) bun.JSError!Ref {
+    const binding = JSBinding.new(.{ .listener = .init(this) });
+    return ListenerClass.adoptNativeRef(binding, globalObject);
+}
 
 pub const ListenerType = union(enum) {
     uws: *uws.ListenSocket,
@@ -32,14 +174,9 @@ pub const ListenerType = union(enum) {
     none: void,
 };
 
-pub fn getData(this: *Listener, _: *jsc.JSGlobalObject) JSValue {
-    log("getData()", .{});
-    return this.strong_data.get() orelse .js_undefined;
-}
-
-pub fn setData(this: *Listener, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+pub fn setDataRoot(this: *Listener, value: *const bindgen.Root) void {
     log("setData()", .{});
-    this.strong_data.set(globalObject, value);
+    this.strong_data.setRoot(value);
 }
 
 pub const UnixOrHost = union(enum) {
@@ -82,50 +219,30 @@ pub const UnixOrHost = union(enum) {
     }
 };
 
-pub fn reload(this: *Listener, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-    const args = callframe.arguments_old(1);
-
-    if (args.len < 1 or (this.listener == .none and this.handlers.active_connections == 0)) {
-        return globalObject.throw("Expected 1 argument", .{});
-    }
-
-    const opts = args.ptr[0];
-    if (opts.isEmptyOrUndefinedOrNull() or opts.isBoolean() or !opts.isObject()) {
-        return globalObject.throwValue(globalObject.toInvalidArguments("Expected options object", .{}));
-    }
-
-    const socket_obj = try opts.get(globalObject, "socket") orelse {
-        return globalObject.throw("Expected \"socket\" object", .{});
-    };
-
-    const handlers = try Handlers.fromJS(globalObject, socket_obj, this.handlers.mode == .server);
-    // Preserve the live connection count across the struct assignment. `Handlers.fromJS`
-    // returns `active_connections = 0`, but existing accepted sockets each hold a +1 via
-    // `markActive`. Without this, closing any of them after reload would underflow the
-    // counter (panic in safe builds, wrap in release).
-    const active_connections = this.handlers.active_connections;
-    this.handlers.deinit();
-    this.handlers = handlers;
-    this.handlers.active_connections = active_connections;
-
-    return .js_undefined;
+pub fn doReload(this: *Listener, context: anytype, options: anytype) bun.bindgen.CallError(@TypeOf(context))!void {
+    if (this.listener == .none and this.handlers.active_connections == 0)
+        return context.fail(.expected_options, {});
+    var handlers = try Handlers.fromArgument(this.handlers.globalObject, context, &options.handlers, this.handlers.mode == .server);
+    defer handlers.deinit();
+    this.handlers.replaceCallbacks(&handlers);
 }
 
-pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSValue {
+pub fn listenFromBinding(
+    context: anytype,
+    generated: anytype,
+) bun.bindgen.CallError(@TypeOf(context))!Ref {
+    const globalObject = context.viewToken().globalObject();
     log("listen", .{});
-    if (opts.isEmptyOrUndefinedOrNull() or opts.isBoolean() or !opts.isObject()) {
-        return globalObject.throwInvalidArguments("Expected object", .{});
-    }
+    const vm = globalObject.bunVM();
 
-    const vm = jsc.VirtualMachine.get();
-
-    var socket_config = try SocketConfig.fromJS(vm, opts, globalObject, true);
+    var socket_config = try SocketConfig.fromGenerated(globalObject, context, generated, true);
     defer socket_config.deinitExcludingHandlers();
 
     const handlers = &socket_config.handlers;
     // Only deinit handlers if there's an error; otherwise we put them in a `Listener` and
     // need them to stay alive.
-    errdefer handlers.deinit();
+    var handlers_owned = true;
+    errdefer if (handlers_owned) handlers.deinit();
 
     const hostname_or_unix = &socket_config.hostname_or_unix;
     const port = socket_config.port;
@@ -142,7 +259,7 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
             };
 
             var socket: Listener = .{
-                .handlers = handlers.*,
+                .handlers = handlers.take(),
                 .connection = connection,
                 .ssl = ssl_enabled,
                 .listener = .none,
@@ -151,25 +268,21 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
 
             vm.eventLoop().ensureWaker();
 
-            if (socket_config.default_data != .zero) {
-                socket.strong_data = .create(socket_config.default_data, globalObject);
-            }
+            socket.strong_data.setRoot(&socket_config.default_data);
 
             const this: *Listener = bun.handleOom(handlers.vm.allocator.create(Listener));
             this.* = socket;
             // TODO: server_name is not supported on named pipes, I belive its , lets wait for
             // someone to ask for it
 
-            // On error, clean up everything `this` owns *except* `this.handlers`: the outer
-            // `errdefer handlers.deinit()` already unprotects those JSValues, and `this.handlers`
-            // is a by-value copy of the same struct, so calling `this.deinit()` here would
-            // unprotect the same callbacks a second time.
-            errdefer {
+            var listener_owned = true;
+            errdefer if (listener_owned) {
+                this.handlers.deinit();
                 this.strong_data.deinit();
                 this.connection.deinit();
                 if (this.protos) |protos| bun.default_allocator.free(protos);
                 handlers.vm.allocator.destroy(this);
-            }
+            };
 
             // we need to add support for the backlog parameter on listen here we use the
             // default value of nodejs
@@ -185,10 +298,12 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
             );
             this.listener = .{ .namedPipe = named_pipe };
 
-            const this_value = this.toJS(globalObject);
-            this.strong_self.set(globalObject, this_value);
+            listener_owned = false;
+            handlers_owned = false;
+            const reference = try this.toRef(globalObject);
+            this.strong_self = StrongSelf.initRef(&reference);
             this.poll_ref.ref(handlers.vm);
-            return this_value;
+            return reference;
         }
     }
 
@@ -197,18 +312,20 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
     // Allocate the Listener up front so the embedded `group` has its final
     // address before we hand it to listen() (it's linked into the loop's
     // intrusive list).
-    var this: *Listener = bun.handleOom(handlers.vm.allocator.create(Listener));
+    var this: *Listener = try handlers.vm.allocator.create(Listener);
     this.* = .{
-        .handlers = handlers.*,
+        .handlers = handlers.take(),
         .connection = undefined, // set after listen succeeds
         .ssl = ssl_enabled,
         .protos = if (ssl) |s| s.takeProtos() else null,
     };
-    this.group.init(uws.Loop.get(), null, this);
+    const socket_handlers = @import("./UwsHandlersEngine.zig");
+    const callbacks = if (ssl_enabled) socket_handlers.listenerCallbacks(true) else socket_handlers.listenerCallbacks(false);
+    this.group.init(uws.Loop.get(), callbacks, this);
     // `Listener` is mimalloc-allocated, so LSAN can't trace `loop->data.head →
     // this.group → head_sockets → us_socket_t` once the only pointer into the
     // group lives inside a mimalloc page. `process.exit()` from JS makes
-    // `Zig__GlobalObject__destructOnExit` early-return (vm.entryScope set), so
+    // global-object destruction early-return (vm.entryScope set), so
     // `finalize()`/`deinit()` never run and the accepted sockets' 88-byte
     // `us_create_poll` allocations are reported as leaked. Registering the
     // embedded group as a root region restores the same reachability the old
@@ -217,6 +334,18 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
     bun.asan.registerRootRegion(&this.group, @sizeOf(uws.SocketGroup));
     var listener_allocated = true;
     errdefer if (listener_allocated) {
+        switch (this.listener) {
+            .uws => |socket| {
+                this.unlinkUnixSocketPath();
+                socket.close();
+                this.listener = .none;
+                this.connection.deinit();
+            },
+            .none => {},
+            .namedPipe => unreachable,
+        }
+        this.strong_data.deinit();
+        this.handlers.deinit();
         if (this.secure_ctx) |c| BoringSSL.SSL_CTX_free(c);
         if (this.protos) |p| bun.default_allocator.free(p);
         bun.asan.unregisterRootRegion(&this.group, @sizeOf(uws.SocketGroup));
@@ -224,95 +353,97 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
         handlers.vm.allocator.destroy(this);
     };
 
-    if (ssl) |ssl_cfg| {
-        var create_err: uws.create_bun_socket_error_t = .none;
+    if (generated.secure_context) |*secure_context| {
+        this.secure_ctx = secure_context.get(SecureContext).borrow();
+    } else if (ssl) |ssl_cfg| {
+        var create_err: uws.TLSContextFailure = .{};
         this.secure_ctx = ssl_cfg.asUSockets().createSSLContext(&create_err) orelse {
-            return globalObject.throwValue(create_err.toJS(globalObject));
+            return TLSFailure.fromContextCreation(context, create_err);
         };
     }
     const kind: uws.SocketKind = if (ssl_enabled) .bun_listener_tls else .bun_listener_tcp;
 
-    const hostname = bun.handleOom(hostname_or_unix.intoOwnedSlice(bun.default_allocator));
-    errdefer bun.default_allocator.free(hostname);
+    const hostname = try hostname_or_unix.intoOwnedSlice(bun.default_allocator);
+    var hostname_owned = true;
+    errdefer if (hostname_owned) bun.default_allocator.free(hostname);
     var connection: Listener.UnixOrHost = if (port) |port_| .{
         .host = .{ .host = hostname, .port = port_ },
     } else if (socket_config.fd) |fd| .{ .fd = fd } else .{ .unix = hostname };
 
-    var errno: c_int = 0;
+    var listen_failure: uws.ListenFailure = .{};
     const listen_socket: *uws.ListenSocket = brk: {
         switch (connection) {
             .host => |host| {
-                const hostz = bun.handleOom(bun.default_allocator.dupeSentinel(u8, host.host, 0));
+                const hostz = try bun.default_allocator.dupeSentinel(u8, host.host, 0);
                 defer bun.default_allocator.free(hostz);
-                const ls = this.group.listen(kind, this.secure_ctx, hostz.ptr, host.port, socket_flags, @sizeOf(?*anyopaque), &errno);
+                const ls = this.group.listen(kind, this.secure_ctx, hostz.ptr, host.port, socket_flags, @sizeOf(?*anyopaque), &listen_failure);
                 if (ls) |s| connection.host.port = @intCast(s.getLocalPort());
                 break :brk ls;
             },
             .unix => |u| {
-                const pathz = bun.handleOom(bun.default_allocator.dupeSentinel(u8, u, 0));
+                const pathz = try bun.default_allocator.dupeSentinel(u8, u, 0);
                 defer bun.default_allocator.free(pathz);
-                break :brk this.group.listenUnix(kind, this.secure_ctx, pathz.ptr, pathz.len, socket_flags, @sizeOf(?*anyopaque), &errno);
+                const socket = this.group.listenUnix(kind, this.secure_ctx, pathz.ptr, pathz.len, socket_flags, @sizeOf(?*anyopaque), &listen_failure);
+                if (socket == null and listen_failure.socket_bound != 0 and pathz.len > 0 and pathz[0] != 0) {
+                    _ = bun.sys.unlink(pathz);
+                }
+                break :brk socket;
             },
             .fd => |fd| {
-                const err: bun.jsc.SystemError = .{
+                return context.fail(.listen_system, try bindgen.SystemError.init(.{
                     .errno = @backingInt(bun.sys.SystemErrno.EINVAL),
-                    .code = .static("EINVAL"),
-                    .message = .static("Bun does not support listening on a file descriptor."),
-                    .syscall = .static("listen"),
+                    .code = "EINVAL",
+                    .message = "Bun does not support listening on a file descriptor.",
+                    .syscall = "listen",
                     .fd = fd.uv(),
-                };
-                return globalObject.throwValue((try err.toErrorInstance(globalObject)).toJS());
+                }));
             },
         }
     } orelse {
-        const err = try globalObject.createErrorInstance("Failed to listen at {s}", .{hostname});
-        log("Failed to listen {d}", .{errno});
-        if (errno != 0) {
-            err.putDirect(globalObject, ZigString.static("syscall"), try bun.String.createUTF8ForJS(globalObject, "listen"));
-            err.putDirect(globalObject, ZigString.static("errno"), JSValue.jsNumber(errno));
-            err.putDirect(globalObject, ZigString.static("address"), ZigString.initUTF8(hostname).toJS(globalObject));
-            if (port) |p| err.putDirect(globalObject, ZigString.static("port"), .jsNumber(p));
-            if (comptime Environment.isWindows) {
-                const str = bun.sys.SystemErrno.fromWinsock(@as(bun.windows.WinsockError, @fromBackingInt(errno)));
-                err.putDirect(globalObject, ZigString.static("code"), ZigString.init(@tagName(str)).toJS(globalObject));
-            } else if (bun.sys.SystemErrno.init(errno)) |str| {
-                err.putDirect(globalObject, ZigString.static("code"), ZigString.init(@tagName(str)).toJS(globalObject));
-            }
+        const system_errno = listen_failure.systemErrno();
+        if (system_errno) |err| if (err == .ENOMEM) return error.OutOfMemory;
+        const message = try std.fmt.allocPrint(bun.default_allocator, "Failed to listen at {s}", .{hostname});
+        defer bun.default_allocator.free(message);
+        if (system_errno) |err| {
+            return context.fail(.listen_address, try bindgen.SystemError.init(.{
+                .errno = @backingInt(err),
+                .code = @tagName(err),
+                .message = message,
+                .syscall = "listen",
+                .address = hostname,
+                .port = port,
+            }));
         }
-        return globalObject.throwValue(err.toJS());
+        return context.fail(.listen_failed, try bindgen.DOMString.fromUTF8(message));
     };
 
     this.connection = connection;
+    hostname_owned = false;
     this.listener = .{ .uws = listen_socket };
-    if (socket_config.default_data != .zero) {
-        this.strong_data = .create(socket_config.default_data, globalObject);
-    }
+    this.strong_data.setRoot(&socket_config.default_data);
 
     if (ssl) |ssl_config| {
         // `ssl_enabled` ⇒ `createSSLContext` succeeded above ⇒ `secure_ctx` set.
         const secure = this.secure_ctx orelse unreachable;
         if (ssl_config.server_name) |server_name| {
-            if (std.mem.span(server_name).len > 0) {
+            if (server_name.len > 0) {
                 // Registering the default cert under its own server_name is a
                 // hint for sni_cb, not load-bearing — sni_find() miss falls
                 // through to the default SSL_CTX anyway. A false here (e.g.
                 // hostname already added via addContext before listen) is
                 // benign, so don't fail the whole listen() for it.
-                _ = listen_socket.addServerName(server_name, secure, null);
+                _ = try listen_socket.addServerName(server_name.ptr, secure, null);
             }
         }
     }
 
     listener_allocated = false; // ownership now on `this`; deinit handles cleanup
-    const this_value = this.toJS(globalObject);
-    this.strong_self.set(globalObject, this_value);
+    handlers_owned = false;
+    const reference = try this.toRef(globalObject);
+    this.strong_self = StrongSelf.initRef(&reference);
     this.poll_ref.ref(handlers.vm);
 
-    return this_value;
-}
-
-pub fn constructor(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!*Listener {
-    return globalObject.throw("Cannot construct Listener", .{});
+    return reference;
 }
 
 pub fn onNamePipeCreated(comptime ssl: bool, listener: *Listener) *NewSocket(ssl) {
@@ -322,112 +453,102 @@ pub fn onNamePipeCreated(comptime ssl: bool, listener: *Listener) *NewSocket(ssl
     var this_socket = Socket.new(.{
         .ref_count = .init(),
         .handlers = &listener.handlers,
-        .socket = Socket.Socket.detached,
+        .core = .{ .socket = Socket.Socket.detached, .allocator = bun.default_allocator },
         .protos = listener.protos,
-        .flags = .{ .owned_protos = false },
+        .owned_protos = false,
     });
     this_socket.ref();
-    if (listener.strong_data.get()) |default_data| {
-        const globalObject = listener.handlers.globalObject;
-        Socket.js.dataSetCached(this_socket.getThisValue(globalObject), globalObject, default_data);
-    }
+    const globalObject = listener.handlers.globalObject;
+    var reference = this_socket.getThisRef(globalObject) catch |err| {
+        globalObject.reportActiveExceptionAsUnhandled(err);
+        this_socket.closeAndDetach(.failure);
+        return this_socket;
+    };
+    defer reference.deinit();
+    Socket.DataSlot.setOptionalRootOnOwned(&reference, &listener.strong_data);
     return this_socket;
 }
 
-/// Called from `dispatch.zig` `BunListener.onOpen` for every accepted socket.
-/// Allocates the `NewSocket` wrapper, stashes it in the socket ext, then
-/// re-stamps the kind to `.bun_socket_{tcp,tls}` so subsequent events route
-/// straight to `BunSocket` (the listener arm only fires once per accept).
-pub fn onCreate(comptime ssl: bool, listener: *Listener, socket: uws.NewSocketHandler(ssl)) *NewSocket(ssl) {
-    jsc.markBinding(@src());
+/// Attaches the connection's native reference after wrapper creation succeeds.
+pub fn onCreate(comptime ssl: bool, listener: *Listener, socket: uws.NewSocketHandler(ssl)) ?*NewSocket(ssl) {
     log("onCreate", .{});
 
     const Socket = NewSocket(ssl);
     bun.assert(ssl == listener.ssl);
 
-    const this_socket = bun.new(Socket, .{
+    const globalObject = listener.handlers.globalObject;
+    const this_socket = bun.default_allocator.create(Socket) catch {
+        socket.close(.failure);
+        globalObject.reportActiveExceptionAsUnhandled(error.OutOfMemory);
+        return null;
+    };
+    this_socket.* = .{
         .ref_count = .init(),
         .handlers = &listener.handlers,
-        .socket = socket,
+        .core = .{ .socket = socket, .allocator = bun.default_allocator },
         .protos = listener.protos,
-        .flags = .{ .owned_protos = false },
-    });
+        .owned_protos = false,
+    };
+    var reference = this_socket.getThisRef(globalObject) catch |err| {
+        this_socket.closeAndDetach(.failure);
+        this_socket.deref();
+        globalObject.reportActiveExceptionAsUnhandled(err);
+        return null;
+    };
+    defer reference.deinit();
     this_socket.ref();
-    if (listener.strong_data.get()) |default_data| {
-        const globalObject = listener.handlers.globalObject;
-        Socket.js.dataSetCached(this_socket.getThisValue(globalObject), globalObject, default_data);
-    }
-    if (socket.ext(**anyopaque)) |ctx| {
-        ctx.* = bun.cast(**anyopaque, this_socket);
-    }
+    Socket.DataSlot.setOptionalRootOnOwned(&reference, &listener.strong_data);
+    socket.socket.connected.ext(?*Socket).* = this_socket;
     socket.socket.connected.setKind(if (ssl) .bun_socket_tls else .bun_socket_tcp);
     socket.setTimeout(120);
     return this_socket;
 }
 
-pub fn addServerName(this: *Listener, global: *jsc.JSGlobalObject, hostname: JSValue, tls: JSValue) bun.JSError!JSValue {
+pub fn addServerNameFromBinding(
+    this: *Listener,
+    context: bindgen.CallContext(AddServerNameSchema),
+    hostname: bindgen.DOMStringView,
+    tls: anytype,
+) bindgen.CallError(AddServerNameSchema)!void {
+    const global = context.viewToken().globalObject();
     if (!this.ssl) {
-        return global.throwInvalidArguments("addServerName requires SSL support", .{});
+        return context.fail(.ssl_required, {});
     }
-    if (!hostname.isString()) {
-        return global.throwInvalidArguments("hostname pattern expects a string", .{});
-    }
-    const host_str = try hostname.toSlice(
-        global,
-        bun.default_allocator,
-    );
-    defer host_str.deinit();
-    const server_name = bun.handleOom(bun.default_allocator.dupeSentinel(u8, host_str.slice(), 0));
+    const server_name = try hostname.toOwnedSliceZ(bun.default_allocator);
     defer bun.default_allocator.free(server_name);
     if (server_name.len == 0) {
-        return global.throwInvalidArguments("hostname pattern cannot be empty", .{});
+        return context.fail(.empty_hostname, {});
     }
 
-    if (this.listener != .uws) return .js_undefined;
+    if (this.listener != .uws) return;
     const ls = this.listener.uws;
 
     // node:tls passes the native SecureContext (already-built SSL_CTX*) — no
     // re-parse. Bun.listen({tls}) callers may still pass a raw options dict.
-    const sni_ctx: *BoringSSL.SSL_CTX = if (SecureContext.fromJS(tls)) |sc|
-        sc.borrow()
-    else if (try SSLConfig.fromJS(jsc.VirtualMachine.get(), global, tls)) |ssl_config| brk: {
-        var cfg = ssl_config;
-        defer cfg.deinit();
-        var create_err: uws.create_bun_socket_error_t = .none;
-        break :brk jsc.VirtualMachine.get().rareData().sslCtxCache().getOrCreate(&cfg, &create_err) orelse {
-            if (create_err != .none) return global.throwValue(create_err.toJS(global));
-            return global.throwValue(bun.BoringSSL.ERR_toJS(global, BoringSSL.ERR_get_error()));
-        };
-    } else return .js_undefined;
+    const sni_ctx: *BoringSSL.SSL_CTX = switch (tls) {
+        .secure_context => |secure| secure.get(SecureContext).borrow(),
+        .options => |options| brk: {
+            var cfg = (try SSLConfigEngine.parse(context, &options)) orelse return;
+            defer cfg.deinit();
+            var create_err: uws.TLSContextFailure = .{};
+            const rare_data = try global.bunVM().tryRareData();
+            break :brk rare_data.sslCtxCache().getOrCreate(&cfg, &create_err) orelse {
+                return TLSFailure.fromContextCreation(context, create_err);
+            };
+        },
+    };
 
-    // The C SNI tree SSL_CTX_up_ref()s; drop our build/borrow ref once added.
-    ls.removeServerName(server_name);
-    const ok = ls.addServerName(server_name, sni_ctx, null);
-    BoringSSL.SSL_CTX_free(sni_ctx);
+    defer BoringSSL.SSL_CTX_free(sni_ctx);
+    const ok = try ls.replaceServerName(server_name, sni_ctx);
     if (!ok) {
-        // Old entry was already removed; failing silently would leave the
-        // hostname with no SNI mapping at all. Surface it.
-        return global.throwValue(global.ERR(.BORINGSSL, "Failed to register SNI for '{s}'", .{server_name}).toJS());
+        const message = try std.fmt.allocPrint(bun.default_allocator, "Failed to register SNI for '{s}'", .{server_name});
+        defer bun.default_allocator.free(message);
+        return context.fail(.tls_boringssl, try bindgen.ThreadSafeDOMString.fromUTF8(message));
     }
-
-    return .js_undefined;
-}
-
-pub fn dispose(this: *Listener, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {
-    this.doStop(true);
-    return .js_undefined;
-}
-
-pub fn stop(this: *Listener, _: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-    const arguments = callframe.arguments_old(1);
-    log("close", .{});
-
-    this.doStop(if (arguments.len > 0 and arguments.ptr[0].isBoolean()) arguments.ptr[0].toBoolean() else false);
-
-    return .js_undefined;
 }
 
 fn doStop(this: *Listener, force_close: bool) void {
+    log("close", .{});
     if (this.listener == .none) return;
     const listener = this.listener;
 
@@ -442,8 +563,8 @@ fn doStop(this: *Listener, force_close: bool) void {
 
     if (this.handlers.active_connections == 0) {
         this.poll_ref.unref(this.handlers.vm);
-        this.strong_self.clearWithoutDeallocation();
-        this.strong_data.clearWithoutDeallocation();
+        this.clearStrongSelf();
+        this.strong_data.clear();
     } else if (force_close) {
         this.group.closeAll();
     }
@@ -464,6 +585,10 @@ pub fn finalize(this: *Listener) callconv(.c) void {
     this.deinit();
 }
 
+pub fn destroy(this: *Listener) void {
+    this.finalize();
+}
+
 /// Match Node.js/libuv: unlink the unix socket file before closing the listening fd.
 /// Unlinking after close would race with another process creating a socket at the same path.
 fn unlinkUnixSocketPath(this: *const Listener) void {
@@ -478,7 +603,7 @@ fn unlinkUnixSocketPath(this: *const Listener) void {
 
 pub fn deinit(this: *Listener) void {
     log("deinit", .{});
-    this.strong_self.deinit();
+    this.clearStrongSelf();
     this.strong_data.deinit();
     const vm = this.handlers.vm;
     this.poll_ref.unref(vm);
@@ -503,61 +628,67 @@ pub fn deinit(this: *Listener) void {
     vm.allocator.destroy(this);
 }
 
-pub fn getUnix(this: *Listener, globalObject: *jsc.JSGlobalObject) JSValue {
+pub fn getUnix(this: *Listener) bun.OOM!?bindgen.DOMString {
     if (this.connection != .unix) {
-        return .js_undefined;
+        return null;
     }
 
-    return ZigString.init(this.connection.unix).withEncoding().toJS(globalObject);
+    return try bindgen.DOMString.fromUTF8(this.connection.unix);
 }
 
-pub fn getHostname(this: *Listener, globalObject: *jsc.JSGlobalObject) JSValue {
+pub fn getHostname(this: *Listener) bun.OOM!?bindgen.DOMString {
     if (this.connection != .host) {
-        return .js_undefined;
+        return null;
     }
-    return ZigString.init(this.connection.host.host).withEncoding().toJS(globalObject);
+    return try bindgen.DOMString.fromUTF8(this.connection.host.host);
 }
 
-pub fn getPort(this: *Listener, _: *jsc.JSGlobalObject) JSValue {
+pub fn getPort(this: *Listener) ?u16 {
     if (this.connection != .host) {
-        return .js_undefined;
+        return null;
     }
-    return JSValue.jsNumber(this.connection.host.port);
+    return this.connection.host.port;
 }
 
-pub fn getFD(this: *Listener, _: *jsc.JSGlobalObject) JSValue {
+pub fn getFD(this: *Listener) i64 {
     switch (this.listener) {
         .uws => |uws_listener| {
-            return uws_listener.socket(false).fd().toJSWithoutMakingLibUVOwned();
+            return uws_listener.socket(false).fd().number();
         },
-        else => return JSValue.jsNumber(-1),
+        else => return -1,
     }
 }
 
-pub fn ref(this: *Listener, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-    const this_value = callframe.this();
-    if (this.listener == .none) return .js_undefined;
-    this.poll_ref.ref(globalObject.bunVM());
-    this.strong_self.set(globalObject, this_value);
-    return .js_undefined;
+pub fn clearStrongSelf(this: *Listener) void {
+    if (this.strong_self) |*reference| reference.deinit();
+    this.strong_self = null;
 }
 
-pub fn unref(this: *Listener, globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {
-    this.poll_ref.unref(globalObject.bunVM());
+pub fn strongRef(this: *const Listener) ?Ref {
+    const reference = if (this.strong_self) |*value| value else return null;
+    return reference.toOwned();
+}
+
+pub fn doRef(this: *Listener, this_value: bindgen.ClassRefView(ListenerClassSchema)) bun.JSError!void {
+    if (this.listener == .none) return;
+    if (this.strong_self == null) this.strong_self = try StrongSelf.initView(this_value);
+    this.poll_ref.ref(this.handlers.vm);
+}
+
+pub fn doUnref(this: *Listener) void {
+    this.poll_ref.unref(this.handlers.vm);
     if (this.handlers.active_connections == 0) {
-        this.strong_self.clearWithoutDeallocation();
+        this.clearStrongSelf();
     }
-    return .js_undefined;
 }
 
-pub fn connect(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSValue {
-    return connectInner(globalObject, null, null, opts);
-}
-
-pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSocket, prev_maybe_tls: ?*TLSSocket, opts: JSValue) bun.JSError!JSValue {
-    if (opts.isEmptyOrUndefinedOrNull() or opts.isBoolean() or !opts.isObject()) {
-        return globalObject.throwInvalidArguments("Expected options object", .{});
-    }
+pub fn connectFromBinding(
+    context: anytype,
+    prev_maybe_tcp: ?*TCPSocket,
+    prev_maybe_tls: ?*TLSSocket,
+    generated: anytype,
+) bun.bindgen.CallError(@TypeOf(context))!void {
+    const globalObject = context.viewToken().globalObject();
     const vm = globalObject.bunVM();
 
     // is_server=false: this is the client connect path. Handlers.mode must be
@@ -565,29 +696,28 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
     // .server branch does @fieldParentPtr("handlers", this) to reach a
     // Listener, but here handlers live in a standalone allocator.create()
     // block (see below), so that would read past the allocation.
-    var socket_config = try SocketConfig.fromJS(vm, opts, globalObject, false);
+    var socket_config = try SocketConfig.fromGenerated(globalObject, context, generated, false);
     defer socket_config.deinitExcludingHandlers();
 
     const handlers = &socket_config.handlers;
     // Only deinit handlers if there's an error; otherwise we put them in a `TCPSocket` or
     // `TLSSocket` and need them to stay alive.
     errdefer handlers.deinit();
+    try handlers.prepareConnectCompletion();
 
     const hostname_or_unix = &socket_config.hostname_or_unix;
     const port = socket_config.port;
     const ssl = if (socket_config.ssl) |*ssl| ssl else null;
     const ssl_enabled = ssl != null;
-    const default_data = socket_config.default_data;
+    const default_data = &socket_config.default_data;
+
+    var server_name = if (ssl) |s| s.takeServerName() else null;
+    defer if (server_name) |value| bun.default_allocator.free(value);
 
     vm.eventLoop().ensureWaker();
 
     var connection: Listener.UnixOrHost = blk: {
-        if (try opts.getOptional(globalObject, "fd", JSValue)) |fd_| {
-            if (fd_.isNumber()) {
-                const fd = fd_.asFileDescriptor();
-                break :blk .{ .fd = fd };
-            }
-        }
+        if (socket_config.fd) |fd| break :blk .{ .fd = fd };
         const host = bun.handleOom(hostname_or_unix.intoOwnedSlice(bun.default_allocator));
         break :blk if (port) |port_| .{
             .host = .{
@@ -598,29 +728,13 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
     };
     errdefer connection.deinit();
 
-    // Resolve the prebuilt SSL_CTX before the platform branches so the Windows
-    // named-pipe path can adopt it. node:tls passes the native SecureContext as
-    // `tls.secureContext` so we share its already-built SSL_CTX (CA bundle,
-    // cert chain, ciphers) instead of rebuilding ~50 KB of BoringSSL state per
-    // connect. SSL_new() up_ref()s again per socket, so the SecureContext can
-    // be GC'd while the connection is alive.
-    //
-    // Hoisted from below `isNamedPipe`: on this branch `[buntls]` no longer
-    // spreads `{ca,cert,key}` into the `tls` object, so the `SSLConfig` parsed
-    // from it is empty and the named-pipe SSLWrapper would build a fresh CTX
-    // with no trust store → DEPTH_ZERO_SELF_SIGNED_CERT. The SSLConfig fallback
-    // (defaultClientSslCtx / createSSLContext) stays after the named-pipe
-    // early-return — that path uses uSockets and threads the CTX through
-    // `socket.owned_ssl_ctx`, which has nothing to share with named-pipe.
+    // A borrowed SecureContext preserves its CA bundle and certificate state
+    // across both the named-pipe and uSockets branches.
     var owned_ssl_ctx: ?*BoringSSL.SSL_CTX = null;
     if (ssl_enabled) {
-        const native_sc: ?*SecureContext = blk: {
-            const tls_js = (try opts.getOptional(globalObject, "tls", JSValue)) orelse break :blk null;
-            if (!tls_js.isObject()) break :blk null;
-            const sc_js = (try tls_js.getOptional(globalObject, "secureContext", JSValue)) orelse break :blk null;
-            break :blk SecureContext.fromJS(sc_js);
-        };
-        if (native_sc) |sc| owned_ssl_ctx = sc.borrow();
+        if (generated.secure_context) |*secure_context| {
+            owned_ssl_ctx = secure_context.get(SecureContext).borrow();
+        }
     }
     errdefer if (owned_ssl_ctx) |c| BoringSSL.SSL_CTX_free(c);
 
@@ -654,15 +768,9 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
             else => false,
         };
         if (isNamedPipe) {
-            default_data.ensureStillAlive();
-
-            const handlers_ptr = bun.handleOom(handlers.vm.allocator.create(Handlers));
-            handlers_ptr.* = handlers.*;
+            const handlers_ptr = try handlers.vm.allocator.create(Handlers);
+            handlers_ptr.* = handlers.take();
             handlers_ptr.mode = .client;
-
-            var promise = jsc.JSPromise.create(globalObject);
-            const promise_value = promise.toJS();
-            handlers_ptr.promise.set(globalObject, promise_value);
 
             if (ssl_enabled) {
                 var tls = if (prev_maybe_tls) |prev| blk: {
@@ -670,16 +778,16 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                         prev_handlers.deinit();
                         handlers.vm.allocator.destroy(prev_handlers);
                     }
-                    bun.assert(prev.this_value.isNotEmpty());
+                    bun.assert(prev.wrapper != null);
                     prev.handlers = handlers_ptr;
-                    bun.assert(prev.socket.socket == .detached);
+                    bun.assert(prev.core.socket.socket == .detached);
                     // Free old resources before reassignment to prevent memory leaks
                     // when sockets are reused for reconnection (common with MongoDB driver)
                     if (prev.connection) |old_connection| {
                         old_connection.deinit();
                     }
                     prev.connection = connection;
-                    if (prev.flags.owned_protos) {
+                    if (prev.owned_protos) {
                         if (prev.protos) |old_protos| {
                             bun.default_allocator.free(old_protos);
                         }
@@ -688,20 +796,23 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                     if (prev.server_name) |old_server_name| {
                         bun.default_allocator.free(old_server_name);
                     }
-                    prev.server_name = if (ssl) |s| s.takeServerName() else null;
+                    prev.server_name = bun.take(&server_name);
                     break :blk prev;
                 } else TLSSocket.new(.{
                     .ref_count = .init(),
                     .handlers = handlers_ptr,
-                    .socket = TLSSocket.Socket.detached,
+                    .core = .{ .socket = TLSSocket.Socket.detached, .allocator = bun.default_allocator },
                     .connection = connection,
                     .protos = if (ssl) |s| s.takeProtos() else null,
-                    .server_name = if (ssl) |s| s.takeServerName() else null,
+                    .server_name = bun.take(&server_name),
                 });
 
-                TLSSocket.js.dataSetCached(tls.getThisValue(globalObject), globalObject, default_data);
+                var reference = try tls.getThisRef(globalObject);
+                defer reference.deinit();
+                TLSSocket.DataSlot.setRootOnOwned(&reference, default_data);
                 tls.poll_ref.ref(handlers.vm);
                 tls.ref();
+                handlers_ptr.attachConnectCompletion(context, TLSSocket.ClassSchema, &reference);
 
                 // Transfer the borrowed CTX into the pipe's SSLWrapper. From
                 // here it owns the ref on every path (initWithCTX adopts on
@@ -716,26 +827,26 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                         if (ssl) |s| s.* else null,
                         ctx_for_pipe,
                         .{ .tls = tls },
-                    ) catch return promise_value,
+                    ) catch return,
                     .fd => |fd| WindowsNamedPipeContext.open(
                         globalObject,
                         fd,
                         if (ssl) |s| s.* else null,
                         ctx_for_pipe,
                         .{ .tls = tls },
-                    ) catch return promise_value,
+                    ) catch return,
                     else => unreachable,
                 };
-                tls.socket = TLSSocket.Socket.fromNamedPipe(named_pipe);
+                tls.core.socket = TLSSocket.Socket.fromNamedPipe(named_pipe);
             } else {
                 var tcp = if (prev_maybe_tcp) |prev| blk: {
-                    bun.assert(prev.this_value.isNotEmpty());
+                    bun.assert(prev.wrapper != null);
                     if (prev.handlers) |prev_handlers| {
                         prev_handlers.deinit();
                         handlers.vm.allocator.destroy(prev_handlers);
                     }
                     prev.handlers = handlers_ptr;
-                    bun.assert(prev.socket.socket == .detached);
+                    bun.assert(prev.core.socket.socket == .detached);
                     // Adopt `connection` (heap-owned for .unix) so the socket's
                     // deinit frees it; matches the TLS arm above and the
                     // non-pipe arm below. Previously `.connection = null`
@@ -750,14 +861,17 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                 } else TCPSocket.new(.{
                     .ref_count = .init(),
                     .handlers = handlers_ptr,
-                    .socket = TCPSocket.Socket.detached,
+                    .core = .{ .socket = TCPSocket.Socket.detached, .allocator = bun.default_allocator },
                     .connection = connection,
                     .protos = null,
                     .server_name = null,
                 });
                 tcp.ref();
-                TCPSocket.js.dataSetCached(tcp.getThisValue(globalObject), globalObject, default_data);
+                var reference = try tcp.getThisRef(globalObject);
+                defer reference.deinit();
+                TCPSocket.DataSlot.setRootOnOwned(&reference, default_data);
                 tcp.poll_ref.ref(handlers.vm);
+                handlers_ptr.attachConnectCompletion(context, TCPSocket.ClassSchema, &reference);
 
                 const named_pipe = switch (connection) {
                     .unix => WindowsNamedPipeContext.connect(
@@ -766,19 +880,19 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                         null,
                         null,
                         .{ .tcp = tcp },
-                    ) catch return promise_value,
+                    ) catch return,
                     .fd => |fd| WindowsNamedPipeContext.open(
                         globalObject,
                         fd,
                         null,
                         null,
                         .{ .tcp = tcp },
-                    ) catch return promise_value,
+                    ) catch return,
                     else => unreachable,
                 };
-                tcp.socket = TCPSocket.Socket.fromNamedPipe(named_pipe);
+                tcp.core.socket = TCPSocket.Socket.fromNamedPipe(named_pipe);
             }
-            return promise_value;
+            return;
         }
     }
 
@@ -787,30 +901,21 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
     // `socket.owned_ssl_ctx` to the per-VM connect group.
     if (ssl_enabled and owned_ssl_ctx == null) {
         if (ssl) |ssl_cfg| {
-            // Per-VM weak `SSLContextCache`: identical configs (including the
-            // common `tls:true` / `{servername}`-only / `{ALPNProtocols}`-only
-            // cases — those fields aren't in the digest because they're
-            // applied per-SSL, not per-CTX) share one `SSL_CTX*`. The
-            // `requires_custom_request_ctx` gate is gone; the cache makes the
-            // default-vs-custom distinction by content.
-            var create_err: uws.create_bun_socket_error_t = .none;
-            owned_ssl_ctx = vm.rareData().sslCtxCache().getOrCreate(ssl_cfg, &create_err) orelse {
-                return globalObject.throwValue(create_err.toJS(globalObject));
+            // Per-connection server names and ALPN values do not affect the
+            // cached context's certificate and trust configuration.
+            var create_err: uws.TLSContextFailure = .{};
+            const rare_data = try vm.tryRareData();
+            owned_ssl_ctx = rare_data.sslCtxCache().getOrCreate(ssl_cfg, &create_err) orelse {
+                return TLSFailure.fromContextCreation(context, create_err);
             };
         }
     }
     // (errdefer for owned_ssl_ctx already armed at the earlier lookup site;
     // duplicating it here would double-free on error.)
 
-    default_data.ensureStillAlive();
-
-    const handlers_ptr = bun.handleOom(handlers.vm.allocator.create(Handlers));
-    handlers_ptr.* = handlers.*;
+    const handlers_ptr = try handlers.vm.allocator.create(Handlers);
+    handlers_ptr.* = handlers.take();
     handlers_ptr.mode = .client;
-
-    var promise = jsc.JSPromise.create(globalObject);
-    const promise_value = promise.toJS();
-    handlers_ptr.promise.set(globalObject, promise_value);
 
     switch (ssl_enabled) {
         inline else => |is_ssl_enabled| {
@@ -821,20 +926,20 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                 prev_maybe_tcp;
 
             const socket = if (maybe_previous) |prev| blk: {
-                bun.assert(prev.this_value.isNotEmpty());
+                bun.assert(prev.wrapper != null);
                 if (prev.handlers) |prev_handlers| {
                     prev_handlers.deinit();
                     handlers.vm.allocator.destroy(prev_handlers);
                 }
                 prev.handlers = handlers_ptr;
-                bun.assert(prev.socket.socket == .detached);
+                bun.assert(prev.core.socket.socket == .detached);
                 // Free old resources before reassignment to prevent memory leaks
                 // when sockets are reused for reconnection (common with MongoDB driver)
                 if (prev.connection) |old_connection| {
                     old_connection.deinit();
                 }
                 prev.connection = connection;
-                if (prev.flags.owned_protos) {
+                if (prev.owned_protos) {
                     if (prev.protos) |old_protos| {
                         bun.default_allocator.free(old_protos);
                     }
@@ -843,89 +948,85 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
                 if (prev.server_name) |old_server_name| {
                     bun.default_allocator.free(old_server_name);
                 }
-                prev.server_name = if (ssl) |s| s.takeServerName() else null;
+                prev.server_name = bun.take(&server_name);
                 if (prev.owned_ssl_ctx) |old| BoringSSL.SSL_CTX_free(old);
                 prev.owned_ssl_ctx = owned_ssl_ctx;
                 break :blk prev;
             } else bun.new(SocketType, .{
                 .ref_count = .init(),
                 .handlers = handlers_ptr,
-                .socket = SocketType.Socket.detached,
+                .core = .{ .socket = SocketType.Socket.detached, .allocator = bun.default_allocator },
                 .connection = connection,
                 .protos = if (ssl) |s| s.takeProtos() else null,
-                .server_name = if (ssl) |s| s.takeServerName() else null,
+                .server_name = bun.take(&server_name),
                 .owned_ssl_ctx = owned_ssl_ctx,
             });
             // Ownership moved into `socket`; disarm the errdefer.
             owned_ssl_ctx = null;
             socket.ref();
-            SocketType.js.dataSetCached(socket.getThisValue(globalObject), globalObject, default_data);
-            socket.flags.allow_half_open = socket_config.allowHalfOpen;
-            socket.doConnect(connection) catch {
-                socket.handleConnectError(@backingInt(if (port == null) bun.sys.SystemErrno.ENOENT else bun.sys.SystemErrno.ECONNREFUSED)) catch {};
-                // Balance the unconditional `socket.ref()` above. `handleConnectError`
-                // only derefs when the socket was attached (`needs_deref`), which is
-                // never true on this synchronous-failure path — the socket is still
-                // `.detached`. This applies to reused (`prev`) sockets as well; the
-                // guard that skipped them leaked one ref per failed reconnect.
-                socket.deref();
-                return promise_value;
+            var reference = try socket.getThisRef(globalObject);
+            defer reference.deinit();
+            SocketType.DataSlot.setRootOnOwned(&reference, default_data);
+            socket.core.flags.allow_half_open = socket_config.flags.allow_half_open;
+            handlers_ptr.attachConnectCompletion(context, SocketType.ClassSchema, &reference);
+            const connect_failure: ?SocketType.ConnectFailure = failure: {
+                const native_failure = socket.doConnect(connection) catch break :failure .out_of_memory;
+                break :failure if (native_failure) |value| .{ .native = value } else null;
             };
+            if (connect_failure) |failure| {
+                socket.handleConnectFailure(failure) catch |err| globalObject.reportActiveExceptionAsUnhandled(err);
+                // No native socket owns the reference acquired before doConnect.
+                socket.deref();
+                return;
+            }
 
             // if this is from node:net there's surface where the user can .ref() and .deref()
             // before the connection starts. make sure we honor that here.
             // in the Bun.connect path, this will always be true at this point in time.
             if (socket.ref_pollref_on_connect) socket.poll_ref.ref(handlers.vm);
 
-            return promise_value;
+            return;
         },
     }
 }
 
-pub fn getsockname(this: *Listener, globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!JSValue {
+pub fn getSockName(this: *Listener) bun.OOM!bindgen.Return(ListenerGetSockNameNativeSchema) {
     if (this.listener != .uws) {
-        return .js_undefined;
+        return null;
     }
 
-    const out_value = callFrame.argumentsAsArray(1)[0];
-    const out = out_value.getObject() orelse
-        return globalThis.throwInvalidArguments("Expected object", .{});
     const socket = this.listener.uws;
 
     var buf: [64]u8 = @splat(0);
     var text_buf: [512]u8 = undefined;
-    const address_bytes: []const u8 = socket.getLocalAddress(&buf) catch return .js_undefined;
+    const address_bytes: []const u8 = socket.getLocalAddress(&buf) catch return null;
     const address_zig: SocketAddress = switch (address_bytes.len) {
         4 => .initIp4(address_bytes[0..4].*, 0),
         16 => .initIp6(address_bytes[0..16].*, 0, 0, 0),
-        else => return .js_undefined,
+        else => return null,
     };
-    const family_js = switch (address_bytes.len) {
-        4 => globalThis.commonStrings().IPv4(),
-        16 => globalThis.commonStrings().IPv6(),
-        else => return .js_undefined,
+    const family = switch (address_bytes.len) {
+        4 => "IPv4",
+        16 => "IPv6",
+        else => return null,
     };
-    const address_js = ZigString.init(bun.fmt.formatIp(address_zig, &text_buf) catch unreachable).toJS(globalThis);
-    const port_js: JSValue = .jsNumber(socket.getLocalPort());
-
-    out.putDirect(globalThis, bun.String.static("family"), family_js);
-    out.putDirect(globalThis, bun.String.static("address"), address_js);
-    out.putDirect(globalThis, bun.String.static("port"), port_js);
-    return .js_undefined;
+    return .{
+        .family = try bindgen.DOMString.fromUTF8(family),
+        .address = try bindgen.DOMString.fromUTF8(address_zig.formatIp(&text_buf)),
+        .port = std.math.cast(u16, socket.getLocalPort()) orelse return null,
+    };
 }
 
-pub fn jsAddServerName(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-    jsc.markBinding(@src());
-
-    const arguments = callframe.arguments_old(3);
-    if (arguments.len < 3) {
-        return global.throwNotEnoughArguments("addServerName", 3, arguments.len);
-    }
-    const listener = arguments.ptr[0];
-    if (listener.as(Listener)) |this| {
-        return this.addServerName(global, arguments.ptr[1], arguments.ptr[2]);
-    }
-    return global.throw("Expected a Listener instance", .{});
+pub fn jsAddServerName(
+    context: bun.bindgen.CallContext(AddServerNameSchema),
+    args: bun.bindgen.Args(AddServerNameSchema),
+) bun.bindgen.CallError(AddServerNameSchema)!void {
+    const listener = args.listener.get(JSBinding).listener.get();
+    return listener.addServerNameFromBinding(
+        context,
+        args.hostname,
+        args.tls,
+    );
 }
 pub const log = Output.scoped(.Listener, .visible);
 
@@ -1029,9 +1130,12 @@ pub const WindowsNamedPipeListeningContext = if (Environment.isWindows) struct {
             bun.BoringSSL.load();
 
             const ctx_opts: uws.SocketContext.BunSocketContextOptions = ssl_options.asUSockets();
-            var err: uws.create_bun_socket_error_t = .none;
+            var err: uws.TLSContextFailure = .{};
             // Create SSL context using uSockets to match behavior of node.js
-            this.ctx = ctx_opts.createSSLContext(&err) orelse return error.InvalidOptions;
+            this.ctx = ctx_opts.createSSLContext(&err) orelse return switch (err.kind) {
+                .out_of_memory => error.OutOfMemory,
+                else => error.InvalidOptions,
+            };
         }
 
         const initResult = this.uvPipe.init(this.vm.uvLoop(), false);
@@ -1092,12 +1196,14 @@ const string = []const u8;
 const std = @import("std");
 
 const bun = @import("bun");
+const bindgen = bun.bindgen;
 const Async = bun.Async;
 const Environment = bun.Environment;
 const Output = bun.Output;
 const default_allocator = bun.default_allocator;
 const strings = bun.strings;
 const uws = bun.uws;
+const TLSFailure = @import("./TLSFailure.zig");
 const BoringSSL = bun.BoringSSL.c;
 const uv = bun.windows.libuv;
 
@@ -1107,6 +1213,7 @@ const SecureContext = bun.api.SecureContext;
 const TCPSocket = bun.api.TCPSocket;
 const TLSSocket = bun.api.TLSSocket;
 const SSLConfig = bun.api.ServerConfig.SSLConfig;
+const SSLConfigEngine = bun.api.ServerConfig.SSLConfigEngine;
 
 const NewSocket = api.socket.NewSocket;
 const SocketConfig = api.socket.SocketConfig;
@@ -1115,5 +1222,27 @@ const WindowsNamedPipeContext = api.socket.WindowsNamedPipeContext;
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
+
+const NodeSocketBindings = bun.bindgen.Module("NodeSocket");
+const AddServerNameSchema = NodeSocketBindings.function("addServerName");
+const AddServerNameBinding = bun.bindgen.Fn(AddServerNameSchema, jsAddServerName);
+const ListenerBindingModule = bindgen.Module("Listener");
+pub const ListenerClassSchema = ListenerBindingModule.class("Listener");
+pub const ListenerClass = bindgen.Class(ListenerClassSchema, JSBinding);
+const ListenerDisposeSchema = ListenerClassSchema.member("dispose");
+const ListenerDataGetterSchema = ListenerClassSchema.memberKind("data", .getter);
+const ListenerDataSetterSchema = ListenerClassSchema.memberKind("data", .setter);
+const ListenerFDGetterSchema = ListenerClassSchema.memberKind("fd", .getter);
+const ListenerGetSockNameNativeSchema = ListenerClassSchema.member("getSockNameNative");
+const ListenerHostnameGetterSchema = ListenerClassSchema.memberKind("hostname", .getter);
+const ListenerPortGetterSchema = ListenerClassSchema.memberKind("port", .getter);
+const ListenerRefSchema = ListenerClassSchema.member("ref");
+const ListenerReloadSchema = ListenerClassSchema.member("reload");
+const ListenerStopSchema = ListenerClassSchema.member("stop");
+const ListenerUnixGetterSchema = ListenerClassSchema.memberKind("unix", .getter);
+const ListenerUnrefSchema = ListenerClassSchema.member("unref");
+
+comptime {
+    _ = AddServerNameBinding;
+    _ = ListenerClass;
+}

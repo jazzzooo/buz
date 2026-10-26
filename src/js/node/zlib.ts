@@ -2,10 +2,12 @@
 
 const BufferModule = require("node:buffer");
 
-const crc32 = $newZigFunction("node_zlib_binding.zig", "crc32", 1);
-const NativeZlib = $zig("node_zlib_binding.zig", "NativeZlib");
-const NativeBrotli = $zig("node_zlib_binding.zig", "NativeBrotli");
-const NativeZstd = $zig("node_zlib_binding.zig", "NativeZstd");
+const createError = $bindgenFn("ErrorCode.schema.zig", "createFromMessage");
+
+const crc32 = $bindgenFn("NodeZlib.schema.zig", "crc32");
+const NativeZlib = $bindgenClass("NativeCompression.schema.zig", "NativeZlib");
+const NativeBrotli = $bindgenClass("NativeCompression.schema.zig", "NativeBrotli");
+const NativeZstd = $bindgenClass("NativeCompression.schema.zig", "NativeZstd");
 
 const ObjectKeys = Object.keys;
 const ArrayPrototypePush = Array.prototype.push;
@@ -14,6 +16,7 @@ const ObjectDefineProperties = Object.defineProperties;
 const ObjectFreeze = Object.freeze;
 const TypedArrayPrototypeFill = Uint8Array.prototype.fill;
 const ArrayPrototypeForEach = Array.prototype.forEach;
+const PromisePrototypeThen = $Promise.prototype.$then;
 const NumberIsNaN = Number.isNaN;
 const MathMax = Math.max;
 
@@ -60,6 +63,147 @@ const codes = {
 for (const ckey of ObjectKeys(codes)) {
   codes[codes[ckey]] = ckey;
 }
+
+function createHandleClass(Native, initArgumentCount) {
+  const Handle = class {
+    #native;
+    #initialized = false;
+    #closed = false;
+    #writing = false;
+    #closeRequested = false;
+    #writeState;
+    #callback;
+
+    constructor(mode) {
+      this.#native = new Native(mode);
+    }
+
+    #checkState() {
+      if (this.#closed) throw createError("ERR_INVALID_STATE", "zlib binding closed");
+      if (this.#writing) throw createError("ERR_INVALID_STATE", "Write already in progress");
+      if (this.#closeRequested) throw createError("ERR_INVALID_STATE", "Pending close");
+    }
+
+    #emitError(error) {
+      const callback = this.onerror;
+      if (typeof callback === "function") {
+        callback.$call(this, error.message, error.errorNumber ?? error.errno ?? -1, error.code);
+      }
+    }
+
+    init(...args) {
+      this.#checkState();
+      const nativeArgs = args.slice(0, initArgumentCount);
+      if (Native === NativeZlib) nativeArgs.push(args[6]);
+      let error;
+      try {
+        error = this.#native.init(...nativeArgs);
+      } catch (error) {
+        this.close();
+        throw error;
+      }
+      if (error) {
+        this.close();
+        if (Native === NativeZstd) {
+          throw createError("ERR_ZLIB_INITIALIZATION_FAILED", error.message);
+        }
+        this.#emitError(error);
+        return false;
+      }
+      this.#writeState = args[initArgumentCount];
+      this.#callback = args[initArgumentCount + 1];
+      this.#initialized = true;
+      return Native === NativeBrotli ? true : undefined;
+    }
+
+    close() {
+      if (this.#closed) return;
+      if (this.#writing) {
+        this.#closeRequested = true;
+        return;
+      }
+      this.#native.close();
+      this.#closed = true;
+      this.#initialized = false;
+    }
+
+    reset() {
+      if (this.#writing)
+        throw createError("ERR_INVALID_STATE", "Cannot reset zlib stream while a write is in progress");
+      if (!this.#initialized || this.#closed) return;
+      const error = this.#native.reset();
+      if (error) this.#emitError(error);
+    }
+
+    params(...args) {
+      this.#checkState();
+      const error = this.#native.params(...args);
+      if (error) this.#emitError(error);
+    }
+
+    #publish(result, output) {
+      this.output = output;
+      this.outputOffset = result.outputOffset;
+      const state = this.#writeState;
+      if (state?.length >= 2) {
+        state[0] = result.availOut;
+        state[1] = result.availIn;
+      }
+    }
+
+    writeSync(flush, input, inputOffset, inputLength, output, outputOffset, outputLength) {
+      this.#checkState();
+      if (!this.#initialized) return;
+      const result = this.#native.writeSync(flush, input, inputOffset, inputLength, output, outputOffset, outputLength);
+      this.#publish(result, output);
+      if (result.failure) this.#emitError(result.failure);
+    }
+
+    write(flush, input, inputOffset, inputLength, output, outputOffset, outputLength) {
+      this.#checkState();
+      if (!this.#initialized) return;
+      this.#writing = true;
+      let promise;
+      try {
+        promise = this.#native.write(flush, input, inputOffset, inputLength, output, outputOffset, outputLength);
+      } catch (error) {
+        this.#writing = false;
+        throw error;
+      }
+      PromisePrototypeThen.$call(
+        promise,
+        result => {
+          // Completion has released the leases; callbacks may start another write.
+          this.#writing = false;
+          try {
+            this.#publish(result, output);
+            if (result.failure) this.#emitError(result.failure);
+            else if (typeof this.#callback === "function") this.#callback.$call(this);
+          } finally {
+            if (this.#closeRequested && !this.#writing) this.close();
+          }
+        },
+        error => {
+          this.#writing = false;
+          try {
+            this.#emitError(error);
+          } finally {
+            if (this.#closeRequested && !this.#writing) this.close();
+          }
+        },
+      );
+    }
+  };
+  ObjectDefineProperty(Handle, "name", { value: Native.name });
+  ObjectDefineProperty(Handle, "length", { value: 0 });
+  ObjectDefineProperty(Handle.prototype.write, "length", { value: 0 });
+  ObjectDefineProperty(Handle.prototype.writeSync, "length", { value: 0 });
+  return Handle;
+}
+
+const ZlibHandle = createHandleClass(NativeZlib, 4);
+const BrotliHandle = createHandleClass(NativeBrotli, 1);
+const ZstdHandle = createHandleClass(NativeZstd, 2);
 
 function zlibBuffer(engine, buffer, callback) {
   validateFunction(callback, "callback");
@@ -142,7 +286,7 @@ const FLUSH_BOUND_IDX_BROTLI = 1;
 const FLUSH_BOUND_IDX_ZSTD = 2;
 
 // The base class for all Zlib-style streams.
-function ZlibBase(opts, mode, handle, { flush, finishFlush, fullFlush }) {
+function ZlibBase(opts, mode, handle, { flush, finishFlush, fullFlush }, writeState) {
   let chunkSize = Z_DEFAULT_CHUNK;
   let maxOutputLength = kMaxLength;
   // The ZlibBase class is not exported to user land, the mode should only be passed in by us.
@@ -164,6 +308,8 @@ function ZlibBase(opts, mode, handle, { flush, finishFlush, fullFlush }) {
       chunkSize = Z_DEFAULT_CHUNK;
     } else if (chunkSize < Z_MIN_CHUNK) {
       throw $ERR_OUT_OF_RANGE("options.chunkSize", `>= ${Z_MIN_CHUNK}`, chunkSize);
+    } else if (chunkSize > 0xffff_ffff) {
+      throw $ERR_OUT_OF_RANGE("options.chunkSize", `>= ${Z_MIN_CHUNK} and <= 4294967295`, chunkSize);
     }
 
     // prettier-ignore
@@ -185,13 +331,13 @@ function ZlibBase(opts, mode, handle, { flush, finishFlush, fullFlush }) {
   this[kError] = null;
   this.bytesWritten = 0;
   this._handle = handle;
+  this._writeState = writeState;
   handle[owner_symbol] = this;
-  // Used by processCallback() and zlibOnError()
   handle.onerror = zlibOnError;
-  this._outBuffer = Buffer.allocUnsafe(chunkSize);
-  this._outOffset = 0;
 
   this._chunkSize = chunkSize;
+  this._outBuffer = Buffer.allocUnsafe(chunkSize);
+  this._outOffset = 0;
   this._defaultFlushFlag = flush;
   this._finishFlushFlag = finishFlush;
   this._defaultFullFlushFlag = fullFlush;
@@ -224,7 +370,7 @@ ObjectDefineProperty(ZlibBase.prototype, "bytesRead", {
 
 ZlibBase.prototype.reset = function () {
   $assert(this._handle, "zlib binding closed");
-  return this._handle.reset();
+  this._handle.reset();
 };
 
 // This is the _flush function called by the transform class, internally, when the last chunk has been written.
@@ -254,7 +400,7 @@ function maxFlush(a, b) {
 // Set up a list of 'special' buffers that can be written using .write()
 // from the .flush() code as a way of introducing flushing operations into the
 // write sequence.
-const kFlushBuffers: (typeof Buffer)[] = [];
+const kFlushBuffers: (Buffer & { [kFlushFlag]?: number })[] = [];
 {
   const dummyArrayBuffer = new ArrayBuffer();
   for (const flushFlag of kFlushFlagList) {
@@ -307,9 +453,16 @@ ZlibBase.prototype._processChunk = function (chunk, flushFlag, cb) {
   else return processChunkSync(this, chunk, flushFlag);
 };
 
+function outputBuffer(self) {
+  if (self._outOffset >= self._outBuffer.byteLength) {
+    self._outBuffer = Buffer.allocUnsafe(self._chunkSize);
+    self._outOffset = 0;
+  }
+  return self._outBuffer;
+}
+
 function processChunkSync(self, chunk, flushFlag) {
   let availInBefore = chunk.byteLength;
-  let availOutBefore = self._chunkSize - self._outOffset;
   let inOff = 0;
   let availOutAfter;
   let availInAfter;
@@ -317,11 +470,7 @@ function processChunkSync(self, chunk, flushFlag) {
   const buffers = [];
   let nread = 0;
   let inputRead = 0;
-  const state = self._writeState;
   const handle = self._handle;
-  let buffer = self._outBuffer;
-  let offset = self._outOffset;
-  const chunkSize = self._chunkSize;
 
   let error: Error | undefined;
   self.on("error", function onError(er) {
@@ -329,13 +478,16 @@ function processChunkSync(self, chunk, flushFlag) {
   });
 
   while (true) {
+    const output = outputBuffer(self);
+    const outputOffset = self._outOffset;
+    const availOutBefore = output.byteLength - outputOffset;
     handle.writeSync(
       flushFlag,
       chunk, // in
       inOff, // in_off
       availInBefore, // in_len
-      buffer, // out
-      offset, // out_off
+      output, // out
+      outputOffset, // out_off
       availOutBefore, // out_len
     );
     if (error) {
@@ -347,16 +499,17 @@ function processChunkSync(self, chunk, flushFlag) {
       throw error;
     } else if (self[kError]) throw self[kError];
 
-    availOutAfter = state[0];
-    availInAfter = state[1];
+    availOutAfter = self._writeState[0];
+    availInAfter = self._writeState[1];
 
     const inDelta = availInBefore - availInAfter;
     inputRead += inDelta;
 
     const have = availOutBefore - availOutAfter;
+    self._outBuffer = output;
+    self._outOffset = outputOffset + have;
     if (have > 0) {
-      const out = buffer.slice(offset, offset + have);
-      offset += have;
+      const out = Buffer.from(output.buffer, output.byteOffset + outputOffset, have);
       ArrayPrototypePush.$call(buffers, out);
       nread += out.byteLength;
 
@@ -368,18 +521,7 @@ function processChunkSync(self, chunk, flushFlag) {
       $assert(have === 0, "have should not go down");
     }
 
-    // Exhausted the output buffer, or used all the input create a new one.
-    if (availOutAfter === 0 || offset >= chunkSize) {
-      availOutBefore = chunkSize;
-      offset = 0;
-      buffer = Buffer.allocUnsafe(chunkSize);
-    }
-
     if (availOutAfter === 0) {
-      // Not actually done. Need to reprocess.
-      // Also, update the availInBefore to the availInAfter value,
-      // so that if we have to hit it a third (fourth, etc.) time,
-      // it'll have the correct byte counts.
       inOff += inDelta;
       availInBefore = availInAfter;
     } else {
@@ -401,29 +543,24 @@ function processChunk(self, chunk, flushFlag, cb) {
 
   handle.buffer = chunk;
   handle.cb = cb;
-  handle.availOutBefore = self._chunkSize - self._outOffset;
   handle.availInBefore = chunk.byteLength;
   handle.inOff = 0;
   handle.flushFlag = flushFlag;
 
-  handle.write(
-    flushFlag, // flush
-    chunk, // in
-    0, // in_off
-    handle.availInBefore, // in_len
-    self._outBuffer, // out
-    self._outOffset, // out_off
-    handle.availOutBefore, // out_len
-  );
+  startWrite(handle);
+}
+
+function startWrite(handle) {
+  const self = handle[owner_symbol];
+  const output = outputBuffer(self);
+  const outputOffset = self._outOffset;
+  handle.availOutBefore = output.byteLength - outputOffset;
+  handle.write(handle.flushFlag, handle.buffer, handle.inOff, handle.availInBefore, output, outputOffset, handle.availOutBefore);
 }
 
 function processCallback() {
-  // This callback's context (`this`) is the `_handle` (ZCtx) object. It is
-  // important to null out the values once they are no longer needed since
-  // `_handle` can stay in memory long after the buffer is needed.
   const handle = this;
   const self = this[owner_symbol];
-  const state = self._writeState;
 
   if (self.destroyed) {
     this.buffer = null;
@@ -431,17 +568,18 @@ function processCallback() {
     return;
   }
 
-  const availOutAfter = state[0];
-  const availInAfter = state[1];
+  const availOutAfter = self._writeState[0];
+  const availInAfter = self._writeState[1];
 
   const inDelta = handle.availInBefore - availInAfter;
   self.bytesWritten += inDelta;
 
   const have = handle.availOutBefore - availOutAfter;
+  self._outBuffer = handle.output;
+  self._outOffset = handle.outputOffset + have;
   let streamBufferIsFull = false;
   if (have > 0) {
-    const out = self._outBuffer.slice(self._outOffset, self._outOffset + have);
-    self._outOffset += have;
+    const out = Buffer.from(handle.output.buffer, handle.output.byteOffset + handle.outputOffset, have);
     streamBufferIsFull = !self.push(out);
   } else {
     $assert(have === 0, "have should not go down");
@@ -452,44 +590,17 @@ function processCallback() {
     return;
   }
 
-  // Exhausted the output buffer, or used all the input create a new one.
-  if (availOutAfter === 0 || self._outOffset >= self._chunkSize) {
-    handle.availOutBefore = self._chunkSize;
-    self._outOffset = 0;
-    self._outBuffer = Buffer.allocUnsafe(self._chunkSize);
-  }
-
   if (availOutAfter === 0) {
-    // Not actually done. Need to reprocess.
-    // Also, update the availInBefore to the availInAfter value,
-    // so that if we have to hit it a third (fourth, etc.) time,
-    // it'll have the correct byte counts.
     handle.inOff += inDelta;
     handle.availInBefore = availInAfter;
 
     if (!streamBufferIsFull) {
-      this.write(
-        handle.flushFlag, // flush
-        this.buffer, // in
-        handle.inOff, // in_off
-        handle.availInBefore, // in_len
-        self._outBuffer, // out
-        self._outOffset, // out_off
-        self._chunkSize, // out_len
-      );
+      startWrite(this);
     } else {
       const oldRead = self._read;
       self._read = n => {
         self._read = oldRead;
-        this.write(
-          handle.flushFlag, // flush
-          this.buffer, // in
-          handle.inOff, // in_off
-          handle.availInBefore, // in_len
-          self._outBuffer, // out
-          self._outOffset, // out_off
-          self._chunkSize, // out_len
-        );
+        startWrite(this);
         self._read(n);
       };
     }
@@ -565,11 +676,13 @@ function Zlib(opts, mode) {
     }
   }
 
-  const handle = new NativeZlib(mode);
-  this._writeState = new Uint32Array(2);
-  handle.init(windowBits, level, memLevel, strategy, this._writeState, processCallback, dictionary);
+  const handle = new ZlibHandle(mode);
+  const writeState = new Uint32Array(2);
+  if (handle.init(windowBits, level, memLevel, strategy, writeState, processCallback, dictionary) === false) {
+    throw $ERR_ZLIB_INITIALIZATION_FAILED();
+  }
 
-  ZlibBase.$apply(this, [opts, mode, handle, zlibDefaultOpts]);
+  ZlibBase.$apply(this, [opts, mode, handle, zlibDefaultOpts, writeState]);
 
   this._level = level;
   this._strategy = strategy;
@@ -642,7 +755,7 @@ function Unzip(opts): void {
 }
 $toClass(Unzip, "Unzip", Zlib);
 
-function createConvenienceMethod(ctor, sync, methodName, isZstd) {
+function createConvenienceMethod(ctor, sync, methodName, isZstd?) {
   if (sync) {
     const fn = function (buffer, opts) {
       return zlibBufferSync(new ctor(opts), buffer);
@@ -705,18 +818,18 @@ function Brotli(opts, mode) {
       if (typeof value !== "number" && typeof value !== "boolean") {
         throw $ERR_INVALID_ARG_TYPE("options.params[key]", "number", opts.params[origKey]);
       }
-      brotliInitParamsArray[key] = value;
+      brotliInitParamsArray[key] = Number(value);
     });
   }
 
-  const handle = new NativeBrotli(mode);
+  const handle = new BrotliHandle(mode);
+  const writeState = new Uint32Array(2);
 
-  this._writeState = new Uint32Array(2);
-  if (!handle.init(brotliInitParamsArray, this._writeState, processCallback)) {
+  if (handle.init(brotliInitParamsArray, writeState, processCallback) === false) {
     throw $ERR_ZLIB_INITIALIZATION_FAILED();
   }
 
-  ZlibBase.$apply(this, [opts, mode, handle, brotliDefaultOpts]);
+  ZlibBase.$apply(this, [opts, mode, handle, brotliDefaultOpts, writeState]);
 }
 $toClass(Brotli, "Brotli", Zlib);
 
@@ -738,7 +851,7 @@ const zstdDefaultOpts = {
   fullFlush: ZSTD_e_flush,
 };
 
-class Zstd extends ZlibBase {
+class Zstd extends (ZlibBase as unknown as new (...args: any[]) => any) {
   constructor(opts, mode, initParamsArray, maxParam) {
     $assert(mode === ZSTD_COMPRESS || mode === ZSTD_DECOMPRESS);
 
@@ -758,14 +871,13 @@ class Zstd extends ZlibBase {
       });
     }
 
-    const handle = new NativeZstd(mode);
+    const handle = new ZstdHandle(mode);
+    const writeState = new Uint32Array(2);
 
     const pledgedSrcSize = opts?.pledgedSrcSize ?? undefined;
 
-    const writeState = new Uint32Array(2);
     handle.init(initParamsArray, pledgedSrcSize, writeState, processCallback);
-    super(opts, mode, handle, zstdDefaultOpts);
-    this._writeState = writeState;
+    super(opts, mode, handle, zstdDefaultOpts, writeState);
   }
 }
 
@@ -789,8 +901,7 @@ class ZstdDecompress extends Zstd {
   }
 }
 
-// Legacy alias on the C++ wrapper object.
-ObjectDefineProperty(NativeZlib.prototype, "jsref", {
+ObjectDefineProperty(ZlibHandle.prototype, "jsref", {
   __proto__: null,
   get() {
     return this[owner_symbol];

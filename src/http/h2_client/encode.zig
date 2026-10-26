@@ -6,15 +6,15 @@ pub fn writePreface(session: *ClientSession) void {
     session.queue(wire.client_preface);
 
     var settings: [3 * wire.SettingsPayloadUnit.byteSize]u8 = undefined;
-    wire.SettingsPayloadUnit.encode(settings[0..6], .SETTINGS_ENABLE_PUSH, 0);
-    wire.SettingsPayloadUnit.encode(settings[6..12], .SETTINGS_INITIAL_WINDOW_SIZE, local_initial_window_size);
-    wire.SettingsPayloadUnit.encode(settings[12..18], .SETTINGS_MAX_HEADER_LIST_SIZE, local_max_header_list_size);
+    (wire.SettingsPayloadUnit{ .type = @backingInt(wire.SettingsType.SETTINGS_ENABLE_PUSH), .value = 0 }).encode(settings[0..6]);
+    (wire.SettingsPayloadUnit{ .type = @backingInt(wire.SettingsType.SETTINGS_INITIAL_WINDOW_SIZE), .value = local_initial_window_size }).encode(settings[6..12]);
+    (wire.SettingsPayloadUnit{ .type = @backingInt(wire.SettingsType.SETTINGS_MAX_HEADER_LIST_SIZE), .value = local_max_header_list_size }).encode(settings[12..18]);
     session.writeFrame(.HTTP_FRAME_SETTINGS, 0, 0, &settings);
 
     // Connection-level window starts at 64 KiB regardless of SETTINGS;
     // open it to match the per-stream window so the first response isn't
     // throttled before our first WINDOW_UPDATE.
-    session.writeWindowUpdate(0, local_initial_window_size - wire.DEFAULT_WINDOW_SIZE);
+    session.writeWindowUpdate(0, local_initial_window_size - wire.default_window_size);
     session.preface_sent = true;
 }
 
@@ -54,26 +54,21 @@ const RequestHeader = enum {
 pub fn writeRequest(session: *ClientSession, client: *HTTPClient, stream: *Stream, request: picohttp.Request) !void {
     const encoded = &session.encode_scratch;
     encoded.clearRetainingCapacity();
-
-    if (session.pending_hpack_enc_capacity) |cap| {
-        session.pending_hpack_enc_capacity = null;
-        session.hpack.setEncoderMaxCapacity(cap);
-        try encoded.ensureUnusedCapacity(bun.default_allocator, 8);
-        encodeHpackTableSizeUpdate(encoded, cap);
-    }
+    var encoder_block = try session.hpack.beginEncoderBlock(encoded, bun.default_allocator);
+    defer encoder_block.deinit();
 
     var authority: []const u8 = client.url.host;
     var has_expect_continue = false;
-    for (request.headers) |h| switch (RequestHeader.map.getAnyCase(h.name) orelse continue) {
+    for (request.headers) |h| switch (RequestHeader.map.getCaseInsensitiveASCII(h.name) orelse continue) {
         .host => authority = h.value,
         .expect => has_expect_continue = strings.eqlCaseInsensitiveASCIIICheckLength(h.value, "100-continue"),
         else => {},
     };
 
-    try encodeHeader(session, encoded, ":method", request.method, false);
-    try encodeHeader(session, encoded, ":scheme", "https", false);
-    try encodeHeader(session, encoded, ":authority", authority, false);
-    try encodeHeader(session, encoded, ":path", if (request.path.len > 0) request.path else "/", false);
+    try encodeHeader(&encoder_block, encoded, ":method", request.method, false);
+    try encodeHeader(&encoder_block, encoded, ":scheme", "https", false);
+    try encodeHeader(&encoder_block, encoded, ":authority", authority, false);
+    try encodeHeader(&encoder_block, encoded, ":path", if (request.path.len > 0) request.path else "/", false);
 
     var lower_buf: [256]u8 = undefined;
     for (request.headers) |h| {
@@ -98,7 +93,7 @@ pub fn writeRequest(session: *ClientSession, client: *HTTPClient, stream: *Strea
             .sensitive => never_index = true,
             .expect => {},
         };
-        try encodeHeader(session, encoded, name, h.value, never_index);
+        try encodeHeader(&encoder_block, encoded, name, h.value, never_index);
     }
 
     const body = client.state.request_body;
@@ -107,6 +102,7 @@ pub fn writeRequest(session: *ClientSession, client: *HTTPClient, stream: *Strea
 
     if (has_expect_continue and (has_inline_body or is_streaming)) stream.awaiting_continue = true;
 
+    encoder_block.commit();
     writeHeaderBlock(session, stream.id, encoded.items, !has_inline_body and !is_streaming);
     if (encoded.capacity > 64 * 1024) encoded.clearAndFree(bun.default_allocator);
     if (has_inline_body) {
@@ -216,33 +212,15 @@ pub fn drainSendBodies(session: *ClientSession) void {
     }
 }
 
-pub fn encodeHeader(session: *ClientSession, encoded: *std.ArrayListUnmanaged(u8), name: []const u8, value: []const u8, never_index: bool) !void {
-    const required = encoded.items.len + name.len + value.len + 32;
-    try encoded.ensureTotalCapacity(bun.default_allocator, required);
-    const written = try session.hpack.encode(name, value, never_index, encoded.allocatedSlice(), encoded.items.len);
-    encoded.items.len += written;
-}
-
-/// RFC 7541 §6.3 Dynamic Table Size Update: `001` prefix, 5-bit-prefix
-/// integer. Must be the first opcode in a header block. Caller guarantees
-/// at least 6 bytes of capacity (max for a u32).
-pub fn encodeHpackTableSizeUpdate(encoded: *std.ArrayListUnmanaged(u8), value: u32) void {
-    if (value < 31) {
-        encoded.appendAssumeCapacity(0x20 | @as(u8, @intCast(value)));
-        return;
-    }
-    encoded.appendAssumeCapacity(0x20 | 31);
-    var rest = value - 31;
-    while (rest >= 128) : (rest >>= 7) {
-        encoded.appendAssumeCapacity(@as(u8, @truncate(rest)) | 0x80);
-    }
-    encoded.appendAssumeCapacity(@as(u8, @truncate(rest)));
+pub fn encodeHeader(encoder_block: *Hpack.EncoderBlock, encoded: *std.ArrayListUnmanaged(u8), name: []const u8, value: []const u8, never_index: bool) !void {
+    _ = try encoder_block.encodeIntoList(encoded, bun.default_allocator, name, value, never_index);
 }
 
 const ClientSession = @import("./ClientSession.zig");
 const Stream = @import("./Stream.zig");
 const std = @import("std");
-const wire = @import("../H2FrameParser.zig");
+const wire = @import("../H2Frame.zig");
+const Hpack = @import("../Hpack.zig");
 
 const H2 = @import("../H2Client.zig");
 const local_initial_window_size = H2.local_initial_window_size;

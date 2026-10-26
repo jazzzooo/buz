@@ -2,19 +2,53 @@ pub const AI_V4MAPPED: c_int = if (bun.Environment.isWindows) 2048 else bun.c.AI
 pub const AI_ADDRCONFIG: c_int = if (bun.Environment.isWindows) 1024 else bun.c.AI_ADDRCONFIG;
 pub const AI_ALL: c_int = if (bun.Environment.isWindows) 256 else bun.c.AI_ALL;
 pub const AI = if (bun.Environment.isWindows) bun.windows.libuv.AI else std.c.AI;
-pub const AddrInfo = if (bun.Environment.isWindows) bun.windows.libuv.addrinfo else std.c.addrinfo;
+pub const AddrInfo = Platform.AddrInfo;
 
 pub const GetAddrInfo = struct {
     name: []const u8 = "",
     port: u16 = 0,
     options: Options = Options{},
 
-    pub fn clone(this: GetAddrInfo) GetAddrInfo {
-        return GetAddrInfo{
-            .name = bun.default_allocator.dupe(u8, this.name) catch unreachable,
+    pub fn clone(this: GetAddrInfo) bun.OOM!Owned {
+        return .{
+            .name = try bun.default_allocator.dupeSentinel(u8, this.name, 0),
             .port = this.port,
             .options = this.options,
         };
+    }
+
+    pub const Owned = struct {
+        name: [:0]const u8,
+        port: u16,
+        options: Options,
+
+        pub fn view(this: Owned) GetAddrInfo {
+            return .{ .name = this.name, .port = this.port, .options = this.options };
+        }
+
+        pub fn deinit(this: *Owned) void {
+            bun.default_allocator.free(this.name);
+            this.* = undefined;
+        }
+
+        pub fn lookup(this: Owned) Result.Outcome {
+            var hints = this.options.toLibC();
+            const addresses = switch (Platform.lookup(this.name, this.port, if (hints) |*hint| hint else null)) {
+                .addresses => |value| value,
+                .err => |status| {
+                    const err = Platform.lookupError(status);
+                    return if (err == .ENOMEM) .out_of_memory else .{ .err = err };
+                },
+            };
+            defer Platform.freeAddrInfo(addresses);
+            return .{ .result = Result.toList(default_allocator, addresses) catch return .out_of_memory };
+        }
+    };
+
+    pub fn eql(this: GetAddrInfo, other: GetAddrInfo) bool {
+        return this.port == other.port and
+            @as(u64, @bitCast(this.options)) == @as(u64, @bitCast(other.options)) and
+            std.mem.eql(u8, this.name, other.name);
     }
 
     pub fn toCAres(this: GetAddrInfo) bun.c_ares.AddrInfo_hints {
@@ -62,22 +96,12 @@ pub const GetAddrInfo = struct {
             var hints: AddrInfo = undefined;
             @memset(std.mem.asBytes(&hints)[0..@sizeOf(AddrInfo)], 0);
 
-            hints.family = this.family.toLibC();
-            hints.socktype = this.socktype.toLibC();
-            hints.protocol = this.protocol.toLibC();
-            hints.flags = this.flags;
+            hints.ai_family = this.family.toLibC();
+            hints.ai_socktype = this.socktype.toLibC();
+            hints.ai_protocol = this.protocol.toLibC();
+            hints.ai_flags = @bitCast(this.flags);
             return hints;
         }
-
-        pub const FromJSError = Family.FromJSError ||
-            SocketType.FromJSError ||
-            Protocol.FromJSError ||
-            Backend.FromJSError || error{
-            InvalidFlags,
-            InvalidOptions,
-        };
-
-        pub const fromJS = options_jsc.optionsFromJS;
     };
 
     pub const Family = enum(u2) {
@@ -93,12 +117,6 @@ pub const GetAddrInfo = struct {
             .{ "ipv6", Family.inet6 },
             .{ "any", Family.unspecified },
         });
-
-        pub const FromJSError = JSError || error{
-            InvalidFamily,
-        };
-
-        pub const fromJS = options_jsc.familyFromJS;
 
         pub fn toLibC(this: Family) i32 {
             return switch (this) {
@@ -129,12 +147,6 @@ pub const GetAddrInfo = struct {
                 .dgram => return std.posix.SOCK.DGRAM,
             }
         }
-
-        pub const FromJSError = JSError || error{
-            InvalidSocketType,
-        };
-
-        pub const fromJS = options_jsc.socketTypeFromJS;
     };
 
     pub const Protocol = enum(u2) {
@@ -146,12 +158,6 @@ pub const GetAddrInfo = struct {
             .{ "tcp", Protocol.tcp },
             .{ "udp", Protocol.udp },
         });
-
-        pub const FromJSError = JSError || error{
-            InvalidProtocol,
-        };
-
-        pub const fromJS = options_jsc.protocolFromJS;
 
         pub fn toLibC(this: Protocol) i32 {
             switch (this) {
@@ -184,46 +190,35 @@ pub const GetAddrInfo = struct {
             // through netd which knows the real resolvers.
             else => if (bun.Environment.isAndroid) .system else .c_ares,
         };
-
-        pub const FromJSError = JSError || error{
-            InvalidBackend,
-        };
-
-        pub const fromJS = options_jsc.backendFromJS;
     };
 
     pub const Result = struct {
-        address: bun.api.socket.SocketAddress,
+        address: SocketAddressValue,
         ttl: i32 = 0,
 
         pub const List = std.array_list.Managed(Result);
 
-        pub const Any = union(enum) {
-            addrinfo: ?*AddrInfo,
-            list: List,
+        pub const Outcome = union(enum) {
+            pending,
+            result: List,
+            err: bun.c_ares.Error,
+            out_of_memory,
 
-            pub const toJS = options_jsc.resultAnyToJS;
-
-            pub fn deinit(this: *const Any) void {
+            pub fn deinit(this: *Outcome) void {
                 switch (this.*) {
-                    .addrinfo => |addrinfo| {
-                        if (addrinfo) |a| {
-                            freeAddrInfo(a);
-                        }
-                    },
-                    .list => |list_| {
-                        var list = list_;
-                        list.clearAndFree();
-                    },
+                    .result => |*list| list.deinit(),
+                    .pending, .err, .out_of_memory => {},
                 }
+                this.* = .pending;
             }
         };
 
         pub fn toList(allocator: std.mem.Allocator, addrinfo: *AddrInfo) !List {
             var list = try List.initCapacity(allocator, addrInfoCount(addrinfo));
 
-            var addr: ?*AddrInfo = addrinfo;
-            while (addr) |a| : (addr = a.next) {
+            var addr: [*c]AddrInfo = addrinfo;
+            while (addr != null) : (addr = addr.*.ai_next) {
+                const a: *AddrInfo = @ptrCast(addr);
                 list.appendAssumeCapacity(fromAddrInfo(a) orelse continue);
             }
 
@@ -231,48 +226,43 @@ pub const GetAddrInfo = struct {
         }
 
         pub fn fromAddrInfo(addrinfo: *AddrInfo) ?Result {
+            if (addrinfo.ai_addr == null) return null;
             return Result{
-                .address = bun.api.socket.SocketAddress.fromPosix(@ptrCast(@alignCast(addrinfo.addr orelse return null))) orelse return null,
+                .address = SocketAddressValue.fromPosix(@ptrCast(@alignCast(addrinfo.ai_addr))) orelse return null,
                 // no TTL in POSIX getaddrinfo()
                 .ttl = 0,
             };
         }
-
-        pub const toJS = options_jsc.resultToJS;
     };
 };
-pub fn addressToString(address: *const bun.api.socket.SocketAddress) bun.OOM!bun.String {
+pub fn addressToString(address: *const SocketAddressValue) bun.OOM!bun.String {
     var buf: [512]u8 = undefined;
     return String.cloneLatin1(address.formatIp(&buf));
 }
 
-pub const addressToJS = options_jsc.addressToJS;
-
-pub fn addrInfoCount(addrinfo: *AddrInfo) u32 {
-    var count: u32 = 1;
-    var current: ?*AddrInfo = addrinfo.next;
-    while (current != null) : (current = current.?.next) {
-        count += @intFromBool(current.?.addr != null);
+pub fn addrInfoCount(addrinfo: *AddrInfo) usize {
+    var count: usize = 0;
+    var current: [*c]AddrInfo = addrinfo;
+    while (current != null) : (current = current.*.ai_next) {
+        count += @intFromBool(current.*.ai_addr != null);
     }
     return count;
 }
 
 pub fn freeAddrInfo(addrinfo: *AddrInfo) void {
-    if (comptime bun.Environment.isWindows) {
-        bun.windows.libuv.freeaddrinfo(addrinfo);
-    } else {
-        std.c.freeaddrinfo(addrinfo);
-    }
+    Platform.freeAddrInfo(addrinfo);
 }
 
-pub const addrInfoToJSArray = options_jsc.addrInfoToJSArray;
+pub const internal = @import("./InternalResolver.zig").Internal;
 
-pub const internal = bun.api.dns.internal;
+comptime {
+    _ = @import("./Native.zig");
+}
 
-const options_jsc = @import("../runtime/dns_jsc/options_jsc.zig");
 const std = @import("std");
 
 const bun = @import("bun");
-const JSError = bun.JSError;
 const String = bun.String;
 const default_allocator = bun.default_allocator;
+const SocketAddressValue = @import("../runtime/socket/SocketAddressValue.zig");
+const Platform = @import("./Platform.zig");

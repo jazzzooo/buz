@@ -2,38 +2,30 @@
 
 #include "root.h"
 
+#include "SchemaBindings.h"
 #include "JavaScriptCore/JSGlobalObject.h"
 #include "JavaScriptCore/ArgList.h"
 #include "JavaScriptCore/JSGlobalObjectInlines.h"
 #include "JSEventTarget.h"
 #include "JavaScriptCore/JSArray.h"
 #include "wtf/text/MakeString.h"
-#include "../ErrorCode.h"
 
 namespace Bun {
 
 using namespace JSC;
 using namespace WebCore;
-JSC_DEFINE_HOST_FUNCTION(jsFunctionNodeEventsGetEventListeners, (JSGlobalObject * globalObject, CallFrame* callFrame))
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_EventTarget_getEventListeners(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_EventTarget_getEventListeners_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
     auto throwScope = DECLARE_THROW_SCOPE(vm);
 
-    if (callFrame->argumentCount() < 2) {
-        throwTypeError(globalObject, throwScope, "getEventListeners needs 2 arguments"_s);
-        return {};
-    }
-
-    JSValue thisValue = callFrame->argument(0);
-    auto* thisObject = dynamicDowncast<JSEventTarget>(thisValue);
-    RETURN_IF_EXCEPTION(throwScope, {});
-    auto eventType = callFrame->argument(1).toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    if (!thisObject) [[unlikely]] {
-        return Bun::throwError(globalObject, throwScope, Bun::ErrorCode::ERR_INVALID_ARG_TYPE,
-            "ERR_INVALID_ARG_TYPE: first argument must be of type EventEmitter"_s);
-    }
+    auto* thisObject = dynamicDowncast<JSEventTarget>(args.target);
+    RELEASE_ASSERT(thisObject);
+    const auto& eventType = args.event_type;
 
     MarkedArgumentBuffer values;
     auto& listeners = thisObject->wrapped().eventListeners(WTF::makeAtomString(eventType));
@@ -44,7 +36,7 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionNodeEventsGetEventListeners, (JSGlobalObject 
         }
     }
 
-    RELEASE_AND_RETURN(throwScope, JSValue::encode(constructArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), values)));
+    RELEASE_AND_RETURN(throwScope, constructArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), values));
 }
 
 }

@@ -500,7 +500,7 @@ void JSFinalObject::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 
 DEFINE_VISIT_CHILDREN_WITH_MODIFIER(JS_EXPORT_PRIVATE, JSFinalObject);
 
-String JSObject::calculatedClassName(JSObject* object)
+static String calculatedClassName(JSObject* object, bool propagateException)
 {
     String constructorFunctionName;
     auto* globalObject = object->realmMayBeNull();
@@ -508,25 +508,45 @@ String JSObject::calculatedClassName(JSObject* object)
         return object->structure()->classInfoForCells()->className;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+    if (propagateException && scope.exception())
+        return {};
+    const auto displayName = [&](auto* constructor) -> String {
+        if (propagateException) {
+            auto value = constructor->getDirect(vm, vm.propertyNames->displayName);
+            if (value && value.isString()) {
+                auto name = asString(value)->value(globalObject);
+                if (scope.exception())
+                    return {};
+                if (!name.data.isEmpty())
+                    return name.data;
+            }
+        }
+        return constructor->calculatedDisplayName(vm);
+    };
 
     // Check for a display name of obj.constructor.
     // This is useful to get `Foo` for the `(class Foo).prototype` object.
     PropertySlot slot(object, PropertySlot::InternalMethodType::VMInquiry, &vm);
     if (object->getOwnPropertySlot(object, globalObject, vm.propertyNames->constructor, slot)) {
+        if (propagateException && scope.exception())
+            return {};
         EXCEPTION_ASSERT(!scope.exception());
         if (slot.isValue()) {
             if (JSObject* ctorObject = dynamicDowncast<JSObject>(slot.getValue(globalObject, vm.propertyNames->constructor))) {
                 if (JSFunction* constructorFunction = dynamicDowncast<JSFunction>(ctorObject))
-                    constructorFunctionName = constructorFunction->calculatedDisplayName(vm);
+                    constructorFunctionName = displayName(constructorFunction);
                 else if (InternalFunction* constructorFunction = dynamicDowncast<InternalFunction>(ctorObject))
-                    constructorFunctionName = constructorFunction->calculatedDisplayName(vm);
+                    constructorFunctionName = displayName(constructorFunction);
             }
         }
     }
 
     EXCEPTION_ASSERT(!scope.exception() || constructorFunctionName.isNull());
-    if (scope.exception()) [[unlikely]]
+    if (scope.exception()) [[unlikely]] {
+        if (propagateException)
+            return {};
         scope.clearException();
+    }
 
     // Get the display name of obj.__proto__.constructor.
     // This is useful to get `Foo` for a `new Foo` object.
@@ -537,13 +557,15 @@ String JSObject::calculatedClassName(JSObject* object)
                 JSObject* protoObject = asObject(protoValue);
                 PropertySlot slot(protoValue, PropertySlot::InternalMethodType::VMInquiry, &vm);
                 if (protoObject->getPropertySlot(globalObject, vm.propertyNames->constructor, slot)) {
+                    if (propagateException && scope.exception())
+                        return {};
                     EXCEPTION_ASSERT(!scope.exception());
                     if (slot.isValue()) {
                         if (JSObject* ctorObject = dynamicDowncast<JSObject>(slot.getValue(globalObject, vm.propertyNames->constructor))) {
                             if (JSFunction* constructorFunction = dynamicDowncast<JSFunction>(ctorObject))
-                                constructorFunctionName = constructorFunction->calculatedDisplayName(vm);
+                                constructorFunctionName = displayName(constructorFunction);
                             else if (InternalFunction* constructorFunction = dynamicDowncast<InternalFunction>(ctorObject))
-                                constructorFunctionName = constructorFunction->calculatedDisplayName(vm);
+                                constructorFunctionName = displayName(constructorFunction);
                         }
                     }
                 }
@@ -552,26 +574,37 @@ String JSObject::calculatedClassName(JSObject* object)
     }
 
     EXCEPTION_ASSERT(!scope.exception() || constructorFunctionName.isNull());
-    if (scope.exception()) [[unlikely]]
+    if (scope.exception()) [[unlikely]] {
+        if (propagateException)
+            return {};
         scope.clearException();
+    }
 
     if (constructorFunctionName.isNull() || constructorFunctionName == "Object"_s) {
         PropertySlot slot(object, PropertySlot::InternalMethodType::VMInquiry, &vm);
         if (object->getPropertySlot(globalObject, vm.propertyNames->toStringTagSymbol, slot)) {
+            if (propagateException && scope.exception())
+                return {};
             EXCEPTION_ASSERT(!scope.exception());
             if (slot.isValue()) {
                 JSValue value = slot.getValue(globalObject, vm.propertyNames->toStringTagSymbol);
                 if (value.isString()) {
                     auto tag = asString(value)->value(globalObject);
-                    if (scope.exception()) [[unlikely]]
+                    if (scope.exception()) [[unlikely]] {
+                        if (propagateException)
+                            return {};
                         scope.clearException();
+                    }
                     return tag;
                 }
             }
         }
 
-        if (scope.exception()) [[unlikely]]
+        if (scope.exception()) [[unlikely]] {
+            if (propagateException)
+                return {};
             scope.clearException();
+        }
 
         String classInfoName = object->classInfo()->className;
         if (!classInfoName.isNull())
@@ -582,6 +615,16 @@ String JSObject::calculatedClassName(JSObject* object)
     }
 
     return constructorFunctionName;
+}
+
+String JSObject::calculatedClassName(JSObject* object)
+{
+    return JSC::calculatedClassName(object, false);
+}
+
+String JSObject::tryCalculatedClassName(JSObject* object)
+{
+    return JSC::calculatedClassName(object, true);
 }
 
 bool JSObject::getOwnPropertySlotByIndex(JSObject* thisObject, JSGlobalObject* globalObject, unsigned i, PropertySlot& slot)

@@ -34,6 +34,7 @@
 #include "PerformanceMark.h"
 #include "PerformanceMeasure.h"
 #include "PerformanceResourceTiming.h"
+#include <algorithm>
 
 // #include "DeprecatedGlobalSettings.h"
 
@@ -49,6 +50,39 @@ PerformanceEntry::PerformanceEntry(const String& name, double startTime, double 
 }
 
 PerformanceEntry::~PerformanceEntry() = default;
+
+bool PerformanceEntry::tryStableSort(Vector<RefPtr<PerformanceEntry>>& entries)
+{
+    const size_t count = entries.size();
+    if (count < 2)
+        return true;
+    Vector<RefPtr<PerformanceEntry>> scratch;
+    if (!scratch.tryReserveInitialCapacity(count))
+        return false;
+    scratch.grow(count);
+
+    for (size_t width = 1; width < count;) {
+        size_t begin = 0;
+        while (begin < count) {
+            const size_t middle = begin + std::min(width, count - begin);
+            const size_t end = middle + std::min(width, count - middle);
+            size_t left = begin;
+            size_t right = middle;
+            for (size_t output = begin; output < end; ++output) {
+                if (left < middle && (right == end || !startTimeCompareLessThan(entries[right], entries[left])))
+                    scratch[output] = WTF::move(entries[left++]);
+                else
+                    scratch[output] = WTF::move(entries[right++]);
+            }
+            begin = end;
+        }
+        entries.swap(scratch);
+        if (width >= count - width)
+            break;
+        width *= 2;
+    }
+    return true;
+}
 
 size_t PerformanceEntry::memoryCost() const
 {

@@ -8,8 +8,8 @@ const setImmediateGlobal = globalThis.setImmediate;
 const setTimeoutGlobal = globalThis.setTimeout;
 const setIntervalGlobal = globalThis.setInterval;
 
-function asyncIterator({ next: nextFunction, return: returnFunction }) {
-  const result = {};
+function asyncIterator({ next: nextFunction, return: returnFunction }: { next?: Function, return?: Function }) {
+  const result: any = {};
   if (typeof nextFunction === "function") {
     result.next = nextFunction;
   }
@@ -40,7 +40,7 @@ function setTimeout(after = 1, value, options = {}) {
   } catch (error) {
     return Promise.$reject(error);
   }
-  const { signal, ref: reference = true } = options;
+  const { signal, ref: reference = true } = options as { signal?: AbortSignal, ref?: boolean };
   try {
     validateAbortSignal(signal, "options.signal");
   } catch (error) {
@@ -69,7 +69,7 @@ function setTimeout(after = 1, value, options = {}) {
     }
   });
   return typeof onCancel !== "undefined"
-    ? returnValue.finally(() => signal.removeEventListener("abort", onCancel))
+    ? returnValue.finally(() => signal!.removeEventListener("abort", onCancel))
     : returnValue;
 }
 
@@ -79,7 +79,7 @@ function setImmediate(value, options = {}) {
   } catch (error) {
     return Promise.$reject(error);
   }
-  const { signal, ref: reference = true } = options;
+  const { signal, ref: reference = true } = options as { signal?: AbortSignal, ref?: boolean };
   try {
     validateAbortSignal(signal, "options.signal");
   } catch (error) {
@@ -108,7 +108,7 @@ function setImmediate(value, options = {}) {
     }
   });
   return typeof onCancel !== "undefined"
-    ? returnValue.finally(() => signal.removeEventListener("abort", onCancel))
+    ? returnValue.finally(() => signal!.removeEventListener("abort", onCancel))
     : returnValue;
 }
 
@@ -137,7 +137,7 @@ function setInterval(after = 1, value, options = {}) {
       },
     });
   }
-  const { signal, ref: reference = true } = options;
+  const { signal, ref: reference = true } = options as { signal?: AbortSignal, ref?: boolean };
   try {
     validateAbortSignal(signal, "options.signal");
   } catch (error) {
@@ -192,7 +192,7 @@ function setInterval(after = 1, value, options = {}) {
 
     return asyncIterator({
       next: function () {
-        return new Promise((resolve, reject) => {
+        return new Promise<void>((resolve, reject) => {
           if (!signal?.aborted) {
             if (notYielded === 0) {
               callback = resolve;

@@ -65,7 +65,7 @@ pub fn initWithNewAllocScope(kind: StateKind, interpreter: *Interpreter, shell: 
         .kind = kind,
         .interpreter = interpreter,
         .shell = shell,
-        .__alloc_scope = if (comptime bun.Environment.enableAllocScopes) .{ .owned = bun.AllocationScope.init(interpreter.event_loop.io(), bun.default_allocator) } else {},
+        .__alloc_scope = if (comptime bun.Environment.enableAllocScopes) .{ .owned = bun.AllocationScope.init(interpreter.scheduler().io(), bun.default_allocator) } else {},
     };
 }
 
@@ -90,13 +90,13 @@ pub fn endScope(this: *Base) void {
     }
 }
 
-pub inline fn eventLoop(this: *const Base) jsc.EventLoopHandle {
-    return this.interpreter.event_loop;
+pub inline fn eventLoop(this: *const Base) Interpreter.Scheduler {
+    return this.interpreter.scheduler();
 }
 
 /// FIXME: We should get rid of this
 pub fn throw(this: *const Base, err: *const bun.shell.ShellErr) void {
-    throwShellErr(err, this.eventLoop()) catch {}; //TODO:
+    this.eventLoop().reportShellError(err);
 }
 
 /// Unwrap a `Maybe(T)` into `error{Sys}!T`, stashing the rich error on the interpreter.
@@ -140,11 +140,9 @@ pub fn leakSlice(this: *Base, memory: anytype) void {
 const std = @import("std");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 
 const Interpreter = bun.shell.Interpreter;
 const IO = bun.shell.Interpreter.IO;
 const ShellExecEnv = Interpreter.ShellExecEnv;
 
 const StateKind = bun.shell.interpret.StateKind;
-const throwShellErr = bun.shell.interpret.throwShellErr;

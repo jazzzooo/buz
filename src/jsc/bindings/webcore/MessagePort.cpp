@@ -29,22 +29,146 @@
 
 #include "BunClientData.h"
 #include "EventNames.h"
+#include "JSDOMExceptionHandling.h"
 #include "MessageEvent.h"
 #include "MessagePortPipe.h"
+#include "NativeEventLoopTarget.h"
 #include "MessageWithMessagePorts.h"
 #include "StructuredSerializeOptions.h"
 #include "WebCoreOpaqueRoot.h"
-#include <wtf/TZoneMallocInlines.h>
-
-extern "C" void Bun__eventLoop__incrementRefConcurrently(void* bunVM, int delta);
+#include "SchemaBindings.h"
+#include <algorithm>
+#include <functional>
 
 namespace WebCore {
 
-WTF_MAKE_TZONE_ALLOCATED_IMPL(MessagePort);
+class MessagePortWakeup final : public MessagePortPipe::Wakeup {
+public:
+    static RefPtr<MessagePortWakeup> tryCreate()
+    {
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(MessagePortWakeup)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) MessagePortWakeup);
+    }
 
-Ref<MessagePort> MessagePort::create(ScriptExecutionContext& context, Ref<MessagePortPipe>&& pipe, uint8_t side)
+    ~MessagePortWakeup()
+    {
+        if (m_signal)
+            Bun::Bindgen::Engine::releaseNativeEventLoopSignal(m_signal);
+    }
+
+    void setSignal(Bun::NativeEventLoopSignal* signal)
+    {
+        ASSERT(!m_signal);
+        m_signal = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_retainNativeEventSignal(signal);
+    }
+
+    void notify() const noexcept final
+    {
+        Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_notifyNativeEventSignal(m_signal);
+    }
+
+private:
+    Bun::NativeEventLoopSignal* m_signal { nullptr };
+};
+
+class MessagePort::DeliveryTarget final : public Bun::NativeEventLoopTarget, public ScriptExecutionContext::NativeLifetime {
+public:
+    static RefPtr<DeliveryTarget> tryCreate(MessagePort& port)
+    {
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(DeliveryTarget)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) DeliveryTarget(port));
+    }
+
+    void run(JSC::JSGlobalObject*) noexcept final
+    {
+        if (!m_port)
+            return;
+        Ref port { *m_port };
+        auto* context = this->context();
+        if (!context || !context->globalObject())
+            return;
+        if (port->m_deliveryState.load(std::memory_order_relaxed) == DeliveryState::ClosePending) {
+            port->dispatchCloseEvent(*context);
+            return;
+        }
+        auto* globalObject = defaultGlobalObject(context->globalObject());
+        if (!port->m_started && !(port->m_hasCloseEventListener.load(std::memory_order_relaxed) && !port->m_pipe->isOtherSideOpen(port->m_side))) {
+            if (!port->m_pipe->isOtherSideOpen(port->m_side) && !MessagePortPipe::queuedCount(port->m_pipe->state(port->m_side)))
+                port->close();
+            return;
+        }
+        size_t limit = std::max<uint64_t>(MessagePortPipe::queuedCount(port->m_pipe->state(port->m_side)), 1000);
+        while (m_port == port.ptr() && port->isEntangled()) {
+            context = port->scriptExecutionContext();
+            if (!context)
+                return;
+            if (!limit--) {
+                if (MessagePortPipe::queuedCount(port->m_pipe->state(port->m_side)))
+                    port->m_wakeup->notify();
+                return;
+            }
+            auto message = port->m_pipe->takeOne(port->m_side);
+            if (!message) {
+                if (!port->m_pipe->isOtherSideOpen(port->m_side))
+                    port->close();
+                return;
+            }
+            port->dispatchOneMessage(*context, WTF::move(*message));
+            if (globalObject->drainMicrotasks())
+                return;
+        }
+    }
+
+    void revoke()
+    {
+        detach();
+        m_port = nullptr;
+    }
+
+    void stop() noexcept final
+    {
+        Ref protectedThis { *this };
+        detach();
+        if (auto* port = std::exchange(m_port, nullptr))
+            port->stop();
+    }
+
+private:
+    void contextClosed() noexcept final { stop(); }
+
+    explicit DeliveryTarget(MessagePort& port)
+        : m_port(&port)
+    {
+    }
+
+    MessagePort* m_port;
+};
+
+ExceptionOr<Ref<MessagePort>> MessagePort::tryAllocate(ScriptExecutionContext& context, Ref<MessagePortPipe>&& pipe, uint8_t side)
 {
-    return adoptRef(*new MessagePort(context, WTF::move(pipe), side));
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(MessagePort)).getValue(allocation))
+        return Exception { OutOfMemoryError };
+    Ref port = adoptRef(*new (NotNull, allocation) MessagePort(context, WTF::move(pipe), side));
+    auto delivery = port->prepareDelivery();
+    if (delivery.hasException())
+        return delivery.releaseException();
+    return port;
+}
+
+ExceptionOr<Ref<MessagePort>> MessagePort::tryCreate(ScriptExecutionContext& context, Ref<MessagePortPipe>&& pipe, uint8_t side)
+{
+    auto result = tryAllocate(context, WTF::move(pipe), side);
+    if (result.hasException())
+        return result.releaseException();
+    auto port = result.releaseReturnValue();
+    port->m_deliveryState = DeliveryState::Entangled;
+    port->m_pipe->attach(port->m_side, Ref { *port->m_wakeup }, port->m_deliveryContext.releaseNonNull());
+    return port;
 }
 
 MessagePort::MessagePort(ScriptExecutionContext& context, Ref<MessagePortPipe>&& pipe, uint8_t side)
@@ -52,40 +176,96 @@ MessagePort::MessagePort(ScriptExecutionContext& context, Ref<MessagePortPipe>&&
     , m_pipe(WTF::move(pipe))
     , m_side(side)
 {
-    // The WeakPtrFactory must be initialized on the owning thread.
-    initializeWeakPtrFactory();
 }
 
 MessagePort::~MessagePort()
 {
-    if (!m_isDetached)
-        m_pipe->close(m_side);
+    ASSERT(!m_hasRef);
+    if (isEntangled())
+        m_pipe->abandon(m_side);
+    closeDelivery();
+}
+
+ExceptionOr<void> MessagePort::prepareDelivery()
+{
+    auto target = DeliveryTarget::tryCreate(*this);
+    auto wakeup = MessagePortWakeup::tryCreate();
+    if (!target || !wakeup)
+        return Exception { OutOfMemoryError };
+    auto* context = scriptExecutionContext();
+    if (!context)
+        return Exception { InvalidStateError };
+    if (!target->attach(*context))
+        return Exception { InvalidStateError };
+    auto deliveryContext = context->messagePortContext();
+    if (!deliveryContext)
+        return Exception { OutOfMemoryError };
+    if (!deliveryContext->context())
+        return Exception { InvalidStateError };
+    auto* globalObject = context->globalObject();
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto signal = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_createNativeEventSignal(globalObject, target.get());
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (!signal)
+        return Exception { InvalidStateError };
+    wakeup->setSignal(*signal);
+    m_deliveryTarget = WTF::move(target);
+    m_wakeup = WTF::move(wakeup);
+    m_deliverySignal = *signal;
+    m_deliveryContext = WTF::move(deliveryContext);
+    return {};
+}
+
+void MessagePort::closeDelivery()
+{
+    auto target = std::exchange(m_deliveryTarget, nullptr);
+    if (target)
+        target->revoke();
+    auto wakeup = std::exchange(m_wakeup, nullptr);
+    if (auto* signal = std::exchange(m_deliverySignal, nullptr))
+        Bun::Bindgen::Engine::releaseNativeEventLoopSignalOwner(signal);
 }
 
 ExceptionOr<void> MessagePort::postMessage(JSC::JSGlobalObject& state, JSC::JSValue messageValue, StructuredSerializeOptions&& options)
 {
+    auto& vm = state.vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto send = isEntangled()
+        ? m_pipe->tryPrepareSend(m_side)
+        : Bun::Bindgen::NativeAllocationResult<MessagePortPipe::PreparedSend> { MessagePortPipe::PreparedSend {} };
+    if (!send)
+        return Exception { OutOfMemoryError };
+
     Vector<RefPtr<MessagePort>> ports;
-    auto messageData = SerializedScriptValue::create(state, messageValue, WTF::move(options.transfer), ports, SerializationForStorage::No, SerializationContext::WorkerPostMessage);
+    auto messageData = SerializedScriptValue::prepare(state, messageValue, WTF::move(options.transfer), ports, SerializationForStorage::No, SerializationContext::WorkerPostMessage);
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
     if (messageData.hasException())
         return messageData.releaseException();
+    auto preparedMessage = messageData.releaseReturnValue();
 
-    if (!isEntangled())
+    if (!isEntangled()) {
+        vm.hasExceptionsAfterHandlingTraps();
+        RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+        auto validation = preparedMessage.validateTransfers();
+        if (validation.hasException())
+            return validation.releaseException();
+        preparedMessage.commit(vm);
         return {};
-
-    Vector<TransferredMessagePort> transferredPorts;
-    if (!ports.isEmpty()) {
-        // A port may not be posted through itself or its own entangled peer.
-        for (auto& port : ports) {
-            if (port->pipe() == m_pipe.ptr())
-                return Exception { DataCloneError };
-        }
-        auto disentangled = MessagePort::disentanglePorts(WTF::move(ports));
-        if (disentangled.hasException())
-            return disentangled.releaseException();
-        transferredPorts = disentangled.releaseReturnValue();
     }
 
-    m_pipe->send(m_side, MessageWithMessagePorts { messageData.releaseReturnValue(), WTF::move(transferredPorts) });
+    auto portTransfer = prepareTransfer(ports.span(), m_pipe.ptr());
+    if (portTransfer.hasException())
+        return portTransfer.releaseException();
+    vm.hasExceptionsAfterHandlingTraps();
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    auto validation = preparedMessage.validateTransfers();
+    if (validation.hasException())
+        return validation.releaseException();
+    auto transferredPorts = portTransfer.releaseReturnValue().commit();
+    if (transferredPorts.hasException())
+        return transferredPorts.releaseException();
+
+    send->commit(MessageWithMessagePorts { preparedMessage.commit(vm), transferredPorts.releaseReturnValue() });
     return {};
 }
 
@@ -95,61 +275,74 @@ void MessagePort::start()
         return;
     m_started = true;
 
-    auto* context = scriptExecutionContext();
-    ASSERT(context);
-    // From the pipe's point of view "attached" means "ready to have drains
-    // scheduled on my behalf" — that is exactly what start() promises.
-    m_pipe->attach(m_side, context->identifier(), ThreadSafeWeakPtr<MessagePort> { *this });
+    ASSERT(m_wakeup);
+    if (MessagePortPipe::queuedCount(m_pipe->state(m_side)) || !m_pipe->isOtherSideOpen(m_side))
+        m_wakeup->notify();
 }
 
 void MessagePort::close()
 {
-    if (m_isDetached)
+    if (isDetached())
         return;
-    m_isDetached = true;
+    Ref protectedThis { *this };
+    m_deliveryState.store(DeliveryState::ClosePending, std::memory_order_relaxed);
 
     // m_pipe is held for the port's whole lifetime (the GC thread reads
     // it in hasPendingActivity()); marking our side Closed is sufficient.
     m_pipe->close(m_side);
+    jsUnref();
+    queueCloseEvent();
+}
 
-    removeAllEventListeners();
-
-    // Release the self-reference taken by jsRef() (set when .onmessage is
-    // assigned or .ref() is called from JS). The JS .close() binding calls
-    // jsUnref() first, so m_hasRef is already false on that path; we only
-    // reach this branch when close() runs without a preceding jsUnref() —
-    // most importantly from contextDestroyed() during Worker teardown.
-    // Without this, the self-ref pins the MessagePort past the JS wrapper
-    // sweep and it leaks forever.
-    if (m_hasRef) {
-        m_hasRef = false;
-        if (auto* context = scriptExecutionContext())
-            context->unrefEventLoop();
-        deref();
+void MessagePort::queueCloseEvent()
+{
+    auto* context = m_deliveryTarget ? m_deliveryTarget->context() : nullptr;
+    if (!context || context->isJSExecutionForbidden()) {
+        stop();
+        return;
     }
+    m_deliveryState.store(DeliveryState::ClosePending, std::memory_order_relaxed);
+    m_wakeup->notify();
+}
+
+void MessagePort::dispatchCloseEvent(ScriptExecutionContext& context)
+{
+    Ref protectedThis { *this };
+    auto* global = context.globalObject();
+    Ref vm = context.vm();
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm.get());
+    if (!scope.exception() && !context.isJSExecutionForbidden()) {
+        auto event = Event::tryCreate(eventNames().closeEvent, Event::CanBubble::No, Event::IsCancelable::No);
+        if (event)
+            EventTarget::dispatchEvent(*event);
+        else {
+            auto throwScope = DECLARE_THROW_SCOPE(vm.get());
+            JSC::throwOutOfMemoryError(global, throwScope);
+        }
+    }
+    m_deliveryState.store(DeliveryState::Detached, std::memory_order_relaxed);
+    removeAllEventListeners();
+    closeDelivery();
+    if (auto* exception = scope.exception())
+        reportException(global, exception);
+}
+
+void MessagePort::stop()
+{
+    Ref protectedThis { *this };
+    if (m_deliveryState.exchange(DeliveryState::Detached, std::memory_order_relaxed) == DeliveryState::Entangled)
+        m_pipe->close(m_side);
+    removeAllEventListeners();
+    jsUnref();
+    closeDelivery();
 }
 
 TransferredMessagePort MessagePort::disentangle()
 {
     ASSERT(isEntangled());
 
-    // Drop any message listeners (and the event-loop ref they carry) while
-    // this port is still attached to its context; after observeContext(null)
-    // there would be nothing to unref.
-    removeAllEventListeners();
-    m_hasMessageEventListener = false;
-
-    // Release the self-reference taken by jsRef() on the sending side. After
-    // transfer this object is inert (the receiving side gets a fresh
-    // MessagePort for the same pipe endpoint) and is no longer a destruction
-    // observer, so nothing else will ever release a ref taken here.
-    // The caller (disentanglePorts) holds a RefPtr, so deref() is safe.
-    if (m_hasRef) {
-        m_hasRef = false;
-        if (auto* context = scriptExecutionContext())
-            context->unrefEventLoop();
-        deref();
-    }
+    m_deliveryState.store(DeliveryState::ClosePending, std::memory_order_relaxed);
+    jsUnref();
 
     // Hand the pipe endpoint to its next owner. Messages that arrive while
     // in transit buffer in the pipe; the receiving context's entangle()
@@ -157,30 +350,15 @@ TransferredMessagePort MessagePort::disentangle()
     // GC thread can always dereference it — our side is detached, so all
     // further operations on it are no-ops.
     m_pipe->detach(m_side);
-    m_isDetached = true;
     m_started = false;
-
-    if (auto* context = scriptExecutionContext())
-        context->willDestroyDestructionObserver(*this);
-    observeContext(nullptr);
+    queueCloseEvent();
 
     return TransferredMessagePort { m_pipe.copyRef(), m_side };
 }
 
-Ref<MessagePort> MessagePort::entangle(ScriptExecutionContext& context, TransferredMessagePort&& transferred)
-{
-    ASSERT(transferred.pipe);
-    auto port = MessagePort::create(context, transferred.pipe.releaseNonNull(), transferred.side);
-    // Only transferred ports ref the event loop on message-listener
-    // add/remove; ports that were never transferred (both ends of a local
-    // MessageChannel) don't hold the process open.
-    port->onDidChangeListener = &MessagePort::onDidChangeListenerImpl;
-    return port;
-}
-
 void MessagePort::dispatchOneMessage(ScriptExecutionContext& context, MessageWithMessagePorts&& message)
 {
-    if (m_isDetached || !context.globalObject())
+    if (isDetached() || !context.globalObject())
         return;
 
     auto* globalObject = defaultGlobalObject(context.globalObject());
@@ -190,63 +368,81 @@ void MessagePort::dispatchOneMessage(ScriptExecutionContext& context, MessageWit
     if (Zig::GlobalObject::scriptExecutionStatus(globalObject, globalObject) != ScriptExecutionStatus::Running)
         return;
 
-    auto ports = MessagePort::entanglePorts(context, WTF::move(message.transferredPorts));
-    if (scope.exception()) [[unlikely]] {
-        RELEASE_ASSERT(vm->hasPendingTerminationException());
-        return;
-    }
-
-    auto event = MessageEvent::create(*context.jsGlobalObject(), message.message.releaseNonNull(), {}, {}, {}, WTF::move(ports));
-    dispatchEvent(event.event);
+    const auto dispatch = [&] {
+        auto throwScope = DECLARE_THROW_SCOPE(vm);
+        auto ports = MessagePort::entanglePorts(context, message.transferredPorts.mutableSpan());
+        RETURN_IF_EXCEPTION(throwScope, void());
+        if (ports.hasException()) {
+            propagateException(*globalObject, throwScope, ports.releaseException());
+            return;
+        }
+        auto event = MessageEvent::create(*context.jsGlobalObject(), message.message.releaseNonNull(), {}, {}, {}, ports.releaseReturnValue());
+        RETURN_IF_EXCEPTION(throwScope, void());
+        if (event)
+            dispatchEvent(event->event);
+    };
+    if (!scope.exception())
+        dispatch();
+    if (auto* exception = scope.exception())
+        reportException(globalObject, exception);
 }
 
-JSValue MessagePort::tryTakeMessage(JSGlobalObject* lexicalGlobalObject)
+std::optional<JSValue> MessagePort::tryTakeMessage(JSGlobalObject* lexicalGlobalObject)
 {
+    auto scope = DECLARE_THROW_SCOPE(lexicalGlobalObject->vm());
     if (!isEntangled())
-        return jsUndefined();
+        return std::nullopt;
 
     auto* context = scriptExecutionContext();
     if (!context)
-        return jsUndefined();
+        return std::nullopt;
 
     auto message = m_pipe->takeOne(m_side);
+    if (!m_pipe->isOtherSideOpen(m_side) && !MessagePortPipe::queuedCount(m_pipe->state(m_side)))
+        m_wakeup->notify();
     if (!message)
-        return jsUndefined();
+        return std::nullopt;
 
-    auto ports = MessagePort::entanglePorts(*context, WTF::move(message->transferredPorts));
-    return message->message.releaseNonNull()->deserialize(*lexicalGlobalObject, lexicalGlobalObject, WTF::move(ports), SerializationErrorMode::NonThrowing);
+    auto ports = MessagePort::entanglePorts(*context, message->transferredPorts.mutableSpan());
+    RETURN_IF_EXCEPTION(scope, {});
+    if (ports.hasException()) {
+        propagateException(*lexicalGlobalObject, scope, ports.releaseException());
+        return {};
+    }
+    auto result = message->message.releaseNonNull()->deserialize(*lexicalGlobalObject, lexicalGlobalObject, ports.releaseReturnValue(), SerializationErrorMode::Throwing);
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
 }
 
 void MessagePort::dispatchEvent(Event& event)
 {
-    if (m_isDetached)
+    if (isDetached())
         return;
     EventTarget::dispatchEvent(event);
 }
 
-void MessagePort::contextDestroyed()
+void MessagePort::contextDestroyed(ScriptExecutionContext& context)
 {
-    // close() releases the jsRef() self-reference, which may be the last
-    // strong ref if the JS wrapper was already swept. Protect across the
-    // call so we can cleanly detach from the dying ScriptExecutionContext
-    // first — otherwise ~ContextDestructionObserver() would call back into
-    // it while it is mid-destruction.
     Ref protectedThis { *this };
-    close();
-    ContextDestructionObserver::contextDestroyed();
+    setRef(false, &context);
+    stop();
 }
 
 bool MessagePort::hasPendingActivity() const
 {
-    // Called from the GC thread concurrently with the mutator; must be
-    // lockless. m_pipe is a Ref<> held for the port's whole lifetime, so
-    // the dereference is always safe; state() and isOtherSideOpen() are
-    // atomic loads. The plain bool reads can observe stale values but
-    // cannot crash — at worst the wrapper is collected one cycle early
-    // or late, which is the same tolerance as before this refactor.
-    if (!scriptExecutionContext() || m_isDetached)
+    switch (m_deliveryState.load(std::memory_order_relaxed)) {
+    case DeliveryState::ClosePending:
+        return true;
+    case DeliveryState::Detached:
         return false;
-    if (!m_hasMessageEventListener)
+    case DeliveryState::Entangled:
+        break;
+    }
+    if (!scriptExecutionContext())
+        return false;
+    if (m_hasCloseEventListener.load(std::memory_order_relaxed))
+        return true;
+    if (!m_hasMessageEventListener.load(std::memory_order_relaxed))
         return false;
 
     uint64_t s = m_pipe->state(m_side);
@@ -255,73 +451,159 @@ bool MessagePort::hasPendingActivity() const
     return MessagePortPipe::queuedCount(s) > 0 || m_pipe->isOtherSideOpen(m_side);
 }
 
-ExceptionOr<Vector<TransferredMessagePort>> MessagePort::disentanglePorts(Vector<RefPtr<MessagePort>>&& ports)
+MessagePort::PreparedTransfer::PreparedTransfer(Vector<RefPtr<MessagePort>>&& ports, Vector<TransferredMessagePort>&& transferred)
+    : m_ports(WTF::move(ports))
+    , m_transferred(WTF::move(transferred))
 {
-    if (ports.isEmpty())
-        return Vector<TransferredMessagePort> {};
+}
 
-    HashSet<MessagePort*> seen;
-    for (auto& port : ports) {
-        if (!port || !port->isEntangled() || !seen.add(port.get()).isNewEntry)
+MessagePort::PreparedTransfer::PreparedTransfer(PreparedTransfer&& other) noexcept
+    : m_ports(WTF::move(other.m_ports))
+    , m_transferred(WTF::move(other.m_transferred))
+    , m_consumed(std::exchange(other.m_consumed, true))
+{
+}
+
+ExceptionOr<MessagePort::PreparedTransfer> MessagePort::prepareTransfer(std::span<const RefPtr<MessagePort>> ports, const MessagePortPipe* excludedPipe)
+{
+    Vector<MessagePort*> sorted;
+    if (!sorted.tryReserveInitialCapacity(ports.size()))
+        return Exception { OutOfMemoryError };
+    for (const auto& port : ports) {
+        if (!port || !port->isEntangled() || port->pipe() == excludedPipe)
+            return Exception { DataCloneError };
+        sorted.append(port.get());
+    }
+    std::sort(sorted.begin(), sorted.end(), std::less<MessagePort*> {});
+    for (size_t i = 1; i < sorted.size(); ++i) {
+        if (sorted[i - 1] == sorted[i])
             return Exception { DataCloneError };
     }
 
-    return WTF::map(ports, [](auto& port) {
-        return port->disentangle();
-    });
+    Vector<TransferredMessagePort> transferred;
+    if (!transferred.tryReserveInitialCapacity(ports.size()))
+        return Exception { OutOfMemoryError };
+    Vector<RefPtr<MessagePort>> retained;
+    if (!retained.tryAppend(ports))
+        return Exception { OutOfMemoryError };
+    return PreparedTransfer { WTF::move(retained), WTF::move(transferred) };
 }
 
-Vector<RefPtr<MessagePort>> MessagePort::entanglePorts(ScriptExecutionContext& context, Vector<TransferredMessagePort>&& transferred)
+ExceptionOr<void> MessagePort::PreparedTransfer::validate() const
 {
-    if (transferred.isEmpty())
-        return {};
-
-    return WTF::map(WTF::move(transferred), [&](TransferredMessagePort&& port) -> RefPtr<MessagePort> {
-        return MessagePort::entangle(context, WTF::move(port));
-    });
+    RELEASE_ASSERT(!m_consumed);
+    for (const auto& port : m_ports) {
+        if (!port->isEntangled())
+            return Exception { DataCloneError };
+    }
+    return {};
 }
 
-void MessagePort::onDidChangeListenerImpl(EventTarget& self, const AtomString& eventType, OnDidChangeListenerKind kind)
+ExceptionOr<Vector<TransferredMessagePort>> MessagePort::PreparedTransfer::commit()
 {
-    if (eventType != eventNames().messageEvent)
+    auto validation = validate();
+    if (validation.hasException())
+        return validation.releaseException();
+    return commitValidated();
+}
+
+Vector<TransferredMessagePort> MessagePort::PreparedTransfer::commitValidated()
+{
+    RELEASE_ASSERT(!validate().hasException());
+    m_consumed = true;
+    for (const auto& port : m_ports)
+        m_transferred.append(port->disentangle());
+    return WTF::move(m_transferred);
+}
+
+MessagePort::PreparedMessage::PreparedMessage(SerializedScriptValue::Prepared&& serialized, PreparedTransfer&& ports)
+    : m_serialized(WTF::move(serialized))
+    , m_ports(WTF::move(ports))
+{
+}
+
+ExceptionOr<MessagePort::PreparedMessage> MessagePort::prepareMessage(JSC::JSGlobalObject& globalObject, JSC::JSValue value, Vector<JSC::Strong<JSC::JSObject>>&& transfer)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
+    Vector<RefPtr<MessagePort>> ports;
+    auto serialized = SerializedScriptValue::prepare(globalObject, value, WTF::move(transfer), ports, SerializationForStorage::No, SerializationContext::WorkerPostMessage);
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (serialized.hasException())
+        return serialized.releaseException();
+    auto portTransfer = prepareTransfer(ports.span());
+    if (portTransfer.hasException())
+        return portTransfer.releaseException();
+    return PreparedMessage { serialized.releaseReturnValue(), portTransfer.releaseReturnValue() };
+}
+
+ExceptionOr<void> MessagePort::PreparedMessage::validateForCommit(JSC::JSGlobalObject& globalObject) const
+{
+    auto& vm = globalObject.vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    vm.hasExceptionsAfterHandlingTraps();
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    auto validation = m_serialized.validateTransfers();
+    if (validation.hasException())
+        return validation.releaseException();
+    return m_ports.validate();
+}
+
+ExceptionOr<MessageWithMessagePorts> MessagePort::PreparedMessage::commit(JSC::JSGlobalObject& globalObject)
+{
+    auto validation = validateForCommit(globalObject);
+    if (validation.hasException())
+        return validation.releaseException();
+    return commitValidated(globalObject.vm());
+}
+
+MessageWithMessagePorts MessagePort::PreparedMessage::commitValidated(JSC::VM& vm)
+{
+    RELEASE_ASSERT(!m_serialized.validateTransfers().hasException());
+    auto ports = m_ports.commitValidated();
+    return MessageWithMessagePorts { m_serialized.commit(vm), WTF::move(ports) };
+}
+
+ExceptionOr<Vector<RefPtr<MessagePort>>> MessagePort::entanglePorts(ScriptExecutionContext& context, std::span<TransferredMessagePort> transferred)
+{
+    auto* globalObject = context.globalObject();
+    if (!globalObject)
+        return Exception { InvalidStateError };
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    Vector<RefPtr<MessagePort>> ports;
+    if (!ports.tryReserveInitialCapacity(transferred.size()))
+        return Exception { OutOfMemoryError };
+    for (const auto& endpoint : transferred) {
+        RELEASE_ASSERT(endpoint.pipe && endpoint.side < 2);
+        auto port = tryAllocate(context, Ref { *endpoint.pipe }, endpoint.side);
+        RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+        if (port.hasException())
+            return port.releaseException();
+        ports.append(port.releaseReturnValue());
+    }
+
+    for (size_t i = 0; i < ports.size(); ++i) {
+        transferred[i].pipe = nullptr;
+        ports[i]->m_deliveryState = DeliveryState::Entangled;
+        ports[i]->m_pipe->attach(ports[i]->m_side, Ref { *ports[i]->m_wakeup }, ports[i]->m_deliveryContext.releaseNonNull());
+    }
+    return ports;
+}
+
+void MessagePort::eventListenersDidChange()
+{
+    const bool closeListening = hasEventListeners(eventNames().closeEvent);
+    m_hasCloseEventListener.store(closeListening, std::memory_order_relaxed);
+    if (closeListening && !m_pipe->isOtherSideOpen(m_side) && m_wakeup)
+        m_wakeup->notify();
+    const bool listening = hasEventListeners(eventNames().messageEvent);
+    const bool wasListening = m_hasMessageEventListener.exchange(listening, std::memory_order_relaxed);
+    if (listening == wasListening)
         return;
-
-    auto& port = static_cast<MessagePort&>(self);
-    auto* context = port.scriptExecutionContext();
-    switch (kind) {
-    case Add:
-        if (port.m_messageEventCount == 0 && context)
-            context->refEventLoop();
-        port.m_messageEventCount++;
-        break;
-    case Remove:
-        port.m_messageEventCount--;
-        if (port.m_messageEventCount == 0 && context)
-            context->unrefEventLoop();
-        break;
-    case Clear:
-        if (port.m_messageEventCount > 0 && context)
-            context->unrefEventLoop();
-        port.m_messageEventCount = 0;
-        break;
-    }
-}
-
-bool MessagePort::addEventListener(const AtomString& eventType, Ref<EventListener>&& listener, const AddEventListenerOptions& options)
-{
-    if (eventType == eventNames().messageEvent) {
+    if (listening) {
+        jsRef();
         start();
-        m_hasMessageEventListener = true;
-    }
-    return EventTarget::addEventListener(eventType, WTF::move(listener), options);
-}
-
-bool MessagePort::removeEventListener(const AtomString& eventType, EventListener& listener, const EventListenerOptions& options)
-{
-    auto result = EventTarget::removeEventListener(eventType, listener, options);
-    if (!hasEventListeners(eventNames().messageEvent))
-        m_hasMessageEventListener = false;
-    return result;
+    } else
+        jsUnref();
 }
 
 WebCoreOpaqueRoot root(MessagePort* port)
@@ -329,29 +611,31 @@ WebCoreOpaqueRoot root(MessagePort* port)
     return WebCoreOpaqueRoot { port };
 }
 
-void MessagePort::jsRef(JSGlobalObject* lexicalGlobalObject)
+void MessagePort::setRef(bool referenced, ScriptExecutionContext* context)
 {
-    // A closed or transferred-away port can never receive messages again, so
-    // taking a self-ref (and an event-loop ref) here would only leak:
-    // close()/disentangle() have already run and nothing will ever release a
-    // ref taken afterwards.
-    if (!isEntangled())
+    if (m_hasRef == referenced)
         return;
-
-    if (!m_hasRef) {
-        m_hasRef = true;
+    RELEASE_ASSERT(context);
+    m_hasRef = referenced;
+    if (referenced) {
         ref();
-        Bun__eventLoop__incrementRefConcurrently(WebCore::clientData(lexicalGlobalObject->vm())->bunVM, 1);
+        context->refEventLoop();
+    } else {
+        context->unrefEventLoop();
+        deref();
     }
 }
 
-void MessagePort::jsUnref(JSGlobalObject* lexicalGlobalObject)
+void MessagePort::jsRef()
 {
-    if (m_hasRef) {
-        m_hasRef = false;
-        deref();
-        Bun__eventLoop__incrementRefConcurrently(WebCore::clientData(lexicalGlobalObject->vm())->bunVM, -1);
-    }
+    if (!isEntangled() || (!m_pipe->isOtherSideOpen(m_side) && !MessagePortPipe::queuedCount(m_pipe->state(m_side))))
+        return;
+    setRef(true, scriptExecutionContext());
+}
+
+void MessagePort::jsUnref()
+{
+    setRef(false, scriptExecutionContext());
 }
 
 } // namespace WebCore

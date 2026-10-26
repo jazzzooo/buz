@@ -22,6 +22,11 @@ class NapiExternal : public JSC::JSDestructibleObject {
     using Base = JSC::JSDestructibleObject;
 
 public:
+    static bool isInstance(JSC::JSValue value) noexcept
+    {
+        return WTF::dynamicDowncast<NapiExternal>(value) != nullptr;
+    }
+
     NapiExternal(JSC::VM& vm, JSC::Structure* structure, WTF::RefPtr<NapiEnv> env)
         : Base(vm, structure)
         , m_env(env)
@@ -92,7 +97,6 @@ public:
     static void destroy(JSC::JSCell* cell);
 
     void* value() const { return m_value; }
-
     void* m_value;
     NapiFinalizer m_finalizer;
     WTF::RefPtr<NapiEnv> m_env;
@@ -102,6 +106,7 @@ public:
     unsigned sourceOriginLine = 0;
     unsigned sourceOriginColumn = 0;
 #endif
+
 };
 
 } // namespace Zig

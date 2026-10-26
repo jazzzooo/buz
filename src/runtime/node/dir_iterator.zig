@@ -542,10 +542,9 @@ const builtin = @import("builtin");
 const bun = @import("bun");
 const FD = bun.FD;
 const PathString = bun.PathString;
-const jsc = bun.jsc;
 const strings = bun.strings;
 const Maybe = bun.sys.Maybe;
-const Entry = jsc.Node.Dirent;
+const Entry = @import("./types.zig").Dirent;
 
 const std = @import("std");
 const mem = std.mem;

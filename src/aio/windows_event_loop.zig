@@ -350,10 +350,8 @@ pub const FilePoll = struct {
             poll.flags.insert(.ignore_updates);
             this.pending_free_tail = poll;
 
-            const callback = jsc.OpaqueWrap(Store, processDeferredFrees);
-            bun.assert(vm.after_event_loop_callback == null or vm.after_event_loop_callback == @as(?jsc.OpaqueCallback, callback));
-            vm.after_event_loop_callback = callback;
-            vm.after_event_loop_callback_ctx = this;
+            bun.assert(vm.pending_file_poll_frees == null or vm.pending_file_poll_frees == this);
+            vm.pending_file_poll_frees = this;
         }
     };
 };
@@ -362,7 +360,7 @@ pub const Waker = struct {
     loop: *bun.uws.WindowsLoop,
 
     pub fn init() !Waker {
-        return .{ .loop = bun.uws.WindowsLoop.get() };
+        return .{ .loop = try bun.uws.WindowsLoop.ensure() };
     }
 
     pub fn getFd(_: *const Waker) bun.FD {

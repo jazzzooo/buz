@@ -151,7 +151,7 @@ pub fn exePath(this: *const CompileTarget, buf: *bun.PathBuffer, version_str: [:
     return dest;
 }
 
-pub fn downloadToPath(this: *const CompileTarget, io: std.Io, env: *bun.DotEnv.Loader, allocator: std.mem.Allocator, dest_z: [:0]const u8) !void {
+pub fn downloadToPath(this: *const CompileTarget, io: std.Io, javascript_semantics: JavaScriptSemantics, env: *bun.DotEnv.Loader, allocator: std.mem.Allocator, dest_z: [:0]const u8) !void {
     HTTP.HTTPThread.init(io, &.{});
     var refresher = bun.Progress{};
 
@@ -182,6 +182,7 @@ pub fn downloadToPath(this: *const CompileTarget, io: std.Io, env: *bun.DotEnv.L
                 "",
                 compressed_archive_bytes,
                 "",
+                javascript_semantics,
                 http_proxy,
                 null,
                 HTTP.FetchRedirect.follow,
@@ -218,17 +219,15 @@ pub fn downloadToPath(this: *const CompileTarget, io: std.Io, env: *bun.DotEnv.L
             {
                 var node = refresher.start(io, "Decompressing", 0);
                 defer node.end();
-                var gunzip = bun.zlib.ZlibReaderArrayList.init(compressed_archive_bytes.list.items, &tarball_bytes, allocator) catch {
-                    node.end();
-                    // Return error without printing - let caller handle the messaging
+                var gunzip = bun.zlib.ZlibReaderArrayList.init(compressed_archive_bytes.list.items, &tarball_bytes, allocator) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
                     return error.InvalidResponse;
                 };
-                gunzip.readAll(true) catch {
-                    node.end();
-                    // Return error without printing - let caller handle the messaging
+                defer gunzip.deinit();
+                gunzip.readAll(true) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
                     return error.InvalidResponse;
                 };
-                gunzip.deinit();
             }
             refresher.refresh();
 
@@ -486,10 +485,8 @@ pub fn defineValues(this: *const CompileTarget) []const []const u8 {
     }
 }
 
-pub const fromJS = @import("../bundler_jsc/options_jsc.zig").compileTargetFromJS;
-pub const fromSlice = @import("../bundler_jsc/options_jsc.zig").compileTargetFromSlice;
-
 const std = @import("std");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;

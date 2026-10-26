@@ -1,21 +1,24 @@
 #include "root.h"
 
 #include "BunClientData.h"
+#include "BunDebugger.h"
+#include "sqlite/JSSQLStatement.h"
+#include "SchemaBindings.h"
+#include "../../runtime/webview/ChromeBackend.h"
+#include "../../runtime/webview/WebKitBackend.h"
 #include "WebCoreJSBuiltins.h"
+#include "ZigGlobalObject.h"
 
-#include "ExtendedDOMClientIsoSubspaces.h"
-#include "ExtendedDOMIsoSubspaces.h"
+#include "DOMClientIsoSubspaces.h"
+#include "DOMIsoSubspaces.h"
 #include <JavaScriptCore/FastMallocAlignedMemoryAllocator.h>
 #include <JavaScriptCore/HeapInlines.h>
 #include <JavaScriptCore/IsoHeapCellType.h>
 #include <JavaScriptCore/JSDestructibleObjectHeapCellType.h>
-// #include <JavaScriptCore/MarkingConstraint.h>
 #include <JavaScriptCore/SubspaceInlines.h>
 #include <JavaScriptCore/VM.h>
 #include <wtf/MainThread.h>
 
-#include "JSDOMConstructorBase.h"
-#include "JSDOMBuiltinConstructorBase.h"
 
 #include "BunGCOutputConstraint.h"
 #include "WebCoreTypedArrayController.h"
@@ -26,7 +29,6 @@
 #include "NodeVM.h"
 #include "../../bake/BakeGlobalObject.h"
 #include "napi_handle_scope.h"
-#include "NativePromiseContext.h"
 
 namespace WebCore {
 using namespace JSC;
@@ -38,11 +40,8 @@ JSHeapData::JSHeapData(Heap& heap)
     , m_heapCellTypeForNodeVMGlobalObject(JSC::IsoHeapCellType::Args<Bun::NodeVMGlobalObject>())
     , m_heapCellTypeForBakeGlobalObject(JSC::IsoHeapCellType::Args<Bake::GlobalObject>())
     , m_heapCellTypeForNapiHandleScopeImpl(JSC::IsoHeapCellType::Args<Bun::NapiHandleScopeImpl>())
-    , m_heapCellTypeForNativePromiseContext(JSC::IsoHeapCellType::Args<Bun::NativePromiseContext>())
-    , m_domBuiltinConstructorSpace ISO_SUBSPACE_INIT(heap, heap.cellHeapCellType, JSDOMBuiltinConstructorBase)
-    , m_domConstructorSpace ISO_SUBSPACE_INIT(heap, heap.cellHeapCellType, JSDOMConstructorBase)
     , m_domNamespaceObjectSpace ISO_SUBSPACE_INIT(heap, heap.cellHeapCellType, JSDOMObject)
-    , m_subspaces(makeUnique<ExtendedDOMIsoSubspaces>())
+    , m_subspaces(makeUnique<DOMIsoSubspaces>())
 
 {
 }
@@ -52,13 +51,13 @@ JSHeapData::~JSHeapData() = default;
 #define CLIENT_ISO_SUBSPACE_INIT(subspace) subspace(m_heapData->subspace)
 
 JSVMClientData::JSVMClientData(VM& vm, RefPtr<JSC::SourceProvider> sourceProvider)
-    : m_builtinNames(vm)
-    , m_builtinFunctions(makeUnique<JSBuiltinFunctions>(vm, sourceProvider, m_builtinNames))
+    : m_vm(vm)
+    , m_builtinNames(vm)
+    , m_builtinFunctions(makeUnique<JSBuiltinFunctions>(vm, sourceProvider))
+    , m_bindgenIdentifiers(std::make_unique<Bun::Bindgen::IdentifierTable>(vm))
     , m_heapData(JSHeapData::ensureHeapData(vm.heap))
-    , CLIENT_ISO_SUBSPACE_INIT(m_domBuiltinConstructorSpace)
-    , CLIENT_ISO_SUBSPACE_INIT(m_domConstructorSpace)
     , CLIENT_ISO_SUBSPACE_INIT(m_domNamespaceObjectSpace)
-    , m_clientSubspaces(makeUnique<ExtendedDOMClientIsoSubspaces>())
+    , m_clientSubspaces(makeUnique<DOMClientIsoSubspaces>())
 {
 }
 
@@ -81,34 +80,57 @@ DEFINE_ALLOCATOR_WITH_HEAP_IDENTIFIER(JSVMClientData);
 
 JSVMClientData::~JSVMClientData()
 {
+    if (webViewChromeTransport)
+        webViewChromeTransport->shutdown();
+#if OS(DARWIN)
+    if (webViewHostClient)
+        webViewHostClient->shutdown();
+#endif
+    Bun::clearDebuggerCallbacksForVM(*this);
+    closeSQLiteDatabasesForVM(*this);
+    if (bindgenWrapperRegistry)
+        bindgenWrapperRegistry->detachAll();
+    isolationSourceProviderCache.clear();
+    Bun::Bindgen::ZigExports::bunBindgenZig_virtual_machine_virtualMachineDrainNativeFinalizers(
+        reinterpret_cast<VirtualMachine*>(bunVM));
     m_clients.forEach([](auto& client) {
         client.willDestroyVM();
     });
     m_clients.clear();
 
-    m_normalWorld = nullptr;
+    if (bindgenWrapperRegistry)
+        bindgenWrapperRegistry->detachAll();
+    Bun::Bindgen::ZigExports::bunBindgenZig_virtual_machine_virtualMachineDrainNativeFinalizers(
+        reinterpret_cast<VirtualMachine*>(bunVM));
+    RELEASE_ASSERT(m_vm.heap.isShuttingDown());
+    // VM deletes client data only after lastChanceToFinalize has completed.
+    Bun::Bindgen::ZigExports::bunBindgenZig_virtual_machine_virtualMachineCloseNativeFinalizers(
+        reinterpret_cast<VirtualMachine*>(bunVM));
 }
-void JSVMClientData::create(VM* vm, void* bunVM)
+
+void JSVMClientData::create(VM* vm, VirtualMachine* bunVM)
 {
     auto provider = WebCore::createBuiltinsSourceProvider();
     JSVMClientData* clientData = new JSVMClientData(*vm, provider);
     clientData->bunVM = bunVM;
+    clientData->webViewChromeTransport = makeUnique<Bun::CDP::Transport>(bunVM);
+#if OS(DARWIN)
+    clientData->webViewHostClient = makeUnique<Bun::WK::HostClient>(bunVM);
+#endif
     vm->deferredWorkTimer->onAddPendingWork = [clientData](Ref<JSC::DeferredWorkTimer::Ticket>&& ticket, JSC::DeferredWorkTimer::WorkType kind) -> void {
         Bun::JSCTaskScheduler::onAddPendingWork(clientData, WTF::move(ticket), kind);
     };
-    vm->deferredWorkTimer->onScheduleWorkSoon = [clientData](Ref<JSC::DeferredWorkTimer::Ticket>&& ticket, JSC::DeferredWorkTimer::Task&& task) -> void {
-        Bun::JSCTaskScheduler::onScheduleWorkSoon(clientData, WTF::move(ticket), WTF::move(task));
+    vm->deferredWorkTimer->onScheduleWorkSoon = [clientData, vm](Ref<JSC::DeferredWorkTimer::Ticket>&& ticket, JSC::DeferredWorkTimer::Task&& task) -> void {
+        Bun::JSCTaskScheduler::onScheduleWorkSoon(*vm, clientData, WTF::move(ticket), WTF::move(task));
     };
     vm->deferredWorkTimer->onCancelPendingWork = [clientData](JSC::DeferredWorkTimer::Ticket& ticket) -> void {
         Bun::JSCTaskScheduler::onCancelPendingWork(clientData, ticket);
     };
 
     vm->clientData = clientData; // ~VM deletes this pointer.
-    clientData->m_normalWorld = DOMWrapperWorld::create(*vm, DOMWrapperWorld::Type::Normal);
 
     vm->heap.addMarkingConstraint(makeUnique<WebCore::DOMGCOutputConstraint>(*vm, clientData->heapData()));
     vm->m_typedArrayController = adoptRef(new WebCoreTypedArrayController(true));
-    clientData->builtinFunctions().exportNames();
 }
 
 WebCore::HTTPHeaderIdentifiers& JSVMClientData::httpHeaderIdentifiers()

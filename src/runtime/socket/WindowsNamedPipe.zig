@@ -17,598 +17,628 @@
 /// Uses libuv for the underlying Named Pipe operations while maintaining compatibility
 /// with µWebSockets, bridging the gap between libuv's pipe handling and uSockets'
 /// unified socket interface.
-const WindowsNamedPipe = @This();
+pub fn WithRuntime(comptime Runtime: type) type {
+    return struct {
+        const WindowsNamedPipe = @This();
+        const EventLoopTimer = Runtime.Timer;
 
-wrapper: ?WrapperType,
-pipe: if (Environment.isWindows) ?*uv.Pipe else void, // any duplex
-vm: *bun.jsc.VirtualMachine, //TODO: create a timeout version that dont need the jsc VM
+        wrapper: ?WrapperType,
+        pipe: if (Environment.isWindows) ?*uv.Pipe else void, // any duplex
+        runtime: Runtime,
 
-writer: bun.io.StreamingWriter(WindowsNamedPipe, .{
-    .onClose = onClose,
-    .onWritable = onWritable,
-    .onError = onError,
-    .onWrite = onWrite,
-}) = .{},
+        writer: bun.io.StreamingWriter(WindowsNamedPipe, .{
+            .onClose = onClose,
+            .onWritable = onWritable,
+            .onError = onError,
+            .onWrite = onWrite,
+        }) = .{},
 
-incoming: bun.ByteList = .{}, // Maybe we should use IPCBuffer here as well
-ssl_error: CertError = .{},
-handlers: Handlers,
-connect_req: uv.uv_connect_t = std.mem.zeroes(uv.uv_connect_t),
+        incoming: bun.ByteList = .{}, // Maybe we should use IPCBuffer here as well
+        ssl_error: CertError = .{},
+        handlers: Handlers,
+        connect_req: uv.uv_connect_t = std.mem.zeroes(uv.uv_connect_t),
 
-event_loop_timer: EventLoopTimer = .{
-    .next = .epoch,
-    .tag = .WindowsNamedPipe,
-},
-current_timeout: u32 = 0,
-flags: Flags = .{},
-
-pub const Flags = packed struct(u8) {
-    disconnected: bool = true,
-    is_closed: bool = false,
-    is_client: bool = false,
-    is_ssl: bool = false,
-    _: u4 = 0,
-};
-pub const Handlers = struct {
-    ctx: *anyopaque,
-    ref_ctx: *const fn (*anyopaque) void,
-    deref_ctx: *const fn (*anyopaque) void,
-    onOpen: *const fn (*anyopaque) void,
-    onHandshake: *const fn (*anyopaque, bool, uws.us_bun_verify_error_t) void,
-    onData: *const fn (*anyopaque, []const u8) void,
-    onClose: *const fn (*anyopaque) void,
-    onEnd: *const fn (*anyopaque) void,
-    onWritable: *const fn (*anyopaque) void,
-    onError: *const fn (*anyopaque, bun.sys.Error) void,
-    onTimeout: *const fn (*anyopaque) void,
-};
-
-fn onWritable(
-    this: *WindowsNamedPipe,
-) void {
-    log("onWritable", .{});
-    // flush pending data
-    this.flush();
-    // call onWritable (will flush on demand)
-    this.handlers.onWritable(this.handlers.ctx);
-}
-
-fn onPipeClose(this: *WindowsNamedPipe) void {
-    log("onPipeClose", .{});
-    this.flags.disconnected = true;
-    this.pipe = null;
-    this.onClose();
-}
-
-fn onReadAlloc(this: *WindowsNamedPipe, suggested_size: usize) []u8 {
-    var available = this.incoming.unusedCapacitySlice();
-    if (available.len < suggested_size) {
-        bun.handleOom(this.incoming.ensureUnusedCapacity(bun.default_allocator, suggested_size));
-        available = this.incoming.unusedCapacitySlice();
-    }
-    return available.ptr[0..suggested_size];
-}
-
-fn onRead(this: *WindowsNamedPipe, buffer: []const u8) void {
-    log("onRead ({})", .{buffer.len});
-    this.incoming.len += @as(u32, @truncate(buffer.len));
-    bun.assert(this.incoming.len <= this.incoming.cap);
-    bun.assert(bun.isSliceInBuffer(buffer, this.incoming.allocatedSlice()));
-
-    const data = this.incoming.slice();
-
-    this.resetTimeout();
-
-    if (this.wrapper) |*wrapper| {
-        wrapper.receiveData(data);
-    } else {
-        this.handlers.onData(this.handlers.ctx, data);
-    }
-    this.incoming.len = 0;
-}
-
-fn onWrite(this: *WindowsNamedPipe, amount: usize, status: bun.io.WriteStatus) void {
-    log("onWrite {d} {}", .{ amount, status });
-
-    switch (status) {
-        .pending => {},
-        .drained => {
-            // unref after sending all data
-            if (this.writer.source) |source| {
-                source.pipe.unref();
-            }
+        event_loop_timer: EventLoopTimer = .{
+            .next = .epoch,
+            .tag = .WindowsNamedPipe,
         },
-        .end_of_file => {
-            // we send FIN so we close after this
-            this.writer.close();
-        },
-    }
-}
+        current_timeout: u32 = 0,
+        flags: Flags = .{},
 
-fn onReadError(this: *WindowsNamedPipe, err: bun.sys.E) void {
-    log("onReadError", .{});
-    if (err == .EOF) {
-        // we received FIN but we dont allow half-closed connections right now
-        this.handlers.onEnd(this.handlers.ctx);
-    } else {
-        this.onError(bun.sys.Error.fromCode(err, .read));
-    }
-    this.writer.close();
-}
+        pub const Flags = packed struct(u8) {
+            disconnected: bool = true,
+            is_closed: bool = false,
+            is_client: bool = false,
+            is_ssl: bool = false,
+            _: u4 = 0,
+        };
+        pub const Handlers = struct {
+            ctx: *anyopaque,
+            ref_ctx: *const fn (*anyopaque) void,
+            deref_ctx: *const fn (*anyopaque) void,
+            onOpen: *const fn (*anyopaque) void,
+            onHandshake: *const fn (*anyopaque, bool, uws.us_bun_verify_error_t) void,
+            onData: *const fn (*anyopaque, []const u8) void,
+            onClose: *const fn (*anyopaque) void,
+            onEnd: *const fn (*anyopaque) void,
+            onWritable: *const fn (*anyopaque) void,
+            onError: *const fn (*anyopaque, bun.sys.Error) void,
+            onOutOfMemory: *const fn (*anyopaque) void,
+            onTimeout: *const fn (*anyopaque) void,
+        };
 
-fn onError(this: *WindowsNamedPipe, err: bun.sys.Error) void {
-    log("onError", .{});
-    this.handlers.onError(this.handlers.ctx, err);
-    this.close();
-}
+        fn onWritable(
+            this: *WindowsNamedPipe,
+        ) void {
+            log("onWritable", .{});
+            // flush pending data
+            this.flush();
+            // call onWritable (will flush on demand)
+            this.handlers.onWritable(this.handlers.ctx);
+        }
 
-fn onOpen(this: *WindowsNamedPipe) void {
-    log("onOpen", .{});
-    this.handlers.onOpen(this.handlers.ctx);
-}
+        fn onPipeClose(this: *WindowsNamedPipe) void {
+            log("onPipeClose", .{});
+            this.flags.disconnected = true;
+            this.pipe = null;
+            this.onClose();
+        }
 
-fn onData(this: *WindowsNamedPipe, decoded_data: []const u8) void {
-    log("onData ({})", .{decoded_data.len});
-    this.handlers.onData(this.handlers.ctx, decoded_data);
-}
-
-fn onHandshake(this: *WindowsNamedPipe, handshake_success: bool, ssl_error: uws.us_bun_verify_error_t) void {
-    log("onHandshake", .{});
-
-    this.ssl_error = .{
-        .error_no = ssl_error.error_no,
-        .code = if (ssl_error.code == null or ssl_error.error_no == 0) "" else bun.handleOom(bun.default_allocator.dupeSentinel(u8, ssl_error.code[0..bun.len(ssl_error.code) :0], 0)),
-        .reason = if (ssl_error.reason == null or ssl_error.error_no == 0) "" else bun.handleOom(bun.default_allocator.dupeSentinel(u8, ssl_error.reason[0..bun.len(ssl_error.reason) :0], 0)),
-    };
-    this.handlers.onHandshake(this.handlers.ctx, handshake_success, ssl_error);
-}
-
-fn onClose(this: *WindowsNamedPipe) void {
-    log("onClose", .{});
-    if (!this.flags.is_closed) {
-        this.flags.is_closed = true; // only call onClose once
-        this.handlers.onClose(this.handlers.ctx);
-        this.deinit();
-    }
-}
-
-fn callWriteOrEnd(this: *WindowsNamedPipe, data: ?[]const u8, msg_more: bool) void {
-    if (data) |bytes| {
-        if (bytes.len > 0) {
-            // ref because we have pending data
-            if (this.writer.source) |source| {
-                source.pipe.ref();
+        fn onReadAlloc(this: *WindowsNamedPipe, suggested_size: usize) []u8 {
+            var available = this.incoming.unusedCapacitySlice();
+            if (available.len < suggested_size) {
+                bun.handleOom(this.incoming.ensureUnusedCapacity(bun.default_allocator, suggested_size));
+                available = this.incoming.unusedCapacitySlice();
             }
-            if (this.flags.disconnected) {
-                // enqueue to be sent after connecting
-                bun.handleOom(this.writer.outgoing.write(bytes));
+            return available.ptr[0..suggested_size];
+        }
+
+        fn onRead(this: *WindowsNamedPipe, buffer: []const u8) void {
+            log("onRead ({})", .{buffer.len});
+            this.incoming.len += @as(u32, @truncate(buffer.len));
+            bun.assert(this.incoming.len <= this.incoming.cap);
+            bun.assert(bun.isSliceInBuffer(buffer, this.incoming.allocatedSlice()));
+
+            const data = this.incoming.slice();
+
+            this.resetTimeout();
+
+            if (this.wrapper) |*wrapper| {
+                wrapper.receiveData(data);
             } else {
-                // write will enqueue the data if it cannot be sent
-                _ = this.writer.write(bytes);
+                this.handlers.onData(this.handlers.ctx, data);
             }
+            this.incoming.len = 0;
         }
-    }
 
-    if (!msg_more) {
-        if (this.wrapper) |*wrapper| {
-            _ = wrapper.shutdown(false);
-        }
-        this.writer.end();
-    }
-}
+        fn onWrite(this: *WindowsNamedPipe, amount: usize, status: bun.io.WriteStatus) void {
+            log("onWrite {d} {}", .{ amount, status });
 
-fn internalWrite(this: *WindowsNamedPipe, encoded_data: []const u8) void {
-    this.resetTimeout();
-
-    // Possible scenarios:
-    // Scenario 1: will not write if is not connected yet but will enqueue the data
-    // Scenario 2: will not write if a exception is thrown (will be handled by onError)
-    // Scenario 3: will be queued in memory and will be flushed later
-    // Scenario 4: no write/end function exists (will be handled by onError)
-    this.callWriteOrEnd(encoded_data, true);
-}
-
-pub fn resumeStream(this: *WindowsNamedPipe) bool {
-    const stream = this.writer.getStream() orelse {
-        return false;
-    };
-    const readStartResult = stream.readStart(this, onReadAlloc, onReadError, onRead);
-    if (readStartResult == .err) {
-        return false;
-    }
-    return true;
-}
-
-pub fn pauseStream(this: *WindowsNamedPipe) bool {
-    const pipe = this.pipe orelse {
-        return false;
-    };
-    pipe.readStop();
-    return true;
-}
-
-pub fn flush(this: *WindowsNamedPipe) void {
-    if (this.wrapper) |*wrapper| {
-        _ = wrapper.flush();
-    }
-    if (!this.flags.disconnected) {
-        _ = this.writer.flush();
-    }
-}
-
-fn onInternalReceiveData(this: *WindowsNamedPipe, data: []const u8) void {
-    if (this.wrapper) |*wrapper| {
-        this.resetTimeout();
-        wrapper.receiveData(data);
-    }
-}
-
-pub fn onTimeout(this: *WindowsNamedPipe) void {
-    log("onTimeout", .{});
-
-    const has_been_cleared = this.event_loop_timer.state == .CANCELLED or this.vm.scriptExecutionStatus() != .running;
-
-    this.event_loop_timer.state = .FIRED;
-    this.event_loop_timer.heap = .{};
-
-    if (has_been_cleared) {
-        return;
-    }
-
-    this.handlers.onTimeout(this.handlers.ctx);
-}
-
-pub fn from(
-    pipe: *uv.Pipe,
-    handlers: WindowsNamedPipe.Handlers,
-    vm: *jsc.VirtualMachine,
-) WindowsNamedPipe {
-    if (Environment.isPosix) {
-        @compileError("WindowsNamedPipe is not supported on POSIX systems");
-    }
-    return WindowsNamedPipe{
-        .vm = vm,
-        .pipe = pipe,
-        .wrapper = null,
-        .handlers = handlers,
-    };
-}
-pub fn ref(this: *WindowsNamedPipe) void {
-    this.handlers.ref_ctx(this.handlers.ctx);
-}
-
-pub fn deref(this: *WindowsNamedPipe) void {
-    this.handlers.deref_ctx(this.handlers.ctx);
-}
-
-fn onConnect(this: *WindowsNamedPipe, status: uv.ReturnCode) void {
-    defer this.deref();
-    if (this.pipe) |pipe| {
-        _ = pipe.unref();
-    }
-
-    if (status.toError(.connect)) |err| {
-        this.onError(err);
-        return;
-    }
-
-    this.flags.disconnected = false;
-    if (this.start(true)) {
-        if (this.isTLS()) {
-            if (this.wrapper) |*wrapper| {
-                // trigger onOpen and start the handshake
-                wrapper.start();
-            }
-        } else {
-            // trigger onOpen
-            this.onOpen();
-        }
-    }
-    this.flush();
-}
-
-pub fn getAcceptedBy(this: *WindowsNamedPipe, server: *uv.Pipe, ssl_ctx: ?*BoringSSL.SSL_CTX) bun.sys.Maybe(void) {
-    bun.assert(this.pipe != null);
-    this.flags.disconnected = true;
-
-    if (ssl_ctx) |tls| {
-        this.flags.is_ssl = true;
-        this.wrapper = WrapperType.initWithCTX(tls, false, .{
-            .ctx = this,
-            .onOpen = WindowsNamedPipe.onOpen,
-            .onHandshake = WindowsNamedPipe.onHandshake,
-            .onData = WindowsNamedPipe.onData,
-            .onClose = WindowsNamedPipe.onClose,
-            .write = WindowsNamedPipe.internalWrite,
-        }) catch {
-            return .{
-                .err = .{
-                    .errno = @backingInt(bun.sys.E.PIPE),
-                    .syscall = .connect,
+            switch (status) {
+                .buffered, .pending => {},
+                .drained => {
+                    // unref after sending all data
+                    if (this.writer.source) |source| {
+                        source.pipe.unref();
+                    }
                 },
-            };
-        };
-        // ref because we are accepting will unref when wrapper deinit
-        _ = BoringSSL.SSL_CTX_up_ref(tls);
-    }
-    const initResult = this.pipe.?.init(this.vm.uvLoop(), false);
-    if (initResult == .err) {
-        return initResult;
-    }
-
-    const openResult = server.accept(this.pipe.?);
-    if (openResult == .err) {
-        return openResult;
-    }
-
-    this.flags.disconnected = false;
-    if (this.start(false)) {
-        if (this.isTLS()) {
-            if (this.wrapper) |*wrapper| {
-                // trigger onOpen and start the handshake
-                wrapper.start();
+                .end_of_file => {
+                    // we send FIN so we close after this
+                    this.writer.close();
+                },
             }
-        } else {
-            // trigger onOpen
-            this.onOpen();
         }
-    }
-    return .success;
-}
-pub fn open(this: *WindowsNamedPipe, fd: bun.FD, ssl_options: ?jsc.API.ServerConfig.SSLConfig, owned_ctx: ?*BoringSSL.SSL_CTX) bun.sys.Maybe(void) {
-    bun.assert(this.pipe != null);
-    this.flags.disconnected = true;
 
-    if (this.initTLSWrapper(ssl_options, owned_ctx)) |result| {
-        if (result == .err) return result;
-    }
-    const initResult = this.pipe.?.init(this.vm.uvLoop(), false);
-    if (initResult == .err) {
-        return initResult;
-    }
-
-    const openResult = this.pipe.?.open(fd);
-    if (openResult == .err) {
-        return openResult;
-    }
-
-    this.ref();
-    onConnect(this, uv.ReturnCode.zero);
-    return .success;
-}
-
-pub fn connect(this: *WindowsNamedPipe, path: []const u8, ssl_options: ?jsc.API.ServerConfig.SSLConfig, owned_ctx: ?*BoringSSL.SSL_CTX) bun.sys.Maybe(void) {
-    bun.assert(this.pipe != null);
-    this.flags.disconnected = true;
-    // ref because we are connecting
-    _ = this.pipe.?.ref();
-
-    if (this.initTLSWrapper(ssl_options, owned_ctx)) |result| {
-        if (result == .err) return result;
-    }
-    const initResult = this.pipe.?.init(this.vm.uvLoop(), false);
-    if (initResult == .err) {
-        return initResult;
-    }
-
-    this.connect_req.data = this;
-    const result = this.pipe.?.connect(&this.connect_req, path, this, onConnect);
-    if (result.asErr() != null) {
-        return result;
-    }
-    this.ref();
-    return result;
-}
-
-/// Set up the in-process SSL wrapper for `connect`/`open`. Prefers a prebuilt
-/// `SSL_CTX` (one ref ADOPTED — held by `wrapper` on success, freed here on
-/// failure) so a memoised `tls.createSecureContext` reaches this path with its
-/// CA bundle intact; on this branch `[buntls]` returns `{secureContext}` and no
-/// longer spreads `{ca,cert,key}`, so the `SSLConfig` fallback alone would build
-/// a CTX with an empty trust store and fail `DEPTH_ZERO_SELF_SIGNED_CERT`.
-/// Returns null when neither input requested TLS.
-fn initTLSWrapper(this: *WindowsNamedPipe, ssl_options: ?jsc.API.ServerConfig.SSLConfig, owned_ctx: ?*BoringSSL.SSL_CTX) ?bun.sys.Maybe(void) {
-    const handlers: WrapperType.Handlers = .{
-        .ctx = this,
-        .onOpen = WindowsNamedPipe.onOpen,
-        .onHandshake = WindowsNamedPipe.onHandshake,
-        .onData = WindowsNamedPipe.onData,
-        .onClose = WindowsNamedPipe.onClose,
-        .write = WindowsNamedPipe.internalWrite,
-    };
-    if (owned_ctx) |ctx| {
-        this.flags.is_ssl = true;
-        this.wrapper = WrapperType.initWithCTX(ctx, true, handlers) catch {
-            BoringSSL.SSL_CTX_free(ctx);
-            return .{ .err = .{ .errno = @backingInt(bun.sys.E.PIPE), .syscall = .connect } };
-        };
-        return .success;
-    }
-    if (ssl_options) |tls| {
-        this.flags.is_ssl = true;
-        this.wrapper = WrapperType.init(tls, true, handlers) catch {
-            return .{ .err = .{ .errno = @backingInt(bun.sys.E.PIPE), .syscall = .connect } };
-        };
-        return .success;
-    }
-    return null;
-}
-
-pub fn startTLS(this: *WindowsNamedPipe, ssl_options: jsc.API.ServerConfig.SSLConfig, is_client: bool) !void {
-    this.flags.is_ssl = true;
-    if (this.start(is_client)) {
-        this.wrapper = try WrapperType.init(ssl_options, is_client, .{
-            .ctx = this,
-            .onOpen = WindowsNamedPipe.onOpen,
-            .onHandshake = WindowsNamedPipe.onHandshake,
-            .onData = WindowsNamedPipe.onData,
-            .onClose = WindowsNamedPipe.onClose,
-            .write = WindowsNamedPipe.internalWrite,
-        });
-
-        this.wrapper.?.start();
-    }
-}
-
-pub fn start(this: *WindowsNamedPipe, is_client: bool) bool {
-    this.flags.is_client = is_client;
-    if (this.pipe == null) {
-        return false;
-    }
-    _ = this.pipe.?.unref();
-    this.writer.setParent(this);
-    const startPipeResult = this.writer.startWithPipe(this.pipe.?);
-    if (startPipeResult == .err) {
-        this.onError(startPipeResult.err);
-        return false;
-    }
-    const stream = this.writer.getStream() orelse {
-        this.onError(bun.sys.Error.fromCode(bun.sys.E.PIPE, .read));
-        return false;
-    };
-
-    const readStartResult = stream.readStart(this, onReadAlloc, onReadError, onRead);
-    if (readStartResult == .err) {
-        this.onError(readStartResult.err);
-        return false;
-    }
-    return true;
-}
-
-pub fn isTLS(this: *WindowsNamedPipe) bool {
-    return this.flags.is_ssl;
-}
-
-pub fn loop(this: *WindowsNamedPipe) *bun.Async.Loop {
-    return this.vm.uvLoop();
-}
-
-pub fn encodeAndWrite(this: *WindowsNamedPipe, data: []const u8) i32 {
-    log("encodeAndWrite (len: {})", .{data.len});
-    if (this.wrapper) |*wrapper| {
-        return @as(i32, @intCast(wrapper.writeData(data) catch 0));
-    } else {
-        this.internalWrite(data);
-    }
-    return @intCast(data.len);
-}
-
-pub fn rawWrite(this: *WindowsNamedPipe, encoded_data: []const u8) i32 {
-    this.internalWrite(encoded_data);
-    return @intCast(encoded_data.len);
-}
-
-pub fn close(this: *WindowsNamedPipe) void {
-    if (this.wrapper) |*wrapper| {
-        _ = wrapper.shutdown(false);
-    }
-    this.writer.end();
-}
-
-pub fn shutdown(this: *WindowsNamedPipe) void {
-    if (this.wrapper) |*wrapper| {
-        _ = wrapper.shutdown(false);
-    }
-}
-
-pub fn shutdownRead(this: *WindowsNamedPipe) void {
-    if (this.wrapper) |*wrapper| {
-        _ = wrapper.shutdownRead();
-    } else {
-        if (this.writer.getStream()) |stream| {
-            _ = stream.readStop();
+        fn onReadError(this: *WindowsNamedPipe, err: bun.sys.E) void {
+            log("onReadError", .{});
+            this.ref();
+            defer this.deref();
+            if (err == .EOF) {
+                // we received FIN but we dont allow half-closed connections right now
+                this.handlers.onEnd(this.handlers.ctx);
+            } else {
+                this.onError(bun.sys.Error.fromCode(err, .read));
+            }
+            if (!this.flags.is_closed) this.writer.close();
         }
-    }
-}
 
-pub fn isShutdown(this: *WindowsNamedPipe) bool {
-    if (this.wrapper) |wrapper| {
-        return wrapper.isShutdown();
-    }
+        fn onError(this: *WindowsNamedPipe, err: bun.sys.Error) void {
+            log("onError", .{});
+            this.ref();
+            defer this.deref();
+            this.handlers.onError(this.handlers.ctx, err);
+            this.close();
+        }
 
-    return this.flags.disconnected or this.writer.is_done;
-}
+        fn onOpen(this: *WindowsNamedPipe) void {
+            log("onOpen", .{});
+            this.handlers.onOpen(this.handlers.ctx);
+        }
 
-pub fn isClosed(this: *WindowsNamedPipe) bool {
-    if (this.wrapper) |wrapper| {
-        return wrapper.isClosed();
-    }
-    return this.flags.disconnected;
-}
+        fn onData(this: *WindowsNamedPipe, decoded_data: []const u8) void {
+            log("onData ({})", .{decoded_data.len});
+            this.handlers.onData(this.handlers.ctx, decoded_data);
+        }
 
-pub fn isEstablished(this: *WindowsNamedPipe) bool {
-    return !this.isClosed();
-}
+        fn onHandshake(this: *WindowsNamedPipe, handshake_success: bool, ssl_error: uws.us_bun_verify_error_t) void {
+            log("onHandshake", .{});
 
-pub fn ssl(this: *WindowsNamedPipe) ?*BoringSSL.SSL {
-    if (this.wrapper) |wrapper| {
-        return wrapper.ssl;
-    }
-    return null;
-}
+            const retained_error = CertError.init(
+                ssl_error.error_no,
+                if (ssl_error.code == null or ssl_error.error_no == 0) "" else ssl_error.code[0..bun.len(ssl_error.code)],
+                if (ssl_error.reason == null or ssl_error.error_no == 0) "" else ssl_error.reason[0..bun.len(ssl_error.reason)],
+            ) catch {
+                const handlers = this.handlers;
+                handlers.ref_ctx(handlers.ctx);
+                defer handlers.deref_ctx(handlers.ctx);
+                handlers.onOutOfMemory(handlers.ctx);
+                if (!this.flags.is_closed) this.close();
+                return;
+            };
+            this.ssl_error.deinit();
+            this.ssl_error = retained_error;
+            this.handlers.onHandshake(this.handlers.ctx, handshake_success, ssl_error);
+        }
 
-pub fn sslError(this: *WindowsNamedPipe) us_bun_verify_error_t {
-    return .{
-        .error_no = this.ssl_error.error_no,
-        .code = @ptrCast(this.ssl_error.code.ptr),
-        .reason = @ptrCast(this.ssl_error.reason.ptr),
+        fn onClose(this: *WindowsNamedPipe) void {
+            log("onClose", .{});
+            if (!this.flags.is_closed) {
+                this.ref();
+                defer this.deref();
+                this.flags.is_closed = true; // only call onClose once
+                this.handlers.onClose(this.handlers.ctx);
+                this.deinit();
+            }
+        }
+
+        fn callWriteOrEnd(this: *WindowsNamedPipe, data: ?[]const u8, msg_more: bool) void {
+            if (data) |bytes| {
+                if (bytes.len > 0) {
+                    // ref because we have pending data
+                    if (this.writer.source) |source| {
+                        source.pipe.ref();
+                    }
+                    if (this.flags.disconnected) {
+                        // enqueue to be sent after connecting
+                        this.writer.outgoing.write(bytes) catch {
+                            this.onError(bun.sys.Error.oom);
+                            return;
+                        };
+                    } else {
+                        // write will enqueue the data if it cannot be sent
+                        const result = this.writer.write(bytes) catch {
+                            this.onError(bun.sys.Error.oom);
+                            return;
+                        };
+                        if (result == .err) {
+                            this.onError(result.err);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if (!msg_more) {
+                if (this.wrapper) |*wrapper| {
+                    _ = wrapper.shutdown(false);
+                }
+                this.writer.end();
+            }
+        }
+
+        fn internalWrite(this: *WindowsNamedPipe, encoded_data: []const u8) void {
+            this.resetTimeout();
+
+            // Possible scenarios:
+            // Scenario 1: will not write if is not connected yet but will enqueue the data
+            // Scenario 2: will not write if a exception is thrown (will be handled by onError)
+            // Scenario 3: will be queued in memory and will be flushed later
+            // Scenario 4: no write/end function exists (will be handled by onError)
+            this.callWriteOrEnd(encoded_data, true);
+        }
+
+        pub fn resumeStream(this: *WindowsNamedPipe) bool {
+            const stream = this.writer.getStream() orelse {
+                return false;
+            };
+            const readStartResult = stream.readStart(this, onReadAlloc, onReadError, onRead);
+            if (readStartResult == .err) {
+                return false;
+            }
+            return true;
+        }
+
+        pub fn pauseStream(this: *WindowsNamedPipe) bool {
+            const pipe = this.pipe orelse {
+                return false;
+            };
+            pipe.readStop();
+            return true;
+        }
+
+        pub fn flush(this: *WindowsNamedPipe) void {
+            if (this.wrapper) |*wrapper| {
+                _ = wrapper.flush();
+            }
+            if (!this.flags.disconnected) {
+                _ = this.writer.flush();
+            }
+        }
+
+        fn onInternalReceiveData(this: *WindowsNamedPipe, data: []const u8) void {
+            if (this.wrapper) |*wrapper| {
+                this.resetTimeout();
+                wrapper.receiveData(data);
+            }
+        }
+
+        pub fn onTimeout(this: *WindowsNamedPipe) void {
+            log("onTimeout", .{});
+
+            const has_been_cleared = this.event_loop_timer.state == .CANCELLED or !this.runtime.isScriptRunning();
+
+            this.event_loop_timer.state = .FIRED;
+            this.event_loop_timer.heap = .{};
+
+            if (has_been_cleared) {
+                return;
+            }
+
+            this.handlers.onTimeout(this.handlers.ctx);
+        }
+
+        pub fn from(
+            pipe: *uv.Pipe,
+            handlers: WindowsNamedPipe.Handlers,
+            runtime: Runtime,
+        ) WindowsNamedPipe {
+            if (Environment.isPosix) {
+                @compileError("WindowsNamedPipe is not supported on POSIX systems");
+            }
+            return WindowsNamedPipe{
+                .runtime = runtime,
+                .pipe = pipe,
+                .wrapper = null,
+                .handlers = handlers,
+            };
+        }
+        pub fn ref(this: *WindowsNamedPipe) void {
+            this.handlers.ref_ctx(this.handlers.ctx);
+        }
+
+        pub fn deref(this: *WindowsNamedPipe) void {
+            this.handlers.deref_ctx(this.handlers.ctx);
+        }
+
+        fn onConnect(this: *WindowsNamedPipe, status: uv.ReturnCode) void {
+            defer this.deref();
+            if (this.pipe) |pipe| {
+                _ = pipe.unref();
+            }
+
+            if (status.toError(.connect)) |err| {
+                this.onError(err);
+                return;
+            }
+
+            this.flags.disconnected = false;
+            if (this.start(true)) {
+                if (this.isTLS()) {
+                    if (this.wrapper) |*wrapper| {
+                        // trigger onOpen and start the handshake
+                        wrapper.start();
+                    }
+                } else {
+                    // trigger onOpen
+                    this.onOpen();
+                }
+            }
+            this.flush();
+        }
+
+        pub fn getAcceptedBy(this: *WindowsNamedPipe, server: *uv.Pipe, ssl_ctx: ?*BoringSSL.SSL_CTX) bun.sys.Maybe(void) {
+            bun.assert(this.pipe != null);
+            this.flags.disconnected = true;
+
+            if (ssl_ctx) |tls| {
+                this.flags.is_ssl = true;
+                this.wrapper = WrapperType.initWithCTX(tls, false, .{
+                    .ctx = this,
+                    .onOpen = WindowsNamedPipe.onOpen,
+                    .onHandshake = WindowsNamedPipe.onHandshake,
+                    .onData = WindowsNamedPipe.onData,
+                    .onClose = WindowsNamedPipe.onClose,
+                    .write = WindowsNamedPipe.internalWrite,
+                }) catch {
+                    return .{
+                        .err = .{
+                            .errno = @backingInt(bun.sys.E.PIPE),
+                            .syscall = .connect,
+                        },
+                    };
+                };
+                // ref because we are accepting will unref when wrapper deinit
+                _ = BoringSSL.SSL_CTX_up_ref(tls);
+            }
+            const initResult = this.pipe.?.init(this.runtime.asyncLoop(), false);
+            if (initResult == .err) {
+                return initResult;
+            }
+
+            const openResult = server.accept(this.pipe.?);
+            if (openResult == .err) {
+                return openResult;
+            }
+
+            this.flags.disconnected = false;
+            if (this.start(false)) {
+                if (this.isTLS()) {
+                    if (this.wrapper) |*wrapper| {
+                        // trigger onOpen and start the handshake
+                        wrapper.start();
+                    }
+                } else {
+                    // trigger onOpen
+                    this.onOpen();
+                }
+            }
+            return .success;
+        }
+        pub fn open(this: *WindowsNamedPipe, fd: bun.FD, ssl_options: ?SSLConfig, owned_ctx: ?*BoringSSL.SSL_CTX) bun.sys.Maybe(void) {
+            bun.assert(this.pipe != null);
+            this.flags.disconnected = true;
+
+            if (this.initTLSWrapper(ssl_options, owned_ctx)) |result| {
+                if (result == .err) return result;
+            }
+            const initResult = this.pipe.?.init(this.runtime.asyncLoop(), false);
+            if (initResult == .err) {
+                return initResult;
+            }
+
+            const openResult = this.pipe.?.open(fd);
+            if (openResult == .err) {
+                return openResult;
+            }
+
+            this.ref();
+            onConnect(this, uv.ReturnCode.zero);
+            return .success;
+        }
+
+        pub fn connect(this: *WindowsNamedPipe, path: []const u8, ssl_options: ?SSLConfig, owned_ctx: ?*BoringSSL.SSL_CTX) bun.sys.Maybe(void) {
+            bun.assert(this.pipe != null);
+            this.flags.disconnected = true;
+            // ref because we are connecting
+            _ = this.pipe.?.ref();
+
+            if (this.initTLSWrapper(ssl_options, owned_ctx)) |result| {
+                if (result == .err) return result;
+            }
+            const initResult = this.pipe.?.init(this.runtime.asyncLoop(), false);
+            if (initResult == .err) {
+                return initResult;
+            }
+
+            this.connect_req.data = this;
+            const result = this.pipe.?.connect(&this.connect_req, path, this, onConnect);
+            if (result.asErr() != null) {
+                return result;
+            }
+            this.ref();
+            return result;
+        }
+
+        /// Set up the in-process SSL wrapper for `connect`/`open`. Prefers a prebuilt
+        /// `SSL_CTX` (one ref ADOPTED — held by `wrapper` on success, freed here on
+        /// failure) so a memoised `tls.createSecureContext` reaches this path with its
+        /// CA bundle intact; on this branch `[buntls]` returns `{secureContext}` and no
+        /// longer spreads `{ca,cert,key}`, so the `SSLConfig` fallback alone would build
+        /// a CTX with an empty trust store and fail `DEPTH_ZERO_SELF_SIGNED_CERT`.
+        /// Returns null when neither input requested TLS.
+        fn initTLSWrapper(this: *WindowsNamedPipe, ssl_options: ?SSLConfig, owned_ctx: ?*BoringSSL.SSL_CTX) ?bun.sys.Maybe(void) {
+            const handlers: WrapperType.Handlers = .{
+                .ctx = this,
+                .onOpen = WindowsNamedPipe.onOpen,
+                .onHandshake = WindowsNamedPipe.onHandshake,
+                .onData = WindowsNamedPipe.onData,
+                .onClose = WindowsNamedPipe.onClose,
+                .write = WindowsNamedPipe.internalWrite,
+            };
+            if (owned_ctx) |ctx| {
+                this.flags.is_ssl = true;
+                this.wrapper = WrapperType.initWithCTX(ctx, true, handlers) catch {
+                    BoringSSL.SSL_CTX_free(ctx);
+                    return .{ .err = .{ .errno = @backingInt(bun.sys.E.PIPE), .syscall = .connect } };
+                };
+                return .success;
+            }
+            if (ssl_options) |tls| {
+                this.flags.is_ssl = true;
+                this.wrapper = WrapperType.init(tls.asUSockets(), true, handlers) catch {
+                    return .{ .err = .{ .errno = @backingInt(bun.sys.E.PIPE), .syscall = .connect } };
+                };
+                return .success;
+            }
+            return null;
+        }
+
+        pub fn startTLS(this: *WindowsNamedPipe, ssl_options: SSLConfig, is_client: bool) !void {
+            this.flags.is_ssl = true;
+            if (this.start(is_client)) {
+                this.wrapper = try WrapperType.init(ssl_options.asUSockets(), is_client, .{
+                    .ctx = this,
+                    .onOpen = WindowsNamedPipe.onOpen,
+                    .onHandshake = WindowsNamedPipe.onHandshake,
+                    .onData = WindowsNamedPipe.onData,
+                    .onClose = WindowsNamedPipe.onClose,
+                    .write = WindowsNamedPipe.internalWrite,
+                });
+
+                this.wrapper.?.start();
+            }
+        }
+
+        pub fn start(this: *WindowsNamedPipe, is_client: bool) bool {
+            this.flags.is_client = is_client;
+            if (this.pipe == null) {
+                return false;
+            }
+            _ = this.pipe.?.unref();
+            this.writer.setParent(this);
+            const startPipeResult = this.writer.startWithPipe(this.pipe.?);
+            if (startPipeResult == .err) {
+                this.onError(startPipeResult.err);
+                return false;
+            }
+            const stream = this.writer.getStream() orelse {
+                this.onError(bun.sys.Error.fromCode(bun.sys.E.PIPE, .read));
+                return false;
+            };
+
+            const readStartResult = stream.readStart(this, onReadAlloc, onReadError, onRead);
+            if (readStartResult == .err) {
+                this.onError(readStartResult.err);
+                return false;
+            }
+            return true;
+        }
+
+        pub fn isTLS(this: *WindowsNamedPipe) bool {
+            return this.flags.is_ssl;
+        }
+
+        pub fn loop(this: *WindowsNamedPipe) *bun.Async.Loop {
+            return this.runtime.asyncLoop();
+        }
+
+        pub fn encodeAndWrite(this: *WindowsNamedPipe, data: []const u8) i32 {
+            log("encodeAndWrite (len: {})", .{data.len});
+            if (this.wrapper) |*wrapper| {
+                return @as(i32, @intCast(wrapper.writeData(data) catch 0));
+            } else {
+                this.internalWrite(data);
+            }
+            return @intCast(data.len);
+        }
+
+        pub fn rawWrite(this: *WindowsNamedPipe, encoded_data: []const u8) i32 {
+            this.internalWrite(encoded_data);
+            return @intCast(encoded_data.len);
+        }
+
+        pub fn close(this: *WindowsNamedPipe) void {
+            if (this.flags.is_closed) return;
+            this.ref();
+            defer this.deref();
+            if (this.wrapper) |*wrapper| {
+                _ = wrapper.shutdown(false);
+            }
+            if (!this.flags.is_closed) this.writer.end();
+        }
+
+        pub fn shutdown(this: *WindowsNamedPipe) void {
+            if (this.wrapper) |*wrapper| {
+                _ = wrapper.shutdown(false);
+            }
+        }
+
+        pub fn shutdownRead(this: *WindowsNamedPipe) void {
+            if (this.wrapper) |*wrapper| {
+                _ = wrapper.shutdownRead();
+            } else {
+                if (this.writer.getStream()) |stream| {
+                    _ = stream.readStop();
+                }
+            }
+        }
+
+        pub fn isShutdown(this: *WindowsNamedPipe) bool {
+            if (this.wrapper) |wrapper| {
+                return wrapper.isShutdown();
+            }
+
+            return this.flags.disconnected or this.writer.is_done;
+        }
+
+        pub fn isClosed(this: *WindowsNamedPipe) bool {
+            if (this.wrapper) |wrapper| {
+                return wrapper.isClosed();
+            }
+            return this.flags.disconnected;
+        }
+
+        pub fn isEstablished(this: *WindowsNamedPipe) bool {
+            return !this.isClosed();
+        }
+
+        pub fn ssl(this: *WindowsNamedPipe) ?*BoringSSL.SSL {
+            if (this.wrapper) |wrapper| {
+                return wrapper.ssl;
+            }
+            return null;
+        }
+
+        pub fn sslError(this: *WindowsNamedPipe) us_bun_verify_error_t {
+            return .{
+                .error_no = this.ssl_error.error_no,
+                .code = @ptrCast(this.ssl_error.code.ptr),
+                .reason = @ptrCast(this.ssl_error.reason.ptr),
+            };
+        }
+
+        pub fn resetTimeout(this: *WindowsNamedPipe) void {
+            this.setTimeoutInMilliseconds(this.current_timeout);
+        }
+        pub fn setTimeoutInMilliseconds(this: *WindowsNamedPipe, ms: c_uint) void {
+            if (this.event_loop_timer.state == .ACTIVE) {
+                this.runtime.removeTimer(&this.event_loop_timer);
+            }
+            this.current_timeout = ms;
+
+            // if the interval is 0 means that we stop the timer
+            if (ms == 0) {
+                return;
+            }
+
+            // reschedule the timer
+            this.event_loop_timer.next = bun.timespec.msFromNow(.allow_mocked_time, ms);
+            this.runtime.insertTimer(&this.event_loop_timer);
+        }
+        pub fn setTimeout(this: *WindowsNamedPipe, seconds: c_uint) void {
+            log("setTimeout({d})", .{seconds});
+            this.setTimeoutInMilliseconds(seconds * 1000);
+        }
+        /// Free internal resources, it can be called multiple times
+        pub fn deinit(this: *WindowsNamedPipe) void {
+            log("deinit", .{});
+            // clear the timer
+            this.setTimeout(0);
+            if (this.writer.getStream()) |stream| {
+                _ = stream.readStop();
+            }
+            this.writer.deinit();
+            if (this.wrapper) |*wrapper| {
+                wrapper.deinit();
+                this.wrapper = null;
+            }
+            this.ssl_error.deinit();
+        }
+
+        pub const CertError = @import("./CertError.zig");
+        const WrapperType = SSLWrapper(*WindowsNamedPipe);
+        const log = bun.Output.scoped(.WindowsNamedPipe, .visible);
     };
 }
-
-pub fn resetTimeout(this: *WindowsNamedPipe) void {
-    this.setTimeoutInMilliseconds(this.current_timeout);
-}
-pub fn setTimeoutInMilliseconds(this: *WindowsNamedPipe, ms: c_uint) void {
-    if (this.event_loop_timer.state == .ACTIVE) {
-        this.vm.timer.remove(&this.event_loop_timer);
-    }
-    this.current_timeout = ms;
-
-    // if the interval is 0 means that we stop the timer
-    if (ms == 0) {
-        return;
-    }
-
-    // reschedule the timer
-    this.event_loop_timer.next = bun.timespec.msFromNow(.allow_mocked_time, ms);
-    this.vm.timer.insert(&this.event_loop_timer);
-}
-pub fn setTimeout(this: *WindowsNamedPipe, seconds: c_uint) void {
-    log("setTimeout({d})", .{seconds});
-    this.setTimeoutInMilliseconds(seconds * 1000);
-}
-/// Free internal resources, it can be called multiple times
-pub fn deinit(this: *WindowsNamedPipe) void {
-    log("deinit", .{});
-    // clear the timer
-    this.setTimeout(0);
-    if (this.writer.getStream()) |stream| {
-        _ = stream.readStop();
-    }
-    this.writer.deinit();
-    if (this.wrapper) |*wrapper| {
-        wrapper.deinit();
-        this.wrapper = null;
-    }
-    var ssl_error = this.ssl_error;
-    ssl_error.deinit();
-    this.ssl_error = .{};
-}
-
-pub const CertError = UpgradedDuplex.CertError;
-const WrapperType = SSLWrapper(*WindowsNamedPipe);
-const log = bun.Output.scoped(.WindowsNamedPipe, .visible);
 
 const std = @import("std");
 const SSLWrapper = @import("./ssl_wrapper.zig").SSLWrapper;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const jsc = bun.jsc;
 const BoringSSL = bun.BoringSSL.c;
 const uv = bun.windows.libuv;
-const EventLoopTimer = bun.api.Timer.EventLoopTimer;
+const SSLConfig = @import("./SSLConfig.zig");
 
 const uws = bun.uws;
-const UpgradedDuplex = uws.UpgradedDuplex;
 const us_bun_verify_error_t = uws.us_bun_verify_error_t;

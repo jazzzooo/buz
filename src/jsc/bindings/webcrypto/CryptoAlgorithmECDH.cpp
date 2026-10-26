@@ -31,7 +31,6 @@
 #include "CryptoAlgorithmEcKeyParams.h"
 #include "CryptoAlgorithmEcdhKeyDeriveParams.h"
 #include "CryptoKeyEC.h"
-#include "ScriptExecutionContext.h"
 
 namespace WebCore {
 
@@ -45,81 +44,60 @@ CryptoAlgorithmIdentifier CryptoAlgorithmECDH::identifier() const
     return s_identifier;
 }
 
-void CryptoAlgorithmECDH::generateKey(const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages, KeyOrKeyPairCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&)
+ExceptionOr<KeyOrKeyPair> CryptoAlgorithmECDH::generateKey(const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages)
 {
     const auto& ecParameters = downcast<CryptoAlgorithmEcKeyParams>(parameters);
 
     if (usages & (CryptoKeyUsageEncrypt | CryptoKeyUsageDecrypt | CryptoKeyUsageSign | CryptoKeyUsageVerify | CryptoKeyUsageWrapKey | CryptoKeyUsageUnwrapKey)) {
-        exceptionCallback(SyntaxError, ""_s);
-        return;
+        return Exception { SyntaxError, ""_s };
     }
 
     auto result = CryptoKeyEC::generatePair(CryptoAlgorithmIdentifier::ECDH, ecParameters.namedCurve, extractable, usages);
     if (result.hasException()) {
-        exceptionCallback(result.releaseException().code(), ""_s);
-        return;
+        return Exception { result.releaseException().code(), ""_s };
     }
 
     auto pair = result.releaseReturnValue();
     pair.publicKey->setUsagesBitmap(0);
     pair.privateKey->setUsagesBitmap(pair.privateKey->usagesBitmap() & (CryptoKeyUsageDeriveKey | CryptoKeyUsageDeriveBits));
-    callback(WTF::move(pair));
+    return KeyOrKeyPair { WTF::move(pair) };
 }
 
-void CryptoAlgorithmECDH::deriveBits(const CryptoAlgorithmParameters& parameters, Ref<CryptoKey>&& baseKey, size_t length, VectorCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext& context, WorkQueue& workQueue)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithmECDH::deriveBits(const CryptoAlgorithmParameters& parameters, Ref<CryptoKey>&& baseKey, size_t length)
 {
     auto& ecParameters = downcast<CryptoAlgorithmEcdhKeyDeriveParams>(parameters);
 
     if (baseKey->type() != CryptoKey::Type::Private) {
-        exceptionCallback(InvalidAccessError, ""_s);
-        return;
+        return Exception { InvalidAccessError, ""_s };
     }
     ASSERT(ecParameters.publicKey);
     if (ecParameters.publicKey->type() != CryptoKey::Type::Public) {
-        exceptionCallback(InvalidAccessError, ""_s);
-        return;
+        return Exception { InvalidAccessError, ""_s };
     }
     if (baseKey->algorithmIdentifier() != ecParameters.publicKey->algorithmIdentifier()) {
-        exceptionCallback(InvalidAccessError, ""_s);
-        return;
+        return Exception { InvalidAccessError, ""_s };
     }
     auto& ecBaseKey = downcast<CryptoKeyEC>(baseKey.get());
     auto& ecPublicKey = downcast<CryptoKeyEC>(*(ecParameters.publicKey.get()));
     if (ecBaseKey.namedCurve() != ecPublicKey.namedCurve()) {
-        exceptionCallback(InvalidAccessError, ""_s);
-        return;
+        return Exception { InvalidAccessError, ""_s };
     }
 
-    auto unifiedCallback = [callback = WTF::move(callback), exceptionCallback = WTF::move(exceptionCallback)](std::optional<Vector<uint8_t>>&& derivedKey, size_t length) mutable {
-        if (!derivedKey) {
-            exceptionCallback(OperationError, ""_s);
-            return;
-        }
-        if (!length) {
-            callback(WTF::move(*derivedKey));
-            return;
-        }
-        auto lengthInBytes = std::ceil(length / 8.);
-        if (lengthInBytes > (*derivedKey).size()) {
-            exceptionCallback(OperationError, ""_s);
-            return;
-        }
-        (*derivedKey).shrink(lengthInBytes);
-        callback(WTF::move(*derivedKey));
-    };
-
-    // This is a special case that can't use dispatchOperation() because it bundles
-    // the result validation and callback dispatch into unifiedCallback.
-    workQueue.dispatch(context.globalObject(),
-        [baseKey = WTF::move(baseKey), publicKey = ecParameters.publicKey, length, unifiedCallback = WTF::move(unifiedCallback), contextIdentifier = context.identifier()]() mutable {
-            auto derivedKey = platformDeriveBits(downcast<CryptoKeyEC>(baseKey.get()), downcast<CryptoKeyEC>(*publicKey));
-            ScriptExecutionContext::postTaskTo(contextIdentifier, [derivedKey = WTF::move(derivedKey), length, unifiedCallback = WTF::move(unifiedCallback)](auto&) mutable {
-                unifiedCallback(WTF::move(derivedKey), length);
-            });
-        });
+    const auto& operation_publicKey = ecParameters.publicKey;
+    auto result = platformDeriveBits(downcast<CryptoKeyEC>(baseKey.get()), downcast<CryptoKeyEC>(*operation_publicKey));
+    if (result.hasException())
+        return result.releaseException();
+    auto derivedKey = result.releaseReturnValue();
+    if (length) {
+        auto lengthInBytes = length / 8 + (length % 8 != 0);
+        if (lengthInBytes > derivedKey.size())
+            return Exception { OperationError };
+        derivedKey.shrink(lengthInBytes);
+    }
+    return derivedKey;
 }
 
-void CryptoAlgorithmECDH::importKey(CryptoKeyFormat format, KeyData&& data, const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages, KeyCallback&& callback, ExceptionCallback&& exceptionCallback)
+ExceptionOr<Ref<CryptoKey>> CryptoAlgorithmECDH::importKey(CryptoKeyFormat format, KeyData&& data, const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages)
 {
     const auto& ecParameters = downcast<CryptoAlgorithmEcKeyParams>(parameters);
 
@@ -136,13 +114,11 @@ void CryptoAlgorithmECDH::importKey(CryptoKeyFormat format, KeyData&& data, cons
         }
         isUsagesAllowed = isUsagesAllowed || !usages;
         if (!isUsagesAllowed) {
-            exceptionCallback(SyntaxError, ""_s);
-            return;
+            return Exception { SyntaxError, ""_s };
         }
 
         if (usages && !key.use.isNull() && key.use != "enc"_s) {
-            exceptionCallback(DataError, ""_s);
-            return;
+            return Exception { DataError, ""_s };
         }
 
         result = CryptoKeyEC::importJwk(ecParameters.identifier, ecParameters.namedCurve, WTF::move(key), extractable, usages);
@@ -150,41 +126,36 @@ void CryptoAlgorithmECDH::importKey(CryptoKeyFormat format, KeyData&& data, cons
     }
     case CryptoKeyFormat::Raw:
         if (usages) {
-            exceptionCallback(SyntaxError, ""_s);
-            return;
+            return Exception { SyntaxError, ""_s };
         }
         result = CryptoKeyEC::importRaw(ecParameters.identifier, ecParameters.namedCurve, WTF::move(std::get<Vector<uint8_t>>(data)), extractable, usages);
         break;
     case CryptoKeyFormat::Spki:
         if (usages) {
-            exceptionCallback(SyntaxError, ""_s);
-            return;
+            return Exception { SyntaxError, ""_s };
         }
         result = CryptoKeyEC::importSpki(ecParameters.identifier, ecParameters.namedCurve, WTF::move(std::get<Vector<uint8_t>>(data)), extractable, usages);
         break;
     case CryptoKeyFormat::Pkcs8:
         if (usages && (usages ^ CryptoKeyUsageDeriveKey) && (usages ^ CryptoKeyUsageDeriveBits) && (usages ^ (CryptoKeyUsageDeriveKey | CryptoKeyUsageDeriveBits))) {
-            exceptionCallback(SyntaxError, ""_s);
-            return;
+            return Exception { SyntaxError, ""_s };
         }
         result = CryptoKeyEC::importPkcs8(ecParameters.identifier, ecParameters.namedCurve, WTF::move(std::get<Vector<uint8_t>>(data)), extractable, usages);
         break;
     }
     if (!result) {
-        exceptionCallback(DataError, ""_s);
-        return;
+        return Exception { DataError, ""_s };
     }
 
-    callback(*result);
+    return Ref<CryptoKey> { *result };
 }
 
-void CryptoAlgorithmECDH::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key, KeyDataCallback&& callback, ExceptionCallback&& exceptionCallback)
+ExceptionOr<KeyData> CryptoAlgorithmECDH::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key)
 {
     const auto& ecKey = downcast<CryptoKeyEC>(key.get());
 
     if (!ecKey.keySizeInBits()) {
-        exceptionCallback(OperationError, ""_s);
-        return;
+        return Exception { OperationError, ""_s };
     }
 
     KeyData result;
@@ -192,8 +163,7 @@ void CryptoAlgorithmECDH::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key
     case CryptoKeyFormat::Jwk: {
         auto jwk = ecKey.exportJwk();
         if (jwk.hasException()) {
-            exceptionCallback(jwk.releaseException().code(), ""_s);
-            return;
+            return Exception { jwk.releaseException().code(), ""_s };
         }
         result = jwk.releaseReturnValue();
         break;
@@ -201,8 +171,7 @@ void CryptoAlgorithmECDH::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key
     case CryptoKeyFormat::Raw: {
         auto raw = ecKey.exportRaw();
         if (raw.hasException()) {
-            exceptionCallback(raw.releaseException().code(), ""_s);
-            return;
+            return Exception { raw.releaseException().code(), ""_s };
         }
         result = raw.releaseReturnValue();
         break;
@@ -210,8 +179,7 @@ void CryptoAlgorithmECDH::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key
     case CryptoKeyFormat::Spki: {
         auto spki = ecKey.exportSpki();
         if (spki.hasException()) {
-            exceptionCallback(spki.releaseException().code(), ""_s);
-            return;
+            return Exception { spki.releaseException().code(), ""_s };
         }
         result = spki.releaseReturnValue();
         break;
@@ -219,15 +187,14 @@ void CryptoAlgorithmECDH::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key
     case CryptoKeyFormat::Pkcs8: {
         auto pkcs8 = ecKey.exportPkcs8();
         if (pkcs8.hasException()) {
-            exceptionCallback(pkcs8.releaseException().code(), ""_s);
-            return;
+            return Exception { pkcs8.releaseException().code(), ""_s };
         }
         result = pkcs8.releaseReturnValue();
         break;
     }
     }
 
-    callback(format, WTF::move(result));
+    return WTF::move(result);
 }
 
 } // namespace WebCore

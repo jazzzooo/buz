@@ -9,7 +9,9 @@ function createStopRegex(allow_comma: boolean) {
     "((?:[(,=;:{]|return|\\=\\>)\\s*)\\/[^\\/\\*]|\\/\\*|\\/\\/|['\"}`\\)" +
       (allow_comma ? "," : "") +
       "]|(?<!\\$)\\brequire\\(|(" +
-      function_replacements.map(x => escapeRegex(x) + "\\(").join("|") +
+      function_replacements
+        .map(x => escapeRegex(x) + (x === "$bindgenFn" || x === "$bindgenClass" ? "(?:\\(|<)" : "\\("))
+        .join("|") +
       ")",
   );
 }

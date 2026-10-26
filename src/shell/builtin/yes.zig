@@ -65,20 +65,12 @@ pub fn start(this: *@This()) Yield {
     this.buffer_used = filled;
 
     if (this.bltn().stdout.needsIO()) |safeguard| {
-        const evtloop = this.bltn().eventLoop();
-        this.task = .{
-            .evtloop = evtloop,
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(evtloop),
-        };
+        this.task = .{ .scheduler = this.bltn().eventLoop() };
         this.state = .waiting_io;
         return this.bltn().stdout.enqueue(this, this.buffer[0..this.buffer_used], safeguard);
     }
 
-    const evtloop = this.bltn().eventLoop();
-    this.task = .{
-        .evtloop = evtloop,
-        .concurrent_task = jsc.EventLoopTask.fromEventLoop(evtloop),
-    };
+    this.task = .{ .scheduler = this.bltn().eventLoop() };
     return this.writeNoIO();
 }
 
@@ -115,7 +107,7 @@ pub fn writeFailingError(this: *Yes, buf: []const u8, exit_code: shell.ExitCode)
     return this.bltn().done(exit_code);
 }
 
-pub fn onIOWriterChunk(this: *@This(), _: usize, maybe_e: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *@This(), _: usize, maybe_e: ?bun.sys.SystemError) Yield {
     if (maybe_e) |e| {
         defer e.deref();
         this.state = .err;
@@ -142,17 +134,12 @@ pub fn deinit(this: *@This()) void {
 /// require IO. After writing a bit, we suspend execution to this task so we
 /// don't just block the main thread forever.
 pub const YesTask = struct {
-    evtloop: jsc.EventLoopHandle,
-    concurrent_task: jsc.EventLoopTask,
+    scheduler: Interpreter.Scheduler,
+    main_task: Interpreter.Scheduler.Task = .{},
 
     pub fn enqueue(this: *@This()) void {
-        if (this.evtloop == .js) {
-            this.evtloop.js.tick();
-            this.evtloop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            this.evtloop.mini.loop.tick();
-            this.evtloop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
+        this.scheduler.tick();
+        this.scheduler.enqueue(&this.main_task, this);
     }
 
     pub fn runFromMainThread(this: *@This()) void {
@@ -174,7 +161,6 @@ const Interpreter = interpreter.Interpreter;
 const Builtin = Interpreter.Builtin;
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 
 const shell = bun.shell;
 const IO = shell.IO;

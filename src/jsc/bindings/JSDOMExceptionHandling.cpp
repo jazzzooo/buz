@@ -26,14 +26,14 @@
 #include "DOMException.h"
 #include "JSDOMException.h"
 #include "JSDOMExceptionHandling.h"
-#include "JSDOMPromiseDeferred.h"
+#include "JSDOMGlobalObject.h"
+#include "JSDOMWrapperCache.h"
 
 #include <JavaScriptCore/ErrorHandlingScope.h>
+#include <JavaScriptCore/ErrorInstance.h>
 #include <JavaScriptCore/Exception.h>
 #include <JavaScriptCore/ExceptionHelpers.h>
-#include <JavaScriptCore/ScriptCallStack.h>
-#include <JavaScriptCore/ScriptCallStackFactory.h>
-#include "headers.h"
+#include <JavaScriptCore/TopExceptionScope.h>
 
 #include "CachedScript.h"
 
@@ -56,24 +56,14 @@ void reportException(JSGlobalObject* lexicalGlobalObject, JSC::Exception* except
 
     ErrorHandlingScope errorScope(lexicalGlobalObject->vm());
 
-    // auto callStack = Inspector::createScriptCallStackFromException(lexicalGlobalObject, exception);
     (void)scope.tryClearException();
     vm.clearLastException();
 
     auto* globalObject = uncheckedDowncast<JSDOMGlobalObject>(lexicalGlobalObject);
-    // if (auto* window = dynamicDowncast<JSDOMWindow>( globalObject)) {
-    //     if (!window->wrapped().isCurrentlyDisplayedInFrame())
-    //         return;
-    // }
 
     int lineNumber = 0;
     int columnNumber = 0;
     String exceptionSourceURL;
-    // if (auto* callFrame = callStack->firstNonNativeCallFrame()) {
-    //     lineNumber = callFrame->lineNumber();
-    //     columnNumber = callFrame->columnNumber();
-    //     exceptionSourceURL = callFrame->sourceURL();
-    // }
 
     Zig::GlobalObject::reportUncaughtExceptionAtEventLoop(globalObject, exception);
 
@@ -136,15 +126,6 @@ String retrieveErrorMessage(JSGlobalObject& lexicalGlobalObject, VM& vm, JSValue
     return errorMessage;
 }
 
-void reportCurrentException(JSGlobalObject* lexicalGlobalObject)
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-    auto* exception = scope.exception();
-    (void)scope.tryClearException();
-    reportException(lexicalGlobalObject, exception);
-}
-
 JSValue createDOMException(JSGlobalObject* lexicalGlobalObject, ExceptionCode ec, const String& message)
 {
     auto& vm = JSC::getVM(lexicalGlobalObject);
@@ -198,7 +179,7 @@ JSValue createDOMException(JSGlobalObject* lexicalGlobalObject, ExceptionCode ec
         // For now, we're going to assume the lexicalGlobalObject. Which is wrong in cases like this:
         // frames[0].document.createElement(null, null); // throws an exception which should have the subframe's prototypes.
         // https://bugs.webkit.org/show_bug.cgi?id=222229
-        JSDOMGlobalObject* globalObject = deprecatedGlobalObjectForPrototype(lexicalGlobalObject);
+        auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
         JSValue errorObject = toJS(lexicalGlobalObject, globalObject, DOMException::create(ec, message));
 
         ASSERT(errorObject);
@@ -222,19 +203,6 @@ void propagateExceptionSlowPath(JSC::JSGlobalObject& lexicalGlobalObject, JSC::T
     throwException(&lexicalGlobalObject, throwScope, jsException);
 }
 
-static EncodedJSValue throwTypeError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, const String& errorMessage)
-{
-    return throwVMTypeError(&lexicalGlobalObject, scope, errorMessage);
-}
-
-template<typename... StringTypes> static String makeArgumentTypeErrorMessage(unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral interfaceName, ASCIILiteral functionName, StringTypes... strings)
-{
-    return makeString(
-        "Argument "_s, argumentIndex + 1, " ('"_s, argumentName, "') to "_s,
-        functionName ? std::make_tuple(interfaceName, "."_s, functionName) : std::make_tuple("the "_s, interfaceName, " constructor"_s),
-        " must be "_s, strings...);
-}
-
 void throwNotSupportedError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, ASCIILiteral message)
 {
     scope.assertNoExceptionExceptTermination();
@@ -251,36 +219,6 @@ void throwSecurityError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScop
 {
     scope.assertNoExceptionExceptTermination();
     throwException(&lexicalGlobalObject, scope, createDOMException(&lexicalGlobalObject, ExceptionCode::SecurityError, message));
-}
-
-JSC::EncodedJSValue throwArgumentMustBeEnumError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral functionInterfaceName, ASCIILiteral functionName, ASCIILiteral expectedValues)
-{
-    return Bun::throwError(&lexicalGlobalObject, scope, Bun::ErrorCode::ERR_INVALID_ARG_TYPE, makeArgumentTypeErrorMessage(argumentIndex, argumentName, functionInterfaceName, functionName, "one of: "_s, expectedValues));
-}
-
-JSC::EncodedJSValue throwArgumentMustBeFunctionError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral interfaceName, ASCIILiteral functionName)
-{
-    return Bun::throwError(&lexicalGlobalObject, scope, Bun::ErrorCode::ERR_INVALID_ARG_TYPE, makeArgumentTypeErrorMessage(argumentIndex, argumentName, interfaceName, functionName, "a function"_s));
-}
-
-JSC::EncodedJSValue throwArgumentMustBeObjectError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral interfaceName, ASCIILiteral functionName)
-{
-    return Bun::throwError(&lexicalGlobalObject, scope, Bun::ErrorCode::ERR_INVALID_ARG_TYPE, makeArgumentTypeErrorMessage(argumentIndex, argumentName, interfaceName, functionName, "an object"_s));
-}
-
-JSC::EncodedJSValue throwArgumentTypeError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral functionInterfaceName, ASCIILiteral functionName, ASCIILiteral expectedType)
-{
-    return Bun::throwError(&lexicalGlobalObject, scope, Bun::ErrorCode::ERR_INVALID_ARG_TYPE, makeArgumentTypeErrorMessage(argumentIndex, argumentName, functionInterfaceName, functionName, "an instance of "_s, expectedType));
-}
-
-void throwAttributeTypeError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, ASCIILiteral interfaceName, ASCIILiteral attributeName, ASCIILiteral expectedType)
-{
-    throwTypeError(lexicalGlobalObject, scope, makeString("The "_s, interfaceName, '.', attributeName, " attribute must be an instance of "_s, expectedType));
-}
-
-JSC::EncodedJSValue throwRequiredMemberTypeError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, ASCIILiteral memberName, ASCIILiteral dictionaryName, ASCIILiteral expectedType)
-{
-    return Bun::throwError(&lexicalGlobalObject, scope, Bun::ErrorCode::ERR_INVALID_ARG_TYPE, makeString("Member "_s, dictionaryName, '.', memberName, " is required and must be an instance of "_s, expectedType));
 }
 
 JSC::EncodedJSValue throwConstructorScriptExecutionContextUnavailableError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, ASCIILiteral interfaceName)
@@ -302,36 +240,15 @@ void throwNonFiniteTypeError(JSGlobalObject& lexicalGlobalObject, JSC::ThrowScop
     throwTypeError(&lexicalGlobalObject, scope, "The provided value is non-finite"_s);
 }
 
-JSC::EncodedJSValue rejectPromiseWithGetterTypeError(JSC::JSGlobalObject& lexicalGlobalObject, const JSC::ClassInfo* classInfo, JSC::PropertyName attributeName)
-{
-    return createRejectedPromiseWithTypeError(lexicalGlobalObject, JSC::makeDOMAttributeGetterTypeErrorMessage(classInfo->className, String(attributeName.uid())), RejectedPromiseWithTypeErrorCause::NativeGetter);
-}
-
 String makeThisTypeErrorMessage(ASCIILiteral interfaceName, ASCIILiteral functionName)
 {
     return makeString("Can only call "_s, interfaceName, '.', functionName, " on instances of "_s, interfaceName);
-}
-
-String makeUnsupportedIndexedSetterErrorMessage(ASCIILiteral interfaceName)
-{
-    return makeString("Failed to set an indexed property on "_s, interfaceName, ": Indexed property setter is not supported."_s);
 }
 
 EncodedJSValue throwThisTypeError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, ASCIILiteral interfaceName, ASCIILiteral attributeName)
 {
     scope.throwException(&lexicalGlobalObject, Bun::createInvalidThisError(&lexicalGlobalObject, makeThisTypeErrorMessage(interfaceName, attributeName)));
     return {};
-}
-
-JSC::EncodedJSValue rejectPromiseWithThisTypeError(DeferredPromise& promise, ASCIILiteral interfaceName, ASCIILiteral methodName)
-{
-    promise.reject(ExceptionCode::InvalidThisError, makeThisTypeErrorMessage(interfaceName, methodName));
-    return JSValue::encode(jsUndefined());
-}
-
-JSC::EncodedJSValue rejectPromiseWithThisTypeError(JSC::JSGlobalObject& lexicalGlobalObject, ASCIILiteral interfaceName, ASCIILiteral methodName)
-{
-    return createRejectedPromiseWithTypeError(lexicalGlobalObject, makeThisTypeErrorMessage(interfaceName, methodName), RejectedPromiseWithTypeErrorCause::InvalidThis);
 }
 
 void throwDOMSyntaxError(JSC::JSGlobalObject& lexicalGlobalObject, JSC::ThrowScope& scope, ASCIILiteral message)

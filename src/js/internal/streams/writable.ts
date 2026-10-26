@@ -23,8 +23,8 @@ const {
   kErrored,
   kConstructed,
 }: {
-  readonly kState: unique symbol;
-  readonly kOnConstructed: unique symbol;
+  readonly kState: symbol;
+  readonly kOnConstructed: symbol;
   kObjectMode: number;
   kErrorEmitted: number;
   kAutoDestroy: number;

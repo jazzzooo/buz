@@ -140,7 +140,7 @@ pub fn migratePnpmLockfile(
         var string_buf = lockfile.stringBuf();
 
         if (root.getObject("catalogs")) |catalogs_expr| {
-            try Lockfile.CatalogMap.fromPnpmLockfile(lockfile, allocator, log, catalogs_expr.data.e_object, &string_buf);
+            try Lockfile.CatalogMap.fromPnpmLockfile(lockfile, manager.javascript_semantics, allocator, log, catalogs_expr.data.e_object, &string_buf);
         }
 
         if (root.getObject("overrides")) |overrides_expr| {
@@ -174,7 +174,7 @@ pub fn migratePnpmLockfile(
                         version_sliced.slice,
                         &version_sliced,
                         log,
-                        manager,
+                        Dependency.ParseContext.fromPackageManager(manager),
                     ) orelse {
                         return invalidPnpmLockfile();
                     },
@@ -576,7 +576,7 @@ pub fn migratePnpmLockfile(
                 const name_hash = String.Builder.stringHash(name_str);
                 const name = try string_buf.appendWithHash(name_str, name_hash);
 
-                var res = try Resolution.fromPnpmLockfile(res_str, &string_buf);
+                var res = try Resolution.fromPnpmLockfile(manager.javascript_semantics, res_str, &string_buf);
 
                 if (res.tag == .npm) {
                     const scope = manager.scopeForPackageName(name_str);
@@ -621,6 +621,7 @@ pub fn migratePnpmLockfile(
 
                 const off, const len = try parseAppendPackageDependencies(
                     lockfile,
+                    manager.javascript_semantics,
                     allocator,
                     &package_obj,
                     &snapshot.obj,
@@ -854,6 +855,7 @@ const ParseAppendDependenciesError = OOM || error{
 
 fn parseAppendPackageDependencies(
     lockfile: *Lockfile,
+    javascript_semantics: JavaScriptSemantics,
     allocator: std.mem.Allocator,
     package_obj: *const Expr,
     snapshot_obj: *const Expr,
@@ -910,7 +912,7 @@ fn parseAppendPackageDependencies(
                         version_sliced.slice,
                         &version_sliced,
                         log,
-                        null,
+                        .{ .javascript_semantics = javascript_semantics },
                     ) orelse {
                         return invalidPnpmLockfile();
                     },
@@ -1022,7 +1024,7 @@ fn parseAppendPackageDependencies(
                                 version_sliced.slice,
                                 &version_sliced,
                                 log,
-                                null,
+                                .{ .javascript_semantics = javascript_semantics },
                             ) orelse {
                                 return invalidPnpmLockfile();
                             },
@@ -1045,7 +1047,7 @@ fn parseAppendPackageDependencies(
                     version_sliced.slice,
                     &version_sliced,
                     log,
-                    null,
+                    .{ .javascript_semantics = javascript_semantics },
                 ) orelse {
                     return invalidPnpmLockfile();
                 },
@@ -1164,7 +1166,7 @@ fn parseAppendImporterDependencies(
                         specifier_sliced.slice,
                         &specifier_sliced,
                         log,
-                        null,
+                        .{ .javascript_semantics = manager.javascript_semantics },
                     ) orelse {
                         return invalidPnpmLockfile();
                     },
@@ -1558,6 +1560,7 @@ fn updatePackageJsonAfterMigration(allocator: Allocator, manager: *PackageManage
 }
 
 const Dependency = @import("./dependency.zig");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 const Npm = @import("./npm.zig");
 const Bin = @import("./bin.zig").Bin;
 const Integrity = @import("./integrity.zig").Integrity;

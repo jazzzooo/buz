@@ -24,8 +24,11 @@
 #pragma once
 
 #include "EventListener.h"
+#include <wtf/FastMalloc.h>
 #include <wtf/Ref.h>
+#include <wtf/RefPtr.h>
 #include <wtf/WeakPtr.h>
+#include <wtf/text/AtomString.h>
 
 namespace WebCore {
 
@@ -34,6 +37,8 @@ class WeakPtrImplWithEventTargetData;
 
 // https://dom.spec.whatwg.org/#concept-event-listener
 class RegisteredEventListener : public RefCounted<RegisteredEventListener> {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(RegisteredEventListener);
+
 public:
     struct Options {
         Options(bool capture = false, bool passive = false, bool once = false)
@@ -48,9 +53,12 @@ public:
         bool once;
     };
 
-    static Ref<RegisteredEventListener> create(Ref<EventListener>&& listener, const Options& options)
+    static RefPtr<RegisteredEventListener> tryCreate(Ref<EventListener>&& listener, const Options& options)
     {
-        return adoptRef(*new RegisteredEventListener(WTF::move(listener), options));
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(RegisteredEventListener)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) RegisteredEventListener(WTF::move(listener), options));
     }
 
     ~RegisteredEventListener();
@@ -63,15 +71,9 @@ public:
 
     void markAsRemoved();
 
-    // Associates this listener with the abort algorithm that was registered
-    // on the provided AbortSignal by EventTarget::addEventListener(). When
-    // the listener is removed (via removeEventListener, once:true firing, or
-    // removeAllEventListeners) markAsRemoved() will drop that algorithm from
-    // the signal so m_algorithms doesn't grow unboundedly when the same
-    // signal is reused across many add/remove cycles.
-    void setAbortSignal(WeakPtr<AbortSignal, WeakPtrImplWithEventTargetData>&&, uint32_t algorithmIdentifier);
-
 private:
+    friend class AbortSignal;
+
     RegisteredEventListener(Ref<EventListener>&& listener, const Options& options)
         : m_useCapture(options.capture)
         , m_isPassive(options.passive)
@@ -85,9 +87,12 @@ private:
     bool m_isPassive : 1;
     bool m_isOnce : 1;
     bool m_wasRemoved : 1;
-    uint32_t m_abortAlgorithmIdentifier { 0 };
     Ref<EventListener> m_callback;
     WeakPtr<AbortSignal, WeakPtrImplWithEventTargetData> m_abortSignal;
+    WeakPtr<EventTarget, WeakPtrImplWithEventTargetData> m_abortTarget;
+    AtomString m_abortEventType;
+    RegisteredEventListener* m_abortPrevious { nullptr };
+    RegisteredEventListener* m_abortNext { nullptr };
 };
 
 } // namespace WebCore

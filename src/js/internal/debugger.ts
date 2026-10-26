@@ -240,7 +240,7 @@ class Debugger {
         websocket: this.#websocket,
       });
 
-      this.#url!.hostname = server.hostname;
+      this.#url!.hostname = server.hostname!;
       this.#url!.port = `${server.port}`;
       return;
     }
@@ -324,7 +324,7 @@ class Debugger {
     };
   }
 
-  #fetch(request: Request, server: WebSocketServer): Response | undefined {
+  #fetch(request: Request, server: WebSocketServer<Connection>): Response | undefined {
     const { method, url, headers } = request;
     const { pathname } = new URL(url);
 

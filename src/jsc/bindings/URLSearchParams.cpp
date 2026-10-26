@@ -23,60 +23,93 @@
  */
 
 #include "URLSearchParams.h"
+#include "SchemaBindings.h"
 
-#include "DOMURL.h"
-#include <wtf/URLParser.h>
-#include "helpers.h"
-#include "JSURLSearchParams.h"
+#include "FormURLEncoding.h"
+#include <new>
+
+void Bun::Bindgen::Engine::releaseURLSearchParams(WebCore::URLSearchParams* params)
+{
+    params->deref();
+}
+
+WebCore::URLSearchParams* Bun::Bindgen::Engine::bunBindgenEngine_urls_urlSearchParamsRetain(
+    const BunBindgenEngine_urls_urlSearchParamsRetain_Arguments& args)
+{
+    args.params->ref();
+    return args.params;
+}
+
+uint64_t Bun::Bindgen::Engine::bunBindgenEngine_urls_urlSearchParamsMemoryCost(
+    const BunBindgenEngine_urls_urlSearchParamsMemoryCost_Arguments& args)
+{
+    return args.params->memoryCost();
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_urls_urlSearchParamsToString_Return Bun::Bindgen::Engine::bunBindgenEngine_urls_urlSearchParamsToString(
+    const BunBindgenEngine_urls_urlSearchParamsToString_Arguments& args)
+{
+    auto result = args.params->toString();
+    if (result.hasException()) {
+        RELEASE_ASSERT(result.releaseException().code() == WebCore::OutOfMemoryError);
+        return Bun::Bindgen::nativeAllocationFailure();
+    }
+    return result.releaseReturnValue();
+}
+
+void Bun::Bindgen::Engine::releaseURLSearchParamsIterator(WebCore::URLSearchParams::Iterator* iterator)
+{
+    delete iterator;
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_urls_urlSearchParamsIteratorCreate_Return Bun::Bindgen::Engine::bunBindgenEngine_urls_urlSearchParamsIteratorCreate(
+    const BunBindgenEngine_urls_urlSearchParamsIteratorCreate_Arguments& args)
+{
+    auto* iterator = new (std::nothrow) WebCore::URLSearchParams::Iterator(*args.params);
+    if (!iterator)
+        return Bun::Bindgen::nativeAllocationFailure();
+    return iterator;
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_urls_urlSearchParamsIteratorNext_Return Bun::Bindgen::Engine::bunBindgenEngine_urls_urlSearchParamsIteratorNext(
+    const BunBindgenEngine_urls_urlSearchParamsIteratorNext_Arguments& args)
+{
+    auto entry = args.iterator->next();
+    if (!entry)
+        return std::nullopt;
+    using Entry = BunBindgenEngine_urls_urlSearchParamsIteratorNext_Return::value_type::value_type;
+    return Entry { .key = WTF::move(entry->key), .value = WTF::move(entry->value) };
+}
 
 namespace WebCore {
 
-extern "C" JSC::EncodedJSValue URLSearchParams__create(JSDOMGlobalObject* globalObject, const ZigString* input)
-{
-    String str = Zig::toString(*input);
-    auto result = URLSearchParams::create(str, nullptr);
-    return JSC::JSValue::encode(WebCore::toJSNewlyCreated(globalObject, globalObject, WTF::move(result)));
-}
-
-extern "C" WebCore::URLSearchParams* URLSearchParams__fromJS(JSC::EncodedJSValue value)
-{
-    return WebCoreCast<WebCore::JSURLSearchParams, WebCore::URLSearchParams>(value);
-}
-
-// callback accepting a void* and a const ZigString*, returning void
-typedef void (*URLSearchParams__toStringCallback)(void* ctx, const ZigString* str);
-
-extern "C" void URLSearchParams__toString(WebCore::URLSearchParams* urlSearchParams, void* ctx, URLSearchParams__toStringCallback callback)
-{
-    String str = urlSearchParams->toString();
-    auto zig = Zig::toZigString(str);
-    callback(ctx, &zig);
-}
-
-URLSearchParams::URLSearchParams(const String& init, DOMURL* associatedURL)
-    : m_associatedURL(associatedURL)
-    , m_pairs(init.startsWith('?') ? WTF::URLParser::parseURLEncodedForm(StringView(init).substring(1)) : WTF::URLParser::parseURLEncodedForm(init))
-{
-}
-
-URLSearchParams::URLSearchParams(const Vector<KeyValuePair<String, String>>& pairs)
-    : m_pairs(pairs)
+URLSearchParams::URLSearchParams(Vector<KeyValuePair<String, String>>&& pairs)
+    : m_pairs(WTF::move(pairs))
 {
 }
 
 URLSearchParams::~URLSearchParams() = default;
 
-ExceptionOr<Ref<URLSearchParams>> URLSearchParams::create(std::variant<Vector<Vector<String>>, Vector<KeyValuePair<String, String>>, String>&& variant)
+ExceptionOr<Ref<URLSearchParams>> URLSearchParams::create(StringView input)
 {
-    auto visitor = WTF::makeVisitor([&](const Vector<Vector<String>>& vector) -> ExceptionOr<Ref<URLSearchParams>> {
-        Vector<KeyValuePair<String, String>> pairs;
-        for (const auto& pair : vector) {
-            if (pair.size() != 2)
-                return Exception { TypeError };
-            pairs.append({pair[0], pair[1]});
-        }
-        return adoptRef(*new URLSearchParams(WTF::move(pairs))); }, [&](const Vector<KeyValuePair<String, String>>& pairs) -> ExceptionOr<Ref<URLSearchParams>> { return adoptRef(*new URLSearchParams(pairs)); }, [&](const String& string) -> ExceptionOr<Ref<URLSearchParams>> { return adoptRef(*new URLSearchParams(string, nullptr)); });
-    return std::visit(visitor, variant);
+    return createFromQuery(input.startsWith('?') ? input.substring(1) : input);
+}
+
+ExceptionOr<Ref<URLSearchParams>> URLSearchParams::createFromQuery(StringView query)
+{
+    auto pairs = FormURLEncoding::parse(query);
+    if (pairs.hasException())
+        return pairs.releaseException();
+    return create(pairs.releaseReturnValue());
+}
+
+ExceptionOr<Ref<URLSearchParams>> URLSearchParams::create(Vector<KeyValuePair<String, String>>&& pairs)
+{
+    void* storage;
+    if (!WTF::tryFastMalloc(sizeof(URLSearchParams)).getValue(storage))
+        return Exception { OutOfMemoryError };
+    auto* params = new (NotNull, storage) URLSearchParams(WTF::move(pairs));
+    return adoptRef(*params);
 }
 
 String URLSearchParams::get(const StringView name) const
@@ -97,84 +130,95 @@ bool URLSearchParams::has(const StringView name, const String& value) const
     return false;
 }
 
-void URLSearchParams::sort()
+template<typename Mutate>
+ExceptionOr<void> URLSearchParams::mutatePairs(Mutate&& mutate)
 {
-    std::stable_sort(m_pairs.begin(), m_pairs.end(), [](const auto& a, const auto& b) {
-        return WTF::codePointCompareLessThan(a.key, b.key);
-    });
-    updateURL();
-    needsSorting = false;
+    auto result = mutate(m_pairs);
+    if (result.hasException())
+        return result.releaseException();
+    m_queryDirty = true;
+    return {};
 }
 
-void URLSearchParams::set(const String& name, const String& value)
+ExceptionOr<void> URLSearchParams::sort()
 {
-    for (auto& pair : m_pairs) {
-        if (pair.key != name)
-            continue;
-        if (pair.value != value)
-            pair.value = value;
-        bool skippedFirstMatch = false;
-        m_pairs.removeAllMatching([&](const auto& pair) {
-            if (pair.key == name) {
-                if (skippedFirstMatch)
-                    return true;
-                skippedFirstMatch = true;
+    Vector<size_t> order;
+    if (!order.tryGrow(m_pairs.size()))
+        return Exception { OutOfMemoryError };
+    for (size_t index = 0; index < order.size(); ++index)
+        order[index] = index;
+    if (order.size() > 1) {
+        std::sort(order.begin(), order.end(), [&](size_t left, size_t right) {
+            const auto& a = m_pairs[left].key;
+            const auto& b = m_pairs[right].key;
+            for (unsigned index = 0; index < std::min(a.length(), b.length()); ++index) {
+                if (a[index] != b[index])
+                    return a[index] < b[index];
             }
-            return false;
+            return a.length() != b.length() ? a.length() < b.length() : left < right;
         });
-        updateURL();
-        needsSorting = true;
-        return;
     }
-    m_pairs.append({ name, value });
-    needsSorting = true;
-    updateURL();
+    Vector<KeyValuePair<String, String>> next;
+    if (!next.tryReserveInitialCapacity(m_pairs.size()))
+        return Exception { OutOfMemoryError };
+    for (size_t index : order)
+        next.unsafeAppendWithoutCapacityCheck(m_pairs[index]);
+    m_pairs = WTF::move(next);
+    m_queryDirty = true;
+    return {};
 }
 
-void URLSearchParams::append(const String& name, const String& value)
+ExceptionOr<void> URLSearchParams::set(const String& name, const String& value)
 {
-    m_pairs.append({ name, value });
-    updateURL();
-    needsSorting = true;
+    return mutatePairs([&](auto& pairs) -> ExceptionOr<void> {
+        for (size_t index = 0; index < pairs.size(); ++index) {
+            if (pairs[index].key != name)
+                continue;
+            pairs[index].value = value;
+            pairs.removeAllMatching([&](const auto& pair) { return pair.key == name; }, index + 1);
+            return {};
+        }
+        if (!pairs.tryAppend(KeyValuePair<String, String> { name, value }))
+            return Exception { OutOfMemoryError };
+        return {};
+    });
 }
 
-Vector<String> URLSearchParams::getAll(const StringView name) const
+ExceptionOr<void> URLSearchParams::append(const String& name, const String& value)
+{
+    return mutatePairs([&](auto& pairs) -> ExceptionOr<void> {
+        if (!pairs.tryAppend(KeyValuePair<String, String> { name, value }))
+            return Exception { OutOfMemoryError };
+        return {};
+    });
+}
+
+ExceptionOr<Vector<String>> URLSearchParams::getAll(const StringView name) const
 {
     Vector<String> values;
-    values.reserveInitialCapacity(m_pairs.size());
+    const size_t count = std::ranges::count_if(m_pairs, [&](const auto& pair) { return pair.key == name; });
+    if (!values.tryReserveInitialCapacity(count))
+        return Exception { OutOfMemoryError };
     for (const auto& pair : m_pairs) {
         if (pair.key == name)
             values.unsafeAppendWithoutCapacityCheck(pair.value);
     }
-    values.shrinkToFit();
     return values;
 }
 
-void URLSearchParams::remove(const StringView name, const String& value)
+ExceptionOr<void> URLSearchParams::remove(const StringView name, const String& value)
 {
-    m_pairs.removeAllMatching([&](const auto& pair) {
-        return pair.key == name && (value.isNull() || pair.value == value);
+    return mutatePairs([&](auto& pairs) -> ExceptionOr<void> {
+        pairs.removeAllMatching([&](const auto& pair) {
+            return pair.key == name && (value.isNull() || pair.value == value);
+        });
+        return {};
     });
-    updateURL();
-    needsSorting = true;
 }
 
-String URLSearchParams::toString() const
+ExceptionOr<String> URLSearchParams::toString() const
 {
-    return WTF::URLParser::serialize(m_pairs);
-}
-
-void URLSearchParams::updateURL()
-{
-    if (m_associatedURL)
-        m_associatedURL->setSearch(WTF::URLParser::serialize(m_pairs));
-}
-
-void URLSearchParams::updateFromAssociatedURL()
-{
-    ASSERT(m_associatedURL);
-    String search = m_associatedURL->search();
-    m_pairs = search.startsWith('?') ? WTF::URLParser::parseURLEncodedForm(StringView(search).substring(1)) : WTF::URLParser::parseURLEncodedForm(search);
+    return FormURLEncoding::serialize(m_pairs.span());
 }
 
 std::optional<KeyValuePair<String, String>> URLSearchParams::Iterator::next()

@@ -1691,12 +1691,17 @@ pub fn installIsolatedPackages(
                     if (!missing_from_cache) {
                         if (patch_info == .patch) {
                             var patch_log: bun.logger.Log = .init(manager.allocator);
-                            installer.applyPackagePatch(entry_id, patch_info.patch, &patch_log);
+                            defer patch_log.deinit();
+                            installer.applyPackagePatch(entry_id, patch_info.patch, &patch_log) catch |err| {
+                                entry_steps[entry_id.get()].store(.done, .monotonic);
+                                installer.onPatchError(entry_id, err, &patch_log);
+                                continue;
+                            };
                             if (patch_log.hasErrors()) {
                                 // monotonic is okay because we haven't started the task yet (it isn't running
                                 // on another thread)
                                 entry_steps[entry_id.get()].store(.done, .monotonic);
-                                installer.onTaskFail(entry_id, .{ .patching = patch_log });
+                                installer.onPatchFailure(entry_id, &patch_log);
                                 continue;
                             }
                         }
@@ -1719,7 +1724,6 @@ pub fn installIsolatedPackages(
                                 pkg_res.value.npm.version,
                                 pkg_res.value.npm.url.slice(string_buf),
                                 ctx,
-                                patch_info.nameAndVersionHash(),
                             ) catch |err| switch (err) {
                                 error.OutOfMemory => |oom| return oom,
                                 error.InvalidURL => {
@@ -1746,7 +1750,11 @@ pub fn installIsolatedPackages(
                                 &pkg_res,
                                 ctx,
                                 patch_info.nameAndVersionHash(),
-                            );
+                            ) catch |err| {
+                                entry_steps[entry_id.get()].store(.done, .monotonic);
+                                installer.onTaskFail(entry_id, .{ .scheduling = err });
+                                continue;
+                            };
                         },
                         .github => {
                             const url = manager.allocGitHubURL(&pkg_res.value.git);
@@ -1756,7 +1764,6 @@ pub fn installIsolatedPackages(
                                 pkg_id,
                                 url,
                                 ctx,
-                                patch_info.nameAndVersionHash(),
                             ) catch |err| switch (err) {
                                 error.OutOfMemory => bun.outOfMemory(),
                                 error.InvalidURL => {
@@ -1791,7 +1798,6 @@ pub fn installIsolatedPackages(
                                 pkg_id,
                                 pkg_res.value.remote_tarball.slice(string_buf),
                                 ctx,
-                                patch_info.nameAndVersionHash(),
                             ) catch |err| switch (err) {
                                 error.OutOfMemory => bun.outOfMemory(),
                                 error.InvalidURL => {

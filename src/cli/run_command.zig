@@ -216,12 +216,16 @@ pub const RunCommand = struct {
         use_system_shell: bool,
     ) !void {
         const shell_bin = findShell(ctx.io, env.get("PATH") orelse "", cwd) orelse return error.MissingShell;
-        env.map.put("npm_lifecycle_event", name) catch unreachable;
-        env.map.put("npm_lifecycle_script", original_script) catch unreachable;
+        try env.map.put("npm_lifecycle_event", name);
+        try env.map.put("npm_lifecycle_script", original_script);
 
         var copy_script_capacity: usize = original_script.len;
-        for (passthrough) |part| copy_script_capacity += 1 + part.len;
+        for (passthrough) |part| {
+            const argument_capacity = std.math.add(usize, part.len, 1) catch return error.OutOfMemory;
+            copy_script_capacity = std.math.add(usize, copy_script_capacity, argument_capacity) catch return error.OutOfMemory;
+        }
         var copy_script = try std.array_list.Managed(u8).initCapacity(allocator, copy_script_capacity);
+        defer copy_script.deinit();
 
         // We're going to do this slowly.
         // Find exact matches of yarn, pnpm, npm
@@ -245,7 +249,11 @@ pub const RunCommand = struct {
         }
 
         if (!use_system_shell) {
-            const mini = bun.jsc.MiniEventLoop.initGlobal(ctx.io, env, cwd);
+            const mini = bun.MiniEventLoop.initGlobal(ctx.io, env, cwd) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                if (!silent) Output.errGeneric("failed to initialize event loop for script {s}: {s}", .{ name, @errorName(err) });
+                Global.exit(1);
+            };
             const code = bun.shell.Interpreter.initAndRunFromSource(ctx, mini, name, copy_script.items, cwd) catch |err| {
                 if (!silent) {
                     Output.prettyErrorln("<r><red>error<r>: Failed to run script <b>{s}<r> due to error <b>{s}<r>", .{ name, @errorName(err) });
@@ -293,15 +301,20 @@ pub const RunCommand = struct {
             .ipc = ipc_fd,
 
             .windows = if (Environment.isWindows) .{
-                .loop = jsc.EventLoopHandle.init(jsc.MiniEventLoop.initGlobal(ctx.io, env, null)),
+                .loop = (bun.MiniEventLoop.initGlobal(ctx.io, env, null) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    if (!silent) Output.errGeneric("failed to initialize event loop for script {s}: {s}", .{ name, @errorName(err) });
+                    Global.exit(1);
+                }).parentEventLoop(),
             },
         }) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             if (!silent) {
                 Output.prettyErrorln("<r><red>error<r>: Failed to run script <b>{s}<r> due to error <b>{s}<r>", .{ name, @errorName(err) });
             }
 
             Output.flush();
-            return;
+            Global.exit(1);
         })) {
             .err => |err| {
                 if (!silent) {
@@ -309,7 +322,7 @@ pub const RunCommand = struct {
                 }
 
                 Output.flush();
-                return;
+                Global.exit(1);
             },
             .result => |result| result,
         };
@@ -466,7 +479,7 @@ pub const RunCommand = struct {
             .use_execve_on_macos = silent,
 
             .windows = if (Environment.isWindows) .{
-                .loop = jsc.EventLoopHandle.init(jsc.MiniEventLoop.initGlobal(ctx.io, env, null)),
+                .loop = (try bun.MiniEventLoop.initGlobal(ctx.io, env, null)).parentEventLoop(),
             },
         }) catch |err| {
             bun.handleErrorReturnTrace(err, @errorReturnTrace());
@@ -589,7 +602,8 @@ pub const RunCommand = struct {
     pub fn ls(ctx: Command.Context) !void {
         const args = ctx.args;
 
-        var this_transpiler = try transpiler.Transpiler.init(ctx.allocator, ctx.io, ctx.log, args, null);
+        var this_transpiler = try transpiler.Transpiler.init(ctx.allocator, ctx.io, ctx.log, args, ctx.transpiler_capabilities, null);
+        defer this_transpiler.feature_flags.deinit();
         this_transpiler.options.env.behavior = api.DotEnvBehavior.load_all;
         this_transpiler.options.env.prefix = "";
 
@@ -613,7 +627,11 @@ pub const RunCommand = struct {
         "/bun-node-debug";
 
     pub fn bunNodeFileUtf8(allocator: std.mem.Allocator) ![:0]const u8 {
-        if (!Environment.isWindows) return bun_node_dir;
+        if (!Environment.isWindows) {
+            const executable = try bun.selfExePath();
+            // Nested invocations share links only with the same executable.
+            return std.fmt.allocPrintSentinel(allocator, "{s}-{x}/node", .{ bun_node_dir, bun.hash(executable) }, 0);
+        }
         var temp_path_buffer: bun.WPathBuffer = undefined;
         var target_path_buffer: bun.PathBuffer = undefined;
         const len = bun.windows.GetTempPathW(
@@ -642,61 +660,40 @@ pub const RunCommand = struct {
         io: std.Io,
         PATH: *std.array_list.Managed(u8),
         optional_bun_path: *string,
-    ) (OOM || error{SelfExePathNotInitialized})!void {
+    ) !void {
         // If we are already running as "node", the path should exist
         if (CLI.pretend_to_be_node) return;
 
         if (Environment.isPosix) {
-            var argv0 = @as([*:0]const u8, @ptrCast(optional_bun_path.ptr));
+            const executable = try bun.selfExePath();
+            optional_bun_path.* = executable;
+            const node_path = try bunNodeFileUtf8(PATH.allocator);
+            defer PATH.allocator.free(node_path);
+            const directory = std.fs.path.dirname(node_path).?;
+            const cwd = std.Io.Dir.cwd();
+            try cwd.createDirPath(io, directory);
 
-            // if we are already an absolute path, use that
-            // if the user started the application via a shebang, it's likely that the path is absolute already
-            if (bun.argv[0][0] == '/') {
-                optional_bun_path.* = bun.argv[0];
-                argv0 = bun.argv[0];
-            } else if (optional_bun_path.len == 0) {
-                // otherwise, ask the OS for the absolute path
-                const self = try bun.selfExePath();
-                if (self.len > 0) {
-                    argv0 = self.ptr;
-                    optional_bun_path.* = self;
+            var path_buffer: bun.PathBuffer = undefined;
+            var target_buffer: bun.PathBuffer = undefined;
+            for ([_][]const u8{ "node", "bun" }) |name| {
+                const path = std.mem.print(&path_buffer, "{s}/{s}", .{ directory, name }) catch unreachable;
+                if (cwd.readLink(io, path, &target_buffer)) |length| {
+                    if (std.mem.eql(u8, target_buffer[0..length], executable)) continue;
+                } else |err| switch (err) {
+                    error.FileNotFound, error.NotLink => {},
+                    else => return err,
                 }
-            }
-
-            if (optional_bun_path.len == 0) {
-                argv0 = bun.argv[0];
-            }
-
-            if (Environment.isDebug) {
-                std.Io.Dir.cwd().deleteTree(io, bun_node_dir) catch {};
-            }
-            const paths = .{ bun_node_dir ++ "/node", bun_node_dir ++ "/bun" };
-            inline for (paths) |path| {
-                var retried = false;
-                while (true) {
-                    inner: {
-                        std.Io.Dir.cwd().symLink(io, std.mem.span(argv0), path, .{}) catch |err| {
-                            if (err == error.PathAlreadyExists) break :inner;
-                            if (retried)
-                                return;
-
-                            std.Io.Dir.cwd().createDirPath(io, bun_node_dir) catch {};
-
-                            retried = true;
-                            continue;
-                        };
-                    }
-                    break;
-                }
+                try cwd.symLinkAtomic(io, executable, path, .{});
             }
             if (PATH.items.len > 0 and PATH.items[PATH.items.len - 1] != std.fs.path.delimiter) {
                 try PATH.append(std.fs.path.delimiter);
             }
 
             // The reason for the extra delim is because we are going to append the system PATH
-            // later on. this is done by the caller, and explains why we are adding bun_node_dir
+            // later on. this is done by the caller, and explains why we are adding the shim directory
             // to the end of the path slice rather than the start.
-            try PATH.appendSlice(bun_node_dir ++ .{std.fs.path.delimiter});
+            try PATH.appendSlice(directory);
+            try PATH.append(std.fs.path.delimiter);
         } else if (Environment.isWindows) {
             var target_path_buffer: bun.WPathBuffer = undefined;
 
@@ -759,7 +756,7 @@ pub const RunCommand = struct {
             }
 
             // The reason for the extra delim is because we are going to append the system PATH
-            // later on. this is done by the caller, and explains why we are adding bun_node_dir
+            // later on. this is done by the caller, and explains why we are adding the shim directory
             // to the end of the path slice rather than the start.
             try bun.strings.toUTF8AppendToList(PATH, dir_slice[prefix.len..]);
             try PATH.append(std.fs.path.delimiter);
@@ -776,7 +773,8 @@ pub const RunCommand = struct {
         store_root_fd: bool,
     ) !*DirInfo {
         const args = ctx.args;
-        this_transpiler.* = try transpiler.Transpiler.init(ctx.allocator, ctx.io, ctx.log, args, env);
+        this_transpiler.* = try transpiler.Transpiler.init(ctx.allocator, ctx.io, ctx.log, args, ctx.transpiler_capabilities, env);
+        errdefer this_transpiler.feature_flags.deinit();
         this_transpiler.options.env.behavior = api.DotEnvBehavior.load_all;
         this_transpiler.env.quiet = true;
         this_transpiler.options.env.prefix = "";
@@ -888,7 +886,7 @@ pub const RunCommand = struct {
         }
 
         const bun_node_exe = try bunNodeFileUtf8(ctx.allocator);
-        const bun_node_dir_win = std.fs.path.dirname(bun_node_exe) orelse return error.FailedToGetTempPath;
+        const bun_node_directory = std.fs.path.dirname(bun_node_exe) orelse return error.FailedToGetTempPath;
         const found_node = this_transpiler.env.loadNodeJSConfig(
             this_transpiler.fs,
             if (force_using_bun) bun_node_exe else "",
@@ -914,23 +912,18 @@ pub const RunCommand = struct {
         }
 
         if (needs_to_force_bun) {
-            new_path_len += bun_node_dir_win.len + 1;
+            new_path_len += bun_node_directory.len + 1;
         }
 
         var new_path = try std.array_list.Managed(u8).initCapacity(ctx.allocator, new_path_len);
+        errdefer new_path.deinit();
 
         if (needs_to_force_bun) {
-            createFakeTemporaryNodeExecutable(
+            try createFakeTemporaryNodeExecutable(
                 ctx.io,
                 &new_path,
                 &optional_bun_self_path,
-            ) catch |err| switch (err) {
-                error.OutOfMemory => bun.outOfMemory(),
-                else => |other| std.debug.panic(
-                    "unexpected error from createFakeTemporaryNodeExecutable: {}",
-                    .{other},
-                ),
-            };
+            );
 
             if (!force_using_bun) {
                 bun.handleOom(this_transpiler.env.map.put("NODE", bun_node_exe));
@@ -997,7 +990,8 @@ pub const RunCommand = struct {
 
         const args = ctx.args;
 
-        var this_transpiler = transpiler.Transpiler.init(ctx.allocator, ctx.io, ctx.log, args, null) catch return shell_out;
+        var this_transpiler = transpiler.Transpiler.init(ctx.allocator, ctx.io, ctx.log, args, ctx.transpiler_capabilities, null) catch return shell_out;
+        defer this_transpiler.feature_flags.deinit();
         this_transpiler.options.env.behavior = api.DotEnvBehavior.load_all;
         this_transpiler.options.env.prefix = "";
         this_transpiler.env.quiet = true;
@@ -1288,6 +1282,7 @@ pub const RunCommand = struct {
     /// can't be downloaded just falls back to alt-text rendering.
     fn prefetchRemoteImages(
         io: std.Io,
+        javascript_semantics: JavaScriptSemantics,
         contents: []const u8,
         md_opts: bun.md.Options,
         out_map: *bun.StringHashMapUnmanaged([]const u8),
@@ -1358,7 +1353,9 @@ pub const RunCommand = struct {
                 "",
                 HTTP.HTTPClientResult.Callback.New(*RemoteImageDownload, RemoteImageDownload.onDone).init(d),
                 HTTP.FetchRedirect.follow,
-                .{},
+                .{
+                    .javascript_semantics = javascript_semantics,
+                },
             );
             downloads.append(allocator, d) catch {
                 d.response_buffer.deinit();
@@ -1439,7 +1436,7 @@ pub const RunCommand = struct {
 
     /// Read a markdown file, render it to ANSI, print to stdout, and exit.
     /// Runs without a JavaScript VM — much faster than booting JSC.
-    fn renderMarkdownFileAndExit(io: std.Io, path: string) noreturn {
+    fn renderMarkdownFileAndExit(io: std.Io, javascript_semantics: JavaScriptSemantics, path: string) noreturn {
         // No explicit free() on contents / rendered below: every path out
         // of this function calls Global.exit() or bun.outOfMemory() (both
         // noreturn), so the OS reclaims the allocations on process exit.
@@ -1491,7 +1488,7 @@ pub const RunCommand = struct {
         // is a no-op.
         var remote_map: bun.StringHashMapUnmanaged([]const u8) = .{};
         if (kitty_graphics and bun.strings.contains(contents, "![")) {
-            prefetchRemoteImages(io, contents, md_opts, &remote_map);
+            prefetchRemoteImages(io, javascript_semantics, contents, md_opts, &remote_map);
         }
 
         // Relative image paths in the markdown should resolve against
@@ -1555,7 +1552,7 @@ pub const RunCommand = struct {
     fn _bootAndHandleError(ctx: Command.Context, path: string, loader: ?bun.options.Loader) bool {
         const resolved_loader: ?bun.options.Loader = loader orelse bun.options.defaultLoaders.get(std.fs.path.extension(path));
         if (resolved_loader) |l| {
-            if (l == .md) renderMarkdownFileAndExit(ctx.io, path);
+            if (l == .md) renderMarkdownFileAndExit(ctx.io, ctx.transpiler_capabilities.javascript_semantics, path);
         }
         Run.boot(ctx, ctx.allocator.dupe(u8, path) catch return false, loader) catch |err| {
             ctx.log.print(Output.errorWriter()) catch {};
@@ -1691,6 +1688,7 @@ pub const RunCommand = struct {
         var ORIGINAL_PATH: string = "";
         var this_transpiler: transpiler.Transpiler = undefined;
         const root_dir_info = try configureEnvForRun(ctx, &this_transpiler, null, log_errors, false);
+        defer this_transpiler.feature_flags.deinit();
         try configurePathForRun(ctx, root_dir_info, &this_transpiler, &ORIGINAL_PATH, root_dir_info.abs_path, force_using_bun);
         this_transpiler.env.map.put("npm_command", "run-script") catch unreachable;
 
@@ -2157,6 +2155,7 @@ const string = []const u8;
 const stringZ = [:0]const u8;
 
 const DotEnv = @import("../dotenv/env_loader.zig");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 const ShellCompletions = @import("./shell_completions.zig");
 const options = @import("../bundler/options.zig");
 const resolve_path = @import("../paths/resolve_path.zig");
@@ -2173,7 +2172,6 @@ const OOM = bun.OOM;
 const Output = bun.Output;
 const clap = bun.clap;
 const default_allocator = bun.default_allocator;
-const jsc = bun.jsc;
 const strings = bun.strings;
 const transpiler = bun.transpiler;
 const Run = bun.bun_js.Run;

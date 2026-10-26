@@ -9,23 +9,24 @@ pub const Context = opaque {
     extern fn us_quic_socket_context_loop(ctx: *Context) *uws.Loop;
     pub const loop = us_quic_socket_context_loop;
 
-    extern fn us_quic_socket_context_connect(ctx: *Context, host: [*:0]const u8, port: c_int, sni: [*:0]const u8, reject_unauthorized: c_int, out_qs: *?*Socket, out_pending: *?*PendingConnect, user: *anyopaque) c_int;
-
     pub const ConnectResult = union(enum) {
         /// IP literal or DNS-cache hit: handshake already in flight.
         socket: *Socket,
-        /// DNS cache miss: caller must register a `Bun__addrinfo` callback on
+        /// DNS cache miss: caller must register a callback on
         /// `pending.addrinfo()` and call `pending.resolved()` when it fires.
         pending: *PendingConnect,
+        out_of_memory,
         err,
     };
 
     pub fn connect(ctx: *Context, host: [*:0]const u8, port: u16, sni: [*:0]const u8, reject_unauthorized: bool, user: *anyopaque) ConnectResult {
-        var qs: ?*Socket = null;
-        var pc: ?*PendingConnect = null;
-        return switch (us_quic_socket_context_connect(ctx, host, port, sni, @intFromBool(reject_unauthorized), &qs, &pc, user)) {
-            1 => .{ .socket = qs.? },
-            0 => .{ .pending = pc.? },
+        const native = @import("usockets-native");
+        var qs: ?*native.us_quic_socket_t = null;
+        var pc: ?*native.struct_us_quic_pending_connect_s = null;
+        return switch (native.us_quic_socket_context_connect(@ptrCast(ctx), host, port, sni, @intFromBool(reject_unauthorized), &qs, &pc, user)) {
+            native.US_QUIC_CONNECT_READY => .{ .socket = @ptrCast(qs.?) },
+            native.US_QUIC_CONNECT_PENDING => .{ .pending = @ptrCast(pc.?) },
+            native.US_QUIC_CONNECT_OUT_OF_MEMORY => .out_of_memory,
             else => .err,
         };
     }

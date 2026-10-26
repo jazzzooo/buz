@@ -1031,6 +1031,12 @@ bool isTimeZoneValid(StringView timeZone)
     return validateTimeZone(timeZone).has_value();
 }
 
+void commitTimeZoneOverride(Vector<char16_t>& identifier)
+{
+    Locker locker { innerTimeZoneOverrideLock };
+    innerTimeZoneOverride().swap(identifier);
+}
+
 bool setTimeZoneOverride(StringView timeZone)
 {
     if (timeZone.isEmpty()) {

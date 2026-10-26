@@ -26,6 +26,7 @@ pub fn deinit(this: *HandshakeResponse41) void {
 
 pub fn writeInternal(this: *HandshakeResponse41, comptime Context: type, writer: NewWriter(Context)) !void {
     var packet = try writer.start(this.sequence_id);
+    defer packet.deinit();
 
     this.capability_flags.CLIENT_CONNECT_ATTRS = this.connect_attrs.count() > 0;
 
@@ -99,9 +100,9 @@ pub const write = writeWrap(HandshakeResponse41, writeInternal).write;
 
 const debug = bun.Output.scoped(.MySQLConnection, .hidden);
 
-const Capabilities = @import("../Capabilities.zig");
+const Capabilities = @import("mysql_domain").Capabilities;
 const bun = @import("bun");
-const CharacterSet = @import("./CharacterSet.zig").CharacterSet;
+const CharacterSet = @import("mysql_domain").CharacterSet;
 const Data = @import("../../shared/Data.zig").Data;
 const encodedLengthIntSize = @import("./EncodeInt.zig").encodedLengthIntSize;
 

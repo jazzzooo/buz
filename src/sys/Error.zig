@@ -22,14 +22,20 @@ dest: []const u8 = "",
 /// Node reports some failures with a documented `ERR_*` code and wording that
 /// owes nothing to the failing syscall. When set, these replace both for
 /// JavaScript; the shell keeps the errno presentation either way.
-node_code: ?bun.jsc.Node.ErrorCode = null,
+node_code: ?NodeErrorCode = null,
 node_message: []const u8 = "",
 
 pub fn clone(this: *const Error, allocator: std.mem.Allocator) Error {
+    return bun.handleOom(this.cloneFallible(allocator));
+}
+
+pub fn cloneFallible(this: *const Error, allocator: std.mem.Allocator) bun.OOM!Error {
     var copy = this.*;
-    copy.path = bun.handleOom(allocator.dupe(u8, copy.path));
-    copy.dest = bun.handleOom(allocator.dupe(u8, copy.dest));
-    copy.node_message = bun.handleOom(allocator.dupe(u8, copy.node_message));
+    copy.path = try allocator.dupe(u8, this.path);
+    errdefer allocator.free(copy.path);
+    copy.dest = try allocator.dupe(u8, this.dest);
+    errdefer allocator.free(copy.dest);
+    copy.node_message = try allocator.dupe(u8, this.node_message);
     return copy;
 }
 
@@ -82,19 +88,34 @@ pub fn fromStdIo(err: anyerror, syscall_tag: sys.Tag) Error {
 }
 
 pub fn format(self: Error, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    // We want to reuse the code from SystemError for formatting.
-    // But, we do not want to call String.createUTF8 on the path/dest strings
-    // because we're intending to pass them to writer.print()
-    // which will convert them back into UTF*.
-    var that = self.withoutPath().toShellSystemError();
-    bun.debugAssert(that.path.tag != .WTFStringImpl);
-    bun.debugAssert(that.dest.tag != .WTFStringImpl);
-    that.path = bun.String.borrowUTF8(self.path);
-    that.dest = bun.String.borrowUTF8(self.dest);
-    bun.debugAssert(that.path.tag != .WTFStringImpl);
-    bun.debugAssert(that.dest.tag != .WTFStringImpl);
-
-    return that.format(writer);
+    const data = self.withoutPath().toShellSystemErrorData();
+    const code = if (data.system_errno) |system_errno| @tagName(system_errno) else "";
+    if (self.path.len > 0) {
+        switch (bun.Output.enable_ansi_colors_stderr) {
+            inline else => |enable_colors| try writer.print(
+                comptime bun.Output.prettyFmt(
+                    "<r><red>{s}<r><d>:<r> <b>{s}<r>: {s} <d>({s}())<r>",
+                    enable_colors,
+                ),
+                .{
+                    code,
+                    self.path,
+                    data.message,
+                    data.syscall,
+                },
+            ),
+        }
+    } else {
+        switch (bun.Output.enable_ansi_colors_stderr) {
+            inline else => |enable_colors| try writer.print(
+                comptime bun.Output.prettyFmt(
+                    "<r><red>{s}<r><d>:<r> {s} <d>({s}())<r>",
+                    enable_colors,
+                ),
+                .{ code, data.message, data.syscall },
+            ),
+        }
+    }
 }
 
 pub inline fn getErrno(this: Error) E {
@@ -255,76 +276,104 @@ pub fn msg(this: Error) ?[]const u8 {
     return null;
 }
 
-/// Simpler formatting which does not allocate a message
-pub fn toShellSystemError(this: Error) SystemError {
+pub const system_error_message_capacity = 4096;
+
+pub const ShellSystemErrorData = struct {
+    errno: c_int,
+    system_errno: ?SystemErrno = null,
+    message: []const u8 = "",
+    path: []const u8 = "",
+    syscall: [:0]const u8,
+    fd: c_int = std.math.minInt(c_int),
+    dest: []const u8 = "",
+};
+
+pub fn toShellSystemErrorData(this: Error) ShellSystemErrorData {
+    var result = ShellSystemErrorData{
+        .errno = -%@as(c_int, this.errno),
+        .syscall = @tagName(this.syscall),
+        .path = this.path,
+        .dest = this.dest,
+    };
+    if (this.getErrorCodeTagName()) |resolved_errno| {
+        _, const system_errno = resolved_errno;
+        result.system_errno = system_errno;
+        result.message = coreutils_error_map.get(system_errno) orelse "";
+    }
+    if (this.fd.unwrapValid()) |valid| {
+        if (!Environment.isWindows or valid.kind == .uv) result.fd = valid.uv();
+    }
+    return result;
+}
+
+pub fn toShellSystemError(this: Error) sys.SystemError {
     @setEvalBranchQuota(1_000_000);
-    var err = SystemError{
-        .errno = @as(c_int, this.errno) * -1,
-        .syscall = bun.String.static(@tagName(this.syscall)),
+    const data = this.toShellSystemErrorData();
+    var err = sys.SystemError{
+        .errno = data.errno,
+        .syscall = bun.String.staticTagName(this.syscall),
         .message = .empty,
+        .fd = data.fd,
     };
 
-    // errno label
-    if (this.getErrorCodeTagName()) |resolved_errno| {
-        const code, const system_errno = resolved_errno;
-        err.code = bun.String.static(code);
-        if (coreutils_error_map.get(system_errno)) |label| {
-            err.message = bun.String.static(label);
+    if (data.system_errno) |system_errno| {
+        err.code = bun.String.staticTagName(system_errno);
+        switch (system_errno) {
+            inline else => |errno_tag| {
+                if (comptime coreutils_error_map.get(errno_tag)) |label| {
+                    err.message = bun.String.static(label);
+                }
+            },
         }
     }
 
-    if (this.path.len > 0) {
-        err.path = bun.String.cloneUTF8(this.path);
-    }
-
-    if (this.dest.len > 0) {
-        err.dest = bun.String.cloneUTF8(this.dest);
-    }
-
-    if (this.fd.unwrapValid()) |valid| {
-        // When the FD is a windows handle, there is no sane way to report this.
-        if (!Environment.isWindows or valid.kind == .uv) {
-            err.fd = valid.uv();
-        }
-    }
-
+    if (data.path.len > 0) err.path = bun.String.cloneUTF8(data.path);
+    if (data.dest.len > 0) err.dest = bun.String.cloneUTF8(data.dest);
     return err;
 }
 
-/// More complex formatting to precisely match the printing that Node.js emits.
-/// Use this whenever the error will be sent to JavaScript instead of the shell variant above.
-pub fn toSystemError(this: Error) SystemError {
-    var err = SystemError{
+pub const SystemErrorData = struct {
+    errno: c_int,
+    code: ?[:0]const u8 = null,
+    code_tag: ?SystemErrorCode = null,
+    message: []const u8,
+    path: []const u8 = "",
+    syscall: [:0]const u8,
+    fd: c_int = std.math.minInt(c_int),
+    dest: []const u8 = "",
+};
+
+pub fn toSystemErrorData(this: Error, message_buffer: *[system_error_message_capacity]u8) SystemErrorData {
+    var result = SystemErrorData{
         .errno = -%@as(c_int, this.errno),
-        .syscall = bun.String.static(@tagName(this.syscall)),
-        .message = .empty,
+        .syscall = @tagName(this.syscall),
+        .message = "",
+        .path = this.path,
+        .dest = this.dest,
     };
 
     if (this.node_code) |node_code| {
-        err.code = bun.String.static(@tagName(node_code));
-        err.message = bun.String.cloneUTF8(this.node_message);
-        if (this.path.len > 0) err.path = bun.String.cloneUTF8(this.path);
-        if (this.dest.len > 0) err.dest = bun.String.cloneUTF8(this.dest);
-        return err;
+        result.code = @tagName(node_code);
+        result.code_tag = .{ .node = node_code };
+        result.message = this.node_message;
+        return result;
     }
 
     // errno label
-    var maybe_code: ?[:0]const u8 = null;
     var label: ?[]const u8 = null;
     if (this.getErrorCodeTagName()) |resolved_errno| {
-        maybe_code, const system_errno = resolved_errno;
-        err.code = bun.String.static(maybe_code.?);
+        const code, const system_errno = resolved_errno;
+        result.code = code;
+        result.code_tag = .{ .system = system_errno };
         label = libuv_error_map.get(system_errno);
     }
 
     // format taken from Node.js 'exceptions.cc'
-    // search keyword: `Local<Value> UVException(Isolate* isolate,`
-    var message_buf: [4096]u8 = @splat(0);
-    const message = message: {
-        var writer_state = std.Io.Writer.fixed(&message_buf);
+    result.message = message: {
+        var writer_state = std.Io.Writer.fixed(message_buffer);
         const writer = &writer_state;
         brk: {
-            if (maybe_code) |code| {
+            if (result.code) |code| {
                 writer.writeAll(code) catch break :brk;
                 writer.writeAll(": ") catch break :brk;
             }
@@ -345,25 +394,41 @@ pub fn toSystemError(this: Error) SystemError {
         }
         break :message writer.buffered();
     };
-    err.message = bun.String.cloneUTF8(message);
-
-    if (this.path.len > 0) {
-        err.path = bun.String.cloneUTF8(this.path);
-    }
-
-    if (this.dest.len > 0) {
-        err.dest = bun.String.cloneUTF8(this.dest);
-    }
 
     if (this.fd.unwrapValid()) |valid| {
         // When the FD is a windows handle, there is no sane way to report this.
         if (!Environment.isWindows or valid.kind == .uv) {
-            err.fd = valid.uv();
+            result.fd = valid.uv();
         }
     }
 
+    return result;
+}
+
+pub fn toSystemError(this: Error) sys.SystemError {
+    var message_buffer: [system_error_message_capacity]u8 = undefined;
+    const data = this.toSystemErrorData(&message_buffer);
+    var err = sys.SystemError{
+        .errno = data.errno,
+        .syscall = bun.String.staticTagName(this.syscall),
+        .message = bun.String.cloneUTF8(data.message),
+        .fd = data.fd,
+    };
+    if (data.code_tag) |code_tag| {
+        err.code = switch (code_tag) {
+            .node => |code| bun.String.staticTagName(code),
+            .system => |code| bun.String.staticTagName(code),
+        };
+    }
+    if (data.path.len > 0) err.path = bun.String.cloneUTF8(data.path);
+    if (data.dest.len > 0) err.dest = bun.String.cloneUTF8(data.dest);
     return err;
 }
+
+pub const SystemErrorCode = union(enum) {
+    node: NodeErrorCode,
+    system: SystemErrno,
+};
 
 pub inline fn todo() Error {
     if (Environment.isDebug) {
@@ -372,16 +437,11 @@ pub inline fn todo() Error {
     return Error{ .errno = todo_errno, .syscall = .TODO };
 }
 
-pub const toJS = @import("../sys_jsc/error_jsc.zig").toJS;
-pub const toJSWithAsyncStack = @import("../sys_jsc/error_jsc.zig").toJSWithAsyncStack;
-pub const TestingAPIs = @import("../sys_jsc/error_jsc.zig").TestingAPIs;
-
 const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const SystemError = bun.jsc.SystemError;
-
+const NodeErrorCode = @import("../runtime/node/nodejs_error_code.zig").Code;
 const sys = bun.sys;
 const E = sys.E;
 const SystemErrno = sys.SystemErrno;

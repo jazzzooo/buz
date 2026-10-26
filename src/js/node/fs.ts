@@ -5,13 +5,15 @@ const promises = require("node:fs/promises");
 const types = require("node:util/types");
 const { validateFunction, validateInteger } = require("internal/validators");
 const { validateCpOptions, needsJavaScriptCopier } = require("internal/fs/cp-options");
+const NativeFSWatcher = $bindgenClass("FSWatcher.schema.zig", "FSWatcher");
+const NativeStatWatcher = $bindgenClass("StatWatcher.schema.zig", "StatWatcher");
 
 const kEmptyObject = Object.freeze(Object.create(null));
 
 const isDate = types.isDate;
 
 // Private exports
-// `fs` points to the return value of `node_fs_binding.zig`'s `createBinding` function.
+// `fs` is the native NodeJSFS instance shared by node:fs/promises.
 const { fs } = promises.$data;
 
 const constants = $processBindingConstants.fs;
@@ -28,16 +30,9 @@ function ensureCallback(callback) {
   return callback;
 }
 
-// Micro-optimization: avoid creating a new function for every call
-// bind() is slightly more optimized in JSC
-// This code is equivalent to:
-//
-// function () { callback(null); }
-//
-function nullcallback(callback) {
-  return FunctionPrototypeBind.$call(callback, undefined, null);
+function callbackWithNoResult(callback) {
+  return () => callback(null);
 }
-const FunctionPrototypeBind = nullcallback.bind;
 
 class FSWatcher extends EventEmitter {
   #watcher;
@@ -64,7 +59,7 @@ class FSWatcher extends EventEmitter {
 
     this.#listener = listener;
     try {
-      this.#watcher = fs.watch(path, options || {}, this.#onEvent.bind(this));
+      this.#watcher = new NativeFSWatcher(path, options || {}, this.#onEvent.bind(this));
     } catch (e: any) {
       e.path = path;
       e.filename = path;
@@ -73,7 +68,10 @@ class FSWatcher extends EventEmitter {
   }
 
   #onEvent(eventType, filenameOrError) {
-    if (eventType === "close") {
+    if (eventType === "abort") {
+      if (this.listenerCount("error") > 0) this.emit("error", filenameOrError);
+      return;
+    } else if (eventType === "close") {
       // close on next microtask tick to avoid long-running function calls when
       // we're trying to detach the watcher
       queueMicrotask(() => {
@@ -111,7 +109,7 @@ class FSWatcher extends EventEmitter {
   start() {}
 }
 
-/** Implemented in `node_fs_stat_watcher.zig` */
+/** Implemented by the native StatWatcher binding. */
 interface StatWatcherHandle {
   ref();
   unref();
@@ -131,7 +129,7 @@ class StatWatcher extends EventEmitter {
 
   constructor(path, options) {
     super();
-    this._handle = fs.watchFile(path, options, this.#onChange.bind(this));
+    this._handle = new NativeStatWatcher(path, options, this.#onChange.bind(this)) as unknown as StatWatcherHandle;
   }
 
   #onChange(curr, prev) {
@@ -166,7 +164,7 @@ var access = function access(path, mode, callback) {
     }
 
     ensureCallback(callback);
-    fs.access(path, mode).then(callback, callback);
+    fs.access(path, mode).then(callbackWithNoResult(callback), callback);
   },
   appendFile = function appendFile(path, data, options, callback) {
     if (!$isCallable(callback)) {
@@ -176,9 +174,9 @@ var access = function access(path, mode, callback) {
 
     ensureCallback(callback);
 
-    fs.appendFile(path, data, options).then(nullcallback(callback), callback);
+    fs.appendFile(path, data, options).then(callbackWithNoResult(callback), callback);
   },
-  close = function close(fd, callback) {
+  close = function close(fd, callback?) {
     if ($isCallable(callback)) {
       fs.close(fd).then(() => callback(null), callback);
     } else if (callback === undefined) {
@@ -194,7 +192,7 @@ var access = function access(path, mode, callback) {
     }
 
     ensureCallback(callback);
-    fs.rm(path, options).then(nullcallback(callback), callback);
+    fs.rm(path, options).then(callbackWithNoResult(callback), callback);
   },
   rmdir = function rmdir(path, options, callback) {
     if ($isCallable(options)) {
@@ -202,7 +200,7 @@ var access = function access(path, mode, callback) {
       options = undefined;
     }
 
-    fs.rmdir(path, options).then(nullcallback(callback), callback);
+    fs.rmdir(path, options).then(callbackWithNoResult(callback), callback);
   },
   copyFile = function copyFile(src, dest, mode, callback) {
     if ($isCallable(mode)) {
@@ -212,7 +210,7 @@ var access = function access(path, mode, callback) {
 
     ensureCallback(callback);
 
-    fs.copyFile(src, dest, mode).then(nullcallback(callback), callback);
+    fs.copyFile(src, dest, mode).then(callbackWithNoResult(callback), callback);
   },
   exists = function exists(path, callback) {
     ensureCallback(callback);
@@ -229,24 +227,24 @@ var access = function access(path, mode, callback) {
   chown = function chown(path, uid, gid, callback) {
     ensureCallback(callback);
 
-    fs.chown(path, uid, gid).then(nullcallback(callback), callback);
+    fs.chown(path, uid, gid).then(callbackWithNoResult(callback), callback);
   },
   chmod = function chmod(path, mode, callback) {
     ensureCallback(callback);
 
-    fs.chmod(path, mode).then(nullcallback(callback), callback);
+    fs.chmod(path, mode).then(callbackWithNoResult(callback), callback);
   },
   fchmod = function fchmod(fd, mode, callback) {
     ensureCallback(callback);
 
-    fs.fchmod(fd, mode).then(nullcallback(callback), callback);
+    fs.fchmod(fd, mode).then(callbackWithNoResult(callback), callback);
   },
   fchown = function fchown(fd, uid, gid, callback) {
     ensureCallback(callback);
 
-    fs.fchown(fd, uid, gid).then(nullcallback(callback), callback);
+    fs.fchown(fd, uid, gid).then(callbackWithNoResult(callback), callback);
   },
-  fstat = function fstat(fd, options, callback) {
+  fstat = function fstat(fd, options?, callback?) {
     if ($isCallable(options)) {
       callback = options;
       options = undefined;
@@ -259,7 +257,7 @@ var access = function access(path, mode, callback) {
   fsync = function fsync(fd, callback) {
     ensureCallback(callback);
 
-    fs.fsync(fd).then(nullcallback(callback), callback);
+    fs.fsync(fd).then(callbackWithNoResult(callback), callback);
   },
   ftruncate = function ftruncate(fd, len = 0, callback) {
     if ($isCallable(len)) {
@@ -269,30 +267,30 @@ var access = function access(path, mode, callback) {
 
     ensureCallback(callback);
 
-    fs.ftruncate(fd, len).then(nullcallback(callback), callback);
+    fs.ftruncate(fd, len).then(callbackWithNoResult(callback), callback);
   },
   futimes = function futimes(fd, atime, mtime, callback) {
     ensureCallback(callback);
 
-    fs.futimes(fd, atime, mtime).then(nullcallback(callback), callback);
+    fs.futimes(fd, atime, mtime).then(callbackWithNoResult(callback), callback);
   },
   lchmod =
     constants.O_SYMLINK !== undefined
       ? function lchmod(path, mode, callback) {
           ensureCallback(callback);
 
-          fs.lchmod(path, mode).then(nullcallback(callback), callback);
+          fs.lchmod(path, mode).then(callbackWithNoResult(callback), callback);
         }
       : undefined, // lchmod is only available on macOS
   lchown = function lchown(path, uid, gid, callback) {
     ensureCallback(callback);
 
-    fs.lchown(path, uid, gid).then(nullcallback(callback), callback);
+    fs.lchown(path, uid, gid).then(callbackWithNoResult(callback), callback);
   },
   link = function link(existingPath, newPath, callback) {
     ensureCallback(callback);
 
-    fs.link(existingPath, newPath).then(nullcallback(callback), callback);
+    fs.link(existingPath, newPath).then(callbackWithNoResult(callback), callback);
   },
   mkdir = function mkdir(path, options, callback) {
     if ($isCallable(options)) {
@@ -302,7 +300,7 @@ var access = function access(path, mode, callback) {
 
     ensureCallback(callback);
 
-    fs.mkdir(path, options).then(nullcallback(callback), callback);
+    fs.mkdir(path, options).then(folder => callback(null, folder), callback);
   },
   mkdtemp = function mkdtemp(prefix, options, callback) {
     if ($isCallable(options)) {
@@ -316,9 +314,10 @@ var access = function access(path, mode, callback) {
       callback(null, folder);
     }, callback);
   },
-  open = function open(path, flags, mode, callback) {
+  open = function open(path, flags?, mode?, callback?) {
     if (arguments.length < 3) {
       callback = flags;
+      flags = undefined;
     } else if ($isCallable(mode)) {
       callback = mode;
       mode = undefined;
@@ -333,7 +332,7 @@ var access = function access(path, mode, callback) {
   fdatasync = function fdatasync(fd, callback) {
     ensureCallback(callback);
 
-    fs.fdatasync(fd).then(nullcallback(callback), callback);
+    fs.fdatasync(fd).then(callbackWithNoResult(callback), callback);
   },
   read = function read(fd, buffer, offsetOrOptions, length, position, callback) {
     // fd = getValidatedFd(fd); DEFERRED TO NATIVE
@@ -438,7 +437,7 @@ var access = function access(path, mode, callback) {
     callback ||= options;
     ensureCallback(callback);
 
-    fs.writeFile(path, data, options).then(nullcallback(callback), callback);
+    fs.writeFile(path, data, options).then(callbackWithNoResult(callback), callback);
   },
   readlink = function readlink(path, options, callback?) {
     if ($isCallable(options)) {
@@ -455,7 +454,7 @@ var access = function access(path, mode, callback) {
   rename = function rename(oldPath, newPath, callback) {
     ensureCallback(callback);
 
-    fs.rename(oldPath, newPath).then(nullcallback(callback), callback);
+    fs.rename(oldPath, newPath).then(callbackWithNoResult(callback), callback);
   },
   lstat = function lstat(path, options, callback?) {
     if ($isCallable(options)) {
@@ -500,11 +499,10 @@ var access = function access(path, mode, callback) {
       type = undefined;
     }
 
-    fs.symlink(target, path, type).then(callback, callback);
+    fs.symlink(target, path, type).then(callbackWithNoResult(callback), callback);
   },
   truncate = function truncate(path, len, callback) {
     if (typeof path === "number") {
-      // Apparently, node supports this
       ftruncate(path, len, callback);
       return;
     }
@@ -517,27 +515,27 @@ var access = function access(path, mode, callback) {
     }
 
     ensureCallback(callback);
-    fs.truncate(path, len).then(nullcallback(callback), callback);
+    fs.truncate(path, len).then(callbackWithNoResult(callback), callback);
   },
   unlink = function unlink(path, callback) {
     ensureCallback(callback);
 
-    fs.unlink(path).then(nullcallback(callback), callback);
+    fs.unlink(path).then(callbackWithNoResult(callback), callback);
   },
   utimes = function utimes(path, atime, mtime, callback) {
     ensureCallback(callback);
 
-    fs.utimes(path, atime, mtime).then(nullcallback(callback), callback);
+    fs.utimes(path, atime, mtime).then(callbackWithNoResult(callback), callback);
   },
   lutimes = function lutimes(path, atime, mtime, callback) {
     ensureCallback(callback);
 
-    fs.lutimes(path, atime, mtime).then(nullcallback(callback), callback);
+    fs.lutimes(path, atime, mtime).then(callbackWithNoResult(callback), callback);
   },
-  accessSync = fs.accessSync.bind(fs),
-  appendFileSync = fs.appendFileSync.bind(fs),
-  closeSync = fs.closeSync.bind(fs),
-  copyFileSync = fs.copyFileSync.bind(fs),
+  accessSync = fs.accessSync.bind(fs) as unknown as typeof import("node:fs").accessSync,
+  appendFileSync = fs.appendFileSync.bind(fs) as unknown as typeof import("node:fs").appendFileSync,
+  closeSync = fs.closeSync.bind(fs) as unknown as typeof import("node:fs").closeSync,
+  copyFileSync = fs.copyFileSync.bind(fs) as unknown as typeof import("node:fs").copyFileSync,
   // This behavior - never throwing -- matches Node.js behavior.
   // https://github.com/nodejs/node/blob/c82f3c9e80f0eeec4ae5b7aedd1183127abda4ad/lib/fs.js#L275C1-L295C1
   existsSync = function existsSync(_path: string) {
@@ -577,22 +575,27 @@ var access = function access(path, mode, callback) {
 
     return fs.readSync(fd, buffer, offset, length, position);
   },
-  writeSync = fs.writeSync.bind(fs),
-  readdirSync = fs.readdirSync.bind(fs),
-  readFileSync = fs.readFileSync.bind(fs),
-  fdatasyncSync = fs.fdatasyncSync.bind(fs),
-  writeFileSync = fs.writeFileSync.bind(fs),
-  readlinkSync = fs.readlinkSync.bind(fs),
-  renameSync = fs.renameSync.bind(fs),
-  statSync = fs.statSync.bind(fs),
-  statfsSync = fs.statfsSync.bind(fs),
-  symlinkSync = fs.symlinkSync.bind(fs),
-  truncateSync = fs.truncateSync.bind(fs),
-  unlinkSync = fs.unlinkSync.bind(fs),
-  utimesSync = fs.utimesSync.bind(fs),
-  lutimesSync = fs.lutimesSync.bind(fs),
-  rmSync = fs.rmSync.bind(fs),
-  rmdirSync = fs.rmdirSync.bind(fs),
+  writeSync = fs.writeSync.bind(fs) as unknown as typeof import("node:fs").writeSync,
+  readdirSync = fs.readdirSync.bind(fs) as unknown as typeof import("node:fs").readdirSync,
+  readFileSync = fs.readFileSync.bind(fs) as unknown as typeof import("node:fs").readFileSync,
+  fdatasyncSync = fs.fdatasyncSync.bind(fs) as unknown as typeof import("node:fs").fdatasyncSync,
+  writeFileSync = fs.writeFileSync.bind(fs) as unknown as typeof import("node:fs").writeFileSync,
+  readlinkSync = fs.readlinkSync.bind(fs) as unknown as typeof import("node:fs").readlinkSync,
+  renameSync = fs.renameSync.bind(fs) as unknown as typeof import("node:fs").renameSync,
+  statSync = fs.statSync.bind(fs) as unknown as typeof import("node:fs").statSync,
+  statfsSync = fs.statfsSync.bind(fs) as unknown as typeof import("node:fs").statfsSync,
+  symlinkSync = fs.symlinkSync.bind(fs) as unknown as typeof import("node:fs").symlinkSync,
+  truncateSync = function truncateSync(path, len) {
+    if (typeof path === "number") {
+      return fs.ftruncateSync(path, len);
+    }
+    return fs.truncateSync(path, len);
+  },
+  unlinkSync = fs.unlinkSync.bind(fs) as unknown as typeof import("node:fs").unlinkSync,
+  utimesSync = fs.utimesSync.bind(fs) as unknown as typeof import("node:fs").utimesSync,
+  lutimesSync = fs.lutimesSync.bind(fs) as unknown as typeof import("node:fs").lutimesSync,
+  rmSync = fs.rmSync.bind(fs) as unknown as typeof import("node:fs").rmSync,
+  rmdirSync = fs.rmdirSync.bind(fs) as unknown as typeof import("node:fs").rmdirSync,
   writev = function writev(fd, buffers, position, callback) {
     if (typeof position === "function") {
       callback = position;
@@ -603,7 +606,7 @@ var access = function access(path, mode, callback) {
 
     fs.writev(fd, buffers, position).$then(bytesWritten => callback(null, bytesWritten, buffers), callback);
   },
-  writevSync = fs.writevSync.bind(fs),
+  writevSync = fs.writevSync.bind(fs) as unknown as typeof import("node:fs").writevSync,
   readv = function readv(fd, buffers, position, callback) {
     if (typeof position === "function") {
       callback = position;
@@ -614,7 +617,7 @@ var access = function access(path, mode, callback) {
 
     fs.readv(fd, buffers, position).$then(bytesRead => callback(null, bytesRead, buffers), callback);
   },
-  readvSync = fs.readvSync.bind(fs),
+  readvSync = fs.readvSync.bind(fs) as unknown as typeof import("node:fs").readvSync,
   Dirent = fs.Dirent,
   Stats = fs.Stats,
   watch = function watch(path, options, listener) {
@@ -740,7 +743,7 @@ const realpathSync: typeof import("node:fs").realpathSync =
           if (typeof options === "string") encoding = options;
           else encoding = options?.encoding;
           if (encoding) {
-            (assertEncodingForWindows ?? $newZigFunction("runtime/node/types.zig", "jsAssertEncodingValid", 1))(
+            (assertEncodingForWindows ?? $bindgenFn("NodeFS.schema.zig", "assertEncodingValid"))(
               encoding,
             );
           }
@@ -776,7 +779,7 @@ const realpathSync: typeof import("node:fs").realpathSync =
         pos = current.length;
 
         // On windows, check that the root exists. On unix there is no need.
-        let lastStat: StatsType = lstatSync(base, { throwIfNoEntry: true });
+        let lastStat: StatsType | undefined = lstatSync(base, { throwIfNoEntry: true });
         if (lastStat === undefined) return;
         knownHard.$add(base);
 
@@ -802,14 +805,14 @@ const realpathSync: typeof import("node:fs").realpathSync =
 
           // Continue if not a symlink, break if a pipe/socket
           if (knownHard.$has(base)) {
-            if (lastStat.isFIFO() || lastStat.isSocket()) {
+            if (lastStat!.isFIFO() || lastStat!.isSocket()) {
               break;
             }
             continue;
           }
 
           let resolvedLink;
-          lastStat = fs.lstatSync(base, { throwIfNoEntry: true });
+          lastStat = fs.lstatSync(base, { throwIfNoEntry: true }) as StatsType | undefined;
           if (lastStat === undefined) return;
 
           if (!lastStat.isSymbolicLink()) {
@@ -817,8 +820,8 @@ const realpathSync: typeof import("node:fs").realpathSync =
             continue;
           }
 
-          lastStat = fs.statSync(base, { throwIfNoEntry: true });
-          const linkTarget = fs.readlinkSync(base);
+          lastStat = fs.statSync(base, { throwIfNoEntry: true }) as StatsType | undefined;
+          const linkTarget = fs.readlinkSync(base) as string;
           resolvedLink = pathModule.resolve(previous, linkTarget);
 
           // Resolve the link, then start over
@@ -830,7 +833,7 @@ const realpathSync: typeof import("node:fs").realpathSync =
 
           // On windows, check that the root exists. On unix there is no need.
           if (!knownHard.$has(base)) {
-            lastStat = fs.lstatSync(base, { throwIfNoEntry: true });
+            lastStat = fs.lstatSync(base, { throwIfNoEntry: true }) as StatsType | undefined;
             if (lastStat === undefined) return;
             knownHard.$add(base);
           }
@@ -847,7 +850,7 @@ const realpath: typeof import("node:fs").realpath =
         }
         ensureCallback(callback);
 
-        fs.realpath(p, options, false).then(function (resolvedPath) {
+        fs.realpath(p, options).then(function (resolvedPath) {
           callback(null, resolvedPath);
         }, callback);
       } as typeof import("node:fs").realpath)
@@ -862,7 +865,7 @@ const realpath: typeof import("node:fs").realpath =
           if (typeof options === "string") encoding = options;
           else encoding = options?.encoding;
           if (encoding) {
-            (assertEncodingForWindows ?? $newZigFunction("runtime/node/types.zig", "jsAssertEncodingValid", 1))(
+            (assertEncodingForWindows ?? $bindgenFn("NodeFS.schema.zig", "assertEncodingValid"))(
               encoding,
             );
           }
@@ -1000,8 +1003,8 @@ realpath.native = function realpath(p, options, callback) {
   fs.realpathNative(p, options).then(function (resolvedPath) {
     callback(null, resolvedPath);
   }, callback);
-};
-realpathSync.native = fs.realpathNativeSync.bind(fs);
+} as unknown as (typeof import("node:fs").realpath)["native"];
+realpathSync.native = fs.realpathNativeSync.bind(fs) as unknown as (typeof import("node:fs").realpathSync)["native"];
 
 function cpSync(src, dest, options) {
   options = validateCpOptions(options);
@@ -1074,7 +1077,7 @@ class Dir {
       withFileTypes: true,
       encoding: this.#options?.encoding,
       recursive: this.#options?.recursive,
-    }));
+    }) as DirentType[]);
     return entries.shift() ?? null;
   }
 
@@ -1088,13 +1091,13 @@ class Dir {
 
     if (this.#entries) return Promise.$resolve(this.#entries.shift() ?? null);
 
-    return fs
-      .readdir(this.#path, {
+    return (
+      fs.readdir(this.#path, {
         withFileTypes: true,
         encoding: this.#options?.encoding,
         recursive: this.#options?.recursive,
-      })
-      .then(entries => {
+      }) as Promise<DirentType[]>
+    ).then(entries => {
         this.#entries = entries;
         return entries.shift() ?? null;
       });

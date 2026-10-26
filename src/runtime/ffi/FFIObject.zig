@@ -1,632 +1,313 @@
-const FFIObject = @This();
-
-pub fn newCString(globalThis: *JSGlobalObject, value: JSValue, byteOffset: ?JSValue, lengthValue: ?JSValue) bun.JSError!jsc.JSValue {
-    switch (FFIObject.getPtrSlice(globalThis, value, byteOffset, lengthValue)) {
-        .err => |err| {
-            return err;
-        },
-        .slice => |slice| {
-            return bun.String.createUTF8ForJS(globalThis, slice);
-        },
-    }
-}
-
-pub const dom_call = DOMCall("FFI", @This(), "ptr", DOMEffect.forRead(.TypedArrayProperties));
-
-pub fn toJS(globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = jsc.JSObject.createEmpty(globalObject, comptime std.meta.fieldNames(@TypeOf(fields)).len + 2);
-    inline for (comptime std.meta.fieldNames(@TypeOf(fields))) |field| {
-        if (comptime bun.strings.eqlComptime(field, "CString")) {
-            // CString needs to be callable as a constructor for backward compatibility.
-            // Pass the same function as the constructor so `new CString(ptr)` works.
-            const func = jsc.toJSHostFn(@field(fields, field));
-            object.putDirect(
-                globalObject,
-                comptime ZigString.static(field),
-                jsc.JSFunction.create(globalObject, field, func, 1, .{ .constructor = func }).toJS(),
-            );
-        } else {
-            object.putDirect(
-                globalObject,
-                comptime ZigString.static(field),
-                jsc.JSFunction.create(globalObject, field, @field(fields, field), 1, .{}).toJS(),
-            );
-        }
-    }
-
-    dom_call.put(globalObject, object.toJS());
-    object.putDirect(globalObject, ZigString.static("read"), Reader.toJS(globalObject));
-
-    return object.toJS();
-}
-
 pub const Reader = struct {
-    pub const dom_calls = .{
-        .u8 = DOMCall("Reader", @This(), "u8", DOMEffect.forRead(.World)),
-        .u16 = DOMCall("Reader", @This(), "u16", DOMEffect.forRead(.World)),
-        .u32 = DOMCall("Reader", @This(), "u32", DOMEffect.forRead(.World)),
-        .ptr = DOMCall("Reader", @This(), "ptr", DOMEffect.forRead(.World)),
-        .i8 = DOMCall("Reader", @This(), "i8", DOMEffect.forRead(.World)),
-        .i16 = DOMCall("Reader", @This(), "i16", DOMEffect.forRead(.World)),
-        .i32 = DOMCall("Reader", @This(), "i32", DOMEffect.forRead(.World)),
-        .i64 = DOMCall("Reader", @This(), "i64", DOMEffect.forRead(.World)),
-        .u64 = DOMCall("Reader", @This(), "u64", DOMEffect.forRead(.World)),
-        .intptr = DOMCall("Reader", @This(), "intptr", DOMEffect.forRead(.World)),
-        .f32 = DOMCall("Reader", @This(), "f32", DOMEffect.forRead(.World)),
-        .f64 = DOMCall("Reader", @This(), "f64", DOMEffect.forRead(.World)),
+    const U8Schema = FFIBindings.function("readerU8");
+    const U16Schema = FFIBindings.function("readerU16");
+    const U32Schema = FFIBindings.function("readerU32");
+    const ReaderPtrSchema = FFIBindings.function("readerPtr");
+    const I8Schema = FFIBindings.function("readerI8");
+    const I16Schema = FFIBindings.function("readerI16");
+    const I32Schema = FFIBindings.function("readerI32");
+    const I64Schema = FFIBindings.function("readerI64");
+    const U64Schema = FFIBindings.function("readerU64");
+    const IntptrSchema = FFIBindings.function("readerIntptr");
+    const F32Schema = FFIBindings.function("readerF32");
+    const F64Schema = FFIBindings.function("readerF64");
+
+    pub const bindings = .{
+        .u8 = bun.bindgen.Fn(U8Schema, @"u8"),
+        .u16 = bun.bindgen.Fn(U16Schema, @"u16"),
+        .u32 = bun.bindgen.Fn(U32Schema, @"u32"),
+        .ptr = bun.bindgen.Fn(ReaderPtrSchema, @This().ptr),
+        .i8 = bun.bindgen.Fn(I8Schema, @"i8"),
+        .i16 = bun.bindgen.Fn(I16Schema, @"i16"),
+        .i32 = bun.bindgen.Fn(I32Schema, @"i32"),
+        .i64 = bun.bindgen.Fn(I64Schema, @"i64"),
+        .u64 = bun.bindgen.Fn(U64Schema, @"u64"),
+        .intptr = bun.bindgen.Fn(IntptrSchema, intptr),
+        .f32 = bun.bindgen.Fn(F32Schema, @"f32"),
+        .f64 = bun.bindgen.Fn(F64Schema, @"f64"),
     };
 
-    pub fn toJS(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-        const obj = jsc.JSObject.createEmpty(globalThis, std.meta.fieldNames(@TypeOf(Reader.dom_calls)).len);
-
-        inline for (comptime std.meta.fieldNames(@TypeOf(Reader.dom_calls))) |field| {
-            @field(Reader.dom_calls, field).put(globalThis, obj.toJS());
-        }
-
-        return obj.toJS();
+    fn scalarReader(comptime Schema: type, comptime T: type) type {
+        return struct {
+            fn call(context: bun.bindgen.CallContext(Schema), args: bun.bindgen.Args(Schema)) bun.bindgen.CallError(Schema)!bun.bindgen.Return(Schema) {
+                if (args.pointer == 0) return context.fail(.zero_pointer, {});
+                const addr = std.math.add(usize, args.pointer, args.byte_offset orelse 0) catch
+                    return context.fail(.address_overflow, {});
+                _ = std.math.add(usize, addr, @sizeOf(T) - 1) catch
+                    return context.fail(.address_overflow, {});
+                return @as(*align(1) const T, @ptrFromInt(addr)).*;
+            }
+        };
     }
 
-    pub fn @"u8"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) u8, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn @"u16"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) u16, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn @"u32"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) u32, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn ptr(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) u64, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn @"i8"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) i8, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn @"i16"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) i16, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn @"i32"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) i32, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn intptr(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) i64, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-
-    pub fn @"f32"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) f32, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-
-    pub fn @"f64"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) f64, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-
-    pub fn @"i64"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) i64, @ptrFromInt(addr)).*;
-        return JSValue.fromInt64NoTruncate(globalObject, value);
-    }
-
-    pub fn @"u64"(
-        globalObject: *JSGlobalObject,
-        _: JSValue,
-        arguments: []const JSValue,
-    ) bun.JSError!JSValue {
-        if (arguments.len == 0 or !arguments[0].isNumber()) {
-            return globalObject.throwInvalidArguments("Expected a pointer", .{});
-        }
-        const addr = arguments[0].asPtrAddress() + if (arguments.len > 1) @as(usize, @intCast(arguments[1].to(i32))) else @as(usize, 0);
-        const value = @as(*align(1) u64, @ptrFromInt(addr)).*;
-        return JSValue.fromUInt64NoTruncate(globalObject, value);
-    }
-
-    pub fn u8WithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) u8, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn u16WithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) u16, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn u32WithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) u32, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn ptrWithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) u64, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn i8WithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) i8, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn i16WithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) i16, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn i32WithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) i32, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-    pub fn intptrWithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) i64, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-
-    pub fn f32WithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) f32, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-
-    pub fn f64WithoutTypeChecks(
-        _: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) f64, @ptrFromInt(addr)).*;
-        return JSValue.jsNumber(value);
-    }
-
-    pub fn u64WithoutTypeChecks(
-        global: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) u64, @ptrFromInt(addr)).*;
-        return JSValue.fromUInt64NoTruncate(global, value);
-    }
-
-    pub fn i64WithoutTypeChecks(
-        global: *JSGlobalObject,
-        _: *anyopaque,
-        raw_addr: i64,
-        offset: i32,
-    ) callconv(jsc.conv) JSValue {
-        const addr = @as(usize, @intCast(raw_addr)) + @as(usize, @intCast(offset));
-        const value = @as(*align(1) i64, @ptrFromInt(addr)).*;
-        return JSValue.fromInt64NoTruncate(global, value);
-    }
+    pub const @"u8" = scalarReader(U8Schema, u8).call;
+    pub const @"u16" = scalarReader(U16Schema, u16).call;
+    pub const @"u32" = scalarReader(U32Schema, u32).call;
+    pub const ptr = scalarReader(ReaderPtrSchema, usize).call;
+    pub const @"i8" = scalarReader(I8Schema, i8).call;
+    pub const @"i16" = scalarReader(I16Schema, i16).call;
+    pub const @"i32" = scalarReader(I32Schema, i32).call;
+    pub const intptr = scalarReader(IntptrSchema, i64).call;
+    pub const @"f32" = scalarReader(F32Schema, f32).call;
+    pub const @"f64" = scalarReader(F64Schema, f64).call;
+    pub const @"i64" = scalarReader(I64Schema, i64).call;
+    pub const @"u64" = scalarReader(U64Schema, u64).call;
 };
 
-pub fn ptr(
-    globalThis: *JSGlobalObject,
-    _: JSValue,
-    arguments: []const JSValue,
-) JSValue {
-    return switch (arguments.len) {
-        0 => ptr_(globalThis, JSValue.zero, null),
-        1 => ptr_(globalThis, arguments[0], null),
-        else => ptr_(globalThis, arguments[0], arguments[1]),
-    };
+fn bindPtr(
+    context: bun.bindgen.CallContext(PtrSchema),
+    args: bun.bindgen.Args(PtrSchema),
+) bun.bindgen.CallError(PtrSchema)!?usize {
+    const view = args.value orelse return null;
+    const length = view.length();
+    if (length == 0) return context.fail(.empty_view, {});
+
+    const offset = args.byte_offset orelse 0;
+    if (offset > length) return context.fail(.offset_out_of_bounds, {});
+
+    const base = @intFromPtr(view.unsafePtr("FFI.ptr returns the caller's original buffer address; the caller keeps the buffer alive and prevents resize or detachment until all native uses finish").ptr);
+    const addr = std.math.add(usize, base, offset) catch return context.fail(.invalid_pointer, {});
+    if (addr == 0) return context.fail(.invalid_pointer, {});
+
+    return addr;
 }
 
-pub fn ptrWithoutTypeChecks(
-    _: *JSGlobalObject,
-    _: *anyopaque,
-    array: *jsc.JSUint8Array,
-) callconv(jsc.conv) JSValue {
-    return JSValue.fromPtrAddress(@intFromPtr(array.ptr()));
-}
+const PointerViewError = error{
+    ZeroPointer,
+    ZeroLength,
+    LengthTooLarge,
+    InvalidPointer,
+};
 
-fn ptr_(
-    globalThis: *JSGlobalObject,
-    value: JSValue,
-    byteOffset: ?JSValue,
-) JSValue {
-    if (value == .zero) {
-        return jsc.JSValue.jsNull();
+fn getPtrSlice(value: usize, byteOffset: ?i64, byteLength: ?usize) PointerViewError![]u8 {
+    if (value == 0) {
+        return error.ZeroPointer;
     }
+    var addr = value;
 
-    const array_buffer = value.asArrayBuffer(globalThis) orelse {
-        return globalThis.toInvalidArguments("Expected ArrayBufferView but received {s}", .{@tagName(value.jsType())});
-    };
-
-    if (array_buffer.len == 0) {
-        return globalThis.toInvalidArguments("ArrayBufferView must have a length > 0. A pointer to empty memory doesn't work", .{});
-    }
-
-    var addr: usize = @intFromPtr(array_buffer.ptr);
-
-    if (byteOffset) |off| {
-        if (!off.isEmptyOrUndefinedOrNull()) {
-            if (!off.isNumber()) {
-                return globalThis.toInvalidArguments("Expected number for byteOffset", .{});
-            }
-        }
-
-        const bytei64 = off.toInt64();
-        if (bytei64 < 0) {
-            addr -|= @as(usize, @intCast(bytei64 * -1));
+    if (byteOffset) |offset| {
+        if (offset < 0) {
+            addr = std.math.sub(usize, addr, @intCast(@abs(offset))) catch return error.InvalidPointer;
         } else {
-            addr += @as(usize, @intCast(bytei64));
+            addr = std.math.add(usize, addr, @intCast(offset)) catch return error.InvalidPointer;
         }
 
-        if (addr > @intFromPtr(array_buffer.ptr) + @as(usize, array_buffer.byte_len)) {
-            return globalThis.toInvalidArguments("byteOffset out of bounds", .{});
+        if (addr == 0) {
+            return error.ZeroPointer;
         }
     }
 
-    if (addr > max_addressable_memory) {
-        return globalThis.toInvalidArguments("Pointer is outside max addressible memory, which usually means a bug in your program.", .{});
+    if (byteLength) |length| {
+        if (length == 0) {
+            return error.ZeroLength;
+        }
+        _ = std.math.add(usize, addr, length) catch return error.LengthTooLarge;
+        return @as([*]u8, @ptrFromInt(addr))[0..length];
     }
 
-    if (addr == 0) {
-        return globalThis.toInvalidArguments("Pointer must not be 0", .{});
-    }
-
-    if (addr == 0xDEADBEEF or addr == 0xaaaaaaaa or addr == 0xAAAAAAAA) {
-        return globalThis.toInvalidArguments("ptr to invalid memory, that would segfault Bun :(", .{});
-    }
-
-    if (comptime Environment.allow_assert) {
-        assert(jsc.JSValue.fromPtrAddress(addr).asPtrAddress() == addr);
-    }
-
-    return jsc.JSValue.fromPtrAddress(addr);
+    return bun.span(@as([*:0]u8, @ptrFromInt(addr)));
 }
 
-const ValueOrError = union(enum) {
-    err: JSValue,
-    slice: []u8,
+fn pointerSlice(
+    context: anytype,
+    pointer: usize,
+    byte_offset: ?i64,
+    byte_length: ?usize,
+) bun.bindgen.CallError(@TypeOf(context))![]u8 {
+    return getPtrSlice(pointer, byte_offset, byte_length) catch |err| switch (err) {
+        error.ZeroPointer => context.fail(.zero_pointer, {}),
+        error.ZeroLength => context.fail(.zero_length, {}),
+        error.LengthTooLarge => context.fail(.length_too_large, {}),
+        error.InvalidPointer => context.fail(.invalid_pointer, {}),
+    };
+}
+
+const Finalizer = struct {
+    context: ?usize,
+    callback: ?usize,
 };
 
-pub fn getPtrSlice(globalThis: *JSGlobalObject, value: JSValue, byteOffset: ?JSValue, byteLength: ?JSValue) ValueOrError {
-    if (!value.isNumber() or value.asNumber() < 0 or value.asNumber() > @as(f64, @as(comptime_float, std.math.maxInt(usize)))) {
-        return .{ .err = globalThis.toInvalidArguments("ptr must be a number.", .{}) };
+const UnsafeExternalMemory = struct {
+    bytes: []u8,
+
+    fn unsafePtr(this: @This(), comptime reason: []const u8) *u8 {
+        if (reason.len == 0) @compileError("unsafePtr requires a non-empty lifetime reason");
+        return &this.bytes[0];
     }
-
-    const num = value.asPtrAddress();
-    if (num == 0) {
-        return .{ .err = globalThis.toInvalidArguments("ptr cannot be zero, that would segfault Bun :(", .{}) };
-    }
-
-    // if (!std.math.isFinite(num)) {
-    //     return .{ .err = globalThis.toInvalidArguments("ptr must be a finite number.", .{}) };
-    // }
-
-    var addr = @as(usize, @bitCast(num));
-
-    if (byteOffset) |byte_off| {
-        if (byte_off.isNumber()) {
-            const off = byte_off.toInt64();
-            if (off < 0) {
-                addr -|= @as(usize, @intCast(off * -1));
-            } else {
-                addr +|= @as(usize, @intCast(off));
-            }
-
-            if (addr == 0) {
-                return .{ .err = globalThis.toInvalidArguments("ptr cannot be zero, that would segfault Bun :(", .{}) };
-            }
-
-            if (!std.math.isFinite(byte_off.asNumber())) {
-                return .{ .err = globalThis.toInvalidArguments("ptr must be a finite number.", .{}) };
-            }
-        } else if (!byte_off.isEmptyOrUndefinedOrNull()) {
-            // do nothing
-        } else {
-            return .{ .err = globalThis.toInvalidArguments("Expected number for byteOffset", .{}) };
-        }
-    }
-
-    if (addr == 0xDEADBEEF or addr == 0xaaaaaaaa or addr == 0xAAAAAAAA) {
-        return .{ .err = globalThis.toInvalidArguments("ptr to invalid memory, that would segfault Bun :(", .{}) };
-    }
-
-    if (byteLength) |valueLength| {
-        if (!valueLength.isEmptyOrUndefinedOrNull()) {
-            if (!valueLength.isNumber()) {
-                return .{ .err = globalThis.toInvalidArguments("length must be a number.", .{}) };
-            }
-
-            if (valueLength.asNumber() == 0.0) {
-                return .{ .err = globalThis.toInvalidArguments("length must be > 0. This usually means a bug in your code.", .{}) };
-            }
-
-            const length_i = valueLength.toInt64();
-            if (length_i < 0) {
-                return .{ .err = globalThis.toInvalidArguments("length must be > 0. This usually means a bug in your code.", .{}) };
-            }
-
-            if (length_i > max_addressable_memory) {
-                return .{ .err = globalThis.toInvalidArguments("length exceeds max addressable memory. This usually means a bug in your code.", .{}) };
-            }
-
-            const length = @as(usize, @intCast(length_i));
-            return .{ .slice = @as([*]u8, @ptrFromInt(addr))[0..length] };
-        }
-    }
-
-    return .{ .slice = bun.span(@as([*:0]u8, @ptrFromInt(addr))) };
-}
-
-fn getCPtr(value: JSValue) ?usize {
-    // pointer to C function
-    if (value.isNumber()) {
-        const addr = value.asPtrAddress();
-        if (addr > 0) return addr;
-    } else if (value.isBigInt()) {
-        const addr = @as(u64, @bitCast(value.toUInt64NoTruncate()));
-        if (addr > 0) {
-            return addr;
-        }
-    }
-
-    return null;
-}
-
-pub fn toArrayBuffer(
-    globalThis: *JSGlobalObject,
-    value: JSValue,
-    byteOffset: ?JSValue,
-    valueLength: ?JSValue,
-    finalizationCtxOrPtr: ?JSValue,
-    finalizationCallback: ?JSValue,
-) bun.JSError!jsc.JSValue {
-    switch (getPtrSlice(globalThis, value, byteOffset, valueLength)) {
-        .err => |erro| {
-            return erro;
-        },
-        .slice => |slice| {
-            var callback: jsc.C.JSTypedArrayBytesDeallocator = null;
-            var ctx: ?*anyopaque = null;
-            if (finalizationCallback) |callback_value| {
-                if (getCPtr(callback_value)) |callback_ptr| {
-                    callback = @as(jsc.C.JSTypedArrayBytesDeallocator, @ptrFromInt(callback_ptr));
-
-                    if (finalizationCtxOrPtr) |ctx_value| {
-                        if (getCPtr(ctx_value)) |ctx_ptr| {
-                            ctx = @as(*anyopaque, @ptrFromInt(ctx_ptr));
-                        } else if (!ctx_value.isUndefinedOrNull()) {
-                            return globalThis.toInvalidArguments("Expected user data to be a C pointer (number or BigInt)", .{});
-                        }
-                    }
-                } else if (!callback_value.isEmptyOrUndefinedOrNull()) {
-                    return globalThis.toInvalidArguments("Expected callback to be a C pointer (number or BigInt)", .{});
-                }
-            } else if (finalizationCtxOrPtr) |callback_value| {
-                if (getCPtr(callback_value)) |callback_ptr| {
-                    callback = @as(jsc.C.JSTypedArrayBytesDeallocator, @ptrFromInt(callback_ptr));
-                } else if (!callback_value.isEmptyOrUndefinedOrNull()) {
-                    return globalThis.toInvalidArguments("Expected callback to be a C pointer (number or BigInt)", .{});
-                }
-            }
-
-            return jsc.ArrayBuffer.fromBytes(slice, jsc.JSValue.JSType.ArrayBuffer).toJSWithContext(globalThis, ctx, callback);
-        },
-    }
-}
-
-pub fn toBuffer(
-    globalThis: *JSGlobalObject,
-    value: JSValue,
-    byteOffset: ?JSValue,
-    valueLength: ?JSValue,
-    finalizationCtxOrPtr: ?JSValue,
-    finalizationCallback: ?JSValue,
-) bun.JSError!jsc.JSValue {
-    switch (getPtrSlice(globalThis, value, byteOffset, valueLength)) {
-        .err => |err| {
-            return err;
-        },
-        .slice => |slice| {
-            var callback: jsc.C.JSTypedArrayBytesDeallocator = null;
-            var ctx: ?*anyopaque = null;
-            if (finalizationCallback) |callback_value| {
-                if (getCPtr(callback_value)) |callback_ptr| {
-                    callback = @as(jsc.C.JSTypedArrayBytesDeallocator, @ptrFromInt(callback_ptr));
-
-                    if (finalizationCtxOrPtr) |ctx_value| {
-                        if (getCPtr(ctx_value)) |ctx_ptr| {
-                            ctx = @as(*anyopaque, @ptrFromInt(ctx_ptr));
-                        } else if (!ctx_value.isEmptyOrUndefinedOrNull()) {
-                            return globalThis.toInvalidArguments("Expected user data to be a C pointer (number or BigInt)", .{});
-                        }
-                    }
-                } else if (!callback_value.isEmptyOrUndefinedOrNull()) {
-                    return globalThis.toInvalidArguments("Expected callback to be a C pointer (number or BigInt)", .{});
-                }
-            } else if (finalizationCtxOrPtr) |callback_value| {
-                if (getCPtr(callback_value)) |callback_ptr| {
-                    callback = @as(jsc.C.JSTypedArrayBytesDeallocator, @ptrFromInt(callback_ptr));
-                } else if (!callback_value.isEmptyOrUndefinedOrNull()) {
-                    return globalThis.toInvalidArguments("Expected callback to be a C pointer (number or BigInt)", .{});
-                }
-            }
-
-            if (callback != null or ctx != null) {
-                return jsc.JSValue.createBufferWithCtx(globalThis, slice, ctx, callback);
-            }
-
-            return jsc.JSValue.createBuffer(globalThis, slice);
-        },
-    }
-}
-
-pub fn getter(
-    globalObject: *jsc.JSGlobalObject,
-    _: *jsc.JSObject,
-) jsc.JSValue {
-    return FFIObject.toJS(globalObject);
-}
-
-const fields = .{
-    .viewSource = jsc.host_fn.wrapStaticMethod(bun.api.FFI, "print", false),
-    .dlopen = jsc.host_fn.wrapStaticMethod(bun.api.FFI, "open", false),
-    .callback = jsc.host_fn.wrapStaticMethod(bun.api.FFI, "callback", false),
-    .linkSymbols = jsc.host_fn.wrapStaticMethod(bun.api.FFI, "linkSymbols", false),
-    .toBuffer = jsc.host_fn.wrapStaticMethod(@This(), "toBuffer", false),
-    .toArrayBuffer = jsc.host_fn.wrapStaticMethod(@This(), "toArrayBuffer", false),
-    .closeCallback = jsc.host_fn.wrapStaticMethod(bun.api.FFI, "closeCallback", false),
-    .CString = jsc.host_fn.wrapStaticMethod(bun.api.FFIObject, "newCString", false),
 };
-const max_addressable_memory = std.math.maxInt(u56);
+
+fn parseFinalizer(
+    context: anytype,
+    context_or_callback: ?usize,
+    callback: ?usize,
+) bun.bindgen.CallError(@TypeOf(context))!Finalizer {
+    if (callback) |callback_address| {
+        if (callback_address == 0) return context.fail(.invalid_finalizer, {});
+        return .{ .context = if ((context_or_callback orelse 0) != 0) context_or_callback else null, .callback = callback_address };
+    }
+    if (context_or_callback) |callback_address| {
+        if (callback_address == 0) return context.fail(.invalid_finalizer, {});
+        return .{ .context = null, .callback = callback_address };
+    }
+    return .{ .context = null, .callback = null };
+}
+
+const CompileSchema = FFIBindings.function("compile");
+const ViewSourceSymbolsSchema = FFIBindings.function("viewSourceSymbols");
+const ViewSourceCallbackSchema = FFIBindings.function("viewSourceCallback");
+const DlopenSchema = FFIBindings.function("dlopen");
+const CallbackSchema = FFIBindings.function("callback");
+const LinkSymbolsSchema = FFIBindings.function("linkSymbols");
+const ToBufferSchema = FFIBindings.function("toBuffer");
+const ToArrayBufferSchema = FFIBindings.function("toArrayBuffer");
+const CStringSchema = FFIBindings.function("CString");
+
+const CompileBinding = bun.bindgen.Fn(CompileSchema, bindCompile);
+const ViewSourceSymbolsBinding = bun.bindgen.Fn(ViewSourceSymbolsSchema, bindViewSourceSymbols);
+const ViewSourceCallbackBinding = bun.bindgen.Fn(ViewSourceCallbackSchema, bindViewSourceCallback);
+const DlopenBinding = bun.bindgen.Fn(DlopenSchema, bindDlopen);
+const CallbackBinding = bun.bindgen.Fn(CallbackSchema, bindCallback);
+const LinkSymbolsBinding = bun.bindgen.Fn(LinkSymbolsSchema, bindLinkSymbols);
+const ToBufferBinding = bun.bindgen.Fn(ToBufferSchema, bindToBuffer);
+const ToArrayBufferBinding = bun.bindgen.Fn(ToArrayBufferSchema, bindToArrayBuffer);
+const CStringBinding = bun.bindgen.Fn(CStringSchema, bindCString);
+
+fn bindCompile(
+    context: bun.bindgen.CallContext(CompileSchema),
+    args: bun.bindgen.Args(CompileSchema),
+) bun.bindgen.CallError(CompileSchema)!bun.bindgen.Return(CompileSchema) {
+    return bun.api.FFIObjectEngine.compile(context, args);
+}
+
+fn bindViewSourceSymbols(
+    context: bun.bindgen.CallContext(ViewSourceSymbolsSchema),
+    args: bun.bindgen.Args(ViewSourceSymbolsSchema),
+) bun.bindgen.CallError(ViewSourceSymbolsSchema)!bun.bindgen.Return(ViewSourceSymbolsSchema) {
+    var sources = try FFI.printSymbols(context, &args.symbols);
+    defer {
+        for (sources.items) |source| bun.default_allocator.free(source);
+        sources.deinit(bun.default_allocator);
+    }
+    return bun.bindgen.Return(ViewSourceSymbolsSchema).fromUTF8Slices(sources.items);
+}
+
+fn bindViewSourceCallback(
+    context: bun.bindgen.CallContext(ViewSourceCallbackSchema),
+    args: bun.bindgen.Args(ViewSourceCallbackSchema),
+) bun.bindgen.CallError(ViewSourceCallbackSchema)!bun.bindgen.DOMString {
+    const source = try FFI.printCallback(context, &args.definition);
+    defer bun.default_allocator.free(source);
+    return bun.bindgen.DOMString.fromUTF8(source);
+}
+
+fn bindDlopen(
+    context: bun.bindgen.CallContext(DlopenSchema),
+    args: bun.bindgen.Args(DlopenSchema),
+) bun.bindgen.CallError(DlopenSchema)!bun.bindgen.Return(DlopenSchema) {
+    return bun.api.FFIObjectEngine.dlopen(context, args);
+}
+
+fn bindCallback(
+    context: bun.bindgen.CallContext(CallbackSchema),
+    args: bun.bindgen.Args(CallbackSchema),
+) bun.bindgen.CallError(CallbackSchema)!bun.bindgen.Return(CallbackSchema) {
+    return FFI.callback(context, args);
+}
+
+fn bindLinkSymbols(
+    context: bun.bindgen.CallContext(LinkSymbolsSchema),
+    args: bun.bindgen.Args(LinkSymbolsSchema),
+) bun.bindgen.CallError(LinkSymbolsSchema)!bun.bindgen.Return(LinkSymbolsSchema) {
+    return FFI.linkSymbols(context, &args.symbols);
+}
+
+fn bindToBuffer(
+    context: bun.bindgen.CallContext(ToBufferSchema),
+    args: bun.bindgen.Args(ToBufferSchema),
+) bun.bindgen.CallError(ToBufferSchema)!bun.bindgen.Return(ToBufferSchema) {
+    const bytes = try pointerSlice(context, args.pointer, args.byteOffset, args.byteLength);
+    const finalizer = try parseFinalizer(
+        context,
+        args.finalizationContextOrCallback,
+        args.finalizationCallback,
+    );
+    if (finalizer.callback) |callback_address| {
+        const operation = context.engineIn("array_buffers", "bufferAdoptOwnedBytes");
+        const EngineArgs = @TypeOf(operation).Args;
+        const Owner = @FieldType(EngineArgs, "owner");
+        const deallocator: bun.bindgen.ExternalBytesDeallocator = @ptrFromInt(callback_address);
+        const finalizer_context: ?*anyopaque = if (finalizer.context) |address| @ptrFromInt(address) else null;
+        var engine_args: EngineArgs = .{
+            .owner = Owner.initNative(try bun.bindgen.adoptExternalBytesOwner(bytes.ptr, bytes.len, finalizer_context, deallocator)),
+        };
+        return operation.call(&engine_args);
+    }
+
+    const memory: UnsafeExternalMemory = .{ .bytes = bytes };
+    return context.engineIn("array_buffers", "bufferBorrowExternalMemoryUnsafe").call(.{
+        .data = memory.unsafePtr("The FFI caller owns this allocation and keeps it alive until all JavaScript views of the returned Buffer are unreachable"),
+        .length = bytes.len,
+    });
+}
+
+fn bindToArrayBuffer(
+    context: bun.bindgen.CallContext(ToArrayBufferSchema),
+    args: bun.bindgen.Args(ToArrayBufferSchema),
+) bun.bindgen.CallError(ToArrayBufferSchema)!bun.bindgen.Return(ToArrayBufferSchema) {
+    const slice = try pointerSlice(context, args.pointer, args.byteOffset, args.byteLength);
+    const finalizer = try parseFinalizer(
+        context,
+        args.finalizationContextOrCallback,
+        args.finalizationCallback,
+    );
+    if (finalizer.callback) |callback_address| {
+        const operation = context.engineIn("array_buffers", "arrayBufferAdoptOwnedBytes");
+        const EngineArgs = @TypeOf(operation).Args;
+        const Owner = @FieldType(EngineArgs, "owner");
+        const deallocator: bun.bindgen.ExternalBytesDeallocator = @ptrFromInt(callback_address);
+        const finalizer_context: ?*anyopaque = if (finalizer.context) |address| @ptrFromInt(address) else null;
+        var engine_args: EngineArgs = .{
+            .owner = Owner.initNative(try bun.bindgen.adoptExternalBytesOwner(slice.ptr, slice.len, finalizer_context, deallocator)),
+        };
+        return operation.call(&engine_args);
+    }
+
+    const memory: UnsafeExternalMemory = .{ .bytes = slice };
+    return context.engineIn("array_buffers", "arrayBufferBorrowExternalMemoryUnsafe").call(.{
+        .data = memory.unsafePtr("The FFI caller owns this allocation and keeps it alive until all JavaScript views of the returned ArrayBuffer are unreachable"),
+        .length = slice.len,
+    });
+}
+
+fn bindCString(
+    context: bun.bindgen.CallContext(CStringSchema),
+    args: bun.bindgen.Args(CStringSchema),
+) bun.bindgen.CallError(CStringSchema)!bun.bindgen.DOMString {
+    const slice = try pointerSlice(context, args.pointer, args.byteOffset, args.byteLength);
+    return bun.bindgen.DOMString.fromUTF8(slice);
+}
 
 const std = @import("std");
 
 const bun = @import("bun");
-const Environment = bun.Environment;
-const assert = bun.assert;
+const FFI = @import("./ffi.zig").FFI;
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSObject = jsc.JSObject;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
-const Bun = jsc.API.Bun;
+const FFIBindings = bun.bindgen.Module("FFI");
+const PtrSchema = FFIBindings.function("ptr");
+const PtrBinding = bun.bindgen.Fn(PtrSchema, bindPtr);
 
-const DOMCall = jsc.host_fn.DOMCall;
-const DOMEffect = jsc.host_fn.DOMEffect;
+comptime {
+    _ = CompileBinding;
+    _ = PtrBinding;
+    _ = ViewSourceSymbolsBinding;
+    _ = ViewSourceCallbackBinding;
+    _ = DlopenBinding;
+    _ = CallbackBinding;
+    _ = LinkSymbolsBinding;
+    _ = ToBufferBinding;
+    _ = ToArrayBufferBinding;
+    _ = CStringBinding;
+    for (std.meta.fieldNames(@TypeOf(Reader.bindings))) |field| {
+        _ = @field(Reader.bindings, field);
+    }
+}

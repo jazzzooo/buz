@@ -7,6 +7,7 @@
 #include "CallSite.h"
 
 #include "JavaScriptCore/CallData.h"
+#include "SchemaBindings.h"
 #include "helpers.h"
 #include "wtf/text/OrdinalNumber.h"
 
@@ -22,6 +23,7 @@ const JSC::ClassInfo CallSite::s_info = { "CallSite"_s, &Base::s_info, nullptr, 
 
 void CallSite::finishCreation(VM& vm, JSC::JSGlobalObject* globalObject, JSCStackFrame& stackFrame, bool encounteredStrictFrame)
 {
+    auto scope = DECLARE_THROW_SCOPE(vm);
     Base::finishCreation(vm);
 
     /* From v8's "Stack Trace API" (https://github.com/v8/v8/wiki/Stack-Trace-API):
@@ -48,16 +50,23 @@ void CallSite::finishCreation(VM& vm, JSC::JSGlobalObject* globalObject, JSCStac
     } else {
         if (callFrame && callFrame->thisValue()) {
             // We know that we're not in strict mode
-            m_thisValue.set(vm, this, callFrame->thisValue().toThis(globalObject, JSC::ECMAMode::sloppy()));
+            auto thisValue = callFrame->thisValue().toThis(globalObject, JSC::ECMAMode::sloppy());
+            RETURN_IF_EXCEPTION(scope, void());
+            m_thisValue.set(vm, this, thisValue);
         } else {
             m_thisValue.set(vm, this, JSC::jsUndefined());
         }
 
-        m_function.set(vm, this, stackFrame.callee());
+        auto* callee = stackFrame.callee();
+        m_function.set(vm, this, callee ? JSValue(callee) : jsUndefined());
     }
 
-    m_functionName.set(vm, this, stackFrame.functionName());
-    m_sourceURL.set(vm, this, stackFrame.sourceURL());
+    auto* functionName = stackFrame.functionName();
+    RETURN_IF_EXCEPTION(scope, void());
+    m_functionName.set(vm, this, functionName);
+    auto* sourceURL = stackFrame.sourceURL();
+    RETURN_IF_EXCEPTION(scope, void());
+    m_sourceURL.set(vm, this, sourceURL);
 
     const auto* sourcePositions = stackFrame.getSourcePositions();
     if (sourcePositions) {
@@ -91,32 +100,23 @@ void CallSite::visitChildrenImpl(JSCell* cell, Visitor& visitor)
     visitor.append(thisCallSite->m_functionName);
     visitor.append(thisCallSite->m_sourceURL);
 }
-JSC_DEFINE_HOST_FUNCTION(nativeFrameForTesting, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    JSC::JSFunction* function = uncheckedDowncast<JSC::JSFunction>(callFrame->argument(0));
-    return JSValue::encode(JSC::call(globalObject, function, JSC::ArgList(), "nativeFrameForTesting"_s));
-}
-
-JSValue createNativeFrameForTesting(Zig::GlobalObject* globalObject)
-{
-    VM& vm = globalObject->vm();
-
-    return JSC::JSFunction::create(vm, globalObject, 1, "nativeFrameForTesting"_s, nativeFrameForTesting, ImplementationVisibility::Public);
-}
-
 void CallSite::formatAsString(JSC::VM& vm, JSC::JSGlobalObject* globalObject, WTF::StringBuilder& sb)
 {
+    auto scope = DECLARE_THROW_SCOPE(vm);
     JSValue thisValue = jsUndefined();
     if (m_thisValue) {
         thisValue = m_thisValue.get();
     }
 
     JSString* myFunctionName = functionName().toStringOrNull(globalObject);
+    RETURN_IF_EXCEPTION(scope, void());
     JSString* mySourceURL = sourceURL().toStringOrNull(globalObject);
+    RETURN_IF_EXCEPTION(scope, void());
 
     String functionName;
     if (myFunctionName && myFunctionName->length() > 0) {
         functionName = myFunctionName->getString(globalObject);
+        RETURN_IF_EXCEPTION(scope, void());
     } else if (m_flags & (static_cast<unsigned int>(Flags::IsFunction) | static_cast<unsigned int>(Flags::IsEval))) {
         functionName = "<anonymous>"_s;
     }
@@ -131,11 +131,12 @@ void CallSite::formatAsString(JSC::VM& vm, JSC::JSGlobalObject* globalObject, WT
         }
 
         if (auto* object = thisValue.getObject()) {
-            auto topExceptionScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-            auto className = object->calculatedClassName(object);
-            if (topExceptionScope.exception()) {
-                (void)topExceptionScope.tryClearException();
+            if (sb.hasOverflowed()) {
+                throwOutOfMemoryError(globalObject, scope);
+                return;
             }
+            auto className = JSObject::tryCalculatedClassName(object);
+            RETURN_IF_EXCEPTION(scope, void());
 
             if (className.length() > 0) {
                 sb.append(className);
@@ -161,7 +162,13 @@ void CallSite::formatAsString(JSC::VM& vm, JSC::JSGlobalObject* globalObject, WT
         if (!mySourceURL || mySourceURL->length() == 0) {
             sb.append("unknown"_s);
         } else {
-            sb.append(mySourceURL->getString(globalObject));
+            if (sb.hasOverflowed()) {
+                throwOutOfMemoryError(globalObject, scope);
+                return;
+            }
+            auto sourceURL = mySourceURL->getString(globalObject);
+            RETURN_IF_EXCEPTION(scope, void());
+            sb.append(sourceURL);
         }
 
         if (line && column) {
@@ -181,4 +188,15 @@ void CallSite::formatAsString(JSC::VM& vm, JSC::JSGlobalObject* globalObject, WT
 }
 
 DEFINE_VISIT_CHILDREN(CallSite);
+}
+
+namespace Bun::Bindgen::Cpp {
+
+JSC::JSValue bunBindgenCpp_CallSite_callNativeFrameForTesting(
+    CppCallContext& context,
+    const BunBindgenCpp_CallSite_callNativeFrameForTesting_Arguments& args)
+{
+    return JSC::call(&context.globalObject, args.callback, JSC::ArgList(), "nativeFrameForTesting"_s);
+}
+
 }

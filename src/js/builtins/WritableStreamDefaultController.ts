@@ -39,7 +39,7 @@ export function initializeWritableStreamDefaultController(this) {
 }
 
 export function error(this, e) {
-  if ($getByIdDirectPrivate(this, "abortSteps") === undefined)
+  if (!$bindgenFn("NativeTypePredicates.schema.zig", "isWritableStreamDefaultController")(this))
     throw $ERR_INVALID_THIS("WritableStreamDefaultController");
 
   const stream = $getByIdDirectPrivate(this, "stream");

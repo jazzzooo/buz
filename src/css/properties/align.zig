@@ -86,7 +86,7 @@ pub const BaselinePosition = enum {
         };
 
         const BaselinePositionMap = bun.ComptimeEnumMap(BaselinePositionIdent);
-        if (BaselinePositionMap.getASCIIICaseInsensitive(ident)) |value|
+        if (BaselinePositionMap.getCaseInsensitiveASCII(ident)) |value|
             switch (value) {
                 .baseline => return .{ .result = BaselinePosition.first },
                 .first => {
@@ -204,7 +204,7 @@ pub const JustifyContent = union(enum) {
         };
 
         const JustifyContentIdentMap = bun.ComptimeEnumMap(JustifyContentIdent);
-        if (JustifyContentIdentMap.getASCIIICaseInsensitive(ident)) |value|
+        if (JustifyContentIdentMap.getCaseInsensitiveASCII(ident)) |value|
             return switch (value) {
                 .left => .{ .result = .{ .left = .{ .overflow = overflow } } },
                 .right => .{ .result = .{ .right = .{ .overflow = overflow } } },
@@ -395,7 +395,7 @@ pub const JustifySelf = union(enum) {
         };
         const Enum = enum { left, right };
         const Map = bun.ComptimeEnumMap(Enum);
-        if (Map.getASCIIICaseInsensitive(ident)) |val| return .{ .result = switch (val) {
+        if (Map.getCaseInsensitiveASCII(ident)) |val| return .{ .result = switch (val) {
             .left => .{ .left = .{ .overflow = overflow } },
             .right => .{ .right = .{ .overflow = overflow } },
         } };
@@ -590,7 +590,7 @@ pub const JustifyItems = union(enum) {
 
         const Enum = enum { left, right };
         const Map = bun.ComptimeEnumMap(Enum);
-        if (Map.getASCIIICaseInsensitive(ident)) |val| return .{ .result = switch (val) {
+        if (Map.getCaseInsensitiveASCII(ident)) |val| return .{ .result = switch (val) {
             .left => .{ .left = .{ .overflow = overflow } },
             .right => .{ .right = .{ .overflow = overflow } },
         } };
@@ -660,7 +660,7 @@ pub const LegacyJustify = enum {
         };
 
         const LegacyJustifyMap = bun.ComptimeEnumMap(LegacyJustifyIdent);
-        if (LegacyJustifyMap.getASCIIICaseInsensitive(ident)) |value| {
+        if (LegacyJustifyMap.getCaseInsensitiveASCII(ident)) |value| {
             switch (value) {
                 .legacy => {
                     const inner_location = input.currentSourceLocation();
@@ -670,7 +670,7 @@ pub const LegacyJustify = enum {
                     };
                     const InnerEnum = enum { left, right, center };
                     const InnerLegacyJustifyMap = bun.ComptimeEnumMap(InnerEnum);
-                    if (InnerLegacyJustifyMap.getASCIIICaseInsensitive(inner_ident)) |inner_value| {
+                    if (InnerLegacyJustifyMap.getCaseInsensitiveASCII(inner_ident)) |inner_value| {
                         return switch (inner_value) {
                             .left => .{ .result = .left },
                             .right => .{ .result = .right },

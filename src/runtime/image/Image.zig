@@ -6,16 +6,272 @@
 //! write one slot of `Pipeline` and return `this` — there is no op list, so
 //! calling a setter twice overwrites. The actual decode → transform → encode
 //! work happens off-thread when a terminal (`bytes`/`buffer`/`blob`/
-//! `toBase64`/`metadata`) is awaited, via `jsc.ConcurrentPromiseTask`.
+//! `toBase64`/`metadata`) is awaited.
 
 const Image = @This();
 
-pub const js = jsc.Codegen.JSImage;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
-pub const toJS = js.toJS;
+pub const JSBinding = struct {
+    bindgen_state: bindgen.ClassState = .{},
+    image: bindgen.OwnedNative(Image, .any),
+    pending_input: ?bindgen.Root = null,
 
-pub const new = bun.TrivialNew(@This());
+    pub fn construct(
+        context: bindgen.CallContext(ImageConstructorSchema),
+        args: bindgen.Args(ImageConstructorSchema),
+    ) bindgen.CallError(ImageConstructorSchema)!*JSBinding {
+        const options = if (args.options) |value| ConstructorOptions.fromBindgen(value) else ConstructorOptions{};
+        const input_arg = args.input orelse return context.fail(.missing_input, {});
+        const converted_input = try input_arg.convert(context);
+
+        const binding = try bindingFromOwnedSource(try sourceFromBindgen(context, &converted_input.value), options);
+        errdefer binding.destroy();
+        if (converted_input.value == .buffer) {
+            var input = try converted_input.value.buffer.toOwned();
+            binding.pending_input = input.takeAnyRoot();
+        }
+        return binding;
+    }
+
+    pub const destroy = deinit;
+
+    fn deinit(this: *JSBinding) void {
+        if (this.pending_input) |*input| input.deinit();
+        this.image.deinit();
+        bun.destroy(this);
+    }
+
+    pub fn memoryUsage(this: *const JSBinding, _: bun.bindgen.MemoryUsageContext(.any)) usize {
+        return @sizeOf(JSBinding) + this.image.get().estimatedSize();
+    }
+
+    pub fn takeInput(
+        this: *JSBinding,
+        context: bindgen.CallContext(ImageInputSchema),
+        _: bindgen.Args(ImageInputSchema),
+    ) bun.JSError!bindgen.Return(ImageInputSchema) {
+        var root = this.pending_input orelse return .initUndefined(context);
+        this.pending_input = null;
+        return .fromOwnedRoot(&root, context);
+    }
+
+    pub fn bindResize(
+        this: *JSBinding,
+        _: bindgen.CallContext(ImageResizeSchema),
+        args: bindgen.Args(ImageResizeSchema),
+    ) bun.JSError!bindgen.Return(ImageResizeSchema) {
+        var resize: Resize = .{
+            .w = args.width,
+            // Zero preserves the source aspect ratio once dimensions are known.
+            .h = args.height orelse 0,
+        };
+        if (args.options) |options| {
+            if (options.filter) |filter| resize.filter = switch (filter) {
+                .box => .box,
+                .bilinear => .bilinear,
+                .lanczos3 => .lanczos3,
+                .mitchell => .mitchell,
+                .nearest => .nearest,
+                .cubic => .cubic,
+                .lanczos2 => .lanczos2,
+                .mks2013 => .mks2013,
+                .mks2021 => .mks2021,
+            };
+            if (options.fit) |fit| resize.fit = switch (fit) {
+                .fill => .fill,
+                .inside => .inside,
+            };
+            if (options.without_enlargement) |without_enlargement| {
+                resize.without_enlargement = without_enlargement;
+            }
+        }
+        this.image.get().pipeline.resize = resize;
+        return args.bindingThis.toOwned();
+    }
+
+    pub fn bindRotate(
+        this: *JSBinding,
+        context: bindgen.CallContext(ImageRotateSchema),
+        args: bindgen.Args(ImageRotateSchema),
+    ) bindgen.CallError(ImageRotateSchema)!bindgen.Return(ImageRotateSchema) {
+        const degrees: u32 = @intCast(@mod(args.degrees, 360));
+        if (degrees != 0 and degrees != 90 and degrees != 180 and degrees != 270) {
+            return context.fail(.invalid_degrees, {});
+        }
+        this.image.get().pipeline.rotate = @intCast(degrees);
+        return args.bindingThis.toOwned();
+    }
+
+    pub fn bindFlip(
+        this: *JSBinding,
+        _: bindgen.CallContext(ImageFlipSchema),
+        args: bindgen.Args(ImageFlipSchema),
+    ) bun.JSError!bindgen.Return(ImageFlipSchema) {
+        this.image.get().pipeline.flip = true;
+        return args.bindingThis.toOwned();
+    }
+
+    pub fn bindFlop(
+        this: *JSBinding,
+        _: bindgen.CallContext(ImageFlopSchema),
+        args: bindgen.Args(ImageFlopSchema),
+    ) bun.JSError!bindgen.Return(ImageFlopSchema) {
+        this.image.get().pipeline.flop = true;
+        return args.bindingThis.toOwned();
+    }
+
+    pub fn bindModulate(
+        this: *JSBinding,
+        _: bindgen.CallContext(ImageModulateSchema),
+        args: bindgen.Args(ImageModulateSchema),
+    ) bun.JSError!bindgen.Return(ImageModulateSchema) {
+        var modulate = this.image.get().pipeline.modulate orelse Modulate{};
+        if (args.options) |options| {
+            if (options.brightness) |brightness| {
+                modulate.brightness = finiteModulation(brightness);
+            }
+            if (options.saturation) |saturation| {
+                modulate.saturation = finiteModulation(saturation);
+            }
+        }
+        this.image.get().pipeline.modulate = modulate;
+        return args.bindingThis.toOwned();
+    }
+
+    pub const bindFormatJpeg = FormatMethod(ImageJpegSchema, .jpeg).call;
+    pub const bindFormatPng = FormatMethod(ImagePngSchema, .png).call;
+    pub const bindFormatWebp = FormatMethod(ImageWebpSchema, .webp).call;
+    pub const bindFormatHeic = FormatMethod(ImageHeicSchema, .heic).call;
+    pub const bindFormatAvif = FormatMethod(ImageAvifSchema, .avif).call;
+
+    fn FormatMethod(comptime Schema: type, comptime format: codecs.Format) type {
+        return struct {
+            pub fn call(this: *JSBinding, _: bindgen.CallContext(Schema), args: bindgen.Args(Schema)) bun.JSError!bindgen.Return(Schema) {
+                var encoded = this.image.get().pipeline.output orelse codecs.EncodeOptions{ .format = format };
+                encoded.format = format;
+                if (args.options) |values| {
+                    if (values.quality) |quality| encoded.quality = quality;
+                    if (values.lossless) |lossless| encoded.lossless = lossless;
+                    if (values.compression_level) |compression_level| encoded.compression_level = @intCast(compression_level);
+                    if (values.palette) |palette| encoded.palette = palette;
+                    if (values.colors) |colors| encoded.colors = colors;
+                    if (values.dither) |dither| encoded.dither = dither;
+                    if (values.progressive) |progressive| encoded.progressive = progressive;
+                }
+                this.image.get().pipeline.output = encoded;
+                return args.bindingThis.toOwned();
+            }
+        };
+    }
+
+    pub const bindMetadata = PipelineMethod(ImageMetadataSchema, .metadata).call;
+    pub const bindBytes = PipelineMethod(ImageBytesSchema, .encode).call;
+    pub const bindBuffer = PipelineMethod(ImageBufferSchema, .encode).call;
+    pub const bindToBuffer = PipelineMethod(ImageToBufferSchema, .encode).call;
+    pub const bindBlobNative = PipelineMethod(ImageBlobNativeSchema, .encode).call;
+    pub const bindToBase64 = PipelineMethod(ImageToBase64Schema, .encode).call;
+    pub const bindDataURL = PipelineMethod(ImageDataURLSchema, .encode).call;
+    pub const bindPlaceholder = PipelineMethod(ImagePlaceholderSchema, .placeholder).call;
+
+    fn PipelineMethod(comptime Schema: type, comptime kind: std.meta.Tag(PipelineKind)) type {
+        return struct {
+            pub fn call(this: *JSBinding, context: bindgen.CallContext(Schema), args: bindgen.Args(Schema)) bindgen.CallError(Schema)!void {
+                return this.image.get().scheduleAsync(
+                    Schema,
+                    context,
+                    try args.bindingThis.toOwned(),
+                    args.source_buffer,
+                    switch (kind) {
+                        .encode => .{ .encode = this.image.get().pipeline.output },
+                        .metadata => .metadata,
+                        .placeholder => .placeholder,
+                    },
+                    null,
+                );
+            }
+        };
+    }
+
+    pub fn bindWriteNative(
+        this: *JSBinding,
+        context: bindgen.CallContext(ImageWriteNativeSchema),
+        args: bindgen.Args(ImageWriteNativeSchema),
+    ) bindgen.CallError(ImageWriteNativeSchema)!void {
+        const destination = args.destination orelse return context.fail(.missing_destination, {});
+        var wrapper = try args.bindingThis.toOwned();
+        defer wrapper.deinit();
+        var owned_destination = try OwnedWriteDestination.fromBindgen(context, destination);
+        return this.image.get().scheduleWrite(
+            context,
+            wrapper.take(),
+            args.source_buffer,
+            owned_destination.take(),
+        );
+    }
+
+    pub fn bindGetWidth(
+        this: *JSBinding,
+        _: bindgen.CallContext(ImageWidthSchema),
+        _: bindgen.Args(ImageWidthSchema),
+    ) bun.JSError!i32 {
+        return this.image.get().last_width;
+    }
+
+    pub fn bindGetHeight(
+        this: *JSBinding,
+        _: bindgen.CallContext(ImageHeightSchema),
+        _: bindgen.Args(ImageHeightSchema),
+    ) bun.JSError!i32 {
+        return this.image.get().last_height;
+    }
+
+    pub fn bindGetBackend(
+        _: bindgen.CallContext(ImageBackendGetterSchema),
+        _: bindgen.Args(ImageBackendGetterSchema),
+    ) bun.JSError!ImageBackend {
+        return switch (codecs.getBackend()) {
+            .system => .system,
+            .bun => .bun,
+        };
+    }
+
+    pub fn bindSetBackend(
+        _: bindgen.CallContext(ImageBackendSetterSchema),
+        args: bindgen.Args(ImageBackendSetterSchema),
+    ) bun.JSError!void {
+        codecs.setBackend(switch (args.value) {
+            .system => .system,
+            .bun => .bun,
+        });
+    }
+
+    pub fn bindFromClipboard(
+        context: bindgen.CallContext(ImageFromClipboardSchema),
+        _: bindgen.Args(ImageFromClipboardSchema),
+    ) bun.JSError!?bindgen.ClassRef(ImageClassSchema) {
+        const binding = try Image.fromClipboard() orelse return null;
+        return try ImageClass.adoptResult(binding, context);
+    }
+
+    pub fn bindHasClipboardImage(
+        _: bindgen.CallContext(ImageHasClipboardImageSchema),
+        _: bindgen.Args(ImageHasClipboardImageSchema),
+    ) bun.JSError!bool {
+        return if (comptime codecs.system_backend) |backend|
+            backend.hasClipboardImage()
+        else
+            false;
+    }
+
+    pub fn bindClipboardChangeCount(
+        _: bindgen.CallContext(ImageClipboardChangeCountSchema),
+        _: bindgen.Args(ImageClipboardChangeCountSchema),
+    ) bun.JSError!i64 {
+        return if (comptime codecs.system_backend) |backend|
+            backend.clipboardChangeCount()
+        else
+            -1;
+    }
+};
 
 source: Source,
 pipeline: Pipeline = .{},
@@ -29,54 +285,21 @@ auto_orient: bool = true,
 /// synchronously after the first await.
 last_width: i32 = -1,
 last_height: i32 = -1,
-/// Strong while at least one PipelineTask is in flight, weak otherwise. The
-/// Strong→wrapper→sourceJS-slot chain is what keeps the borrowed ArrayBuffer
-/// alive across the BackgroundWork roundtrip; switching to weak when idle lets GC
-/// collect the wrapper without polling `hasPendingActivity` every cycle.
-this_ref: jsc.JSRef = .empty(),
-pending_tasks: u32 = 0,
 
 pub const Source = union(enum) {
-    /// Input is a JS ArrayBuffer/TypedArray held in the wrapper's `sourceJS`
-    /// cached slot. We never cache the raw pointer here — it could be detached
-    /// or (for resizable, which we reject) reallocated. Each use re-fetches:
-    ///  - `doMetadata` (sync, JS thread): `asArrayBuffer` → probe; no copy.
-    ///  - `schedule()` (JS thread): `asArrayBuffer` → `pin()` → hand the
-    ///    fresh slice to the worker; `then()` (JS thread) unpins. The pin
-    ///    only lives for the task, never touches `finalize` (which runs
-    ///    during GC sweep), and only forces `possiblySharedBuffer()`
-    ///    materialisation when actually going off-thread — and that costs no
-    ///    more than the dupe it replaces.
-    js_buffer,
-    /// Owned by `bun.default_allocator` — Blob inputs (the Blob's store may be
-    /// sliced/freed independently) and decoded data: URLs.
-    owned: []u8,
-    /// Owned by `bun.default_allocator`. Read on the worker thread.
-    path: [:0]u8,
-    /// `Bun.file()`, `Bun.s3()`, an fd-backed Blob — anything whose bytes
-    /// don't exist until read. We hold a Strong on the JS Blob and, at
-    /// terminal time, just call its own `.bytes()` (whatever that means for
-    /// that kind of Blob — file, S3, pipe, slice) and chain the pipeline
-    /// task off the resulting Promise. After the first read completes the
-    /// source is swapped to `.owned` so subsequent terminals reuse the bytes.
-    blob: jsc.Strong.Optional,
+    buffer,
+    owned: bindgen.OwnedBytes,
+    path: bindgen.OwnedBytes,
+    blob: bun.webcore.Blob,
 
     fn deinit(self: *Source) void {
         switch (self.*) {
-            .js_buffer => {},
-            .owned => |b| bun.default_allocator.free(b),
-            .path => |p| bun.default_allocator.free(p),
-            .blob => |*s| s.deinit(),
+            .buffer => {},
+            .owned, .path => |*bytes| bytes.deinit(),
+            .blob => |*blob| blob.deinit(),
         }
     }
 };
-
-extern fn JSC__JSValue__unpinArrayBuffer(v: jsc.JSValue) void;
-/// 0 = detached/null, 1 = FastTypedArray (≤~1 KB, GC-movable — dupe),
-/// 2 = pinned ArrayBuffer (caller must unpin). For OversizeTypedArray the
-/// helper adopts the storage in-place (createAdopted — no byte copy) and
-/// pins; once adopted it's detachable, so it MUST be pinned, not borrowed.
-extern fn JSC__JSValue__borrowBytes(v: jsc.JSValue, out_ptr: *[*]const u8, out_len: *usize) i32;
 
 pub const Fit = enum {
     fill,
@@ -118,15 +341,6 @@ pub const Modulate = struct {
     saturation: f32 = 1.0,
 };
 
-/// `@intFromFloat` is safety-checked UB on NaN/±Inf/out-of-range; every
-/// number we read from JS goes through this so hostile input throws/clamps
-/// instead of aborting. NaN → lo, ±Inf → the matching bound; bounds are f64
-/// so the clamp stays in float space.
-inline fn coerceInt(comptime T: type, x: f64, lo: f64, hi: f64) T {
-    if (std.math.isNan(x)) return @intFromFloat(lo);
-    return @intFromFloat(@min(@max(x, lo), hi));
-}
-
 /// Size cap for `.path` sources, applied at fstat time before reading
 /// anything. This is the *encoded* file, not the decoded RGBA — `maxPixels`
 /// covers the latter once we have a header. 256 MiB comfortably fits any
@@ -136,249 +350,99 @@ const max_input_file_bytes: u64 = 256 << 20;
 
 // ───────────────────────────── lifecycle ────────────────────────────────────
 
-pub fn constructor(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, this_value: jsc.JSValue) bun.JSError!*Image {
-    const args = callframe.arguments();
-    if (args.len < 1 or args[0].isUndefinedOrNull())
-        return global.throwInvalidArguments("Image() expects a path, ArrayBuffer, TypedArray, Blob or data: URL", .{});
-    return fromInputJS(global, args[0], if (args.len > 1) args[1] else .js_undefined, this_value);
-}
-
 /// `Bun.file("…").image()` / `Bun.s3("…").image()` / `Blob#image()`. Same
-/// allocation as `new Bun.Image(blob, opts)`. Everything that can throw runs
-/// BEFORE `toJS()` — once the wrapper exists its `m_ctx` owns the *Image and
-/// the generated `~JSImage` will `finalize()` on GC, so a manual `finalize()`
-/// after `toJS()` is a double-free. (Contrast `fromInputJS` where the codegen
-/// constructor only wires `m_ctx` after the Zig fn returns, so its `errdefer`
-/// is safe.)
-pub fn fromBlobJS(global: *jsc.JSGlobalObject, blob_value: jsc.JSValue, options: jsc.JSValue) bun.JSError!jsc.JSValue {
-    var img = Image.new(.{ .source = .js_buffer });
-    errdefer img.finalize();
-    try applyOptions(img, global, options);
-    // For Blob receivers `sourceFromJS` either dupes (in-memory blob) or
-    // creates a Strong (file/S3); the cached `sourceJS` slot is only used
-    // for the `.js_buffer` path, which a Blob never produces. The only
-    // reason `sourceFromJS` takes `this_value` at all is to set that slot
-    // for ArrayBuffer inputs — pass `.zero` and assert below.
-    img.source = try sourceFromJS(global, blob_value, .zero);
-    bun.debugAssert(img.source != .js_buffer);
-    return img.toJS(global);
+/// allocation as `new Bun.Image(blob, opts)`.
+pub const ConstructorOptions = struct {
+    max_pixels: ?u64 = null,
+    auto_orient: ?bool = null,
+
+    pub fn fromBindgen(options: anytype) ConstructorOptions {
+        return .{
+            .max_pixels = options.max_pixels,
+            .auto_orient = options.auto_orient,
+        };
+    }
+};
+
+fn bindingFromBlob(blob: *const bun.webcore.Blob, options: ConstructorOptions) bun.OOM!*JSBinding {
+    return bindingFromOwnedSource(.{ .blob = try blob.dupe() }, options);
 }
 
-fn fromInputJS(global: *jsc.JSGlobalObject, input: jsc.JSValue, options: jsc.JSValue, this_value: jsc.JSValue) bun.JSError!*Image {
-    var img = Image.new(.{ .source = .js_buffer });
-    // `opt.get` can throw (Proxy/getter); without this the heap-allocated
-    // *Image and the duplicated source bytes leak.
-    errdefer img.finalize();
-    img.source = try sourceFromJS(global, input, this_value);
-    try applyOptions(img, global, options);
-    return img;
-}
-
-fn applyOptions(img: *Image, global: *jsc.JSGlobalObject, opt: jsc.JSValue) bun.JSError!void {
-    if (!opt.isObject()) return;
-    if (try opt.get(global, "maxPixels")) |v| if (v.isNumber()) {
-        img.max_pixels = coerceInt(u64, v.asNumber(), 0, 1e15);
+fn bindingFromOwnedSource(source: Source, options: ConstructorOptions) bun.OOM!*JSBinding {
+    const image = image: {
+        var owned_source = source;
+        errdefer owned_source.deinit();
+        const value = try bun.default_allocator.create(Image);
+        value.* = .{ .source = owned_source };
+        break :image value;
     };
-    if (try opt.get(global, "autoOrient")) |v| img.auto_orient = v.toBoolean();
+    errdefer image.destroy();
+    applyOptions(image, options);
+    const binding = try bun.default_allocator.create(JSBinding);
+    binding.* = .{ .image = .init(image) };
+    return binding;
+}
+
+pub fn fromBlobResult(context: anytype, blob: *const bun.webcore.Blob, options: ConstructorOptions) bun.JSError!bindgen.ClassRef(ImageClassSchema) {
+    const binding = try bindingFromBlob(blob, options);
+    return ImageClass.adoptResult(binding, context);
+}
+
+fn applyOptions(img: *Image, options: ConstructorOptions) void {
+    if (options.max_pixels) |max_pixels| img.max_pixels = max_pixels;
+    if (options.auto_orient) |auto_orient| img.auto_orient = auto_orient;
 }
 
 pub fn finalize(this: *Image) void {
-    this.this_ref.finalize();
     this.source.deinit();
     bun.destroy(this);
 }
 
-pub fn estimatedSize(this: *Image) usize {
-    // Only the bytes WE own. .js_buffer is the caller's ArrayBuffer (already
-    // counted via the cached value slot); the worker's RGBA scratch is
-    // task-scoped and freed before any GC could observe it.
+pub fn destroy(this: *Image) void {
+    this.finalize();
+}
+
+pub fn estimatedSize(this: *const Image) usize {
     return @sizeOf(Image) + switch (this.source) {
-        .js_buffer, .blob => 0,
-        .owned => |b| b.len,
-        .path => |p| p.len,
+        .blob, .buffer => 0,
+        .owned, .path => |*bytes| bytes.length(),
     };
 }
 
-fn sourceFromJS(global: *jsc.JSGlobalObject, value: jsc.JSValue, this_value: jsc.JSValue) bun.JSError!Source {
-    // String → file path or data:/base64 URL. Everything else → bytes.
-    if (value.isString()) {
-        const str = try value.toBunString(global);
-        defer str.deref();
-        const utf8 = str.toUTF8(bun.default_allocator);
-        defer utf8.deinit();
-        const s = utf8.slice();
-        // `data:[<mime>][;base64],<payload>` — accept any image MIME (we sniff
-        // anyway) and decode base64 here. Non-base64 data URLs aren't useful
-        // for image bytes.
-        if (bun.strings.hasPrefixComptime(s, "data:")) {
-            const comma = bun.strings.indexOfChar(s, ',') orelse
-                return global.throwInvalidArguments("Image(): malformed data: URL (no comma)", .{});
-            const meta = s[5..comma];
-            const payload = s[comma + 1 ..];
-            if (!bun.strings.contains(meta, ";base64"))
-                return global.throwInvalidArguments("Image(): only base64 data: URLs are supported", .{});
-            const out = bun.base64.decodeAllocForgiving(bun.default_allocator, payload) catch |err| switch (err) {
+fn sourceFromBindgen(
+    context: bindgen.CallContext(ImageConstructorSchema),
+    input: anytype,
+) bindgen.CallError(ImageConstructorSchema)!Source {
+    return switch (input.*) {
+        .blob => |*blob_ref| .{ .blob = try blob_ref.get().dupe() },
+        .buffer => .buffer,
+        .string => |*string| source: {
+            const utf8 = try string.toUTF8(bun.default_allocator);
+            defer utf8.deinit();
+            const value = utf8.slice();
+            if (!bun.strings.hasPrefixComptime(value, "data:")) {
+                break :source .{ .path = try .fromSlice(value) };
+            }
+
+            const comma = bun.strings.indexOfChar(value, ',') orelse
+                return context.fail(.malformed_data_url, {});
+            const metadata = value[5..comma];
+            if (!bun.strings.contains(metadata, ";base64")) {
+                return context.fail(.unsupported_data_url, {});
+            }
+            const decoded = bun.base64.decodeAllocForgiving(bun.default_allocator, value[comma + 1 ..]) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
-                error.DecodingFailed => return global.throwInvalidArguments("Image(): invalid base64 in data: URL", .{}),
+                error.DecodingFailed => return context.fail(.invalid_base64, {}),
             };
-            return .{ .owned = out };
-        }
-        return .{ .path = try bun.default_allocator.dupeSentinel(u8, s, 0) };
-    }
-    if (value.asArrayBuffer(global)) |ab| {
-        // A resizable/growable buffer can shrink or reallocate underneath any
-        // slice we'd take; a SharedArrayBuffer can be mutated by another
-        // thread while the worker decodes (the codec layer parses the same
-        // bytes twice — header then body — so a TOCTOU swap can resize the
-        // implied output behind a guard that's already passed). The worker
-        // *borrows* the slice (see `pinForTask`), so this rejection is
-        // load-bearing — `buf.slice()` is the obvious workaround.
-        if (ab.resizable or ab.shared)
-            return global.throwInvalidArguments("Image(): resizable / shared ArrayBuffer is not supported; pass a fixed-length view (e.g. buf.slice())", .{});
-        // Just remember the JS object — see Source.js_buffer for why we don't
-        // cache the pointer or pin here.
-        js.sourceJSSetCached(this_value, global, value);
-        return .js_buffer;
-    }
-    if (value.as(jsc.WebCore.Blob)) |blob| {
-        // In-memory blob: dupe its bytes (the store may be sliced/replaced
-        // independently).
-        const view = blob.sharedView();
-        if (view.len > 0)
-            return .{ .owned = try bun.default_allocator.dupe(u8, view) };
-        // Anything with a backing store but no in-memory view yet
-        // (`Bun.file()`, `Bun.s3()`, fd, …) — keep the JS object and read it
-        // through ITS OWN `.bytes()` at terminal time, so we inherit whatever
-        // that store type does (file → ReadFile, S3 → fetch, etc.) without
-        // knowing about it here.
-        if (blob.store != null)
-            return .{ .blob = .create(value, global) };
-    }
-    return global.throwInvalidArguments("Image() input must be a path string, data: URL, ArrayBuffer, TypedArray or Blob", .{});
+            break :source .{ .owned = .fromDefaultAllocatedSlice(decoded) };
+        },
+    };
 }
 
 // ───────────────────────────── chainable ops ────────────────────────────────
 
-pub fn doResize(this: *Image, global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const args = callframe.arguments();
-    if (args.len < 1 or !args[0].isNumber())
-        return global.throwInvalidArguments("resize(width, height?, options?)", .{});
-    // 0x3FFF² is the max_pixels default; capping each side at 0x3FFFF (≈262k)
-    // keeps every downstream u32 product in range without a per-stage check.
-    var r: Resize = .{
-        .w = coerceInt(u32, args[0].asNumber(), 1, 0x3FFFF),
-        // 0 height = preserve aspect ratio (resolved at execute time once the
-        // source dimensions are known).
-        .h = if (args.len > 1 and args[1].isNumber()) coerceInt(u32, args[1].asNumber(), 0, 0x3FFFF) else 0,
-    };
-    if (args.len > 2 and args[2].isObject()) {
-        const opt = args[2];
-        if (try opt.getOptionalEnum(global, "filter", codecs.Filter)) |v| r.filter = v;
-        if (try opt.getOptionalEnum(global, "fit", Fit)) |v| r.fit = v;
-        if (try opt.get(global, "withoutEnlargement")) |v| r.without_enlargement = v.toBoolean();
-    }
-    this.pipeline.resize = r;
-    return callframe.this();
-}
-
-pub fn doRotate(this: *Image, global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const args = callframe.arguments();
-    if (args.len < 1 or !args[0].isNumber())
-        return global.throwInvalidArguments("rotate(degrees) expects 90, 180 or 270", .{});
-    // coerceInt for the same NaN/Inf/huge-finite reasons as everywhere else;
-    // ±1e15 is plenty of headroom for "any multiple of 90 a user might pass".
-    const raw: i64 = coerceInt(i64, args[0].asNumber(), -1e15, 1e15);
-    const deg: u32 = @intCast(@mod(@mod(raw, 360) + 360, 360));
-    if (deg != 0 and deg != 90 and deg != 180 and deg != 270)
-        return global.throwInvalidArguments("rotate: only multiples of 90 are supported", .{});
-    this.pipeline.rotate = @intCast(deg);
-    return callframe.this();
-}
-
-pub fn doFlip(this: *Image, _: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    this.pipeline.flip = true;
-    return callframe.this();
-}
-
-pub fn doFlop(this: *Image, _: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    this.pipeline.flop = true;
-    return callframe.this();
-}
-
-pub fn doModulate(this: *Image, global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const args = callframe.arguments();
-    var m: Modulate = this.pipeline.modulate orelse .{};
-    if (args.len > 0 and args[0].isObject()) {
-        const opt = args[0];
-        // Clamp finite + bounded so Infinity doesn't reach ModulateImpl as
-        // f32 +Inf (0×Inf = NaN → static_cast<u8>(NaN) is UB).
-        if (try opt.get(global, "brightness")) |v| if (v.isNumber()) {
-            const x = v.asNumber();
-            m.brightness = if (std.math.isFinite(x)) @floatCast(@min(@max(x, 0.0), 1e4)) else 1.0;
-        };
-        if (try opt.get(global, "saturation")) |v| if (v.isNumber()) {
-            const x = v.asNumber();
-            m.saturation = if (std.math.isFinite(x)) @floatCast(@min(@max(x, 0.0), 1e4)) else 1.0;
-        };
-    }
-    this.pipeline.modulate = m;
-    return callframe.this();
-}
-
-fn setFormat(this: *Image, global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, fmt: codecs.Format) bun.JSError!jsc.JSValue {
-    var enc: codecs.EncodeOptions = this.pipeline.output orelse .{ .format = fmt };
-    enc.format = fmt;
-    const args = callframe.arguments();
-    if (args.len > 0 and args[0].isObject()) {
-        const opt = args[0];
-        if (try opt.get(global, "quality")) |q| {
-            if (q.isNumber()) enc.quality = coerceInt(u8, q.asNumber(), 1, 100);
-        }
-        if (try opt.get(global, "lossless")) |l| enc.lossless = l.toBoolean();
-        if (try opt.get(global, "compressionLevel")) |c| if (c.isNumber()) {
-            enc.compression_level = coerceInt(i8, c.asNumber(), 0, 9);
-        };
-        if (try opt.get(global, "palette")) |p| enc.palette = p.toBoolean();
-        if (try opt.get(global, "colors")) |c| if (c.isNumber()) {
-            enc.colors = coerceInt(u16, c.asNumber(), 2, 256);
-        };
-        if (try opt.get(global, "dither")) |d| enc.dither = d.toBoolean();
-        if (try opt.get(global, "progressive")) |p| enc.progressive = p.toBoolean();
-    }
-    this.pipeline.output = enc;
-    return callframe.this();
-}
-
-pub fn doFormatJpeg(this: *Image, g: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.setFormat(g, cf, .jpeg);
-}
-pub fn doFormatPng(this: *Image, g: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.setFormat(g, cf, .png);
-}
-pub fn doFormatWebp(this: *Image, g: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.setFormat(g, cf, .webp);
-}
-pub fn doFormatHeic(this: *Image, g: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.setFormat(g, cf, .heic);
-}
-pub fn doFormatAvif(this: *Image, g: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.setFormat(g, cf, .avif);
-}
-
-/// Stable `.code` so callers can branch without parsing the message — and so
-/// tests can skip when a system-backend format is unavailable on *this
-/// machine* (e.g. AVIF encode on M1/M2, or Windows without the HEIF store
-/// extension) without hard-coding which configurations have what.
-fn errorCode(e: codecs.Error) [:0]const u8 {
-    return switch (e) {
-        error.UnknownFormat => "ERR_IMAGE_UNKNOWN_FORMAT",
-        error.DecodeFailed => "ERR_IMAGE_DECODE_FAILED",
-        error.EncodeFailed => "ERR_IMAGE_ENCODE_FAILED",
-        error.TooManyPixels => "ERR_IMAGE_TOO_MANY_PIXELS",
-        error.UnsupportedOnPlatform => "ERR_IMAGE_FORMAT_UNSUPPORTED",
-        error.ConcurrencyUnavailable => "ERR_CONCURRENCY_UNAVAILABLE",
-        error.OutOfMemory => "ERR_OUT_OF_MEMORY",
-    };
+fn finiteModulation(value: f64) f32 {
+    return if (std.math.isFinite(value)) @floatCast(@min(@max(value, 0.0), 1e4)) else 1.0;
 }
 
 fn errorMessage(e: codecs.Error) [:0]const u8 {
@@ -386,6 +450,7 @@ fn errorMessage(e: codecs.Error) [:0]const u8 {
         error.UnknownFormat => "Image: unrecognised format (expected JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC or AVIF)",
         error.DecodeFailed => "Image: decode failed",
         error.EncodeFailed => "Image: encode failed",
+        error.InvalidDimensions => "Image: dimensions exceed the supported range",
         error.TooManyPixels => "Image: input exceeds maxPixels limit",
         error.UnsupportedOnPlatform => "Image: format not supported on this machine (HEIC/AVIF/TIFF require the OS codec; AVIF encode needs an AV1 encoder)",
         error.ConcurrencyUnavailable => "Image: background concurrency unavailable",
@@ -393,89 +458,47 @@ fn errorMessage(e: codecs.Error) [:0]const u8 {
     };
 }
 
-fn rejectError(global: *jsc.JSGlobalObject, e: codecs.Error) bun.JSError!jsc.JSValue {
-    return errorWithCode(global, errorCode(e), errorMessage(e));
+pub fn initialMetadataResult(this: *Image, input: ?[]const u8) ?PipelineResult {
+    const bytes = input orelse this.jsThreadBytes() orelse return null;
+    const probe = codecs.probe(bytes, this.max_pixels) catch |err| return switch (err) {
+        error.UnsupportedOnPlatform => null,
+        else => .{ .err = err },
+    };
+    var width = probe.width;
+    var height = probe.height;
+    if (this.auto_orient and probe.format == .jpeg) {
+        const transform = exif.readJpeg(bytes).transform();
+        if (transform.rotate == 90 or transform.rotate == 270) std.mem.swap(u32, &width, &height);
+    }
+    return .{ .meta = .{ .w = width, .h = height, .format = probe.format } };
 }
 
-fn errorWithCode(global: *jsc.JSGlobalObject, code: [:0]const u8, msg: [:0]const u8) bun.JSError!jsc.JSValue {
-    const err = try global.createErrorInstance("{s}", .{msg});
-    err.putDirect(global, jsc.ZigString.static("code"), jsc.ZigString.init(code).toJS(global));
-    return err.toJS();
-}
-
-/// Fresh slice into the input bytes for use ON THE JS THREAD ONLY (re-reads
-/// the ArrayBuffer's vector each call so a detach between construction and
-/// here surfaces as `null` instead of UAF). For off-thread, see `pinForTask`.
-fn jsThreadBytes(this: *Image, this_value: jsc.JSValue, global: *jsc.JSGlobalObject) ?[]const u8 {
+fn jsThreadBytes(this: *Image) ?[]const u8 {
     return switch (this.source) {
-        .js_buffer => if (js.sourceJSGetCached(this_value)) |v|
-            if (v.asArrayBuffer(global)) |ab| ab.byteSlice() else null
-        else
-            null,
-        .owned => |b| b,
-        .path, .blob => null,
+        .owned => |*bytes| bytes.slice(),
+        .path, .blob, .buffer => null,
     };
 }
 
-/// Pin the source ArrayBuffer for the duration of one off-thread task and
-/// return a slice that's safe for the worker to read. Unpinned in `then()`.
-///
-/// We deliberately DON'T copy: the encoded input can be tens of MB and
-/// nobody mutates a buffer they just handed to a decoder. The contract is
-/// documented and `.shared`/`.resizable` are refused at construction. The
-/// codec layer is hardened so a hostile mid-decode mutation degrades to
-/// `DecodeFailed`, not OOB/heap-leak — see `codec_jpeg.zig` cropping +
-/// post-check, `codec_webp.zig` dim re-check. (If the attacker already runs
-/// JS in-process the threat model is moot anyway; the surface that matters
-/// is hostile *bytes*, which the codec validation handles.)
-fn pinForTask(this: *Image, this_value: jsc.JSValue, _: *jsc.JSGlobalObject) error{ Detached, OutOfMemory }!PipelineTask.Input {
+pub fn copyInputForTask(this: *Image, input: ?[]const u8) error{OutOfMemory}!OwnedPipelineInput {
     switch (this.source) {
-        .js_buffer => {
-            const v = js.sourceJSGetCached(this_value) orelse return error.Detached;
-            // Classify the storage mode WITHOUT promoting it. A fresh
-            // `new Uint8Array(N)` (the common path — `await res.bytes()`,
-            // `Buffer.from(file)`) is `OversizeTypedArray`: bytes in
-            // fastMalloc, no JSArrayBuffer wrapper, can't be detached or
-            // moved. Calling `possiblySharedBuffer()` on that would
-            // `slowDownAndWasteMemory()` → copy + allocate a wrapper for
-            // every input. The classifier returns the slice directly and
-            // tells us whether anything actually needs pinning.
-            var ptr: [*]const u8 = undefined;
-            var len: usize = 0;
-            return switch (JSC__JSValue__borrowBytes(v, &ptr, &len)) {
-                0 => error.Detached,
-                // FastTypedArray (≤ fastSizeLimit elements, GC-movable): tiny
-                // by definition — dupe instead of forcing JSC to copy via
-                // tryCreate(span()) + allocate a butterfly.
-                1 => if (len == 0) error.Detached else .{ .copied = try bun.default_allocator.dupe(u8, ptr[0..len]) },
-                // Oversize/Wasteful/DataView/JSArrayBuffer: pinned by the
-                // helper. For Oversize, possiblySharedBuffer() adopts the
-                // existing fastMalloc storage in-place (zero byte copy);
-                // pinning then keeps it alive even if JS does `.buffer` →
-                // `transfer()` while the worker reads.
-                2 => if (len == 0) blk: {
-                    JSC__JSValue__unpinArrayBuffer(v);
-                    break :blk error.Detached;
-                } else .{ .bytes = ptr[0..len], .pinned = v },
-                else => unreachable,
-            };
+        .buffer => {
+            const bytes = input orelse @panic("Image buffer source has no declared input bytes");
+            return .{ .bytes = try bun.default_allocator.dupe(u8, bytes) };
         },
-        .owned => |b| return .{ .bytes = b },
-        .path => |p| return .{ .path = p },
-        // schedule() peels this off before pinForTask is reached.
+        .owned => |*bytes| return .{ .bytes = try bun.default_allocator.dupe(u8, bytes.slice()) },
+        .path => |*path| return .{ .path = try bun.default_allocator.dupeSentinel(u8, path.slice(), 0) },
         .blob => unreachable,
     }
 }
 
-// ───────────────────────── static `Bun.Image.backend` ───────────────────────
-
-pub fn getBackend(global: *jsc.JSGlobalObject, _: jsc.JSValue, _: jsc.JSValue) bun.JSError!jsc.JSValue {
-    return bun.String.static(@tagName(codecs.backend)).toJS(global);
-}
-
-pub fn setBackend(_: jsc.JSValue, global: *jsc.JSGlobalObject, value: jsc.JSValue) bool {
-    codecs.backend = value.toEnum(global, "Bun.Image.backend", codecs.Backend) catch return false;
-    return true;
+fn inputForCurrentThread(this: *Image, snapshot: ?[]const u8) PipelineInput {
+    return switch (this.source) {
+        .buffer => .{ .bytes = snapshot orelse @panic("Image body encoding requires a source snapshot") },
+        .owned => |*bytes| .{ .bytes = bytes.slice() },
+        .path => |*path| .{ .path = path.slice() },
+        .blob => unreachable,
+    };
 }
 
 // ───────────── static `Bun.Image.fromClipboard()` / `.hasClipboardImage()` ──
@@ -488,178 +511,53 @@ pub fn setBackend(_: jsc.JSValue, global: *jsc.JSGlobalObject, value: jsc.JSValu
 // unconditionally — there's no stable native API to dlopen and shelling out
 // to `wl-paste`/`xclip` from inside `Bun.Image` is the wrong layer.
 
-pub fn fromClipboard(global: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn fromClipboard() bun.OOM!?*JSBinding {
     if (comptime codecs.system_backend) |sb| {
         const bytes = sb.clipboard() catch |e| switch (e) {
-            error.OutOfMemory => return global.throwOutOfMemory(),
-            error.BackendUnavailable => return .null,
-        } orelse return .null;
-        var img = Image.new(.{ .source = .{ .owned = bytes } });
-        return img.toJS(global);
+            error.OutOfMemory => return error.OutOfMemory,
+            error.BackendUnavailable => return null,
+        } orelse return null;
+        return try bindingFromOwnedSource(.{ .owned = .fromDefaultAllocatedSlice(bytes) }, .{});
     }
-    return .null;
-}
-
-pub fn hasClipboardImage(_: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    if (comptime codecs.system_backend) |sb| return jsc.JSValue.jsBoolean(sb.hasClipboardImage());
-    return .false;
-}
-
-/// Monotone counter that increments on every system-wide clipboard write
-/// (NSPasteboard.changeCount / GetClipboardSequenceNumber). macOS has no
-/// clipboard-change notification, so polling this and calling
-/// `hasClipboardImage()` only when it moves is the cheapest hint-UI pattern.
-/// `-1` on Linux.
-pub fn clipboardChangeCount(_: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    if (comptime codecs.system_backend) |sb| return jsc.JSValue.jsNumber(sb.clipboardChangeCount());
-    return jsc.JSValue.jsNumber(@as(i64, -1));
-}
-
-// ───────────────────────────── getters ──────────────────────────────────────
-
-pub fn getWidth(this: *Image, _: *jsc.JSGlobalObject) jsc.JSValue {
-    return jsc.JSValue.jsNumber(this.last_width);
-}
-
-pub fn getHeight(this: *Image, _: *jsc.JSGlobalObject) jsc.JSValue {
-    return jsc.JSValue.jsNumber(this.last_height);
+    return null;
 }
 
 // ───────────────────────────── async terminals ──────────────────────────────
 
-pub fn doMetadata(this: *Image, global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    // Header-only probe is a few dozen byte reads — when the bytes are already
-    // in memory it's cheaper to do it inline than to bounce off the BackgroundWork
-    // (~0.4 ms roundtrip). Path-backed sources still go async for the file I/O.
-    if (this.jsThreadBytes(callframe.this(), global)) |buf| {
-        if (codecs.probe(buf, this.max_pixels)) |p| {
-            var w = p.width;
-            var h = p.height;
-            if (this.auto_orient and p.format == .jpeg) {
-                const t = exif.readJpeg(buf).transform();
-                if (t.rotate == 90 or t.rotate == 270) std.mem.swap(u32, &w, &h);
-            }
-            this.last_width = @intCast(w);
-            this.last_height = @intCast(h);
-            const obj = jsc.JSObject.createEmpty(global, 3);
-            obj.putDirect(global, jsc.ZigString.static("width"), jsc.JSValue.jsNumber(w));
-            obj.putDirect(global, jsc.ZigString.static("height"), jsc.JSValue.jsNumber(h));
-            obj.putDirect(global, jsc.ZigString.static("format"), jsc.ZigString.init(@tagName(p.format)).toJS(global));
-            return jsc.JSPromise.resolvedPromiseValue(global, obj.toJS());
-        } else |e| switch (e) {
-            // HEIC/AVIF need the system backend → fall through to async.
-            error.UnsupportedOnPlatform => {},
-            else => return jsc.JSPromise.rejectedPromise(global, try rejectError(global, e)).asValue(global),
-        }
-    }
-    return this.schedule(global, callframe.this(), .metadata, .uint8array);
-}
-
-pub fn doBytes(this: *Image, global: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.schedule(global, cf.this(), .{ .encode = this.pipeline.output }, .uint8array);
-}
-
-pub fn doBuffer(this: *Image, global: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.schedule(global, cf.this(), .{ .encode = this.pipeline.output }, .buffer);
-}
-
-pub fn doBlob(this: *Image, global: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.schedule(global, cf.this(), .{ .encode = this.pipeline.output }, .blob);
-}
-
-pub fn doToBase64(this: *Image, global: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.schedule(global, cf.this(), .{ .encode = this.pipeline.output }, .base64);
-}
-
-/// `data:image/{format};base64,{…}`. Same encode as `.toBase64()` plus the
-/// MIME prefix, so it drops straight into `<img src>`.
-pub fn doDataUrl(this: *Image, global: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return this.schedule(global, cf.this(), .{ .encode = this.pipeline.output }, .dataurl);
-}
-
-/// `.placeholder()` — ThumbHash-rendered ≤32px PNG `data:` URL. ~28 chars
-/// of hash → ~400-700 bytes of `data:image/png;base64,…` ready for `<img
-/// src>` / Next's `blurDataURL`. Runs entirely on the work pool; the
-/// pipeline ops (resize/rotate/…) are skipped — a placeholder is OF the
-/// source, not of the output.
-pub fn doPlaceholder(this: *Image, global: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const args = cf.arguments();
-    // Single positional `"dataurl"` for now — leaves room for `"hash"` /
-    // `"color"` without growing methods. Anything else throws so the
-    // option space isn't accidentally squatted.
-    if (args.len > 0 and !args[0].isUndefinedOrNull()) {
-        const s = try args[0].toBunString(global);
-        defer s.deref();
-        if (!s.eqlComptime("dataurl"))
-            return global.throwInvalidArguments("Image.placeholder(): only \"dataurl\" is supported", .{});
-    }
-    return this.schedule(global, cf.this(), .placeholder, .dataurl);
-}
-
-/// Terminal: encode and write to `path` on the work pool (no round-trip of
-/// then `Bun.write(dest, encoded)` — same path as `await Bun.write(...)`, so
-/// `dest` may be a path string, `Bun.file()`, `Bun.s3()`, or an fd. Resolves
-/// with bytes written. If no format method was chained and `dest` is a path
-/// string, the encode format is inferred from its extension, falling back to
-/// the source format — so `img.resize(100).write("thumb.webp")` Just Works.
-pub fn doWrite(this: *Image, global: *jsc.JSGlobalObject, cf: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const args = cf.arguments();
-    if (args.len < 1 or args[0].isUndefinedOrNull())
-        return global.throwInvalidArguments("Image.write(dest): expected a path, Bun.file, Bun.s3 or fd", .{});
-
+fn scheduleWrite(
+    this: *Image,
+    context: bindgen.CallContext(ImageWriteNativeSchema),
+    wrapper: bindgen.ClassRef(ImageClassSchema),
+    input: SourceBufferInput,
+    destination: OwnedWriteDestination,
+) bindgen.CallError(ImageWriteNativeSchema)!void {
     var output = this.pipeline.output;
-    // Extension inference only when dest is a plain string. BunFile/S3 dests
-    // carry no extension contract, so the explicit `.png()` etc. (or source
-    // format) decides.
-    if (output == null and args[0].isString()) {
-        const str = try args[0].toBunString(global);
-        defer str.deref();
-        const utf8 = str.toUTF8(bun.default_allocator);
-        defer utf8.deinit();
-        if (codecs.Format.fromExtension(utf8.slice())) |f| switch (f) {
-            // Only infer formats we can ENCODE; decode-only extensions
-            // (.bmp/.tiff/.gif) fall through to the source-format default.
+    if (output == null) {
+        if (destination.pathSlice()) |path| if (codecs.Format.fromExtension(path)) |f| switch (f) {
             .jpeg, .png, .webp, .heic, .avif => output = .{ .format = f },
             else => {},
         };
     }
-    return this.schedule(global, cf.this(), .{ .encode = output }, .{ .write_dest = .create(args[0], global) });
+    return this.scheduleAsync(
+        ImageWriteNativeSchema,
+        context,
+        wrapper,
+        input,
+        .{ .encode = output },
+        destination,
+    );
 }
 
-fn schedule(this: *Image, global: *jsc.JSGlobalObject, this_value: jsc.JSValue, kind: PipelineTask.Kind, deliver: PipelineTask.Deliver) bun.JSError!jsc.JSValue {
-    if (this.source == .blob)
-        return BlobReadChain.start(this, global, this_value, kind, deliver);
-    const input = this.pinForTask(this_value, global) catch |e| {
-        // `deliver` may own a Strong; the task that would have freed it in
-        // deinit() is never created on this branch.
-        var d = deliver;
-        d.deinit();
-        if (e == error.OutOfMemory) bun.outOfMemory();
-        return jsc.JSPromise.rejectedPromise(
-            global,
-            try errorWithCode(global, "ERR_INVALID_STATE", "Image: source ArrayBuffer was detached"),
-        ).asValue(global);
-    };
-    const job = PipelineTask.new(.{
-        .image = this,
-        .global = global,
-        // Struct copy — the worker reads its own snapshot so further chained
-        // calls on the JS side between schedule and completion don't race.
-        .pipeline = this.pipeline,
-        .input = input,
-        .kind = kind,
-        .deliver = deliver,
-        .max_pixels = this.max_pixels,
-        .auto_orient = this.auto_orient,
-    });
-    // First in-flight task ⇒ hold a Strong ref to the wrapper so GC can't
-    // collect it (and its sourceJS slot, and the pinned ArrayBuffer) until
-    // `then()` drops the count back to 0.
-    if (this.pending_tasks == 0) this.this_ref.setStrong(this_value, global);
-    this.pending_tasks += 1;
-    var task = AsyncImageTask.createOnJSThread(bun.default_allocator, global, job);
-    task.schedule();
-    return task.promise.value();
+fn scheduleAsync(
+    this: *Image,
+    comptime FunctionSchema: type,
+    context: bindgen.CallContext(FunctionSchema),
+    wrapper: bindgen.ClassRef(ImageClassSchema),
+    input: SourceBufferInput,
+    kind: PipelineKind,
+    destination: ?OwnedWriteDestination,
+) bindgen.CallError(FunctionSchema)!void {
+    return bun.api.ImageEngine.schedule(this, FunctionSchema, context, wrapper, input, kind, destination);
 }
 
 /// Run the full pipeline on the *current* thread. Used when an `Image` is
@@ -670,293 +568,228 @@ fn schedule(this: *Image, global: *jsc.JSGlobalObject, this_value: jsc.JSValue, 
 ///
 /// A later refinement is to return a `.Locked` body and resolve it from the
 /// worker pool; this is the simple, correct first cut.
-pub fn encodeForBody(this: *Image, global: *jsc.JSGlobalObject, this_value: jsc.JSValue) bun.JSError!struct { bytes: codecs.Encoded, mime: [:0]const u8 } {
-    // The body-init contract is synchronous, so a `.blob` source can't go
-    // through the async read chain here. For the common case (file by path)
-    // fall back to the `.path` source — `run()` reads it inline. fd/S3-backed
-    // BunFiles would block or need network; refuse with a clear message until
-    // the body path is made `.Locked`.
+pub const BodyEncodeResult = union(enum) {
+    encoded: struct { bytes: codecs.Encoded, mime: [:0]const u8 },
+    unsupported_source,
+    pipeline_error: [:0]const u8,
+    io_error: bun.sys.Error,
+};
+
+pub fn encodeForBody(this: *Image, snapshot: ?[]const u8) bun.OOM!BodyEncodeResult {
     if (this.source == .blob) {
-        const refuse = "Image: fd/S3-backed Bun.file as a Response body — pass `await file.bytes()` or a path string";
-        const blob_js = this.source.blob.get() orelse return global.throw("Image: Blob source was collected", .{});
-        const blob = blob_js.as(jsc.WebCore.Blob) orelse return global.throw(refuse, .{});
-        // Braced so the `else` can't dangle onto the inner `if` — a null
-        // store would otherwise fall through to `pinForTask`'s `.blob =>
-        // unreachable`. (The Strong-held wrapper makes that nominally
-        // unreachable, but this path should throw, not abort, when it isn't.)
-        if (blob.store) |store| {
-            if (store.data == .file and store.data.file.pathlike == .path) {
-                const p = try bun.default_allocator.dupeSentinel(u8, store.data.file.pathlike.path.slice(), 0);
-                this.source.deinit();
-                this.source = .{ .path = p };
-            } else return global.throw(refuse, .{});
-        } else return global.throw(refuse, .{});
+        const blob = &this.source.blob;
+        const source: Source = if (blob.storePtr()) |store| switch (store.data) {
+            .bytes => .{ .owned = try .fromSlice(blob.sharedView()) },
+            .file => if (store.data.file.pathlike == .path)
+                .{ .path = try .fromSlice(store.data.file.pathlike.path.slice()) }
+            else
+                return .unsupported_source,
+            .s3 => return .unsupported_source,
+        } else .{ .owned = .empty() };
+        this.source.deinit();
+        this.source = source;
     }
-    const input = this.pinForTask(this_value, global) catch |e| {
-        if (e == error.OutOfMemory) bun.outOfMemory();
-        return global.throw("Image: source ArrayBuffer was detached", .{});
-    };
-    defer input.release();
-    var task: PipelineTask = .{
-        .image = this,
-        .global = global,
+    const input = this.inputForCurrentThread(snapshot);
+    var job: PipelineJob = .{
         .pipeline = this.pipeline,
         .input = input,
         .kind = .{ .encode = this.pipeline.output },
-        .deliver = .uint8array,
         .max_pixels = this.max_pixels,
         .auto_orient = this.auto_orient,
     };
-    task.run();
-    return switch (task.result) {
+    defer job.deinitResult();
+    job.run();
+    return switch (job.result) {
         .encoded => |e| {
             this.last_width = @intCast(e.w);
             this.last_height = @intCast(e.h);
-            return .{ .bytes = e.out, .mime = e.format.mime() };
+            job.result = .{ .err = error.DecodeFailed };
+            return .{ .encoded = .{ .bytes = e.out, .mime = e.format.mime() } };
         },
-        .err => |e| global.throw("{s}", .{errorMessage(e)}),
-        // Preserve errno/path/syscall instead of flattening to DecodeFailed.
-        .io_err => |e| global.throwValue(try e.toJS(global)),
-        .meta => unreachable,
+        .err => |e| .{ .pipeline_error = errorMessage(e) },
+        .io_err => |e| .{ .io_error = e },
+        .meta, .system_err => unreachable,
     };
 }
 
 // ───────────────────────────── worker task ──────────────────────────────────
 
-/// `.blob` source: ask the Blob for its bytes via the store-agnostic
-/// `Blob.readBytesToHandler` (file → ReadFile/ReadFileUV, S3 → S3.download,
-/// memory → dupe), receive the owned `[]u8` directly — never wrapped in a
-/// JSValue — swap it into `image.source = .owned`, and re-enter `schedule()`.
-/// Promise-of-promise flattens, so the caller sees one `await` for
-/// read+decode+ops+encode. After the first read, subsequent terminals on the
-/// same instance reuse the `.owned` bytes without re-reading.
-const BlobReadChain = struct {
-    image: *Image,
-    global: *jsc.JSGlobalObject,
-    kind: PipelineTask.Kind,
-    deliver: PipelineTask.Deliver,
-    outer: jsc.JSPromise.Strong,
+const PipelineInput = union(enum) {
+    none,
+    bytes: []const u8,
+    path: []const u8,
+};
 
-    fn start(image: *Image, global: *jsc.JSGlobalObject, this_value: jsc.JSValue, kind: PipelineTask.Kind, deliver: PipelineTask.Deliver) bun.JSError!jsc.JSValue {
-        // `deliver` may carry a `.write_dest` Strong; on these defensive
-        // early-returns the chain is never created so its deinit() can't
-        // free it. (Same contract as schedule()'s detached-buffer branch.)
-        const blob_js = image.source.blob.get() orelse {
-            var d = deliver;
-            d.deinit();
-            return global.throw("Image: Blob source was collected", .{});
+pub const OwnedPipelineInput = union(enum) {
+    none,
+    bytes: []u8,
+    path: [:0]u8,
+
+    fn view(this: *const OwnedPipelineInput) PipelineInput {
+        return switch (this.*) {
+            .none => .none,
+            .bytes => |bytes| .{ .bytes = bytes },
+            .path => |path| .{ .path = path },
         };
-        const blob = blob_js.as(jsc.WebCore.Blob) orelse {
-            var d = deliver;
-            d.deinit();
-            return global.throw("Image: Blob source is no longer a Blob", .{});
-        };
-
-        // Same Strong-ref contract as the regular pending_tasks bump — keeps
-        // the wrapper (and its sourceJS slot) alive until the read settles.
-        if (image.pending_tasks == 0) image.this_ref.setStrong(this_value, global);
-        image.pending_tasks += 1;
-
-        var chain = bun.new(BlobReadChain, .{
-            .image = image,
-            .global = global,
-            .kind = kind,
-            .deliver = deliver,
-            .outer = jsc.JSPromise.Strong.init(global),
-        });
-        const promise = chain.outer.value();
-        try blob.readBytesToHandler(BlobReadChain, chain, global);
-        return promise;
     }
 
-    /// JS thread — `readBytesToHandler` guarantees this. `r.ok` is
-    /// `bun.default_allocator`-owned by us.
-    pub fn onReadBytes(self: *BlobReadChain, r: jsc.WebCore.Blob.ReadBytesResult) void {
-        const global = self.global;
-        const image = self.image;
-        var outer = self.outer;
-        const kind = self.kind;
-        var deliver = self.deliver;
-        bun.destroy(self);
+    fn takeBytes(this: *OwnedPipelineInput) []u8 {
+        const bytes = this.bytes;
+        this.* = .none;
+        return bytes;
+    }
 
-        image.pending_tasks -= 1;
-        if (image.pending_tasks == 0) image.this_ref.downgrade();
-        defer outer.deinit();
+    fn deinit(this: *OwnedPipelineInput) void {
+        switch (this.*) {
+            .none => {},
+            .bytes => |bytes| bun.default_allocator.free(bytes),
+            .path => |path| bun.default_allocator.free(path),
+        }
+        this.* = .none;
+    }
+};
 
-        switch (r) {
-            .ok => |bytes| {
-                // Concurrent terminals can have started multiple BlobReadChains
-                // (no in-flight serialisation — `start()` re-enters every time
-                // it sees `.blob`). The FIRST resolver wins and swaps to
-                // `.owned`; that buffer is then *borrowed* by `pinForTask`
-                // into a worker-thread PipelineTask. A later resolver MUST NOT
-                // `source.deinit()` (it would free what the worker is reading)
-                // — drop the redundant read instead and re-enter `schedule()`
-                // on the already-swapped source.
-                if (image.source == .blob) {
-                    image.source.deinit();
-                    image.source = .{ .owned = bytes };
-                } else {
-                    bun.default_allocator.free(bytes);
-                }
-                const this_value = image.this_ref.tryGet() orelse {
-                    const error_value: bun.JSError!jsc.JSValue = if (global.createErrorInstance("Image: collected before read completed", .{})) |err| err.toJS() else |err| err;
-                    outer.reject(global, error_value) catch {};
-                    deliver.deinit();
-                    return;
-                };
-                // Source is now `.owned`; this re-entry takes the regular path.
-                const inner = image.schedule(global, this_value, kind, deliver) catch {
-                    deliver.deinit();
-                    const error_value: bun.JSError!jsc.JSValue = if (global.createErrorInstance("Image: pipeline schedule failed", .{})) |err| err.toJS() else |err| err;
-                    outer.reject(global, error_value) catch {};
-                    return;
-                };
-                outer.resolve(global, inner) catch {};
+const ImageWriteDestination = @FieldType(bindgen.Return(ImageWriteNativeSchema), "destination");
+
+pub const OwnedWriteDestination = struct {
+    value: ?ImageWriteDestination,
+
+    fn fromBindgen(context: anytype, value: anytype) bun.JSError!OwnedWriteDestination {
+        return switch (value) {
+            .path => |path| .{ .value = .{ .path = try path.copy() } },
+            .fd => |fd| .{ .value = .{ .fd = fd } },
+            .blob => |blob| result: {
+                var copy = try blob.get().dupe();
+                defer copy.deinit();
+                break :result .{ .value = .{ .blob = try (try bun.webcore.Blob.new(&copy)).toBindingRef(context) } };
             },
-            .err => |e| {
-                deliver.deinit();
-                const error_value: bun.JSError!jsc.JSValue = if (e.toErrorInstance(global)) |err| err.toJS() else |err| err;
-                outer.reject(global, error_value) catch {};
-            },
+        };
+    }
+
+    fn pathSlice(this: *const OwnedWriteDestination) ?[]const u8 {
+        if (this.value) |*value| return switch (value.*) {
+            .path => |*path| path.slice(),
+            .fd, .blob => null,
+        };
+        return null;
+    }
+
+    pub fn take(this: *OwnedWriteDestination) OwnedWriteDestination {
+        const value = this.value orelse @panic("image write destination was already consumed");
+        this.value = null;
+        return .{ .value = value };
+    }
+
+    fn takeResult(this: *OwnedWriteDestination) ImageWriteDestination {
+        const result = this.value orelse @panic("image write destination was already consumed");
+        this.value = null;
+        return result;
+    }
+
+    pub fn deinit(this: *OwnedWriteDestination) void {
+        var value = this.value orelse return;
+        this.value = null;
+        switch (value) {
+            .path => |*path| path.deinit(),
+            .blob => |*blob| blob.deinit(),
+            .fd => {},
         }
     }
 };
 
-pub const AsyncImageTask = jsc.ConcurrentPromiseTask(PipelineTask);
+pub const PipelineKind = union(enum) {
+    encode: ?codecs.EncodeOptions,
+    metadata,
+    placeholder,
+};
 
-pub const PipelineTask = struct {
-    pub const new = bun.TrivialNew(@This());
+pub const PipelineResult = union(enum) {
+    encoded: struct { out: codecs.Encoded, format: codecs.Format, w: u32, h: u32 },
+    meta: struct { w: u32, h: u32, format: codecs.Format },
+    err: codecs.Error,
+    io_err: bun.sys.Error,
+    system_err: bindgen.SystemError,
+};
 
-    image: *Image,
-    global: *jsc.JSGlobalObject,
+const PipelineAttachment = struct {
+    wrapper: bindgen.ClassRef(ImageClassSchema),
+    destination: ?OwnedWriteDestination,
+    cache_blob_source: bool,
+    input_lease: ?bindgen.OwnedLease(u8) = null,
+
+    fn deinit(this: *PipelineAttachment) void {
+        if (this.destination) |*destination| destination.deinit();
+        this.destination = null;
+        if (this.input_lease) |*lease| lease.deinit();
+        this.input_lease = null;
+        this.wrapper.deinit();
+    }
+};
+
+const PipelineJob = struct {
     pipeline: Pipeline,
-    input: Input,
-    kind: Kind,
-    deliver: Deliver,
+    input: PipelineInput,
+    kind: PipelineKind,
     max_pixels: u64,
     auto_orient: bool,
-    result: Result = .{ .err = error.DecodeFailed },
+    result: PipelineResult = .{ .err = error.DecodeFailed },
 
-    /// Bytes for the worker. `.pinned` is the JS ArrayBuffer/view to unpin in
-    /// `then()` — `.zero` for owned/path sources (nothing to unpin).
-    pub const Input = struct {
-        bytes: []const u8 = &.{},
-        path: ?[:0]const u8 = null,
-        /// JS value to `unpinArrayBuffer` in `then()`. `.zero` for sources
-        /// with no ArrayBuffer to pin (Oversize TA, owned, path, copied).
-        pinned: jsc.JSValue = .zero,
-        /// Our own dupe of a FastTypedArray's bytes — freed in `then()`.
-        copied: ?[]u8 = null,
-
-        fn slice(self: @This()) []const u8 {
-            return self.copied orelse self.bytes;
-        }
-        fn release(self: @This()) void {
-            if (self.pinned != .zero) JSC__JSValue__unpinArrayBuffer(self.pinned);
-            if (self.copied) |c| bun.default_allocator.free(c);
-        }
-    };
-
-    pub const Deliver = union(enum) {
-        uint8array,
-        buffer,
-        blob,
-        base64,
-        /// Like `.base64` plus a `data:{mime};base64,` prefix — same encode
-        /// path, the prefix is the only difference.
-        dataurl,
-        /// `.write(dest)` — `then()` hands the encoded bytes to `Bun.write`'s
-        /// implementation with this as the destination. Anything `Bun.write`
-        /// accepts (path string / BunFile / S3 / fd) works here unchanged.
-        write_dest: jsc.Strong.Optional,
-
-        fn deinit(self: *Deliver) void {
-            if (self.* == .write_dest) self.write_dest.deinit();
-        }
-    };
-
-    pub const Kind = union(enum) {
-        /// `null` ⇒ re-encode in the source format (resolved after decode).
-        encode: ?codecs.EncodeOptions,
-        metadata,
-        /// `.placeholder()` — decode → box-resize ≤100 → ThumbHash → render
-        /// → PNG → `data:` URL. The whole chain runs on the worker; the
-        /// hash itself never crosses the JS boundary unless we add an
-        /// `as: "hash"` option later.
-        placeholder,
-    };
-
-    pub const Result = union(enum) {
-        encoded: struct { out: codecs.Encoded, format: codecs.Format, w: u32, h: u32 },
-        meta: struct { w: u32, h: u32, format: codecs.Format },
-        err: codecs.Error,
-        io_err: bun.sys.Error,
-    };
-
-    pub fn onScheduleError(this: *PipelineTask, err: anyerror) void {
-        this.result = .{ .err = switch (err) {
-            error.ConcurrencyUnavailable => error.ConcurrencyUnavailable,
-            else => unreachable,
-        } };
-    }
-
-    /// Runs on a `BackgroundWork` thread. No JSC access.
-    pub fn run(this: *PipelineTask) void {
-        // `this.input` was prepared on the JS thread by `pinForTask`: either a
-        // pinned ArrayBuffer slice (pin lives until `then()` unpins), an owned
-        // buffer, or a path to read here.
+    pub fn run(this: *PipelineJob) void {
         var owned_file: ?[]u8 = null;
         defer if (owned_file) |f| bun.default_allocator.free(f);
-        const input: []const u8 = if (this.input.path) |p| blk: {
-            // The path string came straight from the constructor, so treat
-            // it as untrusted: open + fstat first instead of `readFrom`.
-            //   • !S_ISREG → ENODEV. `/dev/zero`/`/dev/urandom` would
-            //     otherwise pread forever (st_size=0, never returns 0) until
-            //     the doubling ArrayList OOMs the process; a FIFO with no
-            //     writer would park this BackgroundWork thread in-kernel forever.
-            //   • st_size cap → file-based decompression-bomb fails up
-            //     front with a clear error instead of materialising a
-            //     multi-GB encoded buffer before `maxPixels` even runs.
-            // O_NONBLOCK so the open itself can't block on a FIFO. POSIX-only:
-            // on Windows it omits FILE_SYNCHRONOUS_IO_NONALERT (overlapped
-            // handle) and the subsequent sync read fails EINVAL. Windows has
-            // no open-blocking FIFOs in the same sense; the !S_ISREG check
-            // below still rejects pipes/devices.
-            const oflags = bun.O.RDONLY | if (bun.Environment.isPosix) bun.O.NONBLOCK else @as(@TypeOf(bun.O.RDONLY), 0);
-            const file = switch (bun.sys.File.openat(bun.FD.cwd(), p, oflags, 0)) {
-                .result => |f| f,
-                .err => |e| {
+        const input: []const u8 = switch (this.input) {
+            .none => unreachable,
+            .bytes => |bytes| bytes,
+            .path => |p| blk: {
+                // The path string came straight from the constructor, so treat
+                // it as untrusted: open + fstat first instead of `readFrom`.
+                //   • !S_ISREG → ENODEV. `/dev/zero`/`/dev/urandom` would
+                //     otherwise pread forever (st_size=0, never returns 0) until
+                //     the doubling ArrayList OOMs the process; a FIFO with no
+                //     writer would park this BackgroundWork thread in-kernel forever.
+                //   • st_size cap → file-based decompression-bomb fails up
+                //     front with a clear error instead of materialising a
+                //     multi-GB encoded buffer before `maxPixels` even runs.
+                // O_NONBLOCK so the open itself can't block on a FIFO. POSIX-only:
+                // on Windows it omits FILE_SYNCHRONOUS_IO_NONALERT (overlapped
+                // handle) and the subsequent sync read fails EINVAL. Windows has
+                // no open-blocking FIFOs in the same sense; the !S_ISREG check
+                // below still rejects pipes/devices.
+                const oflags = bun.O.RDONLY | if (bun.Environment.isPosix) bun.O.NONBLOCK else @as(@TypeOf(bun.O.RDONLY), 0);
+                const file = switch (bun.sys.openatA(bun.FD.cwd(), p, oflags, 0)) {
+                    .result => |fd| bun.sys.File.from(fd),
+                    .err => |e| {
+                        this.result = .{ .io_err = e.withPath(p) };
+                        return;
+                    },
+                };
+                defer file.close();
+                const st = switch (file.stat()) {
+                    .result => |s| s,
+                    .err => |e| {
+                        this.result = .{ .io_err = e.withPath(p) };
+                        return;
+                    },
+                };
+                if (!bun.S.ISREG(@intCast(st.mode))) {
+                    this.result = .{ .io_err = .{ .errno = @backingInt(bun.sys.E.NODEV), .syscall = .read, .path = p } };
+                    return;
+                }
+                if (@as(u64, @intCast(@max(st.size, 0))) > max_input_file_bytes) {
+                    this.result = .{ .err = error.TooManyPixels };
+                    return;
+                }
+                const r = file.readToEnd(bun.default_allocator);
+                if (r.err) |e| {
+                    var bytes = r.bytes;
+                    bytes.deinit();
                     this.result = .{ .io_err = e.withPath(p) };
                     return;
-                },
-            };
-            defer file.close();
-            const st = switch (file.stat()) {
-                .result => |s| s,
-                .err => |e| {
-                    this.result = .{ .io_err = e.withPath(p) };
-                    return;
-                },
-            };
-            if (!bun.S.ISREG(@intCast(st.mode))) {
-                this.result = .{ .io_err = .{ .errno = @backingInt(bun.sys.E.NODEV), .syscall = .read, .path = p } };
-                return;
-            }
-            if (@as(u64, @intCast(@max(st.size, 0))) > max_input_file_bytes) {
-                this.result = .{ .err = error.TooManyPixels };
-                return;
-            }
-            const r = file.readToEnd(bun.default_allocator);
-            if (r.err) |e| {
-                var bytes = r.bytes;
-                bytes.deinit();
-                this.result = .{ .io_err = e.withPath(p) };
-                return;
-            }
-            owned_file = r.bytes.items;
-            break :blk owned_file.?;
-        } else this.input.slice();
+                }
+                owned_file = r.bytes.items;
+                break :blk owned_file.?;
+            },
+        };
 
         // Header-only fast path for `.metadata()` — Sharp parses just the
         // IHDR/SOF/VP8 header; we used to decode the full RGBA buffer first
@@ -1068,7 +901,7 @@ pub const PipelineTask = struct {
     /// `box` (the only filter that's correct for "average everything in a
     /// cell" — Lanczos would ring into the DCT). The hash itself stays on
     /// the worker stack; only the rendered PNG crosses back.
-    fn makePlaceholder(rgba: []const u8, sw: u32, sh: u32) codecs.Error!Result {
+    fn makePlaceholder(rgba: []const u8, sw: u32, sh: u32) codecs.Error!PipelineResult {
         const max_in: u32 = 100;
         var w = sw;
         var h = sh;
@@ -1097,94 +930,6 @@ pub const PipelineTask = struct {
         return .{ .encoded = .{ .out = png_out, .format = .png, .w = rendered.w, .h = rendered.h } };
     }
 
-    /// Back on the JS thread.
-    pub fn then(this: *PipelineTask, promise: *jsc.JSPromise) bun.JSTerminated!void {
-        defer this.deinit();
-        // JS thread again — release the per-task pin so user code can
-        // transfer/detach the source now.
-        this.input.release();
-        const global = this.global;
-        // Stash final dims here (JS thread) — `run()` is on a BackgroundWork thread
-        // so writing `this.image.*` there would race the synchronous getters.
-        switch (this.result) {
-            inline .encoded, .meta => |r| {
-                this.image.last_width = @intCast(r.w);
-                this.image.last_height = @intCast(r.h);
-            },
-            else => {},
-        }
-        switch (this.result) {
-            .encoded => |enc| switch (this.deliver) {
-                // The codec's own allocation is handed straight to JS with the
-                // codec's free as the finalizer — no dupe of the output.
-                .uint8array => try promise.resolve(global, jsc.ArrayBuffer.fromBytes(enc.out.bytes, .Uint8Array)
-                    .toJSWithContext(global, null, enc.out.free) catch
-                    return promise.reject(global, error.JSError)),
-                // createBufferWithCtx returns plain JSValue (its C++ side asserts
-                // the no-throw contract), so the .uint8array catch is unmatched
-                // here by construction, not omission.
-                .buffer => try promise.resolve(global, jsc.JSValue.createBufferWithCtx(global, enc.out.bytes, null, enc.out.free)),
-                .blob => {
-                    // Blob.Store frees via an Allocator; dupe for that path.
-                    const owned = bun.handleOom(bun.default_allocator.dupe(u8, enc.out.bytes));
-                    enc.out.deinit();
-                    var blob = jsc.WebCore.Blob.init(owned, bun.default_allocator, global);
-                    blob.content_type = enc.format.mime();
-                    blob.content_type_was_set = true;
-                    try promise.resolve(global, jsc.WebCore.Blob.new(blob).toJS(global));
-                },
-                inline .base64, .dataurl => |_, tag| {
-                    defer enc.out.deinit();
-                    // `data:` and `;base64,` are both ASCII so the prefix
-                    // length is exact; one buffer holds prefix+payload.
-                    var pre_buf: [40]u8 = undefined;
-                    const pre: []const u8 = if (comptime tag == .dataurl)
-                        std.fmt.bufPrint(&pre_buf, "data:{s};base64,", .{enc.format.mime()}) catch unreachable
-                    else
-                        "";
-                    const buf = bun.handleOom(bun.default_allocator.alloc(u8, pre.len + bun.base64.encodeLen(enc.out.bytes)));
-                    defer bun.default_allocator.free(buf);
-                    @memcpy(buf[0..pre.len], pre);
-                    const wrote = pre.len + bun.base64.encode(buf[pre.len..], enc.out.bytes);
-                    const str = bun.String.createUTF8ForJS(global, buf[0..wrote]) catch
-                        return promise.reject(global, error.JSError);
-                    try promise.resolve(global, str);
-                },
-                // `.write(dest)` — wrap the codec buffer as a Buffer (codec's
-                // own free is the finalizer; no dupe), hand it to the SAME
-                // implementation `Bun.write` uses, and resolve our promise
-                // with that Promise<number>. So `dest` may be a path string,
-                // `Bun.file()`, `Bun.s3()`, or an fd — anything `Bun.write`
-                // accepts — and we don't reimplement any of it.
-                .write_dest => |*dest| {
-                    const dest_js = dest.get() orelse {
-                        enc.out.deinit();
-                        const error_value: bun.JSError!jsc.JSValue = if (global.createErrorInstance("Image.write: destination was collected", .{})) |err| err.toJS() else |err| err;
-                        return promise.reject(global, error_value);
-                    };
-                    const data = jsc.JSValue.createBufferWithCtx(global, enc.out.bytes, null, enc.out.free);
-                    var arg_slice = jsc.CallFrame.ArgumentsSlice.init(global.bunVM(), &.{dest_js});
-                    defer arg_slice.deinit();
-                    var path_or_blob = jsc.Node.PathOrBlob.fromJSNoCopy(global, &arg_slice) catch
-                        return promise.reject(global, error.JSError);
-                    defer if (path_or_blob == .path) path_or_blob.path.deinit();
-                    const write_promise = jsc.WebCore.Blob.writeFileInternal(global, &path_or_blob, data, .{}) catch
-                        return promise.reject(global, error.JSError);
-                    try promise.resolve(global, write_promise);
-                },
-            },
-            .meta => |m| {
-                const obj = jsc.JSObject.createEmpty(global, 3);
-                obj.putDirect(global, jsc.ZigString.static("width"), jsc.JSValue.jsNumber(m.w));
-                obj.putDirect(global, jsc.ZigString.static("height"), jsc.JSValue.jsNumber(m.h));
-                obj.putDirect(global, jsc.ZigString.static("format"), jsc.ZigString.init(@tagName(m.format)).toJS(global));
-                try promise.resolve(global, obj.toJS());
-            },
-            .err => |e| try promise.reject(global, rejectError(global, e)),
-            .io_err => |e| try promise.reject(global, e.toJS(global)),
-        }
-    }
-
     /// Fixed Sharp order: rotate → flip/flop → resize. Each stage replaces
     /// `d` in place; the old buffer is freed before assigning the new one so
     /// peak memory is at most 2× one frame. Every stage hand-swaps only the
@@ -1192,7 +937,7 @@ pub const PipelineTask = struct {
     /// `icc_profile == null`, so overwriting `d.*` wholesale would drop the
     /// source's colour profile. Geometry doesn't change colour meaning, so
     /// the profile survives unchanged.
-    fn applyPipeline(this: *PipelineTask, d: *codecs.Decoded) codecs.Error!void {
+    fn applyPipeline(this: *PipelineJob, d: *codecs.Decoded) codecs.Error!void {
         const p = this.pipeline;
         if (p.rotate != 0) {
             const next = try codecs.rotate(d.rgba, d.width, d.height, p.rotate);
@@ -1214,7 +959,7 @@ pub const PipelineTask = struct {
         if (p.resize) |r| {
             const t = resolveResize(r, d.width, d.height);
             // Guard the output canvas AND the H-then-V intermediate (always
-            // dst_w × src_h — image_resize.cpp pass order is fixed). A 1×N
+            // dst_w × src_h). A 1×N
             // source → resize(W,1) has tiny input AND output canvases yet a
             // W×N intermediate; with W=262143, N=16383 that's a 17 GiB alloc
             // from a ~200-byte PNG. The src_w×dst_h cross-product is bounded
@@ -1278,15 +1023,333 @@ pub const PipelineTask = struct {
         }
     }
 
-    fn deinit(this: *PipelineTask) void {
-        // Always reached from `then()` on the JS thread, so the ref/count
-        // touch is safe without atomics.
-        this.deliver.deinit();
-        this.image.pending_tasks -= 1;
-        if (this.image.pending_tasks == 0) this.image.this_ref.downgrade();
-        bun.destroy(this);
+    fn deinitResult(this: *PipelineJob) void {
+        switch (this.result) {
+            .encoded => |encoded| encoded.out.deinit(),
+            .system_err => |*system_error| system_error.deinit(),
+            else => {},
+        }
+        this.result = .{ .err = error.DecodeFailed };
     }
 };
+
+fn materializePipeline(
+    comptime FunctionSchema: type,
+    context: bindgen.MaterializationContext(FunctionSchema),
+    attachment: *PipelineAttachment,
+    input: *OwnedPipelineInput,
+    job: *PipelineJob,
+) bindgen.CallError(FunctionSchema)!bindgen.Return(FunctionSchema) {
+    const image = attachment.wrapper.get(JSBinding).image.get();
+    if (attachment.cache_blob_source and input.* == .bytes and image.source == .blob) {
+        image.source.deinit();
+        image.source = .{ .owned = .fromDefaultAllocatedSlice(input.takeBytes()) };
+    }
+
+    switch (job.result) {
+        inline .encoded, .meta => |result| {
+            image.last_width = @intCast(result.w);
+            image.last_height = @intCast(result.h);
+        },
+        else => {},
+    }
+
+    return switch (job.result) {
+        .encoded => |encoded_result| {
+            if (comptime FunctionSchema == ImageBytesSchema or
+                FunctionSchema == ImageBufferSchema or
+                FunctionSchema == ImageToBufferSchema)
+            {
+                return try bindgen.OwnedBytes.fromSlice(encoded_result.out.bytes);
+            }
+            if (comptime FunctionSchema == ImageBlobNativeSchema) {
+                var data = try bindgen.OwnedBytes.fromSlice(encoded_result.out.bytes);
+                errdefer data.deinit();
+                return .{
+                    .data = data,
+                    .mime = try bindgen.UTF8String.fromSlice(encoded_result.format.mime()),
+                };
+            }
+            if (comptime FunctionSchema == ImageToBase64Schema) {
+                return try encodedStringResult(encoded_result, false);
+            }
+            if (comptime FunctionSchema == ImageDataURLSchema or FunctionSchema == ImagePlaceholderSchema) {
+                return try encodedStringResult(encoded_result, true);
+            }
+            if (comptime FunctionSchema == ImageWriteNativeSchema) {
+                var data = try bindgen.OwnedBytes.fromSlice(encoded_result.out.bytes);
+                errdefer data.deinit();
+                const destination = if (attachment.destination) |*value|
+                    value
+                else
+                    @panic("image write completion has no destination");
+                return .{
+                    .data = data,
+                    .destination = destination.takeResult(),
+                };
+            }
+            @panic("image pipeline produced encoded data for an incompatible endpoint");
+        },
+        .meta => |metadata| {
+            if (comptime FunctionSchema != ImageMetadataSchema) {
+                @panic("image pipeline produced metadata for an incompatible endpoint");
+            }
+            return .{
+                .width = metadata.w,
+                .height = metadata.h,
+                .format = try bindgen.UTF8String.fromSlice(@tagName(metadata.format)),
+            };
+        },
+        .err => |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnknownFormat => context.fail(.unknown_format, {}),
+            error.DecodeFailed => context.fail(.decode_failed, {}),
+            error.EncodeFailed => context.fail(.encode_failed, {}),
+            error.InvalidDimensions => context.fail(.invalid_dimensions, {}),
+            error.TooManyPixels => context.fail(.too_many_pixels, {}),
+            error.UnsupportedOnPlatform => context.fail(.unsupported_on_platform, {}),
+            error.ConcurrencyUnavailable => context.fail(.concurrency_unavailable, {}),
+        },
+        .io_err => |err| context.fail(.system, try bindgen.SystemError.fromSysError(err)),
+        .system_err => |system_error_value| {
+            job.result = .{ .err = error.DecodeFailed };
+            return context.fail(.system, system_error_value);
+        },
+    };
+}
+
+fn encodedStringResult(
+    encoded: @FieldType(PipelineResult, "encoded"),
+    data_url: bool,
+) bun.OOM!bindgen.UTF8String {
+    var prefix_buffer: [40]u8 = undefined;
+    const prefix: []const u8 = if (data_url)
+        std.fmt.bufPrint(&prefix_buffer, "data:{s};base64,", .{encoded.format.mime()}) catch unreachable
+    else
+        "";
+    const buffer = try bun.default_allocator.alloc(u8, prefix.len + bun.base64.encodeLen(encoded.out.bytes));
+    defer bun.default_allocator.free(buffer);
+    @memcpy(buffer[0..prefix.len], prefix);
+    const written = prefix.len + bun.base64.encode(buffer[prefix.len..], encoded.out.bytes);
+    return bindgen.UTF8String.fromSlice(buffer[0..written]);
+}
+
+pub fn AsyncPipeline(comptime FunctionSchema: type) type {
+    return struct {
+        const Self = @This();
+
+        task: bun.BackgroundTaskGroup.Task = .{
+            .callback = &runInBackground,
+            .on_cancel = &cancel,
+        },
+        completion: Completion.Owned,
+        input: OwnedPipelineInput,
+        job: PipelineJob,
+
+        const CompletionOps = struct {
+            pub fn materialize(
+                comptime Schema: type,
+                context: bindgen.MaterializationContext(Schema),
+                attachment: *PipelineAttachment,
+                self: *Self,
+            ) bindgen.CallError(Schema)!bindgen.Return(Schema) {
+                return materializePipeline(Schema, context, attachment, &self.input, &self.job);
+            }
+
+            pub const destroyPayload = Self.deinit;
+
+            pub fn destroyAttachment(attachment: *PipelineAttachment) void {
+                attachment.deinit();
+            }
+        };
+
+        const Completion = bindgen.MaterializedCompletion(
+            FunctionSchema,
+            Self,
+            PipelineAttachment,
+            CompletionOps,
+        );
+
+        pub const BlobReadChain = struct {
+            owner: *Self,
+            background_tasks: *bun.BackgroundTaskGroup,
+
+            pub fn onReadBytes(chain: *@This(), result: bun.webcore.Blob.ReadBytesResult) void {
+                const owner = chain.owner;
+                const background_tasks = chain.background_tasks;
+                bun.destroy(chain);
+                switch (result) {
+                    .ok => |bytes| {
+                        owner.input = .{ .bytes = bytes };
+                        owner.job.input = owner.input.view();
+                        owner.schedule(background_tasks);
+                    },
+                    .err => |err| {
+                        owner.job.result = .{ .system_err = err };
+                        owner.completion.complete(owner);
+                    },
+                    .out_of_memory => {
+                        owner.job.result = .{ .err = error.OutOfMemory };
+                        owner.completion.complete(owner);
+                    },
+                    .cancelled => {
+                        owner.completion.release();
+                        owner.deinit();
+                    },
+                }
+            }
+        };
+
+        pub fn start(
+            image: *Image,
+            background_tasks: *bun.BackgroundTaskGroup,
+            context: bindgen.CallContext(FunctionSchema),
+            wrapper: bindgen.ClassRef(ImageClassSchema),
+            input_value: OwnedPipelineInput,
+            lease_value: ?bindgen.OwnedLease(u8),
+            kind: PipelineKind,
+            destination_value: ?OwnedWriteDestination,
+            initial_result: ?PipelineResult,
+            cache_blob_source: bool,
+        ) bindgen.CallError(FunctionSchema)!void {
+            var input = input_value;
+            var lease = lease_value;
+            var wrapper_owner = wrapper;
+            var destination = destination_value;
+            const self = bun.default_allocator.create(Self) catch {
+                input.deinit();
+                if (lease) |*value| value.deinit();
+                wrapper_owner.deinit();
+                if (destination) |*value| value.deinit();
+                return error.OutOfMemory;
+            };
+
+            var completion_view = context.completion();
+            const completion = Completion.take(&completion_view, .{
+                .wrapper = wrapper_owner.take(),
+                .destination = if (destination) |*value| value.take() else null,
+                .cache_blob_source = cache_blob_source,
+                .input_lease = if (lease) |*value| value.take() else null,
+            }) catch |err| {
+                input.deinit();
+                bun.default_allocator.destroy(self);
+                return err;
+            };
+
+            self.* = .{
+                .completion = completion,
+                .input = input,
+                .job = .{
+                    .pipeline = image.pipeline,
+                    .input = .none,
+                    .kind = kind,
+                    .max_pixels = image.max_pixels,
+                    .auto_orient = image.auto_orient,
+                    .result = initial_result orelse .{ .err = error.DecodeFailed },
+                },
+            };
+            self.job.input = self.input.view();
+            if (initial_result != null) {
+                self.completion.complete(self);
+            } else {
+                self.schedule(background_tasks);
+            }
+        }
+
+        pub const PreparedBlobRead = struct {
+            blob: *bun.webcore.Blob,
+            chain: *BlobReadChain,
+            owner: *Self,
+
+            pub fn abort(this: PreparedBlobRead) void {
+                bun.destroy(this.chain);
+                this.owner.completion.release();
+                this.owner.deinit();
+            }
+        };
+
+        pub fn prepareBlobRead(
+            image: *Image,
+            background_tasks: *bun.BackgroundTaskGroup,
+            context: bindgen.CallContext(FunctionSchema),
+            wrapper: bindgen.ClassRef(ImageClassSchema),
+            kind: PipelineKind,
+            destination_value: ?OwnedWriteDestination,
+        ) bindgen.CallError(FunctionSchema)!PreparedBlobRead {
+            var wrapper_owner = wrapper;
+            var destination = destination_value;
+            const blob = &image.source.blob;
+
+            const self = bun.default_allocator.create(Self) catch {
+                wrapper_owner.deinit();
+                if (destination) |*value| value.deinit();
+                return error.OutOfMemory;
+            };
+            const chain = bun.default_allocator.create(BlobReadChain) catch {
+                bun.default_allocator.destroy(self);
+                wrapper_owner.deinit();
+                if (destination) |*value| value.deinit();
+                return error.OutOfMemory;
+            };
+
+            var completion_view = context.completion();
+            const completion = Completion.take(&completion_view, .{
+                .wrapper = wrapper_owner.take(),
+                .destination = if (destination) |*value| value.take() else null,
+                .cache_blob_source = true,
+            }) catch |err| {
+                bun.default_allocator.destroy(chain);
+                bun.default_allocator.destroy(self);
+                return err;
+            };
+
+            self.* = .{
+                .completion = completion,
+                .input = .none,
+                .job = .{
+                    .pipeline = image.pipeline,
+                    .input = .none,
+                    .kind = kind,
+                    .max_pixels = image.max_pixels,
+                    .auto_orient = image.auto_orient,
+                },
+            };
+            chain.* = .{
+                .owner = self,
+                .background_tasks = background_tasks,
+            };
+            return .{ .blob = blob, .chain = chain, .owner = self };
+        }
+
+        pub fn schedule(self: *Self, background_tasks: *bun.BackgroundTaskGroup) void {
+            bun.BackgroundWork.schedule(background_tasks, &self.task) catch |err| {
+                self.job.result = .{ .err = switch (err) {
+                    error.ConcurrencyUnavailable => error.ConcurrencyUnavailable,
+                    else => unreachable,
+                } };
+                self.completion.complete(self);
+            };
+        }
+
+        fn runInBackground(task: *bun.BackgroundTaskGroup.Task) void {
+            const self: *Self = @fieldParentPtr("task", task);
+            self.job.run();
+            self.completion.complete(self);
+        }
+
+        fn cancel(task: *bun.BackgroundTaskGroup.Task) void {
+            const self: *Self = @fieldParentPtr("task", task);
+            self.job.result = .{ .err = error.ConcurrencyUnavailable };
+            self.completion.complete(self);
+        }
+
+        fn deinit(self: *Self) void {
+            self.job.deinitResult();
+            self.input.deinit();
+            bun.default_allocator.destroy(self);
+        }
+    };
+}
 
 // ───────────────────────────── imports ──────────────────────────────────────
 
@@ -1296,4 +1359,53 @@ const std = @import("std");
 const thumbhash = @import("./thumbhash.zig");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
+const bindgen = bun.bindgen;
+
+const ImageBindingModule = bindgen.Module("Image");
+pub const ImageClassSchema = ImageBindingModule.class("Image");
+const ImageClass = bindgen.Class(ImageClassSchema, JSBinding);
+const ImageConstructorSchema = ImageClassSchema.constructor();
+const ImageInputSchema = ImageClassSchema.memberKind("input", .getter);
+const ImageAvifSchema = ImageClassSchema.memberKind("avif", .method);
+const ImageBlobNativeSchema = ImageClassSchema.memberKind("blobNative", .method);
+const ImageBufferSchema = ImageClassSchema.memberKind("buffer", .method);
+const ImageBytesSchema = ImageClassSchema.memberKind("bytes", .method);
+pub const SourceBufferInput = @FieldType(bindgen.Args(ImageBytesSchema), "source_buffer");
+const ImageDataURLSchema = ImageClassSchema.memberKind("dataurl", .method);
+const ImageFlipSchema = ImageClassSchema.memberKind("flip", .method);
+const ImageFlopSchema = ImageClassSchema.memberKind("flop", .method);
+const ImageHeicSchema = ImageClassSchema.memberKind("heic", .method);
+const ImageHeightSchema = ImageClassSchema.memberKind("height", .getter);
+const ImageJpegSchema = ImageClassSchema.memberKind("jpeg", .method);
+const ImageMetadataSchema = ImageClassSchema.memberKind("metadata", .method);
+const ImageModulateSchema = ImageClassSchema.memberKind("modulate", .method);
+const ImagePlaceholderSchema = ImageClassSchema.memberKind("placeholder", .method);
+const ImagePngSchema = ImageClassSchema.memberKind("png", .method);
+const ImageResizeSchema = ImageClassSchema.memberKind("resize", .method);
+const ImageRotateSchema = ImageClassSchema.memberKind("rotate", .method);
+const ImageToBase64Schema = ImageClassSchema.memberKind("toBase64", .method);
+const ImageToBufferSchema = ImageClassSchema.memberKind("toBuffer", .method);
+const ImageWebpSchema = ImageClassSchema.memberKind("webp", .method);
+const ImageWidthSchema = ImageClassSchema.memberKind("width", .getter);
+const ImageWriteNativeSchema = ImageClassSchema.memberKind("writeNative", .method);
+pub const async_pipeline_schemas = .{
+    .{ .implementation = "bindBlobNative", .schema = ImageBlobNativeSchema },
+    .{ .implementation = "bindBuffer", .schema = ImageBufferSchema },
+    .{ .implementation = "bindBytes", .schema = ImageBytesSchema },
+    .{ .implementation = "bindDataURL", .schema = ImageDataURLSchema },
+    .{ .implementation = "bindMetadata", .schema = ImageMetadataSchema },
+    .{ .implementation = "bindPlaceholder", .schema = ImagePlaceholderSchema },
+    .{ .implementation = "bindToBase64", .schema = ImageToBase64Schema },
+    .{ .implementation = "bindToBuffer", .schema = ImageToBufferSchema },
+    .{ .implementation = "bindWriteNative", .schema = ImageWriteNativeSchema },
+};
+const ImageBackendGetterSchema = ImageClassSchema.memberKind("backend", .static_getter);
+const ImageBackendSetterSchema = ImageClassSchema.memberKind("backend", .static_setter);
+const ImageBackend = bindgen.Return(ImageBackendGetterSchema);
+const ImageClipboardChangeCountSchema = ImageClassSchema.memberKind("clipboardChangeCount", .static_method);
+const ImageFromClipboardSchema = ImageClassSchema.memberKind("fromClipboard", .static_method);
+const ImageHasClipboardImageSchema = ImageClassSchema.memberKind("hasClipboardImage", .static_method);
+
+comptime {
+    _ = ImageClass;
+}

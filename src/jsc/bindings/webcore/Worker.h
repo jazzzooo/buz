@@ -25,18 +25,20 @@
 
 #pragma once
 
-#include "ActiveDOMObject.h"
+#include "MessageQueue.h"
+
 #include "EventTarget.h"
 #include "MessageWithMessagePorts.h"
+#include "SchemaBindings.h"
 #include "WorkerOptions.h"
 #include <JavaScriptCore/RuntimeFlags.h>
+#include <optional>
 #include <wtf/Deque.h>
 #include <wtf/text/AtomStringHash.h>
 #include "ContextDestructionObserver.h"
 #include "Event.h"
 
 namespace JSC {
-class CallFrame;
 class JSObject;
 class JSValue;
 }
@@ -56,10 +58,9 @@ struct WorkerOptions;
 ///
 /// Refs held on this object:
 ///   - JSWorker wrapper       from construct() until GC finalize
-///   - worker thread          taken in create() before the thread is spawned;
-///                            dropped on the PARENT thread inside dispatchExit()'s
-///                            posted close task, so ~Worker never runs on the
-///                            worker thread (EventListenerMap is single-threaded)
+///   - worker thread          taken in prepare() before the thread is spawned;
+///                            dropped on the parent by exit delivery or thread join
+///   - delivery endpoints     released on their VM threads during shutdown
 ///   - transient Ref{*this} captured by posted tasks
 ///
 /// impl_ (Zig WebWorker*) is owned by this object and freed in ~Worker(), so
@@ -86,10 +87,10 @@ struct WorkerOptions;
 /// accepts and silently drops the message, matching browser/Node semantics.
 ///
 /// m_terminateRequested is orthogonal: set once by terminate(), gates
-/// dispatchEvent()/setKeepAlive(), and is mirrored into the Zig side via
-/// WebWorker__notifyNeedTermination so the worker loop can observe it.
+/// dispatchEvent()/setKeepAlive(), and is mirrored into the Zig side so the
+/// worker loop can observe it.
 class Worker final : public ThreadSafeRefCounted<Worker>, public EventTargetWithInlineData, private ContextDestructionObserver {
-    WTF_MAKE_TZONE_ALLOCATED(Worker);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(Worker);
 
 public:
     enum class State : uint8_t {
@@ -99,7 +100,9 @@ public:
         Closed, // close event dispatched on the parent; worker is fully done
     };
 
-    static ExceptionOr<Ref<Worker>> create(ScriptExecutionContext&, const String& url, WorkerOptions&&);
+    static ExceptionOr<Ref<Worker>> prepare(ScriptExecutionContext&, const String& url, WorkerOptions&&);
+    ExceptionOr<void> commitStartup(JSC::JSGlobalObject&, MessagePort::PreparedMessage&&);
+    void cancelStartup();
     ~Worker();
 
     ExceptionOr<void> postMessage(JSC::JSGlobalObject&, JSC::JSValue message, StructuredSerializeOptions&&);
@@ -126,43 +129,47 @@ public:
     ScriptExecutionContextIdentifier clientIdentifier() const { return m_clientIdentifier; }
     WorkerOptions& options() { return m_options; }
 
-    // -- Worker-thread entry points (each posts to m_parentContextId) --------
-    void dispatchOnline(Zig::GlobalObject* workerGlobalObject);
+    ExceptionOr<void> dispatchOnline(Zig::GlobalObject* workerGlobalObject);
     void fireEarlyMessages(Zig::GlobalObject* workerGlobalObject);
-    void dispatchErrorWithMessage(WTF::String message);
-    bool dispatchErrorWithValue(Zig::GlobalObject* workerGlobalObject, JSValue value);
+    Bun::Bindgen::NativeAllocationResult<void> dispatchErrorWithMessage(const WTF::String& message);
+    ExceptionOr<bool> dispatchErrorWithValue(Zig::GlobalObject* workerGlobalObject, JSValue value);
     bool dispatchExit(int32_t exitCode);
     void finishExit(int32_t exitCode, bool dispatchEvent);
 
-    // Post a task to the parent's ScriptExecutionContext by stable identifier.
-    // Returns false if the parent context no longer exists (nested worker whose
-    // middle thread has torn down). Callable from any thread.
-    bool postTaskToParent(Function<void(ScriptExecutionContext&)>&&);
-
-    // Coalesced cross-thread inbox for worker↔parent postMessage, mirroring
-    // MessagePortPipe: a burst of N postMessage calls schedules one drain
-    // task on the receiver, which loops dispatching + draining microtasks.
-    // This avoids N× (global-contexts-lock + HashMap lookup + lambda alloc)
-    // per burst.
     struct MessageInbox {
+        void close();
+        bool setSignal(Bun::NativeEventLoopSignal*);
+        void notify();
         WTF::Lock lock;
-        WTF::Deque<MessageWithMessagePorts> queue WTF_GUARDED_BY_LOCK(lock);
+        MessageQueue queue WTF_GUARDED_BY_LOCK(lock);
+        Bun::NativeEventLoopSignal* signal WTF_GUARDED_BY_LOCK(lock) { nullptr };
+        std::atomic<bool> closed { false };
         std::atomic<bool> drainScheduled { false };
     };
 
-    void enqueueToParent(MessageWithMessagePorts&&);
+    void enqueueToParent(std::unique_ptr<MessageQueue::Node>&&);
     void drainToWorker(ScriptExecutionContext&);
 
 private:
     Worker(ScriptExecutionContext&, WorkerOptions&&);
+    class ParentMessageDelivery;
+    class WorkerMessageDelivery;
+    template<bool isExit> class LifecycleDelivery;
+    ExceptionOr<void> prepareParentMessageDelivery();
+    template<bool isExit> ExceptionOr<Ref<LifecycleDelivery<isExit>>> prepareLifecycleDelivery();
+    void closeLifecycleDelivery();
+    ExceptionOr<void> prepareWorkerMessageDelivery(ScriptExecutionContext&);
+    void closeParentMessageDelivery();
 
     EventTargetInterface eventTargetInterface() const final { return WorkerEventTargetInterfaceType; }
     void refEventTarget() final { ref(); }
     void derefEventTarget() final { deref(); }
     void eventListenersDidChange() final {};
+    void contextDestroyed(ScriptExecutionContext&) final;
 
-    void enqueueToWorker(MessageWithMessagePorts&&);
+    void enqueueToWorker(std::unique_ptr<MessageQueue::Node>&&);
     void drainToParent(ScriptExecutionContext&);
+    void finalizeExit(int32_t exitCode, bool dispatchEvent);
 
     WorkerOptions m_options;
 
@@ -174,6 +181,13 @@ private:
 
     MessageInbox m_toWorker; // messages parent → worker, drained on the worker thread
     MessageInbox m_toParent; // messages worker → parent, drained on the parent thread
+    Bun::NativeEventLoopSignal* m_parentMessageSignal { nullptr };
+    // Published before spawning; retained unchanged until Worker destruction.
+    RefPtr<LifecycleDelivery<true>> m_exitDelivery;
+    RefPtr<LifecycleDelivery<false>> m_onlineDelivery;
+    // Parent-thread state includes the batch held outside the inbox lock.
+    bool m_parentDrainActive { false };
+    std::optional<int32_t> m_pendingExitCode;
 
     std::atomic<State> m_state { State::Pending };
     std::atomic<bool> m_terminateRequested { false };
@@ -187,14 +201,10 @@ private:
     // once the worker VM is up).
     const ScriptExecutionContextIdentifier m_clientIdentifier;
 
-    // Owned Zig WebWorker*. Written once in create(), read only on the parent
+    // Owned Zig WebWorker*. Written once in prepare(), read only on the parent
     // thread (terminate/setKeepAlive) or in the close task (also parent thread).
-    // Freed in ~Worker(). Never null once create() returns successfully.
-    void* impl_ { nullptr };
+    // Freed in ~Worker(). Never null once prepare() returns successfully.
+    Bun::WebWorkerState* impl_ { nullptr };
 };
-
-JSValue createNodeWorkerThreadsBinding(Zig::GlobalObject* globalObject);
-
-JSC_DECLARE_HOST_FUNCTION(jsFunctionPostMessage);
 
 } // namespace WebCore

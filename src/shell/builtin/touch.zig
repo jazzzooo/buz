@@ -10,7 +10,7 @@ state: union(enum) {
         output_done: usize = 0,
         output_waiting: usize = 0,
         args: []const [*:0]const u8,
-        err: ?jsc.SystemError = null,
+        err: ?bun.sys.SystemError = null,
     },
     waiting_write_err,
     done,
@@ -79,7 +79,7 @@ pub fn next(this: *Touch) Yield {
     }
 }
 
-pub fn onIOWriterChunk(this: *Touch, _: usize, e: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *Touch, _: usize, e: ?bun.sys.SystemError) Yield {
     if (e) |err| err.deref();
 
     if (this.state == .waiting_write_err) {
@@ -123,13 +123,7 @@ pub fn onShellTouchTaskDone(this: *Touch, task: *ShellTouchTask) void {
     this.next().run();
 }
 
-pub const ShellTouchOutputTask = OutputTask(Touch, .{
-    .writeErr = ShellTouchOutputTaskVTable.writeErr,
-    .onWriteErr = ShellTouchOutputTaskVTable.onWriteErr,
-    .writeOut = ShellTouchOutputTaskVTable.writeOut,
-    .onWriteOut = ShellTouchOutputTaskVTable.onWriteOut,
-    .onDone = ShellTouchOutputTaskVTable.onDone,
-});
+pub const ShellTouchOutputTask = OutputTask(Touch, ShellTouchOutputTaskVTable);
 
 const ShellTouchOutputTaskVTable = struct {
     pub fn writeErr(this: *Touch, childptr: anytype, errbuf: []const u8) ?Yield {
@@ -172,10 +166,10 @@ pub const ShellTouchTask = struct {
     filepath: [:0]const u8,
     cwd_path: [:0]const u8,
 
-    err: ?jsc.SystemError = null,
-    task: jsc.BackgroundTask = .{ .callback = &runInBackground },
-    event_loop: jsc.EventLoopHandle,
-    concurrent_task: jsc.EventLoopTask,
+    err: ?bun.sys.SystemError = null,
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = &runInBackground },
+    scheduler: Interpreter.Scheduler,
+    main_task: Interpreter.Scheduler.Task = .{},
 
     pub fn format(this: *const ShellTouchTask, writer: *std.Io.Writer) !void {
         try writer.print("ShellTouchTask(0x{x}, filepath={s})", .{ @intFromPtr(this), this.filepath });
@@ -195,21 +189,16 @@ pub const ShellTouchTask = struct {
             .opts = opts,
             .cwd_path = cwd_path,
             .filepath = filepath,
-            .event_loop = touch.bltn().eventLoop(),
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(touch.bltn().eventLoop()),
+            .scheduler = touch.bltn().eventLoop(),
         };
         return task;
     }
 
     pub fn schedule(this: *@This()) void {
         debug("{f} schedule", .{this});
-        BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch {
+        BackgroundWork.schedule(this.scheduler.backgroundTasks(), &this.task) catch {
             this.err = bun.sys.Error.fromCode(.AGAIN, .utime).toShellSystemError();
-            if (this.event_loop == .js) {
-                this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-            } else {
-                this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-            }
+            this.scheduler.enqueue(&this.main_task, this);
         };
     }
 
@@ -222,7 +211,7 @@ pub const ShellTouchTask = struct {
         this.runFromMainThread();
     }
 
-    fn runInBackground(task: *jsc.BackgroundTask) void {
+    fn runInBackground(task: *bun.BackgroundTaskGroup.Task) void {
         var this: *ShellTouchTask = @fieldParentPtr("task", task);
         debug("{f} runInBackground", .{this});
 
@@ -233,19 +222,19 @@ pub const ShellTouchTask = struct {
             &.{ this.cwd_path, this.filepath }));
         defer bun.default_allocator.free(filepath);
 
-        var node_fs = jsc.Node.fs.NodeFS{};
+        var error_buffer: bun.PathBuffer = undefined;
         const milliseconds: f64 = @floatFromInt(bun.timespec.realNow().ms());
-        const atime: jsc.Node.TimeLike = if (bun.Environment.isWindows) milliseconds / 1000.0 else jsc.Node.TimeLike{
+        const atime: TimeLike = if (bun.Environment.isWindows) milliseconds / 1000.0 else TimeLike{
             .sec = @intFromFloat(@divFloor(milliseconds, std.time.ms_per_s)),
             .nsec = @intFromFloat(@mod(milliseconds, std.time.ms_per_s) * std.time.ns_per_ms),
         };
         const mtime = atime;
-        const args = jsc.Node.fs.Arguments.Utimes{
+        const args = NodeFSCore.Utimes{
             .atime = atime,
             .mtime = mtime,
             .path = .{ .string = bun.PathString.init(filepath) },
         };
-        if (node_fs.utimes(args, .sync).asErr()) |err| out: {
+        if (NodeFSCore.utimes(&error_buffer, &args).asErr()) |err| out: {
             if (err.getErrno() == .NOENT) {
                 const perm = 0o664;
                 switch (Syscall.open(filepath, bun.O.CREAT | bun.O.WRONLY, perm)) {
@@ -262,11 +251,7 @@ pub const ShellTouchTask = struct {
             this.err = err.withPath(filepath).toShellSystemError();
         }
 
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
+        this.scheduler.enqueue(&this.main_task, this);
     }
 };
 
@@ -406,11 +391,12 @@ const Builtin = Interpreter.Builtin;
 const Result = Interpreter.Builtin.Result;
 
 const bun = @import("bun");
+const NodeFSCore = @import("../../runtime/node/NodeFSCore.zig");
+const TimeLike = @import("../../runtime/node/time_like.zig").TimeLike;
 const ResolvePath = bun.path;
 const Syscall = bun.sys;
 
-const jsc = bun.jsc;
-const BackgroundWork = bun.jsc.BackgroundWork;
+const BackgroundWork = bun.BackgroundWork;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

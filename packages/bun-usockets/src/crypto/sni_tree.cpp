@@ -1,13 +1,13 @@
 /*
  * Authored by Alex Hultman, 2018-2020.
  * Intellectual property of third-party.
-
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
-
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
-
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,204 +15,198 @@
  * limitations under the License.
  */
 
-/* This Server Name Indication hostname tree is written in C++ but could be ported to C.
- * Overall it looks like crap, but has no memory allocations in fast path and is O(log n). */
-
-#ifndef SNI_TREE_H
-#define SNI_TREE_H
-
 #ifndef LIBUS_NO_SSL
 
-#include <map>
-#include <memory>
-#include <string_view>
-#include <cstring>
-#include <cstdlib>
+#include "../libusockets.h"
+#include <openssl/tls1.h>
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <new>
+#include <string_view>
+#include <type_traits>
 
-/* We only handle a maximum of 10 labels per hostname */
-#define MAX_LABELS 10
+struct sni_node;
 
-/* This cannot be shared */
-thread_local void (*sni_free_cb)(void *);
-
-struct sni_node {
-    /* Empty nodes must always hold null */
-    void *user = nullptr;
-    std::map<std::string_view, std::unique_ptr<sni_node>> children;
-
-    ~sni_node() {
-        for (auto &p : children) {
-            /* The data of our string_views are managed by malloc */
-            free((void *) p.first.data());
-
-            /* Call destructor passed to sni_free only if we hold data.
-             * This is important since sni_remove does not have sni_free_cb set */
-            if (p.second.get()->user) {
-                sni_free_cb(p.second.get()->user);
-            }
-        }
-    }
+struct sni_child {
+    std::string_view label;
+    sni_node *node;
 };
 
-// this can only delete ONE single node, but may cull "empty nodes with null as data"
-void *removeUser(struct sni_node *root, unsigned int label, std::string_view *labels, unsigned int numLabels) {
+static_assert(std::is_trivially_copyable_v<sni_child>);
 
-    /* If we are in the bottom (past bottom by one), there is nothing to remove */
-    if (label == numLabels) {
-        void *user = root->user;
-        /* Mark us for culling on the way up */
-        root->user = nullptr;
-        return user;
-    }
+struct sni_node {
+    void *user = nullptr;
+    sni_child *children = nullptr;
+    size_t count = 0;
+    size_t capacity = 0;
+};
 
-    /* Is this label a child of root? */
-    auto it = root->children.find(labels[label]);
-    if (it == root->children.end()) {
-        /* We cannot continue */
-        return nullptr;
-    }
-
-    void *removedUser = removeUser(it->second.get(), label + 1, labels, numLabels);
-
-    /* On the way back up, we may cull empty nodes with no children.
-     * This ends up being where we remove all nodes */
-    if (it->second.get()->children.empty() && it->second.get()->user == nullptr) {
-
-        /* The data of our string_views are managed by malloc */
-        free((void *) it->first.data());
-
-        /* This can only happen with user set to null, otherwise we use sni_free_cb which is unset by sni_remove */
-        root->children.erase(it);
-    }
-
-    return removedUser;
+static std::string_view takeLabel(std::string_view &name) {
+    const auto label = name.substr(0, name.find('.'));
+    name.remove_prefix(std::min(name.size(), label.size() + 1));
+    return label;
 }
 
-void *getUser(struct sni_node *root, unsigned int label, std::string_view *labels, unsigned int numLabels) {
-
-    /* Do we have labels to match? Otherwise, return where we stand */
-    if (label == numLabels) {
-        return root->user;
+static size_t lowerBound(const sni_node *node, std::string_view label) {
+    size_t first = 0, last = node->count;
+    while (first < last) {
+        const size_t middle = first + (last - first) / 2;
+        if (node->children[middle].label < label) first = middle + 1;
+        else last = middle;
     }
+    return first;
+}
 
-    /* Try and match by our label */
-    auto it = root->children.find(labels[label]);
-    if (it != root->children.end()) {
-        void *user = getUser(it->second.get(), label + 1, labels, numLabels);
-        if (user) {
-            return user;
-        }
+static bool reserveChildren(sni_node *node, size_t count) {
+    if (count <= node->capacity) return true;
+    const size_t maximum = SIZE_MAX / sizeof(sni_child);
+    if (count > maximum) return false;
+    const size_t grown = node->capacity > maximum / 2 ? maximum : std::max(size_t(4), node->capacity * 2);
+    const size_t capacity = std::max(count, grown);
+    auto *children = static_cast<sni_child *>(std::realloc(node->children, capacity * sizeof(sni_child)));
+    if (!children) return false;
+    node->children = children;
+    node->capacity = capacity;
+    return true;
+}
+
+static void freeNode(sni_node *node, void (*release)(void *)) {
+    if (!node) return;
+    for (size_t i = 0; i < node->count; ++i) {
+        std::free(const_cast<char *>(node->children[i].label.data()));
+        freeNode(node->children[i].node, release);
     }
+    if (node->user && release) release(node->user);
+    std::free(node->children);
+    delete node;
+}
 
-    /* Try and match by wildcard */
-    it = root->children.find("*");
-    if (it == root->children.end()) {
-        /* Matching has failed for both label and wildcard */
-        return nullptr;
+static void freeChild(sni_child child) {
+    std::free(const_cast<char *>(child.label.data()));
+    freeNode(child.node, nullptr);
+}
+
+static sni_child makeChild(std::string_view label) {
+    auto *node = new (std::nothrow) sni_node;
+    if (!node) return {};
+    auto *bytes = static_cast<char *>(std::malloc(std::max(size_t(1), label.size())));
+    if (!bytes) {
+        delete node;
+        return {};
     }
+    std::memcpy(bytes, label.data(), label.size());
+    return {std::string_view(bytes, label.size()), node};
+}
 
-    /* We matched by wildcard */
-    return getUser(it->second.get(), label + 1, labels, numLabels);
+static void *removeUser(sni_node *node, std::string_view name) {
+    if (name.empty()) {
+        void *user = node->user;
+        node->user = nullptr;
+        return user;
+    }
+    const auto label = takeLabel(name);
+    const size_t index = lowerBound(node, label);
+    if (index == node->count || node->children[index].label != label) return nullptr;
+    const auto child = node->children[index];
+    void *user = removeUser(child.node, name);
+    if (!child.node->user && child.node->count == 0) {
+        freeChild(child);
+        std::memmove(node->children + index, node->children + index + 1, (node->count - index - 1) * sizeof(sni_child));
+        --node->count;
+    }
+    return user;
+}
+
+static void *findUser(const sni_node *node, std::string_view name) {
+    if (name.empty()) return node->user;
+    const auto label = takeLabel(name);
+    const size_t exact = lowerBound(node, label);
+    if (exact < node->count && node->children[exact].label == label) {
+        if (void *user = findUser(node->children[exact].node, name)) return user;
+    }
+    if (label == "*") return nullptr;
+    const size_t wildcard = lowerBound(node, "*");
+    if (wildcard == node->count || node->children[wildcard].label != "*") return nullptr;
+    return findUser(node->children[wildcard].node, name);
 }
 
 extern "C" {
 
-    void *sni_new() {
-        return new sni_node;
-    }
-
-    void sni_free(void *sni, void (*cb)(void *)) {
-        /* We want to run this callback for every remaining name */
-        sni_free_cb = cb;
-
-        delete (sni_node *) sni;
-    }
-
-    /* Returns non-null if this name already exists */
-    int sni_add(void *sni, const char *hostname, void *user) {
-        struct sni_node *root = (struct sni_node *) sni;
-
-        /* Traverse all labels in hostname */
-        for (std::string_view view(hostname, strlen(hostname)), label;
-            view.length(); view.remove_prefix(std::min(view.length(), label.length() + 1))) {
-            /* Label is the token separated by dot */
-            label = view.substr(0, view.find('.', 0));
-
-            auto it = root->children.find(label);
-            if (it == root->children.end()) {
-                /* Duplicate this label for our kept string_view of it */
-                void *labelString = malloc(label.length());
-                memcpy(labelString, label.data(), label.length());
-
-                it = root->children.emplace(std::string_view((char *) labelString, label.length()),
-                                            std::make_unique<sni_node>()).first; // NOLINT(clang-analyzer-unix.Malloc)
-            }
-
-            root = it->second.get();
-        }
-
-        /* We must never add multiple contexts for the same name, as that would overwrite and leak */
-        if (root->user) {
-            return 1;
-        }
-
-        root->user = user;
-
-        return 0;
-    }
-
-    /* Removes the exact match. Wildcards are treated as the verbatim asterisk char, not as an actual wildcard */
-    void *sni_remove(void *sni, const char *hostname) {
-        struct sni_node *root = (struct sni_node *) sni;
-
-        /* I guess 10 labels is an okay limit */
-        std::string_view labels[10];
-        unsigned int numLabels = 0;
-
-        /* We traverse all labels first of all */
-        for (std::string_view view(hostname, strlen(hostname)), label;
-            view.length(); view.remove_prefix(std::min(view.length(), label.length() + 1))) {
-            /* Label is the token separated by dot */
-            label = view.substr(0, view.find('.', 0));
-
-            /* Anything longer than 10 labels is forbidden */
-            if (numLabels == 10) {
-                return nullptr;
-            }
-
-            labels[numLabels++] = label;
-        }
-
-        return removeUser(root, 0, labels, numLabels);
-    }
-
-    void *sni_find(void *sni, const char *hostname) {
-        struct sni_node *root = (struct sni_node *) sni;
-
-        /* I guess 10 labels is an okay limit */
-        std::string_view labels[10];
-        unsigned int numLabels = 0;
-
-        /* We traverse all labels first of all */
-        for (std::string_view view(hostname, strlen(hostname)), label;
-            view.length(); view.remove_prefix(std::min(view.length(), label.length() + 1))) {
-            /* Label is the token separated by dot */
-            label = view.substr(0, view.find('.', 0));
-
-            /* Anything longer than 10 labels is forbidden */
-            if (numLabels == 10) {
-                return nullptr;
-            }
-
-            labels[numLabels++] = label;
-        }
-
-        return getUser(root, 0, labels, numLabels);
-    }
-
+void *sni_new() {
+    return new (std::nothrow) sni_node;
 }
 
-#endif
+void sni_free(void *sni, void (*release)(void *)) {
+    freeNode(static_cast<sni_node *>(sni), release);
+}
+
+static int setUser(void *sni, const char *hostname, void *user, bool replace, void **previous) {
+    *previous = nullptr;
+    std::string_view name(hostname);
+    if (name.size() > TLSEXT_MAXLEN_host_name) return US_SERVER_NAME_INVALID;
+    auto *node = static_cast<sni_node *>(sni);
+    while (!name.empty()) {
+        const auto label = takeLabel(name);
+        const size_t index = lowerBound(node, label);
+        if (index < node->count && node->children[index].label == label) {
+            node = node->children[index].node;
+            continue;
+        }
+
+        // Build the entire missing suffix before publishing its first edge.
+        auto branch = makeChild(label);
+        if (!branch.node) return US_SERVER_NAME_OUT_OF_MEMORY;
+        auto *leaf = branch.node;
+        while (!name.empty()) {
+            auto child = makeChild(takeLabel(name));
+            if (!child.node || !reserveChildren(leaf, 1)) {
+                freeChild(child);
+                freeChild(branch);
+                return US_SERVER_NAME_OUT_OF_MEMORY;
+            }
+            leaf->children[0] = child;
+            leaf->count = 1;
+            leaf = child.node;
+        }
+        if (node->count == SIZE_MAX || !reserveChildren(node, node->count + 1)) {
+            freeChild(branch);
+            return US_SERVER_NAME_OUT_OF_MEMORY;
+        }
+        leaf->user = user;
+        std::memmove(node->children + index + 1, node->children + index, (node->count - index) * sizeof(sni_child));
+        node->children[index] = branch;
+        ++node->count;
+        return US_SERVER_NAME_OK;
+    }
+    if (node->user && !replace) return US_SERVER_NAME_DUPLICATE;
+    *previous = node->user;
+    node->user = user;
+    return US_SERVER_NAME_OK;
+}
+
+int sni_add(void *sni, const char *hostname, void *user) {
+    void *previous;
+    return setUser(sni, hostname, user, false, &previous);
+}
+
+int sni_replace(void *sni, const char *hostname, void *user, void **previous) {
+    return setUser(sni, hostname, user, true, previous);
+}
+
+void *sni_remove(void *sni, const char *hostname) {
+    const std::string_view name(hostname);
+    if (name.size() > TLSEXT_MAXLEN_host_name) return nullptr;
+    return removeUser(static_cast<sni_node *>(sni), name);
+}
+
+void *sni_find(void *sni, const char *hostname) {
+    const std::string_view name(hostname);
+    if (name.size() > TLSEXT_MAXLEN_host_name) return nullptr;
+    return findUser(static_cast<sni_node *>(sni), name);
+}
+
+}
 
 #endif

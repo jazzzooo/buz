@@ -4,8 +4,7 @@
 //   bun install-exe.ts <src> <dest> [<src> <dest>...]
 //
 // Link-then-rename: the destination is never truncated in place, a running
-// binary keeps its complete old inode, and the installed separate-debug
-// file stays tied to the inode mold's detached writer is still filling.
+// binary keeps its complete old inode.
 // Falls back to a copy across filesystems.
 import { copyFileSync, linkSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";

@@ -27,20 +27,17 @@
 
 #include "config.h"
 #include "ReadableStream.h"
+#include "JSDOMExceptionHandling.h"
 
+#include "BunBuiltinNames.h"
+#include "SchemaBindings.h"
 #include "Exception.h"
 #include "ExceptionCode.h"
-#include "JSDOMConvertSequences.h"
-#include "JSReadableStreamSink.h"
-#include "JSReadableStreamSource.h"
 #include "WebCoreJSClientData.h"
 #include "WebCoreJSBuiltins.h"
 #include "ZigGlobalObject.h"
-#include "ZigGeneratedClasses.h"
 #include "helpers.h"
 #include "BunClientData.h"
-#include "IDLTypes.h"
-#include "BunIDLConvert.h"
 #include <JavaScriptCore/JSFunction.h>
 #include <JavaScriptCore/JSPromise.h>
 #include <JavaScriptCore/ThrowScope.h>
@@ -50,646 +47,491 @@
 namespace WebCore {
 using namespace JSC;
 
-static inline ExceptionOr<JSObject*> invokeConstructor(JSC::JSGlobalObject& lexicalGlobalObject, const JSC::Identifier& identifier, const Function<void(MarkedArgumentBuffer&, JSC::JSGlobalObject&, JSDOMGlobalObject&)>& buildArguments)
+bool isReadableStream(JSC::JSValue value) noexcept
 {
-    VM& vm = lexicalGlobalObject.vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto& globalObject = *uncheckedDowncast<JSDOMGlobalObject>(&lexicalGlobalObject);
-
-    auto constructorValue = globalObject.get(&lexicalGlobalObject, identifier);
-    EXCEPTION_ASSERT(!scope.exception() || vm.hasPendingTerminationException());
-    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
-    auto constructor = JSC::asObject(constructorValue);
-
-    auto constructData = JSC::getConstructData(constructor);
-    ASSERT(constructData.type != CallData::Type::None);
-
-    MarkedArgumentBuffer args;
-    buildArguments(args, lexicalGlobalObject, globalObject);
-    ASSERT(!args.hasOverflowed());
-
-    JSObject* object = JSC::construct(&lexicalGlobalObject, constructor, constructData, args);
-    EXCEPTION_ASSERT(!!scope.exception() == !object);
-    EXCEPTION_ASSERT(!scope.exception() || vm.hasPendingTerminationException());
-    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
-
-    return object;
+    auto* object = value.getObject();
+    if (!object)
+        return false;
+    auto& vm = object->vm();
+    return object->getDirect(vm, WebCore::builtinNames(vm).readableStreamBrandPrivateName()).isTrue();
 }
 
-ExceptionOr<Ref<ReadableStream>> ReadableStream::create(JSC::JSGlobalObject& lexicalGlobalObject, RefPtr<ReadableStreamSource>&& source)
+JSC::JSValue readableStreamNativePtr(JSC::JSObject& stream)
 {
-    auto& builtinNames = WebCore::builtinNames(lexicalGlobalObject.vm());
-
-    auto objectOrException = invokeConstructor(lexicalGlobalObject, builtinNames.ReadableStreamPrivateName(), [&source](auto& args, auto& lexicalGlobalObject, auto& globalObject) {
-        args.append(source ? toJSNewlyCreated(&lexicalGlobalObject, &globalObject, source.releaseNonNull()) : JSC::jsUndefined());
-    });
-
-    if (objectOrException.hasException())
-        return objectOrException.releaseException();
-
-    return create(*uncheckedDowncast<JSDOMGlobalObject>(&lexicalGlobalObject), *uncheckedDowncast<JSReadableStream>(objectOrException.releaseReturnValue()));
+    auto& vm = stream.vm();
+    auto& names = WebCore::builtinNames(vm);
+    auto transferred = stream.getDirect(vm, names.nativeTransferredPrivateName());
+    if (transferred.isTrue())
+        return stream.getDirect(vm, names.transferredNativePtrPrivateName());
+    return stream.getDirect(vm, names.bunNativePtrPrivateName());
 }
 
-ExceptionOr<Ref<ReadableStream>> ReadableStream::create(JSC::JSGlobalObject& lexicalGlobalObject, RefPtr<ReadableStreamSource>&& source, JSC::JSValue nativePtr)
+int32_t readableStreamNativeType(JSC::JSObject& stream)
 {
-    auto& builtinNames = WebCore::builtinNames(lexicalGlobalObject.vm());
-    RELEASE_ASSERT(source != nullptr);
-
-    auto objectOrException = invokeConstructor(lexicalGlobalObject, builtinNames.ReadableStreamPrivateName(), [&source, nativePtr](auto& args, auto& lexicalGlobalObject, auto& globalObject) {
-        auto sourceStream = toJSNewlyCreated(&lexicalGlobalObject, &globalObject, source.releaseNonNull());
-        auto tag = WebCore::clientData(lexicalGlobalObject.vm())->builtinNames().bunNativePtrPrivateName();
-        sourceStream.getObject()->putDirect(lexicalGlobalObject.vm(), tag, nativePtr, JSC::PropertyAttribute::DontDelete | JSC::PropertyAttribute::DontEnum);
-        args.append(sourceStream);
-    });
-
-    if (objectOrException.hasException())
-        return objectOrException.releaseException();
-
-    return create(*uncheckedDowncast<JSDOMGlobalObject>(&lexicalGlobalObject), *uncheckedDowncast<JSReadableStream>(objectOrException.releaseReturnValue()));
+    auto& vm = stream.vm();
+    auto value = stream.getDirect(vm, WebCore::builtinNames(vm).bunNativeTypePrivateName());
+    return value.isInt32() ? value.asInt32() : 0;
 }
 
-static inline std::optional<JSC::JSValue> invokeReadableStreamFunction(JSC::JSGlobalObject& lexicalGlobalObject, const JSC::Identifier& identifier, JSC::JSValue thisValue, const JSC::MarkedArgumentBuffer& arguments)
+bool readableStreamIsTransferred(JSC::JSObject& stream)
+{
+    auto& vm = stream.vm();
+    return stream.getDirect(vm, WebCore::builtinNames(vm).nativeTransferredPrivateName()).isTrue();
+}
+
+bool readableStreamIsDisturbed(JSC::JSObject& stream)
+{
+    auto& vm = stream.vm();
+    return stream.getDirect(vm, WebCore::builtinNames(vm).disturbedPrivateName()).isTrue();
+}
+
+void setReadableStreamNativePtr(JSC::JSGlobalObject& globalObject, JSC::JSObject& stream, JSC::JSValue value)
+{
+    stream.putDirect(globalObject.vm(), WebCore::builtinNames(globalObject.vm()).bunNativePtrPrivateName(), value, 0);
+}
+
+void setReadableStreamNativeType(JSC::JSGlobalObject& globalObject, JSC::JSObject& stream, int32_t value)
+{
+    stream.putDirect(globalObject.vm(), WebCore::builtinNames(globalObject.vm()).bunNativeTypePrivateName(), JSC::jsNumber(value), 0);
+}
+
+void setReadableStreamTransferred(JSC::JSGlobalObject& globalObject, JSC::JSObject& stream)
+{
+    auto& vm = globalObject.vm();
+    auto& names = WebCore::builtinNames(vm);
+    stream.putDirect(vm, names.transferredNativePtrPrivateName(), stream.getDirect(vm, names.bunNativePtrPrivateName()), 0);
+    stream.putDirect(vm, names.nativeTransferredPrivateName(), JSC::jsBoolean(true), 0);
+    stream.putDirect(vm, names.bunNativePtrPrivateName(), JSC::jsNumber(-1), 0);
+}
+
+void setReadableStreamDisturbed(JSC::JSGlobalObject& globalObject, JSC::JSObject& stream, bool value)
+{
+    stream.putDirect(globalObject.vm(), WebCore::builtinNames(globalObject.vm()).disturbedPrivateName(), JSC::jsBoolean(value), 0);
+}
+
+static JSC::JSValue invokeReadableStreamFunction(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSFunction* function, JSC::MarkedArgumentBuffer& arguments)
 {
     JSC::VM& vm = lexicalGlobalObject.vm();
     JSC::JSLockHolder lock(vm);
 
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-    auto function = lexicalGlobalObject.get(&lexicalGlobalObject, identifier);
-    RETURN_IF_EXCEPTION(scope, {});
-    ASSERT(function.isCallable());
-
-    auto callData = JSC::getCallData(function);
-    auto result = call(&lexicalGlobalObject, function, callData, thisValue, arguments);
-    EXCEPTION_ASSERT(!scope.exception() || vm.hasPendingTerminationException());
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    if (arguments.hasOverflowed()) {
+        JSC::throwOutOfMemoryError(&lexicalGlobalObject, scope);
+        return {};
+    }
+    RELEASE_ASSERT(function);
+    auto result = JSC::profiledCall(&lexicalGlobalObject, JSC::ProfilingReason::API, function, JSC::getCallData(function), JSC::jsUndefined(), arguments);
     RETURN_IF_EXCEPTION(scope, {});
     return result;
 }
 
-void ReadableStream::pipeTo(ReadableStreamSink& sink)
-{
-    auto& lexicalGlobalObject = *m_globalObject;
-    auto* clientData = static_cast<JSVMClientData*>(lexicalGlobalObject.vm().clientData);
-    auto& privateName = clientData->builtinFunctions().readableStreamInternalsBuiltins().readableStreamPipeToPrivateName();
-
-    MarkedArgumentBuffer arguments;
-    arguments.append(readableStream());
-    arguments.append(toJS(&lexicalGlobalObject, m_globalObject.get(), sink));
-    ASSERT(!arguments.hasOverflowed());
-    invokeReadableStreamFunction(lexicalGlobalObject, privateName, JSC::jsUndefined(), arguments);
-}
-
-std::optional<std::pair<Ref<ReadableStream>, Ref<ReadableStream>>> ReadableStream::tee()
-{
-    auto& lexicalGlobalObject = *m_globalObject;
-    auto* clientData = static_cast<JSVMClientData*>(lexicalGlobalObject.vm().clientData);
-    auto& privateName = clientData->builtinFunctions().readableStreamInternalsBuiltins().readableStreamTeePrivateName();
-
-    MarkedArgumentBuffer arguments;
-    arguments.append(readableStream());
-    arguments.append(JSC::jsBoolean(true));
-    ASSERT(!arguments.hasOverflowed());
-    auto returnedValue = invokeReadableStreamFunction(lexicalGlobalObject, privateName, JSC::jsUndefined(), arguments);
-    if (!returnedValue)
-        return {};
-
-    auto results = Detail::SequenceConverter<IDLInterface<ReadableStream>>::convert(lexicalGlobalObject, *returnedValue);
-
-    ASSERT(results.size() == 2);
-    return std::make_pair(results[0].releaseNonNull(), results[1].releaseNonNull());
-}
-
-void ReadableStream::lock()
-{
-    auto& builtinNames = WebCore::builtinNames(m_globalObject->vm());
-    auto result = invokeConstructor(*m_globalObject, builtinNames.ReadableStreamDefaultReaderPrivateName(), [this](auto& args, auto&, auto&) {
-        args.append(readableStream());
-    });
-}
-
-void ReadableStream::cancel(const Exception& exception)
-{
-    auto& lexicalGlobalObject = *m_globalObject;
-    auto* clientData = static_cast<JSVMClientData*>(lexicalGlobalObject.vm().clientData);
-    auto& privateName = clientData->builtinFunctions().readableStreamInternalsBuiltins().readableStreamCancelPrivateName();
-
-    auto& vm = lexicalGlobalObject.vm();
-    JSC::JSLockHolder lock(vm);
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-    auto value = createDOMException(&lexicalGlobalObject, exception.code(), exception.message());
-    if (scope.exception()) [[unlikely]] {
-        ASSERT(vm.hasPendingTerminationException());
-        return;
-    }
-
-    MarkedArgumentBuffer arguments;
-    arguments.append(readableStream());
-    arguments.append(value);
-    ASSERT(!arguments.hasOverflowed());
-    invokeReadableStreamFunction(lexicalGlobalObject, privateName, JSC::jsUndefined(), arguments);
-}
-
-void ReadableStream::cancel(WebCore::JSDOMGlobalObject& globalObject, JSReadableStream* readableStream, const Exception& exception)
-{
-    auto* clientData = static_cast<JSVMClientData*>(globalObject.vm().clientData);
-    auto& privateName = clientData->builtinFunctions().readableStreamInternalsBuiltins().readableStreamCancelPrivateName();
-
-    auto& vm = globalObject.vm();
-    JSC::JSLockHolder lock(vm);
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-    auto value = createDOMException(&globalObject, exception.code(), exception.message());
-    if (scope.exception()) [[unlikely]] {
-        ASSERT(vm.hasPendingTerminationException());
-        return;
-    }
-
-    MarkedArgumentBuffer arguments;
-    arguments.append(readableStream);
-    arguments.append(value);
-    ASSERT(!arguments.hasOverflowed());
-    invokeReadableStreamFunction(globalObject, privateName, JSC::jsUndefined(), arguments);
-}
-
-static inline bool checkReadableStream(JSDOMGlobalObject& globalObject, JSReadableStream* readableStream, JSC::JSValue function)
-{
-    auto& lexicalGlobalObject = globalObject;
-
-    ASSERT(function);
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(readableStream);
-    ASSERT(!arguments.hasOverflowed());
-
-    auto& vm = lexicalGlobalObject.vm();
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-    auto callData = JSC::getCallData(function);
-    ASSERT(callData.type != JSC::CallData::Type::None);
-
-    auto result = call(&lexicalGlobalObject, function, callData, JSC::jsUndefined(), arguments);
-    EXCEPTION_ASSERT(!scope.exception() || vm.hasPendingTerminationException());
-
-    return result.isTrue() || scope.exception();
-}
-
 bool ReadableStream::isLocked() const
 {
-    auto clientData = WebCore::clientData(m_globalObject->vm());
-    auto& privateName = clientData->builtinNames().readerPrivateName();
-    return readableStream()->getDirect(m_globalObject->vm(), privateName).isTrue();
+    return isLocked(m_globalObject.get(), readableStream());
 }
 
-bool ReadableStream::isLocked(JSGlobalObject* globalObject, JSReadableStream* readableStream)
+bool ReadableStream::isLocked(JSGlobalObject* globalObject, JSC::JSObject* readableStream)
 {
-    auto clientData = WebCore::clientData(globalObject->vm());
-    auto& privateName = clientData->builtinNames().readerPrivateName();
-    return readableStream->getDirect(globalObject->vm(), privateName).isTrue();
+    auto& names = WebCore::builtinNames(globalObject->vm());
+    auto reader = readableStream->getDirect(globalObject->vm(), names.readerPrivateName());
+    if (reader && !reader.isUndefinedOrNull())
+        return true;
+    auto nativePtr = readableStream->getDirect(globalObject->vm(), names.bunNativePtrPrivateName());
+    return nativePtr.isInt32() && nativePtr.asInt32() == -1;
 }
 
-bool ReadableStream::isDisturbed(JSGlobalObject* globalObject, JSReadableStream* readableStream)
+bool ReadableStream::isDisturbed(JSGlobalObject*, JSC::JSObject* readableStream)
 {
-    return readableStream->disturbed();
+    return readableStreamIsDisturbed(*readableStream);
 }
 
 bool ReadableStream::isDisturbed() const
 {
-    return readableStream()->disturbed();
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionTransferToNativeReadableStream, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    auto* readableStream = dynamicDowncast<JSReadableStream>(callFrame->argument(0));
-    readableStream->setTransferred();
-    readableStream->setDisturbed(true);
-    return JSValue::encode(jsUndefined());
+    return readableStreamIsDisturbed(*readableStream());
 }
 
 } // namespace WebCore
 
+template<typename Source>
+static std::optional<Source> nativeReadableStreamSource(JSC::JSObject& stream)
+{
+    auto value = WebCore::readableStreamNativePtr(stream);
+    if (value.isEmpty() || !value.isCell())
+        return std::nullopt;
+    std::optional<Source> source;
+    if (bun_bindgen_class_ReadableStreamSource_BlobInternalReadableStreamSource_try_cast_value(value))
+        source.emplace().set_blob(value);
+    else if (bun_bindgen_class_ReadableStreamSource_FileInternalReadableStreamSource_try_cast_value(value))
+        source.emplace().set_file(value);
+    else if (bun_bindgen_class_ReadableStreamSource_BytesInternalReadableStreamSource_try_cast_value(value))
+        source.emplace().set_bytes(value);
+    return source;
+}
+
+Bun::Bindgen::Cpp::BunBindgenCpp_NativeReadable_transfer_Return::Type Bun::Bindgen::Cpp::bunBindgenCpp_NativeReadable_transfer(
+    Bun::Bindgen::CppCallContext& context,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_NativeReadable_transfer_Arguments& args)
+{
+    using Return = BunBindgenCpp_NativeReadable_transfer_Return;
+    using Source = Return::Type::value_type::value_type;
+    auto* readableStream = dynamicDowncast<JSC::JSObject>(args.readable_stream);
+    RELEASE_ASSERT(readableStream);
+    if (WebCore::ReadableStream::isLocked(&context.globalObject, readableStream))
+        return std::unexpected(Return::Errors::locked {});
+
+    auto source = nativeReadableStreamSource<Source>(*readableStream);
+    if (!source) {
+        auto& vm = context.globalObject.vm();
+        auto state = readableStream->getDirect(vm, WebCore::builtinNames(vm).statePrivateName());
+        auto native = WebCore::readableStreamNativePtr(*readableStream);
+        // The builtin stream-state protocol defines $streamClosed as 1.
+        constexpr int32_t closedState = 1;
+        if (!native.isUndefined() || !state.isInt32() || state.asInt32() != closedState)
+            return std::unexpected(Return::Errors::invalid_source {});
+    }
+    WebCore::setReadableStreamTransferred(context.globalObject, *readableStream);
+    WebCore::setReadableStreamDisturbed(context.globalObject, *readableStream, true);
+    return source;
+}
+
 using namespace JSC;
 using namespace WebCore;
 
-extern "C" bool ReadableStream__tee(JSC::EncodedJSValue possibleReadableStream, Zig::GlobalObject* globalObject, JSC::EncodedJSValue* possibleReadableStream1, JSC::EncodedJSValue* possibleReadableStream2)
+static JSC::JSObject* engineReadableStream(JSC::JSValue value)
 {
-    auto* readableStream = dynamicDowncast<WebCore::JSReadableStream>(JSC::JSValue::decode(possibleReadableStream));
-    if (!readableStream) [[unlikely]]
-        return false;
-
-    auto lexicalGlobalObject = globalObject;
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto* clientData = static_cast<Bun::JSVMClientData*>(vm.clientData);
-    auto& privateName = clientData->builtinFunctions().readableStreamInternalsBuiltins().readableStreamTeePrivateName();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto invokeReadableStreamFunction = [](JSC::JSGlobalObject* lexicalGlobalObject, const JSC::Identifier& identifier, JSC::JSValue thisValue, const JSC::MarkedArgumentBuffer& arguments) -> std::optional<JSC::JSValue> {
-        JSC::VM& vm = lexicalGlobalObject->vm();
-        auto scope = DECLARE_THROW_SCOPE(vm);
-        JSC::JSLockHolder lock(vm);
-
-        auto function = lexicalGlobalObject->get(lexicalGlobalObject, identifier);
-        scope.assertNoExceptionExceptTermination();
-        if (scope.exception()) [[unlikely]]
-            return {};
-        ASSERT(function.isCallable());
-
-        auto callData = JSC::getCallData(function);
-        auto result = JSC::call(lexicalGlobalObject, function, callData, thisValue, arguments);
-#if ASSERT_ENABLED
-        if (scope.exception()) [[unlikely]] {
-            Bun__reportError(lexicalGlobalObject, JSC::JSValue::encode(scope.exception()));
-        }
-#endif
-        EXCEPTION_ASSERT(!scope.exception() || vm.hasPendingTerminationException());
-        RETURN_IF_EXCEPTION(scope, {});
-        return result;
-    };
-
-    MarkedArgumentBuffer arguments;
-    arguments.append(readableStream);
-    arguments.append(JSC::jsBoolean(true));
-    ASSERT(!arguments.hasOverflowed());
-    auto returnedValue = invokeReadableStreamFunction(lexicalGlobalObject, privateName, JSC::jsUndefined(), arguments);
-    RETURN_IF_EXCEPTION(scope, false);
-    if (!returnedValue) return false;
-
-    auto results = convert<IDLSequence<Bun::IDLRawAny, std::array<JSValue, 2>>>(*lexicalGlobalObject, *returnedValue);
-    RETURN_IF_EXCEPTION(scope, false);
-
-    *possibleReadableStream1 = JSValue::encode(results[0]);
-    *possibleReadableStream2 = JSValue::encode(results[1]);
-    return true;
+    auto* stream = dynamicDowncast<JSC::JSObject>(value);
+    RELEASE_ASSERT(stream && WebCore::isReadableStream(stream));
+    return stream;
 }
 
-extern "C" void ReadableStream__cancel(JSC::EncodedJSValue possibleReadableStream, Zig::GlobalObject* globalObject)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamTee(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamTee_Arguments& args)
 {
-    auto* readableStream = dynamicDowncast<WebCore::JSReadableStream>(JSC::JSValue::decode(possibleReadableStream));
-    if (!readableStream) [[unlikely]]
-        return;
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    MarkedArgumentBuffer arguments;
+    arguments.append(args.stream);
+    arguments.append(JSC::jsBoolean(true));
+    return invokeReadableStreamFunction(*globalObject, defaultGlobalObject(globalObject)->builtinInternalFunctions().readableStreamInternals().m_readableStreamTeeFunction.get(), arguments);
+}
 
-    if (!WebCore::ReadableStream::isLocked(globalObject, readableStream)) {
-        return;
-    }
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamCancel(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamCancel_Arguments& args)
+{
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto* readableStream = engineReadableStream(args.stream);
+    if (!readableStream) [[unlikely]]
+        return {};
 
     WebCore::Exception exception { Bun::AbortError };
-    WebCore::ReadableStream::cancel(*globalObject, readableStream, exception);
-}
-
-// Like ReadableStream__cancel but forwards an arbitrary JS reason verbatim to
-// the stream's cancel algorithm instead of synthesizing a DOMException. Used
-// by fetch() to honor AbortSignal.reason when cancelling a request body.
-extern "C" void ReadableStream__cancelWithReason(JSC::EncodedJSValue possibleReadableStream, Zig::GlobalObject* globalObject, JSC::EncodedJSValue encodedReason)
-{
-    auto* readableStream = dynamicDowncast<WebCore::JSReadableStream>(JSC::JSValue::decode(possibleReadableStream));
-    if (!readableStream) [[unlikely]]
-        return;
-
     auto& vm = globalObject->vm();
-    auto* clientData = static_cast<JSVMClientData*>(vm.clientData);
-    auto& privateName = clientData->builtinFunctions().readableStreamInternalsBuiltins().readableStreamCancelPrivateName();
-
-    JSC::JSLockHolder lock(vm);
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto reason = WebCore::createDOMException(globalObject, exception.code(), exception.message());
+    RETURN_IF_EXCEPTION(scope, {});
     MarkedArgumentBuffer arguments;
     arguments.append(readableStream);
-    arguments.append(JSC::JSValue::decode(encodedReason));
-    ASSERT(!arguments.hasOverflowed());
-    invokeReadableStreamFunction(*globalObject, privateName, JSC::jsUndefined(), arguments);
+    arguments.append(reason);
+    auto result = invokeReadableStreamFunction(*globalObject, defaultGlobalObject(globalObject)->builtinInternalFunctions().readableStreamInternals().m_readableStreamCancelFunction.get(), arguments);
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
 }
 
-extern "C" void ReadableStream__detach(JSC::EncodedJSValue possibleReadableStream, Zig::GlobalObject* globalObject)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamCancelWithReason(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamCancelWithReason_Arguments& args)
 {
-    auto value = JSC::JSValue::decode(possibleReadableStream);
-    if (value.isEmpty() || !value.isCell())
-        return;
-
-    auto* readableStream = static_cast<WebCore::JSReadableStream*>(value.asCell());
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto* readableStream = engineReadableStream(args.stream);
     if (!readableStream) [[unlikely]]
+        return {};
+
+    MarkedArgumentBuffer arguments;
+    arguments.append(readableStream);
+    args.reason.appendTo(arguments);
+    return invokeReadableStreamFunction(*globalObject, defaultGlobalObject(globalObject)->builtinInternalFunctions().readableStreamInternals().m_readableStreamCancelFunction.get(), arguments);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamDetach(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamDetach_Arguments& args)
+{
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto* readableStream = engineReadableStream(args.stream);
+    if (!readableStream)
         return;
-    readableStream->setNativePtr(globalObject->vm(), jsNumber(-1));
-    readableStream->setNativeType(0);
-    readableStream->setDisturbed(true);
+    WebCore::setReadableStreamNativePtr(*globalObject, *readableStream, jsNumber(-1));
+    WebCore::setReadableStreamNativeType(*globalObject, *readableStream, 0);
+    WebCore::setReadableStreamDisturbed(*globalObject, *readableStream, true);
 }
 
-extern "C" bool ReadableStream__isDisturbed(JSC::EncodedJSValue possibleReadableStream, Zig::GlobalObject* globalObject)
+bool Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamCanConsumeNative(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamCanConsumeNative_Arguments& args)
 {
-    ASSERT(globalObject);
-    return WebCore::ReadableStream::isDisturbed(globalObject, dynamicDowncast<WebCore::JSReadableStream>(JSC::JSValue::decode(possibleReadableStream)));
+    auto* stream = engineReadableStream(args.stream);
+    auto& vm = context.globalObject.vm();
+    auto controller = stream->getDirect(vm, WebCore::builtinNames(vm).readableStreamControllerPrivateName());
+    return controller.isUndefinedOrNull()
+        && WebCore::readableStreamNativePtr(*stream).isCell()
+        && !WebCore::ReadableStream::isDisturbed(&context.globalObject, stream)
+        && !WebCore::ReadableStream::isLocked(&context.globalObject, stream);
 }
 
-extern "C" bool ReadableStream__isLocked(JSC::EncodedJSValue possibleReadableStream, Zig::GlobalObject* globalObject)
+bool Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamIsDisturbed(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamIsDisturbed_Arguments& args)
 {
-    ASSERT(globalObject);
-    WebCore::JSReadableStream* stream = dynamicDowncast<WebCore::JSReadableStream>(JSValue::decode(possibleReadableStream));
-    return stream != nullptr && WebCore::ReadableStream::isLocked(globalObject, stream);
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto* stream = engineReadableStream(args.stream);
+    return stream && WebCore::ReadableStream::isDisturbed(globalObject, stream);
 }
 
-extern "C" int32_t ReadableStreamTag__tagged(Zig::GlobalObject* globalObject, JSC::EncodedJSValue* possibleReadableStream, void** ptr)
+bool Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamIsLocked(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamIsLocked_Arguments& args)
 {
-    ASSERT(globalObject);
-    JSC::JSObject* object = JSValue::decode(*possibleReadableStream).getObject();
-    if (!object) {
-        *ptr = nullptr;
-        return -1;
-    }
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto* stream = engineReadableStream(args.stream);
+    return stream && WebCore::ReadableStream::isLocked(globalObject, stream);
+}
 
-    auto& vm = JSC::getVM(globalObject);
+template<typename Description>
+static Description describeReadableStream(JSC::JSObject* object)
+{
+    ASSERT(WebCore::isReadableStream(object));
+    Description description {};
+    using Source = typename decltype(description.source)::value_type;
+    description.source = nativeReadableStreamSource<Source>(*object);
+    if (!description.source)
+        description.tag = decltype(description.tag)::JavaScript;
+    else if (description.source->is_blob())
+        description.tag = decltype(description.tag)::Blob;
+    else if (description.source->is_file())
+        description.tag = decltype(description.tag)::File;
+    else
+        description.tag = decltype(description.tag)::Bytes;
+    return description;
+}
 
-    if (!object->inherits<WebCore::JSReadableStream>()) {
-        auto throwScope = DECLARE_THROW_SCOPE(vm);
-        JSValue target = object;
-        JSValue fn = JSValue();
-        auto* function = dynamicDowncast<JSC::JSFunction>(object);
+Bun::Bindgen::Engine::BunBindgenEngine_readable_streams_readableStreamCoerce_Return Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamCoerce(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamCoerce_Arguments& args)
+{
+    JSC::JSObject* object = args.value.getObject();
+    if (!object)
+        return std::nullopt;
+
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto& vm = globalObject->vm();
+    if (!WebCore::isReadableStream(object)) {
+        auto scope = DECLARE_THROW_SCOPE(vm);
+        JSC::JSValue target = object;
+        JSC::JSValue iteratorFunction;
+        auto* function = WTF::dynamicDowncast<JSC::JSFunction>(object);
         if (function && !function->isHostFunction() && function->jsExecutable() && function->jsExecutable()->isAsyncGenerator()) {
-            fn = object;
-            target = jsUndefined();
+            iteratorFunction = object;
+            target = JSC::jsUndefined();
         } else {
-            auto iterable = object->getIfPropertyExists(globalObject, vm.propertyNames->asyncIteratorSymbol);
-            RETURN_IF_EXCEPTION(throwScope, {});
-            if (iterable && iterable.isCallable()) {
-                fn = iterable;
-            }
+            auto iterator = object->getIfPropertyExists(globalObject, vm.propertyNames->asyncIteratorSymbol);
+            RETURN_IF_EXCEPTION(scope, std::nullopt);
+            if (iterator && iterator.isCallable())
+                iteratorFunction = iterator;
         }
 
-        if (throwScope.exception()) [[unlikely]] {
-            *ptr = nullptr;
-            return -1;
-        }
-
-        if (fn.isEmpty()) {
-            *ptr = nullptr;
-            return -1;
+        if (iteratorFunction.isEmpty()) {
+            scope.release();
+            return std::nullopt;
         }
 
         auto* createIterator = globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamFromAsyncIteratorFunction.get();
-
         JSC::MarkedArgumentBuffer arguments;
         arguments.append(target);
-        arguments.append(fn);
-
-        JSC::JSValue result = profiledCall(globalObject, JSC::ProfilingReason::API, createIterator, JSC::getCallData(createIterator), JSC::jsUndefined(), arguments);
-
-        if (throwScope.exception()) [[unlikely]] {
-            return -1;
+        arguments.append(iteratorFunction);
+        if (arguments.hasOverflowed()) {
+            JSC::throwOutOfMemoryError(globalObject, scope);
+            return std::nullopt;
         }
 
-        if (!result.isObject()) {
-            *ptr = nullptr;
-            return -1;
-        }
-
+        auto result = JSC::profiledCall(
+            globalObject,
+            JSC::ProfilingReason::API,
+            createIterator,
+            JSC::getCallData(createIterator),
+            JSC::jsUndefined(),
+            arguments);
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
         object = result.getObject();
-
-        ASSERT(object->inherits<WebCore::JSReadableStream>());
-        *possibleReadableStream = JSValue::encode(object);
-        *ptr = nullptr;
-        ensureStillAliveHere(object);
-        return 0;
+        if (!object || !WebCore::isReadableStream(object)) {
+            scope.release();
+            return std::nullopt;
+        }
+        scope.release();
     }
 
-    auto* readableStream = uncheckedDowncast<WebCore::JSReadableStream>(object);
-
-    JSValue nativePtrHandle = readableStream->nativePtr();
-    if (nativePtrHandle.isEmpty() || !nativePtrHandle.isCell()) {
-        *ptr = nullptr;
-        return 0;
-    }
-
-    JSCell* cell = nativePtrHandle.asCell();
-
-    if (auto* casted = dynamicDowncast<JSBlobInternalReadableStreamSource>(cell)) {
-        *ptr = casted->wrapped();
-        return 1;
-    }
-
-    if (auto* casted = dynamicDowncast<JSFileInternalReadableStreamSource>(cell)) {
-        *ptr = casted->wrapped();
-        return 2;
-    }
-
-    if (auto* casted = dynamicDowncast<JSBytesInternalReadableStreamSource>(cell)) {
-        *ptr = casted->wrapped();
-        return 4;
-    }
-
-    return 0;
+    return object;
 }
 
-extern "C" JSC::EncodedJSValue ZigGlobalObject__createNativeReadableStream(Zig::GlobalObject* globalObject, JSC::EncodedJSValue nativePtr)
+Bun::Bindgen::Engine::BunBindgenEngine_readable_streams_readableStreamDescribe_Return Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamDescribe(
+    EngineCallContext&,
+    const BunBindgenEngine_readable_streams_readableStreamDescribe_Arguments& args)
 {
+    using Return = BunBindgenEngine_readable_streams_readableStreamDescribe_Return;
+    return describeReadableStream<Return>(engineReadableStream(args.stream));
+}
+
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamCreateNative(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamCreateNative_Arguments& args)
+{
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto& builtinNames = WebCore::builtinNames(vm);
+    JSC::JSValue native;
+    if (args.native.is_blob())
+        native = context.classValue(args.native.blob());
+    else if (args.native.is_bytes())
+        native = context.classValue(args.native.bytes());
+    else {
+        RELEASE_ASSERT(args.native.is_file());
+        native = context.classValue(args.native.file());
+    }
 
-    auto function = globalObject->getDirect(vm, builtinNames.createNativeReadableStreamPrivateName()).getObject();
     JSC::MarkedArgumentBuffer arguments = JSC::MarkedArgumentBuffer();
-    arguments.append(JSValue::decode(nativePtr));
+    arguments.append(native);
 
-    auto callData = JSC::getCallData(function);
-    auto result = call(globalObject, function, callData, JSC::jsUndefined(), arguments);
+    auto result = invokeReadableStreamFunction(*globalObject, defaultGlobalObject(globalObject)->builtinInternalFunctions().readableStreamInternals().m_createNativeReadableStreamFunction.get(), arguments);
     RETURN_IF_EXCEPTION(scope, {});
-    return JSValue::encode(result);
+    return result;
 }
 
-static inline JSC::EncodedJSValue ZigGlobalObject__readableStreamToArrayBufferBody(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue)
+JSC::JSValue Bun::readableStreamToBytes(Zig::GlobalObject* globalObject, JSC::JSValue readableStreamValue)
 {
-    auto& vm = JSC::getVM(globalObject);
-
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    auto* function = globalObject->m_readableStreamToArrayBuffer.get();
-    if (!function) {
-        function = JSFunction::create(vm, globalObject, static_cast<JSC::FunctionExecutable*>(readableStreamReadableStreamToArrayBufferCodeGenerator(vm)), globalObject);
-        globalObject->m_readableStreamToArrayBuffer.set(vm, globalObject, function);
-    }
-
-    JSC::MarkedArgumentBuffer arguments = JSC::MarkedArgumentBuffer();
-    arguments.append(JSValue::decode(readableStreamValue));
-
-    auto callData = JSC::getCallData(function);
-    JSValue result = call(globalObject, function, callData, JSC::jsUndefined(), arguments);
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    JSC::JSObject* object = result.getObject();
-
-    if (!result || result.isUndefinedOrNull()) [[unlikely]]
-        return JSValue::encode(result);
-
-    if (!object) [[unlikely]] {
-        throwTypeError(globalObject, throwScope, "Expected object"_s);
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    MarkedArgumentBuffer arguments;
+    arguments.append(readableStreamValue);
+    auto result = invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToBytesFunction.get(), arguments);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!result || result.isUndefinedOrNull())
+        return result;
+    auto* object = result.getObject();
+    if (!object) {
+        throwTypeError(globalObject, scope, "Expected object"_s);
         return {};
     }
-
-    JSC::JSPromise* promise = dynamicDowncast<JSC::JSPromise>(object);
-    if (!promise) [[unlikely]] {
-        throwTypeError(globalObject, throwScope, "Expected promise"_s);
+    auto* promise = dynamicDowncast<JSC::JSPromise>(object);
+    if (!promise) {
+        throwTypeError(globalObject, scope, "Expected promise"_s);
         return {};
     }
-
-    RELEASE_AND_RETURN(throwScope, JSC::JSValue::encode(promise));
+    return promise;
 }
 
-extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToArrayBuffer(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue)
+JSC::JSValue Bun::readableStreamToText(Zig::GlobalObject* globalObject, JSC::JSValue readableStreamValue)
 {
-    return ZigGlobalObject__readableStreamToArrayBufferBody(static_cast<Zig::GlobalObject*>(globalObject), readableStreamValue);
+    MarkedArgumentBuffer arguments;
+    arguments.append(readableStreamValue);
+    return invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToTextFunction.get(), arguments);
 }
 
-extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToBytes(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue)
+JSC::JSValue Bun::readableStreamToJSON(Zig::GlobalObject* globalObject, JSC::JSValue readableStreamValue)
 {
-    auto& vm = JSC::getVM(globalObject);
+    MarkedArgumentBuffer arguments;
+    arguments.append(readableStreamValue);
+    return invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToJSONFunction.get(), arguments);
+}
 
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
+JSC::JSValue Bun::readableStreamToBlob(Zig::GlobalObject* globalObject, JSC::JSValue readableStreamValue)
+{
+    MarkedArgumentBuffer arguments;
+    arguments.append(readableStreamValue);
+    return invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToBlobFunction.get(), arguments);
+}
 
-    auto* function = globalObject->m_readableStreamToBytes.get();
-    if (!function) {
-        function = JSFunction::create(vm, globalObject, static_cast<JSC::FunctionExecutable*>(readableStreamReadableStreamToBytesCodeGenerator(vm)), globalObject);
-        globalObject->m_readableStreamToBytes.set(vm, globalObject, function);
-    }
-
-    JSC::MarkedArgumentBuffer arguments = JSC::MarkedArgumentBuffer();
-    arguments.append(JSValue::decode(readableStreamValue));
-
-    auto callData = JSC::getCallData(function);
-    JSValue result = call(globalObject, function, callData, JSC::jsUndefined(), arguments);
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    JSC::JSObject* object = result.getObject();
-
-    if (!result || result.isUndefinedOrNull()) [[unlikely]]
-        return JSValue::encode(result);
-
-    if (!object) [[unlikely]] {
-        throwTypeError(globalObject, throwScope, "Expected object"_s);
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamConsumeArrayBuffer(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamConsumeArrayBuffer_Arguments& args)
+{
+    auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(&context.globalObject);
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    MarkedArgumentBuffer arguments;
+    arguments.append(args.stream);
+    arguments.append(JSC::jsBoolean(true));
+    auto result = invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToArrayBufferInternalFunction.get(), arguments);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!result || result.isUndefinedOrNull())
+        return result;
+    auto* object = result.getObject();
+    if (!object) {
+        throwTypeError(globalObject, scope, "Expected object"_s);
         return {};
     }
-
-    JSC::JSPromise* promise = dynamicDowncast<JSC::JSPromise>(object);
-    if (!promise) [[unlikely]] {
-        throwTypeError(globalObject, throwScope, "Expected promise"_s);
+    auto* promise = dynamicDowncast<JSC::JSPromise>(object);
+    if (!promise) {
+        throwTypeError(globalObject, scope, "Expected promise"_s);
         return {};
     }
-
-    RELEASE_AND_RETURN(throwScope, JSC::JSValue::encode(promise));
+    return promise;
 }
 
-extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToText(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamConsumeBytes(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamConsumeBytes_Arguments& args)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    JSC::JSFunction* function = nullptr;
-    if (auto readableStreamToText = globalObject->m_readableStreamToText.get()) {
-        function = readableStreamToText;
-    } else {
-        function = JSFunction::create(vm, globalObject, static_cast<JSC::FunctionExecutable*>(readableStreamReadableStreamToTextCodeGenerator(vm)), globalObject);
-
-        globalObject->m_readableStreamToText.set(vm, globalObject, function);
-    }
-
-    JSC::MarkedArgumentBuffer arguments = JSC::MarkedArgumentBuffer();
-    arguments.append(JSValue::decode(readableStreamValue));
-
-    auto callData = JSC::getCallData(function);
-    JSValue result = call(globalObject, function, callData, JSC::jsUndefined(), arguments);
-    RETURN_IF_EXCEPTION(throwScope, {});
-    return JSC::JSValue::encode(result);
+    auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(&context.globalObject);
+    MarkedArgumentBuffer arguments;
+    arguments.append(args.stream);
+    arguments.append(JSC::jsBoolean(true));
+    return invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToBytesInternalFunction.get(), arguments);
 }
 
-extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToFormData(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue, JSC::EncodedJSValue contentTypeValue)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamConsumeText(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamConsumeText_Arguments& args)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    JSC::JSFunction* function = nullptr;
-    if (auto readableStreamToFormData = globalObject->m_readableStreamToFormData.get()) {
-        function = readableStreamToFormData;
-    } else {
-        function = JSFunction::create(vm, globalObject, static_cast<JSC::FunctionExecutable*>(readableStreamReadableStreamToFormDataCodeGenerator(vm)), globalObject);
-
-        globalObject->m_readableStreamToFormData.set(vm, globalObject, function);
-    }
-
-    JSC::MarkedArgumentBuffer arguments = JSC::MarkedArgumentBuffer();
-    arguments.append(JSValue::decode(readableStreamValue));
-    arguments.append(JSValue::decode(contentTypeValue));
-
-    auto callData = JSC::getCallData(function);
-    JSValue result = call(globalObject, function, callData, JSC::jsUndefined(), arguments);
-    RETURN_IF_EXCEPTION(throwScope, {});
-    return JSC::JSValue::encode(result);
+    auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(&context.globalObject);
+    MarkedArgumentBuffer arguments;
+    arguments.append(args.stream);
+    arguments.append(JSC::jsBoolean(true));
+    return invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToTextInternalFunction.get(), arguments);
 }
 
-extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToJSON(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamConsumeFormData(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamConsumeFormData_Arguments& args)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    JSC::JSFunction* function = nullptr;
-    if (auto readableStreamToJSON = globalObject->m_readableStreamToJSON.get()) {
-        function = readableStreamToJSON;
-    } else {
-        function = JSFunction::create(vm, globalObject, static_cast<JSC::FunctionExecutable*>(readableStreamReadableStreamToJSONCodeGenerator(vm)), globalObject);
-
-        globalObject->m_readableStreamToJSON.set(vm, globalObject, function);
-    }
-
-    JSC::MarkedArgumentBuffer arguments = JSC::MarkedArgumentBuffer();
-    arguments.append(JSValue::decode(readableStreamValue));
-
-    auto callData = JSC::getCallData(function);
-    JSValue result = call(globalObject, function, callData, JSC::jsUndefined(), arguments);
-    RETURN_IF_EXCEPTION(throwScope, {});
-    return JSC::JSValue::encode(result);
+    auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(&context.globalObject);
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    MarkedArgumentBuffer arguments;
+    arguments.append(args.stream);
+    arguments.append(args.content_type ? JSC::jsString(vm, *args.content_type) : JSC::jsUndefined());
+    RETURN_IF_EXCEPTION(scope, {});
+    arguments.append(JSC::jsBoolean(true));
+    RELEASE_AND_RETURN(scope, invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToFormDataInternalFunction.get(), arguments));
 }
 
-extern "C" JSC::EncodedJSValue ZigGlobalObject__readableStreamToBlob(Zig::GlobalObject* globalObject, JSC::EncodedJSValue readableStreamValue)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamConsumeJSON(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamConsumeJSON_Arguments& args)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    JSC::JSFunction* function = nullptr;
-    if (auto readableStreamToBlob = globalObject->m_readableStreamToBlob.get()) {
-        function = readableStreamToBlob;
-    } else {
-        function = JSFunction::create(vm, globalObject, static_cast<JSC::FunctionExecutable*>(readableStreamReadableStreamToBlobCodeGenerator(vm)), globalObject);
-
-        globalObject->m_readableStreamToBlob.set(vm, globalObject, function);
-    }
-
-    JSC::MarkedArgumentBuffer arguments = JSC::MarkedArgumentBuffer();
-    arguments.append(JSValue::decode(readableStreamValue));
-
-    auto callData = JSC::getCallData(function);
-    JSValue result = call(globalObject, function, callData, JSC::jsUndefined(), arguments);
-    RETURN_IF_EXCEPTION(throwScope, {});
-    return JSC::JSValue::encode(result);
+    auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(&context.globalObject);
+    MarkedArgumentBuffer arguments;
+    arguments.append(args.stream);
+    arguments.append(JSC::jsBoolean(true));
+    return invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToJSONInternalFunction.get(), arguments);
 }
 
-JSC_DEFINE_HOST_FUNCTION(functionReadableStreamToArrayBuffer, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_readable_streams_readableStreamConsumeBlob(
+    EngineCallContext& context,
+    const BunBindgenEngine_readable_streams_readableStreamConsumeBlob_Arguments& args)
 {
-    auto& vm = JSC::getVM(globalObject);
-
-    if (callFrame->argumentCount() < 1) [[unlikely]] {
-        auto throwScope = DECLARE_THROW_SCOPE(vm);
-        throwTypeError(globalObject, throwScope, "Expected at least one argument"_s);
-        return {};
-    }
-
-    auto readableStreamValue = callFrame->uncheckedArgument(0);
-    return ZigGlobalObject__readableStreamToArrayBufferBody(static_cast<Zig::GlobalObject*>(globalObject), JSValue::encode(readableStreamValue));
-}
-
-JSC_DEFINE_HOST_FUNCTION(functionReadableStreamToBytes, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(globalObject);
-
-    if (callFrame->argumentCount() < 1) [[unlikely]] {
-        auto throwScope = DECLARE_THROW_SCOPE(vm);
-        throwTypeError(globalObject, throwScope, "Expected at least one argument"_s);
-        return {};
-    }
-
-    auto readableStreamValue = callFrame->uncheckedArgument(0);
-    return ZigGlobalObject__readableStreamToBytes(static_cast<Zig::GlobalObject*>(globalObject), JSValue::encode(readableStreamValue));
+    auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(&context.globalObject);
+    MarkedArgumentBuffer arguments;
+    arguments.append(args.stream);
+    arguments.append(JSC::jsBoolean(true));
+    return invokeReadableStreamFunction(*globalObject, globalObject->builtinInternalFunctions().readableStreamInternals().m_readableStreamToBlobInternalFunction.get(), arguments);
 }

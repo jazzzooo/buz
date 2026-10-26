@@ -25,15 +25,17 @@ pub const AnyRequest = union(enum) {
             inline else => |r| r.setYield(y),
         }
     }
-    pub fn dateForHeader(this: AnyRequest, name: []const u8) bun.JSError!?u64 {
-        return switch (this) {
-            inline else => |r| r.dateForHeader(name),
-        };
-    }
 };
 
 /// uWS::Request C++ -> Zig bindings.
 pub const Request = opaque {
+    pub fn setParameters(req: *Request, parameters: *const []const []const u8) void {
+        c.uws_req_set_parameter_source(req, @ptrCast(@constCast(parameters)), parameterAt);
+    }
+
+    pub fn clearParameters(req: *Request) void {
+        c.uws_req_set_parameter_source(req, null, null);
+    }
     pub fn isAncient(req: *Request) bool {
         return c.uws_req_is_ancient(req);
     }
@@ -51,6 +53,11 @@ pub const Request = opaque {
         var ptr: [*]const u8 = undefined;
         return ptr[0..c.uws_req_get_method(req, &ptr)];
     }
+
+    pub fn rawMethod(req: *Request) []const u8 {
+        var ptr: [*]const u8 = undefined;
+        return ptr[0..c.uws_req_get_raw_method(req, &ptr)];
+    }
     pub fn header(req: *Request, name: []const u8) ?[]const u8 {
         bun.assert(std.ascii.isLower(name[0]));
 
@@ -58,17 +65,6 @@ pub const Request = opaque {
         const len = c.uws_req_get_header(req, name.ptr, name.len, &ptr);
         if (len == 0) return null;
         return ptr[0..len];
-    }
-    pub fn dateForHeader(req: *Request, name: []const u8) bun.JSError!?u64 {
-        const value = header(req, name);
-        if (value == null) return null;
-        var string = bun.String.init(value.?);
-        defer string.deref();
-        const date_f64 = try bun.String.parseDate(&string, bun.jsc.VirtualMachine.get().global);
-        if (!std.math.isNan(date_f64) and std.math.isFinite(date_f64) and date_f64 >= 0) {
-            return @intFromFloat(date_f64);
-        }
-        return null;
     }
     pub fn query(req: *Request, name: []const u8) []const u8 {
         var ptr: [*]const u8 = undefined;
@@ -81,6 +77,8 @@ pub const Request = opaque {
 };
 
 const c = struct {
+    extern fn uws_req_get_raw_method(*Request, *[*]const u8) usize;
+    extern fn uws_req_set_parameter_source(*Request, ?*anyopaque, ?*const fn (*anyopaque, c_uint, *[*]const u8) callconv(.c) usize) void;
     pub extern fn uws_req_is_ancient(res: *Request) bool;
     pub extern fn uws_req_get_yield(res: *Request) bool;
     pub extern fn uws_req_set_yield(res: *Request, yield: bool) void;
@@ -92,6 +90,13 @@ const c = struct {
 };
 
 const std = @import("std");
+
+pub fn parameterAt(context: *anyopaque, index: c_uint, output: *[*]const u8) callconv(.c) usize {
+    const parameters: *const []const []const u8 = @ptrCast(@alignCast(context));
+    const value: []const u8 = if (index < parameters.len) parameters.*[index] else "";
+    output.* = value.ptr;
+    return value.len;
+}
 
 const bun = @import("bun");
 const uws = bun.uws;

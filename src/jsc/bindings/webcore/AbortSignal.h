@@ -31,10 +31,10 @@
 #include "EventTarget.h"
 #include "JSValueInWrappedObject.h"
 #include "JavaScriptCore/JSGlobalObject.h"
+#include <JavaScriptCore/Weak.h>
 #include "ZigGlobalObject.h"
 #include "wtf/DebugHeap.h"
 #include "wtf/FastMalloc.h"
-#include <wtf/Function.h>
 #include <wtf/Lock.h>
 #include <wtf/Ref.h>
 #include <wtf/RefCounted.h>
@@ -43,7 +43,7 @@
 
 namespace WebCore {
 
-class AbortAlgorithm;
+class AbortController;
 class ScriptExecutionContext;
 class WebCoreOpaqueRoot;
 
@@ -64,6 +64,9 @@ class AbortSignal final : public RefCounted<AbortSignal>, public EventTargetWith
     WTF_MAKE_TZONE_ALLOCATED(AbortSignal);
 
 private:
+    friend class AbortController;
+    void setReason(JSC::VM&, JSC::JSValue);
+
     enum class AbortSignalFlags : uint8_t {
         Dependent = 1,
         Aborted = 2,
@@ -74,18 +77,15 @@ private:
 public:
     static Ref<AbortSignal> create(ScriptExecutionContext*);
     WEBCORE_EXPORT ~AbortSignal();
-    using NativeCallbackTuple = std::tuple<void*, void (*)(void*, JSC::EncodedJSValue)>;
-
-    static Ref<AbortSignal> abort(JSDOMGlobalObject&, ScriptExecutionContext&, JSC::JSValue reason);
+    static RefPtr<AbortSignal> abort(JSDOMGlobalObject&, ScriptExecutionContext&, JSC::JSValue reason);
     static Ref<AbortSignal> timeout(ScriptExecutionContext&, uint64_t milliseconds);
-    static Ref<AbortSignal> any(ScriptExecutionContext&, const Vector<RefPtr<AbortSignal>>&);
+    static RefPtr<AbortSignal> any(JSDOMGlobalObject&, ScriptExecutionContext&, const Vector<RefPtr<AbortSignal>>&);
 
-    static uint32_t addAbortAlgorithmToSignal(AbortSignal&, Ref<AbortAlgorithm>&&);
+    static Bun::Bindgen::NativeAllocationResult<uint32_t> addAbortAlgorithmToSignal(AbortSignal&, JSC::JSObject& callback);
     static void removeAbortAlgorithmFromSignal(AbortSignal&, uint32_t algorithmIdentifier);
 
     void signalAbort(JSC::JSGlobalObject* globalObject, CommonAbortReason reason);
     void signalAbort(JSC::JSValue reason);
-    void signalFollow(AbortSignal&);
 
     bool aborted() const { return m_flags & static_cast<uint8_t>(AbortSignalFlags::Aborted); }
     void markAborted(JSC::JSValue reason);
@@ -93,13 +93,14 @@ public:
 
     const JSValueInWrappedObject& reason() const { return m_reason; }
     JSValue jsReason(JSC::JSGlobalObject& globalObject);
-    CommonAbortReason commonReason() const { return m_commonReason; }
 
-    void cleanNativeBindings(void* ref);
-    void addNativeCallback(NativeCallbackTuple callback)
+    void removeNativeListener(void* listener);
+    bool addNativeListener(void* listener)
     {
-        m_native_callbacks.append(callback);
+        if (!m_nativeListeners.tryAppend(listener))
+            return false;
         eventListenersDidChange();
+        return true;
     }
 
     bool hasActiveTimeoutTimer() const { return m_timeout != nullptr; }
@@ -109,13 +110,10 @@ public:
     using RefCounted::deref;
     using RefCounted::ref;
 
-    using Algorithm = Function<void(JSC::JSValue reason)>;
-    uint32_t addAlgorithm(Algorithm&&);
-    void removeAlgorithm(uint32_t);
+    void addEventListenerAbortAlgorithm(RegisteredEventListener&, EventTarget&, const AtomString& eventType);
+    void removeEventListenerAbortAlgorithm(RegisteredEventListener&);
 
     template<typename Visitor> void visitAbortAlgorithms(Visitor&);
-
-    bool isFollowingSignal() const { return !!m_followingSignal; }
 
     void throwIfAborted(JSC::JSGlobalObject&);
 
@@ -132,6 +130,7 @@ public:
     size_t memoryCost() const;
 
     AbortSignalTimeout getTimeout() const { return m_timeout; }
+    void cancelTimer();
 
 private:
     enum class Aborted : bool {
@@ -143,7 +142,8 @@ private:
     void markAsDependent() { setIsDependent(true); }
     void addSourceSignal(AbortSignal&);
     void addDependentSignal(AbortSignal&);
-    void cancelTimer();
+    void detachEventListenerAbortAlgorithm(RegisteredEventListener&);
+    static void invokeAbortAlgorithm(JSC::JSObject&, JSC::JSValue reason);
 
     void applyFlags(uint8_t flags) { m_flags |= flags; }
     void setIsDependent(bool isDependent)
@@ -186,19 +186,20 @@ private:
     void derefEventTarget() final { deref(); }
     void eventListenersDidChange() final;
 
-    Vector<std::pair<uint32_t, Algorithm>> m_algorithms;
-    // Kept separate from m_algorithms so the GC thread can visit the weak JS
-    // callbacks via visitAbortAlgorithms(). Erasing Ref<AbortAlgorithm> into
-    // an Algorithm lambda would hide it from the GC and reintroduce the
-    // Strong-ref cycle leak.
-    Vector<std::pair<uint32_t, Ref<AbortAlgorithm>>> m_abortAlgorithms WTF_GUARDED_BY_LOCK(m_abortAlgorithmsLock);
+    RegisteredEventListener* m_firstListenerAbortAlgorithm { nullptr };
+    RegisteredEventListener* m_lastListenerAbortAlgorithm { nullptr };
+    using AbortAlgorithms = Vector<std::pair<uint32_t, JSC::Weak<JSC::JSObject>>>;
+    AbortAlgorithms m_abortAlgorithms WTF_GUARDED_BY_LOCK(m_abortAlgorithmsLock);
+    AbortAlgorithms m_runningAbortAlgorithms WTF_GUARDED_BY_LOCK(m_abortAlgorithmsLock);
     Lock m_abortAlgorithmsLock;
-    WeakPtr<AbortSignal, WeakPtrImplWithEventTargetData> m_followingSignal;
     AbortSignalSet m_sourceSignals;
     AbortSignalSet m_dependentSignals;
+    // The aborted flag prevents membership in multiple active propagation lists.
+    RefPtr<AbortSignal> m_nextDependentToAbort;
     JSValueInWrappedObject m_reason;
+    AbortController* m_controller { nullptr };
     CommonAbortReason m_commonReason { CommonAbortReason::None };
-    Vector<NativeCallbackTuple, 2> m_native_callbacks;
+    Vector<void*, 2> m_nativeListeners;
     std::atomic<uint32_t> pendingActivityCount { 0 };
     uint32_t m_algorithmIdentifier { 0 };
     AbortSignalTimeout m_timeout { nullptr };

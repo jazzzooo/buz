@@ -3,13 +3,20 @@
 #include "root.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include "SchemaBindings+CrashHandler.h"
 
 #if OS(LINUX) || OS(DARWIN) || OS(FREEBSD)
 
-// These functions are called by the stubs to crash with a nice error message
-// when accessing a libuv functin which we do not support on posix
-void CrashHandler__unsupportedUVFunction(const char* function_name);
-void __bun_throw_not_implemented(const char* symbol_name);
+BUN_BINDGEN_NORETURN static inline void __bun_throw_not_implemented(const char* symbol_name)
+{
+#ifdef __cplusplus
+    Bun::Bindgen::ZigExports::bunBindgenZig_CrashHandlerBindings_unsupportedUVFunction(
+        std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(symbol_name), strlen(symbol_name) });
+#else
+    bunBindgenC_CrashHandlerBindings_unsupportedUVFunction((const uint8_t*)symbol_name, strlen(symbol_name));
+#endif
+}
 
 // libuv headers will use UV_EXTERN
 #define UV_EXTERN __attribute__((visibility("default"))) __attribute__((used))

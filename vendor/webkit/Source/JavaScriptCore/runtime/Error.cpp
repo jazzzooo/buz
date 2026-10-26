@@ -244,13 +244,6 @@ JSObject* addErrorInfo(VM& vm, JSObject* error, int line, const SourceCode& sour
 {
     const String& sourceURL = source.provider()->sourceURL();
     
-    // The putDirect() calls below should really be put() so that they trigger materialization of
-    // the line/sourceURL properties. Otherwise, what we set here will just be overwritten later.
-    // But calling put() would be bad because we'd rather not do effectful things here. Luckily, we
-    // know that this will get called on some kind of error - so we can just directly ask the
-    // ErrorInstance to materialize whatever it needs to. There's a chance that we get passed some
-    // other kind of object, which also has materializable properties. But this code is heuristic-ey
-    // enough that if we're wrong in such corner cases, it's not the end of the world.
     if (ErrorInstance* errorInstance = dynamicDowncast<ErrorInstance>(error)) {
 #if USE(BUN_JSC_ADDITIONS)
 
@@ -262,12 +255,11 @@ JSObject* addErrorInfo(VM& vm, JSObject* error, int line, const SourceCode& sour
         if (!sourceURL.isEmpty()) {
             errorInstance->setSourceURL(sourceURL);
         }
-#endif
-
-        errorInstance->materializeErrorInfoIfNeeded(vm);
-
-#if USE(BUN_JSC_ADDITIONS)
+        // Stack formatting can invoke JavaScript, so parser metadata must leave it lazy.
         return errorInstance;
+#else
+        // Materialize engine-managed locations before overriding their properties.
+        errorInstance->materializeErrorInfoIfNeeded(vm);
 #endif
     }
 

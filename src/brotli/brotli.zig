@@ -1,15 +1,14 @@
 pub const c = @import("../brotli_sys/brotli_c.zig");
 const BrotliDecoder = c.BrotliDecoder;
-const BrotliEncoder = c.BrotliEncoder;
 
 pub const BrotliAllocator = struct {
-    pub fn alloc(_: ?*anyopaque, len: usize) callconv(.c) *anyopaque {
+    pub fn alloc(_: ?*anyopaque, len: usize) callconv(.c) ?*anyopaque {
         if (bun.heap_breakdown.enabled) {
             const zone = bun.heap_breakdown.getZone("brotli");
-            return zone.malloc_zone_malloc(len) orelse bun.outOfMemory();
+            return zone.malloc_zone_malloc(len);
         }
 
-        return mimalloc.mi_malloc(len) orelse bun.outOfMemory();
+        return mimalloc.mi_malloc(len);
     }
 
     pub fn free(_: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
@@ -23,6 +22,19 @@ pub const BrotliAllocator = struct {
     }
 };
 
+pub fn isAllocationError(code: c_int) bool {
+    return switch (code) {
+        c.BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MODES,
+        c.BROTLI_DECODER_ERROR_ALLOC_TREE_GROUPS,
+        c.BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MAP,
+        c.BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_1,
+        c.BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_2,
+        c.BROTLI_DECODER_ERROR_ALLOC_BLOCK_TYPE_TREES,
+        => true,
+        else => false,
+    };
+}
+
 pub const DecoderOptions = struct {
     pub const Params = std.enums.EnumFieldStruct(c.BrotliDecoderParameter, bool, false);
 
@@ -33,62 +45,43 @@ pub const DecoderOptions = struct {
 };
 
 pub const BrotliReaderArrayList = struct {
-    pub const State = enum {
+    pub const State = union(enum) {
         Uninitialized,
         Inflating,
         End,
-        Error,
+        Error: error{ OutOfMemory, BrotliDecompressionError },
     };
 
     input: []const u8,
-    list: std.ArrayListUnmanaged(u8),
+    list: *std.ArrayListUnmanaged(u8),
     list_allocator: std.mem.Allocator,
-    list_ptr: *std.ArrayListUnmanaged(u8),
     brotli: *BrotliDecoder,
-    state: State = State.Uninitialized,
-    total_out: usize = 0,
+    state: State = .Uninitialized,
     total_in: usize = 0,
-    flushOp: BrotliEncoder.Operation,
-    finishFlushOp: BrotliEncoder.Operation,
-    fullFlushOp: BrotliEncoder.Operation,
-
-    pub const new = bun.TrivialNew(BrotliReaderArrayList);
 
     pub fn newWithOptions(input: []const u8, list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, options: DecoderOptions) !*BrotliReaderArrayList {
-        return BrotliReaderArrayList.new(try initWithOptions(input, list, allocator, options, .process, .finish, .flush));
-    }
-
-    pub fn initWithOptions(
-        input: []const u8,
-        list: *std.ArrayListUnmanaged(u8),
-        allocator: std.mem.Allocator,
-        options: DecoderOptions,
-        flushOp: BrotliEncoder.Operation,
-        finishFlushOp: BrotliEncoder.Operation,
-        fullFlushOp: BrotliEncoder.Operation,
-    ) !BrotliReaderArrayList {
         if (!BrotliDecoder.initializeBrotli()) {
             return error.BrotliFailedToLoad;
         }
 
-        var brotli = BrotliDecoder.createInstance(&BrotliAllocator.alloc, &BrotliAllocator.free, null) orelse return error.BrotliFailedToCreateInstance;
-        if (options.params.LARGE_WINDOW)
-            _ = brotli.setParameter(c.BrotliDecoderParameter.LARGE_WINDOW, 1);
-        if (options.params.DISABLE_RING_BUFFER_REALLOCATION)
-            _ = brotli.setParameter(c.BrotliDecoderParameter.DISABLE_RING_BUFFER_REALLOCATION, 1);
+        const reader = try bun.default_allocator.create(BrotliReaderArrayList);
+        errdefer bun.default_allocator.destroy(reader);
+        const brotli = BrotliDecoder.createInstance(&BrotliAllocator.alloc, &BrotliAllocator.free, null) orelse return error.OutOfMemory;
+        errdefer brotli.destroyInstance();
+        if (options.params.LARGE_WINDOW and !brotli.setParameter(c.BrotliDecoderParameter.LARGE_WINDOW, 1))
+            return error.BrotliInvalidParameter;
+        if (options.params.DISABLE_RING_BUFFER_REALLOCATION and !brotli.setParameter(c.BrotliDecoderParameter.DISABLE_RING_BUFFER_REALLOCATION, 1))
+            return error.BrotliInvalidParameter;
 
         bun.assert(list.items.ptr != input.ptr);
 
-        return .{
+        reader.* = .{
             .input = input,
-            .list_ptr = list,
-            .list = list.*,
+            .list = list,
             .list_allocator = allocator,
             .brotli = brotli,
-            .flushOp = flushOp,
-            .finishFlushOp = finishFlushOp,
-            .fullFlushOp = fullFlushOp,
         };
+        return reader;
     }
 
     pub fn end(this: *BrotliReaderArrayList) void {
@@ -96,40 +89,41 @@ pub const BrotliReaderArrayList = struct {
     }
 
     pub fn readAll(this: *BrotliReaderArrayList, is_done: bool) !void {
-        defer this.list_ptr.* = this.list;
-
-        if (this.state == .End or this.state == .Error) {
-            return;
-        }
+        if (this.state == .End) return;
+        if (this.state == .Error) return this.state.Error;
 
         bun.assert(this.list.items.ptr != this.input.ptr);
 
-        while (this.state == State.Uninitialized or this.state == State.Inflating) {
+        while (this.state == .Uninitialized or this.state == .Inflating) {
             var unused_capacity = this.list.unusedCapacitySlice();
 
             if (unused_capacity.len < 4096) {
-                try this.list.ensureUnusedCapacity(this.list_allocator, 4096);
+                this.list.ensureUnusedCapacity(this.list_allocator, 4096) catch |err| {
+                    this.state = .{ .Error = err };
+                    return err;
+                };
                 unused_capacity = this.list.unusedCapacitySlice();
             }
 
             bun.assert(unused_capacity.len > 0);
 
-            var next_in = this.input[this.total_in..];
-
-            var in_remaining = next_in.len;
+            const input = this.input[this.total_in..];
+            var next_in: ?[*]const u8 = input.ptr;
+            var next_out: ?[*]u8 = unused_capacity.ptr;
+            var in_remaining = input.len;
             var out_remaining = unused_capacity.len;
 
-            // https://github.com/google/brotli/blob/fef82ea10435abb1500b615b1b2c6175d429ec6c/go/cbrotli/reader.go#L15-L27
             const result = this.brotli.decompressStream(
                 &in_remaining,
-                @ptrCast(&next_in),
+                &next_in,
                 &out_remaining,
-                @ptrCast(&unused_capacity.ptr),
+                &next_out,
                 null,
             );
 
-            const bytes_written = unused_capacity.len -| out_remaining;
-            const bytes_read = next_in.len -| in_remaining;
+            bun.assert(out_remaining <= unused_capacity.len and in_remaining <= input.len);
+            const bytes_written = unused_capacity.len - out_remaining;
+            const bytes_read = input.len - in_remaining;
 
             this.list.items.len += bytes_written;
             this.total_in += bytes_read;
@@ -143,13 +137,15 @@ pub const BrotliReaderArrayList = struct {
                     return;
                 },
                 .err => {
-                    this.state = .Error;
+                    const code = this.brotli.getErrorCode();
+                    const failure = if (isAllocationError(@backingInt(code))) error.OutOfMemory else error.BrotliDecompressionError;
+                    this.state = .{ .Error = failure };
+                    if (failure == error.OutOfMemory) return failure;
                     if (comptime bun.Environment.allow_assert) {
-                        const code = this.brotli.getErrorCode();
                         bun.Output.debugWarn("Brotli error: {s} ({d})", .{ @tagName(code), @backingInt(code) });
                     }
 
-                    return error.BrotliDecompressionError;
+                    return failure;
                 },
 
                 .needs_more_input => {
@@ -159,14 +155,17 @@ pub const BrotliReaderArrayList = struct {
                     this.state = .Inflating;
                     if (is_done) {
                         // Stream is truncated - we're at EOF but decoder needs more data
-                        this.state = .Error;
+                        this.state = .{ .Error = error.BrotliDecompressionError };
                         return error.BrotliDecompressionError;
                     }
                     // Not at EOF - we can retry with more data
                     return error.ShortRead;
                 },
                 .needs_more_output => {
-                    try this.list.ensureTotalCapacity(this.list_allocator, this.list.capacity + 4096);
+                    this.list.ensureUnusedCapacity(this.list_allocator, 4096) catch |err| {
+                        this.state = .{ .Error = err };
+                        return err;
+                    };
                     this.state = .Inflating;
                 },
             }
@@ -176,67 +175,6 @@ pub const BrotliReaderArrayList = struct {
     pub fn deinit(this: *BrotliReaderArrayList) void {
         this.brotli.destroyInstance();
         bun.destroy(this);
-    }
-};
-
-pub const BrotliCompressionStream = struct {
-    pub const State = enum {
-        Inflating,
-        End,
-        Error,
-    };
-
-    brotli: *BrotliEncoder,
-    state: State = State.Inflating,
-    total_out: usize = 0,
-    total_in: usize = 0,
-    flushOp: BrotliEncoder.Operation,
-    finishFlushOp: BrotliEncoder.Operation,
-    fullFlushOp: BrotliEncoder.Operation,
-
-    pub fn init(
-        flushOp: BrotliEncoder.Operation,
-        finishFlushOp: BrotliEncoder.Operation,
-        fullFlushOp: BrotliEncoder.Operation,
-    ) !BrotliCompressionStream {
-        const instance = BrotliEncoder.createInstance(&BrotliAllocator.alloc, &BrotliAllocator.free, null) orelse return error.BrotliFailedToCreateInstance;
-
-        return BrotliCompressionStream{
-            .brotli = instance,
-            .flushOp = flushOp,
-            .finishFlushOp = finishFlushOp,
-            .fullFlushOp = fullFlushOp,
-        };
-    }
-
-    pub fn writeChunk(this: *BrotliCompressionStream, input: []const u8, last: bool) ![]const u8 {
-        this.total_in += input.len;
-        const result = this.brotli.compressStream(if (last) this.finishFlushOp else this.flushOp, input);
-
-        if (!result.success) {
-            this.state = .Error;
-            return error.BrotliCompressionError;
-        }
-
-        return result.output;
-    }
-
-    pub fn write(this: *BrotliCompressionStream, input: []const u8, last: bool) ![]const u8 {
-        if (this.state == .End or this.state == .Error) {
-            return "";
-        }
-
-        return this.writeChunk(input, last);
-    }
-
-    pub fn end(this: *BrotliCompressionStream) ![]const u8 {
-        defer this.state = .End;
-
-        return try this.write("", true);
-    }
-
-    pub fn deinit(this: *BrotliCompressionStream) void {
-        this.brotli.destroyInstance();
     }
 };
 

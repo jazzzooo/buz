@@ -138,13 +138,13 @@ public:
     JSC::JSValue createHeaders(JSC::JSGlobalObject*);
     void save();
 
-    JSC::JSValue remove(JSC::JSGlobalObject*, JSC::JSCell* thisParser);
+    void remove(JSC::JSGlobalObject*, JSC::JSCell* thisParser);
     JSC::JSValue execute(JSC::JSGlobalObject*, const char* data, size_t len);
-    JSC::JSValue initialize(JSC::JSGlobalObject*, JSC::JSCell* thisParser, llhttp_type_t type, uint64_t maxHttpHeaderSize, uint32_t lenientFlags, JSConnectionsList* connections);
-    JSC::JSValue pause();
-    JSC::JSValue resume();
-    JSC::JSValue getCurrentBuffer(JSC::JSGlobalObject*) const;
-    JSC::JSValue duration() const;
+    void initialize(JSC::JSGlobalObject*, JSC::JSCell* thisParser, llhttp_type_t type, uint64_t maxHttpHeaderSize, uint32_t lenientFlags, JSConnectionsList* connections);
+    void pause();
+    void resume();
+    std::span<const uint8_t> getCurrentBuffer() const;
+    double duration() const;
 
     bool lessThan(HTTPParser& other) const;
 

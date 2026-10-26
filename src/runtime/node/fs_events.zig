@@ -579,12 +579,12 @@ pub const FSEventsWatcher = struct {
     flushCallback: UpdateEndCallback,
     loop: ?*FSEventsLoop,
     recursive: bool,
-    ctx: ?*anyopaque,
+    ctx: *WatcherCore.CallbackContext,
 
-    pub const Callback = *const fn (ctx: ?*anyopaque, event: Event, is_file: bool) void;
-    pub const UpdateEndCallback = *const fn (ctx: ?*anyopaque) void;
+    pub const Callback = WatcherCore.Callback;
+    pub const UpdateEndCallback = WatcherCore.UpdateEndCallback;
 
-    pub fn init(loop: *FSEventsLoop, path: string, recursive: bool, callback: Callback, updateEnd: UpdateEndCallback, ctx: ?*anyopaque) *FSEventsWatcher {
+    pub fn init(loop: *FSEventsLoop, path: string, recursive: bool, callback: Callback, updateEnd: UpdateEndCallback, ctx: *WatcherCore.CallbackContext) *FSEventsWatcher {
         const this = bun.default_allocator.create(FSEventsWatcher) catch unreachable;
 
         this.* = FSEventsWatcher{
@@ -616,11 +616,12 @@ pub const FSEventsWatcher = struct {
     }
 };
 
-pub fn watch(io: std.Io, path: string, recursive: bool, callback: FSEventsWatcher.Callback, updateEnd: FSEventsWatcher.UpdateEndCallback, ctx: ?*anyopaque) !*FSEventsWatcher {
+pub fn watch(io: std.Io, path: string, recursive: bool, callback: FSEventsWatcher.Callback, updateEnd: FSEventsWatcher.UpdateEndCallback, ctx: *WatcherCore.CallbackContext) !*FSEventsWatcher {
     fsevents_default_loop_mutex.lockUncancelable(io);
     defer fsevents_default_loop_mutex.unlock(io);
     if (fsevents_default_loop == null) {
         fsevents_default_loop = try FSEventsLoop.init(io);
+        ProcessLifecycle.addShutdownCallback(&closeAtExit);
     }
     return FSEventsWatcher.init(fsevents_default_loop.?, path, recursive, callback, updateEnd, ctx);
 }
@@ -638,11 +639,18 @@ pub fn closeAndWait(io: std.Io) void {
     }
 }
 
+fn closeAtExit() callconv(.c) void {
+    const io = (fsevents_default_loop orelse return).io;
+    closeAndWait(io);
+}
+
 const string = []const u8;
 
 const std = @import("std");
-const EventType = @import("./path_watcher.zig").PathWatcher.EventType;
+const WatcherCore = @import("./fs_watcher.zig");
+const EventType = WatcherCore.ChangeKind;
 
 const bun = @import("bun");
+const ProcessLifecycle = @import("../../bun_core/ProcessLifecycle.zig");
 const UnboundedQueue = bun.threading.UnboundedQueue;
-const Event = bun.jsc.Node.fs.Watcher.Event;
+const Event = WatcherCore.Event;

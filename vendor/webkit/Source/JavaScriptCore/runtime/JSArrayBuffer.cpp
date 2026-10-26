@@ -27,6 +27,7 @@
 #include "JSArrayBuffer.h"
 
 #include "JSCInlines.h"
+#include "JSGlobalObjectInlines.h"
 #if ENABLE(WEBASSEMBLY)
 #include "JSWebAssemblyMemory.h"
 #endif // ENABLE(WEBASSEMBLY)
@@ -57,6 +58,36 @@ JSArrayBuffer* JSArrayBuffer::create(
         new (NotNull, allocateCell<JSArrayBuffer>(vm))
         JSArrayBuffer(vm, structure, WTF::move(buffer));
     result->finishCreation(vm, structure->realm());
+    return result;
+}
+
+JSArrayBuffer* JSArrayBuffer::transferToFixedLength(JSGlobalObject* globalObject, ArrayBuffer& source)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    if (source.isDetached() || !source.isDetachable() || source.hasActiveByteLease()) {
+        throwTypeError(globalObject, scope, "The ArrayBuffer cannot be transferred"_s);
+        return nullptr;
+    }
+
+    Ref protectedSource(source);
+    bool moveContents = source.isFixedLength();
+    auto target = moveContents
+        ? ArrayBuffer::tryCreate(ArrayBufferContents { })
+        : ArrayBuffer::tryCreate(source.span());
+    if (!target) {
+        throwOutOfMemoryError(globalObject, scope);
+        return nullptr;
+    }
+    auto* result = create(vm, globalObject->arrayBufferStructure(ArrayBufferSharingMode::Default), RefPtr { target });
+    RETURN_IF_EXCEPTION(scope, nullptr);
+    if (moveContents) {
+        // The empty target stays private until commit. Account for its future backing store before reporting can collect.
+        vm.heap.reportExtraMemoryAllocated(result, source.byteLength());
+        RETURN_IF_EXCEPTION(scope, nullptr);
+        RELEASE_ASSERT(source.transferTo(vm, target->m_contents));
+    } else
+        source.detach(vm);
     return result;
 }
 
@@ -117,4 +148,3 @@ void JSArrayBuffer::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 DEFINE_VISIT_CHILDREN(JSArrayBuffer);
 
 } // namespace JSC
-

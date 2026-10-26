@@ -1,57 +1,135 @@
-pub inline fn isSafeAltName(name: []const u8, utf8: bool) bool {
-    for (name) |c| {
-        switch (c) {
-            '"',
-            '\\',
-            // These mess with encoding rules.
-            // Fall through.
-            ',',
-            // Commas make it impossible to split the list of subject alternative
-            // names unambiguously, which is why we have to escape.
-            // Fall through.
-            '\'',
-            => {
-                // Single quotes are unlikely to appear in any legitimate values, but they
-                // could be used to make a value look like it was escaped (i.e., enclosed
-                // in single/double quotes).
-                return false;
-            },
-            else => {
-                if (utf8) {
-                    // In UTF8 strings, we require escaping for any ASCII control character,
-                    // but NOT for non-ASCII characters. Note that all bytes of any code
-                    // point that consists of more than a single byte have their MSB set.
-                    if (c < ' ' or c == '\x7f') {
-                        return false;
-                    }
-                } else {
-                    // Check if the char is a control character or non-ASCII character. Note
-                    // that char may or may not be a signed type. Regardless, non-ASCII
-                    // values will always be outside of this range.
-                    if (c < ' ' or c > '~') {
-                        return false;
-                    }
-                }
-            },
+pub const LegacyCertificate = bindgen.Return(LegacyCertificateSchema);
+const Data = bindgen.Return(ToLegacyObjectSchema);
+const CallbackValue = @FieldType(bindgen.Args(bindgen.CallbackSchema("FetchCheckServerIdentityCallback")), "certificate");
+const StringOperand = @typeInfo(@FieldType(CallbackValue, "subjectaltname")).optional.child;
+const StringSequence = @typeInfo(@FieldType(LegacyCertificate, "ext_key_usage")).optional.child;
+const NameEntry = std.meta.Elem(@typeInfo(@FieldType(CallbackValue, "subject")).optional.child);
+const InfoEntry = std.meta.Elem(@typeInfo(@FieldType(CallbackValue, "infoAccess")).optional.child);
+
+pub const CallbackCertificate = struct {
+    value: CallbackValue,
+    owner: LegacyCertificate,
+    strings: std.ArrayList(bindgen.DOMString) = .empty,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn fromOwned(owner: LegacyCertificate) bun.OOM!CallbackCertificate {
+        var result: CallbackCertificate = .{
+            .value = undefined,
+            .owner = owner,
+            .arena = .init(bun.default_allocator),
+        };
+        errdefer result.deinit();
+        result.value = .{
+            .subject = if (result.owner.subject) |*record| try result.takeRecord(NameEntry, record) else null,
+            .issuer = if (result.owner.issuer) |*record| try result.takeRecord(NameEntry, record) else null,
+            .infoAccess = if (result.owner.infoAccess) |*record| try result.takeRecord(InfoEntry, record) else null,
+            .ext_key_usage = if (result.owner.ext_key_usage) |*sequence| try result.takeStrings(sequence) else null,
+            .subjectaltname = null,
+            .bits = owner.bits,
+            .pubkey = if (owner.pubkey) |*bytes| bytes.operand() else null,
+            .valid_from = null,
+            .valid_to = null,
+            .fingerprint = null,
+            .fingerprint256 = null,
+            .fingerprint512 = null,
+            .serialNumber = null,
+            .raw = owner.raw.operand(),
+            .ca = owner.ca,
+        };
+        inline for (.{ "subjectaltname", "modulus", "exponent", "asn1Curve", "nistCurve", "valid_from", "valid_to", "fingerprint", "fingerprint256", "fingerprint512", "serialNumber" }) |field| {
+            @field(result.value, field) = if (@field(result.owner, field)) |*text| text.operand() else null;
         }
+        return result;
     }
-    return true;
+
+    fn keepString(self: *CallbackCertificate, string: *bindgen.DOMString) bun.OOM!StringOperand {
+        try self.strings.ensureUnusedCapacity(self.arena.allocator(), 1);
+        const owned = string.take();
+        self.strings.appendAssumeCapacity(owned);
+        return owned.operand();
+    }
+
+    fn takeStrings(self: *CallbackCertificate, sequence: *StringSequence) bun.OOM![]const StringOperand {
+        const values = try self.arena.allocator().alloc(StringOperand, sequence.len());
+        var iterator = sequence.iterator();
+        for (values) |*value| {
+            var item = iterator.next().?.value;
+            defer item.deinit();
+            value.* = try self.keepString(&item);
+        }
+        return values;
+    }
+
+    fn takeRecord(self: *CallbackCertificate, comptime Entry: type, record: anytype) bun.OOM![]const Entry {
+        const entries = try self.arena.allocator().alloc(Entry, record.len());
+        var iterator = record.iterator();
+        for (entries) |*entry| {
+            var item = (try iterator.next()).?;
+            defer item.deinit();
+            entry.* = .{
+                .key = try self.keepString(&item.key),
+                .value = if (Entry == NameEntry) switch (item.value) {
+                    .value => |*text| .{ .value = try self.keepString(text) },
+                    .values => |*values| .{ .values = try self.takeStrings(values) },
+                } else if (Entry == InfoEntry)
+                    try self.takeStrings(&item.value)
+                else
+                    @compileError("unsupported certificate record entry"),
+            };
+        }
+        return entries;
+    }
+
+    pub fn deinit(self: *CallbackCertificate) void {
+        for (self.strings.items) |*string| string.deinit();
+        deinitLegacyCertificate(&self.owner);
+        self.arena.deinit();
+    }
+};
+
+pub fn deinitLegacyCertificate(data: *LegacyCertificate) void {
+    bindgen.deinitResult(LegacyCertificateSchema.ReturnType, data);
 }
 
-pub fn toJS(cert: *BoringSSL.X509, globalObject: *JSGlobalObject) bun.JSError!JSValue {
-    return bun.jsc.fromJSHostCall(globalObject, @src(), Bun__X509__toJSLegacyEncoding, .{ cert, globalObject });
+fn bytesToOwned(sequence: anytype) bun.OOM!bindgen.OwnedBytes {
+    var result = try bindgen.OwnedBytes.initUninitialized(sequence.len());
+    errdefer result.deinit();
+    var iterator = sequence.iterator();
+    var index: usize = 0;
+    while (iterator.next()) |item| : (index += 1) result.mutableSlice()[index] = item.value;
+    sequence.deinit();
+    return result;
 }
 
-pub fn toJSObject(cert: *BoringSSL.X509, globalObject: *JSGlobalObject) bun.JSError!JSValue {
-    return Bun__X509__toJS(cert, globalObject);
+pub fn materializeLegacyCertificate(data: *Data) bun.OOM!LegacyCertificate {
+    defer bindgen.deinitReturn(ToLegacyObjectSchema, data);
+    var raw = try bytesToOwned(&data.raw);
+    errdefer raw.deinit();
+    var pubkey: ?bindgen.OwnedBytes = if (data.pubkey) |*bytes| try bytesToOwned(bytes) else null;
+    var result: LegacyCertificate = undefined;
+    inline for (@typeInfo(LegacyCertificate).@"struct".field_names) |field| {
+        @field(result, field) = if (comptime std.mem.eql(u8, field, "raw"))
+            raw.take()
+        else if (comptime std.mem.eql(u8, field, "pubkey"))
+            if (pubkey) |*bytes| bytes.take() else null
+        else switch (@typeInfo(@FieldType(LegacyCertificate, field))) {
+            .optional => bun.take(&@field(data, field)),
+            .bool => @field(data, field),
+            else => @compileError("certificate field requires an explicit ownership conversion: " ++ field),
+        };
+    }
+    return result;
 }
 
-extern fn Bun__X509__toJSLegacyEncoding(cert: *BoringSSL.X509, globalObject: *JSGlobalObject) JSValue;
-extern fn Bun__X509__toJS(cert: *BoringSSL.X509, globalObject: *JSGlobalObject) JSValue;
+pub fn legacyCertificateFromContext(context: anytype, cert: *BoringSSL.X509) bun.JSError!LegacyCertificate {
+    var data = try context.engineIn("X509", "x509ToLegacyObject").call(.{ .certificate = @ptrCast(cert) });
+    return materializeLegacyCertificate(&data);
+}
 
+const std = @import("std");
 const bun = @import("bun");
+const bindgen = bun.bindgen;
 const BoringSSL = bun.BoringSSL.c;
-
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+const X509Bindings = bindgen.Module("X509");
+const ToLegacyObjectSchema = X509Bindings.engineShim("x509ToLegacyObject");
+const LegacyCertificateSchema = X509Bindings.function("certificateToLegacyObject");

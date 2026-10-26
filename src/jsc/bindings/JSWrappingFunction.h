@@ -8,7 +8,6 @@ class GlobalObject;
 #include <JavaScriptCore/JSFunction.h>
 #include <JavaScriptCore/VM.h>
 
-#include "headers-handwritten.h"
 #include "BunClientData.h"
 #include <JavaScriptCore/CallFrame.h>
 
@@ -50,7 +49,9 @@ public:
     }
 
     DECLARE_EXPORT_INFO;
-    static JSWrappingFunction* create(JSC::VM& vm, Zig::GlobalObject* globalObject, const BunString* symbolName, NativeFunctionPtr functionPointer, JSC::JSValue wrappedFn);
+    static JSWrappingFunction* create(JSC::VM& vm, Zig::GlobalObject* globalObject, const WTF::String& symbolName, NativeFunctionPtr functionPointer, JSC::JSValue wrappedFn);
+
+    JSC::JSObject* wrappedFunction() const { return m_wrappedFn.get(); }
 
     static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
     {

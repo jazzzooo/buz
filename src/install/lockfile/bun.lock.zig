@@ -1149,6 +1149,7 @@ pub fn parseIntoBinaryLockfile(
     source: *const logger.Source,
     log: *logger.Log,
     manager: ?*PackageManager,
+    parse_context: Dependency.ParseContext,
 ) ParseError!void {
     lockfile.initEmpty(allocator);
 
@@ -1279,7 +1280,7 @@ pub fn parseIntoBinaryLockfile(
                     version_sliced.slice,
                     &version_sliced,
                     log,
-                    manager,
+                    parse_context,
                 ) orelse {
                     try log.addError(source, value.loc, "Invalid override version");
                     return error.InvalidOverridesObject;
@@ -1329,7 +1330,7 @@ pub fn parseIntoBinaryLockfile(
                     version_sliced.slice,
                     &version_sliced,
                     log,
-                    manager,
+                    parse_context,
                 ) orelse {
                     try log.addError(source, value.loc, "Invalid catalog version");
                     return error.InvalidCatalogObject;
@@ -1409,7 +1410,7 @@ pub fn parseIntoBinaryLockfile(
                         version_sliced.slice,
                         &version_sliced,
                         log,
-                        manager,
+                        parse_context,
                     ) orelse {
                         try log.addError(source, value.loc, "Invalid catalog version");
                         return error.InvalidCatalogsObject;
@@ -1513,6 +1514,7 @@ pub fn parseIntoBinaryLockfile(
 
         const off, const len = try parseAppendDependencies(
             lockfile,
+            parse_context,
             allocator,
             &root_pkg_exr,
             &string_buf,
@@ -1572,6 +1574,7 @@ pub fn parseIntoBinaryLockfile(
 
                 const off, const len = try parseAppendDependencies(
                     lockfile,
+                    parse_context,
                     allocator,
                     &value,
                     &string_buf,
@@ -1704,7 +1707,7 @@ pub fn parseIntoBinaryLockfile(
             const name_hash = String.Builder.stringHash(name_str);
             const name = try string_buf.append(name_str);
 
-            var res = Resolution.fromTextLockfile(res_str, &string_buf) catch |err| switch (err) {
+            var res = Resolution.fromTextLockfile(parse_context.javascript_semantics, res_str, &string_buf) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 error.UnexpectedResolution => {
                     try log.addErrorFmt(source, res_info.loc, allocator, "Unexpected resolution: {s}", .{res_str});
@@ -1819,6 +1822,7 @@ pub fn parseIntoBinaryLockfile(
 
                     const off, const len = try parseAppendDependencies(
                         lockfile,
+                        parse_context,
                         allocator,
                         deps_os_cpu_libc_bin_bundle_obj,
                         &string_buf,
@@ -2119,6 +2123,7 @@ fn dependencyResolutionFailure(dep: *const Dependency, pkg_path: ?string, alloca
 
 fn parseAppendDependencies(
     lockfile: *BinaryLockfile,
+    parse_context: Dependency.ParseContext,
     allocator: std.mem.Allocator,
     obj: *const Expr,
     buf: *String.Buf,
@@ -2194,7 +2199,7 @@ fn parseAppendDependencies(
                         version_sliced.slice,
                         &version_sliced,
                         log,
-                        null,
+                        parse_context,
                     ) orelse {
                         try log.addError(source, value.loc, "Invalid dependency version");
                         return error.InvalidDependencyVersion;

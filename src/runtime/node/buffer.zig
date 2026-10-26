@@ -1,50 +1,26 @@
 pub const BufferVectorized = struct {
     pub fn fill(
-        str: *jsc.ZigString,
-        buf_ptr: [*]u8,
-        fill_length: usize,
-        encoding: jsc.Node.Encoding,
-    ) callconv(.c) bool {
-        if (str.len == 0) return true;
+        input: bun.bindgen.UnsafeStringCodeUnits,
+        output: []u8,
+        encoding: NodeTypes.Encoding,
+    ) bool {
+        const input_length = switch (input) {
+            inline else => |units| units.len,
+        };
+        if (input_length == 0) return true;
 
-        var buf = buf_ptr[0..fill_length];
+        var buf = output;
 
-        const written = switch (encoding) {
-            .utf8 => if (str.is16Bit())
-                Encoder.writeU16(str.utf16SliceAligned().ptr, str.utf16SliceAligned().len, buf.ptr, buf.len, .utf8, true)
-            else
-                Encoder.writeU8(str.slice().ptr, str.slice().len, buf.ptr, buf.len, .utf8),
-            .ascii => if (str.is16Bit())
-                Encoder.writeU16(str.utf16SliceAligned().ptr, str.utf16SliceAligned().len, buf.ptr, buf.len, .ascii, true)
-            else
-                Encoder.writeU8(str.slice().ptr, str.slice().len, buf.ptr, buf.len, .ascii),
-            .latin1 => if (str.is16Bit())
-                Encoder.writeU16(str.utf16SliceAligned().ptr, str.utf16SliceAligned().len, buf.ptr, buf.len, .latin1, true)
-            else
-                Encoder.writeU8(str.slice().ptr, str.slice().len, buf.ptr, buf.len, .latin1),
-            .buffer => if (str.is16Bit())
-                Encoder.writeU16(str.utf16SliceAligned().ptr, str.utf16SliceAligned().len, buf.ptr, buf.len, .buffer, true)
-            else
-                Encoder.writeU8(str.slice().ptr, str.slice().len, buf.ptr, buf.len, .buffer),
-            .utf16le, .ucs2 => if (str.is16Bit())
-                Encoder.writeU16(str.utf16SliceAligned().ptr, str.utf16SliceAligned().len, buf.ptr, buf.len, .utf16le, true)
-            else
-                Encoder.writeU8(str.slice().ptr, str.slice().len, buf.ptr, buf.len, .utf16le),
-            .base64 => if (str.is16Bit())
-                Encoder.writeU16(str.utf16SliceAligned().ptr, str.utf16SliceAligned().len, buf.ptr, buf.len, .base64, true)
-            else
-                Encoder.writeU8(str.slice().ptr, str.slice().len, buf.ptr, buf.len, .base64),
-            .base64url => if (str.is16Bit())
-                Encoder.writeU16(str.utf16SliceAligned().ptr, str.utf16SliceAligned().len, buf.ptr, buf.len, .base64url, true)
-            else
-                Encoder.writeU8(str.slice().ptr, str.slice().len, buf.ptr, buf.len, .base64url),
-            .hex => if (str.is16Bit())
-                Encoder.writeU16(str.utf16SliceAligned().ptr, str.utf16SliceAligned().len, buf.ptr, buf.len, .hex, true)
-            else
-                Encoder.writeU8(str.slice().ptr, str.slice().len, buf.ptr, buf.len, .hex),
-        } catch return false;
+        const written = switch (input) {
+            .utf16 => |units| switch (encoding) {
+                inline else => |resolved| Encoder.writeU16(units.ptr, units.len, buf.ptr, buf.len, resolved, true),
+            },
+            .latin1 => |units| switch (encoding) {
+                inline else => |resolved| Encoder.writeU8(units.ptr, units.len, buf.ptr, buf.len, resolved, true),
+            },
+        };
 
-        if (written == 0 and str.length() > 0) return false;
+        if (written == 0 and input_length > 0) return false;
 
         switch (written) {
             0 => return true,
@@ -78,13 +54,27 @@ pub const BufferVectorized = struct {
     }
 };
 
+fn bindBufferFill(
+    args: bun.bindgen.Args(BufferFillSchema),
+) bun.bindgen.Return(BufferFillSchema) {
+    const input = args.input.unsafePtr("the calling C++ frame owns the string until synchronous buffer filling returns");
+    const output = args.output.unsafePtr("the calling C++ frame roots the destination Buffer until synchronous filling returns");
+    const encoding: NodeTypes.Encoding = switch (args.encoding) {
+        inline else => |value| @field(NodeTypes.Encoding, @tagName(value)),
+    };
+    return BufferVectorized.fill(input, output, encoding);
+}
+
 comptime {
-    @export(&BufferVectorized.fill, .{ .name = "Bun__Buffer_fill" });
+    _ = BufferFillBinding;
 }
 
 const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const jsc = bun.jsc;
-const Encoder = jsc.WebCore.encoding;
+const NodeTypes = @import("./types.zig");
+const Encoder = @import("../webcore/encoding.zig");
+const ArrayBufferBindings = bun.bindgen.Module("array_buffers");
+const BufferFillSchema = ArrayBufferBindings.nativeExport("bufferFill");
+const BufferFillBinding = bun.bindgen.Fn(BufferFillSchema, bindBufferFill);

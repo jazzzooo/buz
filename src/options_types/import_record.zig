@@ -24,11 +24,24 @@ pub const ImportKind = enum(u8) {
 
     internal = 11,
 
+    pub fn toBinding(this: ImportKind, comptime Kind: type) Kind {
+        return switch (this) {
+            .entry_point_run => .entry_point_run,
+            .entry_point_build => .entry_point_build,
+            .stmt => .import_statement,
+            .require => .require_call,
+            .dynamic => .dynamic_import,
+            .require_resolve => .require_resolve,
+            .at, .at_conditional => .import_rule,
+            .url => .url_token,
+            .composes => .composes,
+            .html_manifest => .html_manifest,
+            .internal => .internal,
+        };
+    }
+
     pub const Label = std.EnumArray(ImportKind, []const u8);
     pub const all_labels: Label = brk: {
-        // If these are changed, make sure to update
-        // - src/js/builtins/codegen/replacements.ts
-        // - packages/bun-types/bun.d.ts
         var labels = Label.initFill("");
         labels.set(ImportKind.entry_point_run, "entry-point-run");
         labels.set(ImportKind.entry_point_build, "entry-point-build");
@@ -37,6 +50,7 @@ pub const ImportKind = enum(u8) {
         labels.set(ImportKind.dynamic, "dynamic-import");
         labels.set(ImportKind.require_resolve, "require-resolve");
         labels.set(ImportKind.at, "import-rule");
+        labels.set(ImportKind.at_conditional, "import-rule");
         labels.set(ImportKind.url, "url-token");
         labels.set(ImportKind.composes, "composes");
         labels.set(ImportKind.internal, "internal");
@@ -53,6 +67,7 @@ pub const ImportKind = enum(u8) {
         labels.set(ImportKind.dynamic, "import()");
         labels.set(ImportKind.require_resolve, "require.resolve()");
         labels.set(ImportKind.at, "@import");
+        labels.set(ImportKind.at_conditional, "@import");
         labels.set(ImportKind.url, "url()");
         labels.set(ImportKind.internal, "<bun internal>");
         labels.set(ImportKind.composes, "composes");

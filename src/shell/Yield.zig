@@ -46,13 +46,13 @@ pub const Yield = union(enum) {
     ///       it is only used in 2 places. we might need to implement signals
     ///       first tho.
     on_io_writer_chunk: struct {
-        err: ?jsc.SystemError,
+        err: ?bun.sys.SystemError,
         written: usize,
-        /// This type is actually `IOWriterChildPtr`, but because
-        /// of an annoying cyclic Zig compile error we're doing this
-        /// quick fix of making it `*anyopaque`.
-        child: *anyopaque,
+        child: IOWriterChildPtr,
     },
+
+    /// Owns a writer reference until its pending error notifications are drained.
+    io_writer_error: *IOWriter,
 
     suspended,
     /// Failed and threw a JS error
@@ -97,6 +97,11 @@ pub const Yield = union(enum) {
         var pipeline_stack = bun.handleOom(std.array_list.Managed(*Pipeline).initCapacity(alloc, 4));
         defer pipeline_stack.deinit();
 
+        var error_buffer: [4]*IOWriter = undefined;
+        var error_allocator: std.heap.BufferFirstAllocator = .init(@ptrCast(&error_buffer), bun.default_allocator);
+        var error_writers: std.ArrayList(*IOWriter) = .empty;
+        defer error_writers.deinit(error_allocator.allocator());
+
         // Note that we're using labelled switch statements but _not_
         // re-assigning `this`, so the `this` variable is stale after the first
         // execution. Don't touch it.
@@ -122,10 +127,21 @@ pub const Yield = union(enum) {
             .subshell => |x| continue :state x.next(),
             .cond_expr => |x| continue :state x.next(),
             .on_io_writer_chunk => |x| {
-                const child = IOWriterChildPtr.fromAnyOpaque(x.child);
-                continue :state child.onIOWriterChunk(x.written, x.err);
+                continue :state x.child.onIOWriterChunk(x.written, x.err);
+            },
+            .io_writer_error => |writer| {
+                const next = writer.nextError();
+                if (writer.hasPendingErrorNotifications()) {
+                    bun.handleOom(error_writers.append(error_allocator.allocator(), writer));
+                } else {
+                    writer.deref();
+                }
+                continue :state next orelse .done;
             },
             .failed, .suspended, .done => {
+                if (error_writers.pop()) |writer| {
+                    continue :state .{ .io_writer_error = writer };
+                }
                 if (drainPipelines(&pipeline_stack)) |yield| {
                     continue :state yield;
                 }
@@ -153,7 +169,6 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const jsc = bun.jsc;
 const shell = bun.shell;
 const log = bun.shell.interpret.log;
 

@@ -252,7 +252,7 @@ describe("fs.watchFile", () => {
       const dir = ${JSON.stringify(dir)};
 
       // unref(): release poll_ref so the fixed build can exit naturally
-      // even though JSRef keeps wrappers alive and closed is never set.
+      // even though the wrapper reference keeps wrappers alive and closed is never set.
       // _handle = null: disconnect the native wrapper from JS without
       // calling close(). On the broken build, finalize() is now the only
       // path that can set closed=true.
@@ -271,7 +271,7 @@ describe("fs.watchFile", () => {
       // On the broken build: finalize() sets closed=true, deref (2->1).
       // Timer fires, workPoolCallback sees closed=true, deref on WorkPool
       // (1->0), deinit() calls last_jsvalue.deinit() on the WorkPool thread.
-      // On the fixed build: JSRef initStrong keeps wrappers rooted, none of
+      // When the strong wrapper reference keeps wrappers rooted, none of
       // this runs, the GC calls below are no-ops.
       Bun.gc(true);
       await Bun.sleep(200);

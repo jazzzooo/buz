@@ -1,20 +1,89 @@
 #include "CryptoHkdf.h"
-#include "NodeValidator.h"
-#include "CryptoUtil.h"
-#include "JSCryptoKey.h"
-#include "CryptoKey.h"
-#include "JSBuffer.h"
-#include "ErrorCode.h"
-#include "BunString.h"
+#include "SchemaBindings.h"
 #include "JSKeyObject.h"
+#include "ErrorCode.h"
+#include "JSDOMExceptionHandling.h"
+#include <JavaScriptCore/JSArrayBuffer.h>
+#include <JavaScriptCore/JSArrayBufferView.h>
+#include "webcrypto/CryptoKey.h"
+#include "webcrypto/WebCryptoKey.h"
 
 using namespace JSC;
 using namespace WebCore;
 using namespace ncrypto;
 
+namespace {
+
+Bun::Bindgen::NativeAllocationResult<WTF::Vector<uint8_t>> copyBytes(std::span<const uint8_t> bytes)
+{
+    WTF::Vector<uint8_t> result;
+    if (!result.tryAppend(bytes))
+        return Bun::Bindgen::nativeAllocationFailure();
+    return result;
+}
+
+WTF::Vector<uint8_t> copySecretKeyBytes(JSGlobalObject* globalObject, ThrowScope& scope, std::span<const uint8_t> bytes)
+{
+    auto result = copyBytes(bytes);
+    if (!result) {
+        throwOutOfMemoryError(globalObject, scope);
+        return {};
+    }
+    return WTF::move(*result);
+}
+
+static Bun::JSKeyObject* nodeKeyObject(JSC::JSValue value)
+{
+    auto* key = dynamicDowncast<Bun::JSKeyObject>(value);
+    RELEASE_ASSERT(key);
+    return key;
+}
+
+
+} // namespace
+
 namespace Bun {
 
-HkdfJobCtx::HkdfJobCtx(Digest digest, size_t length, KeyObject&& key, WTF::Vector<uint8_t>&& info, WTF::Vector<uint8_t>&& salt)
+WTF::Vector<uint8_t> exportSecretKeyBytes(JSGlobalObject* globalObject, ThrowScope& scope, const Bindgen::NodeSecretKeyObjectInput& value)
+{
+    if (value.is_key_object()) {
+        const auto& key = nodeKeyObject(value.key_object())->handle();
+        if (key.type() != CryptoKeyType::Secret) {
+            ERR::CRYPTO_INVALID_KEY_OBJECT_TYPE(scope, globalObject, key.type(), "secret"_s);
+            return {};
+        }
+        return copySecretKeyBytes(globalObject, scope, key.symmetricKey().span());
+    }
+
+    RELEASE_ASSERT(value.is_crypto_key());
+    auto& cryptoKey = webCryptoKey(value.crypto_key());
+    if (cryptoKey.type() != CryptoKeyType::Secret) {
+        ERR::CRYPTO_INVALID_KEY_OBJECT_TYPE(scope, globalObject, cryptoKey.type(), "secret"_s);
+        return {};
+    }
+    auto key = KeyObject::create(cryptoKey);
+    if (key.hasException()) {
+        WebCore::propagateException(*globalObject, scope, key.releaseException());
+        return {};
+    }
+    auto keyObject = key.releaseReturnValue();
+    return copySecretKeyBytes(globalObject, scope, keyObject.symmetricKey().span());
+}
+
+Bun::Bindgen::CppBytes Bindgen::Engine::bunBindgenEngine_node_crypto_engine_nodeCryptoExportSecretKey(
+    Bindgen::EngineCallContext& context,
+    const BunBindgenEngine_node_crypto_engine_nodeCryptoExportSecretKey_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    return exportSecretKeyBytes(&context.globalObject, scope, args.key);
+}
+
+HkdfJobCtx::HkdfJobCtx(
+    Digest digest,
+    size_t length,
+    WTF::Vector<uint8_t>&& key,
+    WTF::Vector<uint8_t>&& info,
+    WTF::Vector<uint8_t>&& salt)
     : m_digest(digest)
     , m_length(length)
     , m_key(WTF::move(key))
@@ -23,265 +92,100 @@ HkdfJobCtx::HkdfJobCtx(Digest digest, size_t length, KeyObject&& key, WTF::Vecto
 {
 }
 
-HkdfJobCtx::HkdfJobCtx(HkdfJobCtx&& other)
-    : m_digest(other.m_digest)
-    , m_length(other.m_length)
-    , m_key(WTF::move(other.m_key))
-    , m_info(WTF::move(other.m_info))
-    , m_salt(WTF::move(other.m_salt))
-    , m_result(WTF::move(other.m_result))
-{
-}
-
 HkdfJobCtx::~HkdfJobCtx()
 {
+    if (!m_key.isEmpty())
+        memsetSpan(m_key.mutableSpan(), 0);
 }
 
-extern "C" void Bun__HkdfJobCtx__runTask(HkdfJobCtx* ctx, JSGlobalObject* lexicalGlobalObject)
+void HkdfJobCtx::runTask()
 {
-    ctx->runTask(lexicalGlobalObject);
-}
-void HkdfJobCtx::runTask(JSGlobalObject* lexicalGlobalObject)
-{
-    auto key = m_key.symmetricKey().span();
-
-    auto keyBuf = ncrypto::Buffer<const unsigned char> {
-        .data = key.data(),
-        .len = key.size(),
-    };
-    auto infoBuf = ncrypto::Buffer<const unsigned char> {
-        .data = m_info.begin(),
-        .len = m_info.size(),
-    };
-    auto saltBuf = ncrypto::Buffer<const unsigned char> {
-        .data = m_salt.begin(),
-        .len = m_salt.size(),
-    };
-    auto dp = ncrypto::hkdf(m_digest, keyBuf, infoBuf, saltBuf, m_length);
-
-    if (!dp) {
-        // indicate an error with m_result == std::nullopt
+    if (m_length == 0) {
+        m_result.emplace();
         return;
     }
 
-    m_result = ByteSource::allocated(dp.release());
+    auto result = ncrypto::hkdf(
+        m_digest,
+        ncrypto::Buffer<const unsigned char>::from(m_key.span()),
+        ncrypto::Buffer<const unsigned char>::from(m_info.span()),
+        ncrypto::Buffer<const unsigned char>::from(m_salt.span()),
+        m_length);
+    if (result)
+        m_result = ByteSource::allocated(result.release());
 }
 
-extern "C" void Bun__HkdfJobCtx__runFromJS(HkdfJobCtx* ctx, JSGlobalObject* lexicalGlobalObject, EncodedJSValue callback)
+const EVP_MD* Bindgen::Engine::bunBindgenEngine_node_crypto_engine_nodeCryptoResolveDigest(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_node_crypto_engine_nodeCryptoResolveDigest_Arguments& args)
 {
-    ctx->runFromJS(lexicalGlobalObject, JSValue::decode(callback));
-}
-void HkdfJobCtx::runFromJS(JSGlobalObject* lexicalGlobalObject, JSValue callback)
-{
-    auto& vm = lexicalGlobalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (!m_result) {
-        JSObject* err = createError(lexicalGlobalObject, ErrorCode::ERR_CRYPTO_OPERATION_FAILED, "hkdf operation failed"_s);
-        Bun__EventLoop__runCallback1(lexicalGlobalObject, JSValue::encode(callback), JSValue::encode(jsUndefined()), JSValue::encode(err));
-        return;
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    auto digest = Digest::FromName(args.name);
+    if (!digest) {
+        ERR::CRYPTO_INVALID_DIGEST(scope, &context.globalObject, args.name);
+        return nullptr;
     }
 
-    auto& result = m_result.value();
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-
-    RefPtr<ArrayBuffer> buf = ArrayBuffer::tryCreateUninitialized(result.size(), 1);
-    if (!buf) {
-        JSObject* err = createOutOfMemoryError(lexicalGlobalObject);
-        Bun__EventLoop__runCallback1(lexicalGlobalObject, JSValue::encode(callback), JSValue::encode(jsUndefined()), JSValue::encode(err));
-        return;
-    }
-
-    memcpy(buf->data(), result.data(), result.size());
-
-    Bun__EventLoop__runCallback2(lexicalGlobalObject,
-        JSValue::encode(callback),
-        JSValue::encode(jsUndefined()),
-        JSValue::encode(jsNull()),
-        JSValue::encode(JSArrayBuffer::create(vm, globalObject->arrayBufferStructure(), buf.releaseNonNull())));
+    scope.release();
+    return digest.get();
 }
 
-extern "C" void Bun__HkdfJobCtx__deinit(HkdfJobCtx* ctx)
+Bindgen::NativeAllocationResult<std::optional<WTF::Vector<uint8_t>>> HkdfJobCtx::takeResult()
 {
-    ctx->deinit();
-}
-void HkdfJobCtx::deinit()
-{
-    delete this;
-}
+    if (!m_result)
+        return std::optional<WTF::Vector<uint8_t>> {};
 
-extern "C" HkdfJob* Bun__HkdfJob__create(JSGlobalObject* globalObject, HkdfJobCtx* ctx, EncodedJSValue callback);
-HkdfJob* HkdfJob::create(JSGlobalObject* globalObject, HkdfJobCtx&& ctx, JSValue callback)
-{
-    HkdfJobCtx* ctxCopy = new HkdfJobCtx(WTF::move(ctx));
-    return Bun__HkdfJob__create(globalObject, ctxCopy, JSValue::encode(callback));
+    auto result = copyBytes(m_result->span());
+    if (!result)
+        return Bindgen::nativeAllocationFailure();
+    m_result.reset();
+    return std::optional<WTF::Vector<uint8_t>> { WTF::move(*result) };
 }
 
-extern "C" void Bun__HkdfJob__schedule(HkdfJob* job);
-void HkdfJob::schedule()
+uint32_t Bindgen::Engine::bunBindgenEngine_node_crypto_engine_nodeCryptoDigestSize(
+    const BunBindgenEngine_node_crypto_engine_nodeCryptoDigestSize_Arguments& args)
 {
-    Bun__HkdfJob__schedule(this);
+    return static_cast<uint32_t>(Digest(args.digest).size());
 }
 
-extern "C" void Bun__HkdfJob__createAndSchedule(JSGlobalObject* globalObject, HkdfJobCtx* ctx, EncodedJSValue callback);
-void HkdfJob::createAndSchedule(JSGlobalObject* globalObject, HkdfJobCtx&& ctx, JSValue callback)
+Bindgen::NativeAllocationResult<HkdfJobCtx*> Bindgen::Engine::bunBindgenEngine_node_crypto_engine_nodeCryptoHkdfCreate(
+    const BunBindgenEngine_node_crypto_engine_nodeCryptoHkdfCreate_Arguments& args)
 {
-    HkdfJobCtx* ctxCopy = new HkdfJobCtx(WTF::move(ctx));
-    return Bun__HkdfJob__createAndSchedule(globalObject, ctxCopy, JSValue::encode(callback));
+    auto key = copyBytes(args.key);
+    if (!key)
+        return Bindgen::nativeAllocationFailure();
+    auto info = copyBytes(args.info);
+    if (!info)
+        return Bindgen::nativeAllocationFailure();
+    auto salt = copyBytes(args.salt);
+    if (!salt)
+        return Bindgen::nativeAllocationFailure();
+    void* storage = nullptr;
+    if (!WTF::tryFastMalloc(sizeof(HkdfJobCtx)).getValue(storage))
+        return Bindgen::nativeAllocationFailure();
+    return new (NotNull, storage) HkdfJobCtx(
+        Digest(args.digest),
+        args.length,
+        WTF::move(*key),
+        WTF::move(*info),
+        WTF::move(*salt));
 }
 
-// similar to prepareSecretKey
-KeyObject prepareKey(JSGlobalObject* globalObject, ThrowScope& scope, JSValue key)
+void Bindgen::Engine::bunBindgenEngine_node_crypto_engine_nodeCryptoHkdfRunTask(
+    const BunBindgenEngine_node_crypto_engine_nodeCryptoHkdfRunTask_Arguments& args)
 {
-    if (JSKeyObject* keyObject = dynamicDowncast<JSKeyObject>(key)) {
-        // Node doesn't check for CryptoKeyType::Secret, so we don't either
-        return keyObject->handle();
-    }
-
-    // Handle string or buffer
-    if (key.isString()) {
-        JSString* keyString = key.toString(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-        auto keyView = keyString->view(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        BufferEncodingType encoding = BufferEncodingType::utf8;
-        JSValue buffer = JSValue::decode(WebCore::constructFromEncoding(globalObject, keyView, encoding));
-        auto* view = dynamicDowncast<JSC::JSArrayBufferView>(buffer);
-
-        Vector<uint8_t> copy;
-        copy.append(view->span());
-        return KeyObject::create(WTF::move(copy));
-    }
-
-    // Handle ArrayBuffer types
-    if (auto* view = dynamicDowncast<JSC::JSArrayBufferView>(key)) {
-        Vector<uint8_t> copy;
-        copy.append(view->span());
-        return KeyObject::create(WTF::move(copy));
-    }
-
-    if (auto* buf = dynamicDowncast<JSC::JSArrayBuffer>(key)) {
-        auto* impl = buf->impl();
-        Vector<uint8_t> copy;
-        copy.append(impl->span());
-        return KeyObject::create(WTF::move(copy));
-    }
-
-    ERR::INVALID_ARG_TYPE(scope, globalObject, "ikm"_s, "string or an instance of SecretKeyObject, ArrayBuffer, TypedArray, DataView, or Buffer"_s, key);
-    return {};
+    args.job->runTask();
 }
 
-void copyBufferOrString(JSGlobalObject* lexicalGlobalObject, ThrowScope& scope, JSValue value, const WTF::ASCIILiteral& name, WTF::Vector<uint8_t>& buffer)
+Bindgen::Engine::BunBindgenEngine_node_crypto_engine_nodeCryptoHkdfTakeResult_Return Bindgen::Engine::bunBindgenEngine_node_crypto_engine_nodeCryptoHkdfTakeResult(
+    const BunBindgenEngine_node_crypto_engine_nodeCryptoHkdfTakeResult_Arguments& args)
 {
-    if (value.isString()) {
-        JSString* str = value.toString(lexicalGlobalObject);
-        RETURN_IF_EXCEPTION(scope, );
-        GCOwnedDataScope<WTF::StringView> view = str->view(lexicalGlobalObject);
-        RETURN_IF_EXCEPTION(scope, );
-        UTF8View utf8(view);
-        buffer.append(utf8.span());
-    } else if (auto* view = dynamicDowncast<JSC::JSArrayBufferView>(value)) {
-        buffer.append(view->span());
-    } else if (auto* buf = dynamicDowncast<JSArrayBuffer>(value)) {
-        buffer.append(buf->impl()->span());
-    } else {
-        ERR::INVALID_ARG_TYPE(scope, lexicalGlobalObject, name, "string, ArrayBuffer, TypedArray, Buffer"_s, value);
-    }
+    return args.job->takeResult();
 }
 
-std::optional<HkdfJobCtx> HkdfJobCtx::fromJS(JSGlobalObject* lexicalGlobalObject, CallFrame* callFrame, ThrowScope& scope, Mode mode)
+void Bindgen::Engine::releaseNodeCryptoHkdfJob(HkdfJobCtx* job)
 {
-    JSValue hashValue = callFrame->argument(0);
-    JSValue keyValue = callFrame->argument(1);
-    JSValue saltValue = callFrame->argument(2);
-    JSValue infoValue = callFrame->argument(3);
-    JSValue lengthValue = callFrame->argument(4);
-
-    V::validateString(scope, lexicalGlobalObject, hashValue, "digest"_s);
-    RETURN_IF_EXCEPTION(scope, std::nullopt);
-
-    // TODO(dylan-conway): All of these don't need to copy for sync mode
-
-    KeyObject keyObject = prepareKey(lexicalGlobalObject, scope, keyValue);
-    RETURN_IF_EXCEPTION(scope, std::nullopt);
-
-    WTF::Vector<uint8_t> salt;
-    copyBufferOrString(lexicalGlobalObject, scope, saltValue, "salt"_s, salt);
-    RETURN_IF_EXCEPTION(scope, std::nullopt);
-
-    WTF::Vector<uint8_t> info;
-    copyBufferOrString(lexicalGlobalObject, scope, infoValue, "info"_s, info);
-    RETURN_IF_EXCEPTION(scope, std::nullopt);
-
-    int32_t length = 0;
-    V::validateInteger(scope, lexicalGlobalObject, lengthValue, "length"_s, jsNumber(0), jsNumber(Bun::Buffer::kMaxLength), &length);
-    RETURN_IF_EXCEPTION(scope, std::nullopt);
-
-    if (info.size() > 1024) {
-        ERR::OUT_OF_RANGE(scope, lexicalGlobalObject, "info"_s, "must not contain more than 1024 bytes"_s, jsNumber(info.size()));
-        return std::nullopt;
-    }
-
-    WTF::String hashString = hashValue.toWTFString(lexicalGlobalObject);
-    RETURN_IF_EXCEPTION(scope, std::nullopt);
-    Digest hash = Digest::FromName(hashString);
-    if (!hash) {
-        ERR::CRYPTO_INVALID_DIGEST(scope, lexicalGlobalObject, hashString);
-        return std::nullopt;
-    }
-
-    if (!ncrypto::checkHkdfLength(hash, length)) {
-        ERR::CRYPTO_INVALID_KEYLEN(scope, lexicalGlobalObject);
-        return std::nullopt;
-    }
-
-    return HkdfJobCtx(hash, length, WTF::move(keyObject), WTF::move(info), WTF::move(salt));
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsHkdf, (JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
-{
-    auto& vm = lexicalGlobalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    std::optional<HkdfJobCtx> ctx = HkdfJobCtx::fromJS(lexicalGlobalObject, callFrame, scope, HkdfJobCtx::Mode::Async);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    JSValue callback = callFrame->argument(5);
-    V::validateFunction(scope, lexicalGlobalObject, callback, "callback"_s);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    HkdfJob::createAndSchedule(lexicalGlobalObject, WTF::move(ctx.value()), callback);
-
-    return JSValue::encode(jsUndefined());
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsHkdfSync, (JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
-{
-    auto& vm = lexicalGlobalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    std::optional<HkdfJobCtx> ctx = HkdfJobCtx::fromJS(lexicalGlobalObject, callFrame, scope, HkdfJobCtx::Mode::Sync);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    ctx->runTask(lexicalGlobalObject);
-
-    if (!ctx->m_result.has_value()) {
-        return ERR::CRYPTO_OPERATION_FAILED(scope, lexicalGlobalObject, "hkdf operation failed"_s);
-    }
-
-    auto& result = ctx->m_result.value();
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-
-    RefPtr<ArrayBuffer> buf = JSC::ArrayBuffer::tryCreateUninitialized(result.size(), 1);
-    if (!buf) {
-        throwOutOfMemoryError(lexicalGlobalObject, scope);
-        return {};
-    }
-
-    memcpy(buf->data(), result.data(), result.size());
-
-    return JSValue::encode(JSC::JSArrayBuffer::create(vm, globalObject->arrayBufferStructure(), buf.releaseNonNull()));
+    delete job;
 }
 
 } // namespace Bun

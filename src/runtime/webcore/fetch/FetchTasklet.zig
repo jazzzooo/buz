@@ -2,29 +2,96 @@ pub const FetchTasklet = struct {
     pub const ResumableSink = jsc.WebCore.ResumableFetchSink;
 
     const log = Output.scoped(.FetchTasklet, .visible);
+    const ResponseSchema = bun.bindgen.Module("Response").class("Response");
+    const ResponseHandle = bun.bindgen.ClassWeakHandle(
+        ResponseSchema,
+        @This(),
+    );
+
+    /// Settled outcome of a fetch, materialized on delivery.
+    pub const FetchPayload = union(enum) {
+        response: Response.Ref,
+        native_response: ?*Response,
+        js_error: bun.bindgen.Root.Optional,
+
+        pub fn deinit(this: *FetchPayload) void {
+            switch (this.*) {
+                .response => |*response| response.deinit(),
+                .native_response => |response| if (response) |native| native.unref(),
+                .js_error => |*error_value| error_value.deinit(),
+            }
+            this.* = .{ .js_error = .empty };
+        }
+    };
+
+    const FetchCompletionOps = struct {
+        pub fn materialize(
+            comptime FunctionSchema: type,
+            context: bun.bindgen.MaterializationContext(FunctionSchema),
+            payload: *FetchPayload,
+        ) bun.bindgen.MaterializationError(FunctionSchema)!bun.bindgen.Return(FunctionSchema) {
+            switch (payload.*) {
+                .response => |*response| return response.take(),
+                .native_response => |*owned| {
+                    const response = owned.* orelse @panic("fetch response was already consumed");
+                    owned.* = null;
+                    response.calculateEstimatedByteSize();
+                    return Response.Binding.adoptResult(response, context);
+                },
+                .js_error => |*strong| {
+                    var error_root = strong.takeRoot() orelse @panic("fetch rejection was already consumed");
+                    return context.reject(&error_root, .{ .attach_async_stack = true });
+                },
+            }
+        }
+
+        pub fn destroyPayload(payload: *FetchPayload) void {
+            payload.deinit();
+            bun.destroy(payload);
+        }
+
+    };
+
+    pub const FetchCompletions = bun.bindgen.MaterializedCompletionSet(.{
+        bun.bindgen.Module("BunObject").function("fetch"),
+        bun.bindgen.Module("NodeHTTP").function("client"),
+    }, FetchPayload, FetchCompletionOps);
+
+    pub fn completeFetch(owned: *FetchCompletions.Owned, payload: FetchPayload) void {
+        const result = bun.default_allocator.create(FetchPayload) catch {
+            var value = payload;
+            value.deinit();
+            owned.outOfMemory();
+            return;
+        };
+        result.* = payload;
+        owned.complete(result);
+    }
+
     sink: ?*ResumableSink = null,
-    http: ?*http.AsyncHTTP = null,
+    http_task: *FetchHTTPTask,
     result: http.HTTPClientResult = .{},
     metadata: ?http.HTTPResponseMetadata = null,
     javascript_vm: *VirtualMachine = undefined,
     global_this: *JSGlobalObject = undefined,
     request_body: HTTPRequestBody = undefined,
-    request_body_streaming_buffer: ?*http.ThreadSafeStreamBuffer = null,
-
-    /// buffer being used by AsyncHTTP
-    response_buffer: MutableString = undefined,
     /// buffer used to stream response to JS
     scheduled_response_buffer: MutableString = undefined,
     /// response weak ref we need this to track the response JS lifetime
-    response: jsc.Weak(FetchTasklet) = .{},
+    response: ResponseHandle = .empty,
     /// native response ref if we still need it when JS is discarted
     native_response: ?*Response = null,
     ignore_data: bool = false,
     /// stream strong ref if any is available
     readable_stream_ref: jsc.WebCore.ReadableStream.Strong = .{},
-    request_headers: Headers = Headers{ .allocator = undefined },
-    promise: jsc.JSPromise.Strong,
-    concurrent_task: jsc.ConcurrentTask = .{},
+    body_source: Body.PendingValue.Source = .init(FetchTasklet, "body_source", .{
+        .on_start_streaming = onStartStreamingHTTPResponseBody,
+        .on_readable_stream_available = onReadableStreamAvailable,
+        .on_stream_cancelled = onStreamCancelled,
+        .retain_owner = ref,
+        .release_owner = deref,
+    }),
+    completion: ?FetchCompletions.Owned,
     poll_ref: Async.KeepAlive = .{},
     /// For Http Client requests
     /// when Content-Length is provided this represents the whole size of the request
@@ -32,62 +99,29 @@ pub const FetchTasklet = struct {
     /// If is not chunked encoded and Content-Length is not provided this will be unknown
     body_size: http.HTTPClientResult.BodySize = .unknown,
 
-    /// This is url + proxy memory buffer and is owned by FetchTasklet
-    /// We always clone url and proxy (if informed)
-    url_proxy_buffer: []const u8 = "",
-
     signal: ?*jsc.WebCore.AbortSignal = null,
-    signals: http.Signals = .{},
-    signal_store: http.Signals.Store = .{},
-    has_schedule_callback: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    abort_listener: jsc.WebCore.AbortSignal.Listener = undefined,
 
     // must be stored because AbortSignal stores reason weakly
-    abort_reason: jsc.Strong.Optional = .empty,
+    abort_reason: bun.bindgen.Root.Optional = .empty,
 
     // custom checkServerIdentity
-    check_server_identity: jsc.Strong.Optional = .empty,
+    check_server_identity: ?FetchCheckServerIdentityCallback = null,
     reject_unauthorized: bool = true,
     upgraded_connection: bool = false,
-    // Custom Hostname
-    hostname: ?[]u8 = null,
+    request_has_content_length: bool = false,
     is_waiting_body: bool = false,
     is_waiting_abort: bool = false,
     is_waiting_request_stream_start: bool = false,
-    mutex: std.Io.Mutex,
 
-    tracker: jsc.Debugger.AsyncTaskTracker,
+    detached: bool = false,
+    finished: bool = false,
+    cleared: bool = false,
+    ref_count: RefCount = .init(),
 
-    ref_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
-
-    pub fn ref(this: *FetchTasklet) void {
-        const count = this.ref_count.fetchAdd(1, .monotonic);
-        bun.debugAssert(count > 0);
-    }
-
-    pub fn deref(this: *FetchTasklet) void {
-        const count = this.ref_count.fetchSub(1, .monotonic);
-        bun.debugAssert(count > 0);
-
-        if (count == 1) {
-            this.deinit() catch |err| switch (err) {};
-        }
-    }
-
-    pub fn derefFromThread(this: *FetchTasklet) void {
-        const count = this.ref_count.fetchSub(1, .monotonic);
-        bun.debugAssert(count > 0);
-
-        if (count == 1) {
-            if (this.javascript_vm.isShuttingDown()) {
-                this.deinit() catch |err| switch (err) {};
-                return;
-            }
-            // this is really unlikely to happen, but can happen
-            // lets make sure that we always call deinit from main thread
-
-            this.javascript_vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.fromCallback(this, FetchTasklet.deinit));
-        }
-    }
+    const RefCount = bun.ptr.RefCount(FetchTasklet, "ref_count", deinit, .{});
+    pub const ref = RefCount.ref;
+    pub const deref = RefCount.deref;
 
     pub const HTTPRequestBody = union(enum) {
         AnyBlob: AnyBlob,
@@ -110,37 +144,51 @@ pub const FetchTasklet = struct {
             };
         }
 
+        pub fn take(this: *HTTPRequestBody) HTTPRequestBody {
+            const value = this.*;
+            this.* = HTTPRequestBody.Empty;
+            return value;
+        }
+
         pub fn detach(this: *HTTPRequestBody) void {
-            switch (this.*) {
-                .AnyBlob => this.AnyBlob.detach(),
+            var owned = this.take();
+            switch (owned) {
+                .AnyBlob => owned.AnyBlob.detach(),
                 .ReadableStream => |*stream| {
                     stream.deinit();
                 },
                 .Sendfile => {
-                    if (@max(this.Sendfile.offset, this.Sendfile.remain) > 0)
-                        this.Sendfile.fd.close();
-                    this.Sendfile.offset = 0;
-                    this.Sendfile.remain = 0;
+                    if (@max(owned.Sendfile.offset, owned.Sendfile.remain) > 0)
+                        owned.Sendfile.fd.close();
                 },
             }
         }
 
-        pub fn fromJS(globalThis: *JSGlobalObject, value: JSValue) bun.JSError!HTTPRequestBody {
-            var body_value = try Body.Value.fromJS(globalThis, value);
+        pub fn fromGeneratedBodyInit(globalThis: *JSGlobalObject, context: anytype, generated: anytype) bun.JSError!HTTPRequestBody {
+            const body_value = try Body.Value.fromGeneratedBodyInit(globalThis, context, generated);
+            return fromBodyValue(globalThis, body_value);
+        }
+
+        fn fromBodyValue(globalThis: *JSGlobalObject, initial_body_value: Body.Value) bun.JSError!HTTPRequestBody {
+            var body_value = initial_body_value;
+            errdefer body_value.deinit();
             if (body_value == .Used or (body_value == .Locked and (body_value.Locked.action != .none or body_value.Locked.isDisturbed2(globalThis)))) {
-                return globalThis.ERR(.BODY_ALREADY_USED, "body already used", .{}).throw();
+                return globalThis.throwNodeError(.ERR_BODY_ALREADY_USED, "body already used", .{});
             }
             if (body_value == .Locked) {
                 if (body_value.Locked.readable.has()) {
                     // just grab the ref
                     return FetchTasklet.HTTPRequestBody{ .ReadableStream = body_value.Locked.readable };
                 }
-                const readable = try body_value.toReadableStream(globalThis);
-                if (!readable.isEmptyOrUndefinedOrNull() and body_value == .Locked and body_value.Locked.readable.has()) {
+                if (try body_value.toReadableStream(globalThis)) |readable| {
+                    var owned_readable = readable;
+                    owned_readable.deinit();
+                }
+                if (body_value == .Locked and body_value.Locked.readable.has()) {
                     return FetchTasklet.HTTPRequestBody{ .ReadableStream = body_value.Locked.readable };
                 }
             }
-            return FetchTasklet.HTTPRequestBody{ .AnyBlob = body_value.useAsAnyBlob() };
+            return FetchTasklet.HTTPRequestBody{ .AnyBlob = try body_value.useAsAnyBlob() };
         }
 
         pub fn needsToReadFile(this: *HTTPRequestBody) bool {
@@ -180,46 +228,23 @@ pub const FetchTasklet = struct {
         }
     };
 
-    pub fn init(_: std.mem.Allocator) anyerror!FetchTasklet {
-        return FetchTasklet{};
-    }
-
     fn clearSink(this: *FetchTasklet) void {
         if (this.sink) |sink| {
             this.sink = null;
+            sink.abandon();
             sink.deref();
-        }
-        if (this.request_body_streaming_buffer) |buffer| {
-            this.request_body_streaming_buffer = null;
-            buffer.clearDrainCallback();
-            buffer.deref();
         }
     }
 
     fn clearData(this: *FetchTasklet) void {
+        if (this.cleared) return;
+        this.cleared = true;
         log("clearData ", .{});
         const allocator = bun.default_allocator;
-        if (this.url_proxy_buffer.len > 0) {
-            allocator.free(this.url_proxy_buffer);
-            this.url_proxy_buffer.len = 0;
-        }
-
-        if (this.hostname) |hostname| {
-            allocator.free(hostname);
-            this.hostname = null;
-        }
 
         if (this.result.certificate_info) |*certificate| {
             certificate.deinit(bun.default_allocator);
             this.result.certificate_info = null;
-        }
-
-        this.request_headers.entries.deinit(allocator);
-        this.request_headers.buf.deinit(allocator);
-        this.request_headers = Headers{ .allocator = undefined };
-
-        if (this.http) |http_| {
-            http_.clearData();
         }
 
         if (this.metadata != null) {
@@ -227,7 +252,6 @@ pub const FetchTasklet = struct {
             this.metadata = null;
         }
 
-        this.response_buffer.deinit();
         this.response.deinit();
         if (this.native_response) |response| {
             this.native_response = null;
@@ -239,48 +263,69 @@ pub const FetchTasklet = struct {
         this.readable_stream_ref.deinit();
 
         this.scheduled_response_buffer.deinit();
-        // Always detach request_body regardless of type.
-        // When request_body is a ReadableStream, startRequestStream() creates
-        // an independent Strong reference in ResumableSink, so FetchTasklet's
-        // reference becomes redundant and must be released to avoid leaks.
         this.request_body.detach();
 
         this.abort_reason.deinit();
-        this.check_server_identity.deinit();
+        if (this.check_server_identity) |*identity_callback| identity_callback.deinit();
+        this.check_server_identity = null;
+        if (this.completion) |*owned| {
+            owned.release();
+            this.completion = null;
+        }
         this.clearAbortSignal();
-        // Clear the sink only after the requested ended otherwise we would potentialy lose the last chunk
         this.clearSink();
     }
 
-    // XXX: 'fn (*FetchTasklet) error{}!void' coerces to 'fn (*FetchTasklet) bun.JSError!void' but 'fn (*FetchTasklet) void' does not
-    pub fn deinit(this: *FetchTasklet) error{}!void {
+    fn deinit(this: *FetchTasklet) void {
         log("deinit", .{});
-
-        bun.assert(this.ref_count.load(.monotonic) == 0);
-
         this.clearData();
-
-        const allocator = bun.default_allocator;
-
-        if (this.http) |http_| {
-            this.http = null;
-            allocator.destroy(http_);
-        }
-        allocator.destroy(this);
+        this.http_task.deref();
+        bun.destroy(this);
     }
 
-    fn getCurrentResponse(this: *FetchTasklet) ?*Response {
-        // we need a body to resolve the promise when buffering
-        if (this.native_response) |response| {
-            return response;
+    fn deliver(raw: bun.bindgen.NativeCallbackContext(.vm)) void {
+        const this = raw.get(*FetchTasklet);
+        this.ref();
+        defer this.deref();
+        this.onProgressUpdate() catch |err| this.global_this.reportActiveExceptionAsUnhandled(err);
+    }
+
+    fn detach(raw: bun.bindgen.NativeCallbackContext(.vm)) void {
+        const this = raw.get(*FetchTasklet);
+        defer this.deref();
+        this.detached = true;
+        this.http_task.close();
+        if (!this.finished) this.http_task.abort();
+        this.poll_ref.unref(this.javascript_vm);
+        this.clearData();
+    }
+
+    const CurrentResponse = union(enum) {
+        native: *Response,
+        wrapper: bun.bindgen.ClassRef(ResponseSchema),
+
+        fn get(this: *const CurrentResponse) *Response {
+            return switch (this.*) {
+                .native => |response| response,
+                .wrapper => |*reference| reference.get(Response),
+            };
         }
 
-        // if we did not have a direct reference we check if the Weak ref is still alive
-        if (this.response.get()) |response_js| {
-            if (response_js.as(Response)) |response| {
-                return response;
+        fn deinit(this: *CurrentResponse) void {
+            switch (this.*) {
+                .native => |response| response.unref(),
+                .wrapper => |*handle| handle.deinit(),
             }
         }
+    };
+
+    fn getCurrentResponse(this: *FetchTasklet) bun.JSError!?CurrentResponse {
+        // we need a body to resolve the promise when buffering
+        if (this.native_response) |response| {
+            return .{ .native = response.ref() };
+        }
+
+        if (try this.response.toOwned()) |response| return .{ .wrapper = response };
 
         return null;
     }
@@ -288,7 +333,9 @@ pub const FetchTasklet = struct {
     pub fn startRequestStream(this: *FetchTasklet) void {
         this.is_waiting_request_stream_start = false;
         bun.assert(this.request_body == .ReadableStream);
-        if (this.request_body.ReadableStream.get(this.global_this)) |stream| {
+        var stream = this.request_body.ReadableStream.clone();
+        defer stream.deinit();
+        if (stream.has()) {
             if (this.signal) |signal| {
                 if (signal.aborted()) {
                     stream.abort(this.global_this);
@@ -299,12 +346,30 @@ pub const FetchTasklet = struct {
             const globalThis = this.global_this;
             this.ref(); // lets only unref when sink is done
             // +1 because the task refs the sink
-            const sink = ResumableSink.initExactRefs(globalThis, stream, this, 2);
+            const sink = ResumableSink.init(globalThis, &stream, this) catch |err| {
+                if (this.detached) {
+                    this.writeEndRequest(true, null);
+                    return;
+                }
+                var reason = this.retainFailure(err) catch |failure| {
+                    this.writeEndRequest(true, null);
+                    globalThis.reportActiveExceptionAsUnhandled(failure);
+                    return;
+                };
+                defer reason.deinit();
+                this.writeEndRequest(true, &reason);
+                return;
+            };
+            if (this.detached) {
+                sink.abandon();
+                sink.deref();
+                return;
+            }
             this.sink = sink;
         }
     }
 
-    pub fn onBodyReceived(this: *FetchTasklet) bun.JSTerminated!void {
+    pub fn onBodyReceived(this: *FetchTasklet) bun.JSError!void {
         const success = this.result.isSuccess();
         const globalThis = this.global_this;
         // reset the buffer if we are streaming or if we are not waiting for bufferig anymore
@@ -317,98 +382,107 @@ pub const FetchTasklet = struct {
         }
 
         if (!success) {
-            var err = this.onReject();
-            var need_deinit = true;
-            defer if (need_deinit) err.deinit();
-            var js_err = JSValue.zero;
-            // if we are streaming update with error
-            if (this.readable_stream_ref.get(globalThis)) |readable| {
-                if (readable.ptr == .Bytes) {
-                    js_err = err.toJS(globalThis);
-                    js_err.ensureStillAlive();
-                    try readable.ptr.Bytes.onData(
-                        .{
-                            .err = .{ .JSValue = js_err },
-                        },
-                        bun.default_allocator,
-                    );
-                }
+            var err = try this.onReject();
+            defer err.deinit();
+            this.clearStreamCancelHandler();
+            var readable = this.readable_stream_ref.take();
+            defer readable.deinit();
+
+            if (try this.getCurrentResponse()) |current_response_value| {
+                var current_response = current_response_value;
+                defer current_response.deinit();
+                try current_response.get().getBodyValue().toErrorInstanceWithReadable(
+                    err.dupe(),
+                    globalThis,
+                    if (readable.has()) &readable else null,
+                );
+            } else if (readable.byteStream()) |byte_stream| {
+                try byte_stream.onData(
+                    .{ .err = try err.toStreamError(globalThis) },
+                    bun.default_allocator,
+                );
             }
             if (this.sink) |sink| {
-                if (js_err == .zero) {
-                    js_err = err.toJS(globalThis);
-                    js_err.ensureStillAlive();
-                }
-                sink.cancel(js_err);
-                return;
-            }
-            // if we are buffering resolve the promise
-            if (this.getCurrentResponse()) |response| {
-                need_deinit = false; // body value now owns the error
-                const body = response.getBodyValue();
-                try body.toErrorInstance(err, globalThis);
+                var rooted_error = try err.toRoot(globalThis);
+                defer rooted_error.deinit();
+                sink.cancel(&rooted_error);
             }
             return;
         }
 
-        if (this.readable_stream_ref.get(globalThis)) |readable| {
+        var retained_stream = this.readable_stream_ref.clone();
+        defer retained_stream.deinit();
+        if (retained_stream.byteStream()) |byte_stream| {
             log("onBodyReceived readable_stream_ref", .{});
-            if (readable.ptr == .Bytes) {
-                readable.ptr.Bytes.size_hint = this.getSizeHint();
-                // body can be marked as used but we still need to pipe the data
-                const scheduled_response_buffer = &this.scheduled_response_buffer.list;
+            byte_stream.size_hint = this.getSizeHint();
+            var buffer = this.takeResponseBuffer();
+            defer buffer.deinit();
+            const chunk = buffer.list.items;
 
-                const chunk = scheduled_response_buffer.items;
-
-                if (this.result.has_more) {
-                    try readable.ptr.Bytes.onData(
-                        .{
-                            .temporary = bun.ByteList.fromBorrowedSliceDangerous(chunk),
-                        },
-                        bun.default_allocator,
-                    );
-                } else {
-                    this.clearStreamCancelHandler();
-                    var prev = this.readable_stream_ref;
-                    this.readable_stream_ref = .{};
-                    defer prev.deinit();
-                    buffer_reset = false;
-
-                    try readable.ptr.Bytes.onData(
-                        .{
-                            .temporary_and_done = bun.ByteList.fromBorrowedSliceDangerous(chunk),
-                        },
-                        bun.default_allocator,
-                    );
+            if (this.result.has_more) {
+                try byte_stream.onData(
+                    .{
+                        .temporary = chunk,
+                    },
+                    bun.default_allocator,
+                );
+            } else {
+                this.clearStreamCancelHandler();
+                var prev = this.readable_stream_ref.take();
+                defer prev.deinit();
+                buffer_reset = false;
+                if (try this.getCurrentResponse()) |current_response_value| {
+                    var response = current_response_value;
+                    defer response.deinit();
+                    response.get().getBodyValue().finishStreaming(&this.body_source, &prev);
                 }
-                return;
+
+                try byte_stream.onData(
+                    .{
+                        .temporary_and_done = chunk,
+                    },
+                    bun.default_allocator,
+                );
             }
+            return;
         }
 
-        if (this.getCurrentResponse()) |response| {
+        if (try this.getCurrentResponse()) |current_response_value| {
+            var current_response = current_response_value;
+            defer current_response.deinit();
+            const response = current_response.get();
             log("onBodyReceived Current Response", .{});
             const sizeHint = this.getSizeHint();
             response.setSizeHint(sizeHint);
-            if (response.getBodyReadableStream(globalThis)) |readable| {
+            const response_stream = response.getBodyReadableStream(globalThis) catch |err| {
+                const body_error = try Body.Value.ValueError.fromFailure(err, globalThis);
+                this.abortTask();
+                try response.getBodyValue().toErrorInstance(body_error, globalThis);
+                return;
+            };
+            if (response_stream) |readable| {
+                var owned_readable = readable;
+                defer owned_readable.deinit();
                 log("onBodyReceived CurrentResponse BodyReadableStream", .{});
-                if (readable.ptr == .Bytes) {
-                    const scheduled_response_buffer = this.scheduled_response_buffer.list;
-
-                    const chunk = scheduled_response_buffer.items;
+                if (owned_readable.byteStream()) |byte_stream| {
+                    var buffer = this.takeResponseBuffer();
+                    defer buffer.deinit();
+                    const chunk = buffer.list.items;
+                    if (chunk.len == 0 and this.result.has_more) return;
 
                     if (this.result.has_more) {
-                        try readable.ptr.Bytes.onData(
+                        try byte_stream.onData(
                             .{
-                                .temporary = bun.ByteList.fromBorrowedSliceDangerous(chunk),
+                                .temporary = chunk,
                             },
                             bun.default_allocator,
                         );
                     } else {
-                        readable.value.ensureStillAlive();
-                        response.detachReadableStream(globalThis);
-                        try readable.ptr.Bytes.onData(
+                        this.clearStreamCancelHandler();
+                        response.getBodyValue().finishStreaming(&this.body_source, &owned_readable);
+                        try byte_stream.onData(
                             .{
-                                .temporary_and_done = bun.ByteList.fromBorrowedSliceDangerous(chunk),
+                                .temporary_and_done = chunk,
                             },
                             bun.default_allocator,
                         );
@@ -427,11 +501,11 @@ pub const FetchTasklet = struct {
                 var old = body.*;
                 const body_value = Body.Value{
                     .InternalBlob = .{
-                        .bytes = scheduled_response_buffer.toManaged(bun.default_allocator),
+                        .bytes = .fromManaged(scheduled_response_buffer.toManaged(bun.default_allocator)),
                     },
                 };
                 body.* = body_value;
-                log("onBodyReceived body_value length={}", .{body_value.InternalBlob.bytes.items.len});
+                log("onBodyReceived body_value length={}", .{body_value.InternalBlob.bytes.length()});
 
                 this.scheduled_response_buffer = .{
                     .allocator = bun.default_allocator,
@@ -449,70 +523,76 @@ pub const FetchTasklet = struct {
         }
     }
 
-    pub fn onProgressUpdate(this: *FetchTasklet) bun.JSTerminated!void {
-        jsc.markBinding(@src());
-        log("onProgressUpdate", .{});
-        this.mutex.lockUncancelable(this.javascript_vm.io);
-        this.has_schedule_callback.store(false, .monotonic);
-        const is_done = !this.result.has_more;
+    fn takeResponseBuffer(this: *FetchTasklet) MutableString {
+        const buffer = this.scheduled_response_buffer;
+        this.scheduled_response_buffer = .{ .allocator = bun.default_allocator, .list = .empty };
+        return buffer;
+    }
 
+    pub fn onProgressUpdate(this: *FetchTasklet) bun.JSError!void {
+        log("onProgressUpdate", .{});
+        const native = this.http_task;
+        var update = native.progress.take();
+        defer update.deinit();
+        const is_done = update.has_result and !update.result.has_more;
         const vm = this.javascript_vm;
-        // vm is shutting down we cannot touch JS
-        if (vm.isShuttingDown()) {
-            this.mutex.unlock(this.javascript_vm.io);
-            if (is_done) {
-                this.deref();
-            }
-            return;
+        defer if (is_done and !this.detached) {
+            this.finished = true;
+            native.registry.detach(&native.entry);
+        };
+        defer if (native.progress.finishDelivery()) {
+            _ = native.registry.notify(&native.entry);
+        };
+        if (vm.isShuttingDown()) return;
+        defer if (update.request_drained and !is_done and !this.detached) this.resumeRequestDataStream();
+        if (!update.has_result) return;
+
+        if (update.result.metadata) |metadata| {
+            if (this.metadata) |*previous| previous.deinit(bun.default_allocator);
+            this.metadata = metadata;
+            update.result.metadata = null;
+        }
+        if (update.result.certificate_info == null) {
+            update.result.certificate_info = this.result.certificate_info;
+        } else if (this.result.certificate_info) |previous| {
+            previous.deinit(bun.default_allocator);
+        }
+        this.result = update.result;
+        update.result.certificate_info = null;
+        this.body_size = this.result.body_size;
+        if (this.scheduled_response_buffer.list.items.len == 0) {
+            std.mem.swap(MutableString, &this.scheduled_response_buffer, &update.body);
+        } else {
+            _ = this.scheduled_response_buffer.write(update.body.list.items) catch allocation_failure: {
+                native.progress.failAllocation();
+                this.result.fail = error.OutOfMemory;
+                this.scheduled_response_buffer.reset();
+                break :allocation_failure 0;
+            };
+        }
+        if (this.result.fail) |failure| {
+            if (failure == error.OutOfMemory) this.abortTask();
         }
 
         const globalThis = this.global_this;
-        defer {
-            this.mutex.unlock(this.javascript_vm.io);
-            // if we are not done we wait until the next call
-            if (is_done) {
-                var poll_ref = this.poll_ref;
-                this.poll_ref = .{};
-                poll_ref.unref(vm);
-                this.deref();
-            }
-        }
-        if (this.is_waiting_request_stream_start and this.result.can_stream) {
+        if (this.is_waiting_request_stream_start and this.result.can_stream and this.result.isSuccess()) {
             // start streaming
             this.startRequestStream();
         }
+        if (this.detached) return;
         // if we already respond the metadata and still need to process the body
         if (this.is_waiting_body) {
-            // `scheduled_response_buffer` has two readers that both drain-and-reset:
-            // this path (onBodyReceived) and `onStartStreamingHTTPResponseBodyCallback`,
-            // which runs once when JS first touches `res.body` and hands any already-
-            // buffered bytes to the new ByteStream synchronously.
-            //
-            // That creates a stale-task race:
-            //   1. HTTP thread `callback()` writes N bytes to the buffer and enqueues
-            //      this onProgressUpdate task (under mutex).
-            //   2. Main thread: JS touches `res.body` -> `onStartStreaming` drains those
-            //      N bytes and resets the buffer (under mutex).
-            //   3. This task runs and finds the buffer empty.
-            //
-            // The task cannot be un-enqueued in step 2, and at schedule time (step 1)
-            // the buffer was non-empty, so the only place the staleness is observable
-            // is here when the task runs.
-            //
-            // Without this guard, `onBodyReceived` would call `ByteStream.onData` with
-            // a zero-length non-terminal chunk. That resolves the reader's pending
-            // pull with `len=0`; `native-readable.ts` `handleNumberResult(0)` does not
-            // `push()`, so node:stream `state.reading` (set before the previous `_read()`
-            // early-returned on `kPendingRead`) is never cleared, `_read()` is never
-            // called again, and `pipeline(Readable.fromWeb(res.body), ...)` stalls
-            // forever — eventually spinning at 100% CPU once `poll_ref` unrefs.
+            // Progress-only notifications must not satisfy a stream pull with an empty chunk.
             if (this.scheduled_response_buffer.list.items.len == 0 and
                 this.result.has_more and
                 this.result.isSuccess())
             {
                 return;
             }
-            try this.onBodyReceived();
+            this.onBodyReceived() catch |err| switch (err) {
+                error.JSTerminated => return error.JSTerminated,
+                error.JSError, error.OutOfMemory => globalThis.reportActiveExceptionAsUnhandled(err),
+            };
             return;
         }
         if (this.metadata == null and this.result.isSuccess()) return;
@@ -523,11 +603,8 @@ pub const FetchTasklet = struct {
         if (this.is_waiting_abort) {
             return;
         }
-        const promise_value = this.promise.valueOrEmpty();
-
-        if (promise_value.isEmptyOrUndefinedOrNull()) {
-            log("onProgressUpdate: promise_value is null", .{});
-            this.promise.deinit();
+        if (this.completion == null) {
+            log("onProgressUpdate: completion already settled", .{});
             return;
         }
 
@@ -536,20 +613,22 @@ pub const FetchTasklet = struct {
             defer certificate_info.deinit(bun.default_allocator);
 
             // we receive some error
-            if (this.reject_unauthorized and !this.checkServerIdentity(certificate_info)) {
+            const identity_accepted = !this.reject_unauthorized or (this.checkServerIdentity(certificate_info) catch |err| {
+                if (this.detached) return;
+                if (err != error.OutOfMemory) return err;
+                var completion = this.completion.?;
+                this.completion = null;
+                this.abortTask();
+                completion.outOfMemory();
+                return;
+            });
+            if (this.detached) return;
+            if (!identity_accepted) {
                 log("onProgressUpdate: aborted due certError", .{});
                 // we need to abort the request
-                const promise = promise_value.asAnyPromise().?;
-                const tracker = this.tracker;
-                var result = this.onReject();
-                defer result.deinit();
-
-                promise_value.ensureStillAlive();
-                try promise.rejectWithAsyncStack(globalThis, result.toJS(globalThis));
-
-                tracker.didDispatch(globalThis);
-                this.promise.deinit();
-                return;
+                var completion = this.completion.?;
+                this.completion = null;
+                return this.completeResponse(&completion);
             }
             // checkServerIdentity passed. Fall through to resolve/reject below.
             //
@@ -564,137 +643,102 @@ pub const FetchTasklet = struct {
             // reject with.
         }
 
-        const tracker = this.tracker;
-        tracker.willDispatch(globalThis);
-        defer {
-            log("onProgressUpdate: promise_value is not null", .{});
-            tracker.didDispatch(globalThis);
-            this.promise.deinit();
-        }
-        const success = this.result.isSuccess();
-        const result = switch (success) {
-            true => jsc.Strong.Optional.create(this.onResolve(), globalThis),
-            false => brk: {
-                // in this case we wanna a jsc.Strong.Optional so we just convert it
-                var value = this.onReject();
-                const err = value.toJS(globalThis);
-                if (this.sink) |sink| {
-                    sink.cancel(err);
-                }
-                break :brk value.JSValue;
-            },
-        };
-
-        promise_value.ensureStillAlive();
-        const Holder = struct {
-            held: jsc.Strong.Optional,
-            promise: jsc.Strong.Optional,
-            globalObject: *jsc.JSGlobalObject,
-            task: jsc.AnyTask,
-
-            pub fn resolve(self: *@This()) bun.JSTerminated!void {
-                // cleanup
-                defer bun.default_allocator.destroy(self);
-                defer self.held.deinit();
-                defer self.promise.deinit();
-                // resolve the promise
-                var prom = self.promise.swap().asAnyPromise().?;
-                const res = self.held.swap();
-                res.ensureStillAlive();
-                try prom.resolve(self.globalObject, res);
-            }
-
-            pub fn reject(self: *@This()) bun.JSTerminated!void {
-                // cleanup
-                defer bun.default_allocator.destroy(self);
-                defer self.held.deinit();
-                defer self.promise.deinit();
-
-                // reject the promise
-                var prom = self.promise.swap().asAnyPromise().?;
-                const res = self.held.swap();
-                res.ensureStillAlive();
-                try prom.rejectWithAsyncStack(self.globalObject, res);
-            }
-        };
-        var holder = bun.handleOom(bun.default_allocator.create(Holder));
-        holder.* = .{
-            .held = result,
-            // we need the promise to be alive until the task is done
-            .promise = this.promise.strong,
-            .globalObject = globalThis,
-            .task = undefined,
-        };
-        this.promise.strong = .empty;
-        holder.task = switch (success) {
-            true => jsc.AnyTask.New(Holder, Holder.resolve).init(holder),
-            false => jsc.AnyTask.New(Holder, Holder.reject).init(holder),
-        };
-
-        vm.enqueueTask(jsc.Task.init(&holder.task));
+        var completion = this.completion.?;
+        this.completion = null;
+        try this.completeResponse(&completion);
     }
 
-    pub fn checkServerIdentity(this: *FetchTasklet, certificate_info: http.CertificateInfo) bool {
-        if (this.check_server_identity.get()) |check_server_identity| {
-            check_server_identity.ensureStillAlive();
+    fn completeResponse(this: *FetchTasklet, completion: *FetchCompletions.Owned) bun.JSError!void {
+        const payload = this.responsePayload() catch |err| {
+            this.abortTask();
+            if (err == error.OutOfMemory) {
+                completion.outOfMemory();
+                return;
+            }
+            completion.release();
+            return err;
+        };
+        completeFetch(completion, payload);
+    }
+
+    fn responsePayload(this: *FetchTasklet) bun.JSError!FetchPayload {
+        const global = this.global_this;
+        switch (this.result.isSuccess()) {
+            true => {
+                const response = this.onResolve() catch |err| {
+                    var failure = try Body.Value.ValueError.fromFailure(err, global);
+                    defer failure.deinit();
+                    if (failure == .OutOfMemory) return error.OutOfMemory;
+                    var reason = try failure.toRoot(global);
+                    this.abortTask();
+                    return .{ .js_error = reason.takeOptional() };
+                };
+                return .{ .response = response };
+            },
+            false => {
+                var value = try this.onReject();
+                defer value.deinit();
+                var rooted_error = try value.toRoot(global);
+                defer rooted_error.deinit();
+                if (this.sink) |sink| {
+                    sink.cancel(&rooted_error);
+                }
+                return .{ .js_error = rooted_error.takeOptional() };
+            },
+        }
+    }
+
+    fn retainFailure(this: *FetchTasklet, failure: bun.JSError) bun.JSError!bun.bindgen.Root {
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(this.global_this);
+        defer scope.deinit();
+        var thrown = try scope.takeThrownValue(failure);
+        defer thrown.deinit();
+        return thrown.toRoot();
+    }
+
+    fn rejectServerIdentityWithFailure(this: *FetchTasklet, failure: bun.JSError) bun.JSError!bool {
+        var reason = try this.retainFailure(failure);
+        defer reason.deinit();
+        this.abort_reason.setRoot(&reason);
+        return this.rejectServerIdentity();
+    }
+
+    pub fn checkServerIdentity(this: *FetchTasklet, certificate_info: http.CertificateInfo) bun.JSError!bool {
+        if (this.check_server_identity) |*stored_callback| {
+            var check_server_identity = stored_callback.clone();
+            defer check_server_identity.deinit();
             if (certificate_info.cert.len > 0) {
                 const cert = certificate_info.cert;
                 var cert_ptr = cert.ptr;
                 if (BoringSSL.d2i_X509(null, &cert_ptr, @intCast(cert.len))) |x509| {
                     const globalObject = this.global_this;
                     defer x509.free();
-                    const js_cert = X509.toJS(x509, globalObject) catch |err| {
-                        switch (err) {
-                            error.JSError => {},
-                            error.OutOfMemory => globalObject.throwOutOfMemory() catch {},
-                            error.JSTerminated => {},
-                        }
-                        const check_result = globalObject.tryTakeException().?;
-                        // mark to wait until deinit
-                        this.is_waiting_abort = this.result.has_more;
-                        this.abort_reason.set(globalObject, check_result);
-                        this.signal_store.aborted.store(true, .monotonic);
-                        this.tracker.didCancel(this.global_this);
-                        // we need to abort the request
-                        if (this.http) |http_| http.http_thread.scheduleShutdown(http_);
-                        this.result.fail = error.ERR_TLS_CERT_ALTNAME_INVALID;
-                        return false;
+                    var certificate = X509Engine.legacyCertificate(globalObject, x509) catch |err| {
+                        return this.rejectServerIdentityWithFailure(err);
                     };
-                    var hostname: bun.String = bun.String.cloneUTF8(certificate_info.hostname);
-                    defer hostname.deref();
-                    const js_hostname = hostname.toJS(globalObject) catch |err| {
-                        switch (err) {
-                            error.JSError => {},
-                            error.OutOfMemory => globalObject.throwOutOfMemory() catch {},
-                            error.JSTerminated => {},
-                        }
-                        const hostname_err_result = globalObject.tryTakeException().?;
-                        this.is_waiting_abort = this.result.has_more;
-                        this.abort_reason.set(globalObject, hostname_err_result);
-                        this.signal_store.aborted.store(true, .monotonic);
-                        this.tracker.didCancel(this.global_this);
-                        if (this.http) |http_| http.http_thread.scheduleShutdown(http_);
-                        this.result.fail = error.ERR_TLS_CERT_ALTNAME_INVALID;
-                        return false;
+                    defer certificate.deinit();
+                    var hostname = bun.bindgen.DOMString.fromUTF8(certificate_info.hostname) catch |err| {
+                        return this.rejectServerIdentityWithFailure(err);
                     };
-                    js_hostname.ensureStillAlive();
-                    js_cert.ensureStillAlive();
-                    const check_result = check_server_identity.call(globalObject, .js_undefined, &.{ js_hostname, js_cert }) catch |err| globalObject.takeException(err);
+                    defer hostname.deinit();
+                    var invocation: FetchCheckServerIdentityCallback.Invocation = undefined;
+                    check_server_identity.beginInvocation(&invocation);
+                    defer invocation.deinit();
+                    const check_result = invocation.call(.{
+                        .hostname = hostname.operand(),
+                        .certificate = certificate.value,
+                    }) catch |err| {
+                        if (this.detached) return err;
+                        return this.rejectServerIdentityWithFailure(err);
+                    };
+                    if (this.detached) return true;
 
-                    // > Returns <Error> object [...] on failure
-                    if (check_result.isAnyError()) {
-                        // mark to wait until deinit
-                        this.is_waiting_abort = this.result.has_more;
-                        this.abort_reason.set(globalObject, check_result);
-                        this.signal_store.aborted.store(true, .monotonic);
-                        this.tracker.didCancel(this.global_this);
-
-                        // we need to abort the request
-                        if (this.http) |http_| {
-                            http.http_thread.scheduleShutdown(http_);
-                        }
-                        this.result.fail = error.ERR_TLS_CERT_ALTNAME_INVALID;
-                        return false;
+                    if (check_result) |result| {
+                        var rooted_result = try result.toRoot();
+                        defer rooted_result.deinit();
+                        this.abort_reason.setRoot(&rooted_result);
+                        return this.rejectServerIdentity();
                     }
 
                     // > On success, returns <undefined>
@@ -707,7 +751,14 @@ pub const FetchTasklet = struct {
         return false;
     }
 
-    fn getAbortError(this: *FetchTasklet) ?Body.Value.ValueError {
+    fn rejectServerIdentity(this: *FetchTasklet) bool {
+        this.is_waiting_abort = this.result.has_more;
+        this.http_task.abort();
+        this.result.fail = error.ERR_TLS_CERT_ALTNAME_INVALID;
+        return false;
+    }
+
+    fn getAbortError(this: *FetchTasklet) bun.JSError!?Body.Value.ValueError {
         if (this.abort_reason.has()) {
             defer this.clearAbortSignal();
             const out = this.abort_reason;
@@ -717,9 +768,15 @@ pub const FetchTasklet = struct {
         }
 
         if (this.signal) |signal| {
-            if (signal.reasonIfAborted(this.global_this)) |reason| {
-                defer this.clearAbortSignal();
-                return reason.toBodyValueError(this.global_this);
+            if (try signal.reasonIfAbortedRoot(this.global_this)) |reason| {
+                var engine_reason = reason;
+                defer engine_reason.deinit();
+                var root = engine_reason.takeAnyRoot();
+                defer root.deinit();
+                var result = Body.Value.ValueError{ .JSValue = .empty };
+                result.JSValue.setRoot(&root);
+                this.clearAbortSignal();
+                return result;
             }
         }
 
@@ -734,15 +791,19 @@ pub const FetchTasklet = struct {
             signal.unref();
         }
 
-        signal.cleanNativeBindings(this);
+        signal.removeListener(&this.abort_listener);
     }
 
-    pub fn onReject(this: *FetchTasklet) Body.Value.ValueError {
+    pub fn onReject(this: *FetchTasklet) bun.JSError!Body.Value.ValueError {
         bun.assert(this.result.fail != null);
         log("onReject", .{});
 
-        if (this.getAbortError()) |err| {
+        if (try this.getAbortError()) |err| {
             return err;
+        }
+
+        if (this.result.fail) |failure| {
+            if (failure == error.OutOfMemory) return .OutOfMemory;
         }
 
         if (this.result.abortReason()) |reason| {
@@ -754,7 +815,7 @@ pub const FetchTasklet = struct {
         // SystemError below is still a plain Error for backwards compat.
         switch (this.result.fail.?) {
             error.RequestBodyNotReusable => return .{
-                .TypeError = bun.String.static("Request body is a ReadableStream and cannot be replayed for this redirect"),
+                .TypeError = .adopt(bun.String.static("Request body is a ReadableStream and cannot be replayed for this redirect")),
             },
             else => {},
         }
@@ -762,13 +823,13 @@ pub const FetchTasklet = struct {
         // some times we don't have metadata so we also check http.url
         const path = if (this.metadata) |metadata|
             bun.String.cloneUTF8(metadata.url)
-        else if (this.http) |http_|
+        else if (this.http_task.http) |http_|
             bun.String.cloneUTF8(http_.url.href)
         else
             bun.String.empty;
 
-        const fetch_error = jsc.SystemError{
-            .code = bun.String.static(switch (this.result.fail.?) {
+        const fetch_error = bun.sys.SystemError{
+            .code = bun.String.cloneLatin1(switch (this.result.fail.?) {
                 error.ConnectionClosed => "ECONNRESET",
                 else => |e| @errorName(e),
             }),
@@ -854,23 +915,33 @@ pub const FetchTasklet = struct {
             .path = path,
         };
 
-        return .{ .SystemError = fetch_error };
+        return Body.Value.ValueError.fromSystemError(fetch_error);
     }
 
-    pub fn onReadableStreamAvailable(ctx: *anyopaque, globalThis: *jsc.JSGlobalObject, readable: jsc.WebCore.ReadableStream) void {
-        const this = bun.cast(*FetchTasklet, ctx);
-        this.readable_stream_ref = jsc.WebCore.ReadableStream.Strong.init(readable, globalThis);
+    pub fn onReadableStreamAvailable(this: *FetchTasklet, globalThis: *jsc.JSGlobalObject, readable: *const jsc.WebCore.ReadableStream.Strong) void {
+        _ = globalThis;
+        if (this.detached) return;
+        this.readable_stream_ref = readable.clone();
+        if (readable.byteStream()) |byte_stream| {
+            byte_stream.consume_callback = .{ .context = .init(this), .run = onResponseBytesConsumed };
+            this.http_task.signal_store.response_body_backpressure.store(true, .release);
+            if (this.http_task.http) |request| http.http_thread.scheduleResponseBodyDrain(request.async_http_id);
+        }
     }
 
-    pub fn onStartStreamingHTTPResponseBodyCallback(ctx: *anyopaque) jsc.WebCore.DrainResult {
-        const this = bun.cast(*FetchTasklet, ctx);
-        if (this.signal_store.aborted.load(.monotonic)) {
+    fn onResponseBytesConsumed(ctx: bun.bindgen.NativeCallbackContext(.vm), count: usize) void {
+        const this = ctx.get(*FetchTasklet);
+        if (!this.detached) this.http_task.consumeResponseBytes(count);
+    }
+
+    pub fn onStartStreamingHTTPResponseBody(this: *FetchTasklet) jsc.WebCore.DrainResult {
+        if (this.detached or this.http_task.signal_store.aborted.load(.monotonic)) {
             return jsc.WebCore.DrainResult{
                 .aborted = {},
             };
         }
 
-        if (this.http) |http_| {
+        if (this.http_task.http) |http_| {
             http_.enableResponseBodyStreaming();
 
             // If the server sent the headers and the response body in two separate socket writes
@@ -880,8 +951,6 @@ pub const FetchTasklet = struct {
             bun.http.http_thread.scheduleResponseBodyDrain(http_.async_http_id);
         }
 
-        this.mutex.lockUncancelable(this.javascript_vm.io);
-        defer this.mutex.unlock(this.javascript_vm.io);
         const size_hint = this.getSizeHint();
 
         var scheduled_response_buffer = this.scheduled_response_buffer.list;
@@ -920,43 +989,42 @@ pub const FetchTasklet = struct {
     /// Must be called before releasing readable_stream_ref, while the Strong ref
     /// still keeps the ReadableStream (and thus the ByteStream.Source) alive.
     fn clearStreamCancelHandler(this: *FetchTasklet) void {
-        if (this.readable_stream_ref.get(this.global_this)) |readable| {
-            if (readable.ptr == .Bytes) {
-                const source = readable.ptr.Bytes.parent();
-                source.cancel_handler = null;
-                source.cancel_ctx = null;
-            }
+        this.http_task.signal_store.response_body_backpressure.store(false, .release);
+        if (!this.finished) {
+            if (this.http_task.http) |request| http.http_thread.scheduleResponseBodyDrain(request.async_http_id);
+        }
+        if (this.readable_stream_ref.byteStream()) |byte_stream| {
+            byte_stream.consume_callback = null;
+            const source = byte_stream.parent();
+            source.cancel_handler = null;
+            source.cancel_ctx = null;
         }
     }
 
-    fn onStreamCancelledCallback(ctx: ?*anyopaque) void {
-        const this = bun.cast(*FetchTasklet, ctx.?);
-        if (this.ignore_data) return;
+    fn onStreamCancelled(this: *FetchTasklet) void {
+        if (this.detached or this.ignore_data) return;
         this.ignoreRemainingResponseBody();
     }
 
-    fn toBodyValue(this: *FetchTasklet) Body.Value {
-        if (this.getAbortError()) |err| {
+    fn toBodyValue(this: *FetchTasklet) bun.JSError!Body.Value {
+        if (try this.getAbortError()) |err| {
             return .{ .Error = err };
         }
         if (this.is_waiting_body) {
-            const response = Body.Value{
+            var response = Body.Value{
                 .Locked = .{
                     .size_hint = this.getSizeHint(),
-                    .task = this,
-                    .global = this.global_this,
-                    .onStartStreaming = FetchTasklet.onStartStreamingHTTPResponseBodyCallback,
-                    .onReadableStreamAvailable = FetchTasklet.onReadableStreamAvailable,
-                    .onStreamCancelled = FetchTasklet.onStreamCancelledCallback,
+                    .global = .init(this.global_this),
                 },
             };
+            response.Locked.setSource(&this.body_source);
             return response;
         }
 
         var scheduled_response_buffer = this.scheduled_response_buffer.list;
         const response = Body.Value{
             .InternalBlob = .{
-                .bytes = scheduled_response_buffer.toManaged(bun.default_allocator),
+                .bytes = .fromManaged(scheduled_response_buffer.toManaged(bun.default_allocator)),
             },
         };
         this.scheduled_response_buffer = .{
@@ -970,32 +1038,39 @@ pub const FetchTasklet = struct {
         return response;
     }
 
-    fn toResponse(this: *FetchTasklet) Response {
+    fn toResponse(this: *FetchTasklet) bun.JSError!Response {
         log("toResponse", .{});
         bun.assert(this.metadata != null);
         // at this point we always should have metadata
         const metadata = this.metadata.?;
         const http_response = metadata.response;
+        var headers = try FetchHeaders.createFromPicoHeaders(http_response.headers);
+        errdefer headers.deinit();
+        var status_text = try bun.bindgen.DOMString.fromBunString(bun.api.StringEngine.createAtomIfPossible(http_response.status));
+        errdefer status_text.deinit();
+        var url = try bun.bindgen.DOMString.fromBunString(bun.api.StringEngine.createAtomIfPossible(metadata.url));
+        errdefer url.deinit();
         this.is_waiting_body = this.result.has_more;
         return Response.init(
             .{
-                .headers = FetchHeaders.createFromPicoHeaders(http_response.headers),
+                .headers = headers,
                 .status_code = @as(u16, @truncate(http_response.status_code)),
-                .status_text = bun.String.createAtomIfPossible(http_response.status),
+                .status_text = status_text,
             },
             Body{
-                .value = this.toBodyValue(),
+                .value = try this.toBodyValue(),
             },
-            bun.String.createAtomIfPossible(metadata.url),
+            url,
             this.result.redirected,
         );
     }
 
     fn ignoreRemainingResponseBody(this: *FetchTasklet) void {
         log("ignoreRemainingResponseBody", .{});
+        this.http_task.progress.ignoreData();
         // enabling streaming will make the http thread to drain into the main thread (aka stop buffering)
         // without a stream ref, response body or response instance alive it will just ignore the result
-        if (this.http) |http_| {
+        if (this.http_task.http) |http_| {
             http_.enableResponseBodyStreaming();
         }
         // we should not keep the process alive if we are ignoring the body
@@ -1014,60 +1089,61 @@ pub const FetchTasklet = struct {
         this.ignore_data = true;
     }
 
-    export fn Bun__FetchResponse_finalize(this: *FetchTasklet) callconv(.c) void {
+    fn onResponseFinalize(this: *FetchTasklet) void {
+        if (this.detached) return;
         log("onResponseFinalize", .{});
         if (this.native_response) |response| {
             const body = response.getBodyValue();
             // Three scenarios:
             //
             // 1. We are streaming, in which case we should not ignore the body.
-            // 2. We were buffering, in which case
-            //    2a. if we have no promise, we should ignore the body.
-            //    2b. if we have a promise, we should keep loading the body.
+            // 2. We were buffering, in which case an active body consumption
+            //    must keep loading and otherwise the body can be ignored.
             // 3. We never started buffering, in which case we should ignore the body.
             //
-            // Note: We cannot call .get() on the ReadableStreamRef. This is called inside a finalizer.
-            if (body.* != .Locked or this.readable_stream_ref.held.has()) {
+            if (body.* != .Locked or this.readable_stream_ref.has()) {
                 // Scenario 1 or 3.
                 return;
             }
 
-            if (body.Locked.promise) |promise| {
-                if (promise.isEmptyOrUndefinedOrNull()) {
-                    // Scenario 2b.
-                    this.ignoreRemainingResponseBody();
-                }
-            } else {
-                // Scenario 3.
+            if (!body.Locked.hasStartedConsumption()) {
+                // Scenario 2a or 3.
                 this.ignoreRemainingResponseBody();
             }
         }
     }
-    comptime {
-        _ = Bun__FetchResponse_finalize;
-    }
 
-    pub fn onResolve(this: *FetchTasklet) JSValue {
+    pub fn onResolve(this: *FetchTasklet) bun.JSError!Response.Ref {
         log("onResolve", .{});
-        const response = bun.new(Response, this.toResponse());
-        const response_js = Response.makeMaybePooled(@as(*jsc.JSGlobalObject, this.global_this), response);
-        response_js.ensureStillAlive();
-        this.response = jsc.Weak(FetchTasklet).create(response_js, this.global_this, .FetchResponse, this);
+        const response = try bun.default_allocator.create(Response);
+        response.* = this.toResponse() catch |err| {
+            bun.default_allocator.destroy(response);
+            return err;
+        };
+        var response_ref = try response.toClassRef(this.global_this);
+        errdefer response_ref.deinit();
+        this.response = try ResponseHandle.initRef(&response_ref, this, onResponseFinalize);
         this.native_response = response.ref();
-        return response_js;
+        return response_ref;
     }
 
     pub fn get(
-        allocator: std.mem.Allocator,
         globalThis: *jsc.JSGlobalObject,
-        fetch_options: *const FetchOptions,
-        promise: jsc.JSPromise.Strong,
-    ) !*FetchTasklet {
-        var jsc_vm = globalThis.bunVM();
-        var fetch_tasklet = try allocator.create(FetchTasklet);
-
+        fetch_options: *FetchOptions,
+        completion: FetchCompletions.Owned,
+    ) bun.JSError!*FetchTasklet {
+        errdefer fetch_options.deinit();
+        var owned_completion = completion;
+        var completion_transferred = false;
+        errdefer if (!completion_transferred) owned_completion.release();
+        const jsc_vm = globalThis.bunVM();
+        const registry = try (try jsc_vm.tryRareData()).nativeCompletionRegistry(jsc_vm);
+        const native = try FetchHTTPTask.create(registry, jsc_vm.io);
+        var native_transferred = false;
+        errdefer if (!native_transferred) native.deref();
+        const fetch_tasklet = try bun.default_allocator.create(FetchTasklet);
         fetch_tasklet.* = .{
-            .mutex = .init,
+            .http_task = native,
             .scheduled_response_buffer = .{
                 .allocator = bun.default_allocator,
                 .list = .{
@@ -1075,34 +1151,33 @@ pub const FetchTasklet = struct {
                     .capacity = 0,
                 },
             },
-            .response_buffer = MutableString{
-                .allocator = bun.default_allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
-            },
-            .http = try allocator.create(http.AsyncHTTP),
             .javascript_vm = jsc_vm,
-            .request_body = fetch_options.body,
+            .request_body = fetch_options.body.take(),
             .global_this = globalThis,
-            .promise = promise,
-            .request_headers = fetch_options.headers,
-            .url_proxy_buffer = fetch_options.url_proxy_buffer,
-            .signal = fetch_options.signal,
-            .hostname = fetch_options.hostname,
-            .tracker = jsc.Debugger.AsyncTaskTracker.init(jsc_vm),
-            .check_server_identity = fetch_options.check_server_identity,
+            .completion = completion,
+            .check_server_identity = if (fetch_options.check_server_identity) |*identity_callback| identity_callback.take() else null,
             .reject_unauthorized = fetch_options.reject_unauthorized,
             .upgraded_connection = fetch_options.upgraded_connection,
+            .request_has_content_length = fetch_options.headers.get("content-length") != null and fetch_options.headers.get("transfer-encoding") == null,
         };
+        native_transferred = true;
+        native.request_headers = fetch_options.headers;
+        native.url_proxy_buffer = fetch_options.url_proxy_buffer;
+        native.hostname = fetch_options.hostname;
+        completion_transferred = true;
+        fetch_options.headers = .{ .allocator = fetch_options.headers.allocator };
+        fetch_options.url_proxy_buffer = "";
+        fetch_options.hostname = null;
+        fetch_options.check_server_identity = null;
+        errdefer fetch_tasklet.deref();
 
-        fetch_tasklet.signals = fetch_tasklet.signal_store.to();
-
-        fetch_tasklet.tracker.didSchedule(globalThis);
-
-        if (fetch_tasklet.request_body.store()) |store| {
-            store.ref();
+        native.signals = native.signal_store.to();
+        if (fetch_tasklet.request_body == .AnyBlob) {
+            native.request_bytes = try bun.default_allocator.dupe(u8, fetch_tasklet.request_body.slice());
+            fetch_tasklet.request_body.detach();
+        } else if (fetch_tasklet.request_body == .Sendfile) {
+            native.sendfile = fetch_tasklet.request_body.Sendfile;
+            fetch_tasklet.request_body = HTTPRequestBody.Empty;
         }
 
         var url = fetch_options.url;
@@ -1125,11 +1200,11 @@ pub const FetchTasklet = struct {
                 // `fetch(url, { proxy: "..." })` option.
                 if (env_proxy.href.len > 0) {
                     const old_url_len = url.href.len;
-                    const new_buffer = try std.fmt.allocPrint(bun.default_allocator, "{s}{s}", .{ fetch_tasklet.url_proxy_buffer, env_proxy.href });
-                    if (fetch_tasklet.url_proxy_buffer.len > 0) {
-                        bun.default_allocator.free(fetch_tasklet.url_proxy_buffer);
+                    const new_buffer = try std.fmt.allocPrint(bun.default_allocator, "{s}{s}", .{ native.url_proxy_buffer, env_proxy.href });
+                    if (native.url_proxy_buffer.len > 0) {
+                        bun.default_allocator.free(native.url_proxy_buffer);
                     }
-                    fetch_tasklet.url_proxy_buffer = new_buffer;
+                    native.url_proxy_buffer = new_buffer;
                     url = ZigURL.parse(new_buffer[0..old_url_len]);
                     proxy = ZigURL.parse(new_buffer[old_url_len..]);
                 } else {
@@ -1138,32 +1213,33 @@ pub const FetchTasklet = struct {
             }
         }
 
-        if (fetch_tasklet.check_server_identity.has() and fetch_tasklet.reject_unauthorized) {
-            fetch_tasklet.signal_store.cert_errors.store(true, .monotonic);
+        if (fetch_tasklet.check_server_identity != null and fetch_tasklet.reject_unauthorized) {
+            native.signal_store.cert_errors.store(true, .monotonic);
         } else {
-            fetch_tasklet.signals.cert_errors = null;
+            native.signals.cert_errors = null;
         }
 
         // This task gets queued on the HTTP thread.
-        fetch_tasklet.http.?.* = http.AsyncHTTP.init(
+        native.http = try bun.default_allocator.create(http.AsyncHTTP);
+        native.http.?.* = http.AsyncHTTP.init(
             bun.default_allocator,
             fetch_options.method,
             url,
-            fetch_options.headers.entries,
-            fetch_options.headers.buf.items,
-            &fetch_tasklet.response_buffer,
-            fetch_tasklet.request_body.slice(),
+            native.request_headers.entries,
+            native.request_headers.buf.items,
+            &native.response_buffer,
+            native.request_bytes,
             http.HTTPClientResult.Callback.New(
-                *FetchTasklet,
-                // handles response events (on headers, on body, etc.)
-                FetchTasklet.callback,
-            ).init(fetch_tasklet),
+                *FetchHTTPTask,
+                FetchHTTPTask.onResult,
+            ).init(native),
             fetch_options.redirect_type,
             .{
+                .javascript_semantics = jsc_vm.transpiler.engine_capabilities.javascript_semantics,
                 .http_proxy = proxy,
                 .proxy_headers = fetch_options.proxy_headers,
-                .hostname = fetch_options.hostname,
-                .signals = fetch_tasklet.signals,
+                .hostname = native.hostname,
+                .signals = native.signals,
                 .unix_socket_path = fetch_options.unix_socket_path,
                 .disable_timeout = fetch_options.disable_timeout,
                 .disable_keepalive = fetch_options.disable_keepalive,
@@ -1173,18 +1249,21 @@ pub const FetchTasklet = struct {
                 .tls_props = fetch_options.ssl_config,
             },
         );
+        fetch_options.proxy_headers = null;
+        fetch_options.unix_socket_path = bun.String.Slice.empty;
+        fetch_options.ssl_config = null;
         // enable streaming the write side
         const isStream = fetch_tasklet.request_body == .ReadableStream;
-        fetch_tasklet.http.?.client.flags.is_streaming_request_body = isStream;
-        fetch_tasklet.http.?.client.flags.force_http2 = fetch_options.force_http2;
-        fetch_tasklet.http.?.client.flags.force_http3 = fetch_options.force_http3;
-        fetch_tasklet.http.?.client.flags.force_http1 = fetch_options.force_http1;
+        native.http.?.client.flags.is_streaming_request_body = isStream;
+        native.http.?.client.flags.force_http2 = fetch_options.force_http2;
+        native.http.?.client.flags.force_http3 = fetch_options.force_http3;
+        native.http.?.client.flags.force_http1 = fetch_options.force_http1;
         fetch_tasklet.is_waiting_request_stream_start = isStream;
         if (isStream) {
-            const buffer = http.ThreadSafeStreamBuffer.new(.{ .io = jsc_vm.io });
-            buffer.setDrainCallback(FetchTasklet, FetchTasklet.onWriteRequestDataDrain, fetch_tasklet);
-            fetch_tasklet.request_body_streaming_buffer = buffer;
-            fetch_tasklet.http.?.request_body = .{
+            const buffer = try bun.tryNew(http.ThreadSafeStreamBuffer, .{ .io = jsc_vm.io });
+            buffer.setDrainCallback(FetchHTTPTask, FetchHTTPTask.onDrain, native);
+            native.stream_buffer = buffer;
+            native.http.?.request_body = .{
                 .stream = .{
                     .buffer = buffer,
                     .ended = false,
@@ -1194,32 +1273,42 @@ pub const FetchTasklet = struct {
         // TODO is this necessary? the http client already sets the redirect type,
         // so manually setting it here seems redundant
         if (fetch_options.redirect_type != FetchRedirect.follow) {
-            fetch_tasklet.http.?.client.remaining_redirect_count = 0;
+            native.http.?.client.remaining_redirect_count = 0;
         }
 
         // we want to return after headers are received
-        fetch_tasklet.signal_store.header_progress.store(true, .monotonic);
+        native.signal_store.header_progress.store(true, .monotonic);
 
-        if (fetch_tasklet.request_body == .Sendfile) {
+        if (native.sendfile) |body| {
             bun.assert(url.isHTTP());
             bun.assert(fetch_options.proxy == null);
-            fetch_tasklet.http.?.request_body = .{ .sendfile = fetch_tasklet.request_body.Sendfile };
+            native.http.?.request_body = .{ .sendfile = body };
         }
 
-        if (fetch_tasklet.signal) |signal| {
+        if (fetch_options.signal) |signal| {
             signal.pendingActivityRef();
-            fetch_tasklet.signal = signal.listen(FetchTasklet, fetch_tasklet, FetchTasklet.abortListener);
+            fetch_tasklet.signal = signal.listen(fetch_tasklet.global_this, &fetch_tasklet.abort_listener, fetch_tasklet, FetchTasklet.abortListener) catch |err| {
+                signal.pendingActivityUnref();
+                return err;
+            };
+            fetch_options.signal = null;
         }
         return fetch_tasklet;
     }
 
-    pub fn abortListener(this: *FetchTasklet, reason: JSValue) void {
+    pub fn abortListener(this: *FetchTasklet, reason: bun.bindgen.EngineValueView) void {
         log("abortListener", .{});
-        reason.ensureStillAlive();
-        this.abort_reason.set(this.global_this, reason);
+        var engine_reason = reason.toRoot() catch |err| {
+            this.abortTask();
+            return this.global_this.reportActiveExceptionAsUnhandled(err);
+        };
+        defer engine_reason.deinit();
+        var reason_root = engine_reason.takeAnyRoot();
+        defer reason_root.deinit();
+        this.abort_reason.setRoot(&reason_root);
         this.abortTask();
         if (this.sink) |sink| {
-            sink.cancel(reason);
+            sink.cancel(&reason_root);
             return;
         }
         // Abort fired before the HTTP thread asked for the body, so the
@@ -1228,25 +1317,11 @@ pub const FetchTasklet = struct {
         // signal's reason (https://fetch.spec.whatwg.org/#abort-fetch step 5).
         if (this.is_waiting_request_stream_start and this.request_body == .ReadableStream) {
             this.is_waiting_request_stream_start = false;
-            if (this.request_body.ReadableStream.get(this.global_this)) |stream| {
-                stream.cancelWithReason(this.global_this, reason);
-            }
+            this.request_body.ReadableStream.cancelWithReasonRoot(this.global_this, &reason_root);
         }
     }
 
-    /// This is ALWAYS called from the http thread and we cannot touch the buffer here because is locked
-    pub fn onWriteRequestDataDrain(this: *FetchTasklet) void {
-        if (this.javascript_vm.isShuttingDown()) return;
-        // ref until the main thread callback is called
-        this.ref();
-        this.javascript_vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.fromCallback(this, FetchTasklet.resumeRequestDataStream));
-    }
-
-    /// This is ALWAYS called from the main thread
-    // XXX: 'fn (*FetchTasklet) error{}!void' coerces to 'fn (*FetchTasklet) bun.JSError!void' but 'fn (*FetchTasklet) void' does not
-    pub fn resumeRequestDataStream(this: *FetchTasklet) error{}!void {
-        // deref when done because we ref inside onWriteRequestDataDrain
-        defer this.deref();
+    fn resumeRequestDataStream(this: *FetchTasklet) void {
         log("resumeRequestDataStream", .{});
         if (this.sink) |sink| {
             if (this.signal) |signal| {
@@ -1265,32 +1340,37 @@ pub const FetchTasklet = struct {
     fn skipChunkedFraming(this: *const FetchTasklet) bool {
         return this.upgraded_connection or
             this.result.is_http2 or
-            (this.request_headers.get("content-length") != null and this.request_headers.get("transfer-encoding") == null);
+            this.request_has_content_length;
     }
 
-    pub fn writeRequestData(this: *FetchTasklet, data: []const u8) ResumableSinkBackpressure {
+    pub fn writeRequestData(this: *FetchTasklet, data: []const u8) bun.OOM!ResumableSinkBackpressure {
         log("writeRequestData {}", .{data.len});
+        if (this.detached) return .done;
         if (this.signal) |signal| {
             if (signal.aborted()) {
                 return .done;
             }
         }
-        const thread_safe_stream_buffer = this.request_body_streaming_buffer orelse return .done;
+        const thread_safe_stream_buffer = this.http_task.stream_buffer orelse return .done;
         const stream_buffer = thread_safe_stream_buffer.acquire();
         defer thread_safe_stream_buffer.release();
         const highWaterMark = if (this.sink) |sink| sink.highWaterMark else 16384;
+        // Only writeEndRequest may emit the zero-length chunk that terminates an HTTP body.
+        if (data.len == 0) {
+            return if (stream_buffer.size() >= highWaterMark) .backpressure else .want_more;
+        }
 
         var needs_schedule = false;
         defer if (needs_schedule) {
             // wakeup the http thread to write the data
-            http.http_thread.scheduleRequestWrite(this.http.?, .data);
+            http.http_thread.scheduleRequestWrite(this.http_task.http.?, .data);
         };
 
         // dont have backpressure so we will schedule the data to be written
         // if we have backpressure the onWritable will drain the buffer
-        needs_schedule = stream_buffer.isEmpty();
+        const was_empty = stream_buffer.isEmpty();
         if (this.skipChunkedFraming()) {
-            bun.handleOom(stream_buffer.write(data));
+            try stream_buffer.write(data);
         } else {
             //16 is the max size of a hex number size that represents 64 bits + 2 for the \r\n
             var formated_size_buffer: [18]u8 = undefined;
@@ -1301,51 +1381,63 @@ pub const FetchTasklet = struct {
             ) catch |err| switch (err) {
                 error.NoSpaceLeft => unreachable,
             };
-            bun.handleOom(stream_buffer.ensureUnusedCapacity(formated_size.len + data.len + 2));
+            try stream_buffer.ensureUnusedCapacity(formated_size.len + data.len + 2);
             stream_buffer.writeAssumeCapacity(formated_size);
             stream_buffer.writeAssumeCapacity(data);
             stream_buffer.writeAssumeCapacity("\r\n");
         }
+        needs_schedule = was_empty;
 
         // pause the stream if we hit the high water mark
         return if (stream_buffer.size() >= highWaterMark) .backpressure else .want_more;
     }
 
-    pub fn writeEndRequest(this: *FetchTasklet, err: ?jsc.JSValue) void {
-        log("writeEndRequest hasError? {}", .{err != null});
+    pub fn writeEndRequest(this: *FetchTasklet, failed: bool, reason: ?*const bun.bindgen.Root) void {
+        log("writeEndRequest hasError? {}", .{failed});
         defer this.deref();
-        if (err) |jsError| {
-            if (this.signal_store.aborted.load(.monotonic) or this.abort_reason.has()) {
+        if (this.detached) return;
+        if (failed) {
+            if (this.http_task.signal_store.aborted.load(.monotonic) or this.abort_reason.has()) {
                 return;
             }
-            if (!jsError.isUndefinedOrNull()) {
-                this.abort_reason.set(this.global_this, jsError);
+            if (reason) |value| {
+                this.abort_reason.setRoot(value);
             }
             this.abortTask();
         } else {
             if (!this.skipChunkedFraming()) {
-                // Using chunked transfer encoding, send the terminating chunk
-                const thread_safe_stream_buffer = this.request_body_streaming_buffer orelse return;
-                const stream_buffer = thread_safe_stream_buffer.acquire();
-                defer thread_safe_stream_buffer.release();
-                bun.handleOom(stream_buffer.write(http.end_of_chunked_http1_1_encoding_response_body));
+                const write_error: ?bun.OOM = write_eof: {
+                    const thread_safe_stream_buffer = this.http_task.stream_buffer orelse return;
+                    const stream_buffer = thread_safe_stream_buffer.acquire();
+                    defer thread_safe_stream_buffer.release();
+                    stream_buffer.write(http.end_of_chunked_http1_1_encoding_response_body) catch |err| break :write_eof err;
+                    break :write_eof null;
+                };
+                if (write_error) |err| {
+                    if (!this.abort_reason.has()) {
+                        var write_failure = this.retainFailure(err) catch |failure| {
+                            this.abortTask();
+                            this.global_this.reportActiveExceptionAsUnhandled(failure);
+                            return;
+                        };
+                        defer write_failure.deinit();
+                        this.abort_reason.setRoot(&write_failure);
+                    }
+                    this.abortTask();
+                    return;
+                }
             }
-            if (this.http) |http_| {
+            if (this.http_task.http) |http_| {
                 http.http_thread.scheduleRequestWrite(http_, .end);
             }
         }
     }
 
     pub fn abortTask(this: *FetchTasklet) void {
-        this.signal_store.aborted.store(true, .monotonic);
-        this.tracker.didCancel(this.global_this);
-
-        if (this.http) |http_| {
-            http.http_thread.scheduleShutdown(http_);
-        }
+        this.http_task.abort();
     }
 
-    const FetchOptions = struct {
+    pub const FetchOptions = struct {
         method: Method,
         headers: Headers,
         body: HTTPRequestBody,
@@ -1363,123 +1455,60 @@ pub const FetchTasklet = struct {
         globalThis: ?*JSGlobalObject,
         // Custom Hostname
         hostname: ?[]u8 = null,
-        check_server_identity: jsc.Strong.Optional = .empty,
-        unix_socket_path: ZigString.Slice,
+        check_server_identity: ?FetchCheckServerIdentityCallback = null,
+        unix_socket_path: bun.String.Slice,
         ssl_config: ?SSLConfig.SharedPtr = null,
         upgraded_connection: bool = false,
         force_http2: bool = false,
         force_http3: bool = false,
         force_http1: bool = false,
+
+        fn deinit(this: *FetchOptions) void {
+            this.headers.deinit();
+            this.body.detach();
+            if (this.proxy_headers) |*headers| headers.deinit();
+            this.proxy_headers = null;
+            bun.default_allocator.free(this.url_proxy_buffer);
+            this.url_proxy_buffer = "";
+            if (this.signal) |signal| signal.unref();
+            this.signal = null;
+            if (this.hostname) |hostname| bun.default_allocator.free(hostname);
+            this.hostname = null;
+            if (this.check_server_identity) |*callback| callback.deinit();
+            this.check_server_identity = null;
+            this.unix_socket_path.deinit();
+            this.unix_socket_path = bun.String.Slice.empty;
+            if (this.ssl_config) |*config| config.deinit();
+            this.ssl_config = null;
+        }
     };
 
     pub fn queue(
-        allocator: std.mem.Allocator,
         global: *JSGlobalObject,
-        fetch_options: *const FetchOptions,
-        promise: jsc.JSPromise.Strong,
-    ) !*FetchTasklet {
+        fetch_options: *FetchOptions,
+        completion: FetchCompletions.Owned,
+    ) bun.JSError!void {
         http.HTTPThread.init(global.bunVM().io, &.{});
-        var node = try get(
-            allocator,
+        const node = try get(
             global,
             fetch_options,
-            promise,
+            completion,
         );
 
-        var batch = bun.BackgroundTaskGroup.Batch{};
-        node.http.?.schedule(allocator, &batch);
+        const native = node.http_task;
+        native.entry = .{ .context = .init(node), .deliver = deliver, .detach = detach, .delivery = .repeating };
+        if (!native.registry.register(&native.entry)) {
+            node.deref();
+            return global.throwTypeError("Cannot start fetch in a closed execution context", .{});
+        }
         node.poll_ref.ref(global.bunVM());
-
-        // increment ref so we can keep it alive until the http client is done
-        node.ref();
-        http.http_thread.schedule(batch);
-
-        return node;
-    }
-
-    /// Called from HTTP thread. Handles HTTP events received from socket.
-    pub fn callback(task: *FetchTasklet, async_http: *http.AsyncHTTP, result: http.HTTPClientResult) void {
-        // at this point only this thread is accessing result to is no race condition
-        const is_done = !result.has_more;
-        // we are done with the http client so we can deref our side
-        // this is a atomic operation and will enqueue a task to deinit on the main thread
-        defer if (is_done) task.derefFromThread();
-
-        task.mutex.lockUncancelable(task.javascript_vm.io);
-        // we need to unlock before task.deref();
-        defer task.mutex.unlock(task.javascript_vm.io);
-        task.http.?.* = async_http.*;
-        task.http.?.response_buffer = async_http.response_buffer;
-
-        log("callback success={} ignore_data={} has_more={} bytes={}", .{ result.isSuccess(), task.ignore_data, result.has_more, result.body.?.list.items.len });
-
-        const prev_metadata = task.result.metadata;
-        const prev_cert_info = task.result.certificate_info;
-        const prev_can_stream = task.result.can_stream;
-        task.result = result;
-        // can_stream is a one-shot signal to start the request body stream; don't let a
-        // later coalesced result clobber it before the JS thread sees it.
-        task.result.can_stream = task.result.can_stream or prev_can_stream;
-
-        // Preserve pending certificate info if it was preovided in the previous update.
-        if (task.result.certificate_info == null) {
-            if (prev_cert_info) |cert_info| {
-                task.result.certificate_info = cert_info;
-            }
-        }
-
-        // metadata should be provided only once
-        if (result.metadata orelse prev_metadata) |metadata| {
-            log("added callback metadata", .{});
-            if (task.metadata == null) {
-                task.metadata = metadata;
-            }
-
-            task.result.metadata = null;
-        }
-
-        task.body_size = result.body_size;
-
-        const success = result.isSuccess();
-        task.response_buffer = result.body.?.*;
-
-        if (task.ignore_data) {
-            task.response_buffer.reset();
-
-            if (task.scheduled_response_buffer.list.capacity > 0) {
-                task.scheduled_response_buffer.deinit();
-                task.scheduled_response_buffer = .{
-                    .allocator = bun.default_allocator,
-                    .list = .{
-                        .items = &.{},
-                        .capacity = 0,
-                    },
-                };
-            }
-            if (success and result.has_more) {
-                // we are ignoring the body so we should not receive more data, so will only signal when result.has_more = true
-                return;
-            }
-        } else {
-            if (success) {
-                _ = bun.handleOom(task.scheduled_response_buffer.write(task.response_buffer.list.items));
-            }
-            // reset for reuse
-            task.response_buffer.reset();
-        }
-
-        if (task.has_schedule_callback.cmpxchgStrong(false, true, .acquire, .monotonic)) |has_schedule_callback| {
-            if (has_schedule_callback) {
-                return;
-            }
-        }
-        // will deinit when done with the http client (when is_done = true)
-        if (task.javascript_vm.isShuttingDown()) return;
-        task.javascript_vm.eventLoop().enqueueTaskConcurrent(task.concurrent_task.from(task, .manual_deinit));
+        native.start();
     }
 };
 
-const X509 = @import("../../api/bun/x509.zig");
+const X509Core = @import("../../api/bun/x509.zig");
+const FetchHTTPTask = @import("./FetchHTTPTask.zig");
+const X509Engine = @import("../../api/bun/X509Engine.zig");
 const std = @import("std");
 const Method = @import("../../../http_types/Method.zig").Method;
 const ZigURL = @import("../../../url/url.zig").URL;
@@ -1498,10 +1527,9 @@ const Headers = bun.http.Headers;
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSPromise = jsc.JSPromise;
-const JSValue = jsc.JSValue;
 const VirtualMachine = jsc.VirtualMachine;
-const ZigString = jsc.ZigString;
+const FetchCheckServerIdentityCallbackSchema = bun.bindgen.CallbackSchema("FetchCheckServerIdentityCallback");
+const FetchCheckServerIdentityCallback = bun.bindgen.Callback(FetchCheckServerIdentityCallbackSchema);
 
 const Body = jsc.WebCore.Body;
 const Response = jsc.WebCore.Response;

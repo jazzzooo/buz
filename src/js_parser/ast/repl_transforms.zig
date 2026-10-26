@@ -6,8 +6,6 @@
 /// - Hoists declarations for variable persistence across REPL lines
 pub fn ReplTransforms(comptime P: type) type {
     return struct {
-        const Self = @This();
-
         /// Apply REPL-mode transforms to the AST.
         /// This transforms code for interactive evaluation:
         /// - Wraps the last expression in { value: expr } for result capture
@@ -21,7 +19,7 @@ pub fn ReplTransforms(comptime P: type) type {
             // Collect all statements
             var total_stmts_count: usize = 0;
             for (parts.items) |part| {
-                total_stmts_count += part.stmts.len;
+                total_stmts_count = std.math.add(usize, total_stmts_count, part.stmts.len) catch return error.OutOfMemory;
             }
 
             if (total_stmts_count == 0) {
@@ -29,7 +27,8 @@ pub fn ReplTransforms(comptime P: type) type {
             }
 
             // Collect all statements into a single array
-            var all_stmts = bun.handleOom(allocator.alloc(Stmt, total_stmts_count));
+            const all_stmts = try allocator.alloc(Stmt, total_stmts_count);
+            defer allocator.free(all_stmts);
             var stmt_idx: usize = 0;
             for (parts.items) |part| {
                 for (part.stmts) |stmt| {
@@ -66,7 +65,9 @@ pub fn ReplTransforms(comptime P: type) type {
 
             // Lists for hoisted declarations and inner statements
             var hoisted_stmts = ListManaged(Stmt).init(allocator);
+            defer hoisted_stmts.deinit();
             var inner_stmts = ListManaged(Stmt).init(allocator);
+            errdefer inner_stmts.deinit();
             try hoisted_stmts.ensureTotalCapacity(all_stmts.len);
             try inner_stmts.ensureTotalCapacity(all_stmts.len);
 
@@ -81,6 +82,7 @@ pub fn ReplTransforms(comptime P: type) type {
 
                         // Extract individual identifiers from binding patterns for hoisting
                         var hoisted_decl_list = ListManaged(G.Decl).init(allocator);
+                        errdefer hoisted_decl_list.deinit();
                         for (local.decls.slice()) |decl| {
                             try extractIdentifiersFromBinding(p, decl.binding, &hoisted_decl_list);
                         }
@@ -96,7 +98,7 @@ pub fn ReplTransforms(comptime P: type) type {
                         for (local.decls.slice()) |decl| {
                             if (decl.value) |value| {
                                 // Create assignment expression: binding = value
-                                const assign_expr = createBindingAssignment(p, decl.binding, value, allocator);
+                                const assign_expr = try createBindingAssignment(p, decl.binding, value, allocator);
                                 try inner_stmts.append(p.s(S.SExpr{ .value = assign_expr }, stmt.loc));
                             }
                         }
@@ -108,12 +110,12 @@ pub fn ReplTransforms(comptime P: type) type {
                         if (func.func.name) |name_loc| {
                             try hoisted_stmts.append(p.s(S.Local{
                                 .kind = .k_var,
-                                .decls = Decl.List.fromOwnedSlice(bun.handleOom(allocator.dupe(G.Decl, &.{
+                                .decls = Decl.List.fromOwnedSlice(try allocator.dupe(G.Decl, &.{
                                     G.Decl{
                                         .binding = p.b(B.Identifier{ .ref = name_loc.ref.? }, name_loc.loc),
                                         .value = null,
                                     },
-                                }))),
+                                })),
                             }, stmt.loc));
 
                             // Add this.funcName = funcName assignment
@@ -141,12 +143,12 @@ pub fn ReplTransforms(comptime P: type) type {
                         if (class.class.class_name) |name_loc| {
                             try hoisted_stmts.append(p.s(S.Local{
                                 .kind = .k_var,
-                                .decls = Decl.List.fromOwnedSlice(bun.handleOom(allocator.dupe(G.Decl, &.{
+                                .decls = Decl.List.fromOwnedSlice(try allocator.dupe(G.Decl, &.{
                                     G.Decl{
                                         .binding = p.b(B.Identifier{ .ref = name_loc.ref.? }, name_loc.loc),
                                         .value = null,
                                     },
-                                }))),
+                                })),
                             }, stmt.loc));
 
                             // Convert class declaration to assignment: ClassName = class ClassName {}
@@ -168,79 +170,17 @@ pub fn ReplTransforms(comptime P: type) type {
                         //   import { a, b } from 'mod' -> var {a, b} = await import('mod')
                         //   import * as X from 'mod'   -> var X = await import('mod')
                         //   import 'mod'              -> await import('mod')
-                        const path_str = p.import_records.items[import_data.import_record_index].path.text;
+                        const record = &p.import_records.items[import_data.import_record_index];
+                        const import_options = try createImportOptions(p, record.*, allocator, stmt.loc);
+                        record.kind = .dynamic;
                         const import_expr = p.newExpr(E.Import{
-                            .expr = p.newExpr(E.String{ .data = path_str }, stmt.loc),
-                            .import_record_index = std.math.maxInt(u32),
+                            .expr = p.newExpr(E.String{ .data = record.path.text }, stmt.loc),
+                            .import_record_index = import_data.import_record_index,
+                            .options = import_options,
                         }, stmt.loc);
                         const await_expr = p.newExpr(E.Await{ .value = import_expr }, stmt.loc);
 
-                        if (import_data.star_name_loc) |_| {
-                            // import * as X from 'mod' -> var X = await import('mod')
-                            try hoisted_stmts.append(p.s(S.Local{
-                                .kind = .k_var,
-                                .decls = Decl.List.fromOwnedSlice(bun.handleOom(allocator.dupe(G.Decl, &.{
-                                    G.Decl{
-                                        .binding = p.b(B.Identifier{ .ref = import_data.namespace_ref }, stmt.loc),
-                                        .value = null,
-                                    },
-                                }))),
-                            }, stmt.loc));
-                            const assign = p.newExpr(E.Binary{
-                                .op = .bin_assign,
-                                .left = p.newExpr(E.Identifier{ .ref = import_data.namespace_ref }, stmt.loc),
-                                .right = await_expr,
-                            }, stmt.loc);
-                            try inner_stmts.append(p.s(S.SExpr{ .value = assign }, stmt.loc));
-                        } else if (import_data.default_name) |default_name| {
-                            // import X from 'mod' -> var X = (await import('mod')).default
-                            // import X, { a } from 'mod' -> var __ns = await import('mod'); var X = __ns.default; var a = __ns.a;
-                            try hoisted_stmts.append(p.s(S.Local{
-                                .kind = .k_var,
-                                .decls = Decl.List.fromOwnedSlice(bun.handleOom(allocator.dupe(G.Decl, &.{
-                                    G.Decl{
-                                        .binding = p.b(B.Identifier{ .ref = default_name.ref.? }, default_name.loc),
-                                        .value = null,
-                                    },
-                                }))),
-                            }, stmt.loc));
-
-                            if (import_data.items.len > 0) {
-                                // Share a single await import() between default and named imports.
-                                // namespace_ref is synthesized by processImportStatement for all non-star imports.
-                                try convertNamedImports(p, import_data, await_expr, &hoisted_stmts, &inner_stmts, allocator, stmt.loc);
-                                const ns_ref_expr = p.newExpr(E.Identifier{ .ref = import_data.namespace_ref }, stmt.loc);
-                                const dot_default = p.newExpr(E.Dot{
-                                    .target = ns_ref_expr,
-                                    .name = "default",
-                                    .name_loc = stmt.loc,
-                                }, stmt.loc);
-                                const assign = p.newExpr(E.Binary{
-                                    .op = .bin_assign,
-                                    .left = p.newExpr(E.Identifier{ .ref = default_name.ref.? }, default_name.loc),
-                                    .right = dot_default,
-                                }, stmt.loc);
-                                try inner_stmts.append(p.s(S.SExpr{ .value = assign }, stmt.loc));
-                            } else {
-                                const dot_default = p.newExpr(E.Dot{
-                                    .target = await_expr,
-                                    .name = "default",
-                                    .name_loc = stmt.loc,
-                                }, stmt.loc);
-                                const assign = p.newExpr(E.Binary{
-                                    .op = .bin_assign,
-                                    .left = p.newExpr(E.Identifier{ .ref = default_name.ref.? }, default_name.loc),
-                                    .right = dot_default,
-                                }, stmt.loc);
-                                try inner_stmts.append(p.s(S.SExpr{ .value = assign }, stmt.loc));
-                            }
-                        } else if (import_data.items.len > 0) {
-                            // import { a, b } from 'mod' -> destructure from await import('mod')
-                            try convertNamedImports(p, import_data, await_expr, &hoisted_stmts, &inner_stmts, allocator, stmt.loc);
-                        } else {
-                            // import 'mod' (side-effect only) -> await import('mod')
-                            try inner_stmts.append(p.s(S.SExpr{ .value = await_expr }, stmt.loc));
-                        }
+                        try convertImports(p, import_data, await_expr, &hoisted_stmts, &inner_stmts, allocator, stmt.loc);
                     },
                     .s_directive => |directive| {
                         // In REPL mode, treat directives (string literals) as expressions
@@ -254,7 +194,7 @@ pub fn ReplTransforms(comptime P: type) type {
             }
 
             // Wrap the last expression in return { value: expr }
-            wrapLastExpressionWithReturn(p, &inner_stmts, allocator);
+            try wrapLastExpressionWithReturn(p, &inner_stmts, allocator);
 
             // Create the IIFE: (() => { ...inner_stmts... })() or (async () => { ... })()
             const arrow = p.newExpr(E.Arrow{
@@ -269,8 +209,8 @@ pub fn ReplTransforms(comptime P: type) type {
             }, logger.Loc.Empty);
 
             // Final output: hoisted declarations + IIFE call
-            const final_stmts_count = hoisted_stmts.items.len + 1;
-            var final_stmts = bun.handleOom(allocator.alloc(Stmt, final_stmts_count));
+            const final_stmts_count = std.math.add(usize, hoisted_stmts.items.len, 1) catch return error.OutOfMemory;
+            const final_stmts = try allocator.alloc(Stmt, final_stmts_count);
             for (hoisted_stmts.items, 0..) |stmt, j| {
                 final_stmts[j] = stmt;
             }
@@ -283,11 +223,42 @@ pub fn ReplTransforms(comptime P: type) type {
             }
         }
 
-        /// Convert named imports to individual var assignments from the dynamic import
-        /// import { a, b as c } from 'mod' ->
-        ///   var a; var c;  (hoisted)
-        ///   var __mod = await import('mod'); a = __mod.a; c = __mod.b;  (inner)
-        fn convertNamedImports(
+        fn createImportOptions(p: *P, record: bun.ImportRecord, allocator: Allocator, loc: logger.Loc) bun.OOM!Expr {
+            var attributes: [3]G.Property = undefined;
+            var count: usize = 0;
+            if (record.loader) |loader| {
+                attributes[count] = .{
+                    .key = p.newExpr(E.String{ .data = "type" }, loc),
+                    .value = p.newExpr(E.String{ .data = loader.importAttributeType() }, loc),
+                };
+                count += 1;
+                if (loader == .sqlite_embedded) {
+                    attributes[count] = .{
+                        .key = p.newExpr(E.String{ .data = "embed" }, loc),
+                        .value = p.newExpr(E.String{ .data = "true" }, loc),
+                    };
+                    count += 1;
+                }
+            }
+            if (record.tag == .bake_resolve_to_ssr_graph) {
+                attributes[count] = .{
+                    .key = p.newExpr(E.String{ .data = "bunBakeGraph" }, loc),
+                    .value = p.newExpr(E.String{ .data = "ssr" }, loc),
+                };
+                count += 1;
+            }
+            if (count == 0) return Expr.empty;
+            var attribute_properties = try G.Property.List.fromSlice(allocator, attributes[0..count]);
+            errdefer attribute_properties.deinit(allocator);
+            const with = p.newExpr(E.Object{ .properties = attribute_properties, .is_single_line = true }, loc);
+            const properties = try G.Property.List.fromSlice(allocator, &.{.{
+                .key = p.newExpr(E.String{ .data = "with" }, loc),
+                .value = with,
+            }});
+            return p.newExpr(E.Object{ .properties = properties, .is_single_line = true }, loc);
+        }
+
+        fn convertImports(
             p: *P,
             import_data: *const S.Import,
             await_expr: Expr,
@@ -296,16 +267,20 @@ pub fn ReplTransforms(comptime P: type) type {
             allocator: Allocator,
             loc: logger.Loc,
         ) !void {
+            if (import_data.star_name_loc == null and import_data.default_name == null and import_data.items.len == 0) {
+                try inner_stmts.append(p.s(S.SExpr{ .value = await_expr }, loc));
+                return;
+            }
 
             // Store the module in the namespace ref: var __ns = await import('mod')
             try hoisted_stmts.append(p.s(S.Local{
                 .kind = .k_var,
-                .decls = Decl.List.fromOwnedSlice(bun.handleOom(allocator.dupe(G.Decl, &.{
+                .decls = Decl.List.fromOwnedSlice(try allocator.dupe(G.Decl, &.{
                     G.Decl{
                         .binding = p.b(B.Identifier{ .ref = import_data.namespace_ref }, loc),
                         .value = null,
                     },
-                }))),
+                })),
             }, loc));
             const ns_assign = p.newExpr(E.Binary{
                 .op = .bin_assign,
@@ -314,34 +289,44 @@ pub fn ReplTransforms(comptime P: type) type {
             }, loc);
             try inner_stmts.append(p.s(S.SExpr{ .value = ns_assign }, loc));
 
-            // For each named import: var name; name = __ns.originalName;
+            if (import_data.default_name) |name| {
+                try assignImportedBinding(p, import_data.namespace_ref, name, "default", hoisted_stmts, inner_stmts, allocator);
+            }
             for (import_data.items) |item| {
-                try hoisted_stmts.append(p.s(S.Local{
-                    .kind = .k_var,
-                    .decls = Decl.List.fromOwnedSlice(bun.handleOom(allocator.dupe(G.Decl, &.{
-                        G.Decl{
-                            .binding = p.b(B.Identifier{ .ref = item.name.ref.? }, item.name.loc),
-                            .value = null,
-                        },
-                    }))),
-                }, loc));
-                const ns_ref_expr = p.newExpr(E.Identifier{ .ref = import_data.namespace_ref }, loc);
-                const prop_access = p.newExpr(E.Dot{
-                    .target = ns_ref_expr,
-                    .name = item.alias,
-                    .name_loc = item.name.loc,
-                }, loc);
-                const item_assign = p.newExpr(E.Binary{
-                    .op = .bin_assign,
-                    .left = p.newExpr(E.Identifier{ .ref = item.name.ref.? }, item.name.loc),
-                    .right = prop_access,
-                }, loc);
-                try inner_stmts.append(p.s(S.SExpr{ .value = item_assign }, loc));
+                try assignImportedBinding(p, import_data.namespace_ref, item.name, item.alias, hoisted_stmts, inner_stmts, allocator);
             }
         }
 
+        fn assignImportedBinding(
+            p: *P,
+            namespace_ref: js_ast.Ref,
+            name: js_ast.LocRef,
+            alias: []const u8,
+            hoisted_stmts: *ListManaged(Stmt),
+            inner_stmts: *ListManaged(Stmt),
+            allocator: Allocator,
+        ) !void {
+            try hoisted_stmts.ensureUnusedCapacity(1);
+            try inner_stmts.ensureUnusedCapacity(1);
+            const decls = try Decl.List.fromSlice(allocator, &.{.{
+                .binding = p.b(B.Identifier{ .ref = name.ref.? }, name.loc),
+            }});
+            hoisted_stmts.appendAssumeCapacity(p.s(S.Local{ .kind = .k_var, .decls = decls }, name.loc));
+            const target = p.newExpr(E.Identifier{ .ref = namespace_ref }, name.loc);
+            const value = if (bun.js_lexer.isIdentifier(alias))
+                p.newExpr(E.Dot{ .target = target, .name = alias, .name_loc = name.loc }, name.loc)
+            else
+                p.newExpr(E.Index{ .target = target, .index = p.newExpr(E.String{ .data = alias }, name.loc) }, name.loc);
+            const assignment = p.newExpr(E.Binary{
+                .op = .bin_assign,
+                .left = p.newExpr(E.Identifier{ .ref = name.ref.? }, name.loc),
+                .right = value,
+            }, name.loc);
+            inner_stmts.appendAssumeCapacity(p.s(S.SExpr{ .value = assignment }, name.loc));
+        }
+
         /// Wrap the last expression in return { value: expr }
-        fn wrapLastExpressionWithReturn(p: *P, inner_stmts: *ListManaged(Stmt), allocator: Allocator) void {
+        fn wrapLastExpressionWithReturn(p: *P, inner_stmts: *ListManaged(Stmt), allocator: Allocator) bun.OOM!void {
             if (inner_stmts.items.len > 0) {
                 var last_idx: usize = inner_stmts.items.len;
                 while (last_idx > 0) {
@@ -351,7 +336,7 @@ pub fn ReplTransforms(comptime P: type) type {
                         .s_empty, .s_comment => continue,
                         .s_expr => |expr_data| {
                             // Wrap in return { value: expr }
-                            const wrapped = wrapExprInValueObject(p, expr_data.value, allocator);
+                            const wrapped = try wrapExprInValueObject(p, expr_data.value, allocator);
                             inner_stmts.items[last_idx] = p.s(S.Return{ .value = wrapped }, last_stmt.loc);
                             break;
                         },
@@ -362,7 +347,7 @@ pub fn ReplTransforms(comptime P: type) type {
         }
 
         /// Extract individual identifiers from a binding pattern for hoisting
-        fn extractIdentifiersFromBinding(p: *P, binding: Binding, decls: *ListManaged(G.Decl)) !void {
+        fn extractIdentifiersFromBinding(p: *P, binding: Binding, decls: *ListManaged(G.Decl)) bun.OOM!void {
             switch (binding.data) {
                 .b_identifier => |ident| {
                     try decls.append(G.Decl{
@@ -386,8 +371,8 @@ pub fn ReplTransforms(comptime P: type) type {
 
         /// Create { __proto__: null, value: expr } wrapper object
         /// Uses null prototype to create a clean data object
-        fn wrapExprInValueObject(p: *P, expr: Expr, allocator: Allocator) Expr {
-            var properties = bun.handleOom(allocator.alloc(G.Property, 2));
+        fn wrapExprInValueObject(p: *P, expr: Expr, allocator: Allocator) bun.OOM!Expr {
+            const properties = try allocator.alloc(G.Property, 2);
             // __proto__: null - creates null-prototype object
             properties[0] = G.Property{
                 .key = p.newExpr(E.String{ .data = "__proto__" }, expr.loc),
@@ -404,7 +389,7 @@ pub fn ReplTransforms(comptime P: type) type {
         }
 
         /// Create assignment expression from binding pattern
-        fn createBindingAssignment(p: *P, binding: Binding, value: Expr, allocator: Allocator) Expr {
+        fn createBindingAssignment(p: *P, binding: Binding, value: Expr, allocator: Allocator) bun.OOM!Expr {
             switch (binding.data) {
                 .b_identifier => |ident| {
                     return p.newExpr(E.Binary{
@@ -417,7 +402,7 @@ pub fn ReplTransforms(comptime P: type) type {
                     // For array destructuring, create: [a, b] = value
                     return p.newExpr(E.Binary{
                         .op = .bin_assign,
-                        .left = convertBindingToExpr(p, binding, allocator),
+                        .left = try convertBindingToExpr(p, binding, allocator),
                         .right = value,
                     }, binding.loc);
                 },
@@ -425,7 +410,7 @@ pub fn ReplTransforms(comptime P: type) type {
                     // For object destructuring, create: {a, b} = value
                     return p.newExpr(E.Binary{
                         .op = .bin_assign,
-                        .left = convertBindingToExpr(p, binding, allocator),
+                        .left = try convertBindingToExpr(p, binding, allocator),
                         .right = value,
                     }, binding.loc);
                 },
@@ -438,15 +423,16 @@ pub fn ReplTransforms(comptime P: type) type {
 
         /// Convert a binding pattern to an expression (for assignment targets)
         /// Handles spread/rest patterns in arrays and objects to match Binding.toExpr behavior
-        fn convertBindingToExpr(p: *P, binding: Binding, allocator: Allocator) Expr {
+        fn convertBindingToExpr(p: *P, binding: Binding, allocator: Allocator) bun.OOM!Expr {
             switch (binding.data) {
                 .b_identifier => |ident| {
                     return p.newExpr(E.Identifier{ .ref = ident.ref }, binding.loc);
                 },
                 .b_array => |arr| {
-                    var items = bun.handleOom(allocator.alloc(Expr, arr.items.len));
+                    const items = try allocator.alloc(Expr, arr.items.len);
+                    errdefer allocator.free(items);
                     for (arr.items, 0..) |item, i| {
-                        const expr = convertBindingToExpr(p, item.binding, allocator);
+                        const expr = try convertBindingToExpr(p, item.binding, allocator);
                         // Check for spread pattern: if has_spread and this is the last element
                         if (arr.has_spread and i == arr.items.len - 1) {
                             items[i] = p.newExpr(E.Spread{ .value = expr }, expr.loc);
@@ -466,14 +452,15 @@ pub fn ReplTransforms(comptime P: type) type {
                     }, binding.loc);
                 },
                 .b_object => |obj| {
-                    var properties = bun.handleOom(allocator.alloc(G.Property, obj.properties.len));
+                    const properties = try allocator.alloc(G.Property, obj.properties.len);
+                    errdefer allocator.free(properties);
                     for (obj.properties, 0..) |prop, i| {
                         properties[i] = G.Property{
                             .flags = prop.flags,
                             .key = prop.key,
                             // Set kind to .spread if the property has spread flag
                             .kind = if (prop.flags.contains(.is_spread)) .spread else .normal,
-                            .value = convertBindingToExpr(p, prop.value, allocator),
+                            .value = try convertBindingToExpr(p, prop.value, allocator),
                             .initializer = prop.default_value,
                         };
                     }

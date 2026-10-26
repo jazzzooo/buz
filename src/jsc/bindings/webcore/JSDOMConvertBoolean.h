@@ -32,21 +32,9 @@ namespace WebCore {
 
 template<> struct Converter<IDLBoolean> : DefaultConverter<IDLBoolean> {
 
-    static constexpr bool conversionHasSideEffects = false;
-
     static bool convert(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
     {
         return value.toBoolean(&lexicalGlobalObject);
-    }
-};
-
-template<> struct JSConverter<IDLBoolean> {
-    static constexpr bool needsState = false;
-    static constexpr bool needsGlobalObject = false;
-
-    static JSC::JSValue convert(bool value)
-    {
-        return JSC::jsBoolean(value);
     }
 };
 

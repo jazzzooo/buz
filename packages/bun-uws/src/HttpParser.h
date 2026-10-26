@@ -31,7 +31,6 @@
 #include <climits>
 #include <string_view>
 #include <span>
-#include <map>
 #include "MoveOnlyFunction.h"
 #include "ChunkedEncoding.h"
 
@@ -39,13 +38,11 @@
 #include "ProxyParser.h"
 #include "QueryParser.h"
 #include "HttpErrors.h"
+#include "SchemaBindings.h"
 
 #if defined(_WIN32)
 #define strncasecmp _strnicmp
 #endif
-
-extern "C" size_t BUN_DEFAULT_MAX_HTTP_HEADER_SIZE;
-extern "C" int16_t Bun__HTTPMethod__from(const char *str, size_t len);
 
 namespace uWS
 {
@@ -157,8 +154,8 @@ namespace uWS
         bool didYield;
         unsigned int querySeparator;
         BloomFilter bf;
-        std::pair<int, std::string_view *> currentParameters;
-        std::map<std::string, unsigned short, std::less<>> *currentParameterOffsets = nullptr;
+        void *parameterContext = nullptr;
+        size_t (*parameterGetter)(void *, unsigned, const char **) = nullptr;
 
     public:
         /* Any data pipelined after the HTTP headers (before response).
@@ -356,33 +353,21 @@ namespace uWS
             return getDecodedQueryValue(key, headers->value.substr(querySeparator));
         }
 
-        void setParameters(std::pair<int, std::string_view *> parameters)
-        {
-            currentParameters = parameters;
-        }
 
-        void setParameterOffsets(std::map<std::string, unsigned short, std::less<>> *offsets)
-        {
-            currentParameterOffsets = offsets;
-        }
 
-        std::string_view getParameter(std::string_view name) {
-            if (!currentParameterOffsets) {
-                return {nullptr, 0};
-            }
-            auto it = currentParameterOffsets->find(name);
-            if (it == currentParameterOffsets->end()) {
-                return {nullptr, 0};
-            }
-            return getParameter(it->second);
+
+        void setParameterSource(void *context, size_t (*getter)(void *, unsigned, const char **)) {
+            parameterContext = context;
+            parameterGetter = getter;
         }
 
         std::string_view getParameter(unsigned short index) {
-            if (currentParameters.first < (int)index) {
-                return {};
-            } else {
-                return currentParameters.second[index];
+            if (parameterGetter) {
+                const char *data = nullptr;
+                const auto length = parameterGetter(parameterContext, index, &data);
+                return {data, length};
             }
+            return {};
         }
     };
 
@@ -394,7 +379,7 @@ namespace uWS
          /* This guy really has only 30 bits since we reserve two highest bits to chunked encoding parsing state */
         uint64_t remainingStreamingBytes = 0;
 
-        const size_t MAX_FALLBACK_SIZE = BUN_DEFAULT_MAX_HTTP_HEADER_SIZE;
+        const size_t MAX_FALLBACK_SIZE = Bun::Bindgen::ZigExports::bunBindgenZig_NodeHTTP_defaultMaxHTTPHeaderSize();
 
         /* Returns UINT64_MAX on error. Maximum 999999999 is allowed. */
         static uint64_t toUnsignedInteger(std::string_view str) {
@@ -490,7 +475,9 @@ namespace uWS
             if (str.empty()) return false;
 
             if (useStrictMethodValidation) {
-                return Bun__HTTPMethod__from(str.data(), str.length()) != -1;
+                return Bun::Bindgen::ZigExports::bunBindgenZig_HTTPMethod_from(std::span {
+                    reinterpret_cast<const uint8_t*>(str.data()), str.length()
+                }).has_value();
             }
 
             for (char c : str) {
@@ -948,7 +935,10 @@ namespace uWS
                     /* Go ahead and parse it (todo: better heuristics for emitting FIN to the app level) */
                     std::string_view dataToConsume(data, length);
                     for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
-                        dataHandler(user, chunk, chunk.length() == 0);
+                        void *returnedUser = dataHandler(user, chunk, chunk.length() == 0);
+                        if (returnedUser != user) {
+                            return HttpParserResult::success(consumedTotal + length - (unsigned int) dataToConsume.length(), returnedUser);
+                        }
                     }
                     if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) [[unlikely]] {
                         // TODO: what happen if we already responded?
@@ -962,7 +952,10 @@ namespace uWS
             } else if (contentLengthStringLen) {
                 if constexpr (!ConsumeMinimally) {
                     unsigned int emittable = (unsigned int) std::min<uint64_t>(remainingStreamingBytes, length);
-                    dataHandler(user, std::string_view(data, emittable), emittable == remainingStreamingBytes);
+                    void *returnedUser = dataHandler(user, std::string_view(data, emittable), emittable == remainingStreamingBytes);
+                    if (returnedUser != user) {
+                        return HttpParserResult::success(consumedTotal + emittable, returnedUser);
+                    }
                     remainingStreamingBytes -= emittable;
 
                     data += emittable;
@@ -979,7 +972,10 @@ namespace uWS
                 break;
             } else {
                 /* If we came here without a body; emit an empty data chunk to signal no data */
-                dataHandler(user, {}, true);
+                void *returnedUser = dataHandler(user, {}, true);
+                if (returnedUser != user) {
+                    return HttpParserResult::success(consumedTotal, returnedUser);
+                }
             }
 
             /* Consume minimally should break as easrly as possible */
@@ -998,13 +994,16 @@ public:
         HttpRequest req;
         if (remainingStreamingBytes) {
             if (isConnectRequest) {
-                dataHandler(user, std::string_view(data, length), false);
-                return HttpParserResult::success(0, user);
+                void *returnedUser = dataHandler(user, std::string_view(data, length), false);
+                return HttpParserResult::success(0, returnedUser);
             } else if (isParsingChunkedEncoding(remainingStreamingBytes)) {
                  /* It's either chunked or with a content-length */
                 std::string_view dataToConsume(data, length);
                 for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
-                    dataHandler(user, chunk, chunk.length() == 0);
+                    void *returnedUser = dataHandler(user, chunk, chunk.length() == 0);
+                    if (returnedUser != user) {
+                        return HttpParserResult::success(0, returnedUser);
+                    }
                 }
                 if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
                     return HttpParserResult::error(HTTP_ERROR_400_BAD_REQUEST, HTTP_PARSER_ERROR_INVALID_CHUNKED_ENCODING);
@@ -1017,19 +1016,22 @@ public:
                 // todo: refactor this
                 if (remainingStreamingBytes >= length) {
                     void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes == length);
+                    if (returnedUser != user) {
+                        return HttpParserResult::success(0, returnedUser);
+                    }
                     remainingStreamingBytes -= length;
                     return HttpParserResult::success(0, returnedUser);
                 } else {
                     void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), true);
+                    if (returnedUser != user) {
+                        return HttpParserResult::success(0, returnedUser);
+                    }
 
                     data += (unsigned int) remainingStreamingBytes;
                     length -= (unsigned int) remainingStreamingBytes;
 
                     remainingStreamingBytes = 0;
 
-                    if (returnedUser != user) {
-                        return HttpParserResult::success(0, returnedUser);
-                    }
                 }
             }
 
@@ -1061,13 +1063,16 @@ public:
 
                 if (remainingStreamingBytes) {
                     if(isConnectRequest) {
-                        dataHandler(user, std::string_view(data, length), false);
-                        return HttpParserResult::success(0, user);
+                        void *returnedUser = dataHandler(user, std::string_view(data, length), false);
+                        return HttpParserResult::success(0, returnedUser);
                     } else if (isParsingChunkedEncoding(remainingStreamingBytes)) {
                         /* It's either chunked or with a content-length */
                         std::string_view dataToConsume(data, length);
                         for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
-                            dataHandler(user, chunk, chunk.length() == 0);
+                            void *returnedUser = dataHandler(user, chunk, chunk.length() == 0);
+                            if (returnedUser != user) {
+                                return HttpParserResult::success(0, returnedUser);
+                            }
                         }
                         if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
                             return HttpParserResult::error(HTTP_ERROR_400_BAD_REQUEST, HTTP_PARSER_ERROR_INVALID_CHUNKED_ENCODING);
@@ -1078,19 +1083,22 @@ public:
                         // this is exactly the same as above!
                         if (remainingStreamingBytes >= (unsigned int) length) {
                             void *returnedUser = dataHandler(user, std::string_view(data, length), remainingStreamingBytes == (unsigned int) length);
+                            if (returnedUser != user) {
+                                return HttpParserResult::success(0, returnedUser);
+                            }
                             remainingStreamingBytes -= length;
                             return HttpParserResult::success(0, returnedUser);
                         } else {
                             void *returnedUser = dataHandler(user, std::string_view(data, remainingStreamingBytes), true);
+                            if (returnedUser != user) {
+                                return HttpParserResult::success(0, returnedUser);
+                            }
 
                             data += (unsigned int) remainingStreamingBytes;
                             length -= (unsigned int) remainingStreamingBytes;
 
                             remainingStreamingBytes = 0;
 
-                            if (returnedUser != user) {
-                                return HttpParserResult::success(0, returnedUser);
-                            }
                         }
                     }
                 }

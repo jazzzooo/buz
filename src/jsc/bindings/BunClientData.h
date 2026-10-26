@@ -1,24 +1,37 @@
 #pragma once
 
+struct VirtualMachine;
+
 namespace WebCore {
 
-class ExtendedDOMClientIsoSubspaces;
-class ExtendedDOMIsoSubspaces;
+class DOMClientIsoSubspaces;
+class DOMIsoSubspaces;
 class JSBuiltinFunctions;
+class SQLiteDatabaseData;
 
 class DOMWrapperWorld;
 }
 
+namespace Bun {
+class BindgenWrapperRegistry;
+struct DebuggerCallback;
+struct InspectorTarget;
+namespace CDP { class Transport; }
+namespace WK { struct HostClient; }
+namespace Bindgen {
+class IdentifierTable;
+}
+}
+
 #include "root.h"
 
-#include "ExtendedDOMClientIsoSubspaces.h"
-#include "ExtendedDOMIsoSubspaces.h"
+#include "DOMClientIsoSubspaces.h"
 #include "DOMIsoSubspaces.h"
 #include "BunBuiltinNames.h"
-// #include "WebCoreJSBuiltins.h"
-// #include "WorkerThreadType.h"
 #include <wtf/Function.h>
 #include <wtf/HashSet.h>
+#include <wtf/Vector.h>
+#include <wtf/HashMap.h>
 #include <wtf/WeakHashSet.h>
 #include <wtf/RefPtr.h>
 #include "JSVMClientDataClient.h"
@@ -49,7 +62,7 @@ public:
     static JSHeapData* ensureHeapData(JSC::Heap&);
 
     Lock& lock() { return m_lock; }
-    ExtendedDOMIsoSubspaces& subspaces() { return *m_subspaces.get(); }
+    DOMIsoSubspaces& subspaces() { return *m_subspaces.get(); }
 
     Vector<JSC::IsoSubspace*>& outputConstraintSpaces() { return m_outputConstraintSpaces; }
 
@@ -64,16 +77,13 @@ public:
     JSC::IsoHeapCellType m_heapCellTypeForNodeVMGlobalObject;
     JSC::IsoHeapCellType m_heapCellTypeForNapiHandleScopeImpl;
     JSC::IsoHeapCellType m_heapCellTypeForBakeGlobalObject;
-    JSC::IsoHeapCellType m_heapCellTypeForNativePromiseContext;
     // JSC::IsoHeapCellType m_heapCellTypeForGeneratedClass;
 
 private:
     Lock m_lock;
 
 private:
-    std::unique_ptr<ExtendedDOMIsoSubspaces> m_subspaces;
-    JSC::IsoSubspace m_domConstructorSpace;
-    JSC::IsoSubspace m_domBuiltinConstructorSpace;
+    std::unique_ptr<DOMIsoSubspaces> m_subspaces;
     JSC::IsoSubspace m_domNamespaceObjectSpace;
 
     Vector<JSC::IsoSubspace*> m_outputConstraintSpaces;
@@ -90,7 +100,7 @@ public:
 
     virtual ~JSVMClientData();
 
-    static void create(JSC::VM*, void*);
+    static void create(JSC::VM*, VirtualMachine*);
 
     JSHeapData& heapData() { return *m_heapData; }
     BunBuiltinNames& builtinNames() { return m_builtinNames; }
@@ -101,17 +111,17 @@ public:
         return originalSourceURL;
     }
 
-    WebCore::DOMWrapperWorld& normalWorld() { return *m_normalWorld; }
+    DOMWrapperWorld* wrapperWorlds() const { return m_wrapperWorlds; }
+    void rememberWorld(DOMWrapperWorld&);
+    void forgetWorld(DOMWrapperWorld&);
 
-    JSC::GCClient::IsoSubspace& domConstructorSpace() { return m_domConstructorSpace; }
 
-    ExtendedDOMClientIsoSubspaces& clientSubspaces() { return *m_clientSubspaces.get(); }
+    DOMClientIsoSubspaces& clientSubspaces() { return *m_clientSubspaces.get(); }
 
     Vector<JSC::IsoSubspace*>& outputConstraintSpaces() { return m_outputConstraintSpaces; }
 
-    JSC::GCClient::IsoSubspace& domBuiltinConstructorSpace() { return m_domBuiltinConstructorSpace; }
-
     WebCore::HTTPHeaderIdentifiers& httpHeaderIdentifiers();
+    Bun::Bindgen::IdentifierTable& bindgenIdentifiers() { return *m_bindgenIdentifiers; }
 
     template<typename Func> void forEachOutputConstraintSpace(const Func& func)
     {
@@ -119,8 +129,17 @@ public:
             func(*space);
     }
 
-    void* bunVM;
+    VirtualMachine* bunVM;
     Bun::JSCTaskScheduler deferredWorkTimer;
+    std::unique_ptr<Bun::BindgenWrapperRegistry> bindgenWrapperRegistry;
+    std::unique_ptr<Bun::CDP::Transport> webViewChromeTransport;
+#if OS(DARWIN)
+    std::unique_ptr<Bun::WK::HostClient> webViewHostClient;
+#endif
+    SQLiteDatabaseData* sqliteDatabaseHead { nullptr };
+    bool sqliteClosing { false };
+    Bun::DebuggerCallback* debuggerCallbacksHead { nullptr };
+    Bun::InspectorTarget* inspectorTargetsHead { nullptr };
 
     // Backing storage for Bun::IsolatedModuleCache (see IsolatedModuleCache.h).
     // All access should go through that class. Stored as the JSC base type to
@@ -135,17 +154,27 @@ public:
 private:
     bool isWebCoreJSClientData() const final { return true; }
 
+    JSC::VM& m_vm;
     BunBuiltinNames m_builtinNames;
     std::unique_ptr<JSBuiltinFunctions> m_builtinFunctions;
+    std::unique_ptr<Bun::Bindgen::IdentifierTable> m_bindgenIdentifiers;
 
     JSHeapData* m_heapData;
 
-    RefPtr<WebCore::DOMWrapperWorld> m_normalWorld;
-    JSC::GCClient::IsoSubspace m_domConstructorSpace;
-    JSC::GCClient::IsoSubspace m_domBuiltinConstructorSpace;
+    DOMWrapperWorld* m_wrapperWorlds { nullptr };
+    friend class DOMWrapperWorld;
+    uint64_t wrapperIdentity(void* native) const;
+    uint64_t retainWrapperIdentity(void* native);
+    void releaseWrapperIdentity(void* native, uint64_t generation);
+    struct WrapperIdentity {
+        uint64_t generation;
+        size_t registrations;
+    };
+    HashMap<void*, WrapperIdentity> m_wrapperIdentities;
+    uint64_t m_nextWrapperIdentity { 1 };
     JSC::GCClient::IsoSubspace m_domNamespaceObjectSpace;
 
-    std::unique_ptr<ExtendedDOMClientIsoSubspaces> m_clientSubspaces;
+    std::unique_ptr<DOMClientIsoSubspaces> m_clientSubspaces;
     Vector<JSC::IsoSubspace*> m_outputConstraintSpaces;
 
     std::optional<WebCore::HTTPHeaderIdentifiers> m_httpHeaderIdentifiers;
@@ -204,15 +233,6 @@ ALWAYS_INLINE JSC::GCClient::IsoSubspace* subspaceForImpl(JSC::VM& vm, GetClient
     return clientSpace;
 }
 
-// template<typename T, UseCustomHeapCellType useCustomHeapCellType, typename GetClient, typename SetClient, typename GetServer, typename SetServer>
-// ALWAYS_INLINE JSC::GCClient::IsoSubspace* subspaceForImpl(JSC::VM& vm, GetClient getClient, SetClient setClient, GetServer getServer, SetServer setServer, JSC::HeapCellType& (*getCustomHeapCellType)(JSHeapData&) = nullptr)
-// {
-//     static NeverDestroyed<JSC::IsoSubspacePerVM> perVM([](JSC::Heap& heap) {
-//         return ISO_SUBSPACE_PARAMETERS(heap.destructibleObjectHeapCellType, T);
-//     });
-//     return &perVM.get().clientIsoSubspaceforVM(vm);
-// }
-
 static JSVMClientData* clientData(JSC::VM& vm)
 {
     return downcast<JSVMClientData>(vm.clientData);
@@ -225,7 +245,7 @@ static inline BunBuiltinNames& builtinNames(JSC::VM& vm)
 
 } // namespace WebCore
 
-inline void* bunVM(JSC::VM& vm)
+inline VirtualMachine* bunVM(JSC::VM& vm)
 {
     return WebCore::clientData(vm)->bunVM;
 }

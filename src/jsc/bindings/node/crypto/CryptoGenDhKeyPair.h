@@ -7,40 +7,33 @@
 namespace Bun {
 
 struct DhKeyPairJobCtx : KeyPairJobCtx {
-    WTF_MAKE_TZONE_ALLOCATED(DhKeyPairJobCtx);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(DhKeyPairJobCtx);
 
 public:
-    DhKeyPairJobCtx(ncrypto::DHPointer&& group, const KeyEncodingConfig& config)
-        : KeyPairJobCtx(config.publicKeyEncoding, config.privateKeyEncoding)
+    DhKeyPairJobCtx(ncrypto::DHPointer&& group, KeyEncodingConfig&& config)
+        : KeyPairJobCtx(WTF::move(config))
         , m_prime(WTF::move(group))
     {
     }
 
-    DhKeyPairJobCtx(int primeLength, uint32_t generator, const KeyEncodingConfig& config)
-        : KeyPairJobCtx(config.publicKeyEncoding, config.privateKeyEncoding)
+    DhKeyPairJobCtx(int primeLength, uint32_t generator, KeyEncodingConfig&& config)
+        : KeyPairJobCtx(WTF::move(config))
         , m_prime(primeLength)
         , m_generator(generator)
     {
     }
 
-    DhKeyPairJobCtx(ncrypto::BignumPointer&& prime, const KeyEncodingConfig& config)
-        : KeyPairJobCtx(config.publicKeyEncoding, config.privateKeyEncoding)
+    DhKeyPairJobCtx(ncrypto::BignumPointer&& prime, uint32_t generator, KeyEncodingConfig&& config)
+        : KeyPairJobCtx(WTF::move(config))
         , m_prime(WTF::move(prime))
+        , m_generator(generator)
     {
     }
 
-    void deinit();
-    ncrypto::EVPKeyCtxPointer setup();
-    static std::optional<DhKeyPairJobCtx> fromJS(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, const JSC::GCOwnedDataScope<WTF::StringView>& typeView, JSC::JSValue optionsValue, const KeyEncodingConfig& config);
+    ncrypto::EVPKeyCtxPointer setup() override;
 
-    WTF::Variant<ncrypto::BignumPointer, int> m_prime;
-    uint32_t m_generator;
-};
-
-struct DhKeyPairJob {
-    static DhKeyPairJob* create(JSC::JSGlobalObject*, DhKeyPairJobCtx&&, JSC::JSValue callback);
-    static void createAndSchedule(JSC::JSGlobalObject*, DhKeyPairJobCtx&&, JSC::JSValue callback);
-    void schedule();
+    WTF::Variant<ncrypto::DHPointer, ncrypto::BignumPointer, int> m_prime;
+    uint32_t m_generator { 0 };
 };
 
 } // namespace Bun

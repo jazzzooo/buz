@@ -19,6 +19,10 @@ const Writable = require("internal/streams/writable");
 const from = require("internal/streams/from");
 
 const PromiseWithResolvers = Promise.withResolvers.bind(Promise);
+const isBlob = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isBlob>(
+  "NativeTypePredicates.schema.zig",
+  "isBlob",
+);
 
 class Duplexify extends Duplex {
   constructor(options) {
@@ -59,7 +63,7 @@ function duplexify(body, name?) {
   }
 
   if (isReadableStream(body)) {
-    return _duplexify({ readable: Readable.fromWeb(body) });
+    return _duplexify({ readable: Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]) });
   }
 
   if (isWritableStream(body)) {
@@ -122,7 +126,7 @@ function duplexify(body, name?) {
     throw $ERR_INVALID_RETURN_VALUE("Iterable, AsyncIterable or AsyncFunction", name, value);
   }
 
-  if ($inheritsBlob(body)) {
+  if (isBlob(body)) {
     return duplexify(body.arrayBuffer());
   }
 
@@ -196,7 +200,9 @@ function duplexify(body, name?) {
 }
 
 function fromAsyncGen(fn) {
-  let { promise, resolve } = PromiseWithResolvers();
+  type PendingWrite = { chunk?: any; done: boolean; cb: any };
+  let { promise, resolve }: { promise: Promise<PendingWrite> | null; resolve: ((value: PendingWrite) => void) | null } =
+    PromiseWithResolvers<PendingWrite>();
   const ac = new AbortController();
   const signal = ac.signal;
   const value = fn(
@@ -204,11 +210,11 @@ function fromAsyncGen(fn) {
       while (true) {
         const _promise = promise;
         promise = null;
-        const { chunk, done, cb } = await _promise;
+        const { chunk, done, cb } = (await _promise)!;
         process.nextTick(cb);
         if (done) return;
         if (signal.aborted) throw $makeAbortError(undefined, { cause: signal.reason });
-        ({ promise, resolve } = PromiseWithResolvers());
+        ({ promise, resolve } = PromiseWithResolvers<PendingWrite>());
         yield chunk;
       }
     })(),
@@ -218,12 +224,12 @@ function fromAsyncGen(fn) {
   return {
     value,
     write(chunk, encoding, cb) {
-      const _resolve = resolve;
+      const _resolve = resolve!;
       resolve = null;
       _resolve({ chunk, done: false, cb });
     },
     final(cb) {
-      const _resolve = resolve;
+      const _resolve = resolve!;
       resolve = null;
       _resolve({ done: true, cb });
     },
@@ -235,7 +241,8 @@ function fromAsyncGen(fn) {
 }
 
 function _duplexify(pair) {
-  const r = pair.readable && typeof pair.readable.read !== "function" ? Readable.wrap(pair.readable) : pair.readable;
+  const r =
+    pair.readable && typeof pair.readable.read !== "function" ? (Readable as any).wrap(pair.readable) : pair.readable;
   const w = pair.writable;
 
   let readable = !!isReadable(r);

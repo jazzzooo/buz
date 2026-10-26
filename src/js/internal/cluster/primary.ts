@@ -4,8 +4,8 @@ const RoundRobinHandle = require("internal/cluster/RoundRobinHandle");
 const path = require("node:path");
 const { throwNotImplemented, kHandle } = require("internal/shared");
 
-const sendHelper = $newZigFunction("node_cluster_binding.zig", "sendHelperPrimary", 4);
-const onInternalMessage = $newZigFunction("node_cluster_binding.zig", "onInternalMessagePrimary", 3);
+const sendHelper = $bindgenFn("NodeCluster.schema.zig", "sendHelperPrimary");
+const onInternalMessage = $bindgenFn("NodeCluster.schema.zig", "onInternalMessagePrimary");
 
 let child_process;
 
@@ -13,7 +13,7 @@ const ArrayPrototypeSlice = Array.prototype.slice;
 const ObjectValues = Object.values;
 const ObjectKeys = Object.keys;
 
-const cluster = new EventEmitter();
+const cluster: any = new EventEmitter();
 const intercom = new EventEmitter();
 const SCHED_NONE = 1;
 const SCHED_RR = 2;
@@ -21,6 +21,7 @@ const SCHED_RR = 2;
 export default cluster;
 
 const handles = new Map();
+const internalSendStates = new WeakMap<object, { seq: number; callbacks: Map<number, Function> }>();
 cluster.isWorker = false;
 cluster.isMaster = true; // Deprecated alias. Must be same as isPrimary.
 cluster.isPrimary = true;
@@ -174,7 +175,20 @@ cluster.fork = function (env) {
     cluster.emit("disconnect", worker);
   });
 
-  onInternalMessage(worker.process[kHandle], worker, onmessage);
+  internalSendStates.set(worker, { seq: 0, callbacks: new Map() });
+  onInternalMessage(worker.process[kHandle], (message, handle) => {
+    const ack = message?.ack;
+    if (ack !== undefined) {
+      const state = internalSendStates.get(worker)!;
+      const callback = state.callbacks.get(ack | 0);
+      if (callback !== undefined) {
+        state.callbacks.delete(ack | 0);
+        callback(message, handle);
+        return;
+      }
+    }
+    onmessage(worker, message, handle);
+  });
   process.nextTick(emitForkNT, worker);
   cluster.workers[worker.id] = worker;
   return worker;
@@ -190,7 +204,7 @@ cluster.disconnect = function (cb) {
   if (workers.length === 0) {
     process.nextTick(() => intercom.emit("disconnect"));
   } else {
-    for (const worker of ObjectValues(cluster.workers)) {
+    for (const worker of ObjectValues(cluster.workers) as any[]) {
       if (worker.isConnected()) {
         worker.disconnect();
       }
@@ -208,9 +222,7 @@ const methodMessageMapping = {
   queryServer,
 };
 
-function onmessage(message, _handle) {
-  const worker = this;
-
+function onmessage(worker, message, _handle) {
   const fn = methodMessageMapping[message.act];
 
   if (typeof fn === "function") fn(worker, message);
@@ -300,8 +312,18 @@ function close(worker, message) {
   if (handle && handle.remove(worker)) handles.delete(key);
 }
 
-function send(worker, message, handle?, cb?) {
-  return sendHelper(worker.process[kHandle], message, handle, cb);
+function send(worker, message, _handle?, cb?) {
+  const state = internalSendStates.get(worker);
+  if (state === undefined) return false;
+
+  const sequence = state.seq;
+  state.seq = (state.seq + 1) | 0;
+  message.seq = sequence;
+  if (cb !== undefined) state.callbacks.set(sequence, cb);
+
+  const result = sendHelper(worker.process[kHandle], message);
+  if (result === "failure" || result === "unavailable") state.callbacks.delete(sequence);
+  return result === "success";
 }
 
 // Extend generic Worker with methods specific to the primary process.

@@ -29,7 +29,7 @@ pub fn ResolutionType(comptime SemverIntType: type) type {
             InvalidSemver,
         };
 
-        pub fn fromTextLockfile(res_str: string, string_buf: *String.Buf) FromTextLockfileError!This {
+        pub fn fromTextLockfile(javascript_semantics: JavaScriptSemantics, res_str: string, string_buf: *String.Buf) FromTextLockfileError!This {
             if (strings.hasPrefixComptime(res_str, "root:")) {
                 return This.init(.{ .root = {} });
             }
@@ -46,7 +46,7 @@ pub fn ResolutionType(comptime SemverIntType: type) type {
                 return This.init(.{ .folder = try string_buf.append(folder) });
             }
 
-            return switch (Dependency.Version.Tag.infer(res_str)) {
+            return switch (Dependency.Version.Tag.infer(javascript_semantics, res_str)) {
                 .git => This.init(.{ .git = try Repository.parseAppendGit(res_str, string_buf) }),
                 .github => This.init(.{ .github = try Repository.parseAppendGithub(res_str, string_buf) }),
                 .tarball => {
@@ -101,7 +101,7 @@ pub fn ResolutionType(comptime SemverIntType: type) type {
 
         const FromPnpmLockfileError = OOM || error{InvalidPnpmLockfile};
 
-        pub fn fromPnpmLockfile(res_str: []const u8, string_buf: *String.Buf) FromPnpmLockfileError!Resolution {
+        pub fn fromPnpmLockfile(javascript_semantics: JavaScriptSemantics, res_str: []const u8, string_buf: *String.Buf) FromPnpmLockfileError!Resolution {
             if (strings.withoutPrefixIfPossibleComptime(res_str, "https://codeload.github.com/")) |user_repo_tar_committish| {
                 const user_end = strings.indexOfChar(user_repo_tar_committish, '/') orelse {
                     return error.InvalidPnpmLockfile;
@@ -136,7 +136,7 @@ pub fn ResolutionType(comptime SemverIntType: type) type {
                 return This.init(.{ .folder = try string_buf.append(path) });
             }
 
-            return switch (Dependency.Version.Tag.infer(res_str)) {
+            return switch (Dependency.Version.Tag.infer(javascript_semantics, res_str)) {
                 .git => This.init(.{ .git = try Repository.parseAppendGit(res_str, string_buf) }),
                 .github => This.init(.{ .github = try Repository.parseAppendGithub(res_str, string_buf) }),
                 .tarball => {
@@ -542,6 +542,7 @@ const Repository = @import("./repository.zig").Repository;
 const VersionedURLType = @import("./versioned_url.zig").VersionedURLType;
 
 const bun = @import("bun");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 const OOM = bun.OOM;
 const strings = bun.strings;
 const Dependency = bun.install.Dependency;

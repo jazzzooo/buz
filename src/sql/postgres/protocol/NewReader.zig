@@ -58,12 +58,6 @@ pub fn NewReader(comptime Context: type) type {
         }
 
         pub const bytes = read;
-
-        pub fn String(this: @This()) !bun.String {
-            var result = try this.readZ();
-            defer result.deinit();
-            return bun.String.borrowUTF8(result.slice());
-        }
     };
 }
 

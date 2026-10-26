@@ -90,9 +90,9 @@ pub fn deinit(this: *MySQLStatement) void {
     bun.destroy(this);
 }
 
-pub fn layout(this: *MySQLStatement, owner: ?JSValue, globalObject: *jsc.JSGlobalObject) *const ResultLayout {
+pub fn layout(this: *MySQLStatement, values: *const SQLTypes.BindingValues) bun.JSError!*const ResultLayout {
     if (!this.result_layout.initialized) {
-        this.result_layout.init(this.columns, owner, globalObject);
+        try this.result_layout.init(this.columns, values);
     }
     return &this.result_layout;
 }
@@ -100,12 +100,10 @@ pub const Param = @import("../../sql/mysql/MySQLParam.zig").Param;
 const debug = bun.Output.scoped(.MySQLStatement, .hidden);
 
 const ResultLayout = @import("../shared/ResultLayout.zig");
+const SQLTypes = @import("../shared/SQLTypes.zig");
 const ColumnDefinition41 = @import("../../sql/mysql/protocol/ColumnDefinition41.zig");
 const ErrorPacket = @import("../../sql/mysql/protocol/ErrorPacket.zig");
 const Signature = @import("./protocol/Signature.zig");
-const types = @import("../../sql/mysql/MySQLTypes.zig");
+const types = @import("mysql_domain").types;
 
 const bun = @import("bun");
-
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;

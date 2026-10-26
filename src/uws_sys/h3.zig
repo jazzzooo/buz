@@ -17,6 +17,13 @@ pub const ListenSocket = opaque {
 };
 
 pub const Request = opaque {
+    pub fn setParameters(req: *Request, parameters: *const []const []const u8) void {
+        c.uws_h3_req_set_parameter_source(req, @ptrCast(@constCast(parameters)), @import("./Request.zig").parameterAt);
+    }
+
+    pub fn clearParameters(req: *Request) void {
+        c.uws_h3_req_set_parameter_source(req, null, null);
+    }
     pub fn isAncient(_: *Request) bool {
         return false;
     }
@@ -34,18 +41,15 @@ pub const Request = opaque {
         var p: [*]const u8 = undefined;
         return p[0..c.uws_h3_req_get_method(this, &p)];
     }
+
+    pub fn rawMethod(req: *Request) []const u8 {
+        var ptr: [*]const u8 = undefined;
+        return ptr[0..c.uws_h3_req_get_raw_method(req, &ptr)];
+    }
     pub fn header(this: *Request, name: []const u8) ?[]const u8 {
         var p: [*]const u8 = undefined;
         const n = c.uws_h3_req_get_header(this, name.ptr, name.len, &p);
         return if (n == 0) null else p[0..n];
-    }
-    pub fn dateForHeader(this: *Request, name: []const u8) bun.JSError!?u64 {
-        const value = this.header(name) orelse return null;
-        var s = bun.String.init(value);
-        defer s.deref();
-        const ms = try s.parseDate(bun.jsc.VirtualMachine.get().global);
-        if (!std.math.isNan(ms) and std.math.isFinite(ms) and ms >= 0) return @intFromFloat(ms);
-        return null;
     }
     pub fn query(this: *Request, name: []const u8) []const u8 {
         var p: [*]const u8 = undefined;
@@ -71,45 +75,42 @@ pub const Request = opaque {
 };
 
 pub const Response = opaque {
-    pub fn end(this: *Response, data: []const u8, close_connection: bool) void {
-        c.uws_h3_res_end(this, data.ptr, data.len, close_connection);
+    pub fn end(this: *Response, data: []const u8, close_connection: bool) WriteError!void {
+        _ = try c.uws_h3_res_end(this, data.ptr, data.len, close_connection).check();
     }
-    pub fn tryEnd(this: *Response, data: []const u8, total: usize, close_connection: bool) bool {
-        return c.uws_h3_res_try_end(this, data.ptr, data.len, total, close_connection);
+    pub fn tryEnd(this: *Response, data: []const u8, total: usize, close_connection: bool) WriteError!bool {
+        return c.uws_h3_res_try_end(this, data.ptr, data.len, total, close_connection).check();
     }
-    pub fn endWithoutBody(this: *Response, close_connection: bool) void {
-        c.uws_h3_res_end_without_body(this, close_connection);
+    pub fn endWithoutBody(this: *Response, close_connection: bool) WriteError!void {
+        _ = try c.uws_h3_res_end_without_body(this, close_connection).check();
     }
-    pub fn endStream(this: *Response, close_connection: bool) void {
-        c.uws_h3_res_end_stream(this, close_connection);
+    pub fn endStream(this: *Response, close_connection: bool) WriteError!void {
+        _ = try c.uws_h3_res_end_stream(this, close_connection).check();
     }
-    pub fn endSendFile(this: *Response, write_offset: u64, close_connection: bool) void {
-        c.uws_h3_res_end_sendfile(this, write_offset, close_connection);
-    }
-    pub fn write(this: *Response, data: []const u8) WriteResult {
+    pub fn write(this: *Response, data: []const u8) WriteError!WriteResult {
         var len: usize = data.len;
-        return if (c.uws_h3_res_write(this, data.ptr, &len)) .{ .want_more = len } else .{ .backpressure = len };
+        return if (try c.uws_h3_res_write(this, data.ptr, &len).check()) .{ .want_more = len } else .{ .backpressure = len };
     }
-    pub fn writeStatus(this: *Response, status: []const u8) void {
-        c.uws_h3_res_write_status(this, status.ptr, status.len);
+    pub fn writeStatus(this: *Response, status: []const u8) WriteError!void {
+        _ = try c.uws_h3_res_write_status(this, status.ptr, status.len).check();
     }
-    pub fn writeHeader(this: *Response, key: []const u8, value: []const u8) void {
-        c.uws_h3_res_write_header(this, key.ptr, key.len, value.ptr, value.len);
+    pub fn writeHeader(this: *Response, key: []const u8, value: []const u8) WriteError!void {
+        _ = try c.uws_h3_res_write_header(this, key.ptr, key.len, value.ptr, value.len).check();
     }
-    pub fn writeHeaderInt(this: *Response, key: []const u8, value: u64) void {
-        c.uws_h3_res_write_header_int(this, key.ptr, key.len, value);
+    pub fn writeHeaderInt(this: *Response, key: []const u8, value: u64) WriteError!void {
+        _ = try c.uws_h3_res_write_header_int(this, key.ptr, key.len, value).check();
     }
-    pub fn writeMark(this: *Response) void {
-        c.uws_h3_res_write_mark(this);
+    pub fn writeMark(this: *Response) WriteError!void {
+        _ = try c.uws_h3_res_write_mark(this).check();
     }
     pub fn markWroteContentLengthHeader(this: *Response) void {
         c.uws_h3_res_mark_wrote_content_length_header(this);
     }
-    pub fn writeContinue(this: *Response) void {
-        c.uws_h3_res_write_continue(this);
+    pub fn writeContinue(this: *Response) WriteError!void {
+        _ = try c.uws_h3_res_write_continue(this).check();
     }
-    pub fn flushHeaders(this: *Response, immediate: bool) void {
-        c.uws_h3_res_flush_headers(this, immediate);
+    pub fn flushHeaders(this: *Response, immediate: bool) WriteError!void {
+        _ = try c.uws_h3_res_flush_headers(this, immediate).check();
     }
     pub fn pause(this: *Response) void {
         c.uws_h3_res_pause(this);
@@ -144,11 +145,10 @@ pub const Response = opaque {
     pub fn isCorked(_: *Response) bool {
         return false;
     }
-    pub fn uncork(_: *Response) void {}
+    pub fn uncork(_: *Response) WriteError!void {}
     pub fn isConnectRequest(_: *Response) bool {
         return false;
     }
-    pub fn prepareForSendfile(_: *Response) void {}
     pub fn markNeedsMore(_: *Response) void {}
     pub fn getSocketData(this: *Response) ?*anyopaque {
         return c.uws_h3_res_get_socket_data(this);
@@ -229,11 +229,11 @@ pub const Response = opaque {
     pub fn clearOnData(this: *Response) void {
         c.uws_h3_res_on_data(this, null, null);
     }
-    pub fn corked(this: *Response, comptime handler: anytype, args: std.meta.ArgsTuple(@TypeOf(handler))) void {
+    pub fn corked(this: *Response, comptime handler: anytype, args: std.meta.ArgsTuple(@TypeOf(handler))) WriteError!void {
         _ = this;
         @call(.auto, handler, args);
     }
-    pub fn runCorkedWithType(this: *Response, comptime UD: type, comptime handler: fn (UD) void, ud: UD) void {
+    pub fn runCorkedWithType(this: *Response, comptime UD: type, comptime handler: fn (UD) void, ud: UD) WriteError!void {
         const W = struct {
             fn cb(p: ?*anyopaque) callconv(.c) void {
                 handler(@ptrCast(@alignCast(p.?)));
@@ -244,6 +244,14 @@ pub const Response = opaque {
 };
 
 pub const App = opaque {
+    pub fn setRequestHandler(app: *App, comptime T: type, context: T, comptime handler: fn (T, *Request, *Response) void) void {
+        const Callback = struct {
+            fn call(response: *anyopaque, request: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+                handler(@ptrCast(@alignCast(data.?)), @ptrCast(@alignCast(request)), @ptrCast(@alignCast(response)));
+            }
+        };
+        c.uws_h3_app_set_request_handler(app, @ptrCast(context), Callback.call);
+    }
     pub fn create(opts: uws.SocketContext.BunSocketContextOptions, idle_timeout_s: u32) ?*App {
         return c.uws_h3_create_app(opts, idle_timeout_s);
     }
@@ -255,84 +263,6 @@ pub const App = opaque {
     }
     pub fn close(this: *App) void {
         c.uws_h3_app_close(this);
-    }
-    pub fn clearRoutes(this: *App) void {
-        c.uws_h3_app_clear_routes(this);
-    }
-
-    fn route(
-        comptime which: @TypeOf(.x),
-        this: *App,
-        pattern: []const u8,
-        comptime UD: type,
-        ud: UD,
-        comptime handler: fn (UD, *Request, *Response) void,
-    ) void {
-        const W = struct {
-            fn cb(res: *Response, req: *Request, p: ?*anyopaque) callconv(.c) void {
-                handler(@ptrCast(@alignCast(p.?)), req, res);
-            }
-        };
-        const f = switch (which) {
-            .get => c.uws_h3_app_get,
-            .post => c.uws_h3_app_post,
-            .put => c.uws_h3_app_put,
-            .delete => c.uws_h3_app_delete,
-            .patch => c.uws_h3_app_patch,
-            .head => c.uws_h3_app_head,
-            .options => c.uws_h3_app_options,
-            .connect => c.uws_h3_app_connect,
-            .trace => c.uws_h3_app_trace,
-            .any => c.uws_h3_app_any,
-            else => unreachable,
-        };
-        f(this, pattern.ptr, pattern.len, W.cb, ud);
-    }
-
-    pub fn get(this: *App, p: []const u8, comptime UD: type, ud: UD, comptime h: fn (UD, *Request, *Response) void) void {
-        route(.get, this, p, UD, ud, h);
-    }
-    pub fn post(this: *App, p: []const u8, comptime UD: type, ud: UD, comptime h: fn (UD, *Request, *Response) void) void {
-        route(.post, this, p, UD, ud, h);
-    }
-    pub fn put(this: *App, p: []const u8, comptime UD: type, ud: UD, comptime h: fn (UD, *Request, *Response) void) void {
-        route(.put, this, p, UD, ud, h);
-    }
-    pub fn delete(this: *App, p: []const u8, comptime UD: type, ud: UD, comptime h: fn (UD, *Request, *Response) void) void {
-        route(.delete, this, p, UD, ud, h);
-    }
-    pub fn patch(this: *App, p: []const u8, comptime UD: type, ud: UD, comptime h: fn (UD, *Request, *Response) void) void {
-        route(.patch, this, p, UD, ud, h);
-    }
-    pub fn head(this: *App, p: []const u8, comptime UD: type, ud: UD, comptime h: fn (UD, *Request, *Response) void) void {
-        route(.head, this, p, UD, ud, h);
-    }
-    pub fn options(this: *App, p: []const u8, comptime UD: type, ud: UD, comptime h: fn (UD, *Request, *Response) void) void {
-        route(.options, this, p, UD, ud, h);
-    }
-    pub fn any(this: *App, p: []const u8, comptime UD: type, ud: UD, comptime h: fn (UD, *Request, *Response) void) void {
-        route(.any, this, p, UD, ud, h);
-    }
-    pub fn method(
-        this: *App,
-        m: bun.http.Method,
-        p: []const u8,
-        comptime UD: type,
-        ud: UD,
-        comptime h: fn (UD, *Request, *Response) void,
-    ) void {
-        switch (m) {
-            .GET => this.get(p, UD, ud, h),
-            .POST => this.post(p, UD, ud, h),
-            .PUT => this.put(p, UD, ud, h),
-            .DELETE => this.delete(p, UD, ud, h),
-            .PATCH => this.patch(p, UD, ud, h),
-            .OPTIONS => this.options(p, UD, ud, h),
-            .HEAD => this.head(p, UD, ud, h),
-            .CONNECT => route(.connect, this, p, UD, ud, h),
-            .TRACE => route(.trace, this, p, UD, ud, h),
-            else => {},
-        }
     }
 
     pub fn listenWithConfig(
@@ -358,6 +288,9 @@ pub const ListenConfig = extern struct {
 };
 
 const c = struct {
+    extern fn uws_h3_req_get_raw_method(*Request, *[*]const u8) usize;
+    extern fn uws_h3_app_set_request_handler(*App, ?*anyopaque, ?*const fn (*anyopaque, *anyopaque, ?*anyopaque) callconv(.c) void) void;
+    extern fn uws_h3_req_set_parameter_source(*Request, ?*anyopaque, ?*const fn (*anyopaque, c_uint, *[*]const u8) callconv(.c) usize) void;
     const Handler = ?*const fn (*Response, *Request, ?*anyopaque) callconv(.c) void;
     const ListenHandler = ?*const fn (?*ListenSocket, ?*anyopaque) callconv(.c) void;
     const HeaderCb = *const fn ([*]const u8, usize, [*]const u8, usize, ?*anyopaque) callconv(.c) void;
@@ -365,46 +298,34 @@ const c = struct {
     extern fn uws_h3_create_app(uws.SocketContext.BunSocketContextOptions, u32) ?*App;
     extern fn uws_h3_app_destroy(*App) void;
     extern fn uws_h3_app_close(*App) void;
-    extern fn uws_h3_app_clear_routes(*App) void;
     extern fn uws_h3_app_add_server_name(*App, [*:0]const u8, uws.SocketContext.BunSocketContextOptions) bool;
-    extern fn uws_h3_res_write_continue(*Response) void;
-    extern fn uws_h3_app_get(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_post(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_put(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_delete(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_patch(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_head(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_options(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_connect(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_trace(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
-    extern fn uws_h3_app_any(*App, [*]const u8, usize, Handler, ?*anyopaque) void;
+    extern fn uws_h3_res_write_continue(*Response) NativeWriteStatus;
     extern fn uws_h3_app_listen_with_config(*App, ?[*:0]const u8, u16, i32, ListenHandler, ?*anyopaque) void;
     extern fn uws_h3_listen_socket_port(*ListenSocket) i32;
     extern fn uws_h3_listen_socket_local_address(*ListenSocket, [*]u8, c_int) c_int;
     extern fn uws_h3_listen_socket_close(*ListenSocket) void;
 
     extern fn uws_h3_res_state(*Response) State;
-    extern fn uws_h3_res_end(*Response, [*c]const u8, usize, bool) void;
-    extern fn uws_h3_res_end_stream(*Response, bool) void;
+    extern fn uws_h3_res_end(*Response, [*c]const u8, usize, bool) NativeWriteStatus;
+    extern fn uws_h3_res_end_stream(*Response, bool) NativeWriteStatus;
     extern fn uws_h3_res_force_close(*Response) void;
-    extern fn uws_h3_res_try_end(*Response, [*c]const u8, usize, usize, bool) bool;
-    extern fn uws_h3_res_end_without_body(*Response, bool) void;
+    extern fn uws_h3_res_try_end(*Response, [*c]const u8, usize, usize, bool) NativeWriteStatus;
+    extern fn uws_h3_res_end_without_body(*Response, bool) NativeWriteStatus;
     extern fn uws_h3_res_pause(*Response) void;
     extern fn uws_h3_res_resume(*Response) void;
-    extern fn uws_h3_res_write_status(*Response, [*c]const u8, usize) void;
-    extern fn uws_h3_res_write_header(*Response, [*c]const u8, usize, [*c]const u8, usize) void;
-    extern fn uws_h3_res_write_header_int(*Response, [*c]const u8, usize, u64) void;
+    extern fn uws_h3_res_write_status(*Response, [*c]const u8, usize) NativeWriteStatus;
+    extern fn uws_h3_res_write_header(*Response, [*c]const u8, usize, [*c]const u8, usize) NativeWriteStatus;
+    extern fn uws_h3_res_write_header_int(*Response, [*c]const u8, usize, u64) NativeWriteStatus;
     extern fn uws_h3_res_mark_wrote_content_length_header(*Response) void;
-    extern fn uws_h3_res_write_mark(*Response) void;
-    extern fn uws_h3_res_flush_headers(*Response, bool) void;
-    extern fn uws_h3_res_write(*Response, ?[*]const u8, *usize) bool;
+    extern fn uws_h3_res_write_mark(*Response) NativeWriteStatus;
+    extern fn uws_h3_res_flush_headers(*Response, bool) NativeWriteStatus;
+    extern fn uws_h3_res_write(*Response, ?[*]const u8, *usize) NativeWriteStatus;
     extern fn uws_h3_res_get_write_offset(*Response) u64;
     extern fn uws_h3_res_override_write_offset(*Response, u64) void;
     extern fn uws_h3_res_has_responded(*Response) bool;
     extern fn uws_h3_res_get_buffered_amount(*Response) u64;
     extern fn uws_h3_res_reset_timeout(*Response) void;
     extern fn uws_h3_res_timeout(*Response, u8) void;
-    extern fn uws_h3_res_end_sendfile(*Response, u64, bool) void;
     extern fn uws_h3_res_get_socket_data(*Response) ?*anyopaque;
     extern fn uws_h3_res_on_writable(*Response, ?*const fn (*Response, u64, ?*anyopaque) callconv(.c) bool, ?*anyopaque) void;
     extern fn uws_h3_res_clear_on_writable(*Response) void;
@@ -429,6 +350,8 @@ const std = @import("std");
 
 const State = @import("./Response.zig").State;
 const WriteResult = @import("./Response.zig").WriteResult;
+const WriteError = @import("./Response.zig").WriteError;
+const NativeWriteStatus = @import("./Response.zig").NativeWriteStatus;
 
 const uws = bun.uws;
 const SocketAddress = uws.SocketAddress;

@@ -32,10 +32,21 @@
 #include <wtf/URL.h>
 #include <wtf/URLParser.h>
 #include <wtf/text/MakeString.h>
+#include <wtf/text/StringImpl.h>
 
 namespace WebCore {
 
+using WTF::URLParser;
+
 static constexpr auto dummyURLCharacters { "https://w/"_s };
+
+static ExceptionOr<String> copyComponent(StringView value)
+{
+    auto result = tryMakeString(value);
+    if (result.isNull())
+        return Exception { OutOfMemoryError };
+    return result;
+}
 
 static bool isValidIPv6HostCodePoint(auto codepoint)
 {
@@ -67,98 +78,102 @@ bool isAbsolutePathname(StringView input, BaseURLStringType inputType)
     return false;
 }
 
-// https://urlpattern.spec.whatwg.org/#canonicalize-a-protocol, combined with https://urlpattern.spec.whatwg.org/#process-protocol-for-init
-ExceptionOr<String> canonicalizeProtocol(StringView value, BaseURLStringType valueType)
+// https://urlpattern.spec.whatwg.org/#canonicalize-a-protocol
+static ExceptionOr<String> canonicalizeProtocol(StringView value)
 {
     if (value.isEmpty())
-        return value.toString();
+        return copyComponent(value);
 
-    auto strippedValue = value.endsWith(':') ? value.left(value.length() - 1) : value;
-
-    if (valueType == BaseURLStringType::Pattern)
-        return strippedValue.toString();
-
-    URL dummyURL(makeString(strippedValue, "://w/"_s));
-
+    auto input = tryMakeString(value, "://w/"_s);
+    if (input.isNull())
+        return Exception { OutOfMemoryError };
+    WTF::URL dummyURL { input };
     if (!dummyURL.isValid())
         return Exception { ExceptionCode::TypeError, "Invalid input to canonicalize a URL protocol string."_s };
 
-    return dummyURL.protocol().toString();
+    return copyComponent(dummyURL.protocol());
+}
+
+ExceptionOr<String> processProtocol(StringView value, BaseURLStringType valueType)
+{
+    if (value.endsWith(':'))
+        value = value.left(value.length() - 1);
+    return valueType == BaseURLStringType::Pattern ? copyComponent(value) : canonicalizeProtocol(value);
 }
 
 // https://urlpattern.spec.whatwg.org/#canonicalize-a-username, combined with https://urlpattern.spec.whatwg.org/#process-username-for-init
-String canonicalizeUsername(StringView value, BaseURLStringType valueType)
+ExceptionOr<String> canonicalizeUsername(StringView value, BaseURLStringType valueType)
 {
     if (value.isEmpty())
-        return value.toString();
+        return copyComponent(value);
 
     if (valueType == BaseURLStringType::Pattern)
-        return value.toString();
+        return copyComponent(value);
 
     URL dummyURL(dummyURLCharacters);
     dummyURL.setUser(value);
 
-    return dummyURL.encodedUser().toString();
+    return copyComponent(dummyURL.encodedUser());
 }
 
 // https://urlpattern.spec.whatwg.org/#canonicalize-a-password, combined with https://urlpattern.spec.whatwg.org/#process-password-for-init
-String canonicalizePassword(StringView value, BaseURLStringType valueType)
+ExceptionOr<String> canonicalizePassword(StringView value, BaseURLStringType valueType)
 {
     if (value.isEmpty())
-        return value.toString();
+        return copyComponent(value);
 
     if (valueType == BaseURLStringType::Pattern)
-        return value.toString();
+        return copyComponent(value);
 
     URL dummyURL(dummyURLCharacters);
     dummyURL.setPassword(value);
 
-    return dummyURL.encodedPassword().toString();
+    return copyComponent(dummyURL.encodedPassword());
 }
 
 // https://urlpattern.spec.whatwg.org/#canonicalize-a-hostname, combined with https://urlpattern.spec.whatwg.org/#process-hostname-for-init
 ExceptionOr<String> canonicalizeHostname(StringView value, BaseURLStringType valueType)
 {
     if (value.isEmpty())
-        return value.toString();
+        return copyComponent(value);
 
     if (valueType == BaseURLStringType::Pattern)
-        return value.toString();
+        return copyComponent(value);
 
     URL dummyURL(dummyURLCharacters);
     if (!dummyURL.setHost(value))
         return Exception { ExceptionCode::TypeError, "Invalid input to canonicalize a URL host string."_s };
 
-    return dummyURL.host().toString();
+    return copyComponent(dummyURL.host());
 }
 
 // https://urlpattern.spec.whatwg.org/#canonicalize-an-ipv6-hostname
 ExceptionOr<String> canonicalizeIPv6Hostname(StringView value, BaseURLStringType valueType)
 {
     if (valueType == BaseURLStringType::Pattern)
-        return value.toString();
+        return copyComponent(value);
 
-    StringBuilder result;
-    result.reserveCapacity(value.length());
-
-    for (auto codepoint : value.codePoints()) {
-        if (!isValidIPv6HostCodePoint(codepoint))
+    for (auto character : value.codeUnits()) {
+        if (!isValidIPv6HostCodePoint(character))
             return Exception { ExceptionCode::TypeError, "Invalid input to canonicalize a URL IPv6 host string."_s };
-
-        result.append(toASCIILower(codepoint));
     }
-
-    return String { result.toString() };
+    std::span<Latin1Character> characters;
+    auto impl = StringImpl::tryCreateUninitialized(value.length(), characters);
+    if (!impl)
+        return Exception { OutOfMemoryError };
+    for (unsigned index = 0; index < value.length(); ++index)
+        characters[index] = static_cast<Latin1Character>(toASCIILower(value[index]));
+    return String(WTF::move(impl));
 }
 
 // https://urlpattern.spec.whatwg.org/#canonicalize-a-port, combined with https://urlpattern.spec.whatwg.org/#process-port-for-init
 ExceptionOr<String> canonicalizePort(StringView portValue, StringView protocolValue, BaseURLStringType portValueType)
 {
     if (portValue.isEmpty())
-        return portValue.toString();
+        return copyComponent(portValue);
 
     if (portValueType == BaseURLStringType::Pattern)
-        return portValue.toString();
+        return copyComponent(portValue);
 
     auto maybePort = URLDecomposition::parsePort(portValue, protocolValue);
     if (!maybePort)
@@ -168,33 +183,38 @@ ExceptionOr<String> canonicalizePort(StringView portValue, StringView protocolVa
     if (!maybePortNumber)
         return String { emptyString() };
 
-    return String::number(*maybePortNumber);
+    auto result = tryMakeString(*maybePortNumber);
+    if (result.isNull())
+        return Exception { OutOfMemoryError };
+    return result;
 }
 
 // https://urlpattern.spec.whatwg.org/#canonicalize-an-opaque-pathname
 ExceptionOr<String> canonicalizeOpaquePathname(StringView value)
 {
     if (value.isEmpty())
-        return value.toString();
+        return copyComponent(value);
 
-    URL dummyURL(makeString("a:"_s, value));
-
+    auto input = tryMakeString("a:"_s, value);
+    if (input.isNull())
+        return Exception { OutOfMemoryError };
+    URL dummyURL(input);
     if (!dummyURL.isValid())
         return Exception { ExceptionCode::TypeError, "Invalid input to canonicalize a URL opaque path string."_s };
-
-    return dummyURL.path().toString();
+    return copyComponent(dummyURL.path());
 }
 
 // https://urlpattern.spec.whatwg.org/#canonicalize-a-pathname
 ExceptionOr<String> canonicalizePathname(StringView pathnameValue)
 {
     if (pathnameValue.isEmpty())
-        return pathnameValue.toString();
+        return copyComponent(pathnameValue);
 
     bool hasLeadingSlash = pathnameValue[0] == '/';
-    String maybeAddSlashPrefix = hasLeadingSlash ? pathnameValue.toString() : makeString("/-"_s, pathnameValue);
+    String maybeAddSlashPrefix = hasLeadingSlash ? tryMakeString(pathnameValue) : tryMakeString("/-"_s, pathnameValue);
+    if (maybeAddSlashPrefix.isNull())
+        return Exception { OutOfMemoryError };
 
-    // FIXME: Set state override to State::PathStart after URLParser supports state override.
     URL dummyURL(dummyURLCharacters);
     dummyURL.setPath(maybeAddSlashPrefix);
     ASSERT(dummyURL.isValid());
@@ -203,17 +223,17 @@ ExceptionOr<String> canonicalizePathname(StringView pathnameValue)
     if (!hasLeadingSlash)
         result = result.substring(2);
 
-    return result.toString();
+    return copyComponent(result);
 }
 
 // https://urlpattern.spec.whatwg.org/#process-pathname-for-init
 ExceptionOr<String> processPathname(StringView pathnameValue, const StringView protocolValue, BaseURLStringType pathnameValueType)
 {
     if (pathnameValue.isEmpty())
-        return pathnameValue.toString();
+        return copyComponent(pathnameValue);
 
     if (pathnameValueType == BaseURLStringType::Pattern)
-        return pathnameValue.toString();
+        return copyComponent(pathnameValue);
 
     if (WTF::URLParser::isSpecialScheme(protocolValue) || protocolValue.isEmpty())
         return canonicalizePathname(pathnameValue);
@@ -221,47 +241,51 @@ ExceptionOr<String> processPathname(StringView pathnameValue, const StringView p
     return canonicalizeOpaquePathname(pathnameValue);
 }
 
-// https://urlpattern.spec.whatwg.org/#canonicalize-a-search, combined with https://urlpattern.spec.whatwg.org/#process-search-for-init
-ExceptionOr<String> canonicalizeSearch(StringView value, BaseURLStringType valueType)
+// https://urlpattern.spec.whatwg.org/#canonicalize-a-search
+static ExceptionOr<String> canonicalizeSearch(StringView value)
 {
     if (value.isEmpty())
-        return value.toString();
-
-    auto strippedValue = value[0] == '?' ? value.substring(1) : value;
-
-    if (valueType == BaseURLStringType::Pattern)
-        return strippedValue.toString();
+        return copyComponent(value);
 
     URL dummyURL(dummyURLCharacters);
-    dummyURL.setQuery(strippedValue);
+    dummyURL.setQuery(value);
     ASSERT(dummyURL.isValid());
 
-    return dummyURL.query().toString();
+    return copyComponent(dummyURL.query());
 }
 
-// https://urlpattern.spec.whatwg.org/#canonicalize-a-hash, combined with https://urlpattern.spec.whatwg.org/#process-hash-for-init
-ExceptionOr<String> canonicalizeHash(StringView value, BaseURLStringType valueType)
+ExceptionOr<String> processSearch(StringView value, BaseURLStringType valueType)
+{
+    if (value.startsWith('?'))
+        value = value.substring(1);
+    return valueType == BaseURLStringType::Pattern ? copyComponent(value) : canonicalizeSearch(value);
+}
+
+// https://urlpattern.spec.whatwg.org/#canonicalize-a-hash
+static ExceptionOr<String> canonicalizeHash(StringView value)
 {
     if (value.isEmpty())
-        return value.toString();
-
-    auto strippedValue = value[0] == '#' ? value.substring(1) : value;
-
-    if (valueType == BaseURLStringType::Pattern)
-        return strippedValue.toString();
+        return copyComponent(value);
 
     URL dummyURL(dummyURLCharacters);
-    dummyURL.setFragmentIdentifier(strippedValue);
+    dummyURL.setFragmentIdentifier(value);
     ASSERT(dummyURL.isValid());
 
-    return dummyURL.fragmentIdentifier().toString();
+    return copyComponent(dummyURL.fragmentIdentifier());
+}
+
+ExceptionOr<String> processHash(StringView value, BaseURLStringType valueType)
+{
+    if (value.startsWith('#'))
+        value = value.substring(1);
+    return valueType == BaseURLStringType::Pattern ? copyComponent(value) : canonicalizeHash(value);
 }
 
 ExceptionOr<String> callEncodingCallback(EncodingCallbackType type, StringView input)
 {
     switch (type) {
     case EncodingCallbackType::Protocol:
-        return canonicalizeProtocol(input, BaseURLStringType::URL);
+        return canonicalizeProtocol(input);
     case EncodingCallbackType::Username:
         return canonicalizeUsername(input, BaseURLStringType::URL);
     case EncodingCallbackType::Password:
@@ -277,9 +301,9 @@ ExceptionOr<String> callEncodingCallback(EncodingCallbackType type, StringView i
     case EncodingCallbackType::OpaquePath:
         return canonicalizeOpaquePathname(input);
     case EncodingCallbackType::Search:
-        return canonicalizeSearch(input, BaseURLStringType::URL);
+        return canonicalizeSearch(input);
     case EncodingCallbackType::Hash:
-        return canonicalizeHash(input, BaseURLStringType::URL);
+        return canonicalizeHash(input);
     default:
         ASSERT_NOT_REACHED();
         return Exception { ExceptionCode::TypeError, "Invalid input type for encoding callback."_s };

@@ -1,68 +1,124 @@
-//! Sometimes, you have work that will be scheduled, cancelled, and rescheduled multiple times
-//! The order of that work may not particularly matter.
-//!
-//! An example of this is when writing to a file or network socket.
-//!
-//! You want to balance:
-//!     1) Writing as much as possible to the file/socket in as few system calls as possible
-//!     2) Writing to the file/socket as soon as possible
-//!
-//! That is a scheduling problem. How do you decide when to write to the file/socket? Developers
-//! don't want to remember to call `flush` every time they write to a file/socket, but we don't
-//! want them to have to think about buffering or not buffering either.
-//!
-//! Our answer to this is the DeferredTaskQueue.
-//!
-//! When you call write() when sending a streaming HTTP response, we don't actually write it immediately
-//! by default. Instead, we wait until the end of the microtask queue to write it, unless either:
-//!
-//! - The buffer is full
-//! - The developer calls `flush` manually
-//!
-//! But that means every time you call .write(), we have to check not only if the buffer is full, but also if
-//! it previously had scheduled a write to the file/socket. So we use an ArrayHashMap to keep track of the
-//! list of pointers which have a deferred task scheduled.
-//!
-//! The DeferredTaskQueue is drained after the microtask queue, but before other tasks are executed. This avoids re-entrancy
-//! issues with the event loop.
+//! Coalesces writes until the end of the microtask checkpoint. Each registration
+//! owns a native reference, including while its callback is running.
 
 const DeferredTaskQueue = @This();
 
-pub const DeferredRepeatingTask = *const (fn (*anyopaque) bool);
+pub const Context = bun.bindgen.NativeCallbackContext(.vm);
+pub const DeferredRepeatingTask = *const fn (Context) bool;
 
-map: std.array_hash_map.Auto(?*anyopaque, DeferredRepeatingTask) = .empty,
+pub const Task = struct {
+    registered: bool = false,
+    previous: ?*Task = null,
+    next: ?*Task = null,
+    list: ?*List = null,
+    invocation: ?*Invocation = null,
+    context: ?Context = null,
+    callbacks: ?*const Callbacks = null,
 
-pub fn postTask(this: *DeferredTaskQueue, ctx: ?*anyopaque, task: DeferredRepeatingTask) bool {
-    const existing = bun.handleOom(this.map.getOrPutValue(bun.default_allocator, ctx, task));
-    return existing.found_existing;
-}
+    pub const Callbacks = struct {
+        run: DeferredRepeatingTask,
+        retain: *const fn (Context) void,
+        release: *const fn (Context) void,
+    };
 
-pub fn unregisterTask(this: *DeferredTaskQueue, ctx: ?*anyopaque) bool {
-    return this.map.swapRemove(ctx);
+    pub fn cancel(this: *Task) void {
+        if (!this.registered) return;
+        this.registered = false;
+        if (this.invocation) |invocation| {
+            invocation.cancelled = true;
+            this.invocation = null;
+        } else {
+            this.list.?.remove(this);
+            const context = this.context.?;
+            const callbacks = this.callbacks.?;
+            callbacks.release(context);
+        }
+    }
+};
+
+const Invocation = struct {
+    cancelled: bool = false,
+};
+
+const List = struct {
+    first: ?*Task = null,
+    last: ?*Task = null,
+
+    fn append(this: *List, task: *Task) void {
+        bun.assert(task.list == null);
+        task.previous = this.last;
+        task.next = null;
+        task.list = this;
+        if (this.last) |last| last.next = task else this.first = task;
+        this.last = task;
+    }
+
+    fn remove(this: *List, task: *Task) void {
+        bun.assert(task.list == this);
+        if (task.previous) |previous| previous.next = task.next else this.first = task.next;
+        if (task.next) |next| next.previous = task.previous else this.last = task.previous;
+        task.previous = null;
+        task.next = null;
+        task.list = null;
+    }
+};
+
+pending: List = .{},
+batch: List = .{},
+current: ?*Task = null,
+running: bool = false,
+closed: bool = false,
+
+pub fn postTask(this: *DeferredTaskQueue, task: *Task, context: Context, callbacks: *const Task.Callbacks) void {
+    bun.assert(!task.registered);
+    if (this.closed) return;
+    callbacks.retain(context);
+    task.context = context;
+    task.callbacks = callbacks;
+    task.registered = true;
+    this.pending.append(task);
 }
 
 pub fn run(this: *DeferredTaskQueue) void {
-    var i: usize = 0;
-    var last = this.map.count();
-    while (i < last) {
-        const key = this.map.keys()[i] orelse {
-            this.map.swapRemoveAt(i);
-            last = this.map.count();
-            continue;
-        };
+    if (this.running or this.closed) return;
+    this.running = true;
+    defer this.running = false;
 
-        if (!this.map.values()[i](key)) {
-            this.map.swapRemoveAt(i);
-            last = this.map.count();
-        } else {
-            i += 1;
+    bun.assert(this.batch.first == null);
+    this.batch = this.pending;
+    this.pending = .{};
+    var next = this.batch.first;
+    while (next) |task| : (next = task.next) task.list = &this.batch;
+
+    while (this.batch.first) |task| {
+        this.batch.remove(task);
+        var invocation: Invocation = .{};
+        task.invocation = &invocation;
+        this.current = task;
+        const context = task.context.?;
+        const callbacks = task.callbacks.?;
+        const repeat = callbacks.run(context);
+        this.current = null;
+
+        // Cancellation transfers responsibility for any new registration to its
+        // own queue entry; the old callback's result cannot remove that entry.
+        if (!invocation.cancelled) {
+            task.invocation = null;
+            if (repeat and !this.closed) {
+                this.pending.append(task);
+                continue;
+            }
+            task.registered = false;
         }
+        callbacks.release(context);
     }
 }
 
 pub fn deinit(this: *DeferredTaskQueue) void {
-    this.map.deinit(bun.default_allocator);
+    this.closed = true;
+    if (this.current) |task| task.cancel();
+    while (this.batch.first) |task| task.cancel();
+    while (this.pending.first) |task| task.cancel();
 }
 
 const bun = @import("bun");
-const std = @import("std");

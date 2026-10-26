@@ -17,7 +17,15 @@ const { kEmptyObject } = require("internal/shared");
 const { validateBoolean, validateObject } = require("internal/validators");
 const finished = require("internal/streams/end-of-stream");
 
-const normalizeEncoding = $newZigFunction("node_util_binding.zig", "normalizeEncoding", 1);
+const normalizeEncoding = $bindgenFn("NodeUtil.schema.zig", "normalizeEncoding");
+const isReadableStream = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isReadableStream>(
+  "NativeTypePredicates.schema.zig",
+  "isReadableStream",
+);
+const isWritableStream = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isWritableStream>(
+  "NativeTypePredicates.schema.zig",
+  "isWritableStream",
+);
 
 const ArrayPrototypeFilter = Array.prototype.filter;
 const ArrayPrototypeMap = Array.prototype.map;
@@ -38,6 +46,7 @@ function tryTransferToNativeReadable(stream, options) {
 }
 
 class ReadableFromWeb extends Readable {
+  declare __id?: number;
   #reader;
   #closed;
   #pendingChunks;
@@ -176,9 +185,9 @@ function handleKnownInternalErrors(cause: Error | null): Error | null {
     case cause?.code === "ERR_STREAM_PREMATURE_CLOSE": {
       return $makeAbortError(undefined, { cause });
     }
-    case ZLIB_FAILURES.has(cause?.code): {
+    case ZLIB_FAILURES.has(cause?.code as string): {
       const error = new TypeError(undefined, { cause });
-      error.code = cause.code;
+      error.code = cause!.code;
       return error;
     }
     default:
@@ -282,7 +291,7 @@ function newWritableStreamFromStreamWritable(streamWritable) {
 }
 
 function newStreamWritableFromWritableStream(writableStream, options = kEmptyObject) {
-  if (!$inheritsWritableStream(writableStream)) {
+  if (!isWritableStream(writableStream)) {
     throw $ERR_INVALID_ARG_TYPE("writableStream", "WritableStream", writableStream);
   }
 
@@ -511,14 +520,14 @@ function newReadableStreamFromStreamReadable(streamReadable, options = kEmptyObj
 }
 
 function newStreamReadableFromReadableStream(readableStream, options: Record<string, unknown> = kEmptyObject) {
-  if (!$inheritsReadableStream(readableStream)) {
+  if (!isReadableStream(readableStream)) {
     throw $ERR_INVALID_ARG_TYPE("readableStream", "ReadableStream", readableStream);
   }
 
   validateObject(options, "options");
   const { highWaterMark, encoding, objectMode = false, signal } = options;
 
-  if (encoding !== undefined && !Buffer.isEncoding(encoding))
+  if (encoding !== undefined && !Buffer.isEncoding(encoding as string))
     throw $ERR_INVALID_ARG_VALUE("options.encoding", encoding);
   validateBoolean(objectMode, "options.objectMode");
 
@@ -572,10 +581,10 @@ function newStreamDuplexFromReadableWritablePair(pair = kEmptyObject, options = 
   validateObject(pair, "pair");
   const { readable: readableStream, writable: writableStream } = pair;
 
-  if (!$inheritsReadableStream(readableStream)) {
+  if (!isReadableStream(readableStream)) {
     throw $ERR_INVALID_ARG_TYPE("pair.readable", "ReadableStream", readableStream);
   }
-  if (!$inheritsWritableStream(writableStream)) {
+  if (!isWritableStream(writableStream)) {
     throw $ERR_INVALID_ARG_TYPE("pair.writable", "WritableStream", writableStream);
   }
 
@@ -583,7 +592,7 @@ function newStreamDuplexFromReadableWritablePair(pair = kEmptyObject, options = 
   const { allowHalfOpen = false, objectMode = false, encoding, decodeStrings = true, highWaterMark, signal } = options;
 
   validateBoolean(objectMode, "options.objectMode");
-  if (encoding !== undefined && !Buffer.isEncoding(encoding))
+  if (encoding !== undefined && !Buffer.isEncoding(encoding as string))
     throw $ERR_INVALID_ARG_VALUE(encoding, "options.encoding");
 
   const writer = writableStream.getWriter();

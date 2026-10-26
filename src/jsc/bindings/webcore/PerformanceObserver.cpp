@@ -26,42 +26,52 @@
 #include "config.h"
 #include "PerformanceObserver.h"
 
-// #include "Document.h"
-// #include "InspectorInstrumentation.h"
-// #include "LocalDOMWindow.h"
 #include "Performance.h"
-#include "PerformanceObserverEntryList.h"
-// #include "WorkerGlobalScope.h"
+#include <JavaScriptCore/WeakInlines.h>
+#include <limits>
 
 namespace WebCore {
 
-PerformanceObserver::PerformanceObserver(ScriptExecutionContext& scriptExecutionContext, Ref<PerformanceObserverCallback>&& callback)
-    : m_callback(WTF::move(callback))
+PerformanceObserver::PerformanceObserver(Performance& performance, JSC::JSObject& callback)
+    : m_performance(&performance)
+    , m_callback(&callback)
 {
-    // if (is<Document>(scriptExecutionContext)) {
-    //     auto& document = downcast<Document>(scriptExecutionContext);
-    //     if (auto* window = document.domWindow())
-    //         m_performance = &window->performance();
-    // } else if (is<WorkerGlobalScope>(scriptExecutionContext)) {
-    //     auto& workerGlobalScope = downcast<WorkerGlobalScope>(scriptExecutionContext);
-    //     m_performance = &workerGlobalScope.performance();
-    // } else
-    //     ASSERT_NOT_REACHED();
-    m_performance = uncheckedDowncast<Zig::GlobalObject>(scriptExecutionContext.globalObject())->performance();
+}
+
+PerformanceObserver::~PerformanceObserver()
+{
+    ASSERT(!m_registered && !m_previousObserver && !m_nextObserver && !hasPendingDelivery());
+}
+
+bool PerformanceObserver::tryRetainDelivery()
+{
+    const auto count = m_pendingDeliveries.load(std::memory_order_relaxed);
+    if (count == std::numeric_limits<uint32_t>::max())
+        return false;
+    m_pendingDeliveries.store(count + 1, std::memory_order_relaxed);
+    return true;
+}
+
+void PerformanceObserver::releaseDelivery()
+{
+    const auto count = m_pendingDeliveries.fetch_sub(1, std::memory_order_relaxed);
+    RELEASE_ASSERT(count);
 }
 
 void PerformanceObserver::disassociate()
 {
+    ASSERT(!m_registered);
     m_performance = nullptr;
-    m_registered = false;
 }
 
-ExceptionOr<void> PerformanceObserver::observe(Init&& init)
+ExceptionOr<void> PerformanceObserver::observe(const Init& init)
 {
     if (!m_performance)
         return Exception { TypeError };
 
     bool isBuffered = false;
+    bool isTypeObserver = false;
+    Vector<RefPtr<PerformanceEntry>> bufferedEntries;
     OptionSet<PerformanceEntry::Type> filter;
     if (init.entryTypes) {
         if (init.type)
@@ -74,36 +84,39 @@ ExceptionOr<void> PerformanceObserver::observe(Init&& init)
         }
         if (filter.isEmpty())
             return {};
-        m_typeFilter = filter;
     } else {
         if (!init.type)
             return Exception { TypeError, "no type or entryTypes were provided"_s };
         if (m_registered && !m_isTypeObserver)
             return Exception { InvalidModificationError, "observer type can't be changed once registered"_s };
-        m_isTypeObserver = true;
+        isTypeObserver = true;
         if (auto type = PerformanceEntry::parseEntryTypeString(*init.type))
             filter.add(*type);
         else
             return {};
         if (init.buffered) {
             isBuffered = true;
-            auto oldSize = m_entriesToDeliver.size();
-            m_performance->appendBufferedEntriesByType(*init.type, m_entriesToDeliver, *this);
-            auto begin = m_entriesToDeliver.begin();
-            auto oldEnd = begin + oldSize;
-            auto end = m_entriesToDeliver.end();
-            std::stable_sort(oldEnd, end, PerformanceEntry::startTimeCompareLessThan);
-            std::inplace_merge(begin, oldEnd, end, PerformanceEntry::startTimeCompareLessThan);
+            if (!bufferedEntries.tryAppend(m_entriesToDeliver.span())
+                || !m_performance->tryAppendBufferedEntriesByType(*init.type, bufferedEntries)
+                || !PerformanceEntry::tryStableSort(bufferedEntries))
+                return Exception { OutOfMemoryError };
         }
-        m_typeFilter.add(filter);
+        filter.add(m_typeFilter);
     }
 
+    auto delivery = m_performance->prepareObserverDelivery();
+    if (delivery.hasException())
+        return delivery.releaseException();
+
+    m_isTypeObserver = isTypeObserver;
+    m_typeFilter = filter;
+    if (isBuffered)
+        m_entriesToDeliver = WTF::move(bufferedEntries);
     if (!m_registered) {
         m_performance->registerPerformanceObserver(*this);
-        m_registered = true;
     }
     if (isBuffered)
-        deliver();
+        m_performance->scheduleTaskIfNeeded();
 
     return {};
 }
@@ -115,51 +128,43 @@ Vector<RefPtr<PerformanceEntry>> PerformanceObserver::takeRecords()
 
 void PerformanceObserver::disconnect()
 {
+    Ref protectedThis { *this };
     if (m_performance)
         m_performance->unregisterPerformanceObserver(*this);
 
-    m_registered = false;
     m_entriesToDeliver.clear();
     m_typeFilter = {};
 }
 
-void PerformanceObserver::queueEntry(PerformanceEntry& entry)
+bool PerformanceObserver::prepareEntry()
 {
+    return m_entriesToDeliver.tryReserveCapacity(m_entriesToDeliver.size() + 1);
+}
+
+void PerformanceObserver::appendPreparedEntry(PerformanceEntry& entry)
+{
+    ASSERT(m_entriesToDeliver.size() < m_entriesToDeliver.capacity());
     m_entriesToDeliver.append(&entry);
 }
 
-void PerformanceObserver::deliver()
+Bun::Bindgen::NativeAllocationResult<void> PerformanceObserver::deliver()
 {
-    if (m_entriesToDeliver.isEmpty())
-        return;
+    Ref protectedThis { *this };
+    if (!m_performance || m_entriesToDeliver.isEmpty())
+        return {};
 
-    auto* context = m_callback->scriptExecutionContext();
-    if (!context)
-        return;
+    auto* context = m_performance->scriptExecutionContext();
+    if (!context || context->activeDOMObjectsAreSuspended() || context->activeDOMObjectsAreStopped())
+        return {};
+    auto* callback = m_callback.get();
+    if (!callback)
+        return {};
 
+    if (!PerformanceEntry::tryStableSort(m_entriesToDeliver))
+        return Bun::Bindgen::nativeAllocationFailure();
     Vector<RefPtr<PerformanceEntry>> entries = std::exchange(m_entriesToDeliver, {});
-    auto list = PerformanceObserverEntryList::create(WTF::move(entries));
-
-    // InspectorInstrumentation::willFireObserverCallback(*context, "PerformanceObserver"_s);
-    m_callback->handleEvent(*this, list, *this);
-    // InspectorInstrumentation::didFireObserverCallback(*context);
-}
-
-Vector<String> PerformanceObserver::supportedEntryTypes(ScriptExecutionContext& context)
-{
-    Vector<String> entryTypes = {
-        "mark"_s,
-        "measure"_s,
-        "resource"_s
-    };
-
-    // if (context.settingsValues().performanceNavigationTimingAPIEnabled)
-    //     entryTypes.append("navigation"_s);
-
-    // if (is<Document>(context) && downcast<Document>(context).supportsPaintTiming())
-    //     entryTypes.append("paint"_s);
-
-    return entryTypes;
+    invokeCallback(*callback, entries.span());
+    return {};
 }
 
 } // namespace WebCore

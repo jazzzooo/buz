@@ -41,12 +41,18 @@ WTF_EXPORT_PRIVATE Ref<ExternalStringImpl> ExternalStringImpl::create(std::span<
 
 WTF_EXPORT_PRIVATE Ref<ExternalStringImpl> ExternalStringImpl::createStatic(std::span<const Latin1Character> characters)
 {
-    return adoptRef(*new ExternalStringImpl(characters, nullptr, [](auto, auto, auto) -> void {}));
+    Ref result = adoptRef(*new ExternalStringImpl(characters, nullptr, [](auto, auto, auto) -> void {}));
+    result->hash();
+    result->m_refCount |= s_refCountFlagIsStaticString;
+    return result;
 }
 
 WTF_EXPORT_PRIVATE Ref<ExternalStringImpl> ExternalStringImpl::createStatic(std::span<const char16_t> characters)
 {
-    return adoptRef(*new ExternalStringImpl(characters, nullptr, [](auto, auto, auto) -> void {}));
+    Ref result = adoptRef(*new ExternalStringImpl(characters, nullptr, [](auto, auto, auto) -> void {}));
+    result->hash();
+    result->m_refCount |= s_refCountFlagIsStaticString;
+    return result;
 }
 
 

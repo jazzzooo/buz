@@ -264,6 +264,7 @@ pub const PublishCommand = struct {
                 var lockfile: Lockfile = undefined;
                 const load_from_disk_result = lockfile.loadFromCwd(
                     manager,
+                    bun.install.Dependency.ParseContext.fromPackageManager(manager),
                     manager.allocator,
                     manager.log,
                     false,
@@ -492,6 +493,7 @@ pub const PublishCommand = struct {
     fn checkPackageVersionExists(
         io: std.Io,
         allocator: std.mem.Allocator,
+        javascript_semantics: JavaScriptSemantics,
         package_name: string,
         version: string,
         registry: *const Npm.Registry.Scope,
@@ -509,31 +511,13 @@ pub const PublishCommand = struct {
         var response_buf = MutableString.init(allocator, 1024) catch return false;
         defer response_buf.deinit();
 
-        var headers = http.HeaderBuilder{};
-        headers.count("accept", "application/json");
-
-        var auth_buf = std.array_list.Managed(u8).init(allocator);
-        defer auth_buf.deinit();
-
+        var headers: http.Headers = .{ .allocator = allocator };
+        defer headers.deinit();
+        headers.append("accept", "application/json") catch return false;
         if (registry.token.len > 0) {
-            appendManagedFmt(&auth_buf, "Bearer {s}", .{registry.token}) catch return false;
-            headers.count("authorization", auth_buf.items);
+            headers.appendFmt("authorization", "Bearer {s}", .{registry.token}) catch return false;
         } else if (registry.auth.len > 0) {
-            appendManagedFmt(&auth_buf, "Basic {s}", .{registry.auth}) catch return false;
-            headers.count("authorization", auth_buf.items);
-        }
-
-        headers.allocate(allocator) catch return false;
-        headers.append("accept", "application/json");
-
-        if (registry.token.len > 0) {
-            auth_buf.clearRetainingCapacity();
-            appendManagedFmt(&auth_buf, "Bearer {s}", .{registry.token}) catch return false;
-            headers.append("authorization", auth_buf.items);
-        } else if (registry.auth.len > 0) {
-            auth_buf.clearRetainingCapacity();
-            appendManagedFmt(&auth_buf, "Basic {s}", .{registry.auth}) catch return false;
-            headers.append("authorization", auth_buf.items);
+            headers.appendFmt("authorization", "Basic {s}", .{registry.auth}) catch return false;
         }
 
         var req = http.AsyncHTTP.initSync(
@@ -541,9 +525,10 @@ pub const PublishCommand = struct {
             .GET,
             package_url,
             headers.entries,
-            headers.content.ptr.?[0..headers.content.len],
+            headers.buf.items,
             &response_buf,
             "",
+            javascript_semantics,
             null,
             null,
             .follow,
@@ -555,6 +540,7 @@ pub const PublishCommand = struct {
         // Parse the response to check if this specific version exists
         const source = logger.Source.initPathString("???", response_buf.list.items);
         var log = logger.Log.init(allocator);
+        defer log.deinit();
         const json = JSON.parseUTF8(&source, &log, allocator) catch return false;
 
         // Check if the version exists in the versions object
@@ -583,6 +569,7 @@ pub const PublishCommand = struct {
             const package_exists = checkPackageVersionExists(
                 ctx.manager.io,
                 ctx.allocator,
+                ctx.manager.javascript_semantics,
                 ctx.package_name,
                 version_without_build_tag,
                 registry,
@@ -614,7 +601,7 @@ pub const PublishCommand = struct {
         var print_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer print_buf.deinit(ctx.allocator);
 
-        const publish_headers = try constructPublishHeaders(
+        var publish_headers = try constructPublishHeaders(
             ctx.manager.io,
             ctx.allocator,
             &print_buf,
@@ -624,6 +611,7 @@ pub const PublishCommand = struct {
             ctx.uses_workspaces,
             ctx.manager.options.publish_config.auth_type,
         );
+        defer publish_headers.deinit();
 
         var response_buf = try MutableString.init(ctx.allocator, 1024);
 
@@ -639,9 +627,10 @@ pub const PublishCommand = struct {
             .PUT,
             publish_url,
             publish_headers.entries,
-            publish_headers.content.ptr.?[0..publish_headers.content.len],
+            publish_headers.buf.items,
             &response_buf,
             publish_req_body,
+            ctx.manager.javascript_semantics,
             null,
             null,
             .follow,
@@ -707,7 +696,7 @@ pub const PublishCommand = struct {
 
                 const otp = try getOTP(directory_publish, ctx, registry, &response_buf, &print_buf);
 
-                const otp_headers = try constructPublishHeaders(
+                var otp_headers = try constructPublishHeaders(
                     ctx.manager.io,
                     ctx.allocator,
                     &print_buf,
@@ -717,6 +706,7 @@ pub const PublishCommand = struct {
                     ctx.uses_workspaces,
                     ctx.manager.options.publish_config.auth_type,
                 );
+                defer otp_headers.deinit();
 
                 response_buf.reset();
 
@@ -725,9 +715,10 @@ pub const PublishCommand = struct {
                     .PUT,
                     publish_url,
                     otp_headers.entries,
-                    otp_headers.content.ptr.?[0..otp_headers.content.len],
+                    otp_headers.buf.items,
                     &response_buf,
                     publish_req_body,
+                    ctx.manager.javascript_semantics,
                     null,
                     null,
                     .follow,
@@ -861,6 +852,7 @@ pub const PublishCommand = struct {
                 ctx.uses_workspaces,
                 ctx.manager.options.publish_config.auth_type,
             );
+            defer auth_headers.deinit();
 
             while (true) {
                 response_buf.reset();
@@ -870,9 +862,10 @@ pub const PublishCommand = struct {
                     .GET,
                     done_url,
                     auth_headers.entries,
-                    auth_headers.content.ptr.?[0..auth_headers.content.len],
+                    auth_headers.buf.items,
                     response_buf,
                     "",
+                    ctx.manager.javascript_semantics,
                     null,
                     null,
                     .follow,
@@ -1345,8 +1338,9 @@ pub const PublishCommand = struct {
         maybe_otp: ?[]const u8,
         uses_workspaces: bool,
         auth_type: ?PackageManager.Options.AuthType,
-    ) OOM!http.HeaderBuilder {
-        var headers: http.HeaderBuilder = .{};
+    ) OOM!http.Headers {
+        var headers: http.Headers = .{ .allocator = allocator };
+        errdefer headers.deinit();
         const npm_auth_type = if (maybe_otp == null)
             if (auth_type) |auth| @tagName(auth) else "web"
         else
@@ -1354,83 +1348,40 @@ pub const PublishCommand = struct {
         const ci_name = bun.ci.detectCIName(io);
 
         {
-            headers.count("accept", "*/*");
-            headers.count("accept-encoding", "gzip,deflate");
+            try headers.append("accept", "*/*");
+            try headers.append("accept-encoding", "gzip,deflate");
 
             if (registry.token.len > 0) {
                 try appendUnmanagedFmt(print_buf, allocator, "Bearer {s}", .{registry.token});
-                headers.count("authorization", print_buf.items);
+                try headers.append("authorization", print_buf.items);
                 print_buf.clearRetainingCapacity();
             } else if (registry.auth.len > 0) {
                 try appendUnmanagedFmt(print_buf, allocator, "Basic {s}", .{registry.auth});
-                headers.count("authorization", print_buf.items);
+                try headers.append("authorization", print_buf.items);
                 print_buf.clearRetainingCapacity();
             }
 
             if (maybe_json_len != null) {
                 // not using `MimeType.json.value`, verdaccio will fail if it's anything other than `application/json`
-                headers.count("content-type", "application/json");
+                try headers.append("content-type", "application/json");
             }
 
-            headers.count("npm-auth-type", npm_auth_type);
+            try headers.append("npm-auth-type", npm_auth_type);
             if (maybe_otp) |otp| {
-                headers.count("npm-otp", otp);
+                try headers.append("npm-otp", otp);
             }
-            headers.count("npm-command", "publish");
+            try headers.append("npm-command", "publish");
 
             try appendUnmanagedFmt(print_buf, allocator, "{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, uses_workspaces, if (ci_name != null) " ci/" else "", ci_name orelse "" });
-            // headers.count("user-agent", "npm/10.8.3 node/v24.3.0 darwin arm64 workspaces/false");
-            headers.count("user-agent", print_buf.items);
+            try headers.append("user-agent", print_buf.items);
             print_buf.clearRetainingCapacity();
 
-            headers.count("Connection", "keep-alive");
-            headers.count("Host", registry.url.host);
+            try headers.append("Connection", "keep-alive");
+            try headers.append("Host", registry.url.host);
 
             if (maybe_json_len) |json_len| {
                 try appendUnmanagedFmt(print_buf, allocator, "{d}", .{json_len});
-                headers.count("Content-Length", print_buf.items);
-                print_buf.clearRetainingCapacity();
-            }
-        }
-
-        try headers.allocate(allocator);
-
-        {
-            headers.append("accept", "*/*");
-            headers.append("accept-encoding", "gzip,deflate");
-
-            if (registry.token.len > 0) {
-                try appendUnmanagedFmt(print_buf, allocator, "Bearer {s}", .{registry.token});
-                headers.append("authorization", print_buf.items);
-                print_buf.clearRetainingCapacity();
-            } else if (registry.auth.len > 0) {
-                try appendUnmanagedFmt(print_buf, allocator, "Basic {s}", .{registry.auth});
-                headers.append("authorization", print_buf.items);
-                print_buf.clearRetainingCapacity();
-            }
-
-            if (maybe_json_len != null) {
-                // not using `MimeType.json.value`, verdaccio will fail if it's anything other than `application/json`
-                headers.append("content-type", "application/json");
-            }
-
-            headers.append("npm-auth-type", npm_auth_type);
-            if (maybe_otp) |otp| {
-                headers.append("npm-otp", otp);
-            }
-            headers.append("npm-command", "publish");
-
-            try appendUnmanagedFmt(print_buf, allocator, "{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, uses_workspaces, if (ci_name != null) " ci/" else "", ci_name orelse "" });
-            // headers.append("user-agent", "npm/10.8.3 node/v24.3.0 darwin arm64 workspaces/false");
-            headers.append("user-agent", print_buf.items);
-            print_buf.clearRetainingCapacity();
-
-            headers.append("Connection", "keep-alive");
-            headers.append("Host", registry.url.host);
-
-            if (maybe_json_len) |json_len| {
-                try appendUnmanagedFmt(print_buf, allocator, "{d}", .{json_len});
-                headers.append("Content-Length", print_buf.items);
+                try headers.append("Content-Length", print_buf.items);
                 print_buf.clearRetainingCapacity();
             }
         }
@@ -1507,6 +1458,7 @@ const stringZ = [:0]const u8;
 
 const Open = @import("./open.zig");
 const std = @import("std");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 
 const bun = @import("bun");
 const DotEnv = bun.DotEnv;
@@ -1535,7 +1487,6 @@ const Run = bun.cli.RunCommand;
 const prompt = bun.cli.InitCommand.prompt;
 
 const http = bun.http;
-const HeaderBuilder = http.HeaderBuilder;
 const MimeType = http.MimeType;
 
 const install = bun.install;

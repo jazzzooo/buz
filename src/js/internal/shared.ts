@@ -56,6 +56,8 @@ class ExceptionWithHostPort extends Error {
   syscall: string;
   port?: number;
   address: string;
+  localAddress?: string;
+  localPort?: number;
 
   constructor(err: number, syscall: string, address: string, port?: number) {
     // TODO(joyeecheung): We have to use the type-checked
@@ -87,7 +89,7 @@ class ExceptionWithHostPort extends Error {
 }
 
 class NodeAggregateError extends AggregateError {
-  constructor(errors, message) {
+  constructor(errors, message?) {
     super(new SafeArrayIterator(errors), message);
     this.code = errors[0]?.code;
   }
@@ -97,6 +99,11 @@ class NodeAggregateError extends AggregateError {
 }
 
 class ConnResetException extends Error {
+  path?: string;
+  host?: string;
+  port?: number;
+  localAddress?: string;
+
   constructor(msg) {
     super(msg);
     this.code = "ECONNRESET";
@@ -110,7 +117,7 @@ class ErrnoException extends Error {
   errno: number;
   syscall: string;
 
-  constructor(err, syscall, original) {
+  constructor(err, syscall, original?) {
     util ??= require("node:util");
     const code = util.getSystemErrorName(err);
     const message = original ? `${syscall} ${code} ${original}` : `${syscall} ${code}`;

@@ -1,0 +1,136 @@
+const b = @import("bindgen_schema");
+
+pub const schema = b.moduleWithFocusedEngineIntegrations("FocusedEngineIntegrations", .{
+    b.focusedEngineIntegration("MockFunctionRuntime", .{
+        .kind = .callable_object,
+        .header = "JSMockFunction.h",
+        .implementation = "JSMockFunction.cpp",
+        .behavior = "Owns callable mock cells, GC-traced implementation and history state, and weak spy registries behind schema-declared operations",
+    }),
+    b.focusedEngineIntegration("RealmControl", .{
+        .kind = .realm_control,
+        .backend = .zig,
+        .implementation = "src/jsc/JSGlobalObject.zig",
+        .behavior = "Connects realm handles to schema-declared engine services with explicit catchable-exception and termination policies for error construction and uncaught-value reporting",
+    }),
+    b.focusedEngineIntegration("VirtualMachineExecution", .{
+        .kind = .vm_execution,
+        .backend = .zig,
+        .implementation = "src/jsc/VirtualMachine.zig",
+        .behavior = "Owns VM execution and module-evaluation state, handles engine rejection and termination hooks, and inspects arbitrary thrown values for runtime diagnostics",
+    }),
+    b.focusedEngineIntegration("ReplEvaluation", .{
+        .kind = .script_evaluation,
+        .backend = .zig,
+        .implementation = "src/cli/ReplEngine.zig",
+        .behavior = "Evaluates transformed REPL programs, settles arbitrary promise results, unwraps evaluation records, and inspects result or exception values for terminal and clipboard output",
+    }),
+    b.focusedEngineIntegration("ConsoleInspection", .{
+        .kind = .value_inspection,
+        .backend = .zig,
+        .implementation = "src/jsc/ConsoleObject.zig",
+        .behavior = "Inspects arbitrary JavaScript graphs, intrinsic collections, native wrappers, and custom inspection callbacks for console output with cycle detection and exception preservation",
+    }),
+    b.focusedEngineIntegration("SnapshotValueFormatting", .{
+        .kind = .value_inspection,
+        .backend = .zig,
+        .implementation = "src/test_runner/PrettyFormatEngine.zig",
+        .behavior = "Formats arbitrary JavaScript graphs and asymmetric matchers into snapshot text while tracking cycles, inspection exceptions, and writer failures",
+    }),
+    b.focusedEngineIntegration("TestDiagnostics", .{
+        .kind = .value_inspection,
+        .backend = .zig,
+        .implementation = "src/test_runner/JestEngine.zig",
+        .behavior = "Reports arbitrary test exceptions and resolves parameter-label property paths, JSON serialization, and inspection against retained test arguments",
+    }),
+    b.focusedEngineIntegration("MatcherEvaluation", .{
+        .kind = .value_comparison,
+        .backend = .zig,
+        .implementation = "src/test_runner/expect/MatcherEngine.zig",
+        .behavior = "Evaluates assertions over arbitrary captured values using engine identity, branding, comparison, property access, iteration, and asymmetric equality semantics",
+    }),
+    b.focusedEngineIntegration("MockHistoryMatching", .{
+        .kind = .value_comparison,
+        .backend = .zig,
+        .implementation = "src/test_runner/expect/MockMatcherEngine.zig",
+        .behavior = "Compares arbitrary mock call arguments and return records through asymmetric equality and formats mismatches while preserving callback exceptions",
+    }),
+    b.focusedEngineIntegration("ThrownValueMatching", .{
+        .kind = .value_comparison,
+        .backend = .zig,
+        .implementation = "src/test_runner/expect/ThrowMatcherEngine.zig",
+        .behavior = "Invokes arbitrary test functions and matches thrown values, error messages, constructors, and asymmetric matchers without consuming termination",
+    }),
+    b.focusedEngineIntegration("SnapshotMatching", .{
+        .kind = .value_comparison,
+        .backend = .zig,
+        .implementation = "src/test_runner/expect/SnapshotMatcherEngine.zig",
+        .behavior = "Matches arbitrary received object graphs against property matchers and snapshot text, preserving inspection exceptions and thrown-value semantics",
+    }),
+    b.focusedEngineIntegration("MatcherUtilities", .{
+        .kind = .value_inspection,
+        .backend = .zig,
+        .implementation = "src/test_runner/expect/MatcherUtilsEngine.zig",
+        .behavior = "Provides custom matchers with asymmetric equality and native string diagnostics produced by inspecting arbitrary JavaScript operands",
+    }),
+    b.focusedEngineIntegration("MatcherErrorReporting", .{
+        .kind = .error_reporting,
+        .backend = .zig,
+        .implementation = "src/test_runner/expect/MatcherErrorEngine.zig",
+        .behavior = "Formats arbitrary matcher operands through console inspection and constructs assertion errors with matcher labels while preserving inspection exceptions and termination",
+    }),
+    b.focusedEngineIntegration("WorkerErrorReporting", .{
+        .kind = .error_reporting,
+        .backend = .zig,
+        .implementation = "src/jsc/WorkerErrorEngine.zig",
+        .behavior = "Formats arbitrary worker rejection values, materializes diagnostic logs, and dispatches error events while preserving pending exceptions and termination",
+    }),
+    b.focusedEngineIntegration("NextTickQueue", .{
+        .kind = .job_queue,
+        .header = "JSNextTickQueue.h",
+        .implementation = "JSNextTickQueue.cpp",
+        .behavior = "Retains callback arguments and async context through GC-traced queue links and delivers next-tick callbacks ahead of VM microtasks",
+    }),
+    b.focusedEngineIntegration("MacroExecution", .{
+        .kind = .macro_execution,
+        .backend = .zig,
+        .implementation = "src/js_parser_jsc/MacroEngine.zig",
+        .behavior = "Evaluates dynamically selected ECMAScript modules, invokes typed macro callbacks, and converts arbitrary JavaScript result graphs into compiler expressions",
+    }),
+    b.focusedEngineIntegration("ExpressionMaterialization", .{
+        .kind = .literal_materialization,
+        .backend = .zig,
+        .implementation = "src/js_parser_jsc/ExpressionEngine.zig",
+        .behavior = "Materializes compiler literal graphs as engine arrays, objects, strings, and primitive values for macro arguments and module exports",
+    }),
+    b.focusedEngineIntegration("JSCommonJSExtensions", .{
+        .kind = .runtime_keyed_property_namespace,
+        .header = "JSCommonJSExtensions.h",
+        .implementation = "JSCommonJSExtensions.cpp",
+        .behavior = "CommonJS extension properties apply caller compatibility policy, synchronize successful descriptor changes with resolver state, and defer accessor lookup until loader invocation",
+    }),
+    b.focusedEngineIntegration("SQLiteStatementBindings", .{
+        .kind = .runtime_keyed_property_namespace,
+        .header = "sqlite/JSSQLStatement.h",
+        .implementation = "sqlite/JSSQLStatement.cpp",
+        .behavior = "SQLite resolves query-defined parameter properties in access order and materializes query-defined column names as own properties with the selected row prototype",
+    }),
+    b.focusedEngineIntegration("JSEnvironmentVariableMap", .{
+        .kind = .runtime_keyed_property_namespace,
+        .header = "JSEnvironmentVariableMap.h",
+        .implementation = "JSEnvironmentVariableMap.cpp",
+        .behavior = "process.env resolves arbitrary runtime property names and synchronizes selected data-property writes, definitions, and deletions with native runtime state through intrinsic object hooks",
+    }),
+    b.focusedEngineIntegration("FormatStackTraceForJS", .{
+        .kind = .intrinsic_lazy_property,
+        .header = "FormatStackTraceForJS.h",
+        .implementation = "FormatStackTraceForJS.cpp",
+        .behavior = "Error.stack materialization consumes engine stack frames and preserves recursive access and failed formatting through the intrinsic ErrorInstance property hooks",
+    }),
+    b.focusedEngineIntegration("NativeAddonABI", .{
+        .kind = .engine_value_operations,
+        .backend = .zig,
+        .implementation = "src/napi/napi.zig",
+        .behavior = "Implements the external Node-API value ABI, roots addon handles, and passes arbitrary JavaScript values through schema-declared engine operations",
+    }),
+});

@@ -21,13 +21,13 @@
 #include "JSEventListener.h"
 
 #include "BunProcess.h"
+#include "SchemaBindings.h"
 // #include "BeforeUnloadEvent.h"
 // #include "ContentSecurityPolicy.h"
 #include "EventNames.h"
 // #include "Frame.h"
 // #include "HTMLElement.h"
-#include "JSDOMConvertNullable.h"
-#include "JSDOMConvertStrings.h"
+#include "JSDOMExceptionHandling.h"
 #include "JSDOMGlobalObject.h"
 // #include "JSDocument.h"
 #include "JSEvent.h"
@@ -90,16 +90,16 @@ void JSEventListener::replaceJSFunctionForAttributeListener(JSObject* function, 
     }
 }
 
-JSValue eventHandlerAttribute(EventTarget& eventTarget, const AtomString& eventType, DOMWrapperWorld& isolatedWorld)
+std::optional<JSValue> eventHandlerAttribute(EventTarget& eventTarget, const AtomString& eventType, DOMWrapperWorld& isolatedWorld)
 {
     if (auto* jsListener = eventTarget.attributeEventListener(eventType, isolatedWorld)) {
         if (auto* context = eventTarget.scriptExecutionContext()) {
             if (auto* jsFunction = jsListener->ensureJSFunction(*context))
-                return jsFunction;
+                return JSValue(jsFunction);
         }
     }
 
-    return jsNull();
+    return std::nullopt;
 }
 
 template<typename Visitor>
@@ -125,20 +125,17 @@ void JSEventListener::visitJSFunction(SlotVisitor& visitor) { visitJSFunctionImp
 //         event.setReturnValue(returnValue);
 // }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionEmitUncaughtException, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+static void emitUncaughtException(JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSValue exception)
 {
-    auto exception = callFrame->argument(0);
     reportException(lexicalGlobalObject, exception);
-    return JSValue::encode(JSC::jsUndefined());
 }
-JSC_DEFINE_HOST_FUNCTION(jsFunctionEmitUncaughtExceptionNextTick, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+
+static void emitUncaughtExceptionNextTick(JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSValue exception)
 {
     Zig::GlobalObject* globalObject = defaultGlobalObject(lexicalGlobalObject);
     Bun::Process* process = globalObject->processObject();
-    auto exception = callFrame->argument(0);
-    auto func = JSFunction::create(globalObject->vm(), globalObject, 1, String(), jsFunctionEmitUncaughtException, JSC::ImplementationVisibility::Private);
+    auto func = JSFunction::create(globalObject->vm(), globalObject, 1, String(), bun_bindgen_host_WebCoreFunctions_jsFunctionEmitUncaughtException, JSC::ImplementationVisibility::Private);
     process->queueNextTick(lexicalGlobalObject, func, exception);
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
 void JSEventListener::handleEvent(ScriptExecutionContext& scriptExecutionContext, Event& event)
@@ -272,7 +269,7 @@ void JSEventListener::handleEvent(ScriptExecutionContext& scriptExecutionContext
         if (then.isCallable()) {
             MarkedArgumentBuffer arglist;
             arglist.append(JSValue(JSC::jsUndefined()));
-            arglist.append(JSValue(JSC::JSFunction::create(vm, lexicalGlobalObject, 1, String(), jsFunctionEmitUncaughtExceptionNextTick, ImplementationVisibility::Public, NoIntrinsic))); // err => process.nextTick(() => throw err)
+            arglist.append(JSValue(JSC::JSFunction::create(vm, lexicalGlobalObject, 1, String(), bun_bindgen_host_WebCoreFunctions_jsFunctionEmitUncaughtExceptionNextTick, ImplementationVisibility::Public, NoIntrinsic))); // err => process.nextTick(() => throw err)
             JSC::call(lexicalGlobalObject, then, retval, arglist, "Promise.then is not callable"_s);
             if (scope.exception()) [[unlikely]] {
                 auto* exception = scope.exception();
@@ -290,19 +287,6 @@ void JSEventListener::handleEvent(ScriptExecutionContext& scriptExecutionContext
     }
 
     // Do return value handling for event handlers (https://html.spec.whatwg.org/#the-event-handler-processing-algorithm).
-
-    // if (event.type() == eventNames().beforeunloadEvent) {
-    //     // This is a OnBeforeUnloadEventHandler, and therefore the return value must be coerced into a String.
-    //     if (is<BeforeUnloadEvent>(event)) {
-    //         String resultStr = convert<IDLNullable<IDLDOMString>>(*lexicalGlobalObject, retval);
-    //         if (scope.exception()) [[unlikely]] {
-    //             if (handleExceptionIfNeeded(scope.exception()))
-    //                 return;
-    //         }
-    //         handleBeforeUnloadEventReturnValue(downcast<BeforeUnloadEvent>(event), resultStr);
-    //     }
-    //     return;
-    // }
 
     if (retval.isFalse())
         event.preventDefault();
@@ -332,3 +316,17 @@ String JSEventListener::functionName() const
 }
 
 } // namespace WebCore
+
+void Bun::Bindgen::Cpp::bunBindgenCpp_WebCoreFunctions_jsFunctionEmitUncaughtException(
+    Bun::Bindgen::CppCallContext& context,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_WebCoreFunctions_jsFunctionEmitUncaughtException_Arguments& args)
+{
+    WebCore::emitUncaughtException(&context.globalObject, args.exception);
+}
+
+void Bun::Bindgen::Cpp::bunBindgenCpp_WebCoreFunctions_jsFunctionEmitUncaughtExceptionNextTick(
+    Bun::Bindgen::CppCallContext& context,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_WebCoreFunctions_jsFunctionEmitUncaughtExceptionNextTick_Arguments& args)
+{
+    WebCore::emitUncaughtExceptionNextTick(&context.globalObject, args.exception);
+}

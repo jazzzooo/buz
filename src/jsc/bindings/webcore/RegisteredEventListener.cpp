@@ -28,36 +28,18 @@
 
 namespace WebCore {
 
-RegisteredEventListener::~RegisteredEventListener() = default;
-
-void RegisteredEventListener::setAbortSignal(WeakPtr<AbortSignal, WeakPtrImplWithEventTargetData>&& signal, uint32_t algorithmIdentifier)
+RegisteredEventListener::~RegisteredEventListener()
 {
-    m_abortSignal = WTF::move(signal);
-    m_abortAlgorithmIdentifier = algorithmIdentifier;
+    markAsRemoved();
 }
 
 void RegisteredEventListener::markAsRemoved()
 {
+    if (m_wasRemoved)
+        return;
     m_wasRemoved = true;
-
-    // If this listener was registered with an AbortSignal, drop the
-    // corresponding abort algorithm so the signal's m_algorithms vector
-    // doesn't grow unboundedly when the same long-lived signal is reused
-    // across many addEventListener/removeEventListener cycles.
-    //
-    // Safe when reached via AbortSignal::runAbortSteps(): that path swaps
-    // out m_algorithms before iterating, so removeAlgorithm() is a no-op
-    // on the (now empty) vector.
-    //
-    // Safe when reached via ~EventTarget() for the self-signal case
-    // (signal.addEventListener(type, fn, { signal })): ~AbortSignal()
-    // invalidates WeakPtrs to itself before member destruction, so
-    // m_abortSignal.get() is null here and we never touch the signal
-    // mid-destruction.
-    if (RefPtr signal = m_abortSignal.get()) {
-        m_abortSignal = nullptr;
-        signal->removeAlgorithm(m_abortAlgorithmIdentifier);
-    }
+    if (RefPtr signal = m_abortSignal.get())
+        signal->removeEventListenerAbortAlgorithm(*this);
 }
 
 } // namespace WebCore

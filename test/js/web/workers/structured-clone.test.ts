@@ -453,7 +453,7 @@ for (const structuredCloneFn of [structuredClone, jscSerializeRoundtrip, jscSeri
         // Bun's native borrows call ArrayBuffer::pin(), which makes the buffer
         // non-detachable without setting the C-API lock flag. Transferring a
         // pinned buffer must copy via transferTo()'s copyTo() fallback, not
-        // throw (see bindings.cpp JSC__JSValue__pinArrayBuffer). Locks this in
+        // throw. Locks this in
         // so a future WebKit sync that re-adds upstream's !isDetachable() gate
         // in SerializedScriptValue::create fails CI.
         test("A Bun-pinned ArrayBuffer copies on transfer instead of detaching", async () => {

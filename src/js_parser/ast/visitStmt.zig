@@ -67,7 +67,7 @@ pub fn VisitStmt(
 
                         if (p.options.features.replace_exports.getPtr(name)) |entry| {
                             if (entry.* != .replace) p.ignoreUsage(symbol.ref);
-                            _ = p.injectReplacementExport(stmts, symbol.ref, stmt.loc, entry);
+                            _ = try p.injectReplacementExport(stmts, symbol.ref, stmt.loc, entry);
                             any_replaced = true;
                             continue;
                         }
@@ -137,7 +137,7 @@ pub fn VisitStmt(
 
                         if (p.options.features.replace_exports.count() > 0) {
                             if (p.options.features.replace_exports.getPtr(item.alias)) |entry| {
-                                _ = p.injectReplacementExport(stmts, old_ref, logger.Loc.Empty, entry);
+                                _ = try p.injectReplacementExport(stmts, old_ref, logger.Loc.Empty, entry);
 
                                 continue;
                             }
@@ -183,7 +183,7 @@ pub fn VisitStmt(
                 if (data.alias) |alias| {
                     if (p.options.features.replace_exports.count() > 0) {
                         if (p.options.features.replace_exports.getPtr(alias.original_name)) |entry| {
-                            _ = p.injectReplacementExport(stmts, p.declareSymbol(.other, logger.Loc.Empty, alias.original_name) catch unreachable, logger.Loc.Empty, entry);
+                            _ = try p.injectReplacementExport(stmts, try p.declareSymbol(.other, logger.Loc.Empty, alias.original_name), logger.Loc.Empty, entry);
                             return;
                         }
                     }
@@ -192,12 +192,13 @@ pub fn VisitStmt(
                 try stmts.append(stmt.*);
             }
             pub fn s_export_default(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.ExportDefault) !void {
-                defer {
-                    if (data.default_name.ref) |ref| {
-                        p.recordDeclaredSymbol(ref) catch unreachable;
-                    }
+                try visitExportDefault(p, stmts, stmt, data);
+                if (data.default_name.ref) |ref| {
+                    try p.recordDeclaredSymbol(ref);
                 }
+            }
 
+            fn visitExportDefault(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.ExportDefault) !void {
                 var mark_for_replace: bool = false;
 
                 const orig_dead = p.is_control_flow_dead;
@@ -219,7 +220,7 @@ pub fn VisitStmt(
                         if (was_anonymous_named_expr and expr.data == .e_class and expr.data.e_class.should_lower_standard_decorators) {
                             p.decorator_class_name = js_ast.ClauseItem.default_alias;
                         }
-                        data.value.expr = p.visitExpr(expr);
+                        data.value.expr = try p.visitExpr(expr);
                         p.decorator_class_name = prev_decorator_class_name;
 
                         if (p.is_control_flow_dead) {
@@ -253,7 +254,7 @@ pub fn VisitStmt(
                         }
 
                         if (data.default_name.ref.?.isSourceContentsSlice()) {
-                            data.default_name = createDefaultName(p, data.value.expr.loc) catch unreachable;
+                            data.default_name = try createDefaultName(p, data.value.expr.loc);
                         }
 
                         if (p.options.features.react_fast_refresh and switch (data.value.expr.data) {
@@ -291,7 +292,7 @@ pub fn VisitStmt(
                         if (p.current_scope.parent == null and p.will_wrap_module_in_try_catch_for_using) {
                             try stmts.ensureUnusedCapacity(2);
 
-                            const decls = bun.handleOom(p.allocator.alloc(G.Decl, 1));
+                            const decls = try p.allocator.alloc(G.Decl, 1);
                             decls[0] = .{
                                 .binding = p.b(B.Identifier{ .ref = data.default_name.ref.? }, data.default_name.loc),
                                 .value = data.value.expr,
@@ -299,7 +300,7 @@ pub fn VisitStmt(
                             stmts.appendAssumeCapacity(p.s(S.Local{
                                 .decls = G.Decl.List.fromOwnedSlice(decls),
                             }, stmt.loc));
-                            const items = bun.handleOom(p.allocator.alloc(js_ast.ClauseItem, 1));
+                            const items = try p.allocator.alloc(js_ast.ClauseItem, 1);
                             items[0] = js_ast.ClauseItem{
                                 .alias = "default",
                                 .alias_loc = data.default_name.loc,
@@ -316,7 +317,7 @@ pub fn VisitStmt(
                             if (entry.* == .replace) {
                                 data.value.expr = entry.replace;
                             } else {
-                                _ = p.injectReplacementExport(stmts, Ref.None, logger.Loc.Empty, entry);
+                                _ = try p.injectReplacementExport(stmts, Ref.None, logger.Loc.Empty, entry);
                                 return;
                             }
                         }
@@ -336,18 +337,18 @@ pub fn VisitStmt(
                             defer p.react_refresh.hook_ctx_storage = prev;
                             p.react_refresh.hook_ctx_storage = &react_hook_data;
 
-                            func.func = p.visitFunc(func.func, func.func.open_parens_loc);
+                            func.func = try p.visitFunc(func.func, func.func.open_parens_loc);
 
                             if (p.is_control_flow_dead) {
                                 return;
                             }
 
                             if (data.default_name.ref.?.isSourceContentsSlice()) {
-                                data.default_name = createDefaultName(p, stmt.loc) catch unreachable;
+                                data.default_name = try createDefaultName(p, stmt.loc);
                             }
 
                             if (react_hook_data) |*hook| {
-                                bun.handleOom(stmts.append(p.getReactRefreshHookSignalDecl(hook.signature_cb)));
+                                try stmts.append(p.getReactRefreshHookSignalDecl(hook.signature_cb));
 
                                 data.value = .{
                                     .expr = p.getReactRefreshHookSignalInit(hook, p.newExpr(
@@ -362,7 +363,7 @@ pub fn VisitStmt(
                                 if (entry.* == .replace) {
                                     data.value = .{ .expr = entry.replace };
                                 } else {
-                                    _ = p.injectReplacementExport(stmts, Ref.None, logger.Loc.Empty, entry);
+                                    _ = try p.injectReplacementExport(stmts, Ref.None, logger.Loc.Empty, entry);
                                     return;
                                 }
                             }
@@ -398,7 +399,7 @@ pub fn VisitStmt(
                                         break :brk temp_id;
                                     };
 
-                                    stmts.append(Stmt.alloc(S.Local, .{
+                                    try stmts.append(Stmt.alloc(S.Local, .{
                                         .kind = .k_const,
                                         .decls = try G.Decl.List.fromSlice(p.allocator, &.{
                                             .{
@@ -406,7 +407,7 @@ pub fn VisitStmt(
                                                 .value = data.value.expr,
                                             },
                                         }),
-                                    }, stmt.loc)) catch |err| bun.handleOom(err);
+                                    }, stmt.loc));
 
                                     data.value = .{ .expr = .initIdentifier(ref_to_use, stmt.loc) };
 
@@ -433,7 +434,7 @@ pub fn VisitStmt(
                             return;
                         },
                         .s_class => |class| {
-                            _ = p.visitClass(s2.loc, &class.class, data.default_name.ref.?);
+                            _ = try p.visitClass(s2.loc, &class.class, data.default_name.ref.?);
 
                             if (p.is_control_flow_dead)
                                 return;
@@ -443,13 +444,22 @@ pub fn VisitStmt(
                                 if (entry.* == .replace) {
                                     data.value = .{ .expr = entry.replace };
                                 } else {
-                                    _ = p.injectReplacementExport(stmts, Ref.None, logger.Loc.Empty, entry);
+                                    _ = try p.injectReplacementExport(stmts, Ref.None, logger.Loc.Empty, entry);
                                     return;
                                 }
                             }
 
                             if (data.default_name.ref.?.isSourceContentsSlice()) {
-                                data.default_name = createDefaultName(p, stmt.loc) catch unreachable;
+                                data.default_name = try createDefaultName(p, stmt.loc);
+                            }
+
+                            if (class.class.class_name == null and class.class.should_lower_standard_decorators) {
+                                data.value = .{ .expr = p.lowerStandardDecoratorsExpr(&class.class, s2.loc, js_ast.ClauseItem.default_alias) };
+                                if (p.options.features.server_components.wrapsExports()) {
+                                    data.value.expr = p.wrapValueForServerComponentReference(data.value.expr, "default");
+                                }
+                                try stmts.append(stmt.*);
+                                return;
                             }
 
                             // We only inject a name into classes when there is a decorator
@@ -476,14 +486,14 @@ pub fn VisitStmt(
                             }
 
                             // Emit any prefix statements before the export default
-                            stmts.appendSlice(class_stmts[0..class_stmt_idx]) catch {};
+                            try stmts.appendSlice(class_stmts[0..class_stmt_idx]);
 
                             data.value.stmt = class_stmts[class_stmt_idx];
-                            stmts.append(stmt.*) catch {};
+                            try stmts.append(stmt.*);
 
                             // Emit any suffix statements after the export default
                             if (class_stmt_idx + 1 < class_stmts.len) {
-                                stmts.appendSlice(class_stmts[class_stmt_idx + 1 ..]) catch {};
+                                try stmts.appendSlice(class_stmts[class_stmt_idx + 1 ..]);
                             }
 
                             if (p.options.features.server_components.wrapsExports()) {
@@ -519,7 +529,7 @@ pub fn VisitStmt(
                 defer p.react_refresh.hook_ctx_storage = prev;
                 p.react_refresh.hook_ctx_storage = &react_hook_data;
 
-                data.func = p.visitFunc(data.func, data.func.open_parens_loc);
+                data.func = try p.visitFunc(data.func, data.func.open_parens_loc);
 
                 const name_ref = data.func.name.?.ref.?;
                 bun.assert(name_ref.tag == .symbol);
@@ -531,7 +541,7 @@ pub fn VisitStmt(
                     data.func.flags.remove(.is_export);
 
                     const enclosing_namespace_arg_ref = p.enclosing_namespace_arg_ref orelse bun.outOfMemory();
-                    bun.handleOom(stmts.ensureUnusedCapacity(3));
+                    try stmts.ensureUnusedCapacity(3);
                     stmts.appendAssumeCapacity(stmt.*);
                     stmts.appendAssumeCapacity(Stmt.assign(
                         p.newExpr(E.Dot{
@@ -563,11 +573,11 @@ pub fn VisitStmt(
                             }}),
                         }, stmt.loc));
                     } else {
-                        bun.handleOom(stmts.append(stmt.*));
+                        try stmts.append(stmt.*);
                     }
                 } else if (mark_as_dead) {
                     if (p.options.features.replace_exports.getPtr(original_name)) |replacement| {
-                        _ = p.injectReplacementExport(stmts, name_ref, data.func.name.?.loc, replacement);
+                        _ = try p.injectReplacementExport(stmts, name_ref, data.func.name.?.loc, replacement);
                     }
                 }
 
@@ -601,7 +611,7 @@ pub fn VisitStmt(
                     }
                 }
 
-                _ = p.visitClass(stmt.loc, &data.class, Ref.None);
+                _ = try p.visitClass(stmt.loc, &data.class, Ref.None);
 
                 // Remove the export flag inside a namespace
                 const was_export_inside_namespace = data.is_export and p.enclosing_namespace_arg_ref != null;
@@ -613,11 +623,11 @@ pub fn VisitStmt(
 
                 if (!mark_as_dead or was_export_inside_namespace)
                     // Lower class field syntax for browsers that don't support it
-                    stmts.appendSlice(lowered) catch unreachable
+                    try stmts.appendSlice(lowered)
                 else {
                     const ref = data.class.class_name.?.ref.?;
                     if (p.options.features.replace_exports.getPtr(p.loadNameFromRef(ref))) |replacement| {
-                        if (p.injectReplacementExport(stmts, ref, data.class.class_name.?.loc, replacement)) {
+                        if (try p.injectReplacementExport(stmts, ref, data.class.class_name.?.loc, replacement)) {
                             p.is_control_flow_dead = original_is_dead;
                         }
                     }
@@ -625,7 +635,7 @@ pub fn VisitStmt(
 
                 // Handle exporting this class from a namespace
                 if (was_export_inside_namespace) {
-                    stmts.append(
+                    try stmts.append(
                         Stmt.assign(
                             p.newExpr(
                                 E.Dot{
@@ -643,19 +653,19 @@ pub fn VisitStmt(
                                 data.class.class_name.?.loc,
                             ),
                         ),
-                    ) catch unreachable;
+                    );
                 }
 
                 return;
             }
             pub fn s_export_equals(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.ExportEquals) !void {
                 // "module.exports = value"
-                stmts.append(
+                try stmts.append(
                     Stmt.assign(
                         p.@"module.exports"(stmt.loc),
-                        p.visitExpr(data.value),
+                        try p.visitExpr(data.value),
                     ),
-                ) catch unreachable;
+                );
                 p.recordUsage(p.module_ref);
                 return;
             }
@@ -670,7 +680,7 @@ pub fn VisitStmt(
                     }
                 } else if (!p.fn_or_arrow_data_visit.is_inside_loop and !p.fn_or_arrow_data_visit.is_inside_switch) {
                     const r = js_lexer.rangeOfIdentifier(p.source, stmt.loc);
-                    p.log.addRangeError(p.source, r, "Cannot use \"break\" here") catch unreachable;
+                    try p.log.addRangeError(p.source, r, "Cannot use \"break\" here");
                 }
 
                 try stmts.append(stmt.*);
@@ -682,19 +692,19 @@ pub fn VisitStmt(
                     label.ref = res.ref;
                     if (res.found and !res.is_loop) {
                         const r = js_lexer.rangeOfIdentifier(p.source, stmt.loc);
-                        p.log.addRangeErrorFmt(p.source, r, p.allocator, "Cannot \"continue\" to label {s}", .{name}) catch unreachable;
+                        try p.log.addRangeErrorFmt(p.source, r, p.allocator, "Cannot \"continue\" to label {s}", .{name});
                     }
                 } else if (!p.fn_or_arrow_data_visit.is_inside_loop) {
                     const r = js_lexer.rangeOfIdentifier(p.source, stmt.loc);
-                    p.log.addRangeError(p.source, r, "Cannot use \"continue\" here") catch unreachable;
+                    try p.log.addRangeError(p.source, r, "Cannot use \"continue\" here");
                 }
 
                 try stmts.append(stmt.*);
             }
             pub fn s_label(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Label) !void {
-                p.pushScopeForVisitPass(.label, stmt.loc) catch unreachable;
+                try p.pushScopeForVisitPass(.label, stmt.loc);
                 const name = p.loadNameFromRef(data.name.ref.?);
-                const ref = p.newSymbol(.label, name) catch unreachable;
+                const ref = try p.newSymbol(.label, name);
                 data.name.ref = ref;
                 p.current_scope.label_ref = ref;
                 switch (data.stmt.data) {
@@ -704,7 +714,7 @@ pub fn VisitStmt(
                     else => {},
                 }
 
-                data.stmt = p.visitSingleStmt(data.stmt, StmtsKind.none);
+                data.stmt = try p.visitSingleStmt(data.stmt, StmtsKind.none);
                 p.popScope();
 
                 try stmts.append(stmt.*);
@@ -717,9 +727,9 @@ pub fn VisitStmt(
                 p.current_scope.is_after_const_local_prefix = was_after_after_const_local_prefix;
 
                 const decls_len = if (!(data.is_export and p.options.features.replace_exports.entries.len > 0))
-                    p.visitDecls(data.decls.slice(), data.kind == .k_const, false)
+                    try p.visitDecls(data.decls.slice(), data.kind == .k_const, false)
                 else
-                    p.visitDecls(data.decls.slice(), data.kind == .k_const, true);
+                    try p.visitDecls(data.decls.slice(), data.kind == .k_const, true);
 
                 const is_now_dead = data.decls.len > 0 and decls_len == 0;
                 if (is_now_dead) {
@@ -734,9 +744,9 @@ pub fn VisitStmt(
                         if (d.value) |val| {
                             p.recordUsage((p.enclosing_namespace_arg_ref orelse unreachable));
                             // TODO: is it necessary to lowerAssign? why does esbuild do it _most_ of the time?
-                            stmts.append(p.s(S.SExpr{
+                            try stmts.append(p.s(S.SExpr{
                                 .value = Expr.assign(Binding.toExpr(&d.binding, p.to_expr_wrapper_namespace), val),
-                            }, stmt.loc)) catch unreachable;
+                            }, stmt.loc));
                         }
                     }
 
@@ -766,7 +776,7 @@ pub fn VisitStmt(
                     const relocated = p.maybeRelocateVarsToTopLevel(data.decls.slice(), .normal);
                     if (relocated.ok) {
                         if (relocated.stmt) |new_stmt| {
-                            stmts.append(new_stmt) catch unreachable;
+                            try stmts.append(new_stmt);
                         }
 
                         return;
@@ -821,14 +831,8 @@ pub fn VisitStmt(
                 defer p.stmt_expr_value = .{ .e_missing = .{} };
 
                 const is_top_level = p.current_scope == p.module_scope;
-                if (p.shouldUnwrapCommonJSToESM()) {
-                    p.commonjs_named_exports_needs_conversion = if (is_top_level)
-                        std.math.maxInt(u32)
-                    else
-                        p.commonjs_named_exports_needs_conversion;
-                }
 
-                data.value = p.visitExpr(data.value);
+                data.value = try p.visitExpr(data.value);
 
                 if (should_trim_primitive and data.value.isPrimitiveLiteral()) {
                     return;
@@ -837,77 +841,45 @@ pub fn VisitStmt(
                 // simplify unused
                 data.value = SideEffects.simplifyUnusedExpr(p, data.value) orelse return;
 
-                if (p.shouldUnwrapCommonJSToESM()) {
-                    if (is_top_level) {
-                        if (data.value.data == .e_binary) {
-                            const to_convert = p.commonjs_named_exports_needs_conversion;
-                            if (to_convert != std.math.maxInt(u32)) {
-                                p.commonjs_named_exports_needs_conversion = std.math.maxInt(u32);
-                                convert: {
-                                    const bin: *E.Binary = data.value.data.e_binary;
-                                    if (bin.op == .bin_assign and bin.left.data == .e_commonjs_export_identifier) {
-                                        var last = &p.commonjs_named_exports.values()[to_convert];
-                                        if (!last.needs_decl) break :convert;
-                                        last.needs_decl = false;
-
-                                        var decls = p.allocator.alloc(Decl, 1) catch unreachable;
-                                        const ref = bin.left.data.e_commonjs_export_identifier.ref;
-                                        decls[0] = .{
-                                            .binding = p.b(B.Identifier{ .ref = ref }, bin.left.loc),
-                                            .value = bin.right,
-                                        };
-                                        // we have to ensure these are known to be top-level
-                                        p.declared_symbols.append(p.allocator, .{
-                                            .ref = ref,
-                                            .is_top_level = true,
-                                        }) catch unreachable;
-                                        p.esm_export_keyword.loc = stmt.loc;
-                                        p.esm_export_keyword.len = 5;
-                                        p.had_commonjs_named_exports_this_visit = true;
-                                        var clause_items = p.allocator.alloc(js_ast.ClauseItem, 1) catch unreachable;
-                                        clause_items[0] = js_ast.ClauseItem{
-                                            // We want the generated name to not conflict
-                                            .alias = p.commonjs_named_exports.keys()[to_convert],
-                                            .alias_loc = bin.left.loc,
-                                            .name = .{
-                                                .ref = ref,
-                                                .loc = last.loc_ref.loc,
-                                            },
-                                        };
-                                        stmts.appendSlice(
-                                            &[_]Stmt{
-                                                p.s(
-                                                    S.Local{
-                                                        .kind = .k_var,
-                                                        .is_export = false,
-                                                        .was_commonjs_export = true,
-                                                        .decls = G.Decl.List.fromOwnedSlice(decls),
-                                                    },
-                                                    stmt.loc,
-                                                ),
-                                                p.s(
-                                                    S.ExportClause{
-                                                        .items = clause_items,
-                                                        .is_single_line = true,
-                                                    },
-                                                    stmt.loc,
-                                                ),
-                                            },
-                                        ) catch unreachable;
-
-                                        return;
-                                    }
-                                }
-                            } else if (p.commonjs_replacement_stmts.len > 0) {
-                                if (stmts.items.len == 0) {
-                                    stmts.items = p.commonjs_replacement_stmts;
-                                    stmts.capacity = p.commonjs_replacement_stmts.len;
-                                    p.commonjs_replacement_stmts.len = 0;
-                                } else {
-                                    stmts.appendSlice(p.commonjs_replacement_stmts) catch unreachable;
-                                    p.commonjs_replacement_stmts.len = 0;
-                                }
-
+                if (p.shouldUnwrapCommonJSToESM() and is_top_level and data.value.data == .e_binary) {
+                    const bin = data.value.data.e_binary;
+                    if (bin.op == .bin_assign and bin.left.data == .e_commonjs_export_identifier) {
+                        const target = bin.left.data.e_commonjs_export_identifier;
+                        if (target.export_index != .none) {
+                            const index = @backingInt(target.export_index);
+                            const entry = &p.commonjs_named_exports.values()[index];
+                            bun.assert(entry.loc_ref.ref.?.eql(target.ref));
+                            if (entry.needs_decl) {
+                                const decls = try p.allocator.alloc(Decl, 1);
+                                decls[0] = .{
+                                    .binding = p.b(B.Identifier{ .ref = target.ref }, bin.left.loc),
+                                    .value = bin.right,
+                                };
+                                const clause_items = try p.allocator.alloc(js_ast.ClauseItem, 1);
+                                clause_items[0] = .{
+                                    .alias = p.commonjs_named_exports.keys()[index],
+                                    .alias_loc = bin.left.loc,
+                                    .name = entry.loc_ref,
+                                };
+                                try p.declared_symbols.append(p.allocator, .{
+                                    .ref = target.ref,
+                                    .is_top_level = true,
+                                });
+                                try stmts.ensureUnusedCapacity(2);
+                                const declaration = p.s(S.Local{
+                                    .kind = .k_var,
+                                    .was_commonjs_export = true,
+                                    .decls = G.Decl.List.fromOwnedSlice(decls),
+                                }, stmt.loc);
+                                const export_clause = p.s(S.ExportClause{
+                                    .items = clause_items,
+                                    .is_single_line = true,
+                                }, stmt.loc);
+                                stmts.appendAssumeCapacity(declaration);
+                                stmts.appendAssumeCapacity(export_clause);
+                                entry.needs_decl = false;
+                                p.esm_export_keyword = .{ .loc = stmt.loc, .len = 5 };
+                                p.had_commonjs_named_exports_this_visit = true;
                                 return;
                             }
                         }
@@ -917,7 +889,7 @@ pub fn VisitStmt(
                 try stmts.append(stmt.*);
             }
             pub fn s_throw(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Throw) !void {
-                data.value = p.visitExpr(data.value);
+                data.value = try p.visitExpr(data.value);
                 try stmts.append(stmt.*);
             }
             pub fn s_return(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Return) !void {
@@ -934,12 +906,12 @@ pub fn VisitStmt(
                     };
 
                     if (where.len > 0) {
-                        p.log.addRangeError(p.source, where, "Top-level return cannot be used inside an ECMAScript module") catch unreachable;
+                        try p.log.addRangeError(p.source, where, "Top-level return cannot be used inside an ECMAScript module");
                     }
                 }
 
                 if (data.value) |val| {
-                    data.value = p.visitExpr(val);
+                    data.value = try p.visitExpr(val);
 
                     // "return undefined;" can safely just always be "return;"
                     if (data.value != null and @as(Expr.Tag, data.value.?.data) == .e_undefined) {
@@ -952,14 +924,14 @@ pub fn VisitStmt(
             }
             pub fn s_block(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Block) !void {
                 {
-                    p.pushScopeForVisitPass(.block, stmt.loc) catch unreachable;
+                    try p.pushScopeForVisitPass(.block, stmt.loc);
 
                     // Pass the "is loop body" status on to the direct children of a block used
                     // as a loop body. This is used to enable optimizations specific to the
                     // topmost scope in a loop body block.
                     const kind = if (std.meta.eql(p.loop_body, stmt.data)) StmtsKind.loop_body else StmtsKind.none;
                     var _stmts = ListManaged(Stmt).fromOwnedSlice(p.allocator, data.stmts);
-                    p.visitStmts(&_stmts, kind) catch unreachable;
+                    try p.visitStmts(&_stmts, kind);
                     data.stmts = _stmts.items;
                     p.popScope();
                 }
@@ -967,11 +939,11 @@ pub fn VisitStmt(
                 if (p.options.features.minify_syntax) {
                     // // trim empty statements
                     if (data.stmts.len == 0) {
-                        stmts.append(Stmt{ .data = Prefill.Data.SEmpty, .loc = stmt.loc }) catch unreachable;
+                        try stmts.append(Stmt{ .data = Prefill.Data.SEmpty, .loc = stmt.loc });
                         return;
                     } else if (data.stmts.len == 1 and !statementCaresAboutScope(data.stmts[0])) {
                         // Unwrap blocks containing a single statement
-                        stmts.append(data.stmts[0]) catch unreachable;
+                        try stmts.append(data.stmts[0]);
                         return;
                     }
                 }
@@ -979,9 +951,9 @@ pub fn VisitStmt(
                 try stmts.append(stmt.*);
             }
             pub fn s_with(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.With) !void {
-                data.value = p.visitExpr(data.value);
+                data.value = try p.visitExpr(data.value);
 
-                p.pushScopeForVisitPass(.with, data.body_loc) catch unreachable;
+                try p.pushScopeForVisitPass(.with, data.body_loc);
 
                 // This can be many different kinds of statements.
                 // example code:
@@ -991,14 +963,14 @@ pub fn VisitStmt(
                 //           with(this.form)
                 //             with(this.element)
                 //
-                data.body = p.visitSingleStmt(data.body, StmtsKind.none);
+                data.body = try p.visitSingleStmt(data.body, StmtsKind.none);
 
                 p.popScope();
                 try stmts.append(stmt.*);
             }
             pub fn s_while(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.While) !void {
-                data.test_ = p.visitExpr(data.test_);
-                data.body = p.visitLoopBody(data.body);
+                data.test_ = try p.visitExpr(data.test_);
+                data.body = try p.visitLoopBody(data.body);
 
                 data.test_ = SideEffects.simplifyBoolean(p, data.test_);
                 const result = SideEffects.toBoolean(p, data.test_.data);
@@ -1009,8 +981,8 @@ pub fn VisitStmt(
                 try stmts.append(stmt.*);
             }
             pub fn s_do_while(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.DoWhile) !void {
-                data.body = p.visitLoopBody(data.body);
-                data.test_ = p.visitExpr(data.test_);
+                data.body = try p.visitLoopBody(data.body);
+                data.test_ = try p.visitExpr(data.test_);
 
                 data.test_ = SideEffects.simplifyBoolean(p, data.test_);
                 try stmts.append(stmt.*);
@@ -1018,7 +990,7 @@ pub fn VisitStmt(
             pub fn s_if(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.If) !void {
                 const prev_in_branch = p.in_branch_condition;
                 p.in_branch_condition = true;
-                data.test_ = p.visitExpr(data.test_);
+                data.test_ = try p.visitExpr(data.test_);
                 p.in_branch_condition = prev_in_branch;
 
                 if (p.options.features.minify_syntax) {
@@ -1029,10 +1001,10 @@ pub fn VisitStmt(
                 if (effects.ok and !effects.value) {
                     const old = p.is_control_flow_dead;
                     p.is_control_flow_dead = true;
-                    data.yes = p.visitSingleStmt(data.yes, StmtsKind.none);
+                    data.yes = try p.visitSingleStmt(data.yes, StmtsKind.none);
                     p.is_control_flow_dead = old;
                 } else {
-                    data.yes = p.visitSingleStmt(data.yes, StmtsKind.none);
+                    data.yes = try p.visitSingleStmt(data.yes, StmtsKind.none);
                 }
 
                 // The "else" clause is optional
@@ -1041,9 +1013,9 @@ pub fn VisitStmt(
                         const old = p.is_control_flow_dead;
                         p.is_control_flow_dead = true;
                         defer p.is_control_flow_dead = old;
-                        data.no = p.visitSingleStmt(no, .none);
+                        data.no = try p.visitSingleStmt(no, .none);
                     } else {
-                        data.no = p.visitSingleStmt(no, .none);
+                        data.no = try p.visitSingleStmt(no, .none);
                     }
 
                     // Trim an "else" clause whose body was emptied by dead-code
@@ -1074,7 +1046,7 @@ pub fn VisitStmt(
                                 if (effects.side_effects == .could_have_side_effects) {
                                     // Keep the condition if it could have side effects (but is still known to be truthy)
                                     if (SideEffects.simplifyUnusedExpr(p, data.test_)) |test_| {
-                                        stmts.append(p.s(S.SExpr{ .value = test_ }, test_.loc)) catch unreachable;
+                                        try stmts.append(p.s(S.SExpr{ .value = test_ }, test_.loc));
                                     }
                                 }
 
@@ -1088,7 +1060,7 @@ pub fn VisitStmt(
                                 if (effects.side_effects == .could_have_side_effects) {
                                     // Keep the condition if it could have side effects (but is still known to be truthy)
                                     if (SideEffects.simplifyUnusedExpr(p, data.test_)) |test_| {
-                                        stmts.append(p.s(S.SExpr{ .value = test_ }, test_.loc)) catch unreachable;
+                                        try stmts.append(p.s(S.SExpr{ .value = test_ }, test_.loc));
                                     }
                                 }
 
@@ -1131,14 +1103,14 @@ pub fn VisitStmt(
                 try stmts.append(stmt.*);
             }
             pub fn s_for(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.For) !void {
-                p.pushScopeForVisitPass(.block, stmt.loc) catch unreachable;
+                try p.pushScopeForVisitPass(.block, stmt.loc);
 
                 if (data.init) |initst| {
-                    data.init = p.visitForLoopInit(initst, false);
+                    data.init = try p.visitForLoopInit(initst, false);
                 }
 
                 if (data.test_) |test_| {
-                    data.test_ = SideEffects.simplifyBoolean(p, p.visitExpr(test_));
+                    data.test_ = SideEffects.simplifyBoolean(p, try p.visitExpr(test_));
 
                     const result = SideEffects.toBoolean(p, data.test_.?.data);
                     if (result.ok and result.value and result.side_effects == .no_side_effects) {
@@ -1147,10 +1119,10 @@ pub fn VisitStmt(
                 }
 
                 if (data.update) |update| {
-                    data.update = p.visitExpr(update);
+                    data.update = try p.visitExpr(update);
                 }
 
-                data.body = p.visitLoopBody(data.body);
+                data.body = try p.visitLoopBody(data.body);
 
                 if (data.init) |for_init| {
                     if (for_init.data == .s_local) {
@@ -1171,11 +1143,11 @@ pub fn VisitStmt(
             }
             pub fn s_for_in(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.ForIn) !void {
                 {
-                    p.pushScopeForVisitPass(.block, stmt.loc) catch unreachable;
+                    try p.pushScopeForVisitPass(.block, stmt.loc);
                     defer p.popScope();
-                    _ = p.visitForLoopInit(data.init, true);
-                    data.value = p.visitExpr(data.value);
-                    data.body = p.visitLoopBody(data.body);
+                    _ = try p.visitForLoopInit(data.init, true);
+                    data.value = try p.visitExpr(data.value);
+                    data.body = try p.visitLoopBody(data.body);
 
                     // Check for a variable initializer
                     if (data.init.data == .s_local and data.init.data.s_local.kind == .k_var) {
@@ -1185,12 +1157,12 @@ pub fn VisitStmt(
                             var decl: *G.Decl = &local.decls.ptr[0];
                             if (decl.binding.data == .b_identifier) {
                                 if (decl.value) |val| {
-                                    stmts.append(
+                                    try stmts.append(
                                         Stmt.assign(
                                             Expr.initIdentifier(decl.binding.data.b_identifier.ref, decl.binding.loc),
                                             val,
                                         ),
-                                    ) catch unreachable;
+                                    );
                                     decl.value = null;
                                 }
                             }
@@ -1206,11 +1178,11 @@ pub fn VisitStmt(
                 try stmts.append(stmt.*);
             }
             pub fn s_for_of(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.ForOf) !void {
-                p.pushScopeForVisitPass(.block, stmt.loc) catch unreachable;
+                try p.pushScopeForVisitPass(.block, stmt.loc);
                 defer p.popScope();
-                _ = p.visitForLoopInit(data.init, true);
-                data.value = p.visitExpr(data.value);
-                data.body = p.visitLoopBody(data.body);
+                _ = try p.visitForLoopInit(data.init, true);
+                data.value = try p.visitExpr(data.value);
+                data.body = try p.visitLoopBody(data.body);
 
                 if (data.init.data == .s_local) {
                     if (data.init.data.s_local.kind == .k_var) {
@@ -1232,7 +1204,7 @@ pub fn VisitStmt(
                         const first = p.s(S.Local{
                             .kind = init2.kind,
                             .decls = bindings: {
-                                const decls = bun.handleOom(p.allocator.alloc(G.Decl, 1));
+                                const decls = try p.allocator.alloc(G.Decl, 1);
                                 decls[0] = .{
                                     .binding = p.b(B.Identifier{ .ref = id.ref }, loc),
                                     .value = p.newExpr(E.Identifier{ .ref = temp_ref }, loc),
@@ -1242,7 +1214,8 @@ pub fn VisitStmt(
                         }, loc);
 
                         const length = if (data.body.data == .s_block) data.body.data.s_block.stmts.len else 1;
-                        const statements = bun.handleOom(p.allocator.alloc(Stmt, 1 + length));
+                        const statement_count = std.math.add(usize, length, 1) catch return error.OutOfMemory;
+                        const statements = try p.allocator.alloc(Stmt, statement_count);
                         statements[0] = first;
                         if (data.body.data == .s_block) {
                             @memcpy(statements[1..], data.body.data.s_block.stmts);
@@ -1268,25 +1241,25 @@ pub fn VisitStmt(
                 try stmts.append(stmt.*);
             }
             pub fn s_try(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Try) !void {
-                p.pushScopeForVisitPass(.block, stmt.loc) catch unreachable;
+                try p.pushScopeForVisitPass(.block, stmt.loc);
                 {
                     var _stmts = ListManaged(Stmt).fromOwnedSlice(p.allocator, data.body);
                     p.fn_or_arrow_data_visit.try_body_count += 1;
-                    p.visitStmts(&_stmts, StmtsKind.none) catch unreachable;
+                    try p.visitStmts(&_stmts, StmtsKind.none);
                     p.fn_or_arrow_data_visit.try_body_count -= 1;
                     data.body = _stmts.items;
                 }
                 p.popScope();
 
                 if (data.catch_) |*catch_| {
-                    p.pushScopeForVisitPass(.catch_binding, catch_.loc) catch unreachable;
+                    try p.pushScopeForVisitPass(.catch_binding, catch_.loc);
                     {
                         if (catch_.binding) |catch_binding| {
-                            p.visitBinding(catch_binding, null);
+                            try p.visitBinding(catch_binding, null);
                         }
                         var _stmts = ListManaged(Stmt).fromOwnedSlice(p.allocator, catch_.body);
-                        p.pushScopeForVisitPass(.block, catch_.body_loc) catch unreachable;
-                        p.visitStmts(&_stmts, StmtsKind.none) catch unreachable;
+                        try p.pushScopeForVisitPass(.block, catch_.body_loc);
+                        try p.visitStmts(&_stmts, StmtsKind.none);
                         p.popScope();
                         catch_.body = _stmts.items;
                     }
@@ -1294,10 +1267,10 @@ pub fn VisitStmt(
                 }
 
                 if (data.finally) |*finally| {
-                    p.pushScopeForVisitPass(.block, finally.loc) catch unreachable;
+                    try p.pushScopeForVisitPass(.block, finally.loc);
                     {
                         var _stmts = ListManaged(Stmt).fromOwnedSlice(p.allocator, finally.stmts);
-                        p.visitStmts(&_stmts, StmtsKind.none) catch unreachable;
+                        try p.visitStmts(&_stmts, StmtsKind.none);
                         finally.stmts = _stmts.items;
                     }
                     p.popScope();
@@ -1306,22 +1279,22 @@ pub fn VisitStmt(
                 try stmts.append(stmt.*);
             }
             pub fn s_switch(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Switch) !void {
-                data.test_ = p.visitExpr(data.test_);
+                data.test_ = try p.visitExpr(data.test_);
                 {
-                    p.pushScopeForVisitPass(.block, data.body_loc) catch unreachable;
+                    try p.pushScopeForVisitPass(.block, data.body_loc);
                     defer p.popScope();
                     const old_is_inside_Swsitch = p.fn_or_arrow_data_visit.is_inside_switch;
                     p.fn_or_arrow_data_visit.is_inside_switch = true;
                     defer p.fn_or_arrow_data_visit.is_inside_switch = old_is_inside_Swsitch;
                     for (data.cases, 0..) |case, i| {
                         if (case.value) |val| {
-                            data.cases[i].value = p.visitExpr(val);
+                            data.cases[i].value = try p.visitExpr(val);
                             // TODO: error messages
                             // Check("case", *c.Value, c.Value.Loc)
                             //                 p.warnAboutTypeofAndString(s.Test, *c.Value)
                         }
                         var _stmts = ListManaged(Stmt).fromOwnedSlice(p.allocator, case.body);
-                        p.visitStmts(&_stmts, StmtsKind.none) catch unreachable;
+                        try p.visitStmts(&_stmts, StmtsKind.none);
                         data.cases[i].body = _stmts.items;
                     }
                 }
@@ -1388,7 +1361,7 @@ pub fn VisitStmt(
                     if (value.value) |enum_value| {
                         next_numeric_value = null;
 
-                        const visited = p.visitExpr(enum_value);
+                        const visited = try p.visitExpr(enum_value);
 
                         // "See through" any wrapped comments
                         const underlying_value = if (visited.data == .e_inlined_enum)
@@ -1401,11 +1374,11 @@ pub fn VisitStmt(
                             .e_number => |num| {
                                 exported_members.getPtr(name).?.data = .{ .enum_number = num.value };
 
-                                p.ref_to_ts_namespace_member.put(
+                                try p.ref_to_ts_namespace_member.put(
                                     p.allocator,
                                     value.ref,
                                     .{ .enum_number = num.value },
-                                ) catch |err| bun.handleOom(err);
+                                );
 
                                 next_numeric_value = num.value + 1.0;
                             },
@@ -1414,11 +1387,11 @@ pub fn VisitStmt(
 
                                 exported_members.getPtr(name).?.data = .{ .enum_string = str };
 
-                                p.ref_to_ts_namespace_member.put(
+                                try p.ref_to_ts_namespace_member.put(
                                     p.allocator,
                                     value.ref,
                                     .{ .enum_string = str },
-                                ) catch |err| bun.handleOom(err);
+                                );
                             },
                             else => {
                                 if (visited.knownPrimitive() == .string) {
@@ -1437,11 +1410,11 @@ pub fn VisitStmt(
 
                         exported_members.getPtr(name).?.data = .{ .enum_number = num };
 
-                        p.ref_to_ts_namespace_member.put(
+                        try p.ref_to_ts_namespace_member.put(
                             p.allocator,
                             value.ref,
                             .{ .enum_number = num },
-                        ) catch |err| bun.handleOom(err);
+                        );
                     } else {
                         value.value = p.newExpr(E.Undefined{}, value.loc);
                     }
@@ -1483,10 +1456,10 @@ pub fn VisitStmt(
 
                     // String-valued enums do not form a two-way map
                     if (has_string_value) {
-                        bun.handleOom(value_exprs.append(assign_target));
+                        try value_exprs.append(assign_target);
                     } else {
                         // "Enum[assignTarget] = 'Name'"
-                        value_exprs.append(
+                        try value_exprs.append(
                             Expr.assign(
                                 p.newExpr(E.Index{
                                     .target = p.newExpr(
@@ -1497,14 +1470,14 @@ pub fn VisitStmt(
                                 }, value.loc),
                                 name_as_e_string.?,
                             ),
-                        ) catch |err| bun.handleOom(err);
+                        );
                         p.recordUsage(data.arg);
                     }
                 }
 
                 p.should_fold_typescript_constant_expressions = old_should_fold_typescript_constant_expressions;
 
-                var value_stmts = ListManaged(Stmt).initCapacity(allocator, value_exprs.items.len) catch unreachable;
+                var value_stmts = try ListManaged(Stmt).initCapacity(allocator, value_exprs.items.len);
                 // Generate statements from expressions
                 for (value_exprs.items) |expr| {
                     value_stmts.appendAssumeCapacity(p.s(S.SExpr{ .value = expr }, expr.loc));
@@ -1523,7 +1496,7 @@ pub fn VisitStmt(
                 return;
             }
             pub fn s_namespace(noalias p: *P, noalias stmts: *ListManaged(Stmt), noalias stmt: *Stmt, noalias data: *S.Namespace) !void {
-                p.recordDeclaredSymbol(data.name.ref.?) catch unreachable;
+                try p.recordDeclaredSymbol(data.name.ref.?);
 
                 // Scan ahead for any variables inside this namespace. This must be done
                 // ahead of time before visiting any statements inside the namespace
@@ -1545,8 +1518,8 @@ pub fn VisitStmt(
 
                 const old_enclosing_namespace_arg_ref = p.enclosing_namespace_arg_ref;
                 p.enclosing_namespace_arg_ref = data.arg;
-                p.pushScopeForVisitPass(.entry, stmt.loc) catch unreachable;
-                p.recordDeclaredSymbol(data.arg) catch unreachable;
+                try p.pushScopeForVisitPass(.entry, stmt.loc);
+                try p.recordDeclaredSymbol(data.arg);
                 try p.visitStmtsAndPrependTempRefs(&prepend_list, &prepend_temp_refs);
                 p.popScope();
                 p.enclosing_namespace_arg_ref = old_enclosing_namespace_arg_ref;

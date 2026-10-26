@@ -304,10 +304,13 @@ public:
     static Expected<Ref<StringImpl>, UTF8ConversionError> tryReallocate(Ref<StringImpl>&& originalString, unsigned length, char16_t*& data);
 
     static constexpr unsigned flagsOffset() { return OBJECT_OFFSETOF(StringImpl, m_hashAndFlags); }
+    static constexpr unsigned refCountMemoryOffset() { return OBJECT_OFFSETOF(StringImpl, m_refCount); }
     static constexpr unsigned flagIs8Bit() { return s_hashFlag8BitBuffer; }
     static constexpr unsigned flagIsAtom() { return s_hashFlagStringKindIsAtom; }
     static constexpr unsigned flagIsSymbol() { return s_hashFlagStringKindIsSymbol; }
     static constexpr unsigned maskStringKind() { return s_hashMaskStringKind; }
+    static constexpr uint32_t refCountFlagIsStaticString() { return s_refCountFlagIsStaticString; }
+    static constexpr uint32_t refCountIncrement() { return s_refCountIncrement; }
     static constexpr unsigned dataOffset() { return OBJECT_OFFSETOF(StringImpl, m_data8); }
 
     template<typename CharacterType, size_t inlineCapacity, typename OverflowHandler, size_t minCapacity, typename Malloc>

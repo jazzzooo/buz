@@ -344,6 +344,11 @@ static JSArrayBuffer* arrayBufferCopyAndDetach(JSGlobalObject* globalObject, JSA
         return nullptr;
     }
 
+    if (arrayBuffer->impl()->hasTransferBlockingByteLease()) [[unlikely]] {
+        throwVMTypeError(globalObject, scope, "Receiver cannot be detached while its bytes are leased"_s);
+        return nullptr;
+    }
+
     if (!isResizable && newByteLength == arrayBuffer->impl()->byteLength()) {
         // We should just transfer!
         ArrayBufferContents contents;

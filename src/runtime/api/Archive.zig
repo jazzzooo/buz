@@ -1,9 +1,14 @@
 const Archive = @This();
 
-pub const js = jsc.Codegen.JSArchive;
-pub const toJS = js.toJS;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
+pub fn inspectCustom(_: *Archive, context: bindgen.CallContext(ArchiveInspectSchema), args: bindgen.Args(ArchiveInspectSchema)) bun.JSError!bindgen.DOMString {
+    return @import("./ArchiveEngine.zig").inspect(context, args);
+}
+
+bindgen_state: bindgen.ClassState = .{},
+/// The underlying data for the archive - uses Blob.Store for thread-safe ref counting
+store: bindgen.RefNative(Store, .any),
+/// Compression settings for this archive
+compress: Compression = .none,
 
 /// Compression options for the archive
 pub const Compression = union(enum) {
@@ -14,37 +19,19 @@ pub const Compression = union(enum) {
     },
 };
 
-/// The underlying data for the archive - uses Blob.Store for thread-safe ref counting
-store: *jsc.WebCore.Blob.Store,
-/// Compression settings for this archive
-compress: Compression = .none,
+pub const Handle = Binding.Handle;
 
-pub fn finalize(this: *Archive) void {
-    jsc.markBinding(@src());
-    this.store.deref();
+pub fn destroy(this: *Archive) void {
+    this.store.deinit();
     bun.destroy(this);
 }
 
-/// Pretty-print for console.log
-pub fn writeFormat(this: *const Archive, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
-    const Writer = @TypeOf(writer);
-    const Output = bun.Output;
-    const data = this.store.sharedView();
+pub fn byteLength(this: *const Archive) usize {
+    return this.store.get().sharedView().len;
+}
 
-    try writer.print(comptime Output.prettyFmt("Archive ({f}) {{\n", enable_ansi_colors), .{bun.fmt.size(data.len, .{})});
-
-    {
-        formatter.indent += 1;
-        defer formatter.indent -|= 1;
-
-        try formatter.writeIndent(Writer, writer);
-        try writer.writeAll(comptime Output.prettyFmt("<r>files<d>:<r> ", enable_ansi_colors));
-        try formatter.printAs(.Double, Writer, writer, jsc.JSValue.jsNumber(countFilesInArchive(data)), .NumberObject, enable_ansi_colors);
-    }
-    try writer.writeAll("\n");
-    try formatter.writeIndent(Writer, writer);
-    try writer.writeAll("}");
-    formatter.resetLine();
+pub fn fileCount(this: *const Archive) u32 {
+    return countFilesInArchive(this.store.get().sharedView());
 }
 
 /// Configure archive for reading tar/tar.gz
@@ -84,99 +71,79 @@ fn countFilesInArchive(data: []const u8) u32 {
 /// - compress: "gzip" - Enable gzip compression
 /// - level: number (1-12) - Compression level (default 6)
 /// When no options are provided, no compression is applied
-pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*Archive {
-    const data_arg, const options_arg = callframe.argumentsAsArray(2);
-    if (data_arg == .zero) {
-        return globalThis.throwInvalidArguments("new Archive() requires an argument", .{});
-    }
+pub fn construct(
+    context: bindgen.CallContext(ArchiveConstructorSchema),
+    args: bindgen.Args(ArchiveConstructorSchema),
+) bindgen.CallError(ArchiveConstructorSchema)!*Archive {
+    const compress = if (args.options) |options|
+        try compressionFromOptions(ArchiveConstructorSchema, context, options)
+    else
+        .none;
+    const data_arg = args.data orelse return context.fail(.invalid_data, {});
 
-    // Parse compression options
-    const compress = try parseCompressionOptions(globalThis, options_arg);
-
-    // For Blob/Archive, ref the existing store (zero-copy)
-    if (data_arg.as(jsc.WebCore.Blob)) |blob_ptr| {
-        if (blob_ptr.store) |store| {
-            store.ref();
-            return bun.new(Archive, .{ .store = store, .compress = compress });
-        }
-    }
-
-    // For ArrayBuffer/TypedArray, copy the data
-    if (data_arg.asArrayBuffer(globalThis)) |array_buffer| {
-        const data = try bun.default_allocator.dupe(u8, array_buffer.slice());
-        return createArchive(data, compress);
-    }
-
-    // For plain objects, build a tarball
-    if (data_arg.isObject()) {
-        const data = try buildTarballFromObject(globalThis, data_arg);
-        return createArchive(data, compress);
-    }
-
-    return globalThis.throwInvalidArguments("Expected an object, Blob, TypedArray, or ArrayBuffer", .{});
+    const converted = try data_arg.convert(context);
+    return switch (converted.value) {
+        .blob => |*blob_ref| if (blob_ref.get().storePtr()) |store| archive: {
+            const value = try bun.default_allocator.create(Archive);
+            value.* = .{ .store = .init(store), .compress = compress };
+            break :archive value;
+        } else context.fail(.invalid_data, {}),
+        .buffer => |buffer| try createArchive(try buffer.dupe(bun.default_allocator), compress),
+        .entries => |*entries| try createArchive(try buildTarballForCall(ArchiveConstructorSchema, context, entries), compress),
+        .invalid => context.fail(.invalid_data, {}),
+    };
 }
 
-/// Parse compression options from JS value
-/// Returns .none if no compression specified, caller must handle defaults
-fn parseCompressionOptions(globalThis: *jsc.JSGlobalObject, options_arg: jsc.JSValue) bun.JSError!Compression {
-    // No options provided means no compression (caller handles defaults)
-    if (options_arg.isUndefinedOrNull()) {
-        return .none;
-    }
-
-    if (!options_arg.isObject()) {
-        return globalThis.throwInvalidArguments("Archive: options must be an object", .{});
-    }
-
-    // Check for compress option
-    if (try options_arg.getOptional(globalThis, "compress", jsc.JSValue)) |compress_val| {
-        // compress must be "gzip"
-        if (!compress_val.isString()) {
-            return globalThis.throwInvalidArguments("Archive: compress option must be a string", .{});
-        }
-
-        const compress_str = try compress_val.toSlice(globalThis, bun.default_allocator);
-        defer compress_str.deinit();
-
-        if (!bun.strings.eqlComptime(compress_str.slice(), "gzip")) {
-            return globalThis.throwInvalidArguments("Archive: compress option must be \"gzip\"", .{});
-        }
-
-        // Parse level option (1-12, default 6)
-        var level: u8 = 6;
-        if (try options_arg.getOptional(globalThis, "level", jsc.JSValue)) |level_val| {
-            if (!level_val.isNumber()) {
-                return globalThis.throwInvalidArguments("Archive: level must be a number", .{});
-            }
-            const level_num = level_val.toInt64();
-            if (level_num < 1 or level_num > 12) {
-                return globalThis.throwInvalidArguments("Archive: level must be between 1 and 12", .{});
-            }
-            level = @intCast(level_num);
-        }
-
-        return .{ .gzip = .{ .level = level } };
-    }
-
-    // No compress option specified in options object means no compression
-    return .none;
+fn compressionFromOptions(
+    comptime Schema: type,
+    context: bindgen.CallContext(Schema),
+    options: anytype,
+) bindgen.CallError(Schema)!Compression {
+    const settings = options orelse return .none;
+    if (settings.compress == null) return .none;
+    const level = settings.level orelse 6;
+    if (level < 1 or level > 12) return context.fail(.invalid_compression_level, {});
+    return .{ .gzip = .{ .level = level } };
 }
 
-fn createArchive(data: []u8, compress: Compression) *Archive {
-    const store = jsc.WebCore.Blob.Store.init(data, bun.default_allocator);
-    return bun.new(Archive, .{ .store = store, .compress = compress });
+fn createArchive(data: []u8, compress: Compression) bun.OOM!*Archive {
+    const store = try Store.init(data, bun.default_allocator);
+    errdefer store.deref();
+    const archive = try bun.default_allocator.create(Archive);
+    archive.* = .{ .store = .adopt(store), .compress = compress };
+    return archive;
 }
 
-/// Shared helper that builds tarball bytes from a JS object
-fn buildTarballFromObject(globalThis: *jsc.JSGlobalObject, obj: jsc.JSValue) bun.JSError![]u8 {
+const TarballBuildError = error{
+    OutOfMemory,
+    ArchiveFormatError,
+    ArchiveOpenError,
+    ArchiveHeaderError,
+    ArchiveWriteError,
+    ArchiveFinishEntryError,
+    ArchiveCloseError,
+};
+
+fn buildTarballForCall(
+    comptime Schema: type,
+    context: bindgen.CallContext(Schema),
+    entries: anytype,
+) bindgen.CallError(Schema)![]u8 {
+    return buildTarballFromEntries(entries) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.ArchiveFormatError => context.fail(.archive_format_error, {}),
+        error.ArchiveOpenError => context.fail(.archive_open_error, {}),
+        error.ArchiveHeaderError => context.fail(.archive_header_error, {}),
+        error.ArchiveWriteError => context.fail(.archive_write_error, {}),
+        error.ArchiveFinishEntryError => context.fail(.archive_finish_entry_error, {}),
+        error.ArchiveCloseError => context.fail(.archive_close_error, {}),
+    };
+}
+
+fn buildTarballFromEntries(entries: anytype) TarballBuildError![]u8 {
     const allocator = bun.default_allocator;
     const lib = libarchive.lib;
 
-    const js_obj = obj.getObject() orelse {
-        return globalThis.throwInvalidArguments("Expected an object", .{});
-    };
-
-    // Set up archive first
     var growing_buffer = lib.GrowingBuffer.init(allocator);
     errdefer growing_buffer.deinit();
 
@@ -184,7 +151,7 @@ fn buildTarballFromObject(globalThis: *jsc.JSGlobalObject, obj: jsc.JSValue) bun
     defer _ = archive.writeFree();
 
     if (archive.writeSetFormatPaxRestricted() != .ok) {
-        return globalThis.throwInvalidArguments("Failed to create tarball: ArchiveFormatError", .{});
+        return error.ArchiveFormatError;
     }
 
     if (lib.archive_write_open2(
@@ -195,7 +162,7 @@ fn buildTarballFromObject(globalThis: *jsc.JSGlobalObject, obj: jsc.JSValue) bun
         &lib.GrowingBuffer.closeCallback,
         null,
     ) != 0) {
-        return globalThis.throwInvalidArguments("Failed to create tarball: ArchiveOpenError", .{});
+        return error.ArchiveOpenError;
     }
 
     const entry = lib.Archive.Entry.new();
@@ -203,31 +170,25 @@ fn buildTarballFromObject(globalThis: *jsc.JSGlobalObject, obj: jsc.JSValue) bun
 
     const now_secs: isize = @intCast(bun.timespec.realNow().sec);
 
-    // Iterate over object properties and write directly to archive
-    const PropIterator = jsc.JSPropertyIterator(.{
-        .skip_empty_name = true,
-        .include_value = true,
-    });
-
-    var iter = try PropIterator.init(globalThis, js_obj);
-    defer iter.deinit();
-
-    while (try iter.next()) |key| {
-        const value = iter.value;
-        if (value == .zero) continue;
-
-        // Get the key as a null-terminated string
-        const key_slice = key.toUTF8(allocator);
+    for (0..entries.len()) |index| {
+        const archive_entry = entries.at(index).?;
+        const key_slice = try archive_entry.key.toUTF8(allocator);
         defer key_slice.deinit();
+        if (key_slice.length() == 0) continue;
         const key_str = try allocator.dupeSentinel(u8, key_slice.slice(), 0);
         defer allocator.free(key_str);
 
-        // Get data - use view for Blob/ArrayBuffer, convert for strings
-        const data_slice = try getEntryData(globalThis, value, allocator);
-        defer data_slice.deinit();
+        var string_data = bun.String.Slice.empty;
+        defer string_data.deinit();
+        const data = switch (archive_entry.value) {
+            .blob => |*blob_ref| blob_ref.get().sharedView(),
+            .buffer => |buffer| buffer.unsafePtr("the binding frame owns each copied archive payload until archive.writeData returns"),
+            .string => |*string| data: {
+                string_data = try string.toUTF8(allocator);
+                break :data string_data.slice();
+            },
+        };
 
-        // Write entry to archive
-        const data = data_slice.slice();
         _ = entry.clear();
         entry.setPathnameUtf8(key_str);
         entry.setSize(@intCast(data.len));
@@ -236,39 +197,21 @@ fn buildTarballFromObject(globalThis: *jsc.JSGlobalObject, obj: jsc.JSValue) bun
         entry.setMtime(now_secs, 0);
 
         if (archive.writeHeader(entry) != .ok) {
-            return globalThis.throwInvalidArguments("Failed to create tarball: ArchiveHeaderError", .{});
+            return error.ArchiveHeaderError;
         }
         if (archive.writeData(data) < 0) {
-            return globalThis.throwInvalidArguments("Failed to create tarball: ArchiveWriteError", .{});
+            return error.ArchiveWriteError;
         }
         if (archive.writeFinishEntry() != .ok) {
-            return globalThis.throwInvalidArguments("Failed to create tarball: ArchiveFinishEntryError", .{});
+            return error.ArchiveFinishEntryError;
         }
     }
 
     if (archive.writeClose() != .ok) {
-        return globalThis.throwInvalidArguments("Failed to create tarball: ArchiveCloseError", .{});
+        return error.ArchiveCloseError;
     }
 
-    return growing_buffer.toOwnedSlice() catch {
-        return globalThis.throwInvalidArguments("Failed to create tarball: OutOfMemory", .{});
-    };
-}
-
-/// Returns data as a ZigString.Slice (handles ownership automatically via deinit)
-fn getEntryData(globalThis: *jsc.JSGlobalObject, value: jsc.JSValue, allocator: std.mem.Allocator) bun.JSError!jsc.ZigString.Slice {
-    // For Blob, use sharedView (no copy needed)
-    if (value.as(jsc.WebCore.Blob)) |blob_ptr| {
-        return jsc.ZigString.Slice.fromUTF8NeverFree(blob_ptr.sharedView());
-    }
-
-    // For ArrayBuffer/TypedArray, use view (no copy needed)
-    if (value.asArrayBuffer(globalThis)) |array_buffer| {
-        return jsc.ZigString.Slice.fromUTF8NeverFree(array_buffer.slice());
-    }
-
-    // For strings, convert (allocates)
-    return value.toSlice(globalThis, allocator);
+    return growing_buffer.toOwnedSlice() catch error.OutOfMemory;
 }
 
 /// Static method: Archive.write(path, data, options?)
@@ -276,49 +219,36 @@ fn getEntryData(globalThis: *jsc.JSGlobalObject, value: jsc.JSValue, allocator: 
 /// For Archive instances, uses the archive's compression settings unless overridden by options.
 /// Options:
 ///   - gzip: { level?: number } - Override compression settings
-pub fn write(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const path_arg, const data_arg, const options_arg = callframe.argumentsAsArray(3);
-    if (data_arg == .zero) {
-        return globalThis.throwInvalidArguments("Archive.write requires 2 arguments (path, data)", .{});
-    }
-
-    // Get the path
-    if (!path_arg.isString()) {
-        return globalThis.throwInvalidArguments("Archive.write: first argument must be a string path", .{});
-    }
-
-    const path_slice = try path_arg.toSlice(globalThis, bun.default_allocator);
+pub fn write(
+    context: bindgen.CallContext(ArchiveWriteSchema),
+    args: bindgen.Args(ArchiveWriteSchema),
+) bindgen.CallError(ArchiveWriteSchema)!void {
+    const path = args.path orelse return context.fail(.invalid_path, {});
+    const path_slice = try path.toUTF8(bun.default_allocator);
     defer path_slice.deinit();
+    const options_compress = if (args.options) |options| compression: {
+        const converted = try options.convert(context);
+        break :compression try compressionFromOptions(ArchiveWriteSchema, context, converted.value);
+    } else .none;
+    const data_arg = args.data orelse return context.fail(.invalid_data, {});
 
-    // Parse options for compression override
-    const options_compress = try parseCompressionOptions(globalThis, options_arg);
-
-    // For Archive instances, use options override or archive's compression settings
-    if (fromJS(data_arg)) |archive| {
-        const compress = if (options_compress != .none) options_compress else archive.compress;
-        return startWriteTask(globalThis, .{ .store = archive.store }, path_slice.slice(), compress);
-    }
-
-    // For Blobs, use store reference with options compression
-    if (data_arg.as(jsc.WebCore.Blob)) |blob_ptr| {
-        if (blob_ptr.store) |store| {
-            return startWriteTask(globalThis, .{ .store = store }, path_slice.slice(), options_compress);
-        }
-    }
-
-    // For ArrayBuffer/TypedArray, copy the data with options compression
-    if (data_arg.asArrayBuffer(globalThis)) |array_buffer| {
-        const data = try bun.default_allocator.dupe(u8, array_buffer.slice());
-        return startWriteTask(globalThis, .{ .owned = data }, path_slice.slice(), options_compress);
-    }
-
-    // For plain objects, build a tarball with options compression
-    if (data_arg.isObject()) {
-        const data = try buildTarballFromObject(globalThis, data_arg);
-        return startWriteTask(globalThis, .{ .owned = data }, path_slice.slice(), options_compress);
-    }
-
-    return globalThis.throwInvalidArguments("Expected an object, Blob, TypedArray, ArrayBuffer, or Archive", .{});
+    const converted = try data_arg.convert(context);
+    var compress = options_compress;
+    const write_data: WriteContext.Data = switch (converted.value) {
+        .archive => |*archive_ref| archive_data: {
+            const archive = archive_ref.get(Archive);
+            if (compress == .none) compress = archive.compress;
+            break :archive_data .{ .store = archive.store.get() };
+        },
+        .blob => |*blob_ref| if (blob_ref.get().storePtr()) |store|
+            .{ .store = store }
+        else
+            return context.fail(.invalid_data, {}),
+        .buffer => |buffer| .{ .owned = try buffer.dupe(bun.default_allocator) },
+        .entries => |*entries| .{ .owned = try buildTarballForCall(ArchiveWriteSchema, context, entries) },
+        .invalid => return context.fail(.invalid_data, {}),
+    };
+    startWriteTask(context, write_data, path_slice.slice(), compress);
 }
 
 /// Instance method: archive.extract(path, options?)
@@ -326,90 +256,93 @@ pub fn write(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSE
 /// Options:
 ///   - glob: string | string[] - Only extract files matching the glob pattern(s). Supports negative patterns with "!".
 /// Returns Promise<number> with count of extracted files
-pub fn extract(this: *Archive, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const path_arg, const options_arg = callframe.argumentsAsArray(2);
-    if (path_arg == .zero or !path_arg.isString()) {
-        return globalThis.throwInvalidArguments("Archive.extract requires a path argument", .{});
-    }
-
-    const path_slice = try path_arg.toSlice(globalThis, bun.default_allocator);
+pub fn extract(
+    this: *Archive,
+    context: bindgen.CallContext(ArchiveExtractSchema),
+    args: bindgen.Args(ArchiveExtractSchema),
+) bindgen.CallError(ArchiveExtractSchema)!void {
+    const path = args.path orelse return context.fail(.invalid_path, {});
+    const path_slice = try path.toUTF8(bun.default_allocator);
     defer path_slice.deinit();
 
-    // Parse options
     var glob_patterns: ?[]const []const u8 = null;
     errdefer {
         if (glob_patterns) |patterns| freePatterns(patterns);
     }
-
-    if (!options_arg.isUndefinedOrNull()) {
-        if (!options_arg.isObject()) {
-            return globalThis.throwInvalidArguments("Archive.extract: second argument must be an options object", .{});
-        }
-
-        // Parse glob option
-        if (try options_arg.getOptional(globalThis, "glob", jsc.JSValue)) |glob_val| {
-            glob_patterns = try parsePatternArg(globalThis, glob_val, "Archive.extract", "glob");
+    if (args.options) |options| {
+        const converted = try options.convert(context);
+        if (converted.value) |*settings| {
+            if (settings.glob) |*patterns| {
+                glob_patterns = switch (patterns.*) {
+                    .invalid => return context.fail(.invalid_glob, {}),
+                    else => try ownPatterns(patterns),
+                };
+            }
         }
     }
 
-    return startExtractTask(globalThis, this.store, path_slice.slice(), glob_patterns);
+    var completion = context.completion();
+    const path_copy = bun.default_allocator.dupe(u8, path_slice.slice()) catch {
+        if (glob_patterns) |patterns| freePatterns(patterns);
+        completion.outOfMemory();
+        return;
+    };
+    const task = bun.default_allocator.create(ExtractTask) catch {
+        bun.default_allocator.free(path_copy);
+        if (glob_patterns) |patterns| freePatterns(patterns);
+        completion.outOfMemory();
+        return;
+    };
+    const store = this.store.get();
+    store.ref();
+    task.* = .{
+        .ctx = .{
+            .store = store,
+            .io = bun.current_runtime.io(),
+            .path = path_copy,
+            .glob_patterns = glob_patterns,
+        },
+        .completion = completion.take(),
+    };
+    task.schedule(bun.current_runtime.backgroundTasks());
 }
 
-/// Parse a string or array of strings into a pattern list.
-/// Returns null for empty strings or empty arrays (treated as "no filter").
-fn parsePatternArg(globalThis: *jsc.JSGlobalObject, arg: jsc.JSValue, api_name: []const u8, name: []const u8) bun.JSError!?[]const []const u8 {
+fn ownPatterns(patterns: anytype) bun.OOM!?[]const []const u8 {
     const allocator = bun.default_allocator;
-
-    // Single string
-    if (arg.isString()) {
-        const str_slice = try arg.toSlice(globalThis, allocator);
-        defer str_slice.deinit();
-        // Empty string = no filter
-        if (str_slice.len == 0) return null;
-        const pattern = allocator.dupe(u8, str_slice.slice()) catch return error.OutOfMemory;
-        errdefer allocator.free(pattern);
-        const patterns = allocator.alloc([]const u8, 1) catch return error.OutOfMemory;
-        patterns[0] = pattern;
-        return patterns;
+    var result: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (result.items) |pattern| allocator.free(pattern);
+        result.deinit(allocator);
     }
 
-    // Array of strings
-    if (arg.jsType() == .Array) {
-        const len = try arg.getLength(globalThis);
-        // Empty array = no filter
-        if (len == 0) return null;
-
-        var patterns = std.ArrayList([]const u8).initCapacity(allocator, @intCast(len)) catch return error.OutOfMemory;
-        errdefer {
-            for (patterns.items) |p| allocator.free(p);
-            patterns.deinit(allocator);
-        }
-
-        // Use index-based iteration for safety (avoids issues if array mutates)
-        var i: u32 = 0;
-        while (i < len) : (i += 1) {
-            const item = try arg.getIndex(globalThis, i);
-            if (!item.isString()) {
-                return globalThis.throwInvalidArguments("{s}: {s} array must contain only strings", .{ api_name, name });
+    switch (patterns.*) {
+        .single => |*pattern| try appendPattern(&result, pattern),
+        .multiple => |*values| {
+            try result.ensureTotalCapacity(allocator, values.len());
+            var iterator = values.iterator();
+            while (iterator.next()) |pattern_| {
+                const pattern = pattern_;
+                try appendPattern(&result, &pattern.value);
             }
-            const str_slice = try item.toSlice(globalThis, allocator);
-            defer str_slice.deinit();
-            // Skip empty strings in array
-            if (str_slice.len == 0) continue;
-            const pattern = allocator.dupe(u8, str_slice.slice()) catch return error.OutOfMemory;
-            patterns.appendAssumeCapacity(pattern);
-        }
-
-        // If all strings were empty, treat as no filter
-        if (patterns.items.len == 0) {
-            patterns.deinit(allocator);
-            return null;
-        }
-
-        return patterns.toOwnedSlice(allocator) catch return error.OutOfMemory;
+        },
+        .invalid => unreachable,
     }
 
-    return globalThis.throwInvalidArguments("{s}: {s} must be a string or array of strings", .{ api_name, name });
+    if (result.items.len == 0) {
+        result.deinit(allocator);
+        return null;
+    }
+    return try result.toOwnedSlice(allocator);
+}
+
+fn appendPattern(result: *std.ArrayListUnmanaged([]const u8), pattern: anytype) bun.OOM!void {
+    const allocator = bun.default_allocator;
+    const utf8 = try pattern.toUTF8(allocator);
+    defer utf8.deinit();
+    if (utf8.length() == 0) return;
+    const copy = try allocator.dupe(u8, utf8.slice());
+    errdefer allocator.free(copy);
+    try result.append(allocator, copy);
 }
 
 fn freePatterns(patterns: []const []const u8) void {
@@ -419,115 +352,43 @@ fn freePatterns(patterns: []const []const u8) void {
 
 /// Instance method: archive.blob()
 /// Returns Promise<Blob> with the archive data (compressed if gzip was set in options)
-pub fn blob(this: *Archive, globalThis: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return startBlobTask(globalThis, this.store, this.compress, .blob);
+pub fn blobNative(
+    this: *Archive,
+    context: bindgen.CallContext(ArchiveBlobNativeSchema),
+    _: bindgen.Args(ArchiveBlobNativeSchema),
+) bindgen.CallError(ArchiveBlobNativeSchema)!void {
+    startBytesTask(ArchiveBlobNativeSchema, context, this.store.get(), this.compress);
 }
 
 /// Instance method: archive.bytes()
 /// Returns Promise<Uint8Array> with the archive data (compressed if gzip was set in options)
-pub fn bytes(this: *Archive, globalThis: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return startBlobTask(globalThis, this.store, this.compress, .bytes);
+pub fn bytes(
+    this: *Archive,
+    context: bindgen.CallContext(ArchiveBytesSchema),
+    _: bindgen.Args(ArchiveBytesSchema),
+) bindgen.CallError(ArchiveBytesSchema)!void {
+    startBytesTask(ArchiveBytesSchema, context, this.store.get(), this.compress);
 }
 
 /// Instance method: archive.files(glob?)
 /// Returns Promise<Map<string, File>> with archive file contents
-pub fn files(this: *Archive, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const glob_arg = callframe.argument(0);
-
+pub fn filesNative(
+    this: *Archive,
+    context: bindgen.CallContext(ArchiveFilesNativeSchema),
+    args: bindgen.Args(ArchiveFilesNativeSchema),
+) bindgen.CallError(ArchiveFilesNativeSchema)!void {
     var glob_patterns: ?[]const []const u8 = null;
     errdefer if (glob_patterns) |patterns| freePatterns(patterns);
-
-    if (!glob_arg.isUndefinedOrNull()) {
-        glob_patterns = try parsePatternArg(globalThis, glob_arg, "Archive.files", "glob");
-    }
-
-    return startFilesTask(globalThis, this.store, glob_patterns);
-}
-
-// ============================================================================
-// Generic Async Task Infrastructure
-// ============================================================================
-
-const PromiseResult = union(enum) {
-    resolve: jsc.JSValue,
-    reject: jsc.JSValue,
-
-    fn fulfill(this: PromiseResult, globalThis: *jsc.JSGlobalObject, promise: *jsc.JSPromise) bun.JSTerminated!void {
-        switch (this) {
-            .resolve => |v| try promise.resolve(globalThis, v),
-            .reject => |v| try promise.rejectWithAsyncStack(globalThis, v),
-        }
-    }
-};
-
-/// Generic async task that handles all the boilerplate for thread pool tasks.
-/// Context must provide:
-///   - `fn run(*Context) void` - runs on thread pool
-///   - `fn runFromJS(*Context, *jsc.JSGlobalObject) PromiseResult` - returns value to resolve/reject
-///   - `fn deinit(*Context) void` - cleanup
-fn AsyncTask(comptime Context: type) type {
-    return struct {
-        const Self = @This();
-
-        ctx: Context,
-        promise: jsc.JSPromise.Strong,
-        vm: *jsc.VirtualMachine,
-        task: jsc.BackgroundTask = .{ .callback = &run },
-        concurrent_task: jsc.ConcurrentTask = .{},
-        ref: bun.Async.KeepAlive = .{},
-
-        fn create(globalThis: *jsc.JSGlobalObject, ctx: Context) error{OutOfMemory}!*Self {
-            const vm = globalThis.bunVM();
-            const self = bun.new(Self, .{
-                .ctx = ctx,
-                .promise = jsc.JSPromise.Strong.init(globalThis),
-                .vm = vm,
-            });
-            self.ref.ref(vm);
-            return self;
-        }
-
-        fn schedule(this: *Self) void {
-            jsc.BackgroundWork.schedule(&this.vm.background_tasks, &this.task) catch |err| {
-                this.ctx.result = .{ .err = err };
-                this.vm.enqueueTaskConcurrent(
-                    this.concurrent_task.from(this, .manual_deinit),
-                );
+    if (args.glob) |glob| {
+        if (glob) |*patterns| {
+            glob_patterns = switch (patterns.*) {
+                .invalid => return context.fail(.invalid_glob, {}),
+                else => try ownPatterns(patterns),
             };
         }
+    }
 
-        fn run(work_task: *jsc.BackgroundTask) void {
-            const this: *Self = @fieldParentPtr("task", work_task);
-            const result = Context.run(&this.ctx);
-            // Handle both error union and non-error union return types
-            this.ctx.result = if (@typeInfo(@TypeOf(result)) == .error_union)
-                result catch |err| .{ .err = err }
-            else
-                result;
-            this.vm.enqueueTaskConcurrent(
-                this.concurrent_task.from(this, .manual_deinit),
-            );
-        }
-
-        pub fn runFromJS(this: *Self) bun.JSTerminated!void {
-            this.ref.unref(this.vm);
-
-            defer {
-                Context.deinit(&this.ctx);
-                bun.destroy(this);
-            }
-
-            if (this.vm.isShuttingDown()) return;
-
-            const globalThis = this.vm.global;
-            const promise = this.promise.swap();
-            const result = Context.runFromJS(&this.ctx, globalThis) catch |e| {
-                // JSError means exception is already pending
-                return try promise.reject(globalThis, globalThis.takeException(e));
-            };
-            try result.fulfill(globalThis, promise);
-        }
-    };
+    startFilesTask(context, this.store.get(), glob_patterns);
 }
 
 // ============================================================================
@@ -540,7 +401,7 @@ const ExtractContext = struct {
         err: error{ ReadError, ConcurrencyUnavailable },
     };
 
-    store: *jsc.WebCore.Blob.Store,
+    store: *Store,
     io: std.Io,
     path: []const u8,
     glob_patterns: ?[]const []const u8,
@@ -571,13 +432,6 @@ const ExtractContext = struct {
         return .{ .success = count };
     }
 
-    fn runFromJS(this: *ExtractContext, globalThis: *jsc.JSGlobalObject) bun.JSError!PromiseResult {
-        return switch (this.result) {
-            .success => |count| .{ .resolve = jsc.JSValue.jsNumber(count) },
-            .err => |e| .{ .reject = (try globalThis.createErrorInstance("{s}", .{@errorName(e)})).toJS() },
-        };
-    }
-
     fn deinit(this: *ExtractContext) void {
         this.store.deref();
         bun.default_allocator.free(this.path);
@@ -585,34 +439,48 @@ const ExtractContext = struct {
     }
 };
 
-pub const ExtractTask = AsyncTask(ExtractContext);
+const ExtractTask = struct {
+    ctx: ExtractContext,
+    completion: bindgen.OwnedCompletion(ArchiveExtractSchema),
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = &run, .on_cancel = &cancel },
 
-fn startExtractTask(
-    globalThis: *jsc.JSGlobalObject,
-    store: *jsc.WebCore.Blob.Store,
-    path: []const u8,
-    glob_patterns: ?[]const []const u8,
-) bun.JSError!jsc.JSValue {
-    const path_copy = try bun.default_allocator.dupe(u8, path);
-    errdefer bun.default_allocator.free(path_copy);
+    pub fn schedule(this: *ExtractTask, background_tasks: *bun.BackgroundTaskGroup) void {
+        bun.BackgroundWork.schedule(background_tasks, &this.task) catch |err| {
+            this.ctx.result = .{ .err = err };
+            this.finish();
+        };
+    }
 
-    store.ref();
-    errdefer store.deref();
+    fn run(work_task: *bun.BackgroundTaskGroup.Task) void {
+        const this: *ExtractTask = @fieldParentPtr("task", work_task);
+        this.ctx.result = this.ctx.run();
+        this.finish();
+    }
 
-    const task = try ExtractTask.create(globalThis, .{
-        .store = store,
-        .io = globalThis.bunVM().io,
-        .path = path_copy,
-        .glob_patterns = glob_patterns,
-    });
+    fn cancel(work_task: *bun.BackgroundTaskGroup.Task) void {
+        const this: *ExtractTask = @fieldParentPtr("task", work_task);
+        this.completion.release();
+        this.deinit();
+    }
 
-    const promise_js = task.promise.value();
-    task.schedule();
-    return promise_js;
-}
+    fn finish(this: *ExtractTask) void {
+        defer this.deinit();
+        switch (this.ctx.result) {
+            .success => |count| this.completion.resolve(count),
+            .err => |err| switch (err) {
+                error.ReadError => this.completion.fail(.read_error, {}),
+                error.ConcurrencyUnavailable => this.completion.fail(.concurrency_unavailable, {}),
+            },
+        }
+    }
+
+    fn deinit(this: *ExtractTask) void {
+        this.ctx.deinit();
+        bun.destroy(this);
+    }
+};
 
 const BlobContext = struct {
-    const OutputType = enum { blob, bytes };
     const Error = error{ OutOfMemory, GzipInitFailed, GzipCompressFailed, ConcurrencyUnavailable };
     const Result = union(enum) {
         compressed: []u8,
@@ -620,10 +488,9 @@ const BlobContext = struct {
         err: Error,
     };
 
-    store: *jsc.WebCore.Blob.Store,
+    store: *Store,
     io: std.Io,
     compress: Compression,
-    output_type: OutputType,
     result: Result = .{ .uncompressed = {} },
 
     fn run(this: *BlobContext) Result {
@@ -635,48 +502,94 @@ const BlobContext = struct {
         }
     }
 
-    fn runFromJS(this: *BlobContext, globalThis: *jsc.JSGlobalObject) bun.JSError!PromiseResult {
-        switch (this.result) {
-            .err => |e| return .{ .reject = (try globalThis.createErrorInstance("{s}", .{@errorName(e)})).toJS() },
-            .compressed => |data| {
-                this.result = .{ .uncompressed = {} }; // Ownership transferred
-                return .{ .resolve = switch (this.output_type) {
-                    .blob => jsc.WebCore.Blob.new(jsc.WebCore.Blob.createWithBytesAndAllocator(data, bun.default_allocator, globalThis, false)).toJS(globalThis),
-                    .bytes => jsc.JSValue.createBuffer(globalThis, data),
-                } };
-            },
-            .uncompressed => return switch (this.output_type) {
-                .blob => blk: {
-                    this.store.ref();
-                    break :blk .{ .resolve = jsc.WebCore.Blob.new(jsc.WebCore.Blob.initWithStore(this.store, globalThis)).toJS(globalThis) };
-                },
-                .bytes => .{ .resolve = jsc.JSValue.createBuffer(globalThis, bun.default_allocator.dupe(u8, this.store.sharedView()) catch return .{ .reject = globalThis.createOutOfMemoryError().toJS() }) },
-            },
-        }
-    }
-
     fn deinit(this: *BlobContext) void {
         this.store.deref();
         if (this.result == .compressed) bun.default_allocator.free(this.result.compressed);
     }
 };
 
-pub const BlobTask = AsyncTask(BlobContext);
+fn BytesTask(comptime FunctionSchema: type) type {
+    return struct {
+        const Self = @This();
 
-fn startBlobTask(globalThis: *jsc.JSGlobalObject, store: *jsc.WebCore.Blob.Store, compress: Compression, output_type: BlobContext.OutputType) bun.JSError!jsc.JSValue {
+        ctx: BlobContext,
+        completion: bindgen.OwnedCompletion(FunctionSchema),
+        task: bun.BackgroundTaskGroup.Task = .{ .callback = &run, .on_cancel = &cancel },
+
+        pub fn schedule(this: *Self, background_tasks: *bun.BackgroundTaskGroup) void {
+            bun.BackgroundWork.schedule(background_tasks, &this.task) catch |err| {
+                this.ctx.result = .{ .err = err };
+                this.finish();
+            };
+        }
+
+        fn run(work_task: *bun.BackgroundTaskGroup.Task) void {
+            const this: *Self = @fieldParentPtr("task", work_task);
+            this.ctx.result = this.ctx.run();
+            this.finish();
+        }
+
+        fn cancel(work_task: *bun.BackgroundTaskGroup.Task) void {
+            const this: *Self = @fieldParentPtr("task", work_task);
+            this.completion.release();
+            this.deinit();
+        }
+
+        fn finish(this: *Self) void {
+            defer this.deinit();
+            switch (this.ctx.result) {
+                .compressed => |data| {
+                    const owned_bytes = bindgen.OwnedBytes.fromSlice(data) catch {
+                        this.completion.outOfMemory();
+                        return;
+                    };
+                    this.completion.resolve(owned_bytes);
+                },
+                .uncompressed => {
+                    const owned_bytes = bindgen.OwnedBytes.fromSlice(this.ctx.store.sharedView()) catch {
+                        this.completion.outOfMemory();
+                        return;
+                    };
+                    this.completion.resolve(owned_bytes);
+                },
+                .err => |err| switch (err) {
+                    error.OutOfMemory => this.completion.outOfMemory(),
+                    error.GzipInitFailed => this.completion.fail(.gzip_init_failed, {}),
+                    error.GzipCompressFailed => this.completion.fail(.gzip_compress_failed, {}),
+                    error.ConcurrencyUnavailable => this.completion.fail(.concurrency_unavailable, {}),
+                },
+            }
+        }
+
+        fn deinit(this: *Self) void {
+            this.ctx.deinit();
+            bun.destroy(this);
+        }
+    };
+}
+
+fn startBytesTask(
+    comptime FunctionSchema: type,
+    context: bindgen.CallContext(FunctionSchema),
+    store: *Store,
+    compress: Compression,
+) void {
+    var completion = context.completion();
+    const Task = BytesTask(FunctionSchema);
+    const task = bun.default_allocator.create(Task) catch {
+        completion.outOfMemory();
+        return;
+    };
     store.ref();
-    errdefer store.deref();
-
-    const task = try BlobTask.create(globalThis, .{
-        .store = store,
-        .io = globalThis.bunVM().io,
-        .compress = compress,
-        .output_type = output_type,
-    });
-
-    const promise_js = task.promise.value();
-    task.schedule();
-    return promise_js;
+    task.* = .{
+        .ctx = .{
+            .store = store,
+            .io = bun.current_runtime.io(),
+            .compress = compress,
+        },
+        .completion = completion.take(),
+    };
+    task.schedule(bun.current_runtime.backgroundTasks());
 }
 
 const WriteContext = struct {
@@ -688,7 +601,7 @@ const WriteContext = struct {
     };
     const Data = union(enum) {
         owned: []u8,
-        store: *jsc.WebCore.Blob.Store,
+        store: *Store,
     };
 
     data: Data,
@@ -720,14 +633,6 @@ const WriteContext = struct {
         };
     }
 
-    fn runFromJS(this: *WriteContext, globalThis: *jsc.JSGlobalObject) bun.JSError!PromiseResult {
-        return switch (this.result) {
-            .success => .{ .resolve = .js_undefined },
-            .err => |e| .{ .reject = (try globalThis.createErrorInstance("{s}", .{@errorName(e)})).toJS() },
-            .sys_err => |sys_err| .{ .reject = try sys_err.toJS(globalThis) },
-        };
-    }
-
     fn deinit(this: *WriteContext) void {
         switch (this.data) {
             .owned => |d| bun.default_allocator.free(d),
@@ -741,34 +646,93 @@ const WriteContext = struct {
     }
 };
 
-pub const WriteTask = AsyncTask(WriteContext);
+const WriteTask = struct {
+    ctx: WriteContext,
+    completion: bindgen.OwnedCompletion(ArchiveWriteSchema),
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = &run, .on_cancel = &cancel },
+
+    pub fn schedule(this: *WriteTask, background_tasks: *bun.BackgroundTaskGroup) void {
+        bun.BackgroundWork.schedule(background_tasks, &this.task) catch |err| {
+            this.ctx.result = .{ .err = err };
+            this.finish();
+        };
+    }
+
+    fn run(work_task: *bun.BackgroundTaskGroup.Task) void {
+        const this: *WriteTask = @fieldParentPtr("task", work_task);
+        this.ctx.result = this.ctx.run();
+        this.finish();
+    }
+
+    fn cancel(work_task: *bun.BackgroundTaskGroup.Task) void {
+        const this: *WriteTask = @fieldParentPtr("task", work_task);
+        this.completion.release();
+        this.deinit();
+    }
+
+    fn finish(this: *WriteTask) void {
+        defer this.deinit();
+        switch (this.ctx.result) {
+            .success => this.completion.resolve({}),
+            .err => |err| switch (err) {
+                error.OutOfMemory => this.completion.outOfMemory(),
+                error.GzipInitFailed => this.completion.fail(.gzip_init_failed, {}),
+                error.GzipCompressFailed => this.completion.fail(.gzip_compress_failed, {}),
+                error.ConcurrencyUnavailable => this.completion.fail(.concurrency_unavailable, {}),
+            },
+            .sys_err => |sys_err| {
+                const system_error = bindgen.SystemError.fromSysError(sys_err) catch {
+                    this.completion.outOfMemory();
+                    return;
+                };
+                this.completion.fail(.system, system_error);
+            },
+        }
+    }
+
+    fn deinit(this: *WriteTask) void {
+        this.ctx.deinit();
+        bun.destroy(this);
+    }
+};
 
 fn startWriteTask(
-    globalThis: *jsc.JSGlobalObject,
+    context: bindgen.CallContext(ArchiveWriteSchema),
     data: WriteContext.Data,
     path: []const u8,
     compress: Compression,
-) bun.JSError!jsc.JSValue {
-    const path_z = try bun.default_allocator.dupeSentinel(u8, path, 0);
-    errdefer bun.default_allocator.free(path_z);
-
-    // Ref store if using store reference
+) void {
+    const path_z = bun.default_allocator.dupeSentinel(u8, path, 0) catch {
+        if (data == .owned) bun.default_allocator.free(data.owned);
+        var completion = context.completion();
+        completion.outOfMemory();
+        return;
+    };
     if (data == .store) {
         data.store.ref();
     }
-    errdefer if (data == .store) data.store.deref();
-    errdefer if (data == .owned) bun.default_allocator.free(data.owned);
-
-    const task = try WriteTask.create(globalThis, .{
-        .data = data,
-        .io = globalThis.bunVM().io,
-        .path = path_z,
-        .compress = compress,
-    });
-
-    const promise_js = task.promise.value();
-    task.schedule();
-    return promise_js;
+    var completion = context.completion();
+    const task = bun.default_allocator.create(WriteTask) catch {
+        var owned_context: WriteContext = .{
+            .data = data,
+            .io = undefined,
+            .path = path_z,
+            .compress = compress,
+        };
+        owned_context.deinit();
+        completion.outOfMemory();
+        return;
+    };
+    task.* = .{
+        .ctx = .{
+            .data = data,
+            .io = bun.current_runtime.io(),
+            .path = path_z,
+            .compress = compress,
+        },
+        .completion = completion.take(),
+    };
+    task.schedule(bun.current_runtime.backgroundTasks());
 }
 
 const FilesContext = struct {
@@ -797,7 +761,7 @@ const FilesContext = struct {
         list.deinit(bun.default_allocator);
     }
 
-    store: *jsc.WebCore.Blob.Store,
+    store: *Store,
     glob_patterns: ?[]const []const u8,
     result: Result = .{ .err = error.ReadError },
 
@@ -863,31 +827,6 @@ const FilesContext = struct {
         return .{ .success = entries };
     }
 
-    fn runFromJS(this: *FilesContext, globalThis: *jsc.JSGlobalObject) bun.JSError!PromiseResult {
-        switch (this.result) {
-            .success => |*entries| {
-                const map = jsc.JSMap.create(globalThis);
-                const map_ptr = jsc.JSMap.fromJS(map) orelse {
-                    return .{ .reject = (try globalThis.createErrorInstance("Failed to create Map", .{})).toJS() };
-                };
-
-                for (entries.items) |*entry| {
-                    const blob_ptr = jsc.WebCore.Blob.new(jsc.WebCore.Blob.createWithBytesAndAllocator(entry.data, bun.default_allocator, globalThis, false));
-                    entry.data = &.{}; // Ownership transferred
-                    blob_ptr.is_jsdom_file = true;
-                    blob_ptr.name = bun.String.cloneUTF8(entry.path);
-                    blob_ptr.last_modified = @floatFromInt(entry.mtime * 1000);
-
-                    try map_ptr.set(globalThis, try blob_ptr.name.toJS(globalThis), blob_ptr.toJS(globalThis));
-                }
-
-                return .{ .resolve = map };
-            },
-            .libarchive_err => |err_msg| return .{ .reject = (try globalThis.createErrorInstance("{s}", .{err_msg})).toJS() },
-            .err => |e| return .{ .reject = (try globalThis.createErrorInstance("{s}", .{@errorName(e)})).toJS() },
-        }
-    }
-
     fn deinit(this: *FilesContext) void {
         this.result.deinit();
         this.store.deref();
@@ -895,22 +834,99 @@ const FilesContext = struct {
     }
 };
 
-pub const FilesTask = AsyncTask(FilesContext);
+const FilesTask = struct {
+    ctx: FilesContext,
+    completion: bindgen.OwnedCompletion(ArchiveFilesNativeSchema),
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = &run, .on_cancel = &cancel },
 
-fn startFilesTask(globalThis: *jsc.JSGlobalObject, store: *jsc.WebCore.Blob.Store, glob_patterns: ?[]const []const u8) bun.JSError!jsc.JSValue {
+    pub fn schedule(this: *FilesTask, background_tasks: *bun.BackgroundTaskGroup) void {
+        bun.BackgroundWork.schedule(background_tasks, &this.task) catch |err| {
+            this.ctx.result = .{ .err = err };
+            this.finish();
+        };
+    }
+
+    fn run(work_task: *bun.BackgroundTaskGroup.Task) void {
+        const this: *FilesTask = @fieldParentPtr("task", work_task);
+        this.ctx.result = this.ctx.run() catch |err| .{ .err = err };
+        this.finish();
+    }
+
+    fn cancel(work_task: *bun.BackgroundTaskGroup.Task) void {
+        const this: *FilesTask = @fieldParentPtr("task", work_task);
+        this.completion.release();
+        this.deinit();
+    }
+
+    fn finish(this: *FilesTask) void {
+        defer this.deinit();
+        switch (this.ctx.result) {
+            .success => |*entries| this.resolveEntries(entries),
+            .libarchive_err => |message| {
+                const owned_message = bindgen.ThreadSafeDOMString.fromUTF8(std.mem.span(message)) catch {
+                    this.completion.outOfMemory();
+                    return;
+                };
+                this.completion.fail(.archive_error, owned_message);
+            },
+            .err => |err| switch (err) {
+                error.OutOfMemory => this.completion.outOfMemory(),
+                error.ReadError => this.completion.fail(.read_error, {}),
+                error.ConcurrencyUnavailable => this.completion.fail(.concurrency_unavailable, {}),
+            },
+        }
+    }
+
+    fn resolveEntries(this: *FilesTask, entries: *FilesContext.FileEntryList) void {
+        const Result = bindgen.Return(ArchiveFilesNativeSchema);
+        var values = Result.Builder.init(entries.items.len) catch {
+            this.completion.outOfMemory();
+            return;
+        };
+        defer values.deinit();
+
+        for (entries.items) |*source| {
+            var path = bindgen.UTF8String.fromSlice(source.path) catch {
+                this.completion.outOfMemory();
+                return;
+            };
+            const data = bindgen.OwnedBytes.fromSlice(source.data) catch {
+                path.deinit();
+                this.completion.outOfMemory();
+                return;
+            };
+            values.appendOwned(.{
+                .path = path,
+                .data = data,
+                .mtime = @floatFromInt(source.mtime),
+            });
+        }
+        this.completion.resolve(values.finish());
+    }
+
+    fn deinit(this: *FilesTask) void {
+        this.ctx.deinit();
+        bun.destroy(this);
+    }
+};
+
+fn startFilesTask(
+    context: bindgen.CallContext(ArchiveFilesNativeSchema),
+    store: *Store,
+    glob_patterns: ?[]const []const u8,
+) void {
+    var completion = context.completion();
+    const task = bun.default_allocator.create(FilesTask) catch {
+        if (glob_patterns) |patterns| freePatterns(patterns);
+        completion.outOfMemory();
+        return;
+    };
     store.ref();
-    errdefer store.deref();
-    // Ownership: On error, caller's errdefer frees glob_patterns.
-    // On success, ownership transfers to FilesContext, which frees them in deinit().
-
-    const task = try FilesTask.create(globalThis, .{
-        .store = store,
-        .glob_patterns = glob_patterns,
-    });
-
-    const promise_js = task.promise.value();
-    task.schedule();
-    return promise_js;
+    task.* = .{
+        .ctx = .{ .store = store, .glob_patterns = glob_patterns },
+        .completion = completion.take(),
+    };
+    task.schedule(bun.current_runtime.backgroundTasks());
 }
 
 // ============================================================================
@@ -941,7 +957,11 @@ fn compressGzip(io: std.Io, data: []const u8, level: u8) ![]u8 {
     const result = compressor.gzip(data, output);
     if (result.status != .success) return error.GzipCompressFailed;
 
-    return bun.default_allocator.realloc(output, result.written) catch output[0..result.written];
+    return bun.default_allocator.realloc(output, result.written) catch {
+        const exact = try bun.default_allocator.dupe(u8, output[0..result.written]);
+        bun.default_allocator.free(output);
+        return exact;
+    };
 }
 
 /// Check if a path is safe (no absolute paths or path traversal)
@@ -1157,4 +1177,20 @@ const libdeflate = @import("../../libdeflate_sys/libdeflate.zig");
 const std = @import("std");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
+const bindgen = bun.bindgen;
+const Store = @import("../webcore/blob/Store.zig");
+
+const ArchiveBindingModule = bindgen.Module("Archive");
+const ArchiveSchema = ArchiveBindingModule.class("Archive");
+const ArchiveConstructorSchema = ArchiveSchema.constructor();
+const ArchiveInspectSchema = ArchiveSchema.member("inspectCustom");
+const ArchiveBlobNativeSchema = ArchiveSchema.member("blobNative");
+const ArchiveBytesSchema = ArchiveSchema.member("bytes");
+const ArchiveExtractSchema = ArchiveSchema.member("extract");
+const ArchiveFilesNativeSchema = ArchiveSchema.member("filesNative");
+const ArchiveWriteSchema = ArchiveSchema.member("write");
+pub const Binding = bindgen.Class(ArchiveSchema, Archive);
+
+comptime {
+    _ = Binding;
+}

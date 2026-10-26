@@ -38,6 +38,8 @@
 #include "Event.h"
 // #include "EventLoop.h"
 #include "EventNames.h"
+#include "JSDOMExceptionHandling.h"
+#include "NativeEventLoopTarget.h"
 // #include "LocalFrame.h"
 #include "PerformanceEntry.h"
 #include "PerformanceMarkOptions.h"
@@ -47,53 +49,116 @@
 #include "PerformanceObserver.h"
 // #include "PerformancePaintTiming.h"
 #include "PerformanceResourceTiming.h"
-#include "PerformanceTiming.h"
 #include "PerformanceUserTiming.h"
 // #include "ResourceResponse.h"
 #include "ScriptExecutionContext.h"
-#include <wtf/TZoneMallocInlines.h>
+#include <wtf/FastMalloc.h>
+#include <wtf/Scope.h>
+#include <JavaScriptCore/ExceptionHelpers.h>
+#include <JavaScriptCore/TopExceptionScope.h>
 #include "BunClientData.h"
+#include "SchemaBindings.h"
 
 namespace WebCore {
 
-WTF_MAKE_TZONE_ALLOCATED_IMPL(Performance);
+class Performance::ObserverDeliveryTarget final : public Bun::NativeEventLoopTarget {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(ObserverDeliveryTarget);
+
+public:
+    static RefPtr<ObserverDeliveryTarget> tryCreate()
+    {
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(ObserverDeliveryTarget)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) ObserverDeliveryTarget);
+    }
+
+    bool isPending() const { return !!m_pending; }
+    bool isStopped() const { return m_stopped; }
+
+    void prepare(Performance& performance)
+    {
+        ASSERT(!m_pending && !m_stopped);
+        m_pending = &performance;
+    }
+
+    void run(JSC::JSGlobalObject*) noexcept final
+    {
+        auto performance = std::exchange(m_pending, nullptr);
+        if (!performance)
+            return;
+        if (!performance->scriptExecutionContext())
+            return;
+        if (!performance->deliverObservers()) {
+            auto* context = performance->scriptExecutionContext();
+            if (!context)
+                return;
+            auto* globalObject = context->globalObject();
+            if (!globalObject)
+                return;
+            auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
+            if (!scope.exception()) {
+                auto throwScope = DECLARE_THROW_SCOPE(globalObject->vm());
+                JSC::throwOutOfMemoryError(globalObject, throwScope);
+            }
+            if (auto* exception = scope.exception())
+                reportException(globalObject, exception);
+        }
+    }
+
+    void stop() noexcept final
+    {
+        m_stopped = true;
+        m_pending = nullptr;
+    }
+
+private:
+    RefPtr<Performance> m_pending;
+    bool m_stopped { false };
+};
 
 constexpr Seconds highTimePrecision { 20_us };
 static Seconds timePrecision { 1_ms };
 
-Performance::Performance(ScriptExecutionContext* context, MonotonicTime timeOrigin)
-    : ContextDestructionObserver(context)
-    // , m_resourceTimingBufferFullTimer(*this, &Performance::resourceTimingBufferFullTimerFired) // FIXME: Migrate this to the event loop as well. https://bugs.webkit.org/show_bug.cgi?id=229044
-    , m_timeOrigin(timeOrigin)
+RefPtr<Performance> Performance::tryCreate(ScriptExecutionContext* context, MonotonicTime monotonicTimeOrigin, WallTime wallTimeOrigin)
 {
-    ASSERT(m_timeOrigin);
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(Performance)).getValue(allocation))
+        return nullptr;
+    return adoptRef(*new (NotNull, allocation) Performance(context, monotonicTimeOrigin, wallTimeOrigin));
 }
 
-Performance::~Performance() = default;
-
-void Performance::contextDestroyed()
+Performance::Performance(ScriptExecutionContext* context, MonotonicTime monotonicTimeOrigin, WallTime wallTimeOrigin)
+    : ContextDestructionObserver(context)
+    // , m_resourceTimingBufferFullTimer(*this, &Performance::resourceTimingBufferFullTimerFired) // FIXME: Migrate this to the event loop as well. https://bugs.webkit.org/show_bug.cgi?id=229044
+    , m_monotonicTimeOrigin(monotonicTimeOrigin)
+    , m_wallTimeOrigin(wallTimeOrigin)
 {
-    // m_resourceTimingBufferFullTimer.stop();
-    ContextDestructionObserver::contextDestroyed();
+    ASSERT(m_monotonicTimeOrigin);
+}
+
+Performance::~Performance()
+{
+    ASSERT(!m_firstObserver && !m_lastObserver);
+    closeObserverDelivery();
+}
+
+void Performance::contextDestroyed(ScriptExecutionContext&)
+{
+    Ref protectedThis { *this };
+    closeObserverDelivery();
 }
 
 DOMHighResTimeStamp Performance::now() const
 {
-    auto nowNano = Bun__readOriginTimer(bunVM(scriptExecutionContext()->vm()));
+    auto nowNano = Bun::Bindgen::ZigExports::bunBindgenZig_virtual_machine_readOriginTimer(bunVM(scriptExecutionContext()->vm()));
     return static_cast<double>(nowNano) / 1000000.0;
 }
 
 DOMHighResTimeStamp Performance::timeOrigin() const
 {
-    // return reduceTimeResolution(m_timeOrigin.approximateWallTime().secondsSinceEpoch()).milliseconds();
-    return m_timeOrigin.secondsSinceEpoch().milliseconds();
+    return m_wallTimeOrigin.secondsSinceEpoch().milliseconds();
 }
-
-// ReducedResolutionSeconds Performance::nowInReducedResolutionSeconds() const
-// {
-//     Seconds now = MonotonicTime::now() - m_timeOrigin;
-//     return reduceTimeResolution(now);
-// }
 
 Seconds Performance::reduceTimeResolution(Seconds seconds)
 {
@@ -112,17 +177,6 @@ Seconds Performance::timeResolution()
     return timePrecision;
 }
 
-DOMHighResTimeStamp Performance::relativeTimeFromTimeOriginInReducedResolution(MonotonicTime timestamp) const
-{
-    Seconds seconds = timestamp - m_timeOrigin;
-    return reduceTimeResolution(seconds).milliseconds();
-}
-
-MonotonicTime Performance::monotonicTimeFromRelativeTime(DOMHighResTimeStamp relativeTime) const
-{
-    return m_timeOrigin + Seconds::fromMilliseconds(relativeTime);
-}
-
 // PerformanceNavigation* Performance::navigation()
 // {
 //     if (!is<Document>(scriptExecutionContext()))
@@ -134,56 +188,16 @@ MonotonicTime Performance::monotonicTimeFromRelativeTime(DOMHighResTimeStamp rel
 //     return m_navigation.get();
 // }
 
-PerformanceTiming* Performance::timing()
+Bun::Bindgen::NativeAllocationResult<Vector<RefPtr<PerformanceEntry>>> Performance::getEntries() const
 {
-    // if (!is<Document>(scriptExecutionContext()))
-    //     return nullptr;
-    // ASSERT(isMainThread());
-    if (!m_timing)
-        m_timing = PerformanceTiming::create();
-    return m_timing.get();
+    return getEntriesByType(String {});
 }
 
-Vector<RefPtr<PerformanceEntry>> Performance::getEntries() const
+Bun::Bindgen::NativeAllocationResult<Vector<RefPtr<PerformanceEntry>>> Performance::getEntriesByType(const String& entryType) const
 {
     Vector<RefPtr<PerformanceEntry>> entries;
-
-    // if (m_navigationTiming)
-    //     entries.append(m_navigationTiming);
-
-    // entries.appendVector(m_resourceTimingBuffer);
-
-    if (m_userTiming) {
-        entries.appendVector(m_userTiming->getMarks());
-        entries.appendVector(m_userTiming->getMeasures());
-    }
-
-    // if (m_firstContentfulPaint)
-    //     entries.append(m_firstContentfulPaint);
-
-    std::sort(entries.begin(), entries.end(), PerformanceEntry::startTimeCompareLessThan);
-    return entries;
-}
-
-Vector<RefPtr<PerformanceEntry>> Performance::getEntriesByType(const String& entryType) const
-{
-    Vector<RefPtr<PerformanceEntry>> entries;
-
-    // if (m_navigationTiming && entryType == "navigation"_s)
-    //     entries.append(m_navigationTiming);
-
-    if (entryType == "resource"_s)
-        entries.appendVector(m_resourceTimingBuffer);
-
-    // if (m_firstContentfulPaint && entryType == "paint"_s)
-    //     entries.append(m_firstContentfulPaint);
-
-    if (m_userTiming) {
-        if (entryType == "mark"_s)
-            entries.appendVector(m_userTiming->getMarks());
-        else if (entryType == "measure"_s)
-            entries.appendVector(m_userTiming->getMeasures());
-    }
+    if (!tryAppendBufferedEntriesByType(entryType, entries))
+        return Bun::Bindgen::nativeAllocationFailure();
 
     std::sort(entries.begin(), entries.end(), PerformanceEntry::startTimeCompareLessThan);
     return entries;
@@ -199,55 +213,40 @@ size_t Performance::memoryCost() const
     return size;
 }
 
-Vector<RefPtr<PerformanceEntry>> Performance::getEntriesByName(const String& name, const String& entryType) const
+Bun::Bindgen::NativeAllocationResult<Vector<RefPtr<PerformanceEntry>>> Performance::getEntriesByName(const String& name, const String& entryType) const
 {
     Vector<RefPtr<PerformanceEntry>> entries;
 
-    // if (m_navigationTiming && (entryType.isNull() || entryType == "navigation"_s) && name == m_navigationTiming->name())
-    //     entries.append(m_navigationTiming);
-
     if (entryType.isNull() || entryType == "resource"_s) {
         for (auto& resource : m_resourceTimingBuffer) {
-            if (resource->name() == name)
-                entries.append(resource);
+            if (resource->name() == name && !entries.tryAppend(resource))
+                return Bun::Bindgen::nativeAllocationFailure();
         }
     }
 
-    // if (m_firstContentfulPaint && (entryType.isNull() || entryType == "paint"_s) && name == "first-contentful-paint"_s)
-    //     entries.append(m_firstContentfulPaint);
-
     if (m_userTiming) {
-        if (entryType.isNull() || entryType == "mark"_s)
-            entries.appendVector(m_userTiming->getMarks(name));
-        if (entryType.isNull() || entryType == "measure"_s)
-            entries.appendVector(m_userTiming->getMeasures(name));
+        if ((entryType.isNull() || entryType == "mark"_s) && !m_userTiming->tryAppendMarks(entries, name))
+            return Bun::Bindgen::nativeAllocationFailure();
+        if ((entryType.isNull() || entryType == "measure"_s) && !m_userTiming->tryAppendMeasures(entries, name))
+            return Bun::Bindgen::nativeAllocationFailure();
     }
 
     std::sort(entries.begin(), entries.end(), PerformanceEntry::startTimeCompareLessThan);
     return entries;
 }
 
-void Performance::appendBufferedEntriesByType(const String& entryType, Vector<RefPtr<PerformanceEntry>>& entries, PerformanceObserver& observer) const
+bool Performance::tryAppendBufferedEntriesByType(const String& entryType, Vector<RefPtr<PerformanceEntry>>& entries) const
 {
-    // if (m_navigationTiming
-    //     && entryType == "navigation"_s
-    //     && !observer.hasNavigationTiming()) {
-    //     entries.append(m_navigationTiming);
-    //     observer.addedNavigationTiming();
-    // }
-
-    if (entryType == "resource"_s)
-        entries.appendVector(m_resourceTimingBuffer);
-
-    // if (entryType == "paint"_s && m_firstContentfulPaint)
-    //     entries.append(m_firstContentfulPaint);
+    if ((entryType.isNull() || entryType == "resource"_s) && !entries.tryAppend(m_resourceTimingBuffer.span()))
+        return false;
 
     if (m_userTiming) {
-        if (entryType.isNull() || entryType == "mark"_s)
-            entries.appendVector(m_userTiming->getMarks());
-        if (entryType.isNull() || entryType == "measure"_s)
-            entries.appendVector(m_userTiming->getMeasures());
+        if ((entryType.isNull() || entryType == "mark"_s) && !m_userTiming->tryAppendMarks(entries))
+            return false;
+        if ((entryType.isNull() || entryType == "measure"_s) && !m_userTiming->tryAppendMeasures(entries))
+            return false;
     }
+    return true;
 }
 
 void Performance::clearResourceTimings()
@@ -284,34 +283,40 @@ void Performance::setResourceTimingBufferSize(unsigned size)
 //     queueEntry(*m_navigationTiming);
 // }
 
-void Performance::addResourceTiming(ResourceTiming&& resourceTiming)
+Bun::Bindgen::NativeAllocationResult<void> Performance::addResourceTiming(ResourceTiming&& resourceTiming)
 {
     ASSERT(scriptExecutionContext());
 
-    auto entry = PerformanceResourceTiming::create(m_timeOrigin, WTF::move(resourceTiming));
+    auto entry = PerformanceResourceTiming::tryCreate(m_monotonicTimeOrigin, WTF::move(resourceTiming));
+    if (!entry || !prepareObserverEntry(*entry))
+        return Bun::Bindgen::nativeAllocationFailure();
 
     if (m_waitingForBackupBufferToBeProcessed) {
-        m_backupResourceTimingBuffer.append(WTF::move(entry));
-        return;
+        if (!m_backupResourceTimingBuffer.tryAppend(WTF::move(entry)))
+            return Bun::Bindgen::nativeAllocationFailure();
+        return {};
     }
 
     if (m_resourceTimingBufferFullFlag) {
         // We fired resourcetimingbufferfull event but the author script didn't clear the buffer.
         // Notify performance observers but don't add it to the buffer.
-        queueEntry(entry.get());
-        return;
+        queueEntry(*entry);
+        return {};
     }
 
     if (isResourceTimingBufferFull()) {
         // ASSERT(!m_resourceTimingBufferFullTimer.isActive());
-        m_backupResourceTimingBuffer.append(WTF::move(entry));
+        if (!m_backupResourceTimingBuffer.tryAppend(WTF::move(entry)))
+            return Bun::Bindgen::nativeAllocationFailure();
         m_waitingForBackupBufferToBeProcessed = true;
         // m_resourceTimingBufferFullTimer.startOneShot(0_s);
-        return;
+        return {};
     }
 
-    queueEntry(entry.get());
-    m_resourceTimingBuffer.append(WTF::move(entry));
+    if (!m_resourceTimingBuffer.tryAppend(entry))
+        return Bun::Bindgen::nativeAllocationFailure();
+    queueEntry(*entry);
+    return {};
 }
 
 bool Performance::isResourceTimingBufferFull() const
@@ -368,13 +373,20 @@ bool Performance::isResourceTimingBufferFull() const
 
 ExceptionOr<Ref<PerformanceMark>> Performance::mark(JSC::JSGlobalObject& globalObject, const String& markName, std::optional<PerformanceMarkOptions>&& markOptions)
 {
-    if (!m_userTiming)
-        m_userTiming = makeUnique<PerformanceUserTiming>(*this);
+    if (!m_userTiming) {
+        m_userTiming = PerformanceUserTiming::tryCreate(*this);
+        if (!m_userTiming)
+            return Exception { OutOfMemoryError };
+    }
 
-    auto mark = m_userTiming->mark(globalObject, markName, WTF::move(markOptions));
+    auto mark = m_userTiming->createMark(globalObject, markName, WTF::move(markOptions));
     if (mark.hasException())
         return mark.releaseException();
 
+    if (!prepareObserverEntry(mark.returnValue().get()))
+        return Exception { OutOfMemoryError };
+    if (!m_userTiming->recordEntry(mark.returnValue().get()))
+        return Exception { OutOfMemoryError };
     queueEntry(mark.returnValue().get());
     return mark.releaseReturnValue();
 }
@@ -382,19 +394,26 @@ ExceptionOr<Ref<PerformanceMark>> Performance::mark(JSC::JSGlobalObject& globalO
 void Performance::clearMarks(const String& markName)
 {
     if (!m_userTiming)
-        m_userTiming = makeUnique<PerformanceUserTiming>(*this);
+        return;
     m_userTiming->clearMarks(markName);
 }
 
 ExceptionOr<Ref<PerformanceMeasure>> Performance::measure(JSC::JSGlobalObject& globalObject, const String& measureName, std::optional<StartOrMeasureOptions>&& startOrMeasureOptions, const String& endMark)
 {
-    if (!m_userTiming)
-        m_userTiming = makeUnique<PerformanceUserTiming>(*this);
+    if (!m_userTiming) {
+        m_userTiming = PerformanceUserTiming::tryCreate(*this);
+        if (!m_userTiming)
+            return Exception { OutOfMemoryError };
+    }
 
-    auto measure = m_userTiming->measure(globalObject, measureName, WTF::move(startOrMeasureOptions), endMark);
+    auto measure = m_userTiming->createMeasure(globalObject, measureName, WTF::move(startOrMeasureOptions), endMark);
     if (measure.hasException())
         return measure.releaseException();
 
+    if (!prepareObserverEntry(measure.returnValue().get()))
+        return Exception { OutOfMemoryError };
+    if (!m_userTiming->recordEntry(measure.returnValue().get()))
+        return Exception { OutOfMemoryError };
     queueEntry(measure.returnValue().get());
     return measure.releaseReturnValue();
 }
@@ -402,46 +421,71 @@ ExceptionOr<Ref<PerformanceMeasure>> Performance::measure(JSC::JSGlobalObject& g
 void Performance::clearMeasures(const String& measureName)
 {
     if (!m_userTiming)
-        m_userTiming = makeUnique<PerformanceUserTiming>(*this);
+        return;
     m_userTiming->clearMeasures(measureName);
 }
 
 void Performance::removeAllObservers()
 {
-    for (auto& observer : m_observers)
+    Ref protectedThis { *this };
+    closeObserverDelivery();
+    while (m_firstObserver) {
+        Ref observer { *m_firstObserver };
+        unregisterPerformanceObserver(observer);
         observer->disassociate();
-    m_observers.clear();
+    }
 }
 
 void Performance::registerPerformanceObserver(PerformanceObserver& observer)
 {
-    m_observers.add(&observer);
-
-    // if (m_navigationTiming
-    //     && observer.typeFilter().contains(PerformanceEntry::Type::Navigation)
-    //     && !observer.hasNavigationTiming()) {
-    //     observer.queueEntry(*m_navigationTiming);
-    //     observer.addedNavigationTiming();
-    // }
+    ASSERT(observer.m_performance.get() == this);
+    ASSERT(!observer.m_registered);
+    ASSERT(!observer.m_previousObserver && !observer.m_nextObserver);
+    observer.ref();
+    observer.m_registered = true;
+    observer.m_previousObserver = m_lastObserver;
+    if (m_lastObserver)
+        m_lastObserver->m_nextObserver = &observer;
+    else
+        m_firstObserver = &observer;
+    m_lastObserver = &observer;
 }
 
 void Performance::unregisterPerformanceObserver(PerformanceObserver& observer)
 {
-    m_observers.remove(&observer);
+    if (!observer.m_registered)
+        return;
+    ASSERT(observer.m_performance.get() == this);
+
+    if (observer.m_previousObserver)
+        observer.m_previousObserver->m_nextObserver = observer.m_nextObserver;
+    else
+        m_firstObserver = observer.m_nextObserver;
+    if (observer.m_nextObserver)
+        observer.m_nextObserver->m_previousObserver = observer.m_previousObserver;
+    else
+        m_lastObserver = observer.m_previousObserver;
+    observer.m_previousObserver = nullptr;
+    observer.m_nextObserver = nullptr;
+    observer.m_registered = false;
+    observer.deref();
 }
 
-// void Performance::scheduleNavigationObservationTaskIfNeeded()
-// {
-//     if (m_navigationTiming)
-//         scheduleTaskIfNeeded();
-// }
+bool Performance::prepareObserverEntry(const PerformanceEntry& entry)
+{
+    for (auto* observer = m_firstObserver; observer; observer = observer->m_nextObserver) {
+        if (observer->typeFilter().contains(entry.performanceEntryType()) && !observer->prepareEntry())
+            return false;
+    }
+    return true;
+}
 
 void Performance::queueEntry(PerformanceEntry& entry)
 {
     bool shouldScheduleTask = false;
-    for (auto& observer : m_observers) {
+    for (auto* observer = m_firstObserver; observer; observer = observer->m_nextObserver) {
         if (observer->typeFilter().contains(entry.performanceEntryType())) {
-            observer->queueEntry(entry);
+            observer->appendPreparedEntry(entry);
             shouldScheduleTask = true;
         }
     }
@@ -452,21 +496,73 @@ void Performance::queueEntry(PerformanceEntry& entry)
     scheduleTaskIfNeeded();
 }
 
-void Performance::scheduleTaskIfNeeded()
+ExceptionOr<void> Performance::prepareObserverDelivery()
 {
-    if (m_hasScheduledTimingBufferDeliveryTask)
-        return;
+    if (m_observerDeliveryTarget && !m_observerDeliveryTarget->isStopped())
+        return {};
+    closeObserverDelivery();
 
     auto* context = scriptExecutionContext();
     if (!context)
-        return;
+        return Exception { InvalidStateError };
 
-    m_hasScheduledTimingBufferDeliveryTask = true;
-    context->postTask([protectedThis = Ref { *this }, this](ScriptExecutionContext& context) {
-        m_hasScheduledTimingBufferDeliveryTask = false;
-        for (auto& observer : copyToVector(m_observers))
-            observer->deliver();
+    auto target = ObserverDeliveryTarget::tryCreate();
+    if (!target)
+        return Exception { OutOfMemoryError };
+    auto* globalObject = context->globalObject();
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto signal = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_createNativeEventSignal(globalObject, target.get());
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (!signal)
+        return Exception { InvalidStateError };
+    m_observerDeliveryTarget = WTF::move(target);
+    m_observerDeliverySignal = *signal;
+    return {};
+}
+
+void Performance::closeObserverDelivery()
+{
+    auto target = std::exchange(m_observerDeliveryTarget, nullptr);
+    if (auto* signal = std::exchange(m_observerDeliverySignal, nullptr))
+        Bun::Bindgen::Engine::releaseNativeEventLoopSignalOwner(signal);
+}
+
+void Performance::scheduleTaskIfNeeded()
+{
+    if (!scriptExecutionContext())
+        return;
+    ASSERT(m_observerDeliveryTarget && m_observerDeliverySignal);
+    if (m_observerDeliveryTarget->isPending() || m_observerDeliveryTarget->isStopped())
+        return;
+    m_observerDeliveryTarget->prepare(*this);
+    if (!Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_notifyNativeEventSignal(m_observerDeliverySignal))
+        m_observerDeliveryTarget->stop();
+}
+
+Bun::Bindgen::NativeAllocationResult<void> Performance::deliverObservers()
+{
+    Ref protectedThis { *this };
+    Vector<RefPtr<PerformanceObserver>> observers;
+    auto releaseDeliveries = makeScopeExit([&] {
+        for (auto& observer : observers)
+            observer->releaseDelivery();
     });
+    for (auto* observer = m_firstObserver; observer; observer = observer->m_nextObserver) {
+        if (!observer->tryRetainDelivery())
+            return Bun::Bindgen::nativeAllocationFailure();
+        if (!observers.tryAppend(observer)) {
+            observer->releaseDelivery();
+            return Bun::Bindgen::nativeAllocationFailure();
+        }
+    }
+    bool allocationFailed = false;
+    for (auto& observer : observers) {
+        if (!observer->deliver())
+            allocationFailed = true;
+    }
+    if (allocationFailed)
+        return Bun::Bindgen::nativeAllocationFailure();
+    return {};
 }
 
 } // namespace WebCore

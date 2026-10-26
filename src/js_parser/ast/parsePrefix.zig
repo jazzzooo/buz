@@ -28,7 +28,7 @@ pub fn ParsePrefix(
                 else => {},
             }
 
-            p.log.addRangeError(p.source, superRange, "Unexpected \"super\"") catch unreachable;
+            try p.log.addRangeError(p.source, superRange, "Unexpected \"super\"");
             return p.newExpr(E.Super{}, loc);
         }
         fn t_open_paren(noalias p: *P, level: Level) anyerror!Expr {
@@ -40,12 +40,12 @@ pub fn ParsePrefix(
                 // Allow "in" inside parentheses
                 const oldAllowIn = p.allow_in;
                 p.allow_in = true;
+                defer p.allow_in = oldAllowIn;
 
                 var value = try p.parseExpr(Level.lowest);
                 p.markExprAsParenthesized(&value);
                 try p.lexer.expect(.t_close_paren);
 
-                p.allow_in = oldAllowIn;
                 return value;
             }
 
@@ -69,7 +69,7 @@ pub fn ParsePrefix(
         fn t_this(noalias p: *P) anyerror!Expr {
             const loc = p.lexer.loc();
             if (p.fn_or_arrow_data_parse.is_this_disallowed) {
-                p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"this\" here") catch unreachable;
+                try p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"this\" here");
             }
             try p.lexer.next();
             return Expr{ .data = Prefill.Data.This, .loc = loc };
@@ -110,11 +110,11 @@ pub fn ParsePrefix(
                 .is_await => {
                     switch (p.fn_or_arrow_data_parse.allow_await) {
                         .forbid_all => {
-                            p.log.addRangeError(p.source, name_range, "The keyword \"await\" cannot be used here") catch unreachable;
+                            try p.log.addRangeError(p.source, name_range, "The keyword \"await\" cannot be used here");
                         },
                         .allow_expr => {
                             if (AsyncPrefixExpression.find(raw) != .is_await) {
-                                p.log.addRangeError(p.source, name_range, "The keyword \"await\" cannot be escaped") catch unreachable;
+                                try p.log.addRangeError(p.source, name_range, "The keyword \"await\" cannot be escaped");
                             } else {
                                 if (p.fn_or_arrow_data_parse.is_top_level) {
                                     p.top_level_await_keyword = name_range;
@@ -144,14 +144,14 @@ pub fn ParsePrefix(
                 .is_yield => {
                     switch (p.fn_or_arrow_data_parse.allow_yield) {
                         .forbid_all => {
-                            p.log.addRangeError(p.source, name_range, "The keyword \"yield\" cannot be used here") catch unreachable;
+                            try p.log.addRangeError(p.source, name_range, "The keyword \"yield\" cannot be used here");
                         },
                         .allow_expr => {
                             if (AsyncPrefixExpression.find(raw) != .is_yield) {
-                                p.log.addRangeError(p.source, name_range, "The keyword \"yield\" cannot be escaped") catch unreachable;
+                                try p.log.addRangeError(p.source, name_range, "The keyword \"yield\" cannot be escaped");
                             } else {
                                 if (level.gt(.assign)) {
-                                    p.log.addRangeError(p.source, name_range, "Cannot use a \"yield\" here without parentheses") catch unreachable;
+                                    try p.log.addRangeError(p.source, name_range, "Cannot use a \"yield\" here without parentheses");
                                 }
 
                                 if (p.fn_or_arrow_data_parse.track_arrow_arg_errors) {
@@ -169,7 +169,7 @@ pub fn ParsePrefix(
                             if (!p.lexer.has_newline_before) {
                                 switch (p.lexer.token) {
                                     .t_null, .t_identifier, .t_false, .t_true, .t_numeric_literal, .t_big_integer_literal, .t_string_literal => {
-                                        p.log.addRangeError(p.source, name_range, "Cannot use \"yield\" outside a generator function") catch unreachable;
+                                        try p.log.addRangeError(p.source, name_range, "Cannot use \"yield\" outside a generator function");
                                     },
                                     else => {},
                                 }
@@ -182,13 +182,14 @@ pub fn ParsePrefix(
 
             // Handle the start of an arrow expression
             if (p.lexer.token == .t_equals_greater_than and level.lte(.assign)) {
-                const ref = p.storeNameInRef(name) catch unreachable;
-                var args = p.allocator.alloc(Arg, 1) catch unreachable;
+                const ref = try p.storeNameInRef(name);
+                const args = try p.allocator.alloc(Arg, 1);
+                errdefer p.allocator.free(args);
                 args[0] = Arg{ .binding = p.b(B.Identifier{
                     .ref = ref,
                 }, loc) };
 
-                _ = p.pushScopeForParsePass(.function_args, loc) catch unreachable;
+                _ = try p.pushScopeForParsePass(.function_args, loc);
                 defer p.popScope();
 
                 var fn_or_arrow_data = FnOrArrowDataParse{
@@ -197,7 +198,7 @@ pub fn ParsePrefix(
                 return p.newExpr(try p.parseArrowBody(args, &fn_or_arrow_data), loc);
             }
 
-            const ref = p.storeNameInRef(name) catch unreachable;
+            const ref = try p.storeNameInRef(name);
 
             return Expr.initIdentifier(ref, loc);
         }
@@ -232,12 +233,10 @@ pub fn ParsePrefix(
         fn t_slash(noalias p: *P) anyerror!Expr {
             const loc = p.lexer.loc();
             try p.lexer.scanRegExp();
-            // always set regex_flags_start to null to make sure we don't accidentally use the wrong value later
-            defer p.lexer.regex_flags_start = null;
             const value = p.lexer.raw();
             try p.lexer.next();
 
-            return p.newExpr(E.RegExp{ .value = value, .flags_offset = p.lexer.regex_flags_start }, loc);
+            return p.newExpr(E.RegExp{ .value = value }, loc);
         }
         fn t_void(noalias p: *P) anyerror!Expr {
             const loc = p.lexer.loc();
@@ -286,7 +285,7 @@ pub fn ParsePrefix(
                     const private = value.data.e_index.index.data.e_private_identifier;
                     const name = p.loadNameFromRef(private.ref);
                     const range = logger.Range{ .loc = value.loc, .len = @as(i32, @intCast(name.len)) };
-                    p.log.addRangeErrorFmt(p.source, range, p.allocator, "Deleting the private name \"{s}\" is forbidden", .{name}) catch unreachable;
+                    try p.log.addRangeErrorFmt(p.source, range, p.allocator, "Deleting the private name \"{s}\" is forbidden", .{name});
                 }
             }
 
@@ -358,44 +357,9 @@ pub fn ParsePrefix(
             return try p.parseFnExpr(loc, false, logger.Range.None);
         }
         fn t_class(noalias p: *P) anyerror!Expr {
-            const loc = p.lexer.loc();
-            const classKeyword = p.lexer.range();
-            // markSyntaxFEatuer class
-            try p.lexer.next();
-            var name: ?js_ast.LocRef = null;
-
-            _ = p.pushScopeForParsePass(.class_name, loc) catch unreachable;
-
-            // Parse an optional class name
-            if (p.lexer.token == .t_identifier) {
-                const name_text = p.lexer.identifier;
-                if (!is_typescript_enabled or !strings.eqlComptime(name_text, "implements")) {
-                    if (p.fn_or_arrow_data_parse.allow_await != .allow_ident and strings.eqlComptime(name_text, "await")) {
-                        p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"await\" as an identifier here") catch unreachable;
-                    }
-
-                    name = js_ast.LocRef{
-                        .loc = p.lexer.loc(),
-                        .ref = p.newSymbol(
-                            .other,
-                            name_text,
-                        ) catch unreachable,
-                    };
-                    try p.lexer.next();
-                }
-            }
-
-            // Even anonymous classes can have TypeScript type parameters
-            if (is_typescript_enabled) {
-                _ = try p.skipTypeScriptTypeParameters(.{ .allow_in_out_variance_annotations = true, .allow_const_modifier = true });
-            }
-
-            const class = try p.parseClass(classKeyword, name, ParseClassOptions{
+            return parseClassExpression(p, .{
                 .allow_ts_decorators = is_typescript_enabled or p.options.features.standard_decorators,
             });
-            p.popScope();
-
-            return p.newExpr(class, loc);
         }
         fn t_at(noalias p: *P) anyerror!Expr {
             // Parse decorators before a class expression: @dec class { ... }
@@ -407,27 +371,34 @@ pub fn ParsePrefix(
                 return error.SyntaxError;
             }
 
+            return parseClassExpression(p, .{
+                .ts_decorators = ts_decorators,
+                .allow_ts_decorators = true,
+            });
+        }
+
+        fn parseClassExpression(p: *P, opts: ParseClassOptions) anyerror!Expr {
             const loc = p.lexer.loc();
             const classKeyword = p.lexer.range();
             try p.lexer.next();
             var name: ?js_ast.LocRef = null;
 
-            _ = p.pushScopeForParsePass(.class_name, loc) catch unreachable;
+            _ = try p.pushScopeForParsePass(.class_name, loc);
 
             // Parse an optional class name
             if (p.lexer.token == .t_identifier) {
                 const name_text = p.lexer.identifier;
                 if (!is_typescript_enabled or !strings.eqlComptime(name_text, "implements")) {
                     if (p.fn_or_arrow_data_parse.allow_await != .allow_ident and strings.eqlComptime(name_text, "await")) {
-                        p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"await\" as an identifier here") catch unreachable;
+                        try p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"await\" as an identifier here");
                     }
 
                     name = js_ast.LocRef{
                         .loc = p.lexer.loc(),
-                        .ref = p.newSymbol(
+                        .ref = try p.newSymbol(
                             .other,
                             name_text,
-                        ) catch unreachable,
+                        ),
                     };
                     try p.lexer.next();
                 }
@@ -438,10 +409,7 @@ pub fn ParsePrefix(
                 _ = try p.skipTypeScriptTypeParameters(.{ .allow_in_out_variance_annotations = true, .allow_const_modifier = true });
             }
 
-            const class = try p.parseClass(classKeyword, name, ParseClassOptions{
-                .ts_decorators = ts_decorators,
-                .allow_ts_decorators = true,
-            });
+            const class = try p.parseClass(classKeyword, name, opts);
             p.popScope();
 
             return p.newExpr(class, loc);
@@ -476,7 +444,7 @@ pub fn ParsePrefix(
             if (comptime is_typescript_enabled) {
                 // Skip over TypeScript type arguments here if there are any
                 if (p.lexer.token == .t_less_than) {
-                    _ = p.trySkipTypeScriptTypeArgumentsWithBacktracking();
+                    _ = try p.trySkipTypeScriptTypeArgumentsWithBacktracking();
                 }
             }
 
@@ -496,17 +464,19 @@ pub fn ParsePrefix(
             try p.lexer.next();
             var is_single_line = !p.lexer.has_newline_before;
             var items = ListManaged(Expr).init(p.allocator);
+            errdefer items.deinit();
             var self_errors = DeferredErrors{};
             var comma_after_spread = logger.Loc{};
 
             // Allow "in" inside arrays
             const old_allow_in = p.allow_in;
             p.allow_in = true;
+            defer p.allow_in = old_allow_in;
 
             while (p.lexer.token != .t_close_bracket) {
                 switch (p.lexer.token) {
                     .t_comma => {
-                        items.append(Expr{ .data = Prefill.Data.EMissing, .loc = p.lexer.loc() }) catch unreachable;
+                        try items.append(Expr{ .data = Prefill.Data.EMissing, .loc = p.lexer.loc() });
                     },
                     .t_dot_dot_dot => {
                         if (errors != null)
@@ -554,14 +524,13 @@ pub fn ParsePrefix(
 
             const close_bracket_loc = p.lexer.loc();
             try p.lexer.expect(.t_close_bracket);
-            p.allow_in = old_allow_in;
 
             // Is this a binding pattern?
             if (p.willNeedBindingPattern()) {
                 // noop
             } else if (errors == null) {
                 // Is this an expression?
-                p.logExprErrors(&self_errors);
+                try p.logExprErrors(&self_errors);
             } else {
                 // In this case, we can't distinguish between the two yet
                 self_errors.mergeInto(errors.?);
@@ -578,12 +547,14 @@ pub fn ParsePrefix(
             try p.lexer.next();
             var is_single_line = !p.lexer.has_newline_before;
             var properties = ListManaged(G.Property).init(p.allocator);
+            errdefer properties.deinit();
             var self_errors = DeferredErrors{};
             var comma_after_spread: logger.Loc = logger.Loc{};
 
             // Allow "in" inside object literals
             const old_allow_in = p.allow_in;
             p.allow_in = true;
+            defer p.allow_in = old_allow_in;
 
             while (p.lexer.token != .t_close_brace) {
                 if (p.lexer.token == .t_dot_dot_dot) {
@@ -613,7 +584,7 @@ pub fn ParsePrefix(
                         if (comptime Environment.allow_assert) {
                             assert(prop.key != null or prop.value != null);
                         }
-                        properties.append(prop) catch unreachable;
+                        try properties.append(prop);
                     }
                 }
 
@@ -638,13 +609,12 @@ pub fn ParsePrefix(
 
             const close_brace_loc = p.lexer.loc();
             try p.lexer.expect(.t_close_brace);
-            p.allow_in = old_allow_in;
 
             if (p.willNeedBindingPattern()) {
                 // Is this a binding pattern?
             } else if (errors == null) {
                 // Is this an expression?
-                p.logExprErrors(&self_errors);
+                try p.logExprErrors(&self_errors);
             } else {
                 // In this case, we can't distinguish between the two yet
                 self_errors.mergeInto(errors.?);
@@ -722,7 +692,7 @@ pub fn ParsePrefix(
 
                 // "<T>(x)"
                 // "<T>(x) => {}"
-                switch (p.trySkipTypeScriptTypeParametersThenOpenParenWithBacktracking()) {
+                switch (try p.trySkipTypeScriptTypeParametersThenOpenParenWithBacktracking()) {
                     .did_not_skip_anything => {},
                     else => |result| {
                         try p.lexer.expect(.t_open_paren);

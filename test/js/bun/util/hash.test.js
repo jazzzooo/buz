@@ -76,7 +76,7 @@ it(`Bun.hash.rapidhash()`, () => {
   expect(Bun.hash.rapidhash(new TextEncoder().encode("hello world"))).toBe(0x58a89bdcee89c08cn);
 });
 // Bun.hash.xxHash3 is backed by a runtime-dispatched SIMD kernel
-// (src/jsc/bindings/xxhash3.cpp). The `len <= 16` case above only exercises
+// (src/highway_sys/Hash.cpp). The `len <= 16` case above only exercises
 // the scalar short-key branch; these cover every length branch (16 / 128 / 240
 // cutoffs, 64-byte stripes, multi-block long inputs) and the seeded
 // custom-secret path. Expected values come from the xxHash reference

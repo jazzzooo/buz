@@ -29,10 +29,6 @@ pub const CommandTag = union(enum) {
 
     other: []const u8,
 
-    pub const toJSTag = @import("../../sql_jsc/postgres/command_tag_jsc.zig").toJSTag;
-
-    pub const toJSNumber = @import("../../sql_jsc/postgres/command_tag_jsc.zig").toJSNumber;
-
     const KnownCommand = enum {
         INSERT,
         DELETE,

@@ -1,6 +1,5 @@
 pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
-const Maybe = css.Maybe;
 const PrintErr = css.PrintErr;
 const Url = css.css_values.url.Url;
 const Size2D = css.css_values.size.Size2D;
@@ -221,7 +220,7 @@ pub const UnicodeRange = struct {
         }
     }
 
-    fn parseConcatenated(_text: []const u8) css.Maybe(UnicodeRange, void) {
+    fn parseConcatenated(_text: []const u8) css.Outcome(UnicodeRange, void) {
         var text = if (_text.len > 0 and _text[0] == '+') _text[1..] else {
             return .{ .err = {} };
         };
@@ -643,7 +642,7 @@ pub const FontFaceDeclarationParser = struct {
             return .{ .err = input.newError(css.BasicParseErrorKind{ .at_rule_body_invalid = {} }) };
         }
 
-        pub fn ruleWithoutBlock(_: *This, _: Prelude, _: *const css.ParserState) css.Maybe(AtRule, void) {
+        pub fn ruleWithoutBlock(_: *This, _: Prelude, _: *const css.ParserState) css.Outcome(AtRule, void) {
             return .{ .err = {} };
         }
     };

@@ -73,9 +73,7 @@ pub fn SSLWrapper(comptime T: type) type {
                 // must always run verification so `verify_error` is real for
                 // the JS-side `rejectUnauthorized` decision; load the shared
                 // system roots per-SSL so a server using the same CTX never
-                // sees CertificateRequest. (Pre-redesign this happened by
-                // accident: net.ts forced `requestCert: true` after `[buntls]`
-                // and `SSLConfig.fromJS` rebuilt the CTX with roots from that.)
+                // sees CertificateRequest.
                 if (BoringSSL.SSL_CTX_get_verify_mode(ctx) == BoringSSL.SSL_VERIFY_NONE) {
                     BoringSSL.SSL_set_verify(ssl, BoringSSL.SSL_VERIFY_PEER, alwaysContinueVerify);
                     if (us_get_shared_default_ca_store()) |roots| {
@@ -105,12 +103,14 @@ pub fn SSLWrapper(comptime T: type) type {
             };
         }
 
-        pub fn init(ssl_options: jsc.API.ServerConfig.SSLConfig, is_client: bool, handlers: Handlers) !This {
+        pub fn init(ctx_opts: uws.SocketContext.BunSocketContextOptions, is_client: bool, handlers: Handlers) !This {
             bun.BoringSSL.load();
 
-            const ctx_opts: uws.SocketContext.BunSocketContextOptions = ssl_options.asUSockets();
-            var err: uws.create_bun_socket_error_t = .none;
-            const ssl_ctx = ctx_opts.createSSLContext(&err) orelse return error.InvalidOptions;
+            var err: uws.TLSContextFailure = .{};
+            const ssl_ctx = ctx_opts.createSSLContext(&err) orelse return switch (err.kind) {
+                .out_of_memory => error.OutOfMemory,
+                else => error.InvalidOptions,
+            };
             // initWithCTX adopts the SSL_CTX* (one ref). The passphrase was
             // already freed inside createSSLContext, so SSL_CTX_free is
             // sufficient on the error path.
@@ -537,6 +537,5 @@ fn alwaysContinueVerify(_: c_int, _: ?*BoringSSL.X509_STORE_CTX) callconv(.c) c_
 extern fn us_get_shared_default_ca_store() ?*BoringSSL.X509_STORE;
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 const uws = bun.uws;
 const BoringSSL = bun.BoringSSL.c;

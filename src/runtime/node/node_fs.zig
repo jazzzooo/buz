@@ -2,1229 +2,38 @@
 // for interacting with the filesystem from JavaScript.
 // The top-level functions assume the arguments are already validated
 pub const constants = @import("./node_fs_constant.zig");
-pub const Binding = @import("./node_fs_binding.zig").Binding;
-pub const Watcher = @import("./node_fs_watcher.zig").FSWatcher;
-pub const StatWatcher = @import("./node_fs_stat_watcher.zig").StatWatcher;
 
-pub const default_permission = if (Environment.isPosix)
-    Syscall.S.IRUSR |
-        Syscall.S.IWUSR |
-        Syscall.S.IRGRP |
-        Syscall.S.IWGRP |
-        Syscall.S.IROTH |
-        Syscall.S.IWOTH
-else
-    // Windows does not have permissions
-    0;
+pub const default_permission = NodeFSCore.default_permission;
 
 // All async FS functions are run in a thread pool, but some implementations may
 // decide to do something slightly different. For example, reading a file has
 // an extra stack buffer in the async case.
 pub const Flavor = enum { sync, async };
 
-pub const Async = struct {
-    pub const access = NewAsyncFSTask(Return.Access, Arguments.Access, NodeFS.access);
-    pub const appendFile = NewAsyncFSTask(Return.AppendFile, Arguments.AppendFile, NodeFS.appendFile);
-    pub const chmod = NewAsyncFSTask(Return.Chmod, Arguments.Chmod, NodeFS.chmod);
-    pub const chown = NewAsyncFSTask(Return.Chown, Arguments.Chown, NodeFS.chown);
-    pub const close = NewUVFSRequest(Return.Close, Arguments.Close, .close);
-    pub const copyFile = NewAsyncFSTask(Return.CopyFile, Arguments.CopyFile, NodeFS.copyFile);
-    pub const exists = NewAsyncFSTask(Return.Exists, Arguments.Exists, NodeFS.exists);
-    pub const fchmod = NewAsyncFSTask(Return.Fchmod, Arguments.FChmod, NodeFS.fchmod);
-    pub const fchown = NewAsyncFSTask(Return.Fchown, Arguments.Fchown, NodeFS.fchown);
-    pub const fdatasync = NewAsyncFSTask(Return.Fdatasync, Arguments.FdataSync, NodeFS.fdatasync);
-    pub const fstat = NewAsyncFSTask(Return.Fstat, Arguments.Fstat, NodeFS.fstat);
-    pub const fsync = NewAsyncFSTask(Return.Fsync, Arguments.Fsync, NodeFS.fsync);
-    pub const ftruncate = NewAsyncFSTask(Return.Ftruncate, Arguments.FTruncate, NodeFS.ftruncate);
-    pub const futimes = NewAsyncFSTask(Return.Futimes, Arguments.Futimes, NodeFS.futimes);
-    pub const lchmod = NewAsyncFSTask(Return.Lchmod, Arguments.LCHmod, NodeFS.lchmod);
-    pub const lchown = NewAsyncFSTask(Return.Lchown, Arguments.LChown, NodeFS.lchown);
-    pub const link = NewAsyncFSTask(Return.Link, Arguments.Link, NodeFS.link);
-    pub const lstat = NewAsyncFSTask(Return.Stat, Arguments.Stat, NodeFS.lstat);
-    pub const lutimes = NewAsyncFSTask(Return.Lutimes, Arguments.Lutimes, NodeFS.lutimes);
-    pub const mkdir = NewAsyncFSTask(Return.Mkdir, Arguments.Mkdir, NodeFS.mkdir);
-    pub const mkdtemp = NewAsyncFSTask(Return.Mkdtemp, Arguments.MkdirTemp, NodeFS.mkdtemp);
-    pub const open = NewUVFSRequest(Return.Open, Arguments.Open, .open);
-    pub const read = NewUVFSRequest(Return.Read, Arguments.Read, .read);
-    pub const readdir = NewAsyncFSTask(Return.Readdir, Arguments.Readdir, NodeFS.readdir);
-    pub const readFile = NewAsyncFSTask(Return.ReadFile, Arguments.ReadFile, NodeFS.readFile);
-    pub const readlink = NewAsyncFSTask(Return.Readlink, Arguments.Readlink, NodeFS.readlink);
-    pub const readv = NewUVFSRequest(Return.Readv, Arguments.Readv, .readv);
-    pub const realpath = NewAsyncFSTask(Return.Realpath, Arguments.Realpath, NodeFS.realpath);
-    pub const realpathNonNative = NewAsyncFSTask(Return.Realpath, Arguments.Realpath, NodeFS.realpathNonNative);
-    pub const rename = NewAsyncFSTask(Return.Rename, Arguments.Rename, NodeFS.rename);
-    pub const rm = NewAsyncFSTask(Return.Rm, Arguments.Rm, NodeFS.rm);
-    pub const rmdir = NewAsyncFSTask(Return.Rmdir, Arguments.RmDir, NodeFS.rmdir);
-    pub const stat = NewAsyncFSTask(Return.Stat, Arguments.Stat, NodeFS.stat);
-    pub const symlink = NewAsyncFSTask(Return.Symlink, Arguments.Symlink, NodeFS.symlink);
-    pub const truncate = NewAsyncFSTask(Return.Truncate, Arguments.Truncate, NodeFS.truncate);
-    pub const unlink = NewAsyncFSTask(Return.Unlink, Arguments.Unlink, NodeFS.unlink);
-    pub const utimes = NewAsyncFSTask(Return.Utimes, Arguments.Utimes, NodeFS.utimes);
-    pub const write = NewUVFSRequest(Return.Write, Arguments.Write, .write);
-    pub const writeFile = NewAsyncFSTask(Return.WriteFile, Arguments.WriteFile, NodeFS.writeFile);
-    pub const writev = NewUVFSRequest(Return.Writev, Arguments.Writev, .writev);
-    pub const statfs = NewUVFSRequest(Return.StatFS, Arguments.StatFS, .statfs);
-
-    comptime {
-        bun.assert(readFile.have_abort_signal);
-        bun.assert(writeFile.have_abort_signal);
-    }
-
-    pub const cp = AsyncCpTask;
-
-    pub const readdir_recursive = AsyncReaddirRecursiveTask;
-
-    /// Used internally. Not from JavaScript.
-    pub const AsyncMkdirp = struct {
-        completion_ctx: *anyopaque,
-        completion: *const fn (*anyopaque, bun.sys.Maybe(void)) void,
-
-        /// Memory is not owned by this struct
-        path: []const u8,
-
-        task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
-
-        pub const new = bun.TrivialNew(@This());
-
-        pub fn workPoolCallback(task: *jsc.BackgroundTask) void {
-            var this: *AsyncMkdirp = @fieldParentPtr("task", task);
-
-            var node_fs = NodeFS{};
-            const result = node_fs.mkdirRecursive(
-                Arguments.Mkdir{
-                    .path = PathLike{ .string = PathString.init(this.path) },
-                    .recursive = true,
-                },
-            );
-            switch (result) {
-                .err => |err| {
-                    this.completion(this.completion_ctx, .{ .err = err.withPath(bun.handleOom(bun.default_allocator.dupe(u8, err.path))) });
-                },
-                .result => {
-                    this.completion(this.completion_ctx, .success);
-                },
-            }
-        }
-
-        pub fn schedule(this: *AsyncMkdirp, group: *bun.BackgroundTaskGroup) void {
-            jsc.BackgroundWork.schedule(group, &this.task) catch {
-                this.completion(this.completion_ctx, .{ .err = bun.sys.Error.fromCode(.AGAIN, .mkdir).withPath(
-                    bun.handleOom(bun.default_allocator.dupe(u8, this.path)),
-                ) });
-            };
-        }
-    };
-
-    fn NewUVFSRequest(comptime ReturnType: type, comptime ArgumentType: type, comptime FunctionEnum: NodeFSFunctionEnum) type {
-        if (!Environment.isWindows) {
-            return NewAsyncFSTask(ReturnType, ArgumentType, @field(NodeFS, @tagName(FunctionEnum)));
-        }
-
-        switch (FunctionEnum) {
-            .open,
-            .close,
-            .read,
-            .write,
-            .readv,
-            .writev,
-            .statfs,
-            => {},
-            else => @compileError("UVFSRequest type not implemented"),
-        }
-
-        return struct {
-            promise: jsc.JSPromise.Strong,
-            args: ArgumentType,
-            globalObject: *jsc.JSGlobalObject,
-            req: uv.fs_t = std.mem.zeroes(uv.fs_t),
-            result: bun.sys.Maybe(ReturnType),
-            ref: bun.Async.KeepAlive = .{},
-            tracker: jsc.Debugger.AsyncTaskTracker,
-
-            pub const Task = @This();
-
-            pub const heap_label = "Async" ++ bun.meta.typeBaseName(@typeName(ArgumentType)) ++ "UvTask";
-
-            pub fn create(globalObject: *jsc.JSGlobalObject, this: *jsc.Node.fs.Binding, task_args: ArgumentType, vm: *jsc.VirtualMachine) jsc.JSValue {
-                var task = bun.new(Task, .{
-                    .promise = jsc.JSPromise.Strong.init(globalObject),
-                    .args = task_args,
-                    .result = undefined,
-                    .globalObject = globalObject,
-                    .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
-                });
-                task.ref.ref(vm);
-                task.args.toThreadSafe();
-
-                task.tracker.didSchedule(globalObject);
-
-                const log = bun.sys.syslog;
-                const loop = uv.Loop.get();
-                task.req.data = task;
-                switch (comptime FunctionEnum) {
-                    .open => {
-                        const args: Arguments.Open = task.args;
-                        const path = if (bun.strings.eqlComptime(args.path.slice(), "/dev/null")) "\\\\.\\NUL" else args.path.sliceZ(&this.node_fs.sync_error_buf);
-
-                        var flags: c_int = @backingInt(args.flags);
-                        flags = uv.O.fromBunO(flags);
-
-                        var mode: c_int = @intCast(args.mode);
-                        if (mode == 0) mode = 0o644;
-
-                        const rc = uv.uv_fs_open(loop, &task.req, path.ptr, flags, mode, &uv_callback);
-                        bun.debugAssert(rc == .zero);
-                        log("uv open({s}, {d}, {d}) = scheduled", .{ path, flags, mode });
-                    },
-                    .close => {
-                        const args: Arguments.Close = task.args;
-                        const fd = args.fd.uv();
-
-                        if (fd == 1 or fd == 2) {
-                            log("uv close({}) SKIPPED", .{fd});
-                            task.result = .success;
-                            task.globalObject.bunVM().eventLoop().enqueueTask(jsc.Task.init(task));
-                            return task.promise.value();
-                        }
-
-                        const rc = uv.uv_fs_close(loop, &task.req, fd, &uv_callback);
-                        bun.debugAssert(rc == .zero);
-                        log("uv close({d}) = scheduled", .{fd});
-                    },
-                    .read => {
-                        const args: Arguments.Read = task.args;
-                        const B = uv.uv_buf_t.init;
-                        const fd = args.fd.uv();
-
-                        var buf = args.buffer.slice();
-                        buf = buf[@min(buf.len, args.offset)..];
-                        buf = buf[0..@min(buf.len, args.length)];
-
-                        const rc = uv.uv_fs_read(loop, &task.req, fd, &.{B(buf)}, 1, args.position orelse -1, &uv_callback);
-                        bun.debugAssert(rc == .zero);
-                        log("uv read({d}) = scheduled", .{fd});
-                    },
-                    .write => {
-                        const args: Arguments.Write = task.args;
-                        const B = uv.uv_buf_t.init;
-                        const fd = args.fd.uv();
-
-                        var buf = args.buffer.slice();
-                        buf = buf[@min(buf.len, args.offset)..];
-                        buf = buf[0..@min(buf.len, args.length)];
-
-                        const rc = uv.uv_fs_write(loop, &task.req, fd, &.{B(buf)}, 1, args.position orelse -1, &uv_callback);
-                        bun.debugAssert(rc == .zero);
-                        log("uv write({d}) = scheduled", .{fd});
-                    },
-                    .readv => {
-                        const args: Arguments.Readv = task.args;
-                        const fd = args.fd.uv();
-                        const bufs = args.buffers.buffers.items;
-                        const pos: i64 = args.position orelse -1;
-
-                        var sum: u64 = 0;
-                        for (bufs) |b| sum += b.slice().len;
-
-                        const rc = uv.uv_fs_read(loop, &task.req, fd, bufs.ptr, @intCast(bufs.len), pos, &uv_callback);
-                        bun.debugAssert(rc == .zero);
-                        log("uv readv({d}, {*}, {d}, {d}, {d} total bytes) = scheduled", .{ fd, bufs.ptr, bufs.len, pos, sum });
-                    },
-                    .writev => {
-                        const args_: Arguments.Writev = task.args;
-                        const fd = args_.fd.uv();
-                        const bufs = args_.buffers.buffers.items;
-
-                        if (bufs.len == 0) {
-                            task.result = .success;
-                            task.globalObject.bunVM().eventLoop().enqueueTask(jsc.Task.init(task));
-                            return task.promise.value();
-                        }
-
-                        const pos: i64 = args_.position orelse -1;
-
-                        var sum: u64 = 0;
-                        for (bufs) |b| sum += b.slice().len;
-
-                        const rc = uv.uv_fs_write(loop, &task.req, fd, bufs.ptr, @intCast(bufs.len), pos, &uv_callback);
-                        bun.debugAssert(rc == .zero);
-                        log("uv writev({d}, {*}, {d}, {d}, {d} total bytes) = scheduled", .{ fd, bufs.ptr, bufs.len, pos, sum });
-                    },
-                    .statfs => {
-                        const args_: Arguments.StatFS = task.args;
-                        const path = args_.path.sliceZ(&this.node_fs.sync_error_buf);
-                        const rc = uv.uv_fs_statfs(loop, &task.req, path.ptr, &uv_callbackreq);
-                        bun.debugAssert(rc == .zero);
-                        log("uv statfs({s}) = ~~", .{path});
-                    },
-                    else => comptime unreachable,
-                }
-
-                return task.promise.value();
-            }
-
-            fn uv_callback(req: *uv.fs_t) callconv(.c) void {
-                defer uv.uv_fs_req_cleanup(req);
-                const this: *Task = @ptrCast(@alignCast(req.data.?));
-                var node_fs = NodeFS{};
-                this.result = @field(NodeFS, "uv_" ++ @tagName(FunctionEnum))(&node_fs, this.args, @backingInt(req.result));
-
-                if (this.result == .err) {
-                    this.result.err = this.result.err.clone(bun.default_allocator);
-                    std.mem.doNotOptimizeAway(&node_fs);
-                }
-
-                this.globalObject.bunVM().eventLoop().enqueueTask(jsc.Task.init(this));
-            }
-
-            fn uv_callbackreq(req: *uv.fs_t) callconv(.c) void {
-                defer uv.uv_fs_req_cleanup(req);
-                const this: *Task = @ptrCast(@alignCast(req.data.?));
-                var node_fs = NodeFS{};
-                this.result = @field(NodeFS, "uv_" ++ @tagName(FunctionEnum))(&node_fs, this.args, req, @backingInt(req.result));
-
-                if (this.result == .err) {
-                    this.result.err = this.result.err.clone(bun.default_allocator);
-                    std.mem.doNotOptimizeAway(&node_fs);
-                }
-
-                this.globalObject.bunVM().eventLoop().enqueueTask(jsc.Task.init(this));
-            }
-
-            pub fn runFromJSThread(this: *Task) bun.JSTerminated!void {
-                defer this.deinit();
-
-                const globalObject = this.globalObject;
-                const success = @as(bun.sys.Maybe(ReturnType).Tag, this.result) == .result;
-                var promise_value = this.promise.value();
-                var promise = this.promise.get();
-                const result = switch (this.result) {
-                    .err => |err| err.toJSWithAsyncStack(globalObject, promise) catch |e| return promise.reject(globalObject, globalObject.takeException(e)),
-                    .result => |*res| brk: {
-                        break :brk globalObject.toJS(res) catch |e| return promise.reject(globalObject, globalObject.takeException(e));
-                    },
-                };
-                promise_value.ensureStillAlive();
-
-                const tracker = this.tracker;
-                tracker.willDispatch(globalObject);
-                defer tracker.didDispatch(globalObject);
-
-                switch (success) {
-                    false => {
-                        try promise.reject(globalObject, result);
-                    },
-                    true => {
-                        try promise.resolve(globalObject, result);
-                    },
-                }
-            }
-
-            pub fn deinit(this: *Task) void {
-                if (this.result == .err) {
-                    this.result.err.deinit();
-                }
-
-                this.ref.unref(this.globalObject.bunVM());
-                if (@hasDecl(ArgumentType, "deinitAndUnprotect")) {
-                    this.args.deinitAndUnprotect();
-                } else {
-                    this.args.deinit();
-                }
-                this.promise.deinit();
-                bun.destroy(this);
-            }
-        };
-    }
-
-    fn NewAsyncFSTask(comptime ReturnType: type, comptime ArgumentType: type, comptime function: anytype) type {
-        return struct {
-            pub const Task = @This();
-
-            promise: jsc.JSPromise.Strong,
-            args: ArgumentType,
-            globalObject: *jsc.JSGlobalObject,
-            task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
-            result: bun.sys.Maybe(ReturnType),
-            ref: bun.Async.KeepAlive = .{},
-            tracker: jsc.Debugger.AsyncTaskTracker,
-
-            /// NewAsyncFSTask supports cancelable operations via AbortSignal,
-            /// so long as a "signal" field exists. The task wrapper will ensure
-            /// a promise rejection happens if signaled, but if `function` is
-            /// already called, no guarantees are made. It is recommended for
-            /// the functions to check .signal.aborted() for early returns.
-            pub const have_abort_signal = @hasField(ArgumentType, "signal");
-            pub const heap_label = "Async" ++ bun.meta.typeBaseName(@typeName(ArgumentType)) ++ "Task";
-
-            pub fn create(
-                globalObject: *jsc.JSGlobalObject,
-                _: *bun.api.node.fs.Binding,
-                args: ArgumentType,
-                vm: *jsc.VirtualMachine,
-            ) jsc.JSValue {
-                var task = bun.new(Task, .{
-                    .promise = jsc.JSPromise.Strong.init(globalObject),
-                    .args = args,
-                    .result = undefined,
-                    .globalObject = globalObject,
-                    .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
-                });
-                task.ref.ref(vm);
-                task.args.toThreadSafe();
-                task.tracker.didSchedule(globalObject);
-                jsc.BackgroundWork.schedule(&vm.background_tasks, &task.task) catch {
-                    task.result = .{ .err = bun.sys.Error.fromCode(.AGAIN, .TODO) };
-                    vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(task));
-                };
-                return task.promise.value();
-            }
-
-            fn workPoolCallback(task: *jsc.BackgroundTask) void {
-                var this: *Task = @alignCast(@fieldParentPtr("task", task));
-
-                var node_fs = NodeFS{ .vm = this.globalObject.bunVMConcurrently() };
-                this.result = function(&node_fs, this.args, .async);
-
-                if (this.result == .err) {
-                    this.result.err = this.result.err.clone(bun.default_allocator);
-                    std.mem.doNotOptimizeAway(&node_fs);
-                }
-
-                this.globalObject.bunVMConcurrently().eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(this));
-            }
-
-            pub fn runFromJSThread(this: *Task) bun.JSTerminated!void {
-                defer this.deinit();
-                const globalObject = this.globalObject;
-
-                const tracker = this.tracker;
-                tracker.willDispatch(globalObject);
-                defer tracker.didDispatch(globalObject);
-
-                const success = @as(bun.sys.Maybe(ReturnType).Tag, this.result) == .result;
-                var promise_value = this.promise.value();
-                var promise = this.promise.get();
-                const result = switch (this.result) {
-                    .err => |err| err.toJSWithAsyncStack(globalObject, promise) catch |e| return promise.reject(globalObject, globalObject.takeException(e)),
-                    .result => |*res| brk: {
-                        break :brk globalObject.toJS(res) catch |e| return promise.reject(globalObject, globalObject.takeException(e));
-                    },
-                };
-                promise_value.ensureStillAlive();
-
-                if (have_abort_signal) check_abort: {
-                    const signal = this.args.signal orelse break :check_abort;
-                    if (signal.reasonIfAborted(globalObject)) |reason| {
-                        try promise.reject(globalObject, reason.toJS(globalObject));
-                        return;
-                    }
-                }
-
-                switch (success) {
-                    false => {
-                        try promise.reject(globalObject, result);
-                    },
-                    true => {
-                        try promise.resolve(globalObject, result);
-                    },
-                }
-            }
-
-            pub fn deinit(this: *Task) void {
-                if (this.result == .err) {
-                    this.result.err.deinit();
-                }
-
-                this.ref.unref(this.globalObject.bunVM());
-                if (@hasDecl(ArgumentType, "deinitAndUnprotect")) {
-                    this.args.deinitAndUnprotect();
-                } else {
-                    this.args.deinit();
-                }
-                this.promise.deinit();
-                bun.destroy(this);
-            }
-        };
-    }
-};
-
-pub const AsyncCpTask = NewAsyncCpTask(false);
-pub const ShellAsyncCpTask = NewAsyncCpTask(true);
-
-pub fn NewAsyncCpTask(comptime is_shell: bool) type {
-    const ShellTask = bun.shell.Interpreter.Builtin.Cp.ShellCpTask;
-    const ShellTaskT = if (is_shell) *ShellTask else u0;
-    return struct {
-        promise: jsc.JSPromise.Strong = .{},
-        args: Arguments.Cp,
-        evtloop: jsc.EventLoopHandle,
-        task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
-        result: bun.sys.Maybe(Return.Cp),
-        /// If this task is called by the shell then we shouldn't call this as
-        /// it is not threadsafe and is unnecessary as the process will be kept
-        /// alive by the shell instance
-        ref: if (!is_shell) bun.Async.KeepAlive else struct {} = .{},
-        arena: bun.ArenaAllocator,
-        tracker: jsc.Debugger.AsyncTaskTracker,
-        has_result: std.atomic.Value(bool),
-        /// Number of in-flight references to `this`. Starts at 1 for the main
-        /// directory-scan task; incremented for each `SingleTask` spawned. Every
-        /// holder calls `onSubtaskDone` exactly once when finished (regardless of
-        /// success or error). `runFromJSThread` — which destroys `this` — is only
-        /// enqueued once the count reaches zero, so subtasks still running on the
-        /// thread pool never dereference a freed parent.
-        subtask_count: std.atomic.Value(usize),
-
-        shelltask: ShellTaskT,
-
-        const ThisAsyncCpTask = @This();
-
-        /// This task is used by `AsyncCpTask/fs.promises.cp` to copy a single file.
-        /// When clonefile cannot be used, this task is started once per file.
-        pub const SingleTask = struct {
-            cp_task: *ThisAsyncCpTask,
-            src: bun.OSPathSliceZ,
-            dest: bun.OSPathSliceZ,
-            task: jsc.BackgroundTask = .{ .callback = &SingleTask.workPoolCallback },
-
-            const ThisSingleTask = @This();
-
-            pub fn create(
-                parent: *ThisAsyncCpTask,
-                src: bun.OSPathSliceZ,
-                dest: bun.OSPathSliceZ,
-            ) void {
-                var task = bun.new(ThisSingleTask, .{
-                    .cp_task = parent,
-                    .src = src,
-                    .dest = dest,
-                });
-
-                jsc.BackgroundWork.scheduleContinuation(parent.evtloop.backgroundTasks(), &task.task);
-            }
-
-            fn workPoolCallback(task: *jsc.BackgroundTask) void {
-                var this: *ThisSingleTask = @fieldParentPtr("task", task);
-                const parent = this.cp_task;
-
-                // TODO: error strings on node_fs will die
-                var node_fs = NodeFS{};
-
-                const args = parent.args;
-                const result = node_fs._copySingleFileSync(
-                    this.src,
-                    this.dest,
-                    @fromBackingInt(@intCast((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
-                    null,
-                    parent.args,
-                );
-
-                brk: {
-                    switch (result) {
-                        .err => |err| {
-                            if (err.errno == @backingInt(E.EXIST) and args.flags.skipsExisting()) {
-                                break :brk;
-                            }
-                            parent.finishConcurrently(result);
-                        },
-                        .result => {
-                            parent.onCopy(this.src, this.dest);
-                        },
-                    }
-                }
-
-                this.deinit();
-                // Must be the very last use of `parent`: when the count reaches
-                // zero, runFromJSThread is enqueued and may destroy the parent.
-                parent.onSubtaskDone();
-            }
-
-            pub fn deinit(this: *ThisSingleTask) void {
-                // There is only one path buffer for both paths. 2 extra bytes are the nulls at the end of each
-                bun.default_allocator.free(this.src.ptr[0 .. this.src.len + this.dest.len + 2]);
-
-                bun.destroy(this);
-            }
-        };
-
-        pub fn onCopy(this: *ThisAsyncCpTask, src: anytype, dest: anytype) void {
-            if (comptime !is_shell) return;
-            const task = this.shelltask;
-            task.cpOnCopy(src, dest);
-        }
-
-        pub fn onFinish(this: *ThisAsyncCpTask, result: Maybe(void)) void {
-            if (comptime !is_shell) return;
-            const task = this.shelltask;
-            task.cpOnFinish(result);
-        }
-
-        pub fn create(
-            globalObject: *jsc.JSGlobalObject,
-            _: *jsc.Node.fs.Binding,
-            cp_args: Arguments.Cp,
-            vm: *jsc.VirtualMachine,
-            arena: bun.ArenaAllocator,
-        ) jsc.JSValue {
-            const task = createWithShellTask(globalObject, cp_args, vm, arena, 0, true);
-            return task.promise.value();
-        }
-
-        pub fn createWithShellTask(
-            globalObject: *jsc.JSGlobalObject,
-            cp_args: Arguments.Cp,
-            vm: *jsc.VirtualMachine,
-            arena: bun.ArenaAllocator,
-            shelltask: ShellTaskT,
-            comptime enable_promise: bool,
-        ) *ThisAsyncCpTask {
-            var task = bun.new(
-                ThisAsyncCpTask,
-                ThisAsyncCpTask{
-                    .promise = if (comptime enable_promise) jsc.JSPromise.Strong.init(globalObject) else .{},
-                    .args = cp_args,
-                    .has_result = .{ .raw = false },
-                    .result = undefined,
-                    .evtloop = .{ .js = vm.event_loop },
-                    .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
-                    .arena = arena,
-                    .subtask_count = .{ .raw = 1 },
-                    .shelltask = shelltask,
-                },
-            );
-            if (comptime !is_shell) task.ref.ref(vm);
-            task.args.src.toThreadSafe();
-            task.args.dest.toThreadSafe();
-            task.tracker.didSchedule(globalObject);
-
-            jsc.BackgroundWork.schedule(task.evtloop.backgroundTasks(), &task.task) catch {
-                task.finishConcurrently(.{ .err = bun.sys.Error.fromCode(.AGAIN, .copyfile) });
-                task.onSubtaskDone();
-            };
-
-            return task;
-        }
-
-        pub fn createMini(
-            cp_args: Arguments.Cp,
-            mini: *jsc.MiniEventLoop,
-            arena: bun.ArenaAllocator,
-            shelltask: *ShellTask,
-        ) *ThisAsyncCpTask {
-            var task = bun.new(
-                ThisAsyncCpTask,
-                ThisAsyncCpTask{
-                    .args = cp_args,
-                    .has_result = .{ .raw = false },
-                    .result = undefined,
-                    .evtloop = .{ .mini = mini },
-                    .tracker = jsc.Debugger.AsyncTaskTracker{ .id = 0 },
-                    .arena = arena,
-                    .subtask_count = .{ .raw = 1 },
-                    .shelltask = shelltask,
-                },
-            );
-            if (comptime !is_shell) task.ref.ref(mini);
-            task.args.src.toThreadSafe();
-            task.args.dest.toThreadSafe();
-
-            jsc.BackgroundWork.schedule(task.evtloop.backgroundTasks(), &task.task) catch {
-                task.finishConcurrently(.{ .err = bun.sys.Error.fromCode(.AGAIN, .copyfile) });
-                task.onSubtaskDone();
-            };
-
-            return task;
-        }
-
-        fn workPoolCallback(task: *jsc.BackgroundTask) void {
-            const this: *ThisAsyncCpTask = @alignCast(@fieldParentPtr("task", task));
-
-            var node_fs = NodeFS{};
-            ThisAsyncCpTask.cpAsync(&node_fs, this);
-        }
-
-        /// May be called from any thread (the subtasks).
-        /// Records the result (first caller wins). Does NOT schedule destruction —
-        /// `runFromJSThread` is only enqueued from `onSubtaskDone` once every
-        /// in-flight subtask has dropped its reference, so that subtasks still
-        /// running on the thread pool don't dereference a freed parent.
-        fn finishConcurrently(this: *ThisAsyncCpTask, result: Maybe(Return.Cp)) void {
-            if (this.has_result.cmpxchgStrong(false, true, .monotonic, .monotonic)) |_| {
-                return;
-            }
-
-            this.result = result;
-
-            if (this.result == .err) {
-                this.result.err = this.result.err.clone(bun.default_allocator);
-            }
-        }
-
-        /// Called exactly once by the main directory-scan task and once by each
-        /// `SingleTask` when it is done touching `this`. The last caller (count
-        /// drops to zero) enqueues `runFromJSThread`, which resolves the promise
-        /// and destroys `this`.
-        fn onSubtaskDone(this: *ThisAsyncCpTask) void {
-            const old_count = this.subtask_count.fetchSub(1, .acq_rel);
-            bun.assert(old_count > 0);
-            if (old_count != 1) return;
-
-            // All subtasks have finished. If none reported an error, the copy succeeded.
-            if (!this.has_result.load(.monotonic)) {
-                this.has_result.store(true, .monotonic);
-                this.result = .success;
-            }
-
-            if (this.evtloop == .js) {
-                this.evtloop.enqueueTaskConcurrent(.{ .js = jsc.ConcurrentTask.fromCallback(this, runFromJSThread) });
-            } else {
-                this.evtloop.enqueueTaskConcurrent(.{ .mini = jsc.AnyTaskWithExtraContext.fromCallbackAutoDeinit(this, "runFromJSThreadMini") });
-            }
-        }
-
-        pub fn runFromJSThreadMini(this: *ThisAsyncCpTask, _: *anyopaque) void {
-            this.runFromJSThread() catch {}; // TODO: properly propagate exception upwards
-        }
-
-        fn runFromJSThread(this: *ThisAsyncCpTask) bun.JSTerminated!void {
-            if (comptime is_shell) {
-                this.shelltask.cpOnFinish(this.result);
-                this.deinit();
-                return;
-            }
-            const globalObject = this.evtloop.globalObject() orelse {
-                @panic("No global object, this indicates a bug in Bun. Please file a GitHub issue.");
-            };
-            const success = @as(bun.sys.Maybe(Return.Cp).Tag, this.result) == .result;
-            var promise_value = this.promise.value();
-            var promise = this.promise.get();
-            const result = switch (this.result) {
-                .err => |err| err.toJSWithAsyncStack(globalObject, promise) catch |e| return promise.reject(globalObject, globalObject.takeException(e)),
-                .result => |*res| brk: {
-                    break :brk globalObject.toJS(res) catch |e| return promise.reject(globalObject, globalObject.takeException(e));
-                },
-            };
-            promise_value.ensureStillAlive();
-
-            const tracker = this.tracker;
-            tracker.willDispatch(globalObject);
-            defer tracker.didDispatch(globalObject);
-
-            this.deinit();
-            switch (success) {
-                false => {
-                    try promise.reject(globalObject, result);
-                },
-                true => {
-                    try promise.resolve(globalObject, result);
-                },
-            }
-        }
-
-        pub fn deinit(this: *ThisAsyncCpTask) void {
-            if (this.result == .err) {
-                this.result.err.deinit();
-            }
-            if (comptime !is_shell) this.ref.unref(this.evtloop);
-            this.args.deinit();
-            this.promise.deinit();
-            this.arena.deinit();
-            bun.destroy(this);
-        }
-
-        /// Directory scanning + clonefile will block this thread, then each individual file copy (what the sync version
-        /// calls "_copySingleFileSync") will be dispatched as a separate task.
-        pub fn cpAsync(
-            nodefs: *NodeFS,
-            this: *ThisAsyncCpTask,
-        ) void {
-            // The directory-scan task holds one reference in `subtask_count`
-            // (initialized to 1 in create*). Drop it on return. `runFromJSThread`
-            // (which destroys `this`) is only enqueued once this reference and
-            // every spawned SingleTask's reference have been dropped.
-            defer this.onSubtaskDone();
-
-            const args = this.args;
-            if (nodefs.cpValidate(args.src.slice(), args.dest.slice())) |err| {
-                this.finishConcurrently(.{ .err = err });
-                return;
-            }
-
-            var src_buf: bun.OSPathBuffer = undefined;
-            var dest_buf: bun.OSPathBuffer = undefined;
-            const src = args.src.osPath(&src_buf);
-            const dest = args.dest.osPath(&dest_buf);
-
-            if (Environment.isWindows) {
-                const attributes = c.GetFileAttributesW(src);
-                if (attributes == c.INVALID_FILE_ATTRIBUTES) {
-                    this.finishConcurrently(.{ .err = .{
-                        .errno = @backingInt(SystemErrno.ENOENT),
-                        .syscall = .copyfile,
-                        .path = nodefs.osPathIntoSyncErrorBuf(src),
-                    } });
-                    return;
-                }
-                const file_or_symlink = (attributes & c.FILE_ATTRIBUTE_DIRECTORY) == 0 or (attributes & c.FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-                if (file_or_symlink) {
-                    const r = nodefs._copySingleFileSync(
-                        src,
-                        dest,
-                        if (comptime is_shell)
-                            // Shell always forces copy
-                            @fromBackingInt(@intCast(constants.Copyfile.force))
-                        else
-                            @fromBackingInt(@intCast((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
-                        attributes,
-                        this.args,
-                    );
-                    if (r == .err and r.err.errno == @backingInt(E.EXIST) and args.flags.skipsExisting()) {
-                        this.finishConcurrently(.success);
-                        return;
-                    }
-                    this.onCopy(src, dest);
-                    this.finishConcurrently(r);
-                    return;
-                }
-            } else {
-                const stat_ = switch (Syscall.lstat(src)) {
-                    .result => |result| result,
-                    .err => |err| {
-                        @memcpy(nodefs.sync_error_buf[0..src.len], src);
-                        this.finishConcurrently(.{ .err = err.withPath(nodefs.sync_error_buf[0..src.len]) });
-                        return;
-                    },
-                };
-
-                if (!bun.S.ISDIR(@intCast(stat_.mode))) {
-                    // This is the only file, there is no point in dispatching subtasks
-                    const r = nodefs._copySingleFileSync(
-                        src,
-                        dest,
-                        @fromBackingInt(@intCast((if (args.flags.errorOnExist or !args.flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
-                        stat_,
-                        this.args,
-                    );
-                    if (r == .err and r.err.errno == @backingInt(E.EXIST) and args.flags.skipsExisting()) {
-                        this.onCopy(src, dest);
-                        this.finishConcurrently(.success);
-                        return;
-                    }
-                    this.onCopy(src, dest);
-                    this.finishConcurrently(r);
-                    return;
-                }
-            }
-            if (!args.flags.recursive) {
-                this.finishConcurrently(.{ .err = nodefs.cpRejected(.not_recursive, src, dest) });
-                return;
-            }
-
-            switch (nodefs.cpTree(&src_buf, src.len, &dest_buf, dest.len, AsyncCpVisitor{
-                .nodefs = nodefs,
-                .task = this,
-            })) {
-                // Success here does not finish the copy: each `SingleTask`
-                // holds a reference, and the last to drop it resolves the promise.
-                .result => {},
-                .err => |err| this.finishConcurrently(.{ .err = err }),
-            }
-        }
-
-        const AsyncCpVisitor = struct {
-            nodefs: *NodeFS,
-            task: *ThisAsyncCpTask,
-
-            fn enterDirectory(this: AsyncCpVisitor, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(bool) {
-                var buf: bun.OSPathBuffer = undefined;
-                const normdest: bun.OSPathSliceZ = if (Environment.isWindows)
-                    switch (bun.sys.normalizePathWindows(u16, bun.invalid_fd, dest, &buf, .{ .add_nt_prefix = false })) {
-                        .err => |err| return .{ .err = err },
-                        .result => |normdest| normdest,
-                    }
-                else
-                    dest;
-
-                switch (this.nodefs.cpPrepareDirectory(this.task.args, src, normdest)) {
-                    .err => |err| return .{ .err = err },
-                    .result => |cloned| {
-                        if (!cloned) this.task.onCopy(src, normdest);
-                        return .{ .result = cloned };
-                    },
-                }
-            }
-
-            /// Each file is copied by its own work pool task, so a failure is
-            /// reported through `finishConcurrently` rather than from here.
-            fn copyFile(this: AsyncCpVisitor, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(Return.Cp) {
-                _ = this.task.subtask_count.fetchAdd(1, .monotonic);
-
-                // The subtask outlives this walk step and frees the paths in
-                // `SingleTask.deinit`.
-                const paths = bun.default_allocator.alloc(bun.OSPathChar, src.len + dest.len + 2) catch |err| bun.handleOom(err);
-                @memcpy(paths[0..src.len], src);
-                paths[src.len] = 0;
-                @memcpy(paths[src.len + 1 ..][0..dest.len], dest);
-                paths[src.len + 1 + dest.len] = 0;
-
-                SingleTask.create(
-                    this.task,
-                    paths[0..src.len :0],
-                    paths[src.len + 1 ..][0..dest.len :0],
-                );
-                return .success;
-            }
-        };
-    };
-}
-
-pub const AsyncReaddirRecursiveTask = struct {
-    promise: jsc.JSPromise.Strong,
-    args: Arguments.Readdir,
-    globalObject: *jsc.JSGlobalObject,
-    task: jsc.BackgroundTask = .{ .callback = &workPoolCallback },
-    ref: bun.Async.KeepAlive = .{},
-    tracker: jsc.Debugger.AsyncTaskTracker,
-
-    // It's not 100% clear this one is necessary
-    has_result: std.atomic.Value(bool),
-
-    subtask_count: std.atomic.Value(usize),
-
-    /// The final result list
-    result_list: ResultListEntry.Value = undefined,
-
-    /// When joining the result list, we use this to preallocate the joined array.
-    result_list_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-
-    /// A lockless queue of result lists.
-    ///
-    /// Using a lockless queue instead of mutex + joining the lists as we go was a meaningful performance improvement
-    result_list_queue: ResultListEntry.Queue = ResultListEntry.Queue{},
-
-    /// All the subtasks will use this fd to open files
-    root_fd: FD = bun.invalid_fd,
-
-    /// This isued when joining the file paths for error messages
-    root_path: PathString = PathString.empty,
-
-    pending_err: ?Syscall.Error = null,
-    pending_err_mutex: std.Io.Mutex = .init,
-    background_tasks: *bun.BackgroundTaskGroup,
-
-    pub const new = bun.TrivialNew(@This());
-
-    pub const ResultListEntry = struct {
-        pub const Value = union(Return.Readdir.Tag) {
-            with_file_types: std.array_list.Managed(bun.jsc.Node.Dirent),
-            buffers: std.array_list.Managed(Buffer),
-            files: std.array_list.Managed(bun.String),
-
-            pub fn deinit(this: *@This()) void {
-                switch (this.*) {
-                    .with_file_types => |*res| {
-                        for (res.items) |item| {
-                            item.deref();
-                        }
-                        res.clearAndFree();
-                    },
-                    .buffers => |*res| {
-                        for (res.items) |item| {
-                            bun.default_allocator.free(item.buffer.byteSlice());
-                        }
-                        res.clearAndFree();
-                    },
-                    .files => |*res| {
-                        for (res.items) |item| {
-                            item.deref();
-                        }
-
-                        res.clearAndFree();
-                    },
-                }
-            }
-        };
-        next: ?*ResultListEntry = null,
-        value: Value,
-
-        pub const Queue = bun.UnboundedQueue(ResultListEntry, .next);
-    };
-
-    pub const Subtask = struct {
-        readdir_task: *AsyncReaddirRecursiveTask,
-        basename: bun.PathString = bun.PathString.empty,
-        task: jsc.BackgroundTask = .{ .callback = call },
-
-        pub const new = bun.TrivialNew(@This());
-
-        pub fn call(task: *jsc.BackgroundTask) void {
-            var this: *Subtask = @alignCast(@fieldParentPtr("task", task));
-            defer {
-                bun.default_allocator.free(this.basename.sliceAssumeZ());
-                bun.destroy(this);
-            }
-            var buf: bun.PathBuffer = undefined;
-            this.readdir_task.performWork(this.basename.sliceAssumeZ(), &buf, false);
-        }
-    };
-
-    pub fn enqueue(
-        readdir_task: *AsyncReaddirRecursiveTask,
-        basename: [:0]const u8,
-    ) void {
-        var task = Subtask.new(
-            .{
-                .readdir_task = readdir_task,
-                .basename = bun.PathString.init(bun.handleOom(bun.default_allocator.dupeSentinel(u8, basename, 0))),
-            },
-        );
-        bun.assert(readdir_task.subtask_count.fetchAdd(1, .monotonic) > 0);
-        jsc.BackgroundWork.scheduleContinuation(readdir_task.background_tasks, &task.task);
-    }
-
-    pub fn create(
-        globalObject: *jsc.JSGlobalObject,
-        args: Arguments.Readdir,
-        vm: *jsc.VirtualMachine,
-    ) jsc.JSValue {
-        var task = AsyncReaddirRecursiveTask.new(.{
-            .promise = jsc.JSPromise.Strong.init(globalObject),
-            .args = args,
-            .has_result = .{ .raw = false },
-            .globalObject = globalObject,
-            .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
-            .subtask_count = .{ .raw = 1 },
-            .background_tasks = &vm.background_tasks,
-            .root_path = PathString.init(bun.handleOom(bun.default_allocator.dupeSentinel(u8, args.path.slice(), 0))),
-            .result_list = switch (args.tag()) {
-                .files => .{ .files = std.array_list.Managed(bun.String).init(bun.default_allocator) },
-                .with_file_types => .{ .with_file_types = .init(bun.default_allocator) },
-                .buffers => .{ .buffers = std.array_list.Managed(Buffer).init(bun.default_allocator) },
-            },
-        });
-        task.ref.ref(vm);
-        task.args.toThreadSafe();
-        task.tracker.didSchedule(globalObject);
-
-        jsc.BackgroundWork.schedule(task.background_tasks, &task.task) catch {
-            task.pending_err = bun.sys.Error.fromCode(.AGAIN, .scandir);
-            bun.assert(task.subtask_count.fetchSub(1, .monotonic) == 1);
-            task.finishConcurrently();
-        };
-
-        return task.promise.value();
-    }
-
-    pub fn performWork(this: *AsyncReaddirRecursiveTask, basename: [:0]const u8, buf: *bun.PathBuffer, comptime is_root: bool) void {
-        switch (this.args.tag()) {
-            inline else => |tag| {
-                const ResultType = comptime switch (tag) {
-                    .files => bun.String,
-                    .with_file_types => bun.jsc.Node.Dirent,
-                    .buffers => Buffer,
-                };
-                var stack_buffer: [8192]u8 = undefined;
-                var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, bun.default_allocator);
-
-                // This is a stack-local copy to avoid resizing heap-allocated arrays in the common case of a small directory
-                var entries = std.array_list.Managed(ResultType).init(stack.allocator());
-
-                defer entries.deinit();
-
-                switch (NodeFS.readdirWithEntriesRecursiveAsync(
-                    buf,
-                    this.args,
-                    this,
-                    basename,
-                    ResultType,
-                    &entries,
-                    is_root,
-                )) {
-                    .err => |err| {
-                        for (entries.items) |*item| {
-                            switch (ResultType) {
-                                bun.String => item.deref(),
-                                bun.jsc.Node.Dirent => item.deref(),
-                                Buffer => bun.default_allocator.free(item.buffer.byteSlice()),
-                                else => @compileError("unreachable"),
-                            }
-                        }
-
-                        {
-                            const io = this.globalObject.bunVM().io;
-                            this.pending_err_mutex.lockUncancelable(io);
-                            defer this.pending_err_mutex.unlock(io);
-                            if (this.pending_err == null) {
-                                const err_path = if (err.path.len > 0) err.path else this.args.path.slice();
-                                this.pending_err = err.withPath(bun.default_allocator.dupe(u8, err_path) catch "");
-                            }
-                        }
-
-                        if (this.subtask_count.fetchSub(1, .monotonic) == 1) {
-                            this.finishConcurrently();
-                        }
-                    },
-                    .result => {
-                        this.writeResults(ResultType, &entries);
-                    },
-                }
-            },
-        }
-    }
-
-    fn workPoolCallback(task: *jsc.BackgroundTask) void {
-        var this: *AsyncReaddirRecursiveTask = @alignCast(@fieldParentPtr("task", task));
-        var buf: bun.PathBuffer = undefined;
-        this.performWork(this.root_path.sliceAssumeZ(), &buf, true);
-    }
-
-    pub fn writeResults(this: *AsyncReaddirRecursiveTask, comptime ResultType: type, result: *std.array_list.Managed(ResultType)) void {
-        if (result.items.len > 0) {
-            const Field = switch (ResultType) {
-                bun.String => .files,
-                bun.jsc.Node.Dirent => .with_file_types,
-                Buffer => .buffers,
-                else => @compileError("unreachable"),
-            };
-            const list = bun.handleOom(bun.default_allocator.create(ResultListEntry));
-            errdefer {
-                bun.default_allocator.destroy(list);
-            }
-            var clone = bun.handleOom(std.array_list.Managed(ResultType).initCapacity(bun.default_allocator, result.items.len));
-            clone.appendSliceAssumeCapacity(result.items);
-            _ = this.result_list_count.fetchAdd(clone.items.len, .monotonic);
-            list.* = ResultListEntry{ .next = null, .value = @unionInit(ResultListEntry.Value, @tagName(Field), clone) };
-            this.result_list_queue.push(list);
-        }
-
-        if (this.subtask_count.fetchSub(1, .monotonic) == 1) {
-            this.finishConcurrently();
-        }
-    }
-
-    /// May be called from any thread (the subtasks)
-    pub fn finishConcurrently(this: *AsyncReaddirRecursiveTask) void {
-        if (this.has_result.cmpxchgStrong(false, true, .monotonic, .monotonic)) |_| {
-            return;
-        }
-
-        bun.assert(this.subtask_count.load(.monotonic) == 0);
-
-        const root_fd = this.root_fd;
-        if (root_fd != bun.invalid_fd) {
-            this.root_fd = bun.invalid_fd;
-            root_fd.close();
-            bun.default_allocator.free(this.root_path.slice());
-            this.root_path = PathString.empty;
-        }
-
-        if (this.pending_err != null) {
-            this.clearResultList();
-        }
-
-        {
-            var list = this.result_list_queue.popBatch();
-            var iter = list.iterator();
-
-            // we have to free only the previous one because the next value will
-            // be read by the iterator.
-            var to_destroy: ?*ResultListEntry = null;
-
-            switch (this.args.tag()) {
-                inline else => |tag| {
-                    var results = &@field(this.result_list, @tagName(tag));
-                    bun.handleOom(results.ensureTotalCapacityPrecise(this.result_list_count.swap(0, .monotonic)));
-                    while (iter.next()) |val| {
-                        if (to_destroy) |dest| {
-                            bun.default_allocator.destroy(dest);
-                        }
-                        to_destroy = val;
-
-                        var to_copy = &@field(val.value, @tagName(tag));
-                        results.appendSliceAssumeCapacity(to_copy.items);
-                        to_copy.clearAndFree();
-                    }
-
-                    if (to_destroy) |dest| {
-                        bun.default_allocator.destroy(dest);
-                    }
-                },
-            }
-        }
-
-        this.globalObject.bunVMConcurrently().enqueueTaskConcurrent(jsc.ConcurrentTask.create(jsc.Task.init(this)));
-    }
-
-    fn clearResultList(this: *AsyncReaddirRecursiveTask) void {
-        this.result_list.deinit();
-        var batch = this.result_list_queue.popBatch();
-        var iter = batch.iterator();
-        var to_destroy: ?*ResultListEntry = null;
-
-        while (iter.next()) |val| {
-            val.value.deinit();
-            if (to_destroy) |dest| {
-                bun.default_allocator.destroy(dest);
-            }
-            to_destroy = val;
-        }
-        if (to_destroy) |dest| {
-            bun.default_allocator.destroy(dest);
-        }
-        this.result_list_count.store(0, .monotonic);
-    }
-
-    pub fn runFromJSThread(this: *AsyncReaddirRecursiveTask) bun.JSTerminated!void {
-        const globalObject = this.globalObject;
-        const success = this.pending_err == null;
-        var promise_value = this.promise.value();
-        var promise = this.promise.get();
-        const result = if (this.pending_err) |*err| (err.toJSWithAsyncStack(globalObject, promise) catch |e| return promise.reject(globalObject, globalObject.takeException(e))) else brk: {
-            const res = switch (this.result_list) {
-                .with_file_types => |*res| Return.Readdir{ .with_file_types = res.moveToUnmanaged().items },
-                .buffers => |*res| Return.Readdir{ .buffers = res.moveToUnmanaged().items },
-                .files => |*res| Return.Readdir{ .files = res.moveToUnmanaged().items },
-            };
-            break :brk res.toJS(globalObject) catch |e| return promise.reject(globalObject, globalObject.takeException(e));
-        };
-        promise_value.ensureStillAlive();
-
-        const tracker = this.tracker;
-        tracker.willDispatch(globalObject);
-        defer tracker.didDispatch(globalObject);
-
-        this.deinit();
-        switch (success) {
-            false => {
-                try promise.reject(globalObject, result);
-            },
-            true => {
-                try promise.resolve(globalObject, result);
-            },
-        }
-    }
-
-    pub fn deinit(this: *AsyncReaddirRecursiveTask) void {
-        bun.assert(this.root_fd == bun.invalid_fd); // should already have closed it
-        if (this.pending_err) |*err| {
-            err.deinit();
-        }
-
-        this.ref.unref(this.globalObject.bunVM());
-        this.args.deinit();
-        bun.default_allocator.free(this.root_path.slice());
-        this.clearResultList();
-        this.promise.deinit();
-        bun.destroy(this);
-    }
-};
-
 // TODO: to improve performance for all of these
 // The tagged unions for each type should become regular unions
 // and the tags should be passed in as comptime arguments to the functions performing the syscalls
 // This would reduce stack size, at the cost of instruction cache misses
 pub const Arguments = struct {
+    pub const ValidationError = union(enum) {
+        invalid_argument_value: []const u8,
+        out_of_range: struct {
+            value: union(enum) {
+                float: f64,
+                signed: i64,
+                unsigned: u64,
+            },
+            options: bun.fmt.OutOfRangeOptions,
+        },
+    };
+
+    pub fn Validated(comptime T: type) type {
+        return union(enum) {
+            value: T,
+            validation_error: ValidationError,
+        };
+    }
+
     pub const Rename = struct {
         old_path: PathLike,
         new_path: PathLike,
@@ -1234,198 +43,182 @@ pub const Arguments = struct {
             this.new_path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: @This()) void {
-            this.old_path.deinitAndUnprotect();
-            this.new_path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *@This()) bun.OOM!void {
+            try this.old_path.toThreadSafe();
+            try this.new_path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *@This()) void {
-            this.old_path.toThreadSafe();
-            this.new_path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Rename {
-            const old_path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArgumentTypeValue("oldPath", "string or an instance of Buffer or URL", arguments.next() orelse .js_undefined);
-            };
+        pub fn fromBindgen(args: anytype) bun.JSError!Rename {
+            const old_path = try PathLike.fromBindingView(args.oldPath);
             errdefer old_path.deinit();
-
-            const new_path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArgumentTypeValue("newPath", "string or an instance of Buffer or URL", arguments.next() orelse .js_undefined);
+            return .{
+                .old_path = old_path,
+                .new_path = try PathLike.fromBindingView(args.newPath),
             };
-            errdefer new_path.deinit();
-
-            return Rename{ .old_path = old_path, .new_path = new_path };
         }
     };
 
     pub const Truncate = struct {
-        /// Passing a file descriptor is deprecated and may result in an error being thrown in the future.
-        path: PathOrFileDescriptor,
+        path: PathLike,
         len: u63 = 0,
-        flags: i32 = 0,
 
         pub fn deinit(this: @This()) void {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *@This()) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *@This()) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *@This()) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Truncate {
-            const path = try PathOrFileDescriptor.fromJS(ctx, arguments, bun.default_allocator) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
+        pub fn fromBindgen(args: anytype) bun.JSError!Truncate {
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .len = @intCast(@max(args.len, 0)),
             };
-            const len: u63 = brk: {
-                const len_value = arguments.next() orelse break :brk 0;
-                break :brk @max(0, try jsc.Node.validators.validateInteger(ctx, len_value, "len", null, null));
-            };
-            return .{ .path = path, .len = len };
         }
     };
 
-    pub const Writev = struct {
-        fd: FD,
-        buffers: jsc.Node.VectorArrayBuffer,
-        position: ?u52 = 0,
+    fn VectorIO(comptime writable: bool) type {
+        const OwnedBufferLease = if (writable) OwnedReadVectorBufferLease else OwnedWriteVectorBufferLease;
+        const OwnedBuffers = bun.bindgen.OwnedNativeSlice(OwnedBufferLease, .vm);
+        return struct {
+            fd: FD,
+            buffers: OwnedBuffers,
+            iovecs: []bun.PlatformIOVec,
+            position: ?i64 = null,
 
-        pub fn deinit(_: *const @This()) void {}
+            pub const Async = struct {
+                fd: FD,
+                storage: []u8,
+                iovecs: []bun.PlatformIOVec,
+                position: ?i64,
 
-        pub fn deinitAndUnprotect(this: *const @This()) void {
-            this.buffers.value.unprotect();
-            this.buffers.buffers.deinit();
-        }
+                pub fn execute(node_fs: *NodeFS, args: Async, _: Flavor) Maybe(if (writable) Return.Readv else Return.Writev) {
+                    return if (writable) node_fs.readvImpl(args) else node_fs.writevImpl(args);
+                }
 
-        pub fn toThreadSafe(this: *@This()) void {
-            this.buffers.value.protect();
+                pub fn toThreadSafe(_: *Async) bun.OOM!void {}
 
-            const clone = bun.handleOom(bun.default_allocator.dupe(bun.PlatformIOVec, this.buffers.buffers.items));
-            this.buffers.buffers.deinit();
-            this.buffers.buffers.items = clone;
-            this.buffers.buffers.capacity = clone.len;
-            this.buffers.buffers.allocator = bun.default_allocator;
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Writev {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
+                pub fn deinit(this: *const Async) void {
+                    bun.default_allocator.free(this.iovecs);
+                    bun.default_allocator.free(this.storage);
+                }
             };
 
-            const buffers = try jsc.Node.VectorArrayBuffer.fromJS(
-                ctx,
-                arguments.protectEatNext() orelse {
-                    return ctx.throwInvalidArguments("Expected an ArrayBufferView[]", .{});
-                },
-                arguments.arena.allocator(),
-            );
+            pub const Attachment = if (writable) struct {
+                buffers: OwnedBuffers,
 
-            var position: ?u52 = null;
-
-            if (arguments.nextEat()) |pos_value| {
-                if (!pos_value.isUndefinedOrNull()) {
-                    if (pos_value.isNumber()) {
-                        position = pos_value.to(u52);
-                    } else {
-                        return ctx.throwInvalidArguments("position must be a number", .{});
+                pub fn deliver(this: *@This(), work: *const Async, count: usize) void {
+                    if (count > work.storage.len) @panic("filesystem vector read exceeded its native storage");
+                    var remaining = count;
+                    var offset: usize = 0;
+                    for (this.buffers.values) |*buffer| {
+                        if (remaining == 0) break;
+                        const length = buffer.length();
+                        const written = @min(length, remaining);
+                        if (!buffer.write(0, work.storage[offset..][0..written]))
+                            @panic("filesystem vector read exceeded its destination");
+                        remaining -= written;
+                        offset += length;
                     }
+                    if (remaining != 0) @panic("filesystem vector read lost its destination");
                 }
+
+                pub fn deinit(this: *@This()) void {
+                    this.buffers.deinit();
+                }
+            } else void;
+
+            pub fn prepareAsync(this: *@This()) bun.OOM!struct { args: Async, attachment: Attachment } {
+                var total: usize = 0;
+                for (this.buffers.values) |*buffer| total = std.math.add(usize, total, buffer.length()) catch return error.OutOfMemory;
+                const storage = try bun.default_allocator.alloc(u8, total);
+                var offset: usize = 0;
+                var iovec_index: usize = 0;
+                for (this.buffers.values) |*buffer| {
+                    const length = buffer.length();
+                    if (length == 0) continue;
+                    const bytes = storage[offset..][0..length];
+                    if (comptime !writable) {
+                        if (!buffer.read(0, bytes)) @panic("filesystem vector write lost its source");
+                    }
+                    this.iovecs[iovec_index] = bun.platformIOVecCreate(bytes);
+                    iovec_index += 1;
+                    offset += length;
+                }
+                const work: Async = .{ .fd = this.fd, .storage = storage, .iovecs = this.iovecs, .position = this.position };
+                const attachment: Attachment = if (writable) .{ .buffers = this.buffers } else {};
+                if (comptime !writable) this.buffers.deinit();
+                this.buffers = .empty;
+                this.iovecs = &.{};
+                return .{ .args = work, .attachment = attachment };
             }
 
-            return Writev{ .fd = fd, .buffers = buffers, .position = position };
-        }
-    };
-
-    pub const Readv = struct {
-        fd: FD,
-        buffers: jsc.Node.VectorArrayBuffer,
-        position: ?u52 = 0,
-
-        pub fn deinit(this: *const @This()) void {
-            _ = this;
-        }
-
-        pub fn deinitAndUnprotect(this: *const @This()) void {
-            this.buffers.value.unprotect();
-            this.buffers.buffers.deinit();
-        }
-
-        pub fn toThreadSafe(this: *@This()) void {
-            this.buffers.value.protect();
-
-            const clone = bun.handleOom(bun.default_allocator.dupe(bun.PlatformIOVec, this.buffers.buffers.items));
-            this.buffers.buffers.deinit();
-            this.buffers.buffers.items = clone;
-            this.buffers.buffers.capacity = clone.len;
-            this.buffers.buffers.allocator = bun.default_allocator;
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Readv {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
-            };
-
-            const buffers = try jsc.Node.VectorArrayBuffer.fromJS(
-                ctx,
-                arguments.protectEatNext() orelse {
-                    return ctx.throwInvalidArguments("Expected an ArrayBufferView[]", .{});
-                },
-                arguments.arena.allocator(),
-            );
-
-            var position: ?u52 = null;
-
-            if (arguments.nextEat()) |pos_value| {
-                if (!pos_value.isUndefinedOrNull()) {
-                    if (pos_value.isNumber()) {
-                        position = pos_value.to(u52);
-                    } else {
-                        return ctx.throwInvalidArguments("position must be a number", .{});
-                    }
-                }
+            pub fn deinit(this: *@This()) void {
+                this.buffers.deinit();
+                const iovecs = this.iovecs;
+                this.iovecs = &.{};
+                bun.default_allocator.free(iovecs);
             }
 
-            return Readv{ .fd = fd, .buffers = buffers, .position = position };
-        }
-    };
+            pub fn fromBindgen(args: anytype) bun.JSError!@This() {
+                var owned_buffers = try OwnedBuffers.Builder.init(args.buffers.len());
+                errdefer owned_buffers.deinit();
+                for (0..args.buffers.len()) |index| {
+                    owned_buffers.appendOwned(try args.buffers.at(index).?.toOwned());
+                }
+                const buffers = owned_buffers.slice();
+
+                var iovec_count: usize = 0;
+                for (buffers) |*buffer| {
+                    if (buffer.length() > 0) iovec_count += 1;
+                }
+
+                const iovecs = try bun.default_allocator.alloc(bun.PlatformIOVec, iovec_count);
+                errdefer if (iovecs.len > 0) bun.default_allocator.free(iovecs);
+                var iovec_index: usize = 0;
+                for (buffers) |*buffer| {
+                    if (buffer.length() == 0) continue;
+                    const bytes = if (writable)
+                        buffer.unsafeMutPtr("the owned mutable leases remain alive until filesystem I/O completes")
+                    else
+                        buffer.unsafePtr("the owned leases remain alive until filesystem I/O completes");
+                    iovecs[iovec_index] = bun.platformIOVecCreate(bytes);
+                    iovec_index += 1;
+                }
+
+                return .{
+                    .fd = .fromUV(args.fd),
+                    .buffers = owned_buffers.finish(),
+                    .iovecs = iovecs,
+                    .position = if (args.position orelse null) |integer| @intCast(integer) else null,
+                };
+            }
+
+
+        };
+    }
+
+    pub const Writev = VectorIO(false);
+    pub const Readv = VectorIO(true);
 
     pub const FTruncate = struct {
         fd: FD,
-        len: ?jsc.WebCore.Blob.SizeType = null,
+        len: isize = 0,
 
         pub fn deinit(this: @This()) void {
             _ = this;
         }
 
-        pub fn deinitAndUnprotect(this: *@This()) void {
+        pub fn toThreadSafe(this: *const @This()) bun.OOM!void {
             _ = this;
         }
 
-        pub fn toThreadSafe(this: *const @This()) void {
-            _ = this;
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!FTruncate {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
+        pub fn fromBindgen(args: anytype) bun.JSError!FTruncate {
+            return .{
+                .fd = .fromUV(args.fd),
+                .len = @intCast(@max(args.len, 0)),
             };
-
-            const len: jsc.WebCore.Blob.SizeType = @intCast(@max(try jsc.Node.validators.validateInteger(
-                ctx,
-                arguments.next() orelse jsc.JSValue.jsNumber(0),
-                "len",
-                std.math.minInt(i52),
-                std.math.maxInt(jsc.WebCore.Blob.SizeType),
-            ), 0));
-
-            return FTruncate{ .fd = fd, .len = len };
         }
     };
 
@@ -1438,38 +231,16 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *@This()) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *@This()) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *@This()) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Chown {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
+        pub fn fromBindgen(args: anytype) bun.JSError!Chown {
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .uid = wrapTo(uid_t, args.uid),
+                .gid = wrapTo(gid_t, args.gid),
             };
-            errdefer path.deinit();
-
-            const uid: uid_t = brk: {
-                const uid_value = arguments.next() orelse break :brk {
-                    return ctx.throwInvalidArguments("uid is required", .{});
-                };
-
-                arguments.eat();
-                break :brk wrapTo(uid_t, try jsc.Node.validators.validateInteger(ctx, uid_value, "uid", -1, std.math.maxInt(u32)));
-            };
-
-            const gid: gid_t = brk: {
-                const gid_value = arguments.next() orelse break :brk {
-                    return ctx.throwInvalidArguments("gid is required", .{});
-                };
-                arguments.eat();
-                break :brk wrapTo(gid_t, try jsc.Node.validators.validateInteger(ctx, gid_value, "gid", -1, std.math.maxInt(u32)));
-            };
-
-            return Chown{ .path = path, .uid = uid, .gid = gid };
         }
     };
 
@@ -1480,38 +251,20 @@ pub const Arguments = struct {
 
         pub fn deinit(_: @This()) void {}
 
-        pub fn toThreadSafe(_: *const @This()) void {}
+        pub fn toThreadSafe(_: *const @This()) bun.OOM!void {}
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Fchown {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
+        pub fn fromBindgen(args: anytype) bun.JSError!Fchown {
+            return .{
+                .fd = .fromUV(args.fd),
+                .uid = wrapTo(uid_t, args.uid),
+                .gid = wrapTo(gid_t, args.gid),
             };
-
-            const uid: uid_t = brk: {
-                const uid_value = arguments.next() orelse break :brk {
-                    return ctx.throwInvalidArguments("uid is required", .{});
-                };
-
-                arguments.eat();
-                break :brk wrapTo(uid_t, try jsc.Node.validators.validateInteger(ctx, uid_value, "uid", -1, std.math.maxInt(u32)));
-            };
-
-            const gid: gid_t = brk: {
-                const gid_value = arguments.next() orelse break :brk {
-                    return ctx.throwInvalidArguments("gid is required", .{});
-                };
-                arguments.eat();
-                break :brk wrapTo(gid_t, try jsc.Node.validators.validateInteger(ctx, gid_value, "gid", -1, std.math.maxInt(u32)));
-            };
-
-            return Fchown{ .fd = fd, .uid = uid, .gid = gid };
         }
     };
 
     fn wrapTo(T: type, in: i64) T {
         comptime bun.assert(@typeInfo(T).int.signedness == .unsigned);
-        return @intCast(@mod(in, std.math.maxInt(T)));
+        return if (in == -1) std.math.maxInt(T) else @intCast(in);
     }
 
     pub const LChown = Chown;
@@ -1525,37 +278,16 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *@This()) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *@This()) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *@This()) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Lutimes {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
+        pub fn fromBindgen(args: anytype) bun.JSError!Lutimes {
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .atime = TimeLikeModule.fromBindgen(args.atime),
+                .mtime = TimeLikeModule.fromBindgen(args.mtime),
             };
-            errdefer path.deinit();
-
-            const atime = try jsc.Node.timeLikeFromJS(ctx, arguments.next() orelse {
-                return ctx.throwInvalidArguments("atime is required", .{});
-            }) orelse {
-                return ctx.throwInvalidArguments("atime must be a number or a Date", .{});
-            };
-
-            arguments.eat();
-
-            const mtime = try jsc.Node.timeLikeFromJS(ctx, arguments.next() orelse {
-                return ctx.throwInvalidArguments("mtime is required", .{});
-            }) orelse {
-                return ctx.throwInvalidArguments("mtime must be a number or a Date", .{});
-            };
-
-            arguments.eat();
-
-            return .{ .path = path, .atime = atime, .mtime = mtime };
         }
     };
 
@@ -1567,28 +299,15 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn toThreadSafe(this: *@This()) void {
-            this.path.toThreadSafe();
+        pub fn toThreadSafe(this: *@This()) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn deinitAndUnprotect(this: *@This()) void {
-            this.path.deinitAndUnprotect();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Chmod {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
+        pub fn fromBindgen(args: anytype) bun.JSError!Chmod {
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .mode = @truncate(args.mode),
             };
-            errdefer path.deinit();
-
-            const mode_arg: jsc.JSValue = arguments.next() orelse .js_undefined;
-            const mode: Mode = try jsc.Node.modeFromJS(ctx, mode_arg) orelse {
-                return jsc.Node.validators.throwErrInvalidArgType(ctx, "mode", .{}, "number", mode_arg);
-            };
-
-            arguments.eat();
-
-            return Chmod{ .path = path, .mode = mode };
         }
     };
 
@@ -1598,22 +317,13 @@ pub const Arguments = struct {
 
         pub fn deinit(_: *const @This()) void {}
 
-        pub fn toThreadSafe(_: *const @This()) void {}
+        pub fn toThreadSafe(_: *const @This()) bun.OOM!void {}
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!FChmod {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
+        pub fn fromBindgen(args: anytype) bun.JSError!FChmod {
+            return .{
+                .fd = .fromUV(args.fd),
+                .mode = @truncate(args.mode),
             };
-
-            const mode_arg: jsc.JSValue = arguments.next() orelse .js_undefined;
-            const mode: Mode = try jsc.Node.modeFromJS(ctx, mode_arg) orelse {
-                return jsc.Node.validators.throwErrInvalidArgType(ctx, "mode", .{}, "number", mode_arg);
-            };
-
-            arguments.eat();
-
-            return FChmod{ .fd = fd, .mode = mode };
         }
     };
 
@@ -1627,35 +337,16 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *Arguments.StatFS) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *Arguments.StatFS) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *Arguments.StatFS) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Arguments.StatFS {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
+        pub fn fromBindgen(args: anytype) bun.JSError!Arguments.StatFS {
+            const big_int = if (args.options) |options| options.big_int orelse false else false;
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .big_int = big_int,
             };
-            errdefer path.deinit();
-
-            const big_int = brk: {
-                if (arguments.next()) |next_val| {
-                    if (next_val.isObject()) {
-                        if (next_val.isCallable()) break :brk false;
-                        arguments.eat();
-
-                        if (try next_val.getBooleanStrict(ctx, "bigint")) |big_int| {
-                            break :brk big_int;
-                        }
-                    }
-                }
-                break :brk false;
-            };
-
-            return .{ .path = path, .big_int = big_int };
         }
     };
 
@@ -1668,41 +359,21 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: Stat) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *Stat) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *Stat) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Stat {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
+        pub fn fromBindgen(args: anytype) bun.JSError!Stat {
             var throw_if_no_entry = true;
-
-            const big_int = brk: {
-                if (arguments.next()) |next_val| {
-                    if (next_val.isObject()) {
-                        if (next_val.isCallable()) break :brk false;
-                        arguments.eat();
-
-                        if (try next_val.getBooleanStrict(ctx, "throwIfNoEntry")) |throw_if_no_entry_val| {
-                            throw_if_no_entry = throw_if_no_entry_val;
-                        }
-
-                        if (try next_val.getBooleanStrict(ctx, "bigint")) |big_int| {
-                            break :brk big_int;
-                        }
-                    }
-                }
-                break :brk false;
+            const big_int = if (args.options) |options| parsed: {
+                throw_if_no_entry = options.throw_if_no_entry orelse true;
+                break :parsed options.big_int orelse false;
+            } else false;
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .big_int = big_int,
+                .throw_if_no_entry = throw_if_no_entry,
             };
-
-            return Stat{ .path = path, .big_int = big_int, .throw_if_no_entry = throw_if_no_entry };
         }
     };
 
@@ -1712,29 +383,11 @@ pub const Arguments = struct {
 
         pub fn deinit(_: @This()) void {}
 
-        pub fn toThreadSafe(_: *@This()) void {}
+        pub fn toThreadSafe(_: *@This()) bun.OOM!void {}
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Fstat {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
-            };
-
-            const big_int = brk: {
-                if (arguments.next()) |next_val| {
-                    if (next_val.isObject()) {
-                        if (next_val.isCallable()) break :brk false;
-                        arguments.eat();
-
-                        if (try next_val.getBooleanStrict(ctx, "bigint")) |big_int| {
-                            break :brk big_int;
-                        }
-                    }
-                }
-                break :brk false;
-            };
-
-            return Fstat{ .fd = fd, .big_int = big_int };
+        pub fn fromBindgen(args: anytype) bun.JSError!Fstat {
+            const big_int = if (args.options) |options| options.big_int orelse false else false;
+            return .{ .fd = .fromUV(args.fd), .big_int = big_int };
         }
     };
 
@@ -1749,28 +402,18 @@ pub const Arguments = struct {
             this.new_path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *Link) void {
-            this.old_path.deinitAndUnprotect();
-            this.new_path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *Link) bun.OOM!void {
+            try this.old_path.toThreadSafe();
+            try this.new_path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *Link) void {
-            this.old_path.toThreadSafe();
-            this.new_path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Link {
-            const old_path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("oldPath must be a string or TypedArray", .{});
-            };
+        pub fn fromBindgen(args: anytype) bun.JSError!Link {
+            const old_path = try PathLike.fromBindingView(args.existingPath);
             errdefer old_path.deinit();
-
-            const new_path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("newPath must be a string or TypedArray", .{});
+            return .{
+                .old_path = old_path,
+                .new_path = try PathLike.fromBindingView(args.newPath),
             };
-            errdefer new_path.deinit();
-
-            return Link{ .old_path = old_path, .new_path = new_path };
         }
     };
 
@@ -1794,62 +437,87 @@ pub const Arguments = struct {
             this.new_path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: Symlink) void {
-            this.target_path.deinitAndUnprotect();
-            this.new_path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *@This()) bun.OOM!void {
+            try this.target_path.toThreadSafe();
+            try this.new_path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *@This()) void {
-            this.target_path.toThreadSafe();
-            this.new_path.toThreadSafe();
-        }
+        pub fn fromBindgen(args: anytype) bun.JSError!Symlink {
+            const target_path = try PathLike.fromBindingView(args.target);
+            errdefer target_path.deinit();
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Symlink {
-            const old_path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("target must be a string or TypedArray", .{});
-            };
-            errdefer old_path.deinit();
-
-            const new_path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer new_path.deinit();
-
-            // The type argument is only available on Windows and
-            // ignored on other platforms. It can be set to 'dir',
-            // 'file', or 'junction'. If the type argument is not set,
-            // Node.js will autodetect target type and use 'file' or
-            // 'dir'. If the target does not exist, 'file' will be used.
-            // Windows junction points require the destination path to
-            // be absolute. When using 'junction', the target argument
-            // will automatically be normalized to absolute path.
-            const link_type: LinkType = link_type: {
-                if (arguments.next()) |next_val| {
-                    if (next_val.isUndefinedOrNull()) {
-                        break :link_type .unspecified;
-                    }
-                    if (next_val.isString()) {
-                        arguments.eat();
-                        var str = try next_val.toBunString(ctx);
-                        defer str.deref();
-                        if (str.eqlComptime("dir")) break :link_type .dir;
-                        if (str.eqlComptime("file")) break :link_type .file;
-                        if (str.eqlComptime("junction")) break :link_type .junction;
-                        return ctx.ERR(.INVALID_ARG_VALUE, "Symlink type must be one of \"dir\", \"file\", or \"junction\". Received \"{f}\"", .{str}).throw();
-                    }
-                    // not a string. fallthrough to auto detect.
-                    return ctx.ERR(.INVALID_ARG_VALUE, "Symlink type must be one of \"dir\", \"file\", or \"junction\".", .{}).throw();
-                }
-                break :link_type .unspecified;
-            };
-
-            return Symlink{
-                .target_path = old_path,
-                .new_path = new_path,
-                .link_type = if (Environment.isWindows) link_type,
+            return .{
+                .target_path = target_path,
+                .new_path = try PathLike.fromBindingView(args.path),
+                .link_type = if (Environment.isWindows)
+                    if (args.type) |link_type| switch (link_type) {
+                        .file => .file,
+                        .dir => .dir,
+                        .junction => .junction,
+                    } else .unspecified
+                else {},
             };
         }
     };
+
+    fn encodingFromBindgen(options: anytype) Encoding {
+        const encoding = if (options) |value| switch (value) {
+            .encoding => |encoding| encoding,
+            .options => |encoding_options| encoding_options.encoding orelse return .utf8,
+        } else return .utf8;
+
+        return encodingFromBindgenValue(encoding);
+    }
+
+    fn encodingFromBindgenValue(encoding: anytype) Encoding {
+        if (comptime @hasField(@TypeOf(encoding), "buffer")) {
+            return switch (encoding) {
+                .utf8 => .utf8,
+                .utf16le => .utf16le,
+                .latin1 => .latin1,
+                .ascii => .ascii,
+                .base64 => .base64,
+                .base64url => .base64url,
+                .hex => .hex,
+                .buffer => .buffer,
+            };
+        }
+        return switch (encoding) {
+            .utf8 => .utf8,
+            .utf16le => .utf16le,
+            .latin1 => .latin1,
+            .ascii => .ascii,
+            .base64 => .base64,
+            .base64url => .base64url,
+            .hex => .hex,
+        };
+    }
+
+    fn fileSystemFlagsFromBindgen(value: anytype, default: FileSystemFlags) FileSystemFlags {
+        const selected = value orelse return default;
+        return switch (selected) {
+            .number => |flags| if (Environment.isWindows)
+                @fromBackingInt(windows.libuv.O.toBunO(flags))
+            else
+                @fromBackingInt(flags),
+            .name => |name| @fromBackingInt(switch (name) {
+                .r => bun.O.RDONLY,
+                .rs => bun.O.RDONLY | bun.O.SYNC,
+                .r_plus => bun.O.RDWR,
+                .rs_plus => bun.O.RDWR | bun.O.SYNC,
+                .w => bun.O.TRUNC | bun.O.CREAT | bun.O.WRONLY,
+                .wx => bun.O.TRUNC | bun.O.CREAT | bun.O.WRONLY | bun.O.EXCL,
+                .w_plus => bun.O.TRUNC | bun.O.CREAT | bun.O.RDWR,
+                .wx_plus => bun.O.TRUNC | bun.O.CREAT | bun.O.RDWR | bun.O.EXCL,
+                .a => bun.O.APPEND | bun.O.CREAT | bun.O.WRONLY,
+                .ax => bun.O.APPEND | bun.O.CREAT | bun.O.WRONLY | bun.O.EXCL,
+                .as => bun.O.APPEND | bun.O.CREAT | bun.O.WRONLY | bun.O.SYNC,
+                .a_plus => bun.O.APPEND | bun.O.CREAT | bun.O.RDWR,
+                .ax_plus => bun.O.APPEND | bun.O.CREAT | bun.O.RDWR | bun.O.EXCL,
+                .as_plus => bun.O.APPEND | bun.O.CREAT | bun.O.RDWR | bun.O.SYNC,
+            }),
+        };
+    }
 
     pub const Readlink = struct {
         path: PathLike,
@@ -1859,92 +527,19 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *Readlink) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *Readlink) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *Readlink) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Readlink {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
+        pub fn fromBindgen(args: anytype) bun.JSError!Readlink {
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .encoding = encodingFromBindgen(args.options),
             };
-            errdefer path.deinit();
-
-            var encoding = Encoding.utf8;
-            if (arguments.next()) |val| {
-                arguments.eat();
-
-                switch (val.jsType()) {
-                    jsc.JSValue.JSType.String, jsc.JSValue.JSType.StringObject, jsc.JSValue.JSType.DerivedStringObject => {
-                        encoding = try Encoding.assert(val, ctx, encoding);
-                    },
-                    else => {
-                        if (val.isObject()) {
-                            encoding = try getEncoding(val, ctx, encoding);
-                        }
-                    },
-                }
-            }
-
-            return Readlink{ .path = path, .encoding = encoding };
         }
     };
 
-    pub const Realpath = struct {
-        path: PathLike,
-        encoding: Encoding = .utf8,
-
-        pub fn deinit(this: Realpath) void {
-            this.path.deinit();
-        }
-
-        pub fn deinitAndUnprotect(this: *Realpath) void {
-            this.path.deinitAndUnprotect();
-        }
-
-        pub fn toThreadSafe(this: *Realpath) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Realpath {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
-            var encoding = Encoding.utf8;
-            if (arguments.next()) |val| {
-                arguments.eat();
-
-                switch (val.jsType()) {
-                    jsc.JSValue.JSType.String,
-                    jsc.JSValue.JSType.StringObject,
-                    jsc.JSValue.JSType.DerivedStringObject,
-                    => {
-                        encoding = try Encoding.assert(val, ctx, encoding);
-                    },
-                    else => {
-                        if (val.isObject()) {
-                            encoding = try getEncoding(val, ctx, encoding);
-                        }
-                    },
-                }
-            }
-
-            return Realpath{ .path = path, .encoding = encoding };
-        }
-    };
-
-    fn getEncoding(object: jsc.JSValue, globalObject: *jsc.JSGlobalObject, default: Encoding) bun.JSError!Encoding {
-        if (try object.fastGet(globalObject, .encoding)) |value| {
-            return Encoding.assert(value, globalObject, default);
-        }
-
-        return default;
-    }
+    pub const Realpath = Readlink;
 
     pub const Unlink = struct {
         path: PathLike,
@@ -1953,23 +548,12 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *Unlink) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *Unlink) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *Unlink) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Unlink {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
-            return Unlink{
-                .path = path,
-            };
+        pub fn fromBindgen(args: anytype) bun.JSError!Unlink {
+            return .{ .path = try PathLike.fromBindingView(args.path) };
         }
     };
 
@@ -1984,67 +568,44 @@ pub const Arguments = struct {
         recursive: bool = false,
         retry_delay: c_uint = 100,
 
-        pub fn deinitAndUnprotect(this: *RmDir) void {
-            this.path.deinitAndUnprotect();
-        }
-
-        pub fn toThreadSafe(this: *RmDir) void {
-            this.path.toThreadSafe();
+        pub fn toThreadSafe(this: *RmDir) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
         pub fn deinit(this: RmDir) void {
             this.path.deinit();
         }
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!RmDir {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
-            var recursive = false;
-            var force = false;
-            var max_retries: u32 = 0;
-            var retry_delay: c_uint = 100;
-            if (arguments.next()) |val| {
-                arguments.eat();
-
-                if (val.isObject()) {
-                    if (try val.get(ctx, "recursive")) |boolean| {
-                        if (boolean.isBoolean()) {
-                            recursive = boolean.toBoolean();
-                        } else {
-                            return ctx.throwInvalidArguments("The \"options.recursive\" property must be of type boolean.", .{});
-                        }
-                    }
-
-                    if (try val.get(ctx, "force")) |boolean| {
-                        if (boolean.isBoolean()) {
-                            force = boolean.toBoolean();
-                        } else {
-                            return ctx.throwInvalidArguments("The \"options.force\" property must be of type boolean.", .{});
-                        }
-                    }
-
-                    if (try val.get(ctx, "retryDelay")) |delay| {
-                        retry_delay = @intCast(try jsc.Node.validators.validateInteger(ctx, delay, "options.retryDelay", 0, std.math.maxInt(c_uint)));
-                    }
-
-                    if (try val.get(ctx, "maxRetries")) |retries| {
-                        max_retries = @intCast(try jsc.Node.validators.validateInteger(ctx, retries, "options.maxRetries", 0, std.math.maxInt(u32)));
-                    }
-                } else if (!val.isUndefined()) {
-                    return ctx.throwInvalidArguments("The \"options\" argument must be of type object.", .{});
-                }
-            }
-
+        pub fn fromBindgen(args: anytype) bun.JSError!RmDir {
+            const options = args.options orelse @as(@TypeOf(args.options.?), .{
+                .force = false,
+                .max_retries = 0,
+                .recursive = false,
+                .retry_delay = 100,
+            });
             return .{
-                .path = path,
-                .recursive = recursive,
-                .force = force,
-                .max_retries = max_retries,
-                .retry_delay = retry_delay,
+                .path = try PathLike.fromBindingView(args.path),
+                .force = options.force,
+                .max_retries = options.max_retries,
+                .recursive = options.recursive,
+                .retry_delay = options.retry_delay,
             };
+        }
+    };
+
+    pub const Rmdir = struct {
+        path: PathLike,
+
+        pub fn toThreadSafe(this: *Rmdir) bun.OOM!void {
+            try this.path.toThreadSafe();
+        }
+
+        pub fn deinit(this: Rmdir) void {
+            this.path.deinit();
+        }
+
+        pub fn fromBindgen(args: anytype) bun.JSError!Rmdir {
+            return .{ .path = try PathLike.fromBindingView(args.path) };
         }
     };
 
@@ -2060,96 +621,52 @@ pub const Arguments = struct {
         /// If set to true, the return value is never set to a string
         always_return_none: bool = false,
 
-        pub const DefaultMode = 0o777;
+        pub const DefaultMode = NodeFSCore.Mkdir.DefaultMode;
 
         pub fn deinit(this: Mkdir) void {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *Mkdir) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *Mkdir) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *Mkdir) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Mkdir {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
+        pub fn fromBindgen(args: anytype) bun.JSError!Mkdir {
             var recursive = false;
-            var mode: Mode = 0o777;
+            var mode: Mode = DefaultMode;
+            if (args.options) |options| switch (options) {
+                .mode => |value| mode = @truncate(value),
+                .options => |value| {
+                    recursive = value.recursive;
+                    mode = @truncate(value.mode);
+                },
+                .ignored => {},
+            };
 
-            if (arguments.next()) |val| {
-                arguments.eat();
-
-                if (val.isObject()) {
-                    if (try val.getBooleanStrict(ctx, "recursive")) |boolean| {
-                        recursive = boolean;
-                    }
-
-                    if (try val.get(ctx, "mode")) |mode_| {
-                        mode = try jsc.Node.modeFromJS(ctx, mode_) orelse mode;
-                    }
-                }
-                if (val.isNumber() or val.isString()) {
-                    mode = try jsc.Node.modeFromJS(ctx, val) orelse mode;
-                }
-            }
-
-            return Mkdir{
-                .path = path,
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
                 .recursive = recursive,
                 .mode = mode,
             };
         }
     };
 
-    const MkdirTemp = struct {
-        prefix: PathLike = .{ .buffer = .{ .buffer = jsc.ArrayBuffer.empty } },
+    pub const MkdirTemp = struct {
+        prefix: PathLike = .{ .string = bun.PathString.empty },
         encoding: Encoding = .utf8,
 
         pub fn deinit(this: MkdirTemp) void {
             this.prefix.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *MkdirTemp) void {
-            this.prefix.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *MkdirTemp) bun.OOM!void {
+            try this.prefix.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *MkdirTemp) void {
-            this.prefix.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!MkdirTemp {
-            const prefix = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArgumentTypeValue("prefix", "string, Buffer, or URL", arguments.next() orelse .js_undefined);
-            };
-            errdefer prefix.deinit();
-
-            var encoding = Encoding.utf8;
-
-            if (arguments.next()) |val| {
-                arguments.eat();
-
-                switch (val.jsType()) {
-                    jsc.JSValue.JSType.String, jsc.JSValue.JSType.StringObject, jsc.JSValue.JSType.DerivedStringObject => {
-                        encoding = try Encoding.assert(val, ctx, encoding);
-                    },
-                    else => {
-                        if (val.isObject()) {
-                            encoding = try getEncoding(val, ctx, encoding);
-                        }
-                    },
-                }
-            }
-
+        pub fn fromBindgen(args: anytype) bun.JSError!MkdirTemp {
             return .{
-                .prefix = prefix,
-                .encoding = encoding,
+                .prefix = try PathLike.fromBindingView(args.prefix),
+                .encoding = encodingFromBindgen(args.options),
             };
         }
     };
@@ -2164,12 +681,8 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: Readdir) void {
-            this.path.deinitAndUnprotect();
-        }
-
-        pub fn toThreadSafe(this: *Readdir) void {
-            this.path.toThreadSafe();
+        pub fn toThreadSafe(this: *Readdir) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
         pub fn tag(this: *const Readdir) Return.Readdir.Tag {
@@ -2182,44 +695,20 @@ pub const Arguments = struct {
             };
         }
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Readdir {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
+        pub fn fromBindgen(args: anytype) bun.JSError!Readdir {
             var encoding: Encoding = .utf8;
             var with_file_types = false;
             var recursive = false;
-
-            if (arguments.next()) |val| {
-                arguments.eat();
-
-                switch (val.jsType()) {
-                    .String,
-                    .StringObject,
-                    .DerivedStringObject,
-                    => {
-                        encoding = try Encoding.assert(val, ctx, encoding);
-                    },
-                    else => {
-                        if (val.isObject()) {
-                            encoding = try getEncoding(val, ctx, encoding);
-
-                            if (try val.getBooleanStrict(ctx, "recursive")) |recursive_| {
-                                recursive = recursive_;
-                            }
-
-                            if (try val.getBooleanStrict(ctx, "withFileTypes")) |with_file_types_| {
-                                with_file_types = with_file_types_;
-                            }
-                        }
-                    },
-                }
-            }
-
+            if (args.options) |options| switch (options) {
+                .encoding => |value| encoding = encodingFromBindgenValue(value),
+                .options => |value| {
+                    if (value.encoding) |selected| encoding = encodingFromBindgenValue(selected);
+                    with_file_types = value.with_file_types;
+                    recursive = value.recursive orelse false;
+                },
+            };
             return .{
-                .path = path,
+                .path = try PathLike.fromBindingView(args.path),
                 .encoding = encoding,
                 .with_file_types = with_file_types,
                 .recursive = recursive,
@@ -2231,15 +720,10 @@ pub const Arguments = struct {
         fd: FD,
 
         pub fn deinit(_: Close) void {}
-        pub fn toThreadSafe(_: Close) void {}
+        pub fn toThreadSafe(_: Close) bun.OOM!void {}
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Close {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
-            };
-
-            return Close{ .fd = fd };
+        pub fn fromBindgen(args: anytype) bun.JSError!Close {
+            return .{ .fd = .fromUV(args.fd) };
         }
     };
 
@@ -2252,47 +736,15 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: Open) void {
-            this.path.deinitAndUnprotect();
+        pub fn toThreadSafe(this: *Open) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(this: *Open) void {
-            this.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Open {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
-            var flags = FileSystemFlags.r;
-            var mode: Mode = default_permission;
-
-            if (arguments.next()) |val| {
-                arguments.eat();
-
-                if (val.isObject()) {
-                    if (try val.getOptional(ctx, "flags", jsc.JSValue)) |flags_| {
-                        flags = try FileSystemFlags.fromJS(ctx, flags_) orelse flags;
-                    }
-
-                    if (try val.getOptional(ctx, "mode", jsc.JSValue)) |mode_| {
-                        mode = try jsc.Node.modeFromJS(ctx, mode_) orelse mode;
-                    }
-                } else if (val != .zero) {
-                    flags = try FileSystemFlags.fromJS(ctx, val) orelse flags;
-
-                    if (arguments.nextEat()) |next| {
-                        mode = try jsc.Node.modeFromJS(ctx, next) orelse mode;
-                    }
-                }
-            }
-
-            return Open{
-                .path = path,
-                .flags = flags,
-                .mode = mode,
+        pub fn fromBindgen(args: anytype) bun.JSError!Open {
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .flags = fileSystemFlagsFromBindgen(args.flags, .r),
+                .mode = @truncate(args.mode orelse default_permission),
             };
         }
     };
@@ -2313,34 +765,15 @@ pub const Arguments = struct {
 
         pub fn deinit(_: Futimes) void {}
 
-        pub fn toThreadSafe(self: *const @This()) void {
+        pub fn toThreadSafe(self: *const @This()) bun.OOM!void {
             _ = self;
         }
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Futimes {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
-            };
-
-            const atime = try jsc.Node.timeLikeFromJS(ctx, arguments.next() orelse {
-                return ctx.throwInvalidArguments("atime is required", .{});
-            }) orelse {
-                return ctx.throwInvalidArguments("atime must be a number or a Date", .{});
-            };
-            arguments.eat();
-
-            const mtime = try jsc.Node.timeLikeFromJS(ctx, arguments.next() orelse {
-                return ctx.throwInvalidArguments("mtime is required", .{});
-            }) orelse {
-                return ctx.throwInvalidArguments("mtime must be a number or a Date", .{});
-            };
-            arguments.eat();
-
-            return Futimes{
-                .fd = fd,
-                .atime = atime,
-                .mtime = mtime,
+        pub fn fromBindgen(args: anytype) bun.JSError!Futimes {
+            return .{
+                .fd = .fromUV(args.fd),
+                .atime = TimeLikeModule.fromBindgen(args.atime),
+                .mtime = TimeLikeModule.fromBindgen(args.mtime),
             };
         }
     };
@@ -2352,8 +785,8 @@ pub const Arguments = struct {
     /// an integer specifying the number of bytes to write.
     ///
     /// `position` refers to the offset from the beginning of the file where this data
-    /// should be written. If `typeof position !== 'number'`, the data will be written
-    /// at the current position. See [`pwrite(2)`](http://man7.org/linux/man-pages/man2/pwrite.2.html).
+    /// should be written. An absent or negative position uses the current file position.
+    /// See [`pwrite(2)`](http://man7.org/linux/man-pages/man2/pwrite.2.html).
     ///
     /// The callback will be given three arguments `(err, bytesWritten, buffer)` where`bytesWritten` specifies how many _bytes_ were written from `buffer`.
     ///
@@ -2371,7 +804,6 @@ pub const Arguments = struct {
     pub const Write = struct {
         fd: FD,
         buffer: StringOrBuffer,
-        // buffer_val: jsc.JSValue = jsc.JSValue.zero,
         offset: u64 = 0,
         length: u64 = std.math.maxInt(u64),
         position: ?ReadPosition = null,
@@ -2381,223 +813,200 @@ pub const Arguments = struct {
             this.buffer.deinit();
         }
 
-        pub fn deinitAndUnprotect(this: *@This()) void {
-            this.buffer.deinitAndUnprotect();
+        pub fn toThreadSafe(self: *@This()) bun.OOM!void {
+            try self.buffer.toThreadSafe();
         }
 
-        pub fn toThreadSafe(self: *@This()) void {
-            self.buffer.toThreadSafe();
+        pub fn fromBindgen(args: anytype) bun.OOM!Validated(Write) {
+            return switch (args) {
+                .buffer => |values| fromBindgenBuffer(values),
+                .string_position => |values| .{ .value = try fromBindgenString(
+                    values,
+                    writePosition(values.position),
+                    writeStringEncoding(values.encoding),
+                ) },
+                .string_other => |values| .{ .value = try fromBindgenString(
+                    values,
+                    null,
+                    writeStringEncoding(values.positionOrEncoding),
+                ) },
+            };
         }
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Write {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
-            };
-
-            const buffer_value = arguments.next();
-            const buffer = try StringOrBuffer.fromJS(ctx, bun.default_allocator, buffer_value orelse {
-                return ctx.throwInvalidArguments("data is required", .{});
-            }) orelse {
-                return ctx.throwInvalidArgumentTypeValue("buffer", "string or TypedArray", buffer_value.?);
-            };
-            if (buffer_value.?.isString() and !buffer_value.?.isStringLiteral()) {
-                return ctx.throwInvalidArgumentTypeValue("buffer", "string or TypedArray", buffer_value.?);
+        fn fromBindgenBuffer(values: anytype) bun.OOM!Validated(Write) {
+            const offset = if (values.offset) |input| switch (input) {
+                .number => |value| value,
+                .callable => 0,
+            } else 0;
+            const buffer_length = values.buffer.length();
+            const max_offset = @min(buffer_length, std.math.maxInt(i64));
+            if (offset > max_offset) {
+                return .{ .validation_error = .{ .out_of_range = .{
+                    .value = .{ .unsigned = offset },
+                    .options = .{ .field_name = "offset", .max = @intCast(max_offset) },
+                } } };
             }
 
-            var args = Write{
-                .fd = fd,
-                .buffer = buffer,
-                .encoding = switch (buffer) {
-                    .buffer => Encoding.buffer,
-                    inline else => Encoding.utf8,
-                },
-            };
-            errdefer args.deinit();
-            arguments.eat();
-
-            parse: {
-                var current = arguments.next() orelse break :parse;
-                switch (buffer) {
-                    // fs.write(fd, string[, position[, encoding]], callback)
-                    else => {
-                        if (current.isNumber()) {
-                            args.position = current.to(i52);
-                            arguments.eat();
-                            current = arguments.next() orelse break :parse;
-                        }
-
-                        if (current.isString()) {
-                            args.encoding = try Encoding.assert(current, ctx, args.encoding);
-                            arguments.eat();
-                        }
-                    },
-                    // fs.write(fd, buffer[, offset[, length[, position]]], callback)
-                    .buffer => {
-                        if (current.isUndefinedOrNull() or current.isFunction()) break :parse;
-                        args.offset = @intCast(try jsc.Node.validators.validateInteger(ctx, current, "offset", 0, 9007199254740991));
-                        arguments.eat();
-                        current = arguments.next() orelse break :parse;
-
-                        if (!(current.isNumber() or current.isBigInt())) break :parse;
-                        const length = current.to(i64);
-                        const buf_len = args.buffer.buffer.slice().len;
-                        const max_offset = @min(buf_len, std.math.maxInt(i64));
-                        if (args.offset > max_offset) {
-                            return ctx.throwRangeError(
-                                @as(f64, @floatFromInt(args.offset)),
-                                .{ .field_name = "offset", .max = @intCast(max_offset) },
-                            );
-                        }
-                        const max_len = @min(buf_len - args.offset, std.math.maxInt(i32));
-                        if (length > max_len or length < 0) {
-                            return ctx.throwRangeError(
-                                @as(f64, @floatFromInt(length)),
-                                .{ .field_name = "length", .min = 0, .max = @intCast(max_len) },
-                            );
-                        }
-                        args.length = @intCast(length);
-
-                        arguments.eat();
-                        current = arguments.next() orelse break :parse;
-
-                        if (!(current.isNumber() or current.isBigInt())) break :parse;
-                        const position = current.to(i52);
-                        if (position >= 0) args.position = position;
-                        arguments.eat();
-                    },
+            var length: u64 = std.math.maxInt(u64);
+            const parsed_length = if (values.length) |length_input| switch (length_input) {
+                .value => |parsed| parsed,
+                .ignored => null,
+            } else null;
+            if (parsed_length) |value| {
+                const max_length = @min(buffer_length - offset, std.math.maxInt(i32));
+                if (value > max_length or value < 0) {
+                    return .{ .validation_error = .{ .out_of_range = .{
+                        .value = .{ .signed = value },
+                        .options = .{ .field_name = "length", .min = 0, .max = @intCast(max_length) },
+                    } } };
                 }
+                length = @intCast(value);
             }
 
-            return args;
+            return .{ .value = .{
+                .fd = .fromUV(values.fd),
+                .buffer = try StringOrBuffer.fromBindgenBuffer(values.buffer),
+                .offset = offset,
+                .length = length,
+                .position = if (values.position) |position| writePosition(position) else null,
+                .encoding = .buffer,
+            } };
+        }
+
+        fn fromBindgenString(values: anytype, position: ?ReadPosition, encoding: Encoding) bun.OOM!Write {
+            return .{
+                .fd = .fromUV(values.fd),
+                .buffer = try StringOrBuffer.fromBindgenString(values.data, encoding),
+                .position = position,
+                .encoding = encoding,
+            };
+        }
+
+        fn writePosition(input: anytype) ?ReadPosition {
+            return switch (input) {
+                .value => |position| if (position >= 0) position else null,
+                .ignored => null,
+            };
+        }
+
+        fn writeStringEncoding(value: anytype) Encoding {
+            const selected = value orelse return .utf8;
+            return switch (selected) {
+                .encoding => |encoding| encodingFromBindgenValue(encoding),
+                .ignored => .utf8,
+            };
         }
     };
 
     pub const Read = struct {
         fd: FD,
-        buffer: Buffer,
+        buffer: OwnedReadBufferLease,
         offset: u64,
         length: u64,
         position: ?ReadPosition = null,
 
-        pub fn deinit(_: Read) void {}
+        pub const Async = struct {
+            fd: FD,
+            output: []u8,
+            position: ?ReadPosition,
 
-        pub fn toThreadSafe(this: Read) void {
-            this.buffer.buffer.value.protect();
-        }
+            pub fn bytes(this: *const Async) []u8 {
+                return this.output;
+            }
 
-        pub fn deinitAndUnprotect(this: *Read) void {
-            this.buffer.buffer.value.unprotect();
-        }
+            pub fn execute(node_fs: *NodeFS, args: Async, _: Flavor) Maybe(Return.Read) {
+                return node_fs.readImpl(args);
+            }
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Read {
-            // About half of the normalization has already been done. The second half is done in the native code.
-            // fs_binding.read(fd, buffer, offset, length, position)
+            pub fn toThreadSafe(_: *Async) bun.OOM!void {}
 
-            // fd = getValidatedFd(fd);
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
+            pub fn deinit(this: *const Async) void {
+                bun.default_allocator.free(this.output);
+            }
+        };
+
+        pub const Attachment = struct {
+            buffer: OwnedReadBufferLease,
+            offset: usize,
+
+            pub fn deliver(this: *Attachment, work: *const Async, count: usize) void {
+                if (count > work.output.len or !this.buffer.write(this.offset, work.output[0..count]))
+                    @panic("filesystem read returned bytes outside its destination");
+            }
+
+            pub fn deinit(this: *Attachment) void {
+                this.buffer.deinit();
+            }
+        };
+
+        pub fn prepareAsync(this: *Read) bun.OOM!struct { args: Async, attachment: Attachment } {
+            const output = try bun.default_allocator.alloc(u8, @intCast(this.length));
+            return .{
+                .args = .{ .fd = this.fd, .output = output, .position = this.position },
+                .attachment = .{ .buffer = this.buffer.take(), .offset = @intCast(this.offset) },
             };
+        }
 
-            //  validateBuffer(buffer);
-            const buffer_value = arguments.nextEat() orelse
-                // theoretically impossible, argument has been passed already
-                return ctx.throwInvalidArguments("buffer is required", .{});
-            const buffer: jsc.MarkedArrayBuffer = Buffer.fromJS(ctx, buffer_value) orelse
-                return ctx.throwInvalidArgumentTypeValue("buffer", "TypedArray", buffer_value);
+        pub fn bytes(this: *const Read) []u8 {
+            const buffer = this.buffer.unsafeMutPtr("Arguments.Read owns the destination lease until the synchronous filesystem read returns");
+            const offset = @min(this.offset, buffer.len);
+            return buffer[offset..][0..@min(this.length, buffer.len - offset)];
+        }
 
-            const offset_value: jsc.JSValue = arguments.nextEat() orelse .null;
-            // if (offset == null) {
-            //   offset = 0;
-            // } else {
-            //   validateInteger(offset, 'offset', 0);
-            // }
-            const offset: u64 = if (offset_value.isUndefinedOrNull())
-                0
-            else
-                @intCast(try jsc.Node.validators.validateInteger(ctx, offset_value, "offset", 0, jsc.MAX_SAFE_INTEGER));
+        pub fn deinit(this: Read) void {
+            var buffer = this.buffer;
+            buffer.deinit();
+        }
 
-            // length |= 0;
-            const length_float: f64 = if (arguments.nextEat()) |arg|
-                try arg.toNumber(ctx)
-            else
-                0;
-
-            //   if (length === 0) {
-            //     return process.nextTick(function tick() {
-            //       callback(null, 0, buffer);
-            //     });
-            //   }
-            if (length_float == 0) {
-                return .{ .fd = fd, .buffer = buffer, .length = 0, .offset = 0 };
+        pub fn fromBindgen(args: anytype) bun.OOM!Validated(Read) {
+            const length = args.length;
+            if (length == 0) {
+                return .{ .value = .{
+                    .fd = .fromUV(args.fd),
+                    .buffer = try args.buffer.toOwned(),
+                    .length = 0,
+                    .offset = 0,
+                } };
             }
 
-            const buf_len = buffer.slice().len;
+            const buf_len = args.buffer.length();
             if (buf_len == 0) {
-                return ctx.ERR(.INVALID_ARG_VALUE, "The argument 'buffer' is empty and cannot be written.", .{}).throw();
+                return .{ .validation_error = .{
+                    .invalid_argument_value = "The argument 'buffer' is empty and cannot be written.",
+                } };
             }
-            // validateOffsetLengthRead(offset, length, buffer.byteLength);
-            if (@mod(length_float, 1) != 0) {
-                return ctx.throwRangeError(length_float, .{ .field_name = "length", .msg = "an integer" });
+            if (length > buf_len) {
+                return .{ .validation_error = .{ .out_of_range = .{
+                    .value = .{ .unsigned = length },
+                    .options = .{ .field_name = "length", .max = @intCast(@min(buf_len, std.math.maxInt(i64))) },
+                } } };
             }
-            const length_int: i64 = @intFromFloat(length_float);
-            if (length_int > buf_len) {
-                return ctx.throwRangeError(
-                    length_float,
-                    .{ .field_name = "length", .max = @intCast(@min(buf_len, std.math.maxInt(i64))) },
-                );
+            const buf_len_u64: u64 = @intCast(buf_len);
+            if (args.offset +| length > buf_len_u64) {
+                return .{ .validation_error = .{ .out_of_range = .{
+                    .value = .{ .unsigned = length },
+                    .options = .{ .field_name = "length", .max = @intCast(@min(buf_len_u64 -| args.offset, std.math.maxInt(i64))) },
+                } } };
             }
-            if (@as(i64, @intCast(offset)) +| length_int > buf_len) {
-                return ctx.throwRangeError(
-                    length_float,
-                    .{ .field_name = "length", .max = @intCast(buf_len -| offset) },
-                );
-            }
-            if (length_int < 0) {
-                return ctx.throwRangeError(length_float, .{ .field_name = "length", .min = 0 });
-            }
-            const length: u64 = @intCast(length_int);
-
-            // if (position == null) {
-            //   position = -1;
-            // } else {
-            //   validatePosition(position, 'position', length);
-            // }
-            const position_value: jsc.JSValue = arguments.nextEat() orelse .null;
-            const position_int: i64 = if (position_value.isUndefinedOrNull())
-                -1
-            else if (position_value.isNumber())
-                try jsc.Node.validators.validateInteger(ctx, position_value, "position", -1, jsc.MAX_SAFE_INTEGER)
-            else if (jsc.JSBigInt.fromJS(position_value)) |position| pos: {
-                // const maxPosition = 2n ** 63n - 1n - BigInt(length)
-                const max_position = std.math.maxInt(i64) - length_int;
-                if (position.order(i64, -1) == .lt or position.order(i64, max_position) == .gt) {
-                    const position_str = try position.toString(ctx);
-                    defer position_str.deref();
-
-                    return ctx.throwRangeError(position_str, .{
+            const max_position = std.math.maxInt(i64) - @as(i64, @intCast(length));
+            if (args.position > max_position) {
+                return .{ .validation_error = .{ .out_of_range = .{
+                    .value = .{ .signed = args.position },
+                    .options = .{
                         .field_name = "position",
                         .min = -1,
-                        .max = @intCast(max_position),
-                    });
-                }
-                break :pos position.toInt64();
-            } else return ctx.throwInvalidArgumentTypeValue("position", "number or bigint", position_value);
+                        .max = max_position,
+                    },
+                } } };
+            }
 
-            // Bun needs `null` to tell the native function if to use pread or read
-            const position: ?ReadPosition = if (position_int >= 0)
-                position_int
-            else
-                null;
-
-            return .{
-                .fd = fd,
-                .buffer = buffer,
-                .offset = offset,
+            return .{ .value = .{
+                .fd = .fromUV(args.fd),
+                .buffer = try args.buffer.toOwned(),
+                .offset = args.offset,
                 .length = length,
-                .position = position,
-            };
+                .position = if (args.position >= 0) args.position else null,
+            } };
         }
     };
 
@@ -2610,85 +1019,47 @@ pub const Arguments = struct {
         path: PathOrFileDescriptor,
         encoding: Encoding = Encoding.utf8,
 
-        offset: jsc.WebCore.Blob.SizeType = 0,
-        max_size: ?jsc.WebCore.Blob.SizeType = null,
+        offset: BlobSize.SizeType = 0,
+        max_size: ?BlobSize.SizeType = null,
         limit_size_for_javascript: bool = false,
 
         flag: FileSystemFlags = FileSystemFlags.r,
 
-        signal: ?*AbortSignal = null,
+        abort: NodeFSAbort.Token = .{},
 
         pub fn deinit(self: ReadFile) void {
             self.path.deinit();
-            if (self.signal) |signal| {
-                signal.pendingActivityUnref();
-                signal.unref();
-            }
+            self.abort.deinit();
         }
 
-        pub fn deinitAndUnprotect(self: ReadFile) void {
-            self.path.deinitAndUnprotect();
-            if (self.signal) |signal| {
-                signal.pendingActivityUnref();
-                signal.unref();
-            }
+        pub fn toThreadSafe(self: *ReadFile) bun.OOM!void {
+            try self.path.toThreadSafe();
         }
 
-        pub fn toThreadSafe(self: *ReadFile) void {
-            self.path.toThreadSafe();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!ReadFile {
-            const path = try PathOrFileDescriptor.fromJS(ctx, arguments, bun.default_allocator) orelse {
-                return ctx.throwInvalidArguments("path must be a string or a file descriptor", .{});
-            };
+        pub fn fromBindgen(args: anytype) bun.JSError!ReadFile {
+            const path = try PathOrFileDescriptor.fromBinding(args.path);
             errdefer path.deinit();
 
-            var encoding = Encoding.buffer;
-            var flag = FileSystemFlags.r;
-
-            var abort_signal: ?*AbortSignal = null;
-            errdefer if (abort_signal) |signal| {
-                signal.pendingActivityUnref();
-                signal.unref();
+            var encoding: Encoding = .buffer;
+            var flag: FileSystemFlags = .r;
+            if (args.options) |options| switch (options) {
+                .encoding => |value| encoding = encodingFromBindgenValue(value),
+                .options => |value| {
+                    if (value.encoding) |selected| encoding = encodingFromBindgenValue(selected);
+                    flag = fileSystemFlagsFromBindgen(value.flag, .r);
+                },
             };
-
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                if (arg.isString()) {
-                    encoding = try Encoding.assert(arg, ctx, encoding);
-                } else if (arg.isObject()) {
-                    encoding = try getEncoding(arg, ctx, encoding);
-
-                    if (try arg.getOptional(ctx, "flag", jsc.JSValue)) |flag_| {
-                        flag = try FileSystemFlags.fromJS(ctx, flag_) orelse flag;
-                    }
-
-                    if (try arg.getOptional(ctx, "signal", jsc.JSValue)) |value| {
-                        if (AbortSignal.fromJS(value)) |signal| {
-                            abort_signal = signal.ref();
-                            signal.pendingActivityRef();
-                        } else {
-                            return ctx.throwInvalidArgumentTypeValue("signal", "AbortSignal", value);
-                        }
-                    }
-                }
-            }
 
             return .{
                 .path = path,
                 .encoding = encoding,
                 .flag = flag,
                 .limit_size_for_javascript = true,
-                .signal = abort_signal,
             };
         }
 
         pub fn aborted(self: ReadFile) bool {
-            if (self.signal) |signal| {
-                return signal.aborted();
-            }
-            return false;
+            return self.abort.aborted();
         }
     };
 
@@ -2705,97 +1076,41 @@ pub const Arguments = struct {
 
         dirfd: FD,
 
-        signal: ?*AbortSignal = null,
+        abort: NodeFSAbort.Token = .{},
 
         pub fn deinit(self: WriteFile) void {
             self.file.deinit();
             self.data.deinit();
-            if (self.signal) |signal| {
-                signal.pendingActivityUnref();
-                signal.unref();
-            }
+            self.abort.deinit();
         }
 
-        pub fn toThreadSafe(self: *WriteFile) void {
-            self.file.toThreadSafe();
-            self.data.toThreadSafe();
+        pub fn toThreadSafe(self: *WriteFile) bun.OOM!void {
+            try self.file.toThreadSafe();
+            try self.data.toThreadSafe();
         }
 
-        pub fn deinitAndUnprotect(self: *WriteFile) void {
-            self.file.deinitAndUnprotect();
-            self.data.deinitAndUnprotect();
-            if (self.signal) |signal| {
-                signal.pendingActivityUnref();
-                signal.unref();
-            }
-        }
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!WriteFile {
-            const path = try PathOrFileDescriptor.fromJS(ctx, arguments, bun.default_allocator) orelse {
-                return ctx.throwInvalidArguments("path must be a string or a file descriptor", .{});
-            };
+        pub fn fromBindgen(args: anytype) bun.JSError!WriteFile {
+            const path = try PathOrFileDescriptor.fromBinding(args.file);
             errdefer path.deinit();
 
-            const data_value = arguments.nextEat() orelse {
-                return ctx.throwInvalidArguments("data is required", .{});
+            var encoding: Encoding = switch (args.data) {
+                .buffer => .buffer,
+                .string => .utf8,
             };
-
-            var encoding = Encoding.buffer;
             var flag = FileSystemFlags.w;
             var mode: Mode = default_permission;
-            var abort_signal: ?*AbortSignal = null;
-
-            errdefer if (abort_signal) |signal| {
-                signal.pendingActivityUnref();
-                signal.unref();
-            };
-
             var flush: bool = false;
-            if (data_value.isString()) {
-                encoding = Encoding.utf8;
-            }
-
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                if (arg.isString()) {
-                    encoding = try Encoding.assert(arg, ctx, encoding);
-                } else if (arg.isObject()) {
-                    encoding = try getEncoding(arg, ctx, encoding);
-
-                    if (try arg.getOptional(ctx, "flag", jsc.JSValue)) |flag_| {
-                        flag = try FileSystemFlags.fromJS(ctx, flag_) orelse flag;
-                    }
-
-                    if (try arg.getOptional(ctx, "mode", jsc.JSValue)) |mode_| {
-                        mode = try jsc.Node.modeFromJS(ctx, mode_) orelse mode;
-                    }
-
-                    if (try arg.getOptional(ctx, "signal", jsc.JSValue)) |value| {
-                        if (AbortSignal.fromJS(value)) |signal| {
-                            abort_signal = signal.ref();
-                            signal.pendingActivityRef();
-                        } else {
-                            return ctx.throwInvalidArgumentTypeValue("signal", "AbortSignal", value);
-                        }
-                    }
-
-                    if (try arg.getOptional(ctx, "flush", jsc.JSValue)) |flush_| {
-                        if (flush_.isBoolean() or flush_.isUndefinedOrNull()) {
-                            flush = flush_ == .true;
-                        } else {
-                            return ctx.throwInvalidArgumentTypeValue("flush", "boolean", flush_);
-                        }
-                    }
-                }
-            }
-
-            // String objects not allowed (typeof new String("hi") === "object")
-            // https://github.com/nodejs/node/blob/6f946c95b9da75c70e868637de8161bc8d048379/lib/internal/fs/utils.js#L916
-            const allow_string_object = false;
-            // the pattern in node_fs.zig is to call toThreadSafe after Arguments.*.fromJS
-            const is_async = false;
-            const data = try StringOrBuffer.fromJSWithEncodingMaybeAsync(ctx, bun.default_allocator, data_value, encoding, is_async, allow_string_object) orelse {
-                return ctx.ERR(.INVALID_ARG_TYPE, "The \"data\" argument must be of type string or an instance of Buffer, TypedArray, or DataView", .{}).throw();
+            if (args.options) |options| switch (options) {
+                .encoding => |value| encoding = encodingFromBindgenValue(value),
+                .options => |value| {
+                    if (value.encoding) |selected| encoding = encodingFromBindgenValue(selected);
+                    flag = fileSystemFlagsFromBindgen(value.flag, .w);
+                    mode = @truncate(value.mode orelse default_permission);
+                    flush = value.flush orelse false;
+                },
             };
+
+            const data = try StringOrBuffer.fromBindgen(args.data, encoding);
 
             return .{
                 .file = path,
@@ -2804,92 +1119,30 @@ pub const Arguments = struct {
                 .mode = mode,
                 .data = data,
                 .dirfd = bun.FD.cwd(),
-                .signal = abort_signal,
                 .flush = flush,
             };
         }
 
         pub fn aborted(self: WriteFile) bool {
-            if (self.signal) |signal| {
-                return signal.aborted();
-            }
-            return false;
+            return self.abort.aborted();
         }
     };
 
     pub const AppendFile = WriteFile;
 
-    pub const OpenDir = struct {
-        path: PathLike,
-        encoding: Encoding = Encoding.utf8,
-
-        /// Number of directory entries that are buffered internally when reading from the directory. Higher values lead to better performance but higher memory usage. Default: 32
-        buffer_size: c_int = 32,
-
-        pub fn deinit(self: OpenDir) void {
-            self.path.deinit();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!OpenDir {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
-            var encoding = Encoding.buffer;
-            var buffer_size: c_int = 32;
-
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                if (arg.isString()) {
-                    encoding = Encoding.assert(arg, ctx, encoding) catch encoding;
-                } else if (arg.isObject()) {
-                    if (getEncoding(arg, ctx)) |encoding_| {
-                        encoding = encoding_;
-                    }
-
-                    if (try arg.get(ctx, "bufferSize")) |buffer_size_| {
-                        buffer_size = buffer_size_.toInt32();
-                        if (buffer_size < 0) {
-                            return ctx.throwInvalidArguments("bufferSize must be > 0", .{});
-                        }
-                    }
-                }
-            }
-
-            return OpenDir{
-                .path = path,
-                .encoding = encoding,
-                .buffer_size = buffer_size,
-            };
-        }
-    };
-
     pub const Exists = struct {
-        path: ?PathLike,
+        path: PathLike,
 
         pub fn deinit(this: Exists) void {
-            if (this.path) |path| {
-                path.deinit();
-            }
+            this.path.deinit();
         }
 
-        pub fn toThreadSafe(this: *Exists) void {
-            if (this.path) |*path| {
-                path.toThreadSafe();
-            }
+        pub fn toThreadSafe(this: *Exists) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn deinitAndUnprotect(this: *Exists) void {
-            if (this.path) |*path| {
-                path.deinitAndUnprotect();
-            }
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Exists {
-            return Exists{
-                .path = try PathLike.fromJS(ctx, arguments),
-            };
+        pub fn fromBindgen(args: anytype) bun.JSError!Exists {
+            return .{ .path = try PathLike.fromBindingView(args.path) };
         }
     };
 
@@ -2901,30 +1154,14 @@ pub const Arguments = struct {
             this.path.deinit();
         }
 
-        pub fn toThreadSafe(this: *Access) void {
-            this.path.toThreadSafe();
+        pub fn toThreadSafe(this: *Access) bun.OOM!void {
+            try this.path.toThreadSafe();
         }
 
-        pub fn deinitAndUnprotect(this: *Access) void {
-            this.path.deinitAndUnprotect();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Access {
-            const path = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("path must be a string or TypedArray", .{});
-            };
-            errdefer path.deinit();
-
-            var mode = FileSystemFlags.r;
-
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                mode = try FileSystemFlags.fromJSNumberOnly(ctx, arg, .access);
-            }
-
-            return Access{
-                .path = path,
-                .mode = mode,
+        pub fn fromBindgen(args: anytype) bun.JSError!Access {
+            return .{
+                .path = try PathLike.fromBindingView(args.path),
+                .mode = @fromBackingInt(@intCast(args.mode)),
             };
         }
     };
@@ -2933,17 +1170,12 @@ pub const Arguments = struct {
         fd: FD,
 
         pub fn deinit(_: FdataSync) void {}
-        pub fn toThreadSafe(self: *const @This()) void {
+        pub fn toThreadSafe(self: *const @This()) bun.OOM!void {
             _ = self;
         }
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!FdataSync {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
-            };
-
-            return FdataSync{ .fd = fd };
+        pub fn fromBindgen(args: anytype) bun.JSError!FdataSync {
+            return .{ .fd = .fromUV(args.fd) };
         }
     };
 
@@ -2957,37 +1189,18 @@ pub const Arguments = struct {
             this.dest.deinit();
         }
 
-        pub fn toThreadSafe(this: *CopyFile) void {
-            this.src.toThreadSafe();
-            this.dest.toThreadSafe();
+        pub fn toThreadSafe(this: *CopyFile) bun.OOM!void {
+            try this.src.toThreadSafe();
+            try this.dest.toThreadSafe();
         }
 
-        pub fn deinitAndUnprotect(this: *const CopyFile) void {
-            this.src.deinitAndUnprotect();
-            this.dest.deinitAndUnprotect();
-        }
-
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!CopyFile {
-            const src = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("src must be a string or TypedArray", .{});
-            };
+        pub fn fromBindgen(args: anytype) bun.JSError!CopyFile {
+            const src = try PathLike.fromBindingView(args.src);
             errdefer src.deinit();
-
-            const dest = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("dest must be a string or TypedArray", .{});
-            };
-            errdefer dest.deinit();
-
-            var mode: constants.Copyfile = @fromBackingInt(@intCast(0));
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                mode = @fromBackingInt(@intCast(@backingInt(try FileSystemFlags.fromJSNumberOnly(ctx, arg, .copy_file))));
-            }
-
-            return CopyFile{
+            return .{
                 .src = src,
-                .dest = dest,
-                .mode = mode,
+                .dest = try PathLike.fromBindingView(args.dest),
+                .mode = @fromBackingInt(@intCast(args.mode)),
             };
         }
     };
@@ -2997,17 +1210,7 @@ pub const Arguments = struct {
         dest: PathLike,
         flags: Flags,
 
-        const Flags = struct {
-            mode: constants.Copyfile,
-            recursive: bool,
-            errorOnExist: bool,
-            force: bool,
-            deinit_paths: bool = true,
-
-            pub fn skipsExisting(this: Flags) bool {
-                return !this.force and !this.errorOnExist;
-            }
-        };
+        pub const Flags = NodeFSCopy.Arguments.Flags;
 
         pub fn deinit(this: *const Cp) void {
             if (this.flags.deinit_paths) {
@@ -3016,119 +1219,65 @@ pub const Arguments = struct {
             }
         }
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Cp {
-            const src = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("src must be a string or TypedArray", .{});
-            };
+        pub fn fromBindgen(args: anytype) bun.JSError!Cp {
+            const src = try PathLike.fromBindingView(args.src);
             errdefer src.deinit();
-
-            const dest = try PathLike.fromJS(ctx, arguments) orelse {
-                return ctx.throwInvalidArguments("dest must be a string or TypedArray", .{});
-            };
-            errdefer dest.deinit();
-
-            var recursive: bool = false;
-            var errorOnExist: bool = false;
-            var force: bool = true;
-            var mode: i32 = 0;
-
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                recursive = arg.toBoolean();
-            }
-
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                errorOnExist = arg.toBoolean();
-            }
-
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                force = arg.toBoolean();
-            }
-
-            if (arguments.next()) |arg| {
-                arguments.eat();
-                if (arg.isNumber()) {
-                    mode = try arg.coerce(i32, ctx);
-                }
-            }
-
-            return Cp{
+            return .{
                 .src = src,
-                .dest = dest,
+                .dest = try PathLike.fromBindingView(args.dest),
                 .flags = .{
-                    .mode = @fromBackingInt(@intCast(mode)),
-                    .recursive = recursive,
-                    .errorOnExist = errorOnExist,
-                    .force = force,
+                    .mode = @fromBackingInt(@intCast(args.mode)),
+                    .recursive = args.recursive,
+                    .errorOnExist = args.errorOnExist,
+                    .force = args.force,
                 },
+            };
+        }
+
+        pub fn toCopyArguments(this: Cp) NodeFSCopy.Arguments {
+            return .{
+                .src = this.src,
+                .dest = this.dest,
+                .flags = this.flags,
             };
         }
     };
 
-    pub const UnwatchFile = void;
+    pub const Watch = @import("./FSWatcherTypes.zig").Arguments;
 
-    pub const Watch = Watcher.Arguments;
-
-    pub const WatchFile = StatWatcher.Arguments;
+    pub const WatchFile = @import("./StatWatcherTypes.zig").Arguments;
 
     pub const Fsync = struct {
         fd: FD,
 
         pub fn deinit(_: Fsync) void {}
-        pub fn toThreadSafe(_: *const @This()) void {}
+        pub fn toThreadSafe(_: *const @This()) bun.OOM!void {}
 
-        pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Fsync {
-            const fd_value: jsc.JSValue = arguments.nextEat() orelse .js_undefined;
-            const fd = try bun.FD.fromJSValidated(fd_value, ctx) orelse {
-                return throwInvalidFdError(ctx, fd_value);
-            };
-
-            return Fsync{ .fd = fd };
+        pub fn fromBindgen(args: anytype) bun.JSError!Fsync {
+            return .{ .fd = .fromUV(args.fd) };
         }
     };
 };
 
 pub const StatOrNotFound = union(enum) {
-    stats: bun.jsc.Node.Stats,
+    stats: NodeStats,
     not_found: void,
-
-    pub fn toJS(this: *StatOrNotFound, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-        return switch (this.*) {
-            .stats => this.stats.toJS(globalObject),
-            .not_found => .js_undefined,
-        };
-    }
-
-    pub fn toJSNewlyCreated(this: *const StatOrNotFound, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-        return switch (this.*) {
-            .stats => this.stats.toJSNewlyCreated(globalObject),
-            .not_found => .js_undefined,
-        };
-    }
 };
 
-pub const StringOrUndefined = union(enum) {
-    string: bun.String,
-    none: void,
+pub const StringOrUndefined = NodeFSCore.MkdirResult;
 
-    pub fn toJS(this: *StringOrUndefined, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-        return switch (this.*) {
-            .string => try this.string.transferToJS(globalObject),
-            .none => .js_undefined,
-        };
+const OwnedStringResult = struct {
+    string: bun.String,
+
+    pub fn deinit(result: *@This()) void {
+        result.string.deref();
     }
 };
 
 /// For use in `Return`'s definitions to act as `void` while returning `null` to JavaScript
-const Null = struct {
-    pub fn toJS(_: @This(), _: *jsc.JSGlobalObject) jsc.JSValue {
-        return .null;
-    }
-};
+const Null = struct {};
 
-const Return = struct {
+pub const Return = struct {
     pub const Access = Null;
     pub const AppendFile = void;
     pub const Close = void;
@@ -3139,7 +1288,7 @@ const Return = struct {
     pub const Chmod = void;
     pub const Fchown = void;
     pub const Fdatasync = void;
-    pub const Fstat = bun.jsc.Node.Stats;
+    pub const Fstat = NodeStats;
     pub const Rm = void;
     pub const Fsync = void;
     pub const Ftruncate = void;
@@ -3149,78 +1298,20 @@ const Return = struct {
     pub const Link = void;
     pub const Lstat = StatOrNotFound;
     pub const Mkdir = StringOrUndefined;
-    pub const Mkdtemp = jsc.ZigString;
+    pub const Mkdtemp = OwnedStringResult;
     pub const Open = FD;
     pub const WriteFile = void;
     pub const Readv = Read;
-    pub const StatFS = bun.jsc.Node.StatFS;
+    pub const StatFS = NodeStatFS;
     pub const Read = struct {
         bytes_read: u52,
-
-        pub fn toJS(this: Read, _: *jsc.JSGlobalObject) jsc.JSValue {
-            return jsc.JSValue.jsNumberFromUint64(this.bytes_read);
-        }
-    };
-    pub const ReadPromise = struct {
-        bytes_read: u52,
-        buffer_val: jsc.JSValue = jsc.JSValue.zero,
-        const fields = .{
-            .bytesRead = jsc.ZigString.init("bytesRead"),
-            .buffer = jsc.ZigString.init("buffer"),
-        };
-        pub fn toJS(this: *const ReadPromise, ctx: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-            defer if (!this.buffer_val.isEmptyOrUndefinedOrNull())
-                this.buffer_val.unprotect();
-
-            return (try jsc.JSObject.createObject2(
-                ctx,
-                &fields.bytesRead,
-                &fields.buffer,
-                jsc.JSValue.jsNumberFromUint64(@as(u52, @intCast(@min(std.math.maxInt(u52), this.bytes_read)))),
-                this.buffer_val,
-            )).toJS();
-        }
-    };
-    pub const WritePromise = struct {
-        bytes_written: u52,
-        buffer: StringOrBuffer,
-        buffer_val: jsc.JSValue = jsc.JSValue.zero,
-        const fields = .{
-            .bytesWritten = jsc.ZigString.init("bytesWritten"),
-            .buffer = jsc.ZigString.init("buffer"),
-        };
-
-        // Excited for the issue that's like "cannot read file bigger than 2 GB"
-        pub fn toJS(this: *const WritePromise, globalObject: *jsc.JSGlobalObject) bun.JSError!bun.jsc.JSValue {
-            defer if (!this.buffer_val.isEmptyOrUndefinedOrNull())
-                this.buffer_val.unprotect();
-
-            return (try jsc.JSObject.createObject2(
-                globalObject,
-                &fields.bytesWritten,
-                &fields.buffer,
-                jsc.JSValue.jsNumberFromUint64(@as(u52, @intCast(@min(std.math.maxInt(u52), this.bytes_written)))),
-                if (this.buffer == .buffer)
-                    this.buffer_val
-                else
-                    this.buffer.toJS(globalObject),
-            )).toJS();
-        }
     };
     pub const Write = struct {
         bytes_written: u52,
-        const fields = .{
-            .bytesWritten = jsc.ZigString.init("bytesWritten"),
-        };
-
-        // Excited for the issue that's like "cannot read file bigger than 2 GB"
-        pub fn toJS(this: *const Write, _: *jsc.JSGlobalObject) jsc.JSValue {
-            return jsc.JSValue.jsNumberFromUint64(this.bytes_written);
-        }
     };
     pub const Readdir = union(Tag) {
-        with_file_types: []bun.jsc.Node.Dirent,
-        buffers: []Buffer,
+        with_file_types: []NodeTypes.Dirent,
+        buffers: []NodeBuffer,
         files: []const bun.String,
 
         pub const Tag = enum {
@@ -3229,25 +1320,19 @@ const Return = struct {
             files,
         };
 
-        pub fn toJS(this: Readdir, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-            switch (this) {
-                .with_file_types => {
-                    defer bun.default_allocator.free(this.with_file_types);
-                    var array = try jsc.JSArray.createEmpty(globalObject, this.with_file_types.len);
-                    var previous_jsstring: ?*jsc.JSString = null;
-                    for (this.with_file_types, 0..) |*item, i| {
-                        const res = try item.toJSNewlyCreated(globalObject, &previous_jsstring);
-                        try array.putDirectIndex(globalObject, @truncate(i), res);
-                    }
-                    return array.toJS();
+        pub fn deinit(result: *@This()) void {
+            switch (result.*) {
+                .with_file_types => |items| {
+                    for (items) |*item| item.deref();
+                    bun.default_allocator.free(items);
                 },
-                .buffers => {
-                    defer bun.default_allocator.free(this.buffers);
-                    return .fromAny(globalObject, []Buffer, this.buffers);
+                .buffers => |items| {
+                    for (items) |*item| item.deinit();
+                    bun.default_allocator.free(items);
                 },
-                .files => {
-                    // automatically freed
-                    return .fromAny(globalObject, []const bun.String, this.files);
+                .files => |items| {
+                    for (items) |*item| item.deref();
+                    bun.default_allocator.free(items);
                 },
             }
         }
@@ -3256,7 +1341,7 @@ const Return = struct {
     pub const ReadFileWithOptions = union(enum) {
         string: string,
         transcoded_string: bun.String,
-        buffer: Buffer,
+        buffer: NodeBuffer,
         null_terminated: [:0]const u8,
     };
     pub const Readlink = StringOrBuffer;
@@ -3268,18 +1353,55 @@ const Return = struct {
     pub const Symlink = void;
     pub const Truncate = void;
     pub const Unlink = void;
-    pub const UnwatchFile = void;
-    pub const Watch = jsc.JSValue;
-    pub const WatchFile = jsc.JSValue;
     pub const Utimes = void;
     pub const Chown = void;
     pub const Lutimes = void;
     pub const Writev = Write;
 };
 
+pub fn deinitSuccess(result: anytype) void {
+    const Result = @TypeOf(result.*);
+    if (comptime Result == Return.Open) {
+        result.close();
+        return;
+    }
+    if (comptime Result == Return.Mkdir) {
+        result.deinit();
+        return;
+    }
+    if (comptime Result == Return.Mkdtemp) {
+        result.deinit();
+        return;
+    }
+    if (comptime Result == Return.Readdir) {
+        result.deinit();
+        return;
+    }
+    if (comptime Result == Return.ReadFile) {
+        result.deinit();
+        return;
+    }
+    if (comptime Result == void or
+        Result == Return.Access or
+        Result == Return.Exists or
+        Result == Return.Fstat or
+        Result == StatOrNotFound or
+        Result == Return.StatFS or
+        Result == Return.Read or
+        Result == Return.Write)
+    {
+        return;
+    }
+    @compileError("NodeFS async result needs an explicit cleanup classification: " ++ @typeName(Result));
+}
+
 /// Bun's implementation of the Node.js "fs" module
 /// https://nodejs.org/api/fs.html
 /// https://github.com/DefinitelyTyped/DefinitelyTyped/blob/master/types/node/fs.d.ts
+const node_fs_threadlocal_buffers = bun.ThreadlocalBuffers(struct {
+    read_file: [256 * 1024]u8 = undefined,
+});
+
 pub const NodeFS = struct {
     /// Buffer to store a temporary file path that might appear in a returned error message.
     ///
@@ -3287,17 +1409,13 @@ pub const NodeFS = struct {
     /// That means a stack-allocated buffer won't suffice. Instead, we re-use
     /// the heap allocated buffer on the NodeFS struct
     sync_error_buf: bun.PathBuffer align(@alignOf(u16)) = undefined,
-    /// Message for errors carrying Node wording instead of an errno label.
-    /// Same lifetime as `sync_error_buf`.
     sync_message_buf: [2048]u8 = undefined,
-    vm: ?*jsc.VirtualMachine = null,
+    runtime_io: ?std.Io = null,
 
     pub const ReturnType = Return;
 
-    /// `vm` is only set on the JS thread; work pool tasks construct a bare
-    /// `NodeFS`. Both hold the `Io` that `Cli.start` installed.
     pub fn io(this: *const NodeFS) std.Io {
-        return if (this.vm) |vm| vm.io else bun.cli.Cli.io;
+        return this.runtime_io orelse bun.cli.Cli.io;
     }
 
     pub fn access(this: *NodeFS, args: Arguments.Access, _: Flavor) Maybe(Return.Access) {
@@ -3370,98 +1488,7 @@ pub const NodeFS = struct {
         return .success;
     }
 
-    // since we use a 64 KB stack buffer, we should not let this function get inlined
-    pub noinline fn copyFileUsingReadWriteLoop(src: [:0]const u8, dest: [:0]const u8, src_fd: FD, dest_fd: FD, stat_size: usize, wrote: *u64) Maybe(Return.CopyFile) {
-        var stack_buf: [64 * 1024]u8 = undefined;
-        var buf_to_free: []u8 = &[_]u8{};
-        var buf: []u8 = &stack_buf;
-
-        maybe_allocate_large_temp_buf: {
-            if (stat_size > stack_buf.len * 16) {
-                // Don't allocate more than 8 MB at a time
-                const clamped_size: usize = @min(stat_size, 8 * 1024 * 1024);
-
-                const buf_ = bun.default_allocator.alloc(u8, clamped_size) catch break :maybe_allocate_large_temp_buf;
-                buf = buf_;
-                buf_to_free = buf_;
-            }
-        }
-
-        defer {
-            if (buf_to_free.len > 0) bun.default_allocator.free(buf_to_free);
-        }
-
-        var remain = @as(u64, @intCast(@max(stat_size, 0)));
-        toplevel: while (remain > 0) {
-            const amt = switch (Syscall.read(src_fd, buf[0..@min(buf.len, remain)])) {
-                .result => |result| result,
-                .err => |err| return Maybe(Return.CopyFile){ .err = if (src.len > 0) err.withPath(src) else err },
-            };
-            // 0 == EOF
-            if (amt == 0) {
-                break :toplevel;
-            }
-            wrote.* += amt;
-            remain -|= amt;
-
-            var slice = buf[0..amt];
-            while (slice.len > 0) {
-                const written = switch (Syscall.write(dest_fd, slice)) {
-                    .result => |result| result,
-                    .err => |err| return Maybe(Return.CopyFile){ .err = if (dest.len > 0) err.withPath(dest) else err },
-                };
-                if (written == 0) break :toplevel;
-                slice = slice[written..];
-            }
-        } else {
-            outer: while (true) {
-                const amt = switch (Syscall.read(src_fd, buf)) {
-                    .result => |result| result,
-                    .err => |err| return Maybe(Return.CopyFile){ .err = if (src.len > 0) err.withPath(src) else err },
-                };
-                // we don't know the size
-                // so we just go forever until we get an EOF
-                if (amt == 0) {
-                    break;
-                }
-                wrote.* += amt;
-
-                var slice = buf[0..amt];
-                while (slice.len > 0) {
-                    const written = switch (Syscall.write(dest_fd, slice)) {
-                        .result => |result| result,
-                        .err => |err| return Maybe(Return.CopyFile){ .err = if (dest.len > 0) err.withPath(dest) else err },
-                    };
-                    slice = slice[written..];
-                    if (written == 0) break :outer;
-                }
-            }
-        }
-
-        return .success;
-    }
-
-    // copy_file_range() is frequently not supported across devices, such as tmpfs.
-    // This is relevant for `bun install`
-    // However, sendfile() is supported across devices.
-    // Only on Linux. There are constraints though. It cannot be used if the file type does not support
-    pub noinline fn copyFileUsingSendfileOnLinuxWithReadWriteFallback(src: [:0]const u8, dest: [:0]const u8, src_fd: FD, dest_fd: FD, stat_size: usize, wrote: *u64) Maybe(Return.CopyFile) {
-        while (true) {
-            const amt = switch (bun.sys.sendfile(src_fd, dest_fd, std.math.maxInt(i32) - 1)) {
-                .err => {
-                    return copyFileUsingReadWriteLoop(src, dest, src_fd, dest_fd, stat_size, wrote);
-                },
-                .result => |amount| amount,
-            };
-
-            wrote.* += amt;
-            if (amt == 0) {
-                break;
-            }
-        }
-
-        return .success;
-    }
+    pub const copyFileUsingReadWriteLoop = NodeFSCore.copyFileUsingReadWriteLoop;
 
     pub fn copyFile(this: *NodeFS, args: Arguments.CopyFile, _: Flavor) Maybe(Return.CopyFile) {
         return switch (this.copyFileInner(args)) {
@@ -3670,7 +1697,7 @@ pub const NodeFS = struct {
                 .err => |err| return Maybe(Return.CopyFile){ .err = err },
             };
 
-            var size: usize = @intCast(@max(stat_.size, 0));
+            const size: usize = @intCast(@max(stat_.size, 0));
 
             // https://manpages.debian.org/testing/manpages-dev/ioctl_ficlone.2.en.html
             if (args.mode.isForceClone()) {
@@ -3705,68 +1732,7 @@ pub const NodeFS = struct {
                 dest_fd.close();
             }
 
-            var off_in_copy = @as(i64, @bitCast(@as(u64, 0)));
-            var off_out_copy = @as(i64, @bitCast(@as(u64, 0)));
-
-            if (!bun.canUseCopyFileRangeSyscall()) {
-                return copyFileUsingSendfileOnLinuxWithReadWriteFallback(src, dest, src_fd, dest_fd, size, &wrote);
-            }
-
-            if (size == 0) {
-                // copy until EOF
-                while (true) {
-                    // Linux Kernel 5.3 or later
-                    // Not supported in gVisor
-                    const written = linux.copy_file_range(src_fd.cast(), &off_in_copy, dest_fd.cast(), &off_out_copy, std.heap.pageSize(), 0);
-                    if (ret.errnoSysP(written, .copy_file_range, dest)) |err| {
-                        return switch (err.getErrno()) {
-                            .INTR => continue,
-                            // EINVAL: eCryptfs and other filesystems may not support copy_file_range
-                            // XDEV: cross-device copy not supported
-                            // NOSYS: syscall not available
-                            // OPNOTSUPP: filesystem doesn't support this operation
-                            inline .XDEV, .NOSYS, .INVAL, .OPNOTSUPP => |errno| brk: {
-                                if (comptime errno == .NOSYS or errno == .OPNOTSUPP) {
-                                    bun.disableCopyFileRangeSyscall();
-                                }
-                                break :brk copyFileUsingSendfileOnLinuxWithReadWriteFallback(src, dest, src_fd, dest_fd, size, &wrote);
-                            },
-                            else => return err,
-                        };
-                    }
-                    // wrote zero bytes means EOF
-                    if (written == 0) break;
-                    wrote +|= written;
-                }
-            } else {
-                while (size > 0) {
-                    // Linux Kernel 5.3 or later
-                    // Not supported in gVisor
-                    const written = linux.copy_file_range(src_fd.cast(), &off_in_copy, dest_fd.cast(), &off_out_copy, size, 0);
-                    if (ret.errnoSysP(written, .copy_file_range, dest)) |err| {
-                        return switch (err.getErrno()) {
-                            .INTR => continue,
-                            // EINVAL: eCryptfs and other filesystems may not support copy_file_range
-                            // XDEV: cross-device copy not supported
-                            // NOSYS: syscall not available
-                            // OPNOTSUPP: filesystem doesn't support this operation
-                            inline .XDEV, .NOSYS, .INVAL, .OPNOTSUPP => |errno| brk: {
-                                if (comptime errno == .NOSYS or errno == .OPNOTSUPP) {
-                                    bun.disableCopyFileRangeSyscall();
-                                }
-                                break :brk copyFileUsingSendfileOnLinuxWithReadWriteFallback(src, dest, src_fd, dest_fd, size, &wrote);
-                            },
-                            else => return err,
-                        };
-                    }
-                    // wrote zero bytes means EOF
-                    if (written == 0) break;
-                    wrote +|= written;
-                    size -|= written;
-                }
-            }
-
-            return ret.success;
+            return NodeFSCore.copyFileDataOnLinux(src, dest, src_fd, dest_fd, size, &wrote);
         }
 
         if (comptime Environment.isWindows) {
@@ -3777,7 +1743,7 @@ pub const NodeFS = struct {
             const dest = bun.strings.toKernel32Path(dest_buf, args.dest.slice());
             if (!windows.CopyFileW(src.ptr, dest.ptr, windows.BOOL.fromBool(args.mode.shouldntOverwrite())).toBool()) {
                 if (ret.errnoSysP(0, .copyfile, args.src.slice())) |rest| {
-                    return shouldIgnoreEbusy(args.src, args.dest, rest);
+                    return NodeFSCopy.Copy.shouldIgnoreEbusy(args.src, args.dest, rest);
                 }
             }
 
@@ -3789,7 +1755,7 @@ pub const NodeFS = struct {
 
     pub fn exists(this: *NodeFS, args: Arguments.Exists, _: Flavor) Maybe(Return.Exists) {
         // NOTE: exists cannot return an error
-        const path: PathLike = args.path orelse return .{ .result = false };
+        const path = args.path;
 
         if (bun.StandaloneModuleGraph.get()) |graph| {
             if (graph.find(path.slice()) != null) {
@@ -3872,7 +1838,7 @@ pub const NodeFS = struct {
     }
 
     pub fn ftruncate(_: *NodeFS, args: Arguments.FTruncate, _: Flavor) Maybe(Return.Ftruncate) {
-        return Syscall.ftruncate(args.fd, args.len orelse 0);
+        return NodeFSCore.ftruncate(args.fd, @intCast(@max(args.len, 0)));
     }
 
     pub fn futimes(_: *NodeFS, args: Arguments.Futimes, _: Flavor) Maybe(Return.Futimes) {
@@ -3963,221 +1929,35 @@ pub const NodeFS = struct {
     }
 
     pub fn mkdir(this: *NodeFS, args: Arguments.Mkdir, _: Flavor) Maybe(Return.Mkdir) {
-        if (args.path.slice().len == 0) return .{ .err = .{
-            .errno = @backingInt(bun.sys.E.NOENT),
-            .syscall = .mkdir,
-            .path = "",
-        } };
-        return if (args.recursive) mkdirRecursive(this, args) else mkdirNonRecursive(this, args);
+        return NodeFSCore.mkdirFromArgs(&this.sync_error_buf, &args, void, {});
     }
 
-    // Node doesn't absolute the path so we don't have to either
     pub fn mkdirNonRecursive(this: *NodeFS, args: Arguments.Mkdir) Maybe(Return.Mkdir) {
-        const path = args.path.sliceZ(&this.sync_error_buf);
-        return switch (Syscall.mkdir(path, args.mode)) {
-            .result => Maybe(Return.Mkdir){ .result = .{ .none = {} } },
-            .err => |err| Maybe(Return.Mkdir){ .err = err.withPath(args.path.slice()) },
-        };
+        return NodeFSCore.mkdirNonRecursiveFromArgs(&this.sync_error_buf, &args);
     }
 
     pub fn mkdirRecursive(this: *NodeFS, args: Arguments.Mkdir) Maybe(Return.Mkdir) {
-        return mkdirRecursiveImpl(this, args, void, {});
+        return NodeFSCore.mkdirRecursiveFromArgs(&this.sync_error_buf, &args, void, {});
     }
 
-    pub fn mkdirRecursiveImpl(this: *NodeFS, args: Arguments.Mkdir, comptime Ctx: type, ctx: Ctx) Maybe(Return.Mkdir) {
-        const buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(buf);
-        const path = args.path.osPathKernel32(buf);
-
-        return switch (args.always_return_none) {
-            inline else => |always_return_none| this.mkdirRecursiveOSPathImpl(Ctx, ctx, path, args.mode, !always_return_none),
-        };
-    }
-
-    pub fn _isSep(char: bun.OSPathChar) bool {
-        return if (Environment.isWindows)
-            char == '/' or char == '\\'
-        else
-            char == '/';
+    pub fn mkdirRecursiveImpl(this: *NodeFS, args: Arguments.Mkdir, comptime Context: type, context: Context) Maybe(Return.Mkdir) {
+        return NodeFSCore.mkdirRecursiveFromArgs(&this.sync_error_buf, &args, Context, context);
     }
 
     pub fn mkdirRecursiveOSPath(this: *NodeFS, path: bun.OSPathSliceZ, mode: Mode, comptime return_path: bool) Maybe(Return.Mkdir) {
-        return mkdirRecursiveOSPathImpl(this, void, {}, path, mode, return_path);
+        return NodeFSCore.mkdirRecursiveOSPath(&this.sync_error_buf, void, {}, path, mode, return_path);
     }
 
     pub fn mkdirRecursiveOSPathImpl(
         this: *NodeFS,
-        comptime Ctx: type,
-        ctx: Ctx,
+        comptime Context: type,
+        context: Context,
         path: bun.OSPathSliceZ,
         mode: Mode,
         comptime return_path: bool,
     ) Maybe(Return.Mkdir) {
-        const Char = bun.OSPathChar;
-        const len: u16 = @truncate(path.len);
-
-        // First, attempt to create the desired directory
-        // If that fails, then walk back up the path until we have a match
-        switch (Syscall.mkdirOSPath(path, mode)) {
-            .err => |err| {
-                switch (err.getErrno()) {
-                    else => {
-                        return .{ .err = err.withPath(this.osPathIntoSyncErrorBuf(path[0..len])) };
-                    },
-                    // `mkpath_np` in macOS also checks for `EISDIR`.
-                    // it is unclear if macOS lies about if the existing item is
-                    // a directory or not, so it is checked.
-                    .ISDIR,
-                    // check if it was actually a directory or not.
-                    .EXIST,
-                    => return switch (bun.sys.directoryExistsAt(bun.invalid_fd, path)) {
-                        .err => .{ .err = .{
-                            .errno = err.errno,
-                            .syscall = .mkdir,
-                            .path = this.osPathIntoSyncErrorBuf(strings.withoutNTPrefix(bun.OSPathChar, path[0..len])),
-                        } },
-                        // if is a directory, OK. otherwise failure
-                        .result => |result| if (result)
-                            .{ .result = .{ .none = {} } }
-                        else
-                            .{ .err = .{
-                                .errno = err.errno,
-                                .syscall = .mkdir,
-                                .path = this.osPathIntoSyncErrorBuf(strings.withoutNTPrefix(bun.OSPathChar, path[0..len])),
-                            } },
-                    },
-                    // continue
-                    .NOENT => {
-                        if (len == 0) {
-                            // no path to copy
-                            return .{ .err = err };
-                        }
-                    },
-                }
-            },
-            .result => {
-                if (Ctx != void) ctx.onCreateDir(path);
-                if (!return_path) {
-                    return .{ .result = .{ .none = {} } };
-                }
-                return .{
-                    .result = .{ .string = bun.String.createFromOSPath(path) },
-                };
-            },
-        }
-
-        var working_mem: *bun.OSPathBuffer = @ptrCast(@alignCast(&this.sync_error_buf));
-
-        @memcpy(working_mem[0..len], path[0..len]);
-
-        var i: u16 = len - 1;
-
-        // iterate backwards until creating the directory works successfully
-        while (i > 0) : (i -= 1) {
-            if (_isSep(path[i])) {
-                working_mem[i] = 0;
-                const parent: [:0]Char = working_mem[0..i :0];
-
-                switch (Syscall.mkdirOSPath(parent, mode)) {
-                    .err => |err| {
-                        working_mem[i] = std.fs.path.sep;
-                        switch (err.getErrno()) {
-                            .EXIST => {
-                                // On Windows, this may happen if trying to mkdir replacing a file
-                                if (bun.Environment.isWindows) {
-                                    switch (bun.sys.directoryExistsAt(bun.invalid_fd, parent)) {
-                                        .err => {},
-                                        .result => |res| {
-                                            // is a directory. break.
-                                            if (!res) return .{ .err = .{
-                                                .errno = @backingInt(bun.sys.E.NOTDIR),
-                                                .syscall = .mkdir,
-                                                .path = this.osPathIntoSyncErrorBuf(strings.withoutNTPrefix(bun.OSPathChar, path[0..len])),
-                                            } };
-                                        },
-                                    }
-                                }
-                                // Handle race condition
-                                break;
-                            },
-                            .NOENT => {
-                                continue;
-                            },
-                            else => return .{ .err = err.withPath(
-                                if (Environment.isWindows)
-                                    this.osPathIntoSyncErrorBufOverlap(strings.withoutNTPrefix(bun.OSPathChar, parent))
-                                else
-                                    strings.withoutNTPrefix(bun.OSPathChar, parent),
-                            ) },
-                        }
-                    },
-                    .result => {
-                        if (Ctx != void) ctx.onCreateDir(parent);
-                        // We found a parent that worked
-                        working_mem[i] = std.fs.path.sep;
-                        break;
-                    },
-                }
-            }
-        }
-        const first_match: u16 = i;
-        i += 1;
-        // after we find one that works, we go forward _after_ the first working directory
-        while (i < len) : (i += 1) {
-            if (_isSep(path[i])) {
-                working_mem[i] = 0;
-                const parent: [:0]Char = working_mem[0..i :0];
-
-                switch (Syscall.mkdirOSPath(parent, mode)) {
-                    .err => |err| {
-                        working_mem[i] = std.fs.path.sep;
-                        switch (err.getErrno()) {
-                            // handle the race condition
-                            .EXIST => {},
-
-                            // NOENT shouldn't happen here
-                            else => return .{
-                                .err = err.withPath(this.osPathIntoSyncErrorBuf(strings.withoutNTPrefix(bun.OSPathChar, path))),
-                            },
-                        }
-                    },
-
-                    .result => {
-                        if (Ctx != void) ctx.onCreateDir(parent);
-                        working_mem[i] = std.fs.path.sep;
-                    },
-                }
-            }
-        }
-
-        working_mem[len] = 0;
-
-        // Our final directory will not have a trailing separator
-        // so we have to create it once again
-        switch (Syscall.mkdirOSPath(working_mem[0..len :0], mode)) {
-            .err => |err| {
-                switch (err.getErrno()) {
-                    // handle the race condition
-                    .EXIST => {},
-
-                    // NOENT shouldn't happen here
-                    else => return .{
-                        .err = err.withPath(this.osPathIntoSyncErrorBuf(strings.withoutNTPrefix(bun.OSPathChar, path))),
-                    },
-                }
-            },
-            .result => {},
-        }
-
-        if (Ctx != void) ctx.onCreateDir(working_mem[0..len :0]);
-        if (!return_path) {
-            return .{ .result = .{ .none = {} } };
-        }
-        return .{
-            .result = .{ .string = bun.String.createFromOSPath(working_mem[0..first_match]) },
-        };
+        return NodeFSCore.mkdirRecursiveOSPath(&this.sync_error_buf, Context, context, path, mode, return_path);
     }
-
     pub fn mkdtemp(this: *NodeFS, args: Arguments.MkdirTemp, _: Flavor) Maybe(Return.Mkdtemp) {
         var prefix_buf = &this.sync_error_buf;
         const prefix_slice = args.prefix.slice();
@@ -4203,12 +1983,12 @@ pub const NodeFS = struct {
                     .path = prefix_buf[0 .. len + 6],
                 } };
             }
-            return .initResult(bun.handleOom(jsc.ZigString.dupeForJS(std.mem.sliceTo(req.path, 0), bun.default_allocator)));
+            return .initResult(.{ .string = bun.String.cloneUTF8(std.mem.sliceTo(req.path, 0)) });
         }
 
         const rc = c.mkdtemp(prefix_buf);
         if (rc) |ptr| {
-            return .initResult(bun.handleOom(jsc.ZigString.dupeForJS(std.mem.sliceTo(ptr, 0), bun.default_allocator)));
+            return .initResult(.{ .string = bun.String.cloneUTF8(std.mem.sliceTo(ptr, 0)) });
         }
 
         // c.getErrno(rc) returns SUCCESS if rc is -1 so we call std.c._errno() directly
@@ -4262,15 +2042,9 @@ pub const NodeFS = struct {
         return Maybe(Return.StatFS).initResult(Return.StatFS.init(&statfs_, args.big_int));
     }
 
-    pub fn openDir(_: *NodeFS, _: Arguments.OpenDir, _: Flavor) Maybe(Return.OpenDir) {
-        return Maybe(Return.OpenDir).todo();
-    }
-
-    fn readInner(_: *NodeFS, args: Arguments.Read) Maybe(Return.Read) {
+    fn readInner(_: *NodeFS, args: anytype) Maybe(Return.Read) {
         if (Environment.allow_assert) bun.assert(args.position == null);
-        var buf = args.buffer.slice();
-        buf = buf[@min(args.offset, buf.len)..];
-        buf = buf[0..@min(buf.len, args.length)];
+        const buf = args.bytes();
 
         return switch (Syscall.read(args.fd, buf)) {
             .err => |err| .{ .err = err },
@@ -4280,10 +2054,8 @@ pub const NodeFS = struct {
         };
     }
 
-    fn preadInner(_: *NodeFS, args: Arguments.Read) Maybe(Return.Read) {
-        var buf = args.buffer.slice();
-        buf = buf[@min(args.offset, buf.len)..];
-        buf = buf[0..@min(buf.len, args.length)];
+    fn preadInner(_: *NodeFS, args: anytype) Maybe(Return.Read) {
+        const buf = args.bytes();
 
         return switch (Syscall.pread(args.fd, buf, args.position.?)) {
             .err => |err| .{ .err = .{
@@ -4298,9 +2070,11 @@ pub const NodeFS = struct {
     }
 
     pub fn read(this: *NodeFS, args: Arguments.Read, _: Flavor) Maybe(Return.Read) {
-        const len1 = args.buffer.slice().len;
-        const len2 = args.length;
-        if (len1 == 0 or len2 == 0) {
+        return this.readImpl(args);
+    }
+
+    fn readImpl(this: *NodeFS, args: anytype) Maybe(Return.Read) {
+        if (args.bytes().len == 0) {
             return Maybe(Return.Read).initResult(.{ .bytes_read = 0 });
         }
         return if (args.position != null)
@@ -4309,7 +2083,7 @@ pub const NodeFS = struct {
             this.readInner(args);
     }
 
-    pub fn uv_read(this: *NodeFS, args: Arguments.Read, rc: i64) Maybe(Return.Read) {
+    pub fn uv_read(this: *NodeFS, args: anytype, rc: i64) Maybe(Return.Read) {
         _ = this;
         if (rc < 0) {
             return Maybe(Return.Read){ .err = .{
@@ -4322,7 +2096,7 @@ pub const NodeFS = struct {
         return Maybe(Return.Read).initResult(.{ .bytes_read = @intCast(rc) });
     }
 
-    pub fn uv_readv(this: *NodeFS, args: Arguments.Readv, rc: i64) Maybe(Return.Readv) {
+    pub fn uv_readv(this: *NodeFS, args: anytype, rc: i64) Maybe(Return.Readv) {
         _ = this;
         if (rc < 0) {
             return Maybe(Return.Readv){ .err = .{
@@ -4336,14 +2110,22 @@ pub const NodeFS = struct {
     }
 
     pub fn readv(this: *NodeFS, args: Arguments.Readv, _: Flavor) Maybe(Return.Readv) {
-        if (args.buffers.buffers.items.len == 0) {
+        return this.readvImpl(args);
+    }
+
+    fn readvImpl(this: *NodeFS, args: anytype) Maybe(Return.Readv) {
+        if (args.iovecs.len == 0) {
             return .{ .result = .{ .bytes_read = 0 } };
         }
         return if (args.position != null) preadvInner(this, args) else readvInner(this, args);
     }
 
     pub fn writev(this: *NodeFS, args: Arguments.Writev, _: Flavor) Maybe(Return.Writev) {
-        if (args.buffers.buffers.items.len == 0) {
+        return this.writevImpl(args);
+    }
+
+    fn writevImpl(this: *NodeFS, args: anytype) Maybe(Return.Writev) {
+        if (args.iovecs.len == 0) {
             return .{ .result = .{ .bytes_written = 0 } };
         }
         return if (args.position != null) pwritevInner(this, args) else writevInner(this, args);
@@ -4366,7 +2148,7 @@ pub const NodeFS = struct {
         return Maybe(Return.Write).initResult(.{ .bytes_written = @intCast(rc) });
     }
 
-    pub fn uv_writev(this: *NodeFS, args: Arguments.Writev, rc: i64) Maybe(Return.Writev) {
+    pub fn uv_writev(this: *NodeFS, args: anytype, rc: i64) Maybe(Return.Writev) {
         _ = this;
         if (rc < 0) {
             return Maybe(Return.Writev){ .err = .{
@@ -4415,10 +2197,10 @@ pub const NodeFS = struct {
         };
     }
 
-    fn preadvInner(_: *NodeFS, args: Arguments.Readv) Maybe(Return.Readv) {
+    fn preadvInner(_: *NodeFS, args: anytype) Maybe(Return.Readv) {
         const position = args.position.?;
 
-        return switch (Syscall.preadv(args.fd, args.buffers.buffers.items, position)) {
+        return switch (Syscall.preadv(args.fd, args.iovecs, position)) {
             .err => |err| .{
                 .err = err,
             },
@@ -4428,8 +2210,8 @@ pub const NodeFS = struct {
         };
     }
 
-    fn readvInner(_: *NodeFS, args: Arguments.Readv) Maybe(Return.Readv) {
-        return switch (Syscall.readv(args.fd, args.buffers.buffers.items)) {
+    fn readvInner(_: *NodeFS, args: anytype) Maybe(Return.Readv) {
+        return switch (Syscall.readv(args.fd, args.iovecs)) {
             .err => |err| .{
                 .err = err,
             },
@@ -4439,9 +2221,9 @@ pub const NodeFS = struct {
         };
     }
 
-    fn pwritevInner(_: *NodeFS, args: Arguments.Writev) Maybe(Return.Write) {
+    fn pwritevInner(_: *NodeFS, args: anytype) Maybe(Return.Write) {
         const position = args.position.?;
-        return switch (Syscall.pwritev(args.fd, @ptrCast(args.buffers.buffers.items), position)) {
+        return switch (Syscall.pwritev(args.fd, @ptrCast(args.iovecs), position)) {
             .err => |err| .{
                 .err = err,
             },
@@ -4451,8 +2233,8 @@ pub const NodeFS = struct {
         };
     }
 
-    fn writevInner(_: *NodeFS, args: Arguments.Writev) Maybe(Return.Write) {
-        return switch (Syscall.writev(args.fd, @ptrCast(args.buffers.buffers.items))) {
+    fn writevInner(_: *NodeFS, args: anytype) Maybe(Return.Write) {
+        return switch (Syscall.writev(args.fd, @ptrCast(args.iovecs))) {
             .err => |err| .{
                 .err = err,
             },
@@ -4471,8 +2253,8 @@ pub const NodeFS = struct {
 
         const maybe = switch (args.recursive) {
             inline else => |recursive| switch (args.tag()) {
-                .buffers => readdirInner(&this.sync_error_buf, args, Buffer, recursive, flavor),
-                .with_file_types => readdirInner(&this.sync_error_buf, args, bun.jsc.Node.Dirent, recursive, flavor),
+                .buffers => readdirInner(&this.sync_error_buf, args, NodeBuffer, recursive, flavor),
+                .with_file_types => readdirInner(&this.sync_error_buf, args, NodeTypes.Dirent, recursive, flavor),
                 .files => readdirInner(&this.sync_error_buf, args, bun.String, recursive, flavor),
             },
         };
@@ -4493,7 +2275,7 @@ pub const NodeFS = struct {
         comptime ExpectedType: type,
         entries: *std.array_list.Managed(ExpectedType),
     ) Maybe(void) {
-        const is_u16 = comptime Environment.isWindows and (ExpectedType == bun.String or ExpectedType == bun.jsc.Node.Dirent);
+        const is_u16 = comptime Environment.isWindows and (ExpectedType == bun.String or ExpectedType == NodeTypes.Dirent);
 
         var dirent_path: bun.String = bun.String.dead;
         defer {
@@ -4514,11 +2296,11 @@ pub const NodeFS = struct {
             .err => |err| {
                 for (entries.items) |*item| {
                     switch (ExpectedType) {
-                        bun.jsc.Node.Dirent => {
+                        NodeTypes.Dirent => {
                             item.deref();
                         },
-                        Buffer => {
-                            item.destroy();
+                        NodeBuffer => {
+                            item.deinit();
                         },
                         bun.String => {
                             item.deref();
@@ -4535,15 +2317,15 @@ pub const NodeFS = struct {
             },
             .result => |ent| ent,
         }) |current| : (entry = iterator.next()) {
-            if (ExpectedType == jsc.Node.Dirent) {
+            if (ExpectedType == NodeTypes.Dirent) {
                 if (dirent_path.isEmpty()) {
-                    dirent_path = jsc.WebCore.encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(basename)), basename), args.encoding);
+                    dirent_path = webcore_encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(basename)), basename), args.encoding);
                 }
             }
             if (comptime !is_u16) {
                 const utf8_name = current.name.slice();
                 switch (ExpectedType) {
-                    jsc.Node.Dirent => {
+                    NodeTypes.Dirent => {
                         dirent_path.ref();
                         // On filesystems that return DT_UNKNOWN (e.g. FUSE, bind mounts),
                         // fall back to lstat to determine the real file kind.
@@ -4555,23 +2337,23 @@ pub const NodeFS = struct {
                         else
                             current.kind;
                         entries.append(.{
-                            .name = jsc.WebCore.encoding.toBunString(utf8_name, args.encoding),
+                            .name = webcore_encoding.toBunString(utf8_name, args.encoding),
                             .path = dirent_path,
                             .kind = kind,
                         }) catch |err| bun.handleOom(err);
                     },
-                    Buffer => {
-                        bun.handleOom(entries.append(bun.handleOom(Buffer.fromString(utf8_name, bun.default_allocator))));
+                    NodeBuffer => {
+                        bun.handleOom(entries.append(bun.handleOom(NodeBuffer.copy(utf8_name))));
                     },
                     bun.String => {
-                        bun.handleOom(entries.append(jsc.WebCore.encoding.toBunString(utf8_name, args.encoding)));
+                        bun.handleOom(entries.append(webcore_encoding.toBunString(utf8_name, args.encoding)));
                     },
                     else => @compileError("unreachable"),
                 }
             } else {
                 const utf16_name = current.name.slice();
                 switch (ExpectedType) {
-                    jsc.Node.Dirent => {
+                    NodeTypes.Dirent => {
                         dirent_path.ref();
                         entries.append(.{
                             .name = bun.String.cloneUTF16(utf16_name),
@@ -4586,7 +2368,7 @@ pub const NodeFS = struct {
                         .utf8 => bun.handleOom(entries.append(bun.String.cloneUTF16(utf16_name))),
                         else => |enc| {
                             const utf8_path = bun.strings.fromWPath(re_encoding_buffer.?, utf16_name);
-                            bun.handleOom(entries.append(jsc.WebCore.encoding.toBunString(utf8_path, enc)));
+                            bun.handleOom(entries.append(webcore_encoding.toBunString(utf8_path, enc)));
                         },
                     },
                     else => @compileError("unreachable"),
@@ -4600,12 +2382,12 @@ pub const NodeFS = struct {
     pub fn readdirWithEntriesRecursiveAsync(
         buf: *bun.PathBuffer,
         args: Arguments.Readdir,
-        async_task: *AsyncReaddirRecursiveTask,
+        async_task: anytype,
         basename: [:0]const u8,
         comptime ExpectedType: type,
         entries: *std.array_list.Managed(ExpectedType),
         comptime is_root: bool,
-    ) Maybe(void) {
+    ) bun.OOM!Maybe(void) {
         const root_basename = async_task.root_path.slice();
         const flags = bun.O.DIRECTORY | bun.O.RDONLY;
         const atfd = if (comptime is_root) bun.FD.cwd() else async_task.root_fd;
@@ -4728,31 +2510,38 @@ pub const NodeFS = struct {
                 }
             }
 
+            try entries.ensureUnusedCapacity(1);
             switch (comptime ExpectedType) {
-                bun.jsc.Node.Dirent => {
+                NodeTypes.Dirent => {
                     var path_buf: bun.PathBuffer = undefined;
                     var path_fba = std.heap.FixedBufferAllocator.init(&path_buf);
                     const joined_path = std.fs.path.resolve(path_fba.allocator(), &.{ root_basename, name_to_copy }) catch root_basename;
                     const path_u8 = std.fs.path.dirname(joined_path) orelse "";
                     if (dirent_path_prev.isEmpty() or !bun.strings.eql(dirent_path_prev.byteSlice(), path_u8)) {
+                        const path = bun.String.cloneUTF8(path_u8);
+                        if (path.tag == .Dead) return error.OutOfMemory;
                         dirent_path_prev.deref();
-                        dirent_path_prev = bun.String.cloneUTF8(path_u8);
+                        dirent_path_prev = path;
                     }
+                    const name = bun.String.cloneUTF8(utf8_name);
+                    if (name.tag == .Dead) return error.OutOfMemory;
                     dirent_path_prev.ref();
 
-                    entries.append(.{
-                        .name = bun.String.cloneUTF8(utf8_name),
+                    entries.appendAssumeCapacity(.{
+                        .name = name,
                         .path = dirent_path_prev,
                         .kind = effective_kind,
-                    }) catch |err| bun.handleOom(err);
+                    });
                 },
-                Buffer => {
-                    bun.handleOom(entries.append(bun.handleOom(Buffer.fromString(name_to_copy, bun.default_allocator))));
+                NodeBuffer => {
+                    entries.appendAssumeCapacity(try NodeBuffer.copy(name_to_copy));
                 },
                 bun.String => {
-                    bun.handleOom(entries.append(bun.String.cloneUTF8(name_to_copy)));
+                    const name = bun.String.cloneUTF8(name_to_copy);
+                    if (name.tag == .Dead) return error.OutOfMemory;
+                    entries.appendAssumeCapacity(name);
                 },
-                else => bun.outOfMemory(),
+                else => @compileError("unsupported recursive readdir result type"),
             }
         }
 
@@ -4895,27 +2684,27 @@ pub const NodeFS = struct {
                 }
 
                 switch (comptime ExpectedType) {
-                    bun.jsc.Node.Dirent => {
+                    NodeTypes.Dirent => {
                         var path_buf: bun.PathBuffer = undefined;
                         var path_fba = std.heap.FixedBufferAllocator.init(&path_buf);
                         const joined_path = std.fs.path.resolve(path_fba.allocator(), &.{ root_basename, name_to_copy }) catch root_basename;
                         const path_u8 = std.fs.path.dirname(joined_path) orelse "";
                         if (dirent_path_prev.isEmpty() or !bun.strings.eql(dirent_path_prev.byteSlice(), path_u8)) {
                             dirent_path_prev.deref();
-                            dirent_path_prev = jsc.WebCore.encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(path_u8)), path_u8), args.encoding);
+                            dirent_path_prev = webcore_encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(path_u8)), path_u8), args.encoding);
                         }
                         dirent_path_prev.ref();
                         entries.append(.{
-                            .name = jsc.WebCore.encoding.toBunString(utf8_name, args.encoding),
+                            .name = webcore_encoding.toBunString(utf8_name, args.encoding),
                             .path = dirent_path_prev,
                             .kind = effective_kind,
                         }) catch |err| bun.handleOom(err);
                     },
-                    Buffer => {
-                        bun.handleOom(entries.append(bun.handleOom(Buffer.fromString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(name_to_copy)), name_to_copy), bun.default_allocator))));
+                    NodeBuffer => {
+                        bun.handleOom(entries.append(bun.handleOom(NodeBuffer.copy(strings.withoutNTPrefix(std.meta.Child(@TypeOf(name_to_copy)), name_to_copy)))));
                     },
                     bun.String => {
-                        bun.handleOom(entries.append(jsc.WebCore.encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(name_to_copy)), name_to_copy), args.encoding)));
+                        bun.handleOom(entries.append(webcore_encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(name_to_copy)), name_to_copy), args.encoding)));
                     },
                     else => @compileError("unreachable"),
                 }
@@ -4938,7 +2727,7 @@ pub const NodeFS = struct {
 
         if (
         // Typed arrays in JavaScript are limited to 4.7 GB.
-        adjusted_size > jsc.VirtualMachine.synthetic_allocation_limit or
+        adjusted_size > bun.JavaScriptLimits.syntheticAllocationLimit() or
             // If they do not have enough memory to open the file and they're on Linux, let's throw an error instead of dealing with the OOM killer.
             (Environment.isLinux and size >= bun.getTotalMemorySize()))
         {
@@ -4956,9 +2745,9 @@ pub const NodeFS = struct {
         comptime flavor: Flavor,
     ) Maybe(Return.Readdir) {
         const file_type = switch (ExpectedType) {
-            bun.jsc.Node.Dirent => "with_file_types",
+            NodeTypes.Dirent => "with_file_types",
             bun.String => "files",
-            Buffer => "buffers",
+            NodeBuffer => "buffers",
             else => @compileError("unreachable"),
         };
 
@@ -4972,11 +2761,11 @@ pub const NodeFS = struct {
                 .err => |err| {
                     for (entries.items) |*result| {
                         switch (ExpectedType) {
-                            bun.jsc.Node.Dirent => {
+                            NodeTypes.Dirent => {
                                 result.deref();
                             },
-                            Buffer => {
-                                result.destroy();
+                            NodeBuffer => {
+                                result.deinit();
                             },
                             bun.String => {
                                 result.deref();
@@ -4991,7 +2780,7 @@ pub const NodeFS = struct {
                         .err = err,
                     };
                 },
-                .result => .{ .result = @unionInit(Return.Readdir, file_type, entries.items) },
+                .result => .{ .result = @unionInit(Return.Readdir, file_type, bun.handleOom(entries.toOwnedSlice())) },
             };
         }
 
@@ -5018,7 +2807,7 @@ pub const NodeFS = struct {
             .err => |err| return .{
                 .err = err,
             },
-            .result => .{ .result = @unionInit(Return.Readdir, file_type, entries.items) },
+            .result => .{ .result = @unionInit(Return.Readdir, file_type, bun.handleOom(entries.toOwnedSlice())) },
         };
     }
 
@@ -5045,7 +2834,7 @@ pub const NodeFS = struct {
                 .string => brk: {
                     const str = bun.SliceWithUnderlyingString.transcodeFromOwnedSlice(@constCast(ret.result.string), args.encoding);
 
-                    if (str.underlying.tag == .Dead and str.utf8.len == 0) {
+                    if (str.underlying.tag == .Dead and str.utf8.length() == 0) {
                         return .{ .err = Syscall.Error.fromCode(.NOMEM, .read).withPathLike(args.path) };
                     }
 
@@ -5067,10 +2856,8 @@ pub const NodeFS = struct {
                         if (args.encoding == .buffer) {
                             return .{
                                 .result = .{
-                                    .buffer = Buffer.fromBytes(
+                                    .buffer = NodeBuffer.adoptDefault(
                                         bun.handleOom(bun.default_allocator.dupe(u8, file.contents)),
-                                        bun.default_allocator,
-                                        .Uint8Array,
                                     ),
                                 },
                             };
@@ -5135,13 +2922,10 @@ pub const NodeFS = struct {
         // This will make it slightly slower to read e.g. 512 KB files, but usually the OS won't return a full 512 KB in one read anyway.
         const temporary_read_buffer_before_stat_call = brk: {
             const temporary_read_buffer = temporary_read_buffer: {
-                var temporary_read_buffer: []u8 = &async_stack_buffer;
-
-                if (comptime flavor == .sync) {
-                    if (this.vm) |vm| {
-                        temporary_read_buffer = vm.rareData().pipeReadBuffer();
-                    }
-                }
+                const temporary_read_buffer: []u8 = if (comptime flavor == .sync)
+                    &node_fs_threadlocal_buffers.get().read_file
+                else
+                    &async_stack_buffer;
 
                 var available = temporary_read_buffer;
                 while (available.len > 0) {
@@ -5163,35 +2947,12 @@ pub const NodeFS = struct {
             if (did_succeed) {
                 switch (args.encoding) {
                     .buffer => {
-                        if (comptime flavor == .sync and string_type == .default) {
-                            if (this.vm) |vm| {
-                                // Attempt to create the buffer in jsc's heap.
-                                // This avoids creating a WastefulTypedArray.
-                                const array_buffer = jsc.ArrayBuffer.createBuffer(vm.global, temporary_read_buffer) catch .zero; // TODO: properly propagate exception upwards
-                                array_buffer.ensureStillAlive();
-                                return .{
-                                    .result = .{
-                                        .buffer = jsc.MarkedArrayBuffer{
-                                            .buffer = array_buffer.asArrayBuffer(vm.global) orelse {
-                                                // This case shouldn't really happen.
-                                                return .{
-                                                    .err = Syscall.Error.fromCode(.NOMEM, .read).withPathLike(args.path),
-                                                };
-                                            },
-                                        },
-                                    },
-                                };
-                            }
-                        }
-
                         return .{
                             .result = .{
-                                .buffer = Buffer.fromBytes(
+                                .buffer = NodeBuffer.adoptDefault(
                                     bun.default_allocator.dupe(u8, temporary_read_buffer) catch return .{
                                         .err = Syscall.Error.fromCode(.NOMEM, .read).withPathLike(args.path),
                                     },
-                                    bun.default_allocator,
-                                    .Uint8Array,
                                 ),
                             },
                         };
@@ -5200,7 +2961,7 @@ pub const NodeFS = struct {
                         if (comptime string_type == .default) {
                             return .{
                                 .result = .{
-                                    .transcoded_string = jsc.WebCore.encoding.toBunString(temporary_read_buffer, args.encoding),
+                                    .transcoded_string = webcore_encoding.toBunString(temporary_read_buffer, args.encoding),
                                 },
                             };
                         } else {
@@ -5231,7 +2992,7 @@ pub const NodeFS = struct {
 
         // For certain files, the size might be 0 but the file might still have contents.
         // https://github.com/oven-sh/bun/issues/1220
-        const max_size = args.max_size orelse std.math.maxInt(jsc.WebCore.Blob.SizeType);
+        const max_size = args.max_size orelse BlobSize.max_size;
         const has_max_size = args.max_size != null;
 
         const size = @as(
@@ -5257,7 +3018,7 @@ pub const NodeFS = struct {
         }
 
         var buf = std.array_list.Managed(u8).init(bun.default_allocator);
-        defer if (!did_succeed) buf.clearAndFree();
+        defer buf.deinit();
         buf.ensureTotalCapacityPrecise(
             @min(
                 @max(temporary_read_buffer_before_stat_call.len, size) + 16,
@@ -5339,7 +3100,7 @@ pub const NodeFS = struct {
             return switch (args.encoding) {
                 .buffer => .{
                     .result = .{
-                        .buffer = Buffer.empty,
+                        .buffer = NodeBuffer.empty,
                     },
                 },
                 else => brk: {
@@ -5363,14 +3124,18 @@ pub const NodeFS = struct {
         return switch (args.encoding) {
             .buffer => .{
                 .result = .{
-                    .buffer = Buffer.fromBytes(buf.items, bun.default_allocator, .Uint8Array),
+                    .buffer = NodeBuffer.adoptDefault(buf.toOwnedSlice() catch return .{
+                        .err = Syscall.Error.fromCode(.NOMEM, .read).withPathLike(args.path),
+                    }),
                 },
             },
             else => brk: {
                 if (comptime string_type == .default) {
                     break :brk .{
                         .result = .{
-                            .string = buf.items,
+                            .string = buf.toOwnedSlice() catch return .{
+                                .err = Syscall.Error.fromCode(.NOMEM, .read).withPathLike(args.path),
+                            },
                         },
                     };
                 } else {
@@ -5388,102 +3153,8 @@ pub const NodeFS = struct {
     }
 
     pub fn writeFileWithPathBuffer(pathbuf: *bun.PathBuffer, args: Arguments.WriteFile) Maybe(Return.WriteFile) {
-        const fd = switch (args.file) {
-            .path => brk: {
-                const path = args.file.path.sliceZWithForceCopy(pathbuf, true);
-
-                const open_result = bun.sys.openat(
-                    args.dirfd,
-                    path,
-                    args.flag.asInt(),
-                    args.mode,
-                );
-
-                break :brk switch (open_result) {
-                    .err => |err| return .{
-                        .err = err.withPath(args.file.path.slice()),
-                    },
-                    .result => |fd| fd,
-                };
-            },
-            .fd => |fd| fd,
-        };
-
-        defer {
-            if (args.file == .path)
-                fd.close();
-        }
-
-        if (args.aborted()) return Maybe(Return.WriteFile).aborted;
-
-        var buf = args.data.slice();
-        var written: usize = 0;
-
-        // Attempt to pre-allocate large files
-        // Worthwhile after 6 MB at least on ext4 linux
-        if (bun.sys.preallocate_supported and buf.len >= bun.sys.preallocate_length) preallocate: {
-            const offset: usize = if (args.file == .path)
-                // on mac, it's relatively positioned
-                0
-            else brk: {
-                // on linux, it's absolutely positione
-
-                switch (Syscall.lseek(
-                    fd,
-                    @as(std.posix.off_t, @intCast(0)),
-                    std.os.linux.SEEK.CUR,
-                )) {
-                    .err => break :preallocate,
-                    .result => |pos| break :brk @as(usize, @intCast(pos)),
-                }
-            };
-
-            bun.sys.preallocate_file(
-                fd.cast(),
-                @as(std.posix.off_t, @intCast(offset)),
-                @as(std.posix.off_t, @intCast(buf.len)),
-            ) catch {};
-        }
-
-        while (buf.len > 0) {
-            switch (bun.sys.write(fd, buf)) {
-                .err => |err| return .{
-                    .err = err,
-                },
-                .result => |amt| {
-                    buf = buf[amt..];
-                    written += amt;
-                    if (amt == 0) {
-                        break;
-                    }
-                },
-            }
-        }
-
-        // https://github.com/oven-sh/bun/issues/2931
-        // https://github.com/oven-sh/bun/issues/10222
-        // Only truncate if we're not appending and writing to a path
-        if ((@backingInt(args.flag) & bun.O.APPEND) == 0 and args.file != .fd) {
-            // If this errors, we silently ignore it.
-            // Not all files are seekable (and thus, not all files can be truncated).
-            if (Environment.isWindows) {
-                _ = bun.windows.SetEndOfFile(fd.cast());
-            } else {
-                _ = Syscall.ftruncate(fd, @intCast(@as(u63, @truncate(written))));
-            }
-        }
-
-        if (args.flush) {
-            if (Environment.isWindows) {
-                _ = c.FlushFileBuffers(fd.cast());
-            } else {
-                _ = system.fsync(fd.cast());
-            }
-        }
-
-        return .success;
+        return NodeFSCore.writeFileWithPathBufferFromArgs(pathbuf, &args, args.aborted());
     }
-
     pub fn writeFile(this: *NodeFS, args: Arguments.WriteFile, _: Flavor) Maybe(Return.WriteFile) {
         return writeFileWithPathBuffer(&this.sync_error_buf, args);
     }
@@ -5502,7 +3173,7 @@ pub const NodeFS = struct {
         return .{
             .result = switch (args.encoding) {
                 .buffer => .{
-                    .buffer = Buffer.fromString(link_path, bun.default_allocator) catch unreachable,
+                    .buffer = NodeBuffer.copy(link_path) catch unreachable,
                 },
                 else => if (args.path == .slice_with_underlying_string and
                     strings.eqlLong(args.path.slice_with_underlying_string.slice(), link_path, true))
@@ -5576,7 +3247,7 @@ pub const NodeFS = struct {
             return .{
                 .result = switch (args.encoding) {
                     .buffer => .{
-                        .buffer = Buffer.fromString(buf, bun.default_allocator) catch unreachable,
+                        .buffer = NodeBuffer.copy(buf) catch unreachable,
                     },
                     .utf8 => utf8: {
                         if (args.path == .slice_with_underlying_string) {
@@ -5590,22 +3261,25 @@ pub const NodeFS = struct {
                         };
                     },
                     else => |enc| .{
-                        .string = .{ .utf8 = .{}, .underlying = jsc.WebCore.encoding.toBunString(buf, enc) },
+                        .string = .{ .utf8 = .{}, .underlying = webcore_encoding.toBunString(buf, enc) },
                     },
                 },
             };
         }
 
         var outbuf: bun.PathBuffer = undefined;
-        var inbuf = &this.sync_error_buf;
-        if (comptime Environment.allow_assert) bun.assert(FileSystem.instance_loaded);
-
-        const path_slice = args.path.slice();
-
-        var parts = [_]string{ FileSystem.instance.top_level_dir, path_slice };
-        const path_ = FileSystem.instance.absBuf(&parts, inbuf);
-        inbuf[path_.len] = 0;
-        const path: [:0]u8 = inbuf[0..path_.len :0];
+        const path: [:0]const u8 = switch (variant) {
+            .native => args.path.sliceZ(&this.sync_error_buf),
+            .emulated => path: {
+                if (comptime Environment.allow_assert) bun.assert(FileSystem.instance_loaded);
+                break :path bun.path.joinAbsStringBufZChecked(
+                    FileSystem.instance.top_level_dir,
+                    &this.sync_error_buf,
+                    &.{args.path.slice()},
+                    .auto,
+                ) orelse return .{ .err = Syscall.Error.fromCode(.NAMETOOLONG, .realpath).withPath(args.path.slice()) };
+            },
+        };
 
         const flags = if (comptime Environment.isLinux)
             // O_PATH is faster
@@ -5630,7 +3304,7 @@ pub const NodeFS = struct {
         return .{
             .result = switch (args.encoding) {
                 .buffer => .{
-                    .buffer = Buffer.fromString(buf, bun.default_allocator) catch unreachable,
+                    .buffer = NodeBuffer.copy(buf) catch unreachable,
                 },
                 .utf8 => utf8: {
                     if (args.path == .slice_with_underlying_string) {
@@ -5644,7 +3318,7 @@ pub const NodeFS = struct {
                     };
                 },
                 else => |enc| .{
-                    .string = .{ .utf8 = .{}, .underlying = jsc.WebCore.encoding.toBunString(buf, enc) },
+                    .string = .{ .utf8 = .{}, .underlying = webcore_encoding.toBunString(buf, enc) },
                 },
             },
         };
@@ -5664,21 +3338,7 @@ pub const NodeFS = struct {
         };
     }
 
-    pub fn rmdir(this: *NodeFS, args: Arguments.RmDir, _: Flavor) Maybe(Return.Rmdir) {
-        if (args.recursive) {
-            zigDeleteTree(this.vm.?.io, std.Io.Dir.cwd(), args.path.slice(), .directory) catch |err| {
-                var errno = bun.sys.Error.errnoFromStdIo(err, .PERM);
-                if (Environment.isWindows and errno == .NOTDIR) {
-                    errno = .NOENT;
-                }
-                return Maybe(Return.Rm){
-                    .err = bun.sys.Error.fromCode(errno, .rmdir),
-                };
-            };
-
-            return .success;
-        }
-
+    pub fn rmdir(this: *NodeFS, args: Arguments.Rmdir, _: Flavor) Maybe(Return.Rmdir) {
         if (comptime Environment.isWindows) {
             return switch (Syscall.rmdir(args.path.sliceZ(&this.sync_error_buf))) {
                 .err => |err| .{ .err = err.withPath(args.path.slice()) },
@@ -5694,7 +3354,7 @@ pub const NodeFS = struct {
 
         // We cannot use removefileat() on macOS because it does not handle write-protected files as expected.
         if (args.recursive) {
-            zigDeleteTree(this.vm.?.io, std.Io.Dir.cwd(), args.path.slice(), .file) catch |err| {
+            zigDeleteTree(this.io(), std.Io.Dir.cwd(), args.path.slice(), .file) catch |err| {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
                 const errno = bun.sys.Error.errnoFromStdIo(err, .ACCES);
                 if (errno == .NOENT and args.force) {
@@ -5845,41 +3505,11 @@ pub const NodeFS = struct {
         };
     }
 
-    fn truncateInner(this: *NodeFS, path: PathLike, len: u63, flags: i32) Maybe(Return.Truncate) {
-        if (comptime Environment.isWindows) {
-            const file = bun.sys.open(
-                path.sliceZ(&this.sync_error_buf),
-                bun.O.WRONLY | flags,
-                0o644,
-            );
-            if (file == .err) {
-                return .{ .err = .{
-                    .errno = file.err.errno,
-                    .path = path.slice(),
-                    .syscall = .truncate,
-                } };
-            }
-            defer file.result.close();
-            const ret = Syscall.ftruncate(file.result, len);
-            return switch (ret) {
-                .result => ret,
-                .err => |err| .{ .err = err.withPathAndSyscall(path.slice(), .truncate) },
-            };
-        }
-
-        return Maybe(Return.Truncate).errnoSysP(c.truncate(path.sliceZ(&this.sync_error_buf), len), .truncate, path.slice()) orelse
-            .success;
+    fn truncateInner(this: *NodeFS, path: PathLike, len: u63) Maybe(Return.Truncate) {
+        return NodeFSCore.truncate(&this.sync_error_buf, &path, len);
     }
-
     pub fn truncate(this: *NodeFS, args: Arguments.Truncate, _: Flavor) Maybe(Return.Truncate) {
-        return switch (args.path) {
-            .fd => |fd| Syscall.ftruncate(fd, args.len),
-            .path => this.truncateInner(
-                args.path.path,
-                args.len,
-                args.flags,
-            ),
-        };
+        return this.truncateInner(args.path, args.len);
     }
 
     pub fn unlink(this: *NodeFS, args: Arguments.Unlink, _: Flavor) Maybe(Return.Unlink) {
@@ -5893,57 +3523,8 @@ pub const NodeFS = struct {
             .success;
     }
 
-    pub fn watchFile(_: *NodeFS, args: Arguments.WatchFile, comptime flavor: Flavor) Maybe(Return.WatchFile) {
-        bun.assert(flavor == .sync);
-
-        const watcher = args.createStatWatcher() catch |err| {
-            const buf = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "Failed to watch file {f}", .{bun.fmt.QuotedFormatter{ .text = args.path.slice() }}));
-            defer bun.default_allocator.free(buf);
-            const error_instance = (jsc.SystemError{
-                .message = bun.String.init(buf),
-                .code = bun.String.init(@errorName(err)),
-                .path = bun.String.init(args.path.slice()),
-            }).toErrorInstance(args.global_this) catch return Maybe(Return.Watch){ .result = .js_undefined };
-            args.global_this.throwValue(error_instance.toJS()) catch {};
-            return Maybe(Return.Watch){ .result = .js_undefined };
-        };
-        return Maybe(Return.Watch){ .result = watcher };
-    }
-
-    pub fn unwatchFile(_: *NodeFS, _: Arguments.UnwatchFile, _: Flavor) Maybe(Return.UnwatchFile) {
-        return Maybe(Return.UnwatchFile).todo();
-    }
-
     pub fn utimes(this: *NodeFS, args: Arguments.Utimes, _: Flavor) Maybe(Return.Utimes) {
-        if (comptime Environment.isWindows) {
-            var req: uv.fs_t = uv.fs_t.uninitialized;
-            defer req.deinit();
-            const rc = uv.uv_fs_utime(
-                bun.Async.Loop.get(),
-                &req,
-                args.path.sliceZ(&this.sync_error_buf).ptr,
-                args.atime,
-                args.mtime,
-                null,
-            );
-            return if (rc.errno()) |errno|
-                .{ .err = Syscall.Error{
-                    .errno = errno,
-                    .syscall = .utime,
-                    .path = args.path.slice(),
-                } }
-            else
-                .success;
-        }
-
-        return switch (Syscall.utimens(
-            args.path.sliceZ(&this.sync_error_buf),
-            args.atime,
-            args.mtime,
-        )) {
-            .err => |err| .{ .err = err.withPath(args.path.slice()) },
-            .result => .success,
-        };
+        return NodeFSCore.utimes(&this.sync_error_buf, &args);
     }
 
     pub fn lutimes(this: *NodeFS, args: Arguments.Lutimes, _: Flavor) Maybe(Return.Lutimes) {
@@ -5974,1085 +3555,17 @@ pub const NodeFS = struct {
         };
     }
 
-    pub fn watch(_: *NodeFS, args: Arguments.Watch, _: Flavor) Maybe(Return.Watch) {
-        return switch (args.createFSWatcher()) {
-            .result => |result| .{ .result = result.js_this },
-            .err => |err| .{ .err = err },
-        };
-    }
-
     /// This function is `cpSync`, but only if you pass `{ recursive: ..., force: ..., errorOnExist: ..., mode: ... }'
     /// The other options like `filter` use a JS fallback, see `src/js/internal/fs/cp.ts`
     pub fn cp(this: *NodeFS, args: Arguments.Cp, _: Flavor) Maybe(Return.Cp) {
-        var src_buf: bun.OSPathBuffer = undefined;
-        var dest_buf: bun.OSPathBuffer = undefined;
-
-        if (this.cpValidate(args.src.slice(), args.dest.slice())) |err| {
-            return .{ .err = err };
-        }
-
-        const src = args.src.osPath(&src_buf);
-        const dest = args.dest.osPath(&dest_buf);
-
-        return this.cpSyncInner(&src_buf, @intCast(src.len), &dest_buf, @intCast(dest.len), args);
-    }
-
-    pub fn osPathIntoSyncErrorBuf(this: *NodeFS, slice: anytype) []const u8 {
-        if (Environment.isWindows) {
-            return bun.strings.fromWPath(&this.sync_error_buf, slice);
-        } else {
-            @memcpy(this.sync_error_buf[0..slice.len], slice);
-            return this.sync_error_buf[0..slice.len];
-        }
-    }
-
-    pub fn osPathIntoSyncErrorBufOverlap(this: *NodeFS, slice: anytype) []const u8 {
-        if (Environment.isWindows) {
-            const tmp = bun.os_path_buffer_pool.get();
-            defer bun.os_path_buffer_pool.put(tmp);
-            @memcpy(tmp[0..slice.len], slice);
-            return bun.strings.fromWPath(&this.sync_error_buf, tmp[0..slice.len]);
-        }
-    }
-
-    /// A copy Node refuses to perform, rejected on inspection rather than by a
-    /// failing syscall. `EINVAL` covers three of these, so rejection sites name
-    /// the reason and not the code.
-    pub const CpReason = enum {
-        identical,
-        into_subdirectory_of_self,
-        symlink_into_subdirectory_of_self,
-        dir_to_non_dir,
-        non_dir_to_dir,
-        not_recursive,
-        exists,
-        fifo,
-        socket,
-        unknown_file_type,
-
-        fn code(this: CpReason) jsc.Node.ErrorCode {
-            return switch (this) {
-                .identical, .into_subdirectory_of_self => .ERR_FS_CP_EINVAL,
-                .symlink_into_subdirectory_of_self => .ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY,
-                .dir_to_non_dir => .ERR_FS_CP_DIR_TO_NON_DIR,
-                .non_dir_to_dir => .ERR_FS_CP_NON_DIR_TO_DIR,
-                .not_recursive => .ERR_FS_EISDIR,
-                .exists => .ERR_FS_CP_EEXIST,
-                .fifo => .ERR_FS_CP_FIFO_PIPE,
-                .socket => .ERR_FS_CP_SOCKET,
-                .unknown_file_type => .ERR_FS_CP_UNKNOWN,
-            };
-        }
-
-        fn errno(this: CpReason) E {
-            return switch (this) {
-                .not_recursive => .ISDIR,
-                .exists => .EXIST,
-                else => .INVAL,
-            };
-        }
-
-        /// Which of the two paths Node puts on the error.
-        fn reportsDest(this: CpReason) bool {
-            return this == .exists;
-        }
-    };
-
-    /// Wording is Node's verbatim; tests match on it.
-    ///
-    /// True when `dest` is `src` or sits underneath it. Compared component by
-    /// component, so `/a/bc` does not count as being under `/a/b`.
-    fn isPathUnder(src: []const u8, dest: []const u8) bool {
-        var src_components = std.mem.tokenizeScalar(u8, src, std.fs.path.sep);
-        var dest_components = std.mem.tokenizeScalar(u8, dest, std.fs.path.sep);
-        while (src_components.next()) |src_component| {
-            const dest_component = dest_components.next() orelse return false;
-            if (!bun.strings.eql(src_component, dest_component)) return false;
-        }
-        return true;
-    }
-
-    fn isSameFile(a: bun.Stat, b: bun.Stat) bool {
-        return a.ino == b.ino and a.dev == b.dev;
-    }
-
-    /// Resolves a directory through symlinks by asking the OS for the opened
-    /// directory's own path.
-    fn cpResolveDir(path: [:0]const u8, buf: *bun.PathBuffer) ?[]const u8 {
-        const fd = switch (Syscall.open(path, bun.O.DIRECTORY | bun.O.RDONLY, 0)) {
-            .result => |fd| fd,
-            .err => return null,
+        var copy: NodeFSCopy.Copy = .{
+            .sync_error_buf = &this.sync_error_buf,
+            .sync_message_buf = &this.sync_message_buf,
+            .runtime_io = this.runtime_io,
         };
-        defer fd.close();
-        return bun.getFdPath(fd, buf) catch null;
-    }
-
-    /// Whether copying `src` into `dest` would nest the copy inside its own
-    /// source once every symlink on both paths is resolved.
-    fn cpNestsInsideSelf(src_abs: [:0]const u8, dest_abs: [:0]const u8) bool {
-        const src_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(src_buf);
-        const dest_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(dest_buf);
-
-        const src_real = cpResolveDir(src_abs, src_buf) orelse return false;
-
-        // `dest` need not exist yet, so resolve its parent and re-attach the
-        // final component.
-        const dest_dir = std.fs.path.dirname(dest_abs) orelse return false;
-        const dest_name = std.fs.path.basename(dest_abs);
-        const parent_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(parent_buf);
-        @memcpy(parent_buf[0..dest_dir.len], dest_dir);
-        parent_buf[dest_dir.len] = 0;
-
-        const dest_dir_real = cpResolveDir(parent_buf[0..dest_dir.len :0], dest_buf) orelse return false;
-        if (dest_dir_real.len + 1 + dest_name.len >= dest_buf.len) return false;
-        dest_buf[dest_dir_real.len] = std.fs.path.sep;
-        @memcpy(dest_buf[dest_dir_real.len + 1 ..][0..dest_name.len], dest_name);
-
-        return isPathUnder(src_real, dest_buf[0 .. dest_dir_real.len + 1 + dest_name.len]);
-    }
-
-    /// Copies that Node rejects on inspection, before anything is written.
-    /// Runs once per `cp` call, not once per entry.
-    fn cpValidate(this: *NodeFS, src: []const u8, dest: []const u8) ?Syscall.Error {
-        const src_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(src_buf);
-        const dest_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(dest_buf);
-        var cwd_buf: bun.PathBuffer = undefined;
-        const cwd = bun.getcwd(&cwd_buf) catch return null;
-
-        const src_abs = bun.path.joinAbsStringBufZ(cwd, src_buf, &.{src}, .auto);
-        const dest_abs = bun.path.joinAbsStringBufZ(cwd, dest_buf, &.{dest}, .auto);
-
-        // A source that cannot be stat'd is left to the copy, which reports the
-        // syscall's own error.
-        const src_stat = switch (Syscall.lstat(src_abs)) {
-            .result => |s| s,
-            .err => return null,
-        };
-        const src_is_dir = bun.S.ISDIR(@intCast(src_stat.mode));
-
-        switch (Syscall.lstat(dest_abs)) {
-            .err => {},
-            .result => |dest_stat| {
-                const dest_is_dir = bun.S.ISDIR(@intCast(dest_stat.mode));
-                if (isSameFile(src_stat, dest_stat)) {
-                    return this.cpRejected(.identical, src_abs, dest_abs);
-                }
-                if (src_is_dir and !dest_is_dir) {
-                    return this.cpRejected(.dir_to_non_dir, src_abs, dest_abs);
-                }
-                if (!src_is_dir and dest_is_dir) {
-                    return this.cpRejected(.non_dir_to_dir, src_abs, dest_abs);
-                }
-            },
-        }
-
-        if (!src_is_dir) return null;
-
-        // Resolving needs the destination's parent to exist; the lexical form
-        // does not.
-        if (isPathUnder(src_abs, dest_abs) or cpNestsInsideSelf(src_abs, dest_abs)) {
-            return this.cpRejected(.into_subdirectory_of_self, src_abs, dest_abs);
-        }
-
-        return null;
-    }
-
-    fn cpUnsupportedReason(mode: u32) CpReason {
-        if (bun.S.ISFIFO(mode)) return .fifo;
-        if (bun.S.ISSOCK(mode)) return .socket;
-        return .unknown_file_type;
-    }
-
-    /// Reports a path as UTF-8 whatever the platform's path encoding is.
-    fn cpPathToUtf8(buf: *bun.PathBuffer, path: anytype) []const u8 {
-        if (comptime std.meta.Elem(@TypeOf(path)) == u16) {
-            return bun.strings.fromWPath(buf, path);
-        }
-        @memcpy(buf[0..path.len], path);
-        return buf[0..path.len];
-    }
-
-    /// `src_path` and `dest_path` may be OS paths or UTF-8.
-    fn cpRejected(this: *NodeFS, reason: CpReason, src_path: anytype, dest_path: anytype) Syscall.Error {
-        const scratch = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(scratch);
-
-        // The path on the error outlives this call, so it takes the long-lived
-        // buffer; the other only has to survive formatting.
-        const src_buf, const dest_buf = if (reason.reportsDest())
-            .{ scratch, &this.sync_error_buf }
-        else
-            .{ &this.sync_error_buf, scratch };
-
-        const src = cpPathToUtf8(src_buf, src_path);
-        const dest = cpPathToUtf8(dest_buf, dest_path);
-
-        var writer = std.Io.Writer.fixed(&this.sync_message_buf);
-        // Truncation is acceptable: only the code is load-bearing.
-        (switch (reason) {
-            .identical => writer.print("src and dest cannot be the same {s}", .{dest}),
-            .into_subdirectory_of_self => writer.print("cannot copy {s} to a subdirectory of self {s}", .{ src, dest }),
-            .symlink_into_subdirectory_of_self => writer.print("cannot overwrite {s} with {s}", .{ dest, src }),
-            .dir_to_non_dir => writer.print("cannot overwrite non-directory {s} with directory {s}", .{ dest, src }),
-            .non_dir_to_dir => writer.print("cannot overwrite directory {s} with non-directory {s}", .{ dest, src }),
-            .not_recursive => writer.print("Recursive option not enabled, cannot copy a directory: {s}", .{src}),
-            .exists => writer.print("{s} already exists", .{dest}),
-            .fifo => writer.print("cannot copy a FIFO pipe: {s}", .{src}),
-            .socket => writer.print("cannot copy a socket file: {s}", .{src}),
-            .unknown_file_type => writer.print("cannot copy an unknown file type: {s}", .{src}),
-        }) catch {};
-
-        return .{
-            .errno = @backingInt(reason.errno()),
-            .syscall = .copyfile,
-            .path = if (reason.reportsDest()) dest else src,
-            .node_code = reason.code(),
-            .node_message = writer.buffered(),
-        };
-    }
-
-    /// Appends `sep ++ rel` to the OS path held in `buf[0..base_len]`, encoding
-    /// the walker's WTF-8 relative path as `bun.OSPathChar`. Returns null when
-    /// the result would not fit, which callers report as ENAMETOOLONG.
-    ///
-    /// One UTF-16 code unit never takes fewer than one WTF-8 byte, so the byte
-    /// length of `rel` bounds the converted length on Windows too.
-    ///
-    /// TODO: this caps nesting at whatever fits in `bun.OSPathBuffer`.
-    /// `std.Io.Dir.Walker.Entry` carries the containing directory handle, so the
-    /// copy could work from that and a basename instead, with no accumulated
-    /// path and no limit. It needs `_copySingleFileSync` to become fd-relative:
-    /// `clonefileat`/`fcopyfile` on macOS, `openat` on Linux, and `NtCreateFile`
-    /// with a root handle on Windows.
-    fn appendWalkPath(buf: *bun.OSPathBuffer, base_len: usize, rel: []const u8) ?[:0]const bun.OSPathChar {
-        if (base_len + rel.len + 2 > buf.len) return null;
-        buf[base_len] = std.fs.path.sep;
-        if (Environment.isWindows) {
-            const converted = bun.strings.toWPathWtf8(buf[base_len + 1 ..], rel) catch return null;
-            return buf[0 .. base_len + 1 + converted.len :0];
-        }
-        @memcpy(buf[base_len + 1 ..][0..rel.len], rel);
-        buf[base_len + 1 + rel.len] = 0;
-        return buf[0 .. base_len + 1 + rel.len :0];
-    }
-
-    fn cpWalkError(this: *NodeFS, err: anyerror, path: []const bun.OSPathChar) Syscall.Error {
-        return bun.sys.Error.fromStdIo(err, .copyfile).withPath(this.osPathIntoSyncErrorBuf(path));
-    }
-
-    fn cpNameTooLong(this: *NodeFS, path: []const bun.OSPathChar) Syscall.Error {
-        return .{
-            .errno = @backingInt(E.NAMETOOLONG),
-            .syscall = .copyfile,
-            .path = this.osPathIntoSyncErrorBuf(path),
-        };
-    }
-
-    /// Creates `dest` for a directory that is about to be descended into.
-    /// Returns true when `clonefile` copied the whole subtree already, in which
-    /// case the caller must not descend.
-    fn cpPrepareDirectory(this: *NodeFS, args: Arguments.Cp, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(bool) {
-        if (comptime Environment.isMac) try_with_clonefile: {
-            if (Maybe(Return.Cp).errnoSysP(c.clonefile(src, dest, 0), .clonefile, src)) |err| {
-                switch (err.getErrno()) {
-                    .NAMETOOLONG, .ROFS, .INVAL, .ACCES, .PERM => |errno| {
-                        if (errno == .ACCES or errno == .PERM) {
-                            if (args.flags.force) {
-                                break :try_with_clonefile;
-                            }
-                        }
-
-                        @memcpy(this.sync_error_buf[0..src.len], src);
-                        return .{ .err = err.err.withPath(this.sync_error_buf[0..src.len]) };
-                    },
-
-                    // Other errors may be due to clonefile() not being supported
-                    // We'll fall back to other implementations
-                    else => {},
-                }
-            } else {
-                return .{ .result = true };
-            }
-        }
-
-        // A copied directory keeps the source's permissions. Windows has no
-        // mode to carry over.
-        const mode: Mode = if (comptime Environment.isWindows) Arguments.Mkdir.DefaultMode else switch (Syscall.stat(src)) {
-            .result => |s| @intCast(s.mode & 0o777),
-            .err => Arguments.Mkdir.DefaultMode,
-        };
-
-        switch (this.mkdirRecursiveOSPath(dest, mode, false)) {
-            .err => |err| return .{ .err = err },
-            .result => {},
-        }
-
-        // mkdir's mode is masked by the umask, and the directory may already
-        // exist.
-        if (comptime !Environment.isWindows) {
-            _ = Syscall.chmod(dest, mode);
-        }
-        return .{ .result = false };
-    }
-
-    /// Copies the contents of the directory `src_buf[0..src_root_len]` into
-    /// `dest_buf[0..dest_root_len]`.
-    ///
-    /// Nesting is bounded by what fits in `bun.OSPathBuffer`, not by the stack,
-    /// so traversal state lives on the heap in `std.Io.Dir.SelectiveWalker`.
-    /// Opting in to each descent is what lets `clonefile` skip a subtree it has
-    /// already copied wholesale.
-    ///
-    /// `visitor` decides what each entry means:
-    ///   fn enterDirectory(self, src, dest) Maybe(bool)  // true = do not descend
-    ///   fn copyFile(self, src, dest) Maybe(Return.Cp)
-    fn cpTree(
-        this: *NodeFS,
-        src_buf: *bun.OSPathBuffer,
-        src_root_len: usize,
-        dest_buf: *bun.OSPathBuffer,
-        dest_root_len: usize,
-        visitor: anytype,
-    ) Maybe(Return.Cp) {
-        switch (visitor.enterDirectory(src_buf[0..src_root_len :0], dest_buf[0..dest_root_len :0])) {
-            .err => |err| return .{ .err = err },
-            .result => |cloned| if (cloned) return .success,
-        }
-
-        const fd = switch (Syscall.openatOSPath(
-            .cwd(),
-            src_buf[0..src_root_len :0],
-            bun.O.DIRECTORY | bun.O.RDONLY,
-            0,
-        )) {
-            .err => |err| return .{ .err = err.withPath(this.osPathIntoSyncErrorBuf(src_buf[0..src_root_len])) },
-            .result => |fd_| fd_,
-        };
-        defer fd.close();
-
-        var walker = fd.stdDir().walkSelectively(bun.default_allocator) catch |err| bun.handleOom(err);
-        defer walker.deinit(this.io());
-
-        while (walker.next(this.io()) catch |err| {
-            return .{ .err = this.cpWalkError(err, src_buf[0..src_root_len]) };
-        }) |entry| {
-            const src = appendWalkPath(src_buf, src_root_len, entry.path) orelse
-                return .{ .err = this.cpNameTooLong(src_buf[0..src_root_len]) };
-            const dest = appendWalkPath(dest_buf, dest_root_len, entry.path) orelse
-                return .{ .err = this.cpNameTooLong(src_buf[0..src_root_len]) };
-
-            if (entry.kind == .directory) {
-                switch (visitor.enterDirectory(src, dest)) {
-                    .err => |err| return .{ .err = err },
-                    .result => |cloned| if (cloned) continue,
-                }
-                walker.enter(this.io(), entry) catch |err| {
-                    return .{ .err = this.cpWalkError(err, src) };
-                };
-            } else {
-                switch (visitor.copyFile(src, dest)) {
-                    .err => |err| return .{ .err = err },
-                    .result => {},
-                }
-            }
-        }
-
-        return .success;
-    }
-
-    const SyncCpVisitor = struct {
-        nodefs: *NodeFS,
-        args: Arguments.Cp,
-
-        fn enterDirectory(this: SyncCpVisitor, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(bool) {
-            return this.nodefs.cpPrepareDirectory(this.args, src, dest);
-        }
-
-        fn copyFile(this: SyncCpVisitor, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ) Maybe(Return.Cp) {
-            const cp_flags = this.args.flags;
-            const r = this.nodefs._copySingleFileSync(
-                src,
-                dest,
-                @fromBackingInt(@intCast((if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
-                null,
-                this.args,
-            );
-            switch (r) {
-                .err => |err| {
-                    if (err.errno == @backingInt(E.EXIST) and cp_flags.skipsExisting()) {
-                        return .success;
-                    }
-                    return .{ .err = err };
-                },
-                .result => return .success,
-            }
-        }
-    };
-
-    fn cpSyncInner(
-        this: *NodeFS,
-        src_buf: *bun.OSPathBuffer,
-        src_dir_len: PathString.PathInt,
-        dest_buf: *bun.OSPathBuffer,
-        dest_dir_len: PathString.PathInt,
-        args: Arguments.Cp,
-    ) Maybe(Return.Cp) {
-        const cp_flags = args.flags;
-        const src = src_buf[0..src_dir_len :0];
-        const dest = dest_buf[0..dest_dir_len :0];
-
-        if (Environment.isWindows) {
-            const attributes = c.GetFileAttributesW(src);
-            if (attributes == c.INVALID_FILE_ATTRIBUTES) {
-                return .{ .err = .{
-                    .errno = @backingInt(SystemErrno.ENOENT),
-                    .syscall = .copyfile,
-                    .path = this.osPathIntoSyncErrorBuf(src),
-                } };
-            }
-
-            if ((attributes & c.FILE_ATTRIBUTE_DIRECTORY) == 0) {
-                const r = this._copySingleFileSync(
-                    src,
-                    dest,
-                    @fromBackingInt(@intCast(if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0))),
-                    attributes,
-                    args,
-                );
-                if (r == .err and r.err.errno == @backingInt(E.EXIST) and cp_flags.skipsExisting()) {
-                    return .success;
-                }
-                return r;
-            }
-        } else {
-            const stat_ = switch (Syscall.lstat(src)) {
-                .result => |result| result,
-                .err => |err| {
-                    @memcpy(this.sync_error_buf[0..src.len], src);
-                    return .{ .err = err.withPath(this.sync_error_buf[0..src.len]) };
-                },
-            };
-
-            if (!posix.S.ISDIR(@intCast(stat_.mode))) {
-                const r = this._copySingleFileSync(
-                    src,
-                    dest,
-                    @fromBackingInt(@intCast((if (cp_flags.errorOnExist or !cp_flags.force) constants.COPYFILE_EXCL else @as(u8, 0)))),
-                    stat_,
-                    args,
-                );
-                if (r == .err and r.err.errno == @backingInt(E.EXIST) and cp_flags.skipsExisting()) {
-                    return .success;
-                }
-                return r;
-            }
-        }
-
-        if (!cp_flags.recursive) {
-            return .{ .err = this.cpRejected(.not_recursive, src, dest) };
-        }
-
-        return this.cpTree(src_buf, src_dir_len, dest_buf, dest_dir_len, SyncCpVisitor{
-            .nodefs = this,
-            .args = args,
-        });
-    }
-
-    /// On Windows, copying a file onto itself will return EBUSY, which is an
-    /// unintuitive and cryptic error to return to the user for an operation
-    /// that should seemingly be a no-op.
-    ///
-    /// So we check if the source and destination are the same file, and if they
-    /// are, we return success.
-    ///
-    /// This is copied directly from libuv's implementation of `uv_fs_copyfile`
-    /// for Windows:
-    ///
-    /// https://github.com/libuv/libuv/blob/497f3168d13ea9a92ad18c28e8282777ec2acf73/src/win/fs.c#L2069
-    ///
-    /// **This function does nothing on non-Windows platforms**.
-    fn shouldIgnoreEbusy(src: PathLike, dest: PathLike, result: Maybe(Return.CopyFile)) Maybe(Return.CopyFile) {
-        if (comptime !Environment.isWindows) return result;
-        if (result != .err or result.err.getErrno() != .BUSY) return result;
-
-        var buf: bun.PathBuffer = undefined;
-        const statbuf = switch (Syscall.stat(src.sliceZ(&buf))) {
-            .result => |b| b,
-            .err => return result,
-        };
-        const new_statbuf = switch (Syscall.stat(dest.sliceZ(&buf))) {
-            .result => |b| b,
-            .err => return result,
-        };
-
-        if (statbuf.dev == new_statbuf.dev and statbuf.ino == new_statbuf.ino) {
-            return .success;
-        }
-
-        return result;
-    }
-
-    /// Recreate the symlink at `src` as a symlink at `dest`.
-    ///
-    /// Used by `_copySingleFileSync` when `open(src, O_NOFOLLOW)` fails with
-    /// ELOOP/EMLINK. The previous implementation called `symlink(src, dest)`,
-    /// which created a link whose *target string* was the path of the source
-    /// symlink instead of the target that the source symlink pointed at, so
-    /// every copied link pointed back into the source tree.
-    ///
-    /// The native fast path only runs when `verbatimSymlinks` is not set (the
-    /// JS fallback handles that option), so we match Node's default here:
-    /// `readlink(src)`, then resolve a relative target against `dirname(src)`.
-    fn _cpSymlink(this: *NodeFS, src: [:0]const u8, dest: [:0]const u8) Maybe(Return.CopyFile) {
-        var target_buf: bun.PathBuffer = undefined;
-        const link_target = switch (Syscall.readlink(src, &target_buf)) {
-            .result => |result| result,
-            .err => |err| {
-                @memcpy(this.sync_error_buf[0..src.len], src);
-                return .{ .err = err.withPath(this.sync_error_buf[0..src.len]) };
-            },
-        };
-
-        const resolved_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(resolved_buf);
-        const resolved_src = cpResolveLinkTarget(src, link_target, resolved_buf) orelse {
-            @memcpy(this.sync_error_buf[0..src.len], src);
-            return .{ .err = .{
-                .errno = @backingInt(E.NAMETOOLONG),
-                .syscall = .symlink,
-                .path = this.sync_error_buf[0..src.len],
-            } };
-        };
-
-        // Anything at the destination that is not a link is left alone, so that
-        // `symlink` below fails with EEXIST rather than discarding a file.
-        const dest_target_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(dest_target_buf);
-        switch (Syscall.readlink(dest, dest_target_buf)) {
-            .err => {},
-            .result => |dest_target| {
-                if (this.cpSymlinkOverLink(resolved_src, dest, dest_target)) |err| return .{ .err = err };
-                _ = Syscall.unlink(dest);
-            },
-        }
-
-        return Syscall.symlink(resolved_src, dest);
-    }
-
-    /// Resolves a symlink's target the way Node does when `verbatimSymlinks` is
-    /// not set: absolute targets stand, relative ones resolve against the
-    /// directory holding the link. Returns null when the result does not fit,
-    /// which callers report as ENAMETOOLONG.
-    fn cpResolveLinkTarget(link_path: []const u8, target: []const u8, buf: *bun.PathBuffer) ?[:0]const u8 {
-        if (std.fs.path.isAbsolute(target)) {
-            if (target.len >= buf.len) return null;
-            @memcpy(buf[0..target.len], target);
-            buf[target.len] = 0;
-            return buf[0..target.len :0];
-        }
-
-        var cwd_buf: bun.PathBuffer = undefined;
-        const cwd = bun.getcwd(&cwd_buf) catch return null;
-        const link_dir = std.fs.path.dirnamePosix(link_path) orelse "";
-        // `target` can approach PATH_MAX on its own, so prepending `link_dir`
-        // may not fit.
-        const resolved = bun.path.joinAbsStringBufChecked(
-            cwd,
-            buf[0 .. buf.len - 1],
-            &.{ link_dir, target },
-            .posix,
-        ) orelse return null;
-        buf[resolved.len] = 0;
-        return buf[0..resolved.len :0];
-    }
-
-    /// Whether replacing the existing link at `dest`, which points at
-    /// `dest_target`, with one pointing at `resolved_src` would put either tree
-    /// inside the other.
-    fn cpSymlinkOverLink(this: *NodeFS, resolved_src: [:0]const u8, dest: [:0]const u8, dest_target: []const u8) ?Syscall.Error {
-        // Only a link that resolves to a directory can nest a tree.
-        switch (Syscall.stat(resolved_src)) {
-            .result => |s| if (!bun.S.ISDIR(@intCast(s.mode))) return null,
-            .err => return null,
-        }
-
-        const resolved_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(resolved_buf);
-        const resolved_dest = cpResolveLinkTarget(dest, dest_target, resolved_buf) orelse return null;
-
-        if (isPathUnder(resolved_src, resolved_dest)) {
-            return this.cpRejected(.into_subdirectory_of_self, resolved_src, resolved_dest);
-        }
-
-        const dest_is_dir = switch (Syscall.stat(dest)) {
-            .result => |s| bun.S.ISDIR(@intCast(s.mode)),
-            .err => false,
-        };
-        if (dest_is_dir and isPathUnder(resolved_dest, resolved_src)) {
-            return this.cpRejected(.symlink_into_subdirectory_of_self, resolved_src, resolved_dest);
-        }
-
-        return null;
-    }
-
-    /// Opens the destination of a single-file copy, created with the source's
-    /// permissions so the file is never briefly readable. A missing parent
-    /// directory is created, which `cp` promises and `copyFile` does not.
-    ///
-    /// `O_EXCL` is set by the caller exactly when it must not clobber, so an
-    /// EEXIST here always means the caller asked to be told.
-    fn openCopyDest(this: *NodeFS, src: bun.OSPathSliceZ, dest: bun.OSPathSliceZ, flags: i32, mode: Mode) Maybe(FD) {
-        switch (Syscall.open(dest, flags, mode)) {
-            .result => |fd| return .{ .result = fd },
-            .err => |err| {
-                if (err.getErrno() == .EXIST) {
-                    return .{ .err = this.cpRejected(.exists, src, dest) };
-                }
-
-                if (err.getErrno() == .NOENT) {
-                    var len = dest.len;
-                    while (len > 0 and dest[len - 1] != std.fs.path.sep) {
-                        len -= 1;
-                    }
-                    const mkdir_result = this.mkdirRecursive(.{
-                        .path = PathLike{ .string = PathString.init(dest[0..len]) },
-                        .recursive = true,
-                    });
-                    if (mkdir_result == .err) {
-                        return .{ .err = mkdir_result.err };
-                    }
-
-                    if (Syscall.open(dest, flags, mode).asValue()) |fd| {
-                        return .{ .result = fd };
-                    }
-                }
-
-                @memcpy(this.sync_error_buf[0..dest.len], dest);
-                return .{ .err = err.withPath(this.sync_error_buf[0..dest.len]) };
-            },
-        }
-    }
-
-    /// This is `copyFile`, but it copies symlinks as-is
-    pub fn _copySingleFileSync(
-        this: *NodeFS,
-        src: bun.OSPathSliceZ,
-        dest: bun.OSPathSliceZ,
-        mode: constants.Copyfile,
-        /// Stat on posix, file attributes on windows
-        reuse_stat: ?if (Environment.isWindows) windows.DWORD else bun.Stat,
-        args: Arguments.Cp,
-    ) Maybe(Return.CopyFile) {
-        const ret = Maybe(Return.CopyFile);
-
-        // TODO: do we need to fchown?
-        if (Environment.isMac) {
-            if (mode.isForceClone()) {
-                // https://www.manpagez.com/man/2/clonefile/
-                return ret.errnoSysP(c.clonefile(src, dest, 0), .clonefile, src) orelse ret.success;
-            } else {
-                const stat_ = reuse_stat orelse switch (Syscall.lstat(src)) {
-                    .result => |result| result,
-                    .err => |err| {
-                        @memcpy(this.sync_error_buf[0..src.len], src);
-                        return .{ .err = err.withPath(this.sync_error_buf[0..src.len]) };
-                    },
-                };
-
-                if (!posix.S.ISREG(@intCast(stat_.mode))) {
-                    if (posix.S.ISLNK(@intCast(stat_.mode))) {
-                        var mode_: u32 = c.COPYFILE_ACL | c.COPYFILE_DATA | c.COPYFILE_NOFOLLOW_SRC;
-                        if (mode.shouldntOverwrite()) {
-                            mode_ |= c.COPYFILE_EXCL;
-                        }
-
-                        return ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse ret.success;
-                    }
-                    return .{ .err = this.cpRejected(cpUnsupportedReason(@intCast(stat_.mode)), src, dest) };
-                }
-
-                // 64 KB is about the break-even point for clonefile() to be worth it
-                // at least, on an M1 with an NVME SSD.
-                if (stat_.size > 128 * 1024) {
-                    if (!mode.shouldntOverwrite()) {
-                        // clonefile() will fail if it already exists
-                        _ = Syscall.unlink(dest);
-                    }
-
-                    if (ret.errnoSysP(c.clonefile(src, dest, 0), .clonefile, src) == null) {
-                        _ = Syscall.chmod(dest, @intCast(stat_.mode));
-                        return ret.success;
-                    }
-                } else {
-                    const src_fd = switch (Syscall.open(src, bun.O.RDONLY, 0o644)) {
-                        .result => |result| result,
-                        .err => |err| {
-                            @memcpy(this.sync_error_buf[0..src.len], src);
-                            return .{ .err = err.withPath(this.sync_error_buf[0..src.len]) };
-                        },
-                    };
-                    defer {
-                        src_fd.close();
-                    }
-
-                    var flags: i32 = bun.O.CREAT | bun.O.WRONLY;
-                    var wrote: usize = 0;
-                    if (mode.shouldntOverwrite()) {
-                        flags |= bun.O.EXCL;
-                    }
-
-                    const dest_fd = switch (this.openCopyDest(src, dest, flags, @intCast(stat_.mode & 0o777))) {
-                        .result => |fd| fd,
-                        .err => |err| return .{ .err = err },
-                    };
-                    defer {
-                        _ = Syscall.ftruncate(dest_fd, @intCast(@as(u63, @truncate(wrote))));
-                        _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
-                        dest_fd.close();
-                    }
-
-                    return copyFileUsingReadWriteLoop(src, dest, src_fd, dest_fd, @intCast(@max(stat_.size, 0)), &wrote);
-                }
-            }
-
-            // we fallback to copyfile() when the file is > 128 KB and clonefile fails
-            // clonefile() isn't supported on all devices
-            // nor is it supported across devices
-            var mode_: u32 = c.COPYFILE_ACL | c.COPYFILE_DATA | c.COPYFILE_NOFOLLOW_SRC;
-            if (mode.shouldntOverwrite()) {
-                mode_ |= c.COPYFILE_EXCL;
-            }
-
-            const first_try = ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse return ret.success;
-            if (first_try == .err and first_try.err.errno == @backingInt(Syscall.E.NOENT)) {
-                const mkdir_result = this.mkdirRecursive(.{
-                    .path = PathLike{ .string = PathString.init(std.fs.path.dirname(dest) orelse "") },
-                    .recursive = true,
-                });
-                if (mkdir_result == .err) return .{ .err = mkdir_result.err };
-                return ret.errnoSysP(c.copyfile(src, dest, null, mode_), .copyfile, src) orelse ret.success;
-            }
-            return first_try;
-        }
-
-        if (Environment.isLinux) {
-            // https://manpages.debian.org/testing/manpages-dev/ioctl_ficlone.2.en.html
-            if (mode.isForceClone()) {
-                return Maybe(Return.CopyFile).todo();
-            }
-
-            // O_NONBLOCK so that opening a FIFO returns instead of waiting for a
-            // writer that will never arrive; the file type is rejected below.
-            const src_fd = switch (Syscall.open(src, bun.O.RDONLY | bun.O.NOFOLLOW | bun.O.NONBLOCK, 0o644)) {
-                .result => |result| result,
-                .err => |err| {
-                    switch (err.getErrno()) {
-                        // ELOOP is returned when you open a symlink with NOFOLLOW.
-                        // as in, it does not actually let you open it.
-                        .LOOP => return this._cpSymlink(src, dest),
-                        // Sockets and some device nodes cannot be opened at all.
-                        // Report what the file is rather than how opening it failed.
-                        .NXIO, .NODEV => switch (Syscall.lstat(src)) {
-                            .result => |stat_| return .{
-                                .err = this.cpRejected(cpUnsupportedReason(@intCast(stat_.mode)), src, dest),
-                            },
-                            .err => {},
-                        },
-                        else => {},
-                    }
-
-                    return .{ .err = err };
-                },
-            };
-            defer {
-                src_fd.close();
-            }
-
-            const stat_: bun.Stat = switch (Syscall.fstat(src_fd)) {
-                .result => |result| result,
-                .err => |err| return Maybe(Return.CopyFile){ .err = err.withFd(src_fd) },
-            };
-
-            if (!posix.S.ISREG(@intCast(stat_.mode))) {
-                return .{ .err = this.cpRejected(cpUnsupportedReason(@intCast(stat_.mode)), src, dest) };
-            }
-
-            var flags: i32 = bun.O.CREAT | bun.O.WRONLY;
-            var wrote: usize = 0;
-            if (mode.shouldntOverwrite()) {
-                flags |= bun.O.EXCL;
-            }
-
-            const dest_fd = switch (this.openCopyDest(src, dest, flags, @intCast(stat_.mode & 0o777))) {
-                .result => |fd| fd,
-                .err => |err| return .{ .err = err },
-            };
-
-            var size: usize = @intCast(@max(stat_.size, 0));
-
-            if (posix.S.ISREG(@intCast(stat_.mode)) and bun.can_use_ioctl_ficlone()) {
-                const rc = bun.linux.ioctl_ficlone(dest_fd, src_fd);
-                if (rc == 0) {
-                    _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
-                    dest_fd.close();
-                    return ret.success;
-                }
-
-                bun.disable_ioctl_ficlone();
-            }
-
-            defer {
-                _ = Syscall.ftruncate(dest_fd, @as(i64, @intCast(@as(u63, @truncate(wrote)))));
-                _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
-                dest_fd.close();
-            }
-
-            var off_in_copy = @as(i64, @bitCast(@as(u64, 0)));
-            var off_out_copy = @as(i64, @bitCast(@as(u64, 0)));
-
-            if (!bun.canUseCopyFileRangeSyscall()) {
-                return copyFileUsingSendfileOnLinuxWithReadWriteFallback(src, dest, src_fd, dest_fd, size, &wrote);
-            }
-
-            if (size == 0) {
-                // copy until EOF
-                while (true) {
-                    // Linux Kernel 5.3 or later
-                    // Not supported in gVisor
-                    const written = linux.copy_file_range(src_fd.cast(), &off_in_copy, dest_fd.cast(), &off_out_copy, std.heap.pageSize(), 0);
-                    if (ret.errnoSysP(written, .copy_file_range, dest)) |err| {
-                        return switch (err.getErrno()) {
-                            // EINVAL: eCryptfs and other filesystems may not support copy_file_range
-                            // XDEV: cross-device copy not supported
-                            // NOSYS: syscall not available
-                            // OPNOTSUPP: filesystem doesn't support this operation
-                            inline .XDEV, .NOSYS, .INVAL, .OPNOTSUPP => |errno| brk: {
-                                if (comptime errno == .NOSYS or errno == .OPNOTSUPP) {
-                                    bun.disableCopyFileRangeSyscall();
-                                }
-                                break :brk copyFileUsingSendfileOnLinuxWithReadWriteFallback(src, dest, src_fd, dest_fd, size, &wrote);
-                            },
-                            else => return err,
-                        };
-                    }
-                    // wrote zero bytes means EOF
-                    if (written == 0) break;
-                    wrote +|= written;
-                }
-            } else {
-                while (size > 0) {
-                    // Linux Kernel 5.3 or later
-                    // Not supported in gVisor
-                    const written = linux.copy_file_range(src_fd.cast(), &off_in_copy, dest_fd.cast(), &off_out_copy, size, 0);
-                    if (ret.errnoSysP(written, .copy_file_range, dest)) |err| {
-                        return switch (err.getErrno()) {
-                            // EINVAL: eCryptfs and other filesystems may not support copy_file_range
-                            // XDEV: cross-device copy not supported
-                            // NOSYS: syscall not available
-                            // OPNOTSUPP: filesystem doesn't support this operation
-                            inline .XDEV, .NOSYS, .INVAL, .OPNOTSUPP => |errno| brk: {
-                                if (comptime errno == .NOSYS or errno == .OPNOTSUPP) {
-                                    bun.disableCopyFileRangeSyscall();
-                                }
-                                break :brk copyFileUsingSendfileOnLinuxWithReadWriteFallback(src, dest, src_fd, dest_fd, size, &wrote);
-                            },
-                            else => return err,
-                        };
-                    }
-                    // wrote zero bytes means EOF
-                    if (written == 0) break;
-                    wrote +|= written;
-                    size -|= written;
-                }
-            }
-
-            return ret.success;
-        }
-
-        if (Environment.isFreeBSD) {
-            if (mode.isForceClone()) {
-                return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
-            }
-
-            const src_fd = switch (Syscall.open(src, bun.O.RDONLY | bun.O.NOFOLLOW, 0o644)) {
-                .result => |result| result,
-                .err => |err| {
-                    // O_NOFOLLOW on a symlink → recreate the link. FreeBSD's
-                    // open(2) returns EMLINK for this case, though POSIX
-                    // specifies ELOOP; accept either.
-                    if (err.getErrno() == .MLINK or err.getErrno() == .LOOP) {
-                        return this._cpSymlink(src, dest);
-                    }
-                    return .{ .err = err };
-                },
-            };
-            defer src_fd.close();
-
-            const stat_: bun.Stat = switch (Syscall.fstat(src_fd)) {
-                .result => |result| result,
-                .err => |err| return Maybe(Return.CopyFile){ .err = err.withFd(src_fd) },
-            };
-            if (!posix.S.ISREG(@intCast(stat_.mode))) {
-                return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EOPNOTSUPP), .syscall = .copyfile } };
-            }
-
-            var flags: i32 = bun.O.CREAT | bun.O.WRONLY;
-            var wrote: u64 = 0;
-            if (mode.shouldntOverwrite()) {
-                flags |= bun.O.EXCL;
-            }
-
-            const dest_fd = switch (this.openCopyDest(src, dest, flags, @intCast(stat_.mode & 0o777))) {
-                .result => |fd| fd,
-                .err => |err| return .{ .err = err },
-            };
-
-            // No O_TRUNC at open: if src and dest resolve to the same inode,
-            // that would zero the file before the first read.
-            if (Syscall.fstat(dest_fd).asValue()) |dst_stat| {
-                if (stat_.ino == dst_stat.ino and stat_.dev == dst_stat.dev) {
-                    dest_fd.close();
-                    @memcpy(this.sync_error_buf[0..src.len], src);
-                    return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(SystemErrno.EINVAL), .syscall = .copyfile, .path = this.sync_error_buf[0..src.len] } };
-                }
-            }
-
-            defer {
-                _ = Syscall.ftruncate(dest_fd, @as(i64, @intCast(@as(u63, @truncate(wrote)))));
-                _ = Syscall.fchmod(dest_fd, @intCast(stat_.mode));
-                dest_fd.close();
-            }
-
-            const size: usize = @intCast(@max(stat_.size, 0));
-
-            // FreeBSD 13+ has copy_file_range(2). std.c declares it returning
-            // usize on FreeBSD, so bitcast to isize before getErrno (see
-            // freebsd_errno.getErrno).
-            var off_in: i64 = 0;
-            var off_out: i64 = 0;
-            cfr: while (true) {
-                const rc: isize = @bitCast(std.c.copy_file_range(src_fd.native(), &off_in, dest_fd.native(), &off_out, if (size == 0) std.math.maxInt(i32) - 1 else size -| wrote, 0));
-                switch (bun.sys.getErrno(rc)) {
-                    .SUCCESS => {
-                        if (rc == 0) return ret.success;
-                        wrote +|= @intCast(rc);
-                        if (size != 0 and wrote >= size) return ret.success;
-                    },
-                    .INTR => continue,
-                    .XDEV, .INVAL, .OPNOTSUPP, .NOSYS, .BADF => break :cfr,
-                    else => |e| {
-                        @memcpy(this.sync_error_buf[0..dest.len], dest);
-                        return Maybe(Return.CopyFile){ .err = .{ .errno = @backingInt(e), .syscall = .copyfile, .path = this.sync_error_buf[0..dest.len] } };
-                    },
-                }
-            }
-
-            return copyFileUsingReadWriteLoop(src, dest, src_fd, dest_fd, size, &wrote);
-        }
-
-        if (Environment.isWindows) {
-            const src_enoent_maybe = ret.initErrWithP(.ENOENT, .copyfile, this.osPathIntoSyncErrorBuf(src));
-            const dst_enoent_maybe = ret.initErrWithP(.ENOENT, .copyfile, this.osPathIntoSyncErrorBuf(dest));
-            const stat_ = reuse_stat orelse switch (c.GetFileAttributesW(src)) {
-                c.INVALID_FILE_ATTRIBUTES => return ret.errnoSysP(0, .copyfile, this.osPathIntoSyncErrorBuf(src)).?,
-                else => |result| result,
-            };
-            if (stat_ & c.FILE_ATTRIBUTE_REPARSE_POINT == 0) {
-                if (c.CopyFileW(src, dest, @intFromBool(mode.shouldntOverwrite())) == 0) {
-                    var err = windows.GetLastError();
-                    var errpath: bun.OSPathSliceZ = undefined;
-                    switch (err) {
-                        .FILE_EXISTS, .ALREADY_EXISTS => errpath = dest,
-                        .PATH_NOT_FOUND => {
-                            const parent = parent: {
-                                var it = std.fs.path.ComponentIterator(.windows, u16).init(dest);
-                                _ = it.last() orelse break :parent null;
-                                const up = it.previous() orelse break :parent it.root();
-                                break :parent up.path;
-                            };
-                            if (parent) |dir| bun.makePathW(std.Io.Dir.cwd(), this.vm.?.io, dir) catch {};
-                            const second_try = windows.CopyFileW(src, dest, windows.BOOL.fromBool(mode.shouldntOverwrite()));
-                            if (second_try.toBool()) return ret.success;
-                            err = windows.GetLastError();
-                            errpath = dest;
-                            if (err == .FILE_EXISTS or err == .ALREADY_EXISTS) errpath = src;
-                        },
-                        else => errpath = src,
-                    }
-                    const result = ret.errnoSysP(0, .copyfile, this.osPathIntoSyncErrorBuf(dest)) orelse src_enoent_maybe;
-                    return shouldIgnoreEbusy(args.src, args.dest, result);
-                }
-                return ret.success;
-            } else {
-                const handle = switch (bun.sys.openatWindows(bun.invalid_fd, src, bun.O.RDONLY, 0)) {
-                    .err => |err| return .{ .err = err },
-                    .result => |src_fd| src_fd,
-                };
-                defer handle.close();
-                const wbuf = bun.os_path_buffer_pool.get();
-                defer bun.os_path_buffer_pool.put(wbuf);
-                const len = bun.windows.GetFinalPathNameByHandleW(handle.cast(), wbuf, wbuf.len, 0);
-                if (len == 0 or len >= wbuf.len) {
-                    return ret.errnoSysP(0, .copyfile, this.osPathIntoSyncErrorBuf(dest)) orelse dst_enoent_maybe;
-                }
-                const flags = if (stat_ & windows.FILE_ATTRIBUTE_DIRECTORY != 0)
-                    std.os.windows.SYMBOLIC_LINK_FLAG_DIRECTORY
-                else
-                    0;
-                if (!windows.CreateSymbolicLinkW(dest, wbuf[0..len :0], flags).toBool()) {
-                    return ret.errnoSysP(0, .copyfile, this.osPathIntoSyncErrorBuf(dest)) orelse dst_enoent_maybe;
-                }
-                return ret.success;
-            }
-        }
-
-        return ret.todo();
-    }
-
-    /// Directory scanning + clonefile will block this thread, then each individual file copy (what the sync version
-    /// calls "_copySingleFileSync") will be dispatched as a separate task.
-    pub fn cpAsync(this: *NodeFS, task: *AsyncCpTask) void {
-        AsyncCpTask.cpAsync(this, task);
-    }
-
-    // returns boolean `should_continue`
-    fn _cpAsyncDirectory(
-        this: *NodeFS,
-        args: Arguments.Cp.Flags,
-        task: *AsyncCpTask,
-        src_buf: *bun.OSPathBuffer,
-        src_dir_len: PathString.PathInt,
-        dest_buf: *bun.OSPathBuffer,
-        dest_dir_len: PathString.PathInt,
-    ) bool {
-        return AsyncCpTask._cpAsyncDirectory(this, args, task, src_buf, src_dir_len, dest_buf, dest_dir_len);
+        return copy.cp(args.toCopyArguments());
     }
 };
-
-fn throwInvalidFdError(global: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError {
-    if (value.isNumber()) {
-        return global.ERR(.OUT_OF_RANGE, "The value of \"fd\" is out of range. It must be an integer. Received {f}", .{bun.fmt.double(value.asNumber())}).throw();
-    }
-    return global.throwInvalidArgumentTypeValue("fd", "number", value);
-}
-
-pub export fn Bun__mkdirp(globalThis: *jsc.JSGlobalObject, path: [*:0]const u8) bool {
-    return globalThis.bunVM().nodeFS().mkdirRecursive(
-        Arguments.Mkdir{
-            .path = PathLike{ .string = PathString.init(bun.span(path)) },
-            .recursive = true,
-        },
-    ) != .err;
-}
-
-comptime {
-    _ = Bun__mkdirp;
-}
 
 /// Copied from std.Io.Dir.deleteTree. This function returns `FileNotFound` instead of ignoring it, which
 /// is required to match the behavior of Node.js's `fs.rm` { recursive: true, force: false }.
@@ -7418,6 +3931,14 @@ const string = []const u8;
 
 const DirIterator = @import("./dir_iterator.zig");
 const FileSystem = @import("../../resolver/fs.zig").FileSystem;
+const BlobSize = @import("../webcore/BlobSize.zig");
+const webcore_encoding = @import("../webcore/encoding.zig");
+const NodeFSCore = @import("./NodeFSCore.zig");
+const NodeFSAbort = @import("./NodeFSAbort.zig");
+const NodeFSCopy = @import("./NodeFSCopy.zig");
+pub const NodeTypes = @import("./types.zig");
+const NodeStats = @import("./Stat.zig").Stats;
+const NodeStatFS = @import("./StatFS.zig").StatFS;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
@@ -7426,21 +3947,17 @@ const Mode = bun.Mode;
 const PathString = bun.PathString;
 const c = bun.c;
 const strings = bun.strings;
-const AbortSignal = bun.webcore.AbortSignal;
-const Buffer = bun.api.node.Buffer;
+pub const NodeBuffer = NodeTypes.NodeBuffer;
 
-const jsc = bun.jsc;
-const ArrayBuffer = jsc.MarkedArrayBuffer;
-const ArgumentsSlice = jsc.CallFrame.ArgumentsSlice;
-
-const Encoding = jsc.Node.Encoding;
-const FileSystemFlags = jsc.Node.FileSystemFlags;
-const PathLike = jsc.Node.PathLike;
-const PathOrFileDescriptor = jsc.Node.PathOrFileDescriptor;
-const StringOrBuffer = jsc.Node.StringOrBuffer;
-const TimeLike = jsc.Node.TimeLike;
-const gid_t = jsc.Node.gid_t;
-const uid_t = jsc.Node.uid_t;
+const Encoding = NodeTypes.Encoding;
+const FileSystemFlags = NodeTypes.FileSystemFlags;
+const PathLike = NodeTypes.PathLike;
+const PathOrFileDescriptor = NodeTypes.PathOrFileDescriptor;
+const StringOrBuffer = NodeTypes.StringOrBuffer;
+const TimeLikeModule = @import("./time_like.zig");
+const TimeLike = TimeLikeModule.TimeLike;
+const gid_t = if (Environment.isPosix) std.posix.gid_t else bun.windows.libuv.uv_gid_t;
+const uid_t = if (Environment.isPosix) std.posix.uid_t else bun.windows.libuv.uv_uid_t;
 
 const E = bun.sys.E;
 const Maybe = bun.sys.Maybe;
@@ -7454,3 +3971,12 @@ const linux = std.os.linux;
 
 const posix = std.posix;
 const system = std.posix.system;
+const NodeJSFSBindings = bun.bindgen.Module("NodeJSFS");
+const NodeJSFSReadSchema = NodeJSFSBindings.class("NodeJSFS").member("read");
+const NodeJSFSReadvSchema = NodeJSFSBindings.class("NodeJSFS").member("readv");
+const NodeJSFSWritevSchema = NodeJSFSBindings.class("NodeJSFS").member("writev");
+const OwnedReadBufferLease = bun.bindgen.ResultType(NodeJSFSReadSchema.args[1].ArgumentType);
+const ReadVectorBufferSequenceSchema = NodeJSFSReadvSchema.args[1].ArgumentType;
+const VectorBufferSequenceSchema = NodeJSFSWritevSchema.args[1].ArgumentType;
+const OwnedReadVectorBufferLease = bun.bindgen.ResultType(ReadVectorBufferSequenceSchema.child);
+const OwnedWriteVectorBufferLease = bun.bindgen.ResultType(VectorBufferSequenceSchema.child);

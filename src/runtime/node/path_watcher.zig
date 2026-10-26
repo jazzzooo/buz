@@ -1,16 +1,7 @@
 //! POSIX backend for `fs.watch()`.
 //!
-//! This is deliberately independent of `bun.Watcher` (the bundler/--watch/--hot
-//! watcher). `bun.Watcher` is shaped around a module graph — its WatchItem carries
-//! `options.Loader`, `*PackageJSON`, a `*bun.fs.FileSystem`, and on Windows is pinned
-//! to `top_level_dir`. None of that applies to `fs.watch()`, and routing `fs.watch()`
-//! through it required a 1k-line shim (the old version of this file) full of
-//! lock-ordering workarounds, a BackgroundWork directory crawler, and a bolted-on FSEvents
-//! side-channel.
-//!
-//! The Windows backend (`win_watcher.zig`, libuv `uv_fs_event`) never went through
-//! `bun.Watcher` and is a quarter of the size; this file gives Linux/macOS/FreeBSD
-//! the same shape:
+//! A process-global manager owns the platform resources and deduplicates watches
+//! by canonical path and recursion mode:
 //!
 //!   PathWatcherManager        process-global, lazy, owns the OS resource
 //!     ├─ Linux:   one inotify fd + one reader thread, wd → PathWatcher map
@@ -18,11 +9,7 @@
 //!     └─ FreeBSD: one kqueue fd + one reader thread, fd → PathWatcher map
 //!
 //!   PathWatcher               one per unique (realpath, recursive) — deduped
-//!     └─ handlers[]           the JS FSWatcher contexts sharing this watch
-//!
-//! A second `fs.watch()` on the same path returns the existing PathWatcher with a
-//! new handler appended. `detach()` removes a handler; the last one out tears down
-//! the OS watch.
+//!     └─ handlers[]           callback contexts sharing this watch
 
 /// Process-global manager. Created on first `fs.watch()`, never destroyed (matches
 /// the FSEvents loop and Windows libuv loop lifetimes).
@@ -35,8 +22,7 @@ pub const PathWatcherManager = struct {
     io: std.Io,
     /// Guards `watchers` and all per-platform dispatch maps. The reader thread holds
     /// this while dispatching, so `detach()` on the JS thread cannot free a PathWatcher
-    /// mid-emit. A single lock here replaces the three interacting mutexes of the old
-    /// design.
+    /// mid-emit. The same lock protects the manager and platform dispatch maps.
     mutex: std.Io.Mutex = .init,
 
     /// Dedup map: dedup key → PathWatcher. The key is the resolved path with a one-byte
@@ -95,87 +81,55 @@ pub const PathWatcher = struct {
     recursive: bool,
     is_file: bool,
 
-    /// JS `FSWatcher` contexts sharing this OS watch. Each gets its own ChangeEvent
-    /// for per-handler duplicate suppression (same as win_watcher.zig). Guarded by
+    /// Consumers sharing this OS watch. Each gets its own duplicate-suppression
+    /// state and callback pair. Guarded by
     /// `manager.mutex` on all platforms — every emit path (inotify/kqueue reader
     /// threads and the Darwin FSEvents callback) holds it while iterating, so
     /// attach/detach can never race with dispatch.
-    handlers: std.array_hash_map.Auto(*anyopaque, ChangeEvent) = .empty,
+    handlers: std.array_hash_map.Auto(*WatcherCore.CallbackContext, Handler) = .empty,
 
     /// Per-platform per-watch state (inotify wds, kqueue fds, or the FSEventsWatcher).
     platform: Platform.Watch = .{},
 
     pub const new = bun.TrivialNew(PathWatcher);
 
-    pub const EventType = enum {
-        rename,
-        change,
+    pub const EventType = WatcherCore.ChangeKind;
 
-        pub fn toEvent(event_type: EventType, path: FSWatcher.EventPathString) Event {
-            return switch (event_type) {
-                inline else => |t| @unionInit(Event, @tagName(t), path),
-            };
-        }
+    const Handler = struct {
+        duplicate_filter: WatcherCore.DuplicateFilter = .{},
+        callback: WatcherCore.Callback,
+        update_end: WatcherCore.UpdateEndCallback,
     };
 
-    /// Per-handler duplicate suppression.
-    ///
-    /// The predicate is intentionally identical to `win_watcher.zig` and the old
-    /// `path_watcher.zig` so POSIX and Windows agree on which bursts are coalesced.
-    /// It suppresses only when, within the same millisecond, *both* the hash and
-    /// the event type match the previous emission — arguably too aggressive, but
-    /// changing it here would diverge from Windows; fixing all three together is
-    /// a separate change.
-    pub const ChangeEvent = struct {
-        hash: u64 = 0,
-        event_type: EventType = .change,
-        timestamp: i64 = 0,
-
-        fn shouldEmit(this: *ChangeEvent, hash: u64, timestamp: i64, event_type: EventType) bool {
-            const time_diff = timestamp - this.timestamp;
-            if ((this.timestamp == 0 or time_diff > 1) or
-                this.event_type != event_type and this.hash != hash)
-            {
-                this.timestamp = timestamp;
-                this.event_type = event_type;
-                this.hash = hash;
-                return true;
-            }
-            return false;
-        }
-    };
-
-    pub const Callback = *const fn (ctx: ?*anyopaque, event: Event, is_file: bool) void;
-    pub const UpdateEndCallback = *const fn (ctx: ?*anyopaque) void;
+    pub const Callback = WatcherCore.Callback;
+    pub const UpdateEndCallback = WatcherCore.UpdateEndCallback;
 
     /// Called from the platform reader thread with `manager.mutex` held.
-    /// `rel_path` is borrowed — `onPathUpdatePosix` dupes it before enqueuing.
     fn emit(this: *PathWatcher, event_type: EventType, rel_path: []const u8, is_file: bool) void {
-        const timestamp = bun.timespec.realNow().ms();
+        const timestamp_ms = bun.hw_timer.nowNs() / std.time.ns_per_ms;
         const hash = bun.hash(rel_path);
-        for (this.handlers.keys(), this.handlers.values()) |ctx, *last| {
-            if (last.shouldEmit(hash, timestamp, event_type)) {
-                onPathUpdateFn(ctx, event_type.toEvent(rel_path), is_file);
+        for (this.handlers.keys(), this.handlers.values()) |ctx, *handler| {
+            if (handler.duplicate_filter.shouldEmit(hash, timestamp_ms, event_type)) {
+                handler.callback(ctx, event_type.toEvent(rel_path), is_file);
             }
         }
     }
 
     fn emitError(this: *PathWatcher, err: bun.sys.Error) void {
-        for (this.handlers.keys()) |ctx| {
-            onPathUpdateFn(ctx, .{ .@"error" = err }, false);
+        for (this.handlers.keys(), this.handlers.values()) |ctx, handler| {
+            handler.callback(ctx, .{ .@"error" = err }, false);
         }
     }
 
-    /// Signals end-of-batch so `FSWatcher` can flush its queued events to the JS thread.
+    /// Signals the end of a platform event batch.
     /// Caller holds `manager.mutex`.
     fn flush(this: *PathWatcher) void {
-        for (this.handlers.keys()) |ctx| {
-            onUpdateEndFn(ctx);
+        for (this.handlers.keys(), this.handlers.values()) |ctx, handler| {
+            handler.update_end(ctx);
         }
     }
 
-    /// JS-thread entry point from `FSWatcher.detach()`. Removes one handler; if it was
-    /// the last, tears down the OS watch and frees.
+    /// Removes one handler; the last removal tears down the OS watch.
     ///
     /// All bookkeeping (handlers, dedup map, platform dispatch maps) happens under
     /// `manager.mutex` in one critical section so a concurrent `watch()` from another
@@ -187,7 +141,7 @@ pub const PathWatcher = struct {
     /// `manager.mutex`). Holding both here would be AB/BA with the CF thread. Once
     /// `fse.deinit()` returns, `_events_cb` has released the loop mutex and nulled our
     /// slot, so no further callbacks will fire and `destroy()` is safe.
-    pub fn detach(this: *PathWatcher, ctx: *anyopaque) void {
+    pub fn detach(this: *PathWatcher, ctx: *WatcherCore.CallbackContext) void {
         const manager = this.manager orelse {
             _ = this.handlers.swapRemove(ctx);
             if (this.handlers.count() == 0) this.destroy();
@@ -224,19 +178,19 @@ pub const PathWatcher = struct {
     }
 };
 
+pub const Runtime = struct {
+    io: std.Io,
+};
+
 pub fn watch(
-    vm: *VirtualMachine,
+    runtime: Runtime,
     path: [:0]const u8,
     recursive: bool,
-    comptime callback: PathWatcher.Callback,
-    comptime updateEnd: PathWatcher.UpdateEndCallback,
-    ctx: *anyopaque,
+    callback: PathWatcher.Callback,
+    update_end: PathWatcher.UpdateEndCallback,
+    ctx: *WatcherCore.CallbackContext,
 ) bun.sys.Maybe(*PathWatcher) {
-    // The callback/updateEnd are comptime so the emit path can call them directly
-    // without an indirect-call-per-event; assert they're what node_fs_watcher passes.
-    comptime bun.assert(callback == onPathUpdateFn);
-    comptime bun.assert(updateEnd == onUpdateEndFn);
-    const manager = switch (PathWatcherManager.get(vm.io)) {
+    const manager = switch (PathWatcherManager.get(runtime.io)) {
         .err => |e| return .{ .err = e },
         .result => |m| m,
     };
@@ -246,9 +200,8 @@ pub fn watch(
     //
     // Open with O_PATH|O_DIRECTORY first and retry without O_DIRECTORY on ENOTDIR —
     // that tells us file-vs-dir without a separate stat, follows symlinks, and the
-    // resulting fd feeds `getFdPath` for the realpath. One or two syscalls instead
-    // of lstat + open + (stat) in the old code. `O.PATH` is 0 on macOS (degrades to
-    // O_RDONLY, which is what F_GETPATH needs anyway).
+    // resulting fd feeds `getFdPath` for the realpath. `O.PATH` is 0 on macOS and
+    // degrades to O_RDONLY, which is what F_GETPATH needs.
     const resolve_buf = bun.path_buffer_pool.get();
     defer bun.path_buffer_pool.put(resolve_buf);
     var is_file = false;
@@ -280,7 +233,10 @@ pub fn watch(
     const gop = bun.handleOom(manager.watchers.getOrPut(bun.default_allocator, key));
     if (gop.found_existing) {
         const existing = gop.value_ptr.*;
-        bun.handleOom(existing.handlers.put(bun.default_allocator, ctx, .{}));
+        bun.handleOom(existing.handlers.put(bun.default_allocator, ctx, .{
+            .callback = callback,
+            .update_end = update_end,
+        }));
         manager.mutex.unlock(manager.io);
         return .{ .result = existing };
     }
@@ -293,7 +249,10 @@ pub fn watch(
         .recursive = recursive,
         .is_file = is_file,
     });
-    bun.handleOom(watcher.handlers.put(bun.default_allocator, ctx, .{}));
+    bun.handleOom(watcher.handlers.put(bun.default_allocator, ctx, .{
+        .callback = callback,
+        .update_end = update_end,
+    }));
     gop.value_ptr.* = watcher;
 
     // Linux/FreeBSD: `addWatch` mutates the platform dispatch maps (wd_map/entries)
@@ -397,9 +356,7 @@ const Platform = switch (Environment.os) {
     .linux => Linux,
     .mac => Darwin,
     .freebsd => Kqueue,
-    // win_watcher.zig imports PathWatcher.EventType from this file, so this type must
-    // resolve on Windows even though none of the code paths run. The stub keeps the
-    // struct fields typed while the actual Windows backend lives in win_watcher.zig.
+    // This module is analyzed on Windows even though the libuv backend is selected.
     .windows => struct {
         pub const Watch = struct {
             pub fn deinit(_: *@This()) void {}
@@ -676,13 +633,8 @@ const Linux = struct {
     }
 };
 
-/// macOS: delegate to `fs_events.zig`, which already runs one CFRunLoop thread with
-/// one FSEventStream covering every watched path. The PathWatcher itself is the
-/// FSEventsWatcher's opaque ctx — `fs_events.zig` calls back via `onFSEvent` below,
-/// and we fan out to the JS handlers.
-///
-/// Unlike the old design, FSEvents is used for both files and directories (same as
-/// libuv), so `fs.watch()` no longer spins up a second kqueue thread.
+/// macOS uses one FSEventStream covering every watched path. Each PathWatcher is
+/// the callback context and fans matching events out to its handlers.
 const Darwin = struct {
     /// No manager-level state — FSEvents has its own process-global loop.
     pub const Watch = struct {
@@ -743,8 +695,8 @@ const Darwin = struct {
     /// `_events_cb` releases it, so `destroy()` cannot run under us. The
     /// `watcher.manager == null` check catches the window where detach has already
     /// unlinked us but hasn't yet called `fse.deinit()`.
-    fn onFSEvent(ctx: ?*anyopaque, event: Event, is_file: bool) void {
-        const watcher: *PathWatcher = @ptrCast(@alignCast(ctx.?));
+    fn onFSEvent(ctx: *WatcherCore.CallbackContext, event: Event, is_file: bool) void {
+        const watcher: *PathWatcher = @ptrCast(@alignCast(ctx));
         const manager = default_manager orelse return;
         manager.mutex.lockUncancelable(manager.io);
         defer manager.mutex.unlock(manager.io);
@@ -754,12 +706,11 @@ const Darwin = struct {
                 watcher.emit(@field(PathWatcher.EventType, @tagName(tag)), path, is_file);
             },
             .@"error" => |err| watcher.emitError(err),
-            else => {},
         }
     }
 
-    fn onFSEventFlush(ctx: ?*anyopaque) void {
-        const watcher: *PathWatcher = @ptrCast(@alignCast(ctx.?));
+    fn onFSEventFlush(ctx: *WatcherCore.CallbackContext) void {
+        const watcher: *PathWatcher = @ptrCast(@alignCast(ctx));
         const manager = default_manager orelse return;
         manager.mutex.lockUncancelable(manager.io);
         defer manager.mutex.unlock(manager.io);
@@ -948,10 +899,5 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
 
-const jsc = bun.jsc;
-const VirtualMachine = jsc.VirtualMachine;
-
-const FSWatcher = bun.jsc.Node.fs.Watcher;
-const Event = FSWatcher.Event;
-const onPathUpdateFn = FSWatcher.onPathUpdate;
-const onUpdateEndFn = FSWatcher.onUpdateEnd;
+const WatcherCore = @import("./fs_watcher.zig");
+const Event = WatcherCore.Event;

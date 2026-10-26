@@ -4,6 +4,49 @@
 /// only during connect() and freed immediately after building the CONNECT request.
 const WebSocketProxy = @This();
 
+pub const Tunnel = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        ref: *const fn (*anyopaque) void,
+        deref: *const fn (*anyopaque) void,
+        shutdown: *const fn (*anyopaque) void,
+        detach_upgrade_client: *const fn (*anyopaque) void,
+        receive: *const fn (*anyopaque, []const u8) void,
+        writable: *const fn (*anyopaque) void,
+        write: *const fn (*anyopaque, []const u8) anyerror!usize,
+    };
+
+    pub fn ref(tunnel: Tunnel) void {
+        tunnel.vtable.ref(tunnel.context);
+    }
+
+    pub fn deref(tunnel: Tunnel) void {
+        tunnel.vtable.deref(tunnel.context);
+    }
+
+    pub fn shutdown(tunnel: Tunnel) void {
+        tunnel.vtable.shutdown(tunnel.context);
+    }
+
+    pub fn detachUpgradeClient(tunnel: Tunnel) void {
+        tunnel.vtable.detach_upgrade_client(tunnel.context);
+    }
+
+    pub fn receive(tunnel: Tunnel, data: []const u8) void {
+        tunnel.vtable.receive(tunnel.context, data);
+    }
+
+    pub fn onWritable(tunnel: Tunnel) void {
+        tunnel.vtable.writable(tunnel.context);
+    }
+
+    pub fn write(tunnel: Tunnel, data: []const u8) !usize {
+        return tunnel.vtable.write(tunnel.context, data);
+    }
+};
+
 /// Target hostname for SNI during TLS handshake
 target_host: []const u8,
 /// Whether target uses TLS (wss://)
@@ -11,7 +54,7 @@ target_is_https: bool,
 /// WebSocket upgrade request to send after CONNECT succeeds
 websocket_request_buf: []u8,
 /// TLS tunnel for wss:// through HTTP proxy
-tunnel: ?*WebSocketProxyTunnel = null,
+tunnel: ?Tunnel = null,
 
 /// Initialize a new WebSocketProxy
 pub fn init(
@@ -37,12 +80,12 @@ pub fn isTargetHttps(self: *const WebSocketProxy) bool {
 }
 
 /// Get the TLS tunnel for wss:// through HTTP proxy
-pub fn getTunnel(self: *const WebSocketProxy) ?*WebSocketProxyTunnel {
+pub fn getTunnel(self: *const WebSocketProxy) ?Tunnel {
     return self.tunnel;
 }
 
 /// Set the TLS tunnel
-pub fn setTunnel(self: *WebSocketProxy, new_tunnel: ?*WebSocketProxyTunnel) void {
+pub fn setTunnel(self: *WebSocketProxy, new_tunnel: ?Tunnel) void {
     self.tunnel = new_tunnel;
 }
 
@@ -67,5 +110,4 @@ pub fn deinit(self: *WebSocketProxy) void {
     }
 }
 
-const WebSocketProxyTunnel = @import("./WebSocketProxyTunnel.zig");
 const bun = @import("bun");

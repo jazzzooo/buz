@@ -69,6 +69,7 @@ public:
     const String& pattern() const LIFETIME_BOUND { return m_patternString; }
 
     bool isValid() const { return !Yarr::hasError(m_constructionErrorCode); }
+    bool constructionFailedOutOfMemory() const { return m_constructionErrorCode == Yarr::ErrorCode::TooManyDisjunctions; }
     ASCIILiteral errorMessage() const { return Yarr::errorMessage(m_constructionErrorCode); }
     JSObject* errorToThrow(JSGlobalObject* globalObject) { return Yarr::errorToThrow(globalObject, m_constructionErrorCode); }
     void reset()

@@ -1,15 +1,13 @@
 #include "BakeGlobalObject.h"
+#include "BunPanic.h"
+#include "SchemaBindings.h"
 #include "BakeSourceProvider.h"
 #include "JSNextTickQueue.h"
 #include "JavaScriptCore/GlobalObjectMethodTable.h"
 #include "JavaScriptCore/JSPromise.h"
-#include "headers-handwritten.h"
 #include "JavaScriptCore/JSModuleLoader.h"
 #include "JavaScriptCore/Completion.h"
 #include "JavaScriptCore/JSSourceCode.h"
-
-extern "C" BunString BakeProdResolve(JSC::JSGlobalObject*, BunString a, BunString b);
-extern "C" BunString BakeToWindowsPath(BunString a);
 
 namespace Bake {
 using namespace JSC;
@@ -21,36 +19,26 @@ bakeModuleLoaderImportModule(JSC::JSGlobalObject* global,
     const JSC::SourceOrigin& sourceOrigin,
     bool deferred)
 {
+    auto& vm = JSC::getVM(global);
+    auto scope = DECLARE_THROW_SCOPE(vm);
     WTF::String keyString = moduleNameValue->getString(global);
+    RETURN_IF_EXCEPTION(scope, nullptr);
     if (keyString.startsWith("bake:/"_s)) {
-        auto& vm = JSC::getVM(global);
-        return JSC::importModule(global, JSC::Identifier::fromString(vm, keyString),
-            JSC::Identifier(), WTF::move(parameters), nullptr);
+        RELEASE_AND_RETURN(scope, JSC::importModule(global, JSC::Identifier::fromString(vm, keyString),
+                                      JSC::Identifier(), WTF::move(parameters), nullptr));
     }
 
     if (!sourceOrigin.isNull() && sourceOrigin.string().startsWith("bake:/"_s)) {
-        auto& vm = JSC::getVM(global);
-        auto scope = DECLARE_THROW_SCOPE(vm);
-
         WTF::String refererString = sourceOrigin.string();
-        WTF::String keyString = moduleNameValue->getString(global);
 
-        if (!keyString) {
-            auto promise = JSC::JSPromise::create(vm, global->promiseStructure());
-            promise->reject(vm, JSC::createError(global, "import() requires a string"_s));
-            return promise;
-        }
-
-        BunString result = BakeProdResolve(global, Bun::toString(refererString), Bun::toString(keyString));
+        auto result = Bun::Bindgen::ZigExports::bunBindgenZig_BakeProduction_bakeProdResolve(global, refererString, keyString);
         RETURN_IF_EXCEPTION(scope, nullptr);
 
-        return JSC::importModule(global, JSC::Identifier::fromString(vm, result.toWTFString()),
-            JSC::Identifier(), WTF::move(parameters), nullptr);
+        RELEASE_AND_RETURN(scope, JSC::importModule(global, JSC::Identifier::fromString(vm, result),
+                                      JSC::Identifier(), WTF::move(parameters), nullptr));
     }
 
-    // TODO: make static cast instead of jscast
-    // Use Zig::GlobalObject's function
-    return uncheckedDowncast<Zig::GlobalObject>(global)->moduleLoaderImportModule(global, moduleLoader, moduleNameValue, WTF::move(parameters), sourceOrigin, deferred);
+    RELEASE_AND_RETURN(scope, Zig::GlobalObject::moduleLoaderImportModule(global, moduleLoader, moduleNameValue, WTF::move(parameters), sourceOrigin, deferred));
 }
 
 JSC::Identifier bakeModuleLoaderResolve(JSC::JSGlobalObject* jsGlobal,
@@ -63,15 +51,16 @@ JSC::Identifier bakeModuleLoaderResolve(JSC::JSGlobalObject* jsGlobal,
 
     if (auto string = dynamicDowncast<JSC::JSString>(referrer)) {
         WTF::String refererString = string->getString(global);
+        RETURN_IF_EXCEPTION(scope, vm.propertyNames->emptyIdentifier);
 
         WTF::String keyString = key.toWTFString(global);
         RETURN_IF_EXCEPTION(scope, vm.propertyNames->emptyIdentifier);
 
         if (refererString.startsWith("bake:/"_s) || (refererString == "."_s && keyString.startsWith("bake:/"_s))) {
-            BunString result = BakeProdResolve(global, Bun::toString(referrer.getString(global)), Bun::toString(keyString));
+            auto result = Bun::Bindgen::ZigExports::bunBindgenZig_BakeProduction_bakeProdResolve(global, refererString, keyString);
             RETURN_IF_EXCEPTION(scope, vm.propertyNames->emptyIdentifier);
 
-            return JSC::Identifier::fromString(vm, result.toWTFString(BunString::ZeroCopy));
+            return JSC::Identifier::fromString(vm, result);
         }
     }
 
@@ -80,15 +69,16 @@ JSC::Identifier bakeModuleLoaderResolve(JSC::JSGlobalObject* jsGlobal,
         RETURN_IF_EXCEPTION(scope, vm.propertyNames->emptyIdentifier);
 
         if (keyView.startsWith("bake:/"_s)) {
-            BunString result = BakeProdResolve(global, Bun::toString("bake:/"_s), Bun::toString(keyView.substringSharingImpl("bake:"_s.length())));
+            auto result = Bun::Bindgen::ZigExports::bunBindgenZig_BakeProduction_bakeProdResolve(
+                global, "bake:/"_s, keyView.substringSharingImpl("bake:"_s.length()));
             RETURN_IF_EXCEPTION(scope, vm.propertyNames->emptyIdentifier);
 
-            return JSC::Identifier::fromString(vm, result.transferToWTFString());
+            return JSC::Identifier::fromString(vm, result);
         }
     }
 
     // Use Zig::GlobalObject's function
-    return Zig::GlobalObject::moduleLoaderResolve(jsGlobal, loader, key, referrer, WTF::move(origin), useImportMap);
+    RELEASE_AND_RETURN(scope, Zig::GlobalObject::moduleLoaderResolve(jsGlobal, loader, key, referrer, WTF::move(origin), useImportMap));
 }
 
 static JSC::JSPromise* rejectedInternalPromise(JSC::JSGlobalObject* globalObject, JSC::JSValue value)
@@ -101,23 +91,7 @@ static JSC::JSPromise* rejectedInternalPromise(JSC::JSGlobalObject* globalObject
 
 static JSC::JSPromise* resolvedInternalPromise(JSC::JSGlobalObject* globalObject, JSC::JSValue value)
 {
-    auto& vm = JSC::getVM(globalObject);
-    JSC::JSPromise* promise = JSC::JSPromise::create(vm, globalObject->promiseStructure());
-    promise->fulfill(vm, value);
-    return promise;
-}
-
-extern "C" BunString BakeProdLoad(void* perThreadData, BunString a);
-
-extern "C" bool BakeGlobalObject__isBakeGlobalObject(JSC::JSGlobalObject* global)
-{
-    return global->JSCell::inherits(Bake::GlobalObject::info());
-}
-
-extern "C" void* BakeGlobalObject__getPerThreadData(JSC::JSGlobalObject* global)
-{
-    Bake::GlobalObject* bake = uncheckedDowncast<Bake::GlobalObject>(global);
-    return bake->m_perThreadData;
+    return JSC::JSPromise::resolvedPromise(globalObject, value);
 }
 
 JSC::JSPromise* bakeModuleLoaderFetch(JSC::JSGlobalObject* globalObject,
@@ -129,25 +103,31 @@ JSC::JSPromise* bakeModuleLoaderFetch(JSC::JSGlobalObject* globalObject,
     auto scope = DECLARE_THROW_SCOPE(vm);
     auto moduleKey = key.toWTFString(globalObject);
     if (scope.exception()) [[unlikely]]
-        return rejectedInternalPromise(globalObject, scope.exception()->value());
+        RELEASE_AND_RETURN(scope, rejectedInternalPromise(globalObject, scope.exception()->value()));
 
     if (moduleKey.startsWith("bake:/"_s)) {
         if (global->m_perThreadData) [[likely]] {
-            BunString source = BakeProdLoad(global->m_perThreadData, Bun::toString(moduleKey));
-            if (source.tag != BunStringTag::Dead) {
+            auto loaded = Bun::Bindgen::ZigExports::bunBindgenZig_BakeProduction_bakeProdLoad(global->m_perThreadData, moduleKey);
+            RETURN_IF_EXCEPTION(scope, nullptr);
+            if (!loaded) {
+                JSC::throwOutOfMemoryError(globalObject, scope);
+                return nullptr;
+            }
+            if (auto& source = *loaded) {
                 JSC::SourceOrigin origin = JSC::SourceOrigin(WTF::URL(moduleKey));
-                JSC::SourceCode sourceCode = JSC::SourceCode(Bake::SourceProvider::create(
+                auto provider = Bake::SourceProvider::create(
                     globalObject,
-                    source.toWTFString(),
+                    *source,
                     origin,
                     WTF::move(moduleKey),
                     WTF::TextPosition(),
-                    JSC::SourceProviderSourceType::Module));
-                return resolvedInternalPromise(globalObject, JSC::JSSourceCode::create(vm, WTF::move(sourceCode)));
+                    JSC::SourceProviderSourceType::Module);
+                RETURN_IF_EXCEPTION(scope, nullptr);
+                JSC::SourceCode sourceCode(provider.releaseNonNull());
+                RELEASE_AND_RETURN(scope, resolvedInternalPromise(globalObject, JSC::JSSourceCode::create(vm, WTF::move(sourceCode))));
             }
 
-            // We unconditionally prefix the key with "bake:" inside
-            // BakeProdResolve in production.zig.
+            // Production resolution unconditionally prefixes the key with "bake:".
             //
             // But if someone does: `await import(resolve(import.meta.dir, "nav.ts"))`
             // we don't actually want to load it from the Bake production module
@@ -159,18 +139,24 @@ JSC::JSPromise* bakeModuleLoaderFetch(JSC::JSGlobalObject* globalObject,
             // have to worry about platform paths. Now we have to worry about
             // it, because `moduleLoaderFetch(...)` may read the path from disk
             // and so we need to give a Windows path to it.
-            auto temp = BakeToWindowsPath(Bun::toString(bakePrefixRemoved));
-            bakePrefixRemoved = temp.toWTFString();
+            auto windowsPath = Bun::Bindgen::ZigExports::bunBindgenZig_BakeProduction_bakeToWindowsPath(bakePrefixRemoved);
+            RETURN_IF_EXCEPTION(scope, nullptr);
+            if (!windowsPath) {
+                JSC::throwOutOfMemoryError(globalObject, scope);
+                return nullptr;
+            }
+            bakePrefixRemoved = WTF::move(*windowsPath);
 #endif
             JSString* bakePrefixRemovedString = jsNontrivialString(vm, bakePrefixRemoved);
             JSValue bakePrefixRemovedJsvalue = bakePrefixRemovedString;
-            return Zig::GlobalObject::moduleLoaderFetch(globalObject, loader, bakePrefixRemovedJsvalue, WTF::move(parameters), WTF::move(script));
+            RELEASE_AND_RETURN(scope, Zig::GlobalObject::moduleLoaderFetch(globalObject, loader, bakePrefixRemovedJsvalue, WTF::move(parameters), WTF::move(script)));
         }
-        return rejectedInternalPromise(globalObject, createTypeError(globalObject, "BakeGlobalObject does not have per-thread data configured"_s));
+        RELEASE_AND_RETURN(scope, rejectedInternalPromise(globalObject, createTypeError(globalObject, "BakeGlobalObject does not have per-thread data configured"_s)));
     }
 
     auto result = Zig::GlobalObject::moduleLoaderFetch(globalObject, loader, key, WTF::move(parameters), WTF::move(script));
-    RETURN_IF_EXCEPTION(scope, rejectedInternalPromise(globalObject, scope.exception()->value()));
+    if (scope.exception()) [[unlikely]]
+        RELEASE_AND_RETURN(scope, rejectedInternalPromise(globalObject, scope.exception()->value()));
     return result;
 }
 
@@ -196,9 +182,6 @@ JSC::Structure* GlobalObject::createStructure(JSC::VM& vm)
     return structure;
 }
 
-struct BunVirtualMachine;
-extern "C" BunVirtualMachine* Bun__getVM();
-
 const JSC::GlobalObjectMethodTable& GlobalObject::globalObjectMethodTable()
 {
     const auto& parent = Zig::GlobalObject::globalObjectMethodTable();
@@ -215,6 +198,7 @@ const JSC::GlobalObjectMethodTable& GlobalObject::globalObjectMethodTable()
         bakeModuleLoaderFetch,
         INHERIT_HOOK_METHOD(moduleLoaderCreateImportMetaProperties),
         INHERIT_HOOK_METHOD(moduleLoaderEvaluate),
+        INHERIT_HOOK_METHOD(moduleLoaderAnalyzeTranspiledModule),
         INHERIT_HOOK_METHOD(promiseRejectionTracker),
         INHERIT_HOOK_METHOD(reportUncaughtExceptionAtEventLoop),
         INHERIT_HOOK_METHOD(currentScriptExecutionOwner),
@@ -232,23 +216,20 @@ const JSC::GlobalObjectMethodTable& GlobalObject::globalObjectMethodTable()
     return table;
 }
 
-// A lot of this function is taken from 'Zig__GlobalObject__create'
-// TODO: remove this entire method
-extern "C" GlobalObject* BakeCreateProdGlobal(void* console)
+static GlobalObject* createProductionGlobal()
 {
     RefPtr<JSC::VM> vmPtr = JSC::VM::tryCreate(JSC::HeapType::Large);
     if (!vmPtr) [[unlikely]] {
         BUN_PANIC("Failed to allocate JavaScriptCore Virtual Machine. Did your computer run out of memory? Or maybe you compiled Bun with a mismatching libc++ version or compiler?");
     }
-    // We need to unsafely ref this so it stays alive, later in
-    // `Zig__GlobalObject__destructOnExit` will call
+    // We need to unsafely ref this so it stays alive; global-object exit teardown calls
     // `vm.derefSuppressingSaferCPPChecking()` to free it.
     vmPtr->refSuppressingSaferCPPChecking();
     JSC::VM& vm = *vmPtr;
 
     vm.heap.acquireAccess();
     JSC::JSLockHolder locker(vm);
-    BunVirtualMachine* bunVM = Bun__getVM();
+    auto* bunVM = Bun::Bindgen::ZigExports::bunBindgenZig_virtual_machine_getVirtualMachine();
     WebCore::JSVMClientData::create(&vm, bunVM);
 
     JSC::Structure* structure = Bake::GlobalObject::createStructure(vm);
@@ -261,7 +242,7 @@ extern "C" GlobalObject* BakeCreateProdGlobal(void* console)
 
     JSC::gcProtect(global);
 
-    global->setConsole(console);
+    global->setConsole();
     global->setStackTraceLimit(10); // Node.js defaults to 10
     global->isThreadLocalDefaultGlobalObject = true;
 
@@ -285,12 +266,21 @@ extern "C" GlobalObject* BakeCreateProdGlobal(void* console)
     return global;
 }
 
-extern "C" void BakeGlobalObject__attachPerThreadData(GlobalObject* global, void* perThreadData)
-{
-    global->m_perThreadData = perThreadData;
-}
-
 const JSC::ClassInfo Bake::GlobalObject::s_info = { "GlobalObject"_s, &Base::s_info, nullptr, nullptr,
     CREATE_METHOD_TABLE(Bake::GlobalObject) };
 
 }; // namespace Bake
+
+JSC::JSGlobalObject* Bun::Bindgen::Engine::bunBindgenEngine_BakeProduction_createBakeProductionGlobal(
+    const Bun::Bindgen::Engine::BunBindgenEngine_BakeProduction_createBakeProductionGlobal_Arguments& args)
+{
+    return Bake::createProductionGlobal();
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_BakeProduction_bakeGlobalObjectSetPerThreadData(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_BakeProduction_bakeGlobalObjectSetPerThreadData_Arguments& args)
+{
+    auto* global = uncheckedDowncast<Bake::GlobalObject>(&context.globalObject);
+    global->m_perThreadData = args.perThreadData.value_or(nullptr);
+}

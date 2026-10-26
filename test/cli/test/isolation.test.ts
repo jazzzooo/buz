@@ -530,7 +530,7 @@ test.concurrent("--isolate: SourceProvider cache covers node_modules .mjs and ty
 test.concurrent("--isolate: cached SourceProvider's module_info rebuilds correct exports", async () => {
   // A wide module so the printer-generated module_info has thousands of
   // export entries. Under --isolate, file b hits the SourceProvider cache and
-  // rebuilds JSModuleRecord from the cached module_info (Bun__analyzeTranspiledModule)
+  // rebuilds JSModuleRecord from the cached module_info
   // instead of re-parsing. If the record is wrong, named imports would be
   // undefined or the count would mismatch.
   const N = 2000;

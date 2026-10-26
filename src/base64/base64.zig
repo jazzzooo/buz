@@ -122,15 +122,22 @@ pub fn decodeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 }
 
 pub fn decodeAllocForgiving(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var destination = try allocator.alloc(u8, decodeLen(input));
+    return decodeAllocWith(decodeForgiving, allocator, input);
+}
+
+pub fn decodeAllocNode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    return decodeAllocWith(decodeNode, allocator, input);
+}
+
+fn decodeAllocWith(comptime decoder: fn ([]u8, []const u8) bun.simdutf.SIMDUTFResult, allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    const destination = try allocator.alloc(u8, decodeLen(input));
     errdefer allocator.free(destination);
 
-    const result = decodeForgiving(destination, input);
+    const result = decoder(destination, input);
     if (!result.isSuccessful()) return error.DecodingFailed;
     if (result.count == destination.len) return destination;
 
-    destination = try allocator.realloc(destination, result.count);
-    return destination;
+    return try allocator.realloc(destination, result.count);
 }
 
 pub fn encode(destination: []u8, source: []const u8) usize {

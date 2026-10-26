@@ -10,24 +10,29 @@ export function initializeDecompressionStream(this, format) {
     "zstd": zlib.createZstdDecompress,
   };
 
-  if (!(format in builders))
-    throw $ERR_INVALID_ARG_VALUE("format", format, "must be one of: " + Object.keys(builders).join(", "));
-
   const handle = builders[format]();
-  $putByIdDirectPrivate(this, "readable", stream.Readable.toWeb(handle));
-  $putByIdDirectPrivate(this, "writable", stream.Writable.toWeb(handle));
+  $putByIdDirectPrivate(this, "decompressionStreamReadable", stream.Readable.toWeb(handle));
+  $putByIdDirectPrivate(this, "decompressionStreamWritable", stream.Writable.toWeb(handle));
 
   return this;
 }
 
 $getter;
 export function readable(this) {
-  if (!$inheritsDecompressionStream(this)) throw $makeGetterTypeError("DecompressionStream", "readable");
-  return $getByIdDirectPrivate(this, "readable");
+  const isDecompressionStream = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isDecompressionStream>(
+    "NativeTypePredicates.schema.zig",
+    "isDecompressionStream",
+  );
+  if (!isDecompressionStream(this)) throw $makeGetterTypeError("DecompressionStream", "readable");
+  return $getByIdDirectPrivate(this, "decompressionStreamReadable");
 }
 
 $getter;
 export function writable(this) {
-  if (!$inheritsDecompressionStream(this)) throw $makeGetterTypeError("DecompressionStream", "writable");
-  return $getByIdDirectPrivate(this, "writable");
+  const isDecompressionStream = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isDecompressionStream>(
+    "NativeTypePredicates.schema.zig",
+    "isDecompressionStream",
+  );
+  if (!isDecompressionStream(this)) throw $makeGetterTypeError("DecompressionStream", "writable");
+  return $getByIdDirectPrivate(this, "decompressionStreamWritable");
 }

@@ -26,15 +26,6 @@
 #pragma once
 
 #include "root.h"
-#include "ZigGlobalObject.h"
-
-#include <JavaScriptCore/JSFunction.h>
-#include <JavaScriptCore/VM.h>
-
-#include "headers-handwritten.h"
-#include "BunClientData.h"
-#include <JavaScriptCore/CallFrame.h>
-
 #ifndef LAZY_LOAD_SQLITE_DEFAULT_SETTING
 #if defined(__APPLE__)
 #define LAZY_LOAD_SQLITE_DEFAULT_SETTING 1
@@ -51,39 +42,14 @@
 #define LAZY_LOAD_SQLITE 0
 #endif
 
-#if LAZY_LOAD_SQLITE
-#include "sqlite3.h"
-#else
 #include "sqlite3_local.h"
-#endif
 
 namespace WebCore {
 
-class JSSQLStatementConstructor final : public JSC::JSFunction {
-public:
-    using Base = JSC::JSFunction;
-    static constexpr unsigned StructureFlags = Base::StructureFlags;
-
-    static JSSQLStatementConstructor* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::Structure* structure);
-
-    DECLARE_INFO;
-
-    static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
-    {
-        return JSC::Structure::create(vm, globalObject, prototype, JSC::TypeInfo(JSFunctionType, StructureFlags), info());
-    }
-
-private:
-    JSSQLStatementConstructor(JSC::VM& vm, NativeExecutable* native, JSGlobalObject* globalObject, JSC::Structure* structure)
-        : Base(vm, native, globalObject, structure)
-    {
-    }
-
-    void finishCreation(JSC::VM&);
-};
-static_assert(sizeof(JSSQLStatementConstructor) == sizeof(JSFunction), "Allocate JSSQLStatementConstructor in JSFunction IsoSubspace");
-Structure* createJSSQLStatementStructure(JSGlobalObject* globalObject);
-
-JSValue createJSSQLStatementConstructor(Zig::GlobalObject* globalObject);
+class JSVMClientData;
+class SQLiteDatabaseData;
+class SQLiteStatementData;
+class SQLiteControlHandleData;
+void closeSQLiteDatabasesForVM(JSVMClientData&);
 
 } // namespace WebCore

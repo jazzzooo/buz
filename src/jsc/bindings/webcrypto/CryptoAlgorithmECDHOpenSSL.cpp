@@ -30,29 +30,34 @@
 
 #include "CryptoKeyEC.h"
 #include "OpenSSLUtilities.h"
+#include "ncrypto.h"
 
 namespace WebCore {
 
-std::optional<Vector<uint8_t>> CryptoAlgorithmECDH::platformDeriveBits(const CryptoKeyEC& baseKey, const CryptoKeyEC& publicKey)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithmECDH::platformDeriveBits(const CryptoKeyEC& baseKey, const CryptoKeyEC& publicKey)
 {
+    ncrypto::ClearErrorOnReturn clearError;
+    auto failure = [] { return Exception { ncrypto::takeAllocationFailure() ? OutOfMemoryError : OperationError }; };
     auto ctx = EvpPKeyCtxPtr(EVP_PKEY_CTX_new(baseKey.platformKey(), nullptr));
     if (!ctx)
-        return std::nullopt;
+        return failure();
 
     if (EVP_PKEY_derive_init(ctx.get()) <= 0)
-        return std::nullopt;
+        return failure();
 
     if (EVP_PKEY_derive_set_peer(ctx.get(), publicKey.platformKey()) <= 0)
-        return std::nullopt;
+        return failure();
 
     // Call with a nullptr to get the required buffer size.
     size_t keyLen;
     if (EVP_PKEY_derive(ctx.get(), nullptr, &keyLen) <= 0)
-        return std::nullopt;
+        return failure();
 
-    Vector<uint8_t> key(keyLen);
+    Vector<uint8_t> key;
+    if (!key.tryGrow(keyLen))
+        return Exception { OutOfMemoryError };
     if (EVP_PKEY_derive(ctx.get(), key.begin(), &keyLen) <= 0)
-        return std::nullopt;
+        return failure();
 
     // Shrink the buffer since the new keyLen may differ from the buffer size.
     key.shrink(keyLen);

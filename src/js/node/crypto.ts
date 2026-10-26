@@ -13,23 +13,13 @@ const {
   getCiphers,
   getCipherInfo,
   Sign: _Sign,
-  sign,
   Verify: _Verify,
-  verify,
   Hmac: _Hmac,
   Hash: _Hash,
   ECDH,
   DiffieHellman,
   DiffieHellmanGroup,
-  diffieHellman,
-  checkPrime,
-  checkPrimeSync,
-  generatePrime,
-  generatePrimeSync,
   Cipher,
-  hkdf,
-  hkdfSync,
-
   publicEncrypt,
   publicDecrypt,
   privateEncrypt,
@@ -41,33 +31,102 @@ const {
   createPublicKey,
   createPrivateKey,
 
-  generateKey,
-  generateKeySync,
-  generateKeyPair,
-  generateKeyPairSync,
-
   X509Certificate,
-} = $cpp("node_crypto_binding.cpp", "createNodeCryptoBinding");
+} = {
+  getCurves: $bindgenFn("node_crypto_binding.schema.zig", "getCurves"),
+  certVerifySpkac: $bindgenFn("node_crypto_binding.schema.zig", "certVerifySpkac"),
+  certExportPublicKey: $bindgenFn("node_crypto_binding.schema.zig", "certExportPublicKey"),
+  certExportChallenge: $bindgenFn("node_crypto_binding.schema.zig", "certExportChallenge"),
+  getCiphers: $bindgenFn("node_crypto_binding.schema.zig", "getCiphers"),
+  getCipherInfo: $bindgenFn("node_crypto_binding.schema.zig", "getCipherInfo"),
+  Sign: $bindgenClass("NodeCryptoSign.schema.zig", "Sign"),
+  Verify: $bindgenClass("NodeCryptoSign.schema.zig", "Verify"),
+  Hmac: $bindgenClass("NodeCryptoHmac.schema.zig", "Hmac"),
+  Hash: $bindgenFn("node_crypto_binding.schema.zig", "hashConstructor")(),
+  ECDH: $bindgenClass("NodeCryptoECDH.schema.zig", "ECDH"),
+  DiffieHellman: $bindgenFn("node_crypto_binding.schema.zig", "diffieHellmanConstructor")(),
+  DiffieHellmanGroup: $bindgenFn("node_crypto_binding.schema.zig", "diffieHellmanGroupConstructor")(),
+  Cipher: $bindgenFn("node_crypto_binding.schema.zig", "cipherConstructor")(),
+  publicEncrypt: $bindgenFn("node_crypto_binding.schema.zig", "publicEncrypt"),
+  publicDecrypt: $bindgenFn("node_crypto_binding.schema.zig", "publicDecrypt"),
+  privateEncrypt: $bindgenFn("node_crypto_binding.schema.zig", "privateEncrypt"),
+  privateDecrypt: $bindgenFn("node_crypto_binding.schema.zig", "privateDecrypt"),
+  KeyObject: $bindgenFn("node_crypto_binding.schema.zig", "keyObjectConstructor")(),
+  createSecretKey: $bindgenFn("node_crypto_binding.schema.zig", "createSecretKey"),
+  createPublicKey: $bindgenFn("node_crypto_binding.schema.zig", "createPublicKey"),
+  createPrivateKey: $bindgenFn("node_crypto_binding.schema.zig", "createPrivateKey"),
+  X509Certificate: $bindgenFn("node_crypto_binding.schema.zig", "x509CertificateConstructor")(),
+};
 
 const {
   pbkdf2: _pbkdf2,
   pbkdf2Sync,
   timingSafeEqual,
-  randomInt,
+  randomInt: _randomInt,
   randomUUID,
-  randomBytes,
+  randomBytes: _randomBytes,
+  randomBytesAsync: _randomBytesAsync,
   randomFillSync,
-  randomFill,
+  randomFill: _randomFill,
   secureHeapUsed,
   getFips,
   setFips,
   setEngine,
   getHashes,
-  scrypt,
+  scrypt: _scrypt,
   scryptSync,
-} = $zig("node_crypto_binding.zig", "createNodeCryptoBindingZig");
+  hkdf: _hkdf,
+  hkdfSync,
+  checkPrime: _checkPrime,
+  checkPrimeSync,
+  generatePrime: _generatePrime,
+  generatePrimeSync: _generatePrimeSync,
+  generateKey: _generateKey,
+  generateKeySync: _generateKeySync,
+  diffieHellman: _diffieHellman,
+  diffieHellmanSync: _diffieHellmanSync,
+  signOneShot: _signOneShot,
+  signOneShotSync: _signOneShotSync,
+  verifyOneShot: _verifyOneShot,
+  verifyOneShotSync: _verifyOneShotSync,
+  generateKeyPair: _generateKeyPair,
+  generateKeyPairSync: _generateKeyPairSync,
+} = {
+  pbkdf2: $bindgenFn("node_crypto_binding.schema.zig", "pbkdf2"),
+  pbkdf2Sync: $bindgenFn("node_crypto_binding.schema.zig", "pbkdf2Sync"),
+  timingSafeEqual: $bindgenFn("node_crypto_binding.schema.zig", "timingSafeEqual"),
+  randomInt: $bindgenFn("node_crypto_binding.schema.zig", "randomInt"),
+  randomUUID: $bindgenFn("node_crypto_binding.schema.zig", "randomUUID"),
+  randomBytes: $bindgenFn("node_crypto_binding.schema.zig", "randomBytes"),
+  randomBytesAsync: $bindgenFn("node_crypto_binding.schema.zig", "randomBytesAsync"),
+  randomFillSync: $bindgenFn("node_crypto_binding.schema.zig", "randomFillSync"),
+  randomFill: $bindgenFn("node_crypto_binding.schema.zig", "randomFill"),
+  secureHeapUsed: $bindgenFn("node_crypto_binding.schema.zig", "secureHeapUsed"),
+  getFips: $bindgenFn("node_crypto_binding.schema.zig", "getFips"),
+  setFips: $bindgenFn("node_crypto_binding.schema.zig", "setFips"),
+  setEngine: $bindgenFn("node_crypto_binding.schema.zig", "setEngine"),
+  getHashes: $bindgenFn("node_crypto_binding.schema.zig", "getHashes"),
+  scrypt: $bindgenFn("node_crypto_binding.schema.zig", "scrypt"),
+  scryptSync: $bindgenFn("node_crypto_binding.schema.zig", "scryptSync"),
+  hkdf: $bindgenFn("node_crypto_binding.schema.zig", "hkdf"),
+  hkdfSync: $bindgenFn("node_crypto_binding.schema.zig", "hkdfSync"),
+  checkPrime: $bindgenFn("node_crypto_binding.schema.zig", "checkPrime"),
+  checkPrimeSync: $bindgenFn("node_crypto_binding.schema.zig", "checkPrimeSync"),
+  generatePrime: $bindgenFn("node_crypto_binding.schema.zig", "generatePrime"),
+  generatePrimeSync: $bindgenFn("node_crypto_binding.schema.zig", "generatePrimeSync"),
+  generateKey: $bindgenFn("node_crypto_binding.schema.zig", "generateKey"),
+  generateKeySync: $bindgenFn("node_crypto_binding.schema.zig", "generateKeySync"),
+  diffieHellman: $bindgenFn("node_crypto_binding.schema.zig", "diffieHellman"),
+  diffieHellmanSync: $bindgenFn("node_crypto_binding.schema.zig", "diffieHellmanSync"),
+  signOneShot: $bindgenFn("node_crypto_binding.schema.zig", "signOneShot"),
+  signOneShotSync: $bindgenFn("node_crypto_binding.schema.zig", "signOneShotSync"),
+  verifyOneShot: $bindgenFn("node_crypto_binding.schema.zig", "verifyOneShot"),
+  verifyOneShotSync: $bindgenFn("node_crypto_binding.schema.zig", "verifyOneShotSync"),
+  generateKeyPair: $bindgenFn("node_crypto_binding.schema.zig", "generateKeyPair"),
+  generateKeyPairSync: $bindgenFn("node_crypto_binding.schema.zig", "generateKeyPairSync"),
+};
 
-const normalizeEncoding = $newZigFunction("node_util_binding.zig", "normalizeEncoding", 1);
+const normalizeEncoding = $bindgenFn("NodeUtil.schema.zig", "normalizeEncoding");
 
 const { validateString } = require("internal/validators");
 
@@ -104,7 +163,7 @@ function getArrayBufferOrView(buffer, name, encoding?) {
   if (buffer instanceof KeyObject) {
     if (buffer.type !== "secret") {
       const error = new TypeError(
-        `ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: Invalid key object type ${key.type}, expected secret`,
+        `ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: Invalid key object type ${buffer.type}, expected secret`,
       );
       error.code = "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE";
       throw error;
@@ -149,7 +208,7 @@ crypto_exports.createPrivateKey = createPrivateKey;
 var webcrypto = crypto;
 var _subtle = webcrypto.subtle;
 
-crypto_exports.hash = function hash(algorithm, input, outputEncoding = "hex") {
+crypto_exports.hash = function hash(algorithm, input, outputEncoding: any = "hex") {
   return CryptoHasher.hash(algorithm, input, outputEncoding);
 };
 
@@ -170,6 +229,181 @@ function pbkdf2(password, salt, iterations, keylen, digest, callback) {
   }
 
   promise.then(() => {});
+}
+
+function scrypt(password, salt, keylen, options, callback) {
+  if (callback === undefined) {
+    callback = options;
+    options = undefined;
+  }
+
+  const promise = _scrypt(password, salt, keylen, options, callback);
+  promise.then(
+    result => callback(null, result),
+    err => callback(err),
+  );
+}
+
+function hkdf(digest, key, salt, info, length, callback) {
+  _hkdf(digest, key, salt, info, length, callback).then(
+    result => callback(null, result),
+    err => callback(err),
+  );
+}
+
+function checkPrime(candidate, options, callback) {
+  if (typeof options === "function") {
+    callback = options;
+    options = undefined;
+  }
+
+  _checkPrime(candidate, options, callback).then(
+    result => callback(null, result),
+    err => callback(err),
+  );
+}
+
+function materializeGeneratedPrime(result) {
+  const { bytes, bigint } = result;
+  if (bigint) {
+    return BigInt(`0x${Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("hex")}`);
+  }
+
+  if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+    return bytes.buffer;
+  }
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function generatePrime(size, options, callback) {
+  if (typeof options === "function") {
+    callback = options;
+    options = undefined;
+  }
+
+  _generatePrime(size, options, callback).then(
+    result => callback(undefined, materializeGeneratedPrime(result)),
+    err => callback(err),
+  );
+}
+
+function generatePrimeSync(size, options) {
+  return materializeGeneratedPrime(_generatePrimeSync(size, options));
+}
+
+function materializeGeneratedKey(bytes) {
+  try {
+    return createSecretKey(bytes);
+  } finally {
+    bytes.fill(0);
+  }
+}
+
+function generateKey(type, options, callback) {
+  _generateKey(type, options, callback).then(
+    bytes => callback(null, materializeGeneratedKey(bytes)),
+    err => callback(err),
+  );
+}
+
+function generateKeySync(type, options) {
+  return materializeGeneratedKey(_generateKeySync(type, options));
+}
+
+function generateKeyPair(type, options, callback) {
+  if (typeof options === "function") {
+    callback = options;
+    options = undefined;
+  }
+
+  _generateKeyPair({ type, options }, callback).then(
+    result => callback(null, result.publicKey, result.privateKey),
+    err => callback(err),
+  );
+}
+
+function generateKeyPairSync(type, options) {
+  return _generateKeyPairSync({ type, options });
+}
+
+function diffieHellman(options, callback) {
+  if (callback === undefined) {
+    return _diffieHellmanSync(options);
+  }
+
+  _diffieHellman(options, callback).then(
+    result => callback(null, result),
+    err => callback(err),
+  );
+}
+
+function sign(algorithm, data, key, callback) {
+  if (callback === undefined) {
+    return _signOneShotSync(algorithm, data, key);
+  }
+
+  _signOneShot(algorithm, data, key, callback).then(
+    result => callback(null, result),
+    err => callback(err),
+  );
+}
+
+function verify(algorithm, data, key, signature, callback: any = undefined) {
+  if (callback === undefined) {
+    return _verifyOneShotSync(algorithm, data, key, signature);
+  }
+
+  _verifyOneShot(algorithm, data, key, signature, callback).then(
+    result => callback(null, result),
+    err => callback(err),
+  );
+}
+
+function randomInt(min, max, callback = undefined) {
+  if (typeof max === "function") {
+    callback = max;
+    max = min;
+    min = 0;
+  } else if (max === undefined) {
+    max = min;
+    min = 0;
+  }
+
+  const result = _randomInt(min, max, callback);
+  if (callback !== undefined) {
+    process.nextTick(callback, undefined, result);
+    return;
+  }
+  return result;
+}
+
+function randomBytes(size, callback: any = undefined) {
+  if (callback === undefined) return _randomBytes(size);
+
+  _randomBytesAsync(size, callback).then(
+    result => callback(null, result),
+    err => callback(err),
+  );
+}
+
+function randomFill(buffer, offset, size, callback) {
+  if (typeof offset === "function") {
+    callback = offset;
+    offset = undefined;
+    size = undefined;
+  } else if (typeof size === "function") {
+    callback = size;
+    size = undefined;
+  }
+
+  _randomFill(buffer, offset, size, callback).then(
+    () => {
+      callback(null, buffer);
+    },
+    err => {
+      callback(err);
+    },
+  );
 }
 
 crypto_exports.pbkdf2 = pbkdf2;
@@ -205,7 +439,8 @@ Object.assign(Sign.prototype, {
     callback();
   },
   update: function (data, encoding) {
-    return this[kHandle].update(this, data, encoding);
+    this[kHandle].update(data, encoding);
+    return this;
   },
   sign: function (options, encoding) {
     return this[kHandle].sign(options, encoding);
@@ -303,13 +538,14 @@ $toClass(Hmac, "Hmac", LazyTransform);
 
 Object.assign(Hmac.prototype, {
   update: function (data, encoding) {
-    return this[kHandle].update(this, data, encoding);
+    this[kHandle].update(data, encoding);
+    return this;
   },
   digest: function (outputEncoding) {
     return this[kHandle].digest(outputEncoding);
   },
   _transform: function (chunk, encoding, callback) {
-    this[kHandle].update(this, chunk, encoding);
+    this[kHandle].update(chunk, encoding);
     callback();
   },
   _flush: function (callback) {

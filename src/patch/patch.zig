@@ -91,8 +91,8 @@ pub const PatchFile = struct {
                             abs_patch_dir,
                             todir,
                         }));
-                        var nodefs = bun.api.node.fs.NodeFS{};
-                        if (nodefs.mkdirRecursive(.{
+                        var mkdir_error_buffer: bun.PathBuffer = undefined;
+                        if (NodeFSCore.mkdir(&mkdir_error_buffer, .{
                             .path = .{ .string = bun.PathString.init(path_to_make) },
                             .recursive = true,
                             .mode = 0o755,
@@ -108,14 +108,14 @@ pub const PatchFile = struct {
                     const filedir = std.fs.path.dirname(filepath.slice()) orelse "";
                     const mode = part.file_creation.mode;
 
-                    var nodefs = bun.api.node.fs.NodeFS{};
                     if (filedir.len > 0) {
                         const abs_patch_dir = switch (state.patchDirAbsPath(patch_dir)) {
                             .result => |p| p,
                             .err => |e| return e.withoutPath(),
                         };
                         const path_to_make = bun.handleOom(std.fs.path.joinZ(arena.allocator(), &.{ abs_patch_dir, filedir }));
-                        if (nodefs.mkdirRecursive(.{
+                        var mkdir_error_buffer: bun.PathBuffer = undefined;
+                        if (NodeFSCore.mkdir(&mkdir_error_buffer, .{
                             .path = .{ .string = bun.PathString.init(path_to_make) },
                             .recursive = true,
                             .mode = 0o755,
@@ -1132,15 +1132,33 @@ const PatchLinesParser = struct {
     }
 };
 
-pub const TestingAPIs = @import("../patch_jsc/testing.zig").TestingAPIs;
-pub fn spawnOpts(
+pub const GitDiffCommand = struct {
+    options: bun.spawn.sync.Options,
     old_folder: []const u8,
     new_folder: []const u8,
-    cwd: [:0]const u8,
-    git: [:0]const u8,
-    loop: *jsc.AnyEventLoop,
-) bun.spawn.sync.Options {
-    const argv: []const []const u8 = brk: {
+    argv: [][]const u8,
+    envp: [:null]?[*:0]const u8,
+    allocator: Allocator,
+
+    pub fn init(
+        allocator: Allocator,
+        old_folder_input: []const u8,
+        new_folder_input: []const u8,
+        cwd: [:0]const u8,
+        git: [:0]const u8,
+    ) bun.OOM!GitDiffCommand {
+        const old_folder = if (comptime bun.Environment.isWindows)
+            try normalizedGitPath(allocator, old_folder_input)
+        else
+            old_folder_input;
+        errdefer if (comptime bun.Environment.isWindows) allocator.free(old_folder);
+
+        const new_folder = if (comptime bun.Environment.isWindows)
+            try normalizedGitPath(allocator, new_folder_input)
+        else
+            new_folder_input;
+        errdefer if (comptime bun.Environment.isWindows) allocator.free(new_folder);
+
         const ARGV = &[_][:0]const u8{
             "git",
             "-c",
@@ -1153,48 +1171,83 @@ pub fn spawnOpts(
             "--full-index",
             "--no-index",
         };
-        const argv_buf = bun.handleOom(bun.default_allocator.alloc([]const u8, ARGV.len + 2));
-        argv_buf[0] = git;
+        const argv = try allocator.alloc([]const u8, ARGV.len + 2);
+        errdefer allocator.free(argv);
+        argv[0] = git;
         for (1..ARGV.len) |i| {
-            argv_buf[i] = ARGV[i];
+            argv[i] = ARGV[i];
         }
-        argv_buf[ARGV.len] = old_folder;
-        argv_buf[ARGV.len + 1] = new_folder;
-        break :brk argv_buf;
-    };
+        argv[ARGV.len] = old_folder;
+        argv[ARGV.len + 1] = new_folder;
 
-    const envp: [:null]?[*:0]const u8 = brk: {
         const env_arr = &[_][:0]const u8{
             "GIT_CONFIG_NOSYSTEM",
             "HOME",
             "XDG_CONFIG_HOME",
             "USERPROFILE",
         };
-        const PATH = bun.env_var.PATH.get();
-        const envp_buf = bun.handleOom(bun.default_allocator.allocSentinel(?[*:0]const u8, env_arr.len + @as(usize, if (PATH != null) 1 else 0), null));
+        const path = bun.env_var.PATH.get();
+        const envp = try allocator.allocSentinel(
+            ?[*:0]const u8,
+            env_arr.len + @as(usize, if (path != null) 1 else 0),
+            null,
+        );
+        errdefer allocator.free(envp);
         for (0..env_arr.len) |i| {
-            envp_buf[i] = env_arr[i].ptr;
+            envp[i] = env_arr[i].ptr;
         }
-        if (PATH) |p| {
-            envp_buf[envp_buf.len - 1] = @ptrCast(p.ptr);
+        if (path) |value| {
+            envp[envp.len - 1] = @ptrCast(value.ptr);
         }
-        break :brk envp_buf;
-    };
 
-    return bun.spawn.sync.Options{
-        .stdout = .buffer,
-        .stderr = .buffer,
-        .cwd = cwd,
-        .envp = envp,
-        .argv = argv,
-        .windows = if (bun.Environment.isWindows) .{ .loop = switch (loop.*) {
-            .js => |x| .{ .js = x },
-            .mini => |*x| .{ .mini = x },
-        } },
-    };
-}
+        return .{
+            .options = .{
+                .stdout = .buffer,
+                .stderr = .buffer,
+                .cwd = cwd,
+                .envp = envp,
+                .argv = argv,
+            },
+            .old_folder = old_folder,
+            .new_folder = new_folder,
+            .argv = argv,
+            .envp = envp,
+            .allocator = allocator,
+        };
+    }
 
-pub fn diffPostProcess(result: *bun.spawn.sync.Result, old_folder: []const u8, new_folder: []const u8) !bun.jsc.Node.Maybe(std.array_list.Managed(u8), std.array_list.Managed(u8)) {
+    pub fn setEventLoop(command: *GitDiffCommand, event_loop: anytype) void {
+        if (comptime bun.Environment.isWindows) {
+            command.options.windows.loop = event_loop.parentEventLoop();
+        }
+    }
+
+    pub fn deinit(command: *GitDiffCommand) void {
+        command.allocator.free(command.envp);
+        command.allocator.free(command.argv);
+        if (comptime bun.Environment.isWindows) {
+            command.allocator.free(command.old_folder);
+            command.allocator.free(command.new_folder);
+        }
+    }
+
+    fn normalizedGitPath(allocator: Allocator, path: []const u8) bun.OOM![]u8 {
+        const normalized = try allocator.dupe(u8, path);
+        std.mem.replaceScalar(u8, normalized, '\\', '/');
+        return normalized;
+    }
+};
+
+pub const GitDiffResult = union(enum) {
+    result: std.array_list.Managed(u8),
+    err: std.array_list.Managed(u8),
+};
+
+pub fn diffPostProcess(
+    result: *bun.spawn.sync.Result,
+    old_folder: []const u8,
+    new_folder: []const u8,
+) bun.OOM!GitDiffResult {
     var stdout = std.array_list.Managed(u8).init(bun.default_allocator);
     var stderr = std.array_list.Managed(u8).init(bun.default_allocator);
 
@@ -1217,76 +1270,6 @@ pub fn diffPostProcess(result: *bun.spawn.sync.Result, old_folder: []const u8, n
     try gitDiffPostprocess(&stdout, old_folder, new_folder);
     deinit_stdout = false;
     return .{ .result = stdout };
-}
-
-pub fn gitDiffPreprocessPaths(
-    allocator: std.mem.Allocator,
-    old_folder_: []const u8,
-    new_folder_: []const u8,
-    comptime sentinel: bool,
-) [2]if (sentinel) [:0]const u8 else []const u8 {
-    const bump = if (sentinel) 1 else 0;
-    const old_folder = if (comptime bun.Environment.isWindows) brk: {
-        // backslash in the path fucks everything up
-        const cpy = bun.handleOom(allocator.alloc(u8, old_folder_.len + bump));
-        @memcpy(cpy[0..old_folder_.len], old_folder_);
-        std.mem.replaceScalar(u8, cpy, '\\', '/');
-        if (sentinel) {
-            cpy[old_folder_.len] = 0;
-            break :brk cpy[0..old_folder_.len :0];
-        }
-        break :brk cpy;
-    } else old_folder_;
-    const new_folder = if (comptime bun.Environment.isWindows) brk: {
-        const cpy = bun.handleOom(allocator.alloc(u8, new_folder_.len + bump));
-        @memcpy(cpy[0..new_folder_.len], new_folder_);
-        std.mem.replaceScalar(u8, cpy, '\\', '/');
-        if (sentinel) {
-            cpy[new_folder_.len] = 0;
-            break :brk cpy[0..new_folder_.len :0];
-        }
-        break :brk cpy;
-    } else new_folder_;
-
-    if (bun.Environment.isPosix and sentinel) {
-        return .{
-            bun.handleOom(allocator.dupeSentinel(u8, old_folder, 0)),
-            bun.handleOom(allocator.dupeSentinel(u8, new_folder, 0)),
-        };
-    }
-
-    return .{ old_folder, new_folder };
-}
-
-pub fn gitDiffInternal(
-    allocator: std.mem.Allocator,
-    old_folder_: []const u8,
-    new_folder_: []const u8,
-) !bun.jsc.Node.Maybe(std.array_list.Managed(u8), std.array_list.Managed(u8)) {
-    const paths = gitDiffPreprocessPaths(allocator, old_folder_, new_folder_, false);
-    const old_folder = paths[0];
-    const new_folder = paths[1];
-
-    defer if (comptime bun.Environment.isWindows) {
-        allocator.free(old_folder);
-        allocator.free(new_folder);
-    };
-
-    var cwd_buf: bun.PathBuffer = undefined;
-    const cwd_slice = try bun.getcwd(&cwd_buf);
-    const cwd = try allocator.dupeSentinel(u8, cwd_slice, 0);
-    defer allocator.free(cwd);
-
-    var git_buf: bun.PathBuffer = undefined;
-    const git = bun.which(&git_buf, bun.env_var.PATH.get() orelse "", cwd, "git") orelse return error.FileNotFound;
-    var event_loop: jsc.AnyEventLoop = .{ .js = jsc.VirtualMachine.get().eventLoop() };
-    const options = spawnOpts(old_folder, new_folder, cwd, git, &event_loop);
-    var spawn_result = switch (try bun.spawnSync(&options)) {
-        .result => |result| result,
-        .err => |err| return err.toZigErr(),
-    };
-    defer spawn_result.deinit();
-    return diffPostProcess(&spawn_result, old_folder, new_folder);
 }
 
 /// Now we need to do the equivalent of these regex subtitutions.
@@ -1430,8 +1413,7 @@ fn shouldSkipLine(line: []const u8) bool {
 
 const bun = @import("bun");
 const Output = bun.Output;
-const jsc = bun.jsc;
-
+const NodeFSCore = @import("../runtime/node/NodeFSCore.zig");
 const std = @import("std");
 const List = std.ArrayListUnmanaged;
 const Allocator = std.mem.Allocator;

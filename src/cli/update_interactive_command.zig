@@ -318,6 +318,7 @@ pub const UpdateInteractiveCommand = struct {
 
         const load_lockfile_result = manager.lockfile.loadFromCwd(
             manager,
+            bun.install.Dependency.ParseContext.fromPackageManager(manager),
             manager.allocator,
             manager.log,
             true,
@@ -995,6 +996,9 @@ pub const UpdateInteractiveCommand = struct {
     }
 
     fn truncateWithEllipsis(allocator: std.mem.Allocator, text: []const u8, max_width: usize, only_end: bool) ![]const u8 {
+        if (max_width == 0) {
+            return allocator.dupe(u8, "");
+        }
         if (text.len <= max_width) {
             return try allocator.dupe(u8, text);
         }
@@ -1223,9 +1227,11 @@ pub const UpdateInteractiveCommand = struct {
                 initial_draw = false;
 
                 const help_text = "Space to toggle, Enter to confirm, a to select all, n to select none, i to invert, l to toggle latest";
-                const elipsised_help_text = try truncateWithEllipsis(bun.default_allocator, help_text, current_size.width - "? Select packages to update - ".len, true);
+                const prompt_title = "Select packages to update";
+                const prompt_width = "? ".len + prompt_title.len + " - ".len;
+                const elipsised_help_text = try truncateWithEllipsis(bun.default_allocator, help_text, current_size.width -| prompt_width, true);
                 defer bun.default_allocator.free(elipsised_help_text);
-                Output.prettyln("<r><cyan>?<r> Select packages to update<d> - {s}<r>", .{elipsised_help_text});
+                Output.prettyln("<r><cyan>?<r> {s}<d> - {s}<r>", .{ prompt_title, elipsised_help_text });
 
                 // Calculate how many lines the prompt will actually take due to terminal wrapping
                 total_lines = 1;

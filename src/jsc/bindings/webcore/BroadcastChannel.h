@@ -90,7 +90,7 @@ private:
     void refEventTarget() final { ref(); }
     void derefEventTarget() final { deref(); }
     void eventListenersDidChange() final;
-    void contextDestroyed() final;
+    void contextDestroyed(ScriptExecutionContext&) final;
 
     // State is a single atomic so the GC-thread hasPendingActivity() check
     // never takes a lock.

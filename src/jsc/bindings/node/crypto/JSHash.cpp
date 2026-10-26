@@ -1,4 +1,5 @@
 #include "JSHash.h"
+#include "SchemaBindings.h"
 #include "CryptoUtil.h"
 #include "BunClientData.h"
 #include <JavaScriptCore/ArrayBuffer.h>
@@ -15,10 +16,16 @@
 
 namespace Bun {
 
-static const HashTableValue JSHashPrototypeTableValues[] = {
-    { "update"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHashProtoFuncUpdate, 1 } },
-    { "digest"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHashProtoFuncDigest, 1 } },
-};
+static JSHash* hashObject(JSC::JSValue value)
+{
+    auto* hash = dynamicDowncast<JSHash>(value);
+    RELEASE_ASSERT(hash);
+    return hash;
+}
+
+#define BUN_BINDGEN_OBJECT_SURFACE_JSHashPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSHashPrototype
 
 const ClassInfo JSHash::s_info = { "Hash"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSHash) };
 const ClassInfo JSHashPrototype::s_info = { "Hash"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSHashPrototype) };
@@ -34,12 +41,7 @@ void JSHash::destroy(JSC::JSCell* cell)
     static_cast<JSHash*>(cell)->~JSHash();
 }
 
-JSHash::~JSHash()
-{
-    if (m_zigHasher) {
-        ExternZigHash::destroy(m_zigHasher);
-    }
-}
+JSHash::~JSHash() = default;
 
 void JSHash::finishCreation(JSC::VM& vm)
 {
@@ -97,19 +99,23 @@ bool JSHash::init(JSC::JSGlobalObject* globalObject, ThrowScope& scope, const EV
     return true;
 }
 
-bool JSHash::initZig(JSGlobalObject* globalObject, ThrowScope& scope, ExternZigHash::Hasher* hasher, std::optional<uint32_t> xofLen)
+bool JSHash::initZig(JSGlobalObject* globalObject, ThrowScope& scope, ExternZigHash::HasherOwner hasher, std::optional<uint32_t> xofLen)
 {
-    m_zigHasher = hasher;
-    m_mdLen = ExternZigHash::getDigestSize(hasher);
+    m_mdLen = ExternZigHash::getDigestSize(hasher.get());
 
     if (m_mdLen == 0) {
         return false;
     }
 
-    if (xofLen.has_value()) {
+    if (xofLen.has_value() && *xofLen != m_mdLen) {
+        if (!ExternZigHash::isXof(hasher.get())) {
+            EVPerr(EVP_F_EVP_DIGESTFINALXOF, EVP_R_NOT_XOF_OR_INVALID_LENGTH);
+            return false;
+        }
         m_mdLen = xofLen.value();
     }
 
+    m_zigHasher = WTF::move(hasher);
     return true;
 }
 
@@ -125,7 +131,7 @@ bool JSHash::update(std::span<const uint8_t> input)
     }
 
     if (m_zigHasher) {
-        return ExternZigHash::update(m_zigHasher, input);
+        return ExternZigHash::update(m_zigHasher.get(), input).status == Bindgen::CryptoHasherExternStatus::success;
     }
 
     return false;
@@ -134,130 +140,86 @@ bool JSHash::update(std::span<const uint8_t> input)
 void JSHashPrototype::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
-    reifyStaticProperties(vm, JSHash::info(), JSHashPrototypeTableValues, *this);
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+    bunBindgenObjectSurface_JSHashPrototype_install(vm, JSHash::info(), *this);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHashProtoFuncUpdate, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+static bool hashUpdate(
+    Bindgen::CppCallContext& context,
+    JSC::JSGlobalObject* globalObject,
+    JSHash* hash,
+    const auto& inputValue,
+    const auto& encoding)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    // Get the Hash instance
-    JSValue thisHash = callFrame->thisValue();
-    JSHash* hash = dynamicDowncast<JSHash>(thisHash);
-    if (!hash) [[unlikely]] {
-        return Bun::ERR::INVALID_THIS(scope, globalObject, "Hash"_s);
-    }
-
-    JSValue hashWrapper = callFrame->argument(0);
-
     // Check if the Hash is already finalized
     if (hash->m_finalized) {
-        return Bun::ERR::CRYPTO_HASH_FINALIZED(scope, globalObject);
+        Bun::ERR::CRYPTO_HASH_FINALIZED(scope, globalObject);
+        return false;
     }
 
-    JSC::JSValue inputValue = callFrame->argument(1);
-    JSValue encodingValue = callFrame->argument(2);
-
-    // Process the inputValue
-    if (inputValue.isString()) {
-        // Handle string inputValue
-        JSString* inputString = inputValue.toString(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        auto _ = JSC::EnsureStillAliveScope(inputString);
-
-        auto encoding = parseEnumeration<WebCore::BufferEncodingType>(*globalObject, encodingValue).value_or(WebCore::BufferEncodingType::utf8);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        // Validate encoding
-        if (encoding == WebCore::BufferEncodingType::hex && inputString->length() % 2 != 0) {
-            return Bun::ERR::INVALID_ARG_VALUE(scope, globalObject, "encoding"_s, encodingValue, makeString("is invalid for data of length "_s, inputString->length()));
-        }
-
-        auto inputView = inputString->view(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        JSValue converted = JSValue::decode(WebCore::constructFromEncoding(globalObject, inputView, encoding));
-        RETURN_IF_EXCEPTION(scope, {});
-
-        auto* convertedView = dynamicDowncast<JSC::JSArrayBufferView>(converted);
-
-        if (!hash->update(std::span { reinterpret_cast<const uint8_t*>(convertedView->vector()), convertedView->byteLength() })) {
-            return Bun::ERR::CRYPTO_HASH_UPDATE_FAILED(scope, globalObject);
-        }
-
-        return JSValue::encode(hashWrapper);
-    } else if (auto* view = dynamicDowncast<JSArrayBufferView>(inputValue)) {
-        if (view->isDetached()) [[unlikely]] {
-            return Bun::ERR::INVALID_STATE(scope, globalObject, "Cannot hash a detached buffer"_s);
-        }
-        if (!hash->update(view->span())) {
-            return Bun::ERR::CRYPTO_HASH_UPDATE_FAILED(scope, globalObject);
-        }
-
-        return JSValue::encode(hashWrapper);
+    if (!inputValue) {
+        Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "data"_s, "string or an instance of Buffer, TypedArray, or DataView"_s, jsUndefined());
+        return false;
     }
 
-    return Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "data"_s, "string or an instance of Buffer, TypedArray, or DataView"_s, inputValue);
+    std::optional<Bindgen::NodeStringEncoding> convertedEncoding;
+    if (!convertStringInputEncodingAndLease(context, scope, *inputValue, encoding, convertedEncoding))
+        return {};
+
+    auto input = getStringOrBufferBytes(globalObject, scope, inputValue.value(), nodeEncodingOrDefault(convertedEncoding, BufferEncodingType::utf8));
+    RETURN_IF_EXCEPTION(scope, false);
+
+    if (!hash->update(input)) {
+        Bun::ERR::CRYPTO_HASH_UPDATE_FAILED(scope, globalObject);
+        return false;
+    }
+
+    return true;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHashProtoFuncDigest, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+template<typename Encoding>
+static Bindgen::NodeCryptoEncodedOutputResult hashDigest(
+    JSC::JSGlobalObject* lexicalGlobalObject,
+    JSHash* hash,
+    const std::optional<Encoding>& encodingValue,
+    const std::optional<std::optional<bool>>& setFinalizedValue)
 {
     JSC::VM& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
 
-    // Get the Hash instance
-    JSHash* hash = dynamicDowncast<JSHash>(callFrame->thisValue());
-    if (!hash) [[unlikely]] {
-        return Bun::ERR::INVALID_THIS(scope, lexicalGlobalObject, "Hash"_s);
-    }
-
     // Check if already finalized
     if (hash->m_finalized) {
-        return Bun::ERR::CRYPTO_HASH_FINALIZED(scope, globalObject);
+        Bun::ERR::CRYPTO_HASH_FINALIZED(scope, globalObject);
+        return {};
     }
 
-    // Handle encoding if provided
-    JSC::JSValue encodingValue = callFrame->argument(0);
+    BufferEncodingType encoding = nodeEncodingOrDefault(encodingValue, BufferEncodingType::buffer);
 
-    BufferEncodingType encoding = BufferEncodingType::buffer;
-    if (encodingValue.pureToBoolean() != TriState::False) {
-        // this value needs to stringify if truthy
-        // https://github.com/nodejs/node/blob/2a6f90813f4802def79f2df1bfe20e95df279abf/lib/internal/crypto/hash.js#L130
-        WTF::String encodingString = encodingValue.toWTFString(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-        encoding = parseEnumerationFromString<BufferEncodingType>(encodingString).value_or(BufferEncodingType::buffer);
-        RETURN_IF_EXCEPTION(scope, {});
-    }
-
-    bool finalized = true;
-    JSValue setFinalizedValue = callFrame->argument(1);
-    if (setFinalizedValue.isBoolean()) {
-        finalized = setFinalizedValue.asBoolean();
-    }
+    bool finalized = setFinalizedValue && setFinalizedValue->has_value() ? **setFinalizedValue : true;
 
     uint32_t len = hash->m_mdLen;
 
     if (hash->m_zigHasher) {
-        if (hash->m_digestBuffer.size() > 0 || len == 0) {
-            RELEASE_AND_RETURN(scope, StringBytes::encode(lexicalGlobalObject, scope, hash->m_digestBuffer.span().subspan(0, hash->m_mdLen), encoding));
-        }
-
-        uint32_t maxDigestLen = std::max((uint32_t)EVP_MAX_MD_SIZE, len);
-        hash->m_digestBuffer.resizeToFit(maxDigestLen);
-        auto totalDigestLen = ExternZigHash::digest(hash->m_zigHasher, globalObject, hash->m_digestBuffer.mutableSpan());
-        if (!totalDigestLen) {
-            throwCryptoError(lexicalGlobalObject, scope, ERR_get_error(), "Failed to finalize digest"_s);
-            return {};
+        if (hash->m_digestBuffer.isEmpty() && len > 0) {
+            Vector<uint8_t, EVP_MAX_MD_SIZE> digestBuffer;
+            if (!digestBuffer.tryGrow(len)) {
+                throwOutOfMemoryError(lexicalGlobalObject, scope);
+                return {};
+            }
+            auto digestResult = ExternZigHash::digest(hash->m_zigHasher.get(), globalObject, digestBuffer.mutableSpan());
+            if (digestResult.status != Bindgen::CryptoHasherExternStatus::success) {
+                throwCryptoError(lexicalGlobalObject, scope, digestResult.errorCode, "Failed to finalize digest"_s);
+                return {};
+            }
+            RELEASE_ASSERT(digestResult.length == len);
+            hash->m_digestBuffer = WTF::move(digestBuffer);
         }
 
         hash->m_finalized = finalized;
-        hash->m_mdLen = std::min(len, totalDigestLen);
-
-        RELEASE_AND_RETURN(scope, StringBytes::encode(lexicalGlobalObject, scope, hash->m_digestBuffer.span().subspan(0, hash->m_mdLen), encoding));
+        RELEASE_AND_RETURN(scope, StringBytes::encode(lexicalGlobalObject, scope, hash->m_digestBuffer.span(), encoding));
     }
 
     // Only compute the digest if it hasn't been cached yet
@@ -280,7 +242,11 @@ JSC_DEFINE_HOST_FUNCTION(jsHashProtoFuncDigest, (JSC::JSGlobalObject * lexicalGl
     RELEASE_AND_RETURN(scope, StringBytes::encode(lexicalGlobalObject, scope, std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(hash->m_digest.data()), len }, encoding));
 }
 
-JSC_DEFINE_HOST_FUNCTION(constructHash, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+static JSC::EncodedJSValue constructHash(
+    JSC::JSGlobalObject* globalObject,
+    JSC::JSObject* newTarget,
+    const auto& algorithmOrHashValue,
+    const auto& optionsValue)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -289,75 +255,65 @@ JSC_DEFINE_HOST_FUNCTION(constructHash, (JSC::JSGlobalObject * globalObject, JSC
     JSC::Structure* structure = zigGlobalObject->m_JSHashClassStructure.get(zigGlobalObject);
 
     // Handle new target
-    JSC::JSValue newTarget = callFrame->newTarget();
     if (zigGlobalObject->m_JSHashClassStructure.constructor(zigGlobalObject) != newTarget) [[unlikely]] {
-        if (!newTarget) {
-            throwTypeError(globalObject, scope, "Class constructor Hash cannot be invoked without 'new'"_s);
-            return {};
-        }
-
-        auto* functionGlobalObject = defaultGlobalObject(getFunctionRealm(globalObject, newTarget.getObject()));
+        auto* functionGlobalObject = defaultGlobalObject(getFunctionRealm(globalObject, newTarget));
         RETURN_IF_EXCEPTION(scope, {});
-        structure = InternalFunction::createSubclassStructure(globalObject, newTarget.getObject(), functionGlobalObject->m_JSHashClassStructure.get(functionGlobalObject));
+        structure = InternalFunction::createSubclassStructure(globalObject, newTarget, functionGlobalObject->m_JSHashClassStructure.get(functionGlobalObject));
         RETURN_IF_EXCEPTION(scope, {});
     }
-
-    JSValue algorithmOrHashInstanceValue = callFrame->argument(0);
 
     // Because we aren't checking if m_finalized true in Hash.prototype.copy, we need to check here
     // and make sure we validate arguments in the correct order.
     // If clone, check m_finalized before anything else.
     JSHash* original = nullptr;
     const EVP_MD* md = nullptr;
-    ExternZigHash::Hasher* zigHasher = nullptr;
-    if (algorithmOrHashInstanceValue.inherits(JSHash::info())) {
-        original = dynamicDowncast<JSHash>(algorithmOrHashInstanceValue);
-        if (!original || original->m_finalized) {
+    ExternZigHash::HasherOwner zigHasher;
+    uint32_t zigErrorCode = 0;
+    const auto* algorithmOrHash = algorithmOrHashValue.convert();
+    RETURN_IF_EXCEPTION(scope, {});
+    if (algorithmOrHash->is_hash()) {
+        original = hashObject(algorithmOrHash->hash());
+        if (original->m_finalized) {
             return Bun::ERR::CRYPTO_HASH_FINALIZED(scope, globalObject);
         }
 
         if (original->m_zigHasher) {
-            zigHasher = ExternZigHash::getFromOther(zigGlobalObject, original->m_zigHasher);
+            auto result = ExternZigHash::getFromOther(zigGlobalObject, original->m_zigHasher.get());
+            RETURN_IF_EXCEPTION(scope, {});
+            zigHasher = WTF::move(result.hasher);
+            zigErrorCode = result.errorCode;
         } else {
             md = original->m_ctx.getDigest();
         }
     } else {
-        Bun::V::validateString(scope, globalObject, algorithmOrHashInstanceValue, "algorithm"_s);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        WTF::String algorithm = algorithmOrHashInstanceValue.toWTFString(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        md = ncrypto::getDigestByName(algorithm);
+        RELEASE_ASSERT(algorithmOrHash->is_algorithm());
+        md = ncrypto::getDigestByName(algorithmOrHash->algorithm());
         if (!md) {
-            zigHasher = ExternZigHash::getByName(zigGlobalObject, algorithm);
+            auto result = ExternZigHash::getByName(zigGlobalObject, algorithmOrHash->algorithm());
+            RETURN_IF_EXCEPTION(scope, {});
+            zigHasher = WTF::move(result.hasher);
+            zigErrorCode = result.errorCode;
         }
     }
 
     if (md == nullptr && zigHasher == nullptr) [[unlikely]] {
-        throwCryptoError(globalObject, scope, ERR_get_error(), "Digest method not supported"_s);
+        throwCryptoError(globalObject, scope, zigErrorCode, "Digest method not supported"_s);
         return {};
     }
 
     std::optional<unsigned int> xofLen = std::nullopt;
-    JSValue optionsValue = callFrame->argument(1);
-    if (optionsValue.isObject()) {
-        JSValue outputLengthValue = optionsValue.get(globalObject, Identifier::fromString(vm, "outputLength"_s));
+    if (optionsValue) {
+        const auto* converted = optionsValue->convert();
         RETURN_IF_EXCEPTION(scope, {});
-
-        if (!outputLengthValue.isUndefined()) {
-            Bun::V::validateUint32(scope, globalObject, outputLengthValue, "options.outputLength"_s, jsUndefined());
-            RETURN_IF_EXCEPTION(scope, {});
-            xofLen = outputLengthValue.toUInt32(globalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-        }
+        if (converted->is_options())
+            xofLen = converted->options().output_length;
     }
 
     JSHash* hash = JSHash::create(vm, structure);
 
     if (zigHasher) {
-        if (!hash->initZig(globalObject, scope, zigHasher, xofLen)) {
-            throwCryptoError(globalObject, scope, 0, "Digest method not supported"_s);
+        if (!hash->initZig(globalObject, scope, WTF::move(zigHasher), xofLen)) {
+            throwCryptoError(globalObject, scope, ERR_get_error(), "Digest method not supported"_s);
             return {};
         }
         return JSValue::encode(hash);
@@ -376,13 +332,56 @@ JSC_DEFINE_HOST_FUNCTION(constructHash, (JSC::JSGlobalObject * globalObject, JSC
     return JSC::JSValue::encode(hash);
 }
 
-JSC_DEFINE_HOST_FUNCTION(callHash, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_hashConstructorCall(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_hashConstructorCall_Arguments&)
 {
+    auto* globalObject = &context.globalObject;
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     throwTypeError(globalObject, scope, "Class constructor Hash cannot be invoked without 'new'"_s);
-    return JSC::encodedJSUndefined();
+}
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_hashConstructorConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_hashConstructorConstruct_Arguments& args)
+{
+    return JSC::JSValue::decode(constructHash(
+        &context.globalObject,
+        JSC::asObject(args.bindingNewTarget),
+        args.algorithm,
+        args.options));
+}
+
+std::optional<Bindgen::CppAny> Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_hashUpdate(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_hashUpdate_Arguments& args)
+{
+    if (!hashUpdate(
+        context,
+        &context.globalObject,
+        hashObject(args.bindingThis),
+        args.data,
+        args.encoding))
+        return std::nullopt;
+    return args.wrapper;
+}
+
+Bindgen::NodeCryptoEncodedOutputResult Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_hashDigest(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_hashDigest_Arguments& args)
+{
+    return hashDigest(
+        &context.globalObject,
+        hashObject(args.bindingThis),
+        args.encoding,
+        args.setFinalized);
+}
+
+JSHashConstructor::JSHashConstructor(JSC::VM& vm, JSC::Structure* structure)
+    : Base(vm, structure, bun_bindgen_host_NodeCryptoBinding_hashConstructorCall, bun_bindgen_host_NodeCryptoBinding_hashConstructorConstruct)
+{
 }
 
 JSC::Structure* JSHashConstructor::createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)

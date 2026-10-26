@@ -318,17 +318,6 @@ it.skipIf(!isPosix)(
   },
 );
 
-// Sibling of the end() test above for sink.close() (js_close -> FileSink::end()).
-// end()'s Err arm set done=true and tore down the writer without scheduling
-// run_pending, so a backpressured write()'s promise was left pending forever
-// while close() threw. Now close() routes the error to that promise and
-// returns undefined.
-//
-// Runs in a subprocess because sink.close() on a Blob-created FileSink
-// currently leaks the native FileSink (doClose detaches m_sinkPtr so the
-// wrapper's +1 never reaches finalize); running it in-process would abort the
-// whole file under detect_leaks=1. That leak is pre-existing on main and
-// tracked separately.
 it.skipIf(!isPosix)(
   "close() after a backpressured write() with the reader gone rejects the write's promise with EPIPE",
   async () => {
@@ -348,12 +337,7 @@ it.skipIf(!isPosix)(
     `;
     await using proc = Bun.spawn({
       cmd: [bunExe(), "-e", src],
-      env: {
-        ...bunEnv,
-        // Pre-existing leak in sink.close() (see comment above); don't let the
-        // child's LSAN abort hide the actual assertion we're testing.
-        ASAN_OPTIONS: "allow_user_segv_handler=1:disable_coredump=0:detect_leaks=0",
-      },
+      env: bunEnv,
       stderr: "pipe",
     });
     const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);

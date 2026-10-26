@@ -25,7 +25,7 @@
 #include <unordered_map>
 #include <vector>
 #include <string_view>
-#include <functional>
+#include "HttpCallback.h"
 #include <set>
 #include <string>
 
@@ -94,7 +94,7 @@ private:
 
     /* The drain callback must not publish, unsubscribe or subscribe.
      * It must only cork, uncork, send, write */
-    std::function<bool(Subscriber *, T &, IteratorFlags)> cb;
+    HttpCallback<bool (*)(Subscriber *, T &, IteratorFlags, void *)> cb;
 
     /* The topics */
     std::unordered_map<std::string_view, std::unique_ptr<Topic>> topics;
@@ -148,8 +148,8 @@ private:
 
 public:
 
-    TopicTree(std::function<bool(Subscriber *, T &, IteratorFlags)> cb) : cb(cb) {
-
+    TopicTree(void *context, bool (*callback)(Subscriber *, T &, IteratorFlags, void *)) {
+        cb.set(context, callback);
     }
 
     /* Returns nullptr if not found */

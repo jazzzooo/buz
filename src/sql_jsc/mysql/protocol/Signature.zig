@@ -1,12 +1,10 @@
 const Signature = @This();
 fields: []Param = &.{},
-name: []const u8 = "",
 query: []const u8 = "",
 
 pub fn empty() Signature {
     return Signature{
         .fields = &.{},
-        .name = "",
         .query = "",
     };
 }
@@ -15,9 +13,6 @@ pub fn deinit(this: *Signature) void {
     if (this.fields.len > 0) {
         bun.default_allocator.free(this.fields);
     }
-    if (this.name.len > 0) {
-        bun.default_allocator.free(this.name);
-    }
     if (this.query.len > 0) {
         bun.default_allocator.free(this.query);
     }
@@ -25,62 +20,75 @@ pub fn deinit(this: *Signature) void {
 
 pub fn hash(this: *const Signature) u64 {
     var hasher = std.hash.Wyhash.init(0);
-    hasher.update(this.name);
-    hasher.update(std.mem.sliceAsBytes(this.fields));
+    std.hash.autoHash(&hasher, this.query.len);
+    hasher.update(this.query);
+    for (this.fields) |field| {
+        std.hash.autoHash(&hasher, field.type);
+        std.hash.autoHash(&hasher, field.flags.toInt());
+    }
     return hasher.final();
 }
 
-pub fn generate(globalObject: *jsc.JSGlobalObject, query: []const u8, array_value: JSValue, columns: JSValue) !Signature {
+pub fn eql(this: *const Signature, other: *const Signature) bool {
+    if (!std.mem.eql(u8, this.query, other.query) or this.fields.len != other.fields.len) return false;
+    for (this.fields, other.fields) |left, right| {
+        if (left.type != right.type or left.flags.toInt() != right.flags.toInt()) return false;
+    }
+    return true;
+}
+
+pub const MapContext = struct {
+    pub fn hash(_: @This(), key: *const Signature) u64 {
+        return key.hash();
+    }
+
+    pub fn eql(_: @This(), left: *const Signature, right: *const Signature) bool {
+        return left.eql(right);
+    }
+};
+
+pub fn generate(
+    query: []const u8,
+    values: *const SQLTypes.BindingValues,
+    columns: ?*const SQLTypes.BindingColumns,
+) AnyMySQLError.Error!Signature {
     var fields = std.array_list.Managed(Param).init(bun.default_allocator);
-    var name = try std.array_list.Managed(u8).initCapacity(bun.default_allocator, query.len);
+    defer fields.deinit();
 
-    name.appendSliceAssumeCapacity(query);
-
-    errdefer {
-        fields.deinit();
-        name.deinit();
+    if (SQLParameters.count(values, columns) > std.math.maxInt(u16)) return error.Overflow;
+    var hints = try SQLParameters.inferMySQL(values, columns);
+    defer hints.deinit();
+    var iterator = hints.iterator();
+    while (iterator.next()) |hint| {
+        const field: Param = switch (hint.value) {
+            .null_value => .{ .type = .MYSQL_TYPE_NULL, .flags = .{} },
+            .string => .{ .type = .MYSQL_TYPE_STRING, .flags = .{} },
+            .datetime => .{ .type = .MYSQL_TYPE_DATETIME, .flags = .{} },
+            .blob => .{ .type = .MYSQL_TYPE_BLOB, .flags = .{} },
+            .signed_longlong => .{ .type = .MYSQL_TYPE_LONGLONG, .flags = .{} },
+            .unsigned_longlong => .{ .type = .MYSQL_TYPE_LONGLONG, .flags = .{ .UNSIGNED = true } },
+            .signed_long => .{ .type = .MYSQL_TYPE_LONG, .flags = .{} },
+            .unsigned_long => .{ .type = .MYSQL_TYPE_LONG, .flags = .{ .UNSIGNED = true } },
+            .double_value => .{ .type = .MYSQL_TYPE_DOUBLE, .flags = .{} },
+            .boolean => .{ .type = .MYSQL_TYPE_TINY, .flags = .{} },
+            .json => .{ .type = .MYSQL_TYPE_JSON, .flags = .{} },
+            .varchar => .{ .type = .MYSQL_TYPE_VARCHAR, .flags = .{} },
+        };
+        try fields.append(field);
     }
 
-    var iter = try QueryBindingIterator.init(array_value, columns, globalObject);
-
-    while (try iter.next()) |value| {
-        if (value.isEmptyOrUndefinedOrNull()) {
-            // Allow MySQL to decide the type
-            try fields.append(.{ .type = .MYSQL_TYPE_NULL, .flags = .{} });
-            try name.appendSlice(".null");
-            continue;
-        }
-        var unsigned = false;
-        const tag = try types.FieldType.fromJS(globalObject, value, &unsigned);
-        if (unsigned) {
-            // 128 is more than enought right now
-            var tag_name_buf: [128]u8 = @splat(0);
-            try name.appendSlice(std.fmt.bufPrint(tag_name_buf[0..], "U{s}", .{@tagName(tag)}) catch @tagName(tag));
-        } else {
-            try name.appendSlice(@tagName(tag));
-        }
-        // TODO: add flags if necessary right now the only relevant would be unsigned but is JS and is never unsigned
-        try fields.append(.{ .type = tag, .flags = .{ .UNSIGNED = unsigned } });
-    }
-
-    if (iter.anyFailed()) {
-        return error.InvalidQueryBinding;
-    }
-
+    const owned_query = try bun.default_allocator.dupe(u8, query);
+    errdefer bun.default_allocator.free(owned_query);
     return Signature{
-        .name = name.items,
-        .fields = fields.items,
-        .query = try bun.default_allocator.dupe(u8, query),
+        .fields = try fields.toOwnedSlice(),
+        .query = owned_query,
     };
 }
 
 const bun = @import("bun");
 const std = @import("std");
 const Param = @import("../MySQLStatement.zig").Param;
-const QueryBindingIterator = @import("../../shared/QueryBindingIterator.zig").QueryBindingIterator;
+const SQLParameters = @import("../../shared/SQLParameters.zig");
+const SQLTypes = @import("../../shared/SQLTypes.zig");
 
-const types = @import("../../../sql/mysql/MySQLTypes.zig");
-const FieldType = types.FieldType;
-
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;
+const AnyMySQLError = @import("../../../sql/mysql/protocol/AnyMySQLError.zig");

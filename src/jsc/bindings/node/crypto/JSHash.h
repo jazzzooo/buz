@@ -8,14 +8,10 @@
 #include "ncrypto.h"
 #include "CryptoUtil.h"
 #include "JSBuffer.h"
-#include "JSDOMConvertEnumeration.h"
 #include <JavaScriptCore/LazyProperty.h>
 #include <JavaScriptCore/LazyPropertyInlines.h>
 
 namespace Bun {
-
-JSC_DECLARE_HOST_FUNCTION(callHash);
-JSC_DECLARE_HOST_FUNCTION(constructHash);
 
 class JSHash final : public JSC::JSDestructibleObject {
 public:
@@ -41,7 +37,7 @@ public:
 
     void finishCreation(JSC::VM& vm);
     bool init(JSC::JSGlobalObject* globalObject, ThrowScope& scope, const EVP_MD* md, std::optional<uint32_t> xofLen);
-    bool initZig(JSGlobalObject* globalObject, ThrowScope& scope, ExternZigHash::Hasher* hasher, std::optional<uint32_t> xofLen);
+    bool initZig(JSGlobalObject* globalObject, ThrowScope& scope, ExternZigHash::HasherOwner hasher, std::optional<uint32_t> xofLen);
     bool update(std::span<const uint8_t> input);
 
     ncrypto::EVPMDCtxPointer m_ctx;
@@ -51,7 +47,7 @@ public:
 
     Vector<uint8_t, EVP_MAX_MD_SIZE> m_digestBuffer;
 
-    ExternZigHash::Hasher* m_zigHasher { nullptr };
+    ExternZigHash::HasherOwner m_zigHasher;
 };
 
 class JSHashPrototype final : public JSC::JSNonFinalObject {
@@ -115,19 +111,13 @@ public:
     }
 
 private:
-    JSHashConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, callHash, constructHash)
-    {
-    }
+    JSHashConstructor(JSC::VM& vm, JSC::Structure* structure);
 
     void finishCreation(JSC::VM& vm, JSC::JSObject* prototype)
     {
         Base::finishCreation(vm, 2, "Hash"_s, PropertyAdditionMode::WithStructureTransition);
     }
 };
-
-JSC_DECLARE_HOST_FUNCTION(jsHashProtoFuncUpdate);
-JSC_DECLARE_HOST_FUNCTION(jsHashProtoFuncDigest);
 
 void setupJSHashClassStructure(JSC::LazyClassStructure::Initializer& init);
 

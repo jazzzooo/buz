@@ -31,12 +31,13 @@ pub const Result = struct {
 /// order) and the new length is returned via `Result.test_files`.
 pub fn filter(
     ctx: Command.Context,
-    vm: *jsc.VirtualMachine,
+    runtime_transpiler: *Transpiler,
     test_files: []bun.PathString,
     changed_since: []const u8,
+    git_event_loop: GitEventLoop,
 ) !Result {
     const allocator = ctx.allocator;
-    const top_level_dir = vm.transpiler.fs.top_level_dir;
+    const top_level_dir = runtime_transpiler.fs.top_level_dir;
 
     // If this process was restarted by the --watch file watcher, it
     // recorded exactly which files changed in this env var before
@@ -49,7 +50,7 @@ pub fn filter(
     var changed_files = if (consumeWatchTrigger(allocator)) |trigger_set|
         trigger_set
     else
-        getChangedFiles(allocator, top_level_dir, changed_since) catch |err| switch (err) {
+        getChangedFiles(allocator, top_level_dir, changed_since, git_event_loop) catch |err| switch (err) {
             error.GitNotFound => {
                 Output.errGeneric("<b>--changed<r> requires <b>git<r> to be installed and in PATH", .{});
                 Global.exit(1);
@@ -85,17 +86,19 @@ pub fn filter(
     defer allocator.free(entry_points);
     for (test_files, entry_points) |p, *out| out.* = p.slice();
 
-    // Build a dedicated transpiler for scanning. We do not reuse the VM's
-    // transpiler because BundleV2.init takes ownership of the allocator and
-    // log, and we want the runtime transpiler left untouched for actually
-    // executing tests afterward.
-    var log = logger.Log.init(allocator);
+    // Scanning changes transpiler options and allocation state; the runtime
+    // transpiler must remain available to execute the selected tests.
+    var scan_heap = bun.MimallocArena.init();
+    defer scan_heap.deinit();
+    const scan_allocator = scan_heap.allocator();
+    var log = logger.Log.init(scan_allocator);
     defer log.deinit();
 
-    var scan_transpiler = Transpiler.init(allocator, ctx.io, &log, ctx.args, vm.transpiler.env) catch |err| {
+    var scan_transpiler = Transpiler.init(scan_allocator, ctx.io, &log, ctx.args, runtime_transpiler.engine_capabilities, runtime_transpiler.env) catch |err| {
         Output.errGeneric("Failed to initialize module graph scanner for --changed: {s}", .{@errorName(err)});
         Global.exit(1);
     };
+    defer scan_transpiler.feature_flags.deinit();
     scan_transpiler.options.target = .bun;
     // Do not follow bare specifiers into node_modules; changes there are not
     // considered local edits.
@@ -112,12 +115,8 @@ pub fn filter(
 
     const bundle = BundleV2.scanModuleGraphFromCLI(
         &scan_transpiler,
-        allocator,
-        jsc.AnyEventLoop.init(
-            ctx.io,
-            allocator,
-            bun.cli.Cli.pinnedThreads().backgroundExecutor(),
-        ),
+        scan_heap.borrow(),
+        runtime_transpiler.engine_capabilities.bytecode_generator,
         entry_points,
     ) catch |err| {
         // Fall back to running every test rather than aborting the run.
@@ -255,13 +254,18 @@ pub const trigger_file_env_var = "BUN_INTERNAL_TEST_CHANGED_TRIGGER_FILE";
 /// the hot-reloader collector to record changed paths. The collector
 /// and the path string intentionally live for the rest of the process;
 /// --watch exec()s on reload so nothing accumulates across restarts.
-pub fn initWatchTrigger(io: std.Io, allocator: std.mem.Allocator) void {
+pub const WatchTriggerState = struct {
+    paths: *bun.StringSet,
+    trigger_file: [:0]const u8,
+};
+
+pub fn initWatchTrigger(io: std.Io, allocator: std.mem.Allocator) ?WatchTriggerState {
     if (bun.Environment.isWindows) {
         // Windows --watch restarts via TerminateProcess + parent
         // respawn with the parent's (unchanged) env, so a setenv in
         // the first child would not reach subsequent children. Fall
         // back to re-querying git on each restart there for now.
-        return;
+        return null;
     }
 
     const path: [:0]const u8 = if (bun.getenvZ(trigger_file_env_var)) |existing|
@@ -286,8 +290,7 @@ pub fn initWatchTrigger(io: std.Io, allocator: std.mem.Allocator) void {
 
     const set = bun.handleOom(allocator.create(bun.StringSet));
     set.* = bun.StringSet.init(allocator);
-    jsc.hot_reloader.watch_changed_paths = set;
-    jsc.hot_reloader.watch_changed_trigger_file = path;
+    return .{ .paths = set, .trigger_file = path };
 }
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
@@ -349,6 +352,7 @@ fn getChangedFiles(
     allocator: std.mem.Allocator,
     top_level_dir: []const u8,
     since: []const u8,
+    git_event_loop: GitEventLoop,
 ) GitError!bun.StringSet {
     var which_buf: bun.PathBuffer = undefined;
     const git_path = bun.which(&which_buf, bun.env_var.PATH.get() orelse "", top_level_dir, "git") orelse {
@@ -359,7 +363,7 @@ fn getChangedFiles(
     // absolute (git prints paths relative to the repo toplevel with these
     // commands).
     const git_root = blk: {
-        var result = try runGit(allocator, git_path, top_level_dir, &.{ "rev-parse", "--show-toplevel" });
+        var result = try runGit(allocator, git_path, top_level_dir, &.{ "rev-parse", "--show-toplevel" }, git_event_loop);
         defer result.stdout.deinit();
         defer result.stderr.deinit();
         if (!result.ok) {
@@ -383,14 +387,14 @@ fn getChangedFiles(
         // Uncommitted (unstaged + staged). `git diff HEAD` covers both.
         // On a repo with no commits, `HEAD` is unresolved; fall back to just
         // `git diff` (unstaged) + staged.
-        var diff = try runGit(allocator, git_path, top_level_dir, &.{ "diff", "--name-only", "HEAD", "--" });
+        var diff = try runGit(allocator, git_path, top_level_dir, &.{ "diff", "--name-only", "HEAD", "--" }, git_event_loop);
         defer diff.stdout.deinit();
         defer diff.stderr.deinit();
         if (diff.spawn_failed) return error.GitFailed;
         if (diff.ok) {
             appendPaths(&set, git_root, diff.stdout.items);
         } else {
-            var unstaged = try runGit(allocator, git_path, top_level_dir, &.{ "diff", "--name-only", "--" });
+            var unstaged = try runGit(allocator, git_path, top_level_dir, &.{ "diff", "--name-only", "--" }, git_event_loop);
             defer unstaged.stdout.deinit();
             defer unstaged.stderr.deinit();
             if (unstaged.spawn_failed) return error.GitFailed;
@@ -398,7 +402,7 @@ fn getChangedFiles(
                 appendPaths(&set, git_root, unstaged.stdout.items);
             }
 
-            var staged = try runGit(allocator, git_path, top_level_dir, &.{ "diff", "--name-only", "--cached", "--" });
+            var staged = try runGit(allocator, git_path, top_level_dir, &.{ "diff", "--name-only", "--cached", "--" }, git_event_loop);
             defer staged.stdout.deinit();
             defer staged.stderr.deinit();
             if (staged.spawn_failed) return error.GitFailed;
@@ -407,7 +411,7 @@ fn getChangedFiles(
             }
         }
     } else {
-        var diff = try runGit(allocator, git_path, top_level_dir, &.{ "diff", "--name-only", since, "--" });
+        var diff = try runGit(allocator, git_path, top_level_dir, &.{ "diff", "--name-only", since, "--" }, git_event_loop);
         defer diff.stdout.deinit();
         defer diff.stderr.deinit();
         if (!diff.ok) {
@@ -430,7 +434,7 @@ fn getChangedFiles(
     // forces repo-root-relative output regardless of our cwd, matching
     // `git diff --name-only`.
     {
-        var untracked = try runGit(allocator, git_path, top_level_dir, &.{ "ls-files", "--others", "--exclude-standard", "--full-name" });
+        var untracked = try runGit(allocator, git_path, top_level_dir, &.{ "ls-files", "--others", "--exclude-standard", "--full-name" }, git_event_loop);
         defer untracked.stdout.deinit();
         defer untracked.stderr.deinit();
         if (untracked.spawn_failed) return error.GitFailed;
@@ -457,6 +461,7 @@ fn runGit(
     git_path: []const u8,
     cwd: []const u8,
     args: []const []const u8,
+    git_event_loop: GitEventLoop,
 ) std.mem.Allocator.Error!GitResult {
     var argv = try std.array_list.Managed([]const u8).initCapacity(allocator, args.len + 3);
     defer argv.deinit();
@@ -478,7 +483,7 @@ fn runGit(
         // The test command has a JSC VM running; reuse its event loop on
         // Windows rather than spinning up a MiniEventLoop.
         .windows = if (Environment.isWindows) .{
-            .loop = jsc.EventLoopHandle.init(jsc.VirtualMachine.get()),
+            .loop = git_event_loop,
         },
     }) catch |err| {
         Output.errGeneric("--changed: failed to spawn git: {s}", .{@errorName(err)});
@@ -537,9 +542,9 @@ const Environment = bun.Environment;
 const Global = bun.Global;
 const Output = bun.Output;
 const Transpiler = bun.Transpiler;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 const BundleV2 = bun.bundle_v2.BundleV2;
 const Command = bun.cli.Command;
 const Index = bun.ast.Index;
+const GitEventLoop = if (Environment.isWindows) bun.ParentEventLoop else void;

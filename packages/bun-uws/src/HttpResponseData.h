@@ -25,6 +25,8 @@
 #include "HttpContext.h"
 
 #include "MoveOnlyFunction.h"
+#include "HttpCallback.h"
+#include "libusockets.h"
 
 namespace uWS {
 
@@ -43,39 +45,31 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
 
     /* When we are done with a response we mark it like so */
     void markDone(uWS::HttpResponse<SSL> *uwsRes) {
-        onAborted = nullptr;
+        onAborted.clear();
         /* Also remove onWritable so that we do not emit when draining behind the scenes. */
-        onWritable = nullptr;
+        onWritable.clear();
         /* Ignore data after this point */
-        inStream = nullptr;
+        inStream.clear();
 
         // Ensure we don't call a timeout callback
-        onTimeout = nullptr;
+        onTimeout.clear();
 
         /* We are done with this request */
         this->state &= ~HttpResponseData<SSL>::HTTP_RESPONSE_PENDING;
 
-        HttpResponseData<SSL> *httpResponseData = uwsRes->getHttpResponseData();
-        httpResponseData->isIdle = true;
+        this->isIdle = !uwsRes->hasPendingOutput();
     }
 
-    /* Caller of onWritable. It is possible onWritable calls markDone so we need to borrow it. */
     bool callOnWritable(uWS::HttpResponse<SSL>* response, uint64_t offset) {
-        /* Borrow real onWritable */
-        auto* borrowedOnWritable = std::move(onWritable);
-
-        /* Set onWritable to placeholder */
-        onWritable = [](uWS::HttpResponse<SSL>*, uint64_t, void*) {return true;};
-
-        /* Run borrowed onWritable */
-        bool ret = borrowedOnWritable(response, offset, userData);
-
-        /* If we still have onWritable (the placeholder) then move back the real one */
-        if (onWritable) {
-            /* We haven't reset onWritable, so give it back */
-            onWritable = std::move(borrowedOnWritable);
-        }
-
+        auto *socket = reinterpret_cast<us_socket_t *>(response);
+        auto *group = us_socket_group(socket);
+        const auto callback = onWritable;
+        HttpCallback<OnWritableCallback> placeholder;
+        placeholder.set(nullptr, +[](uWS::HttpResponse<SSL>*, uint64_t, void*) {return true;});
+        onWritable = placeholder;
+        const bool ret = callback(response, offset);
+        if (us_socket_is_closed(socket) || us_socket_group(socket) != group) return false;
+        if (onWritable == placeholder) onWritable = callback;
         return ret;
     }
     /* Bits of status */
@@ -90,15 +84,13 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
         HTTP_WROTE_TRANSFER_ENCODING_HEADER = 128, // used
     };
 
-    /* Shared context pointer */
-    void* userData = nullptr;
     void* socketData = nullptr;
 
     /* Per socket event handlers */
-    OnWritableCallback onWritable = nullptr;
-    OnAbortedCallback onAborted = nullptr;
-    OnDataCallback inStream = nullptr;
-    OnTimeoutCallback onTimeout = nullptr;
+    HttpCallback<OnWritableCallback> onWritable;
+    HttpCallback<OnAbortedCallback> onAborted;
+    HttpCallback<OnDataCallback> inStream;
+    HttpCallback<OnTimeoutCallback> onTimeout;
     /* Outgoing offset */
     uint64_t offset = 0;
 
@@ -110,6 +102,8 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
     uint8_t idleTimeout = 10; // default HTTP_TIMEOUT 10 seconds
     bool fromAncientRequest = false;
     bool isConnectRequest = false;
+    bool webSocketCompressionEnabled = true;
+    bool webSocketStatusWritten = false;
 
 #ifdef UWS_WITH_PROXY
     ProxyParser proxyParser;

@@ -47,7 +47,7 @@ const AuditResult = struct {
 };
 
 pub const AuditCommand = struct {
-    pub fn exec(ctx: Command.Context) !noreturn {
+    pub fn exec(ctx: Context) !noreturn {
         const cli = try PackageManager.CommandLineArguments.parse(ctx.allocator, .audit);
         const manager, _ = PackageManager.init(ctx, cli, .audit) catch |err| {
             if (err == error.MissingPackageJSON) {
@@ -71,12 +71,12 @@ pub const AuditCommand = struct {
     /// Returns the exit code of the command. 0 if no vulnerabilities were found, 1 if vulnerabilities were found.
     /// The exception is when you pass --json, it will simply return 0 as that was considered a successful "request
     /// for the audit information"
-    pub fn audit(ctx: Command.Context, pm: *PackageManager, json_output: bool, audit_level: ?AuditLevel, audit_prod_only: bool, ignore_list: []const []const u8) bun.OOM!u32 {
+    pub fn audit(ctx: Context, pm: *PackageManager, json_output: bool, audit_level: ?AuditLevel, audit_prod_only: bool, ignore_list: []const []const u8) bun.OOM!u32 {
         Output.prettyError(comptime Output.prettyFmt("<r><b>bun audit <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n", true), .{});
         Output.flush();
 
-        const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
-        @import("./package_manager_command.zig").PackageManagerCommand.handleLoadLockfileErrors(load_lockfile, pm);
+        const load_lockfile = pm.lockfile.loadFromCwd(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), ctx.allocator, ctx.log, true);
+        handleLockfileLoadErrors(load_lockfile, pm);
 
         var dependency_tree = try buildDependencyTree(ctx.allocator, pm);
         defer dependency_tree.deinit();
@@ -352,25 +352,15 @@ fn sendAuditRequest(allocator: std.mem.Allocator, pm: *PackageManager, body: []c
     const compression_result = compressor.gzip(body, compressed_body);
     const final_compressed_body = compressed_body[0..compression_result.written];
 
-    var headers: HeaderBuilder = .{};
-    headers.count("accept", "application/json");
-    headers.count("content-type", "application/json");
-    headers.count("content-encoding", "gzip");
+    var headers: http.Headers = .{ .allocator = allocator };
+    defer headers.deinit();
+    try headers.append("accept", "application/json");
+    try headers.append("content-type", "application/json");
+    try headers.append("content-encoding", "gzip");
     if (pm.options.scope.token.len > 0) {
-        headers.count("authorization", "");
-        headers.content.cap += "Bearer ".len + pm.options.scope.token.len;
+        try headers.appendFmt("authorization", "Bearer {s}", .{pm.options.scope.token});
     } else if (pm.options.scope.auth.len > 0) {
-        headers.count("authorization", "");
-        headers.content.cap += "Basic ".len + pm.options.scope.auth.len;
-    }
-    try headers.allocate(allocator);
-    headers.append("accept", "application/json");
-    headers.append("content-type", "application/json");
-    headers.append("content-encoding", "gzip");
-    if (pm.options.scope.token.len > 0) {
-        headers.appendFmt("authorization", "Bearer {s}", .{pm.options.scope.token});
-    } else if (pm.options.scope.auth.len > 0) {
-        headers.appendFmt("authorization", "Basic {s}", .{pm.options.scope.auth});
+        try headers.appendFmt("authorization", "Basic {s}", .{pm.options.scope.auth});
     }
 
     const url_str = try std.fmt.allocPrint(allocator, "{s}/-/npm/v1/security/advisories/bulk", .{strings.withoutTrailingSlash(pm.options.scope.url.href)});
@@ -385,9 +375,10 @@ fn sendAuditRequest(allocator: std.mem.Allocator, pm: *PackageManager, body: []c
         .POST,
         url,
         headers.entries,
-        headers.content.ptr.?[0..headers.content.len],
+        headers.buf.items,
         &response_buf,
         final_compressed_body,
+        pm.javascript_semantics,
         http_proxy,
         null,
         .follow,
@@ -813,7 +804,8 @@ fn printEnhancedAuditReport(
 const libdeflate = @import("../libdeflate_sys/libdeflate.zig");
 const std = @import("std");
 const AuditLevel = @import("../install/PackageManager/CommandLineArguments.zig").AuditLevel;
-const Command = @import("./cli.zig").Command;
+const Context = @import("../options_types/Context.zig").Context;
+const handleLockfileLoadErrors = @import("./lockfile_load_result.zig").handleErrors;
 const PackageManager = @import("../install/install.zig").PackageManager;
 const URL = @import("../url/url.zig").URL;
 
@@ -825,4 +817,3 @@ const logger = bun.logger;
 const strings = bun.strings;
 
 const http = bun.http;
-const HeaderBuilder = http.HeaderBuilder;

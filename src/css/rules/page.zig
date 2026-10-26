@@ -1,7 +1,6 @@
 pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
-const Maybe = css.Maybe;
 const PrintErr = css.PrintErr;
 const Location = css.css_rules.Location;
 
@@ -359,7 +358,7 @@ pub const PageRuleParser = struct {
             return .success;
         }
 
-        pub fn ruleWithoutBlock(_: *This, _: AtRuleParser.Prelude, _: *const css.ParserState) css.Maybe(AtRuleParser.AtRule, void) {
+        pub fn ruleWithoutBlock(_: *This, _: AtRuleParser.Prelude, _: *const css.ParserState) css.Outcome(AtRuleParser.AtRule, void) {
             return .{ .err = {} };
         }
     };

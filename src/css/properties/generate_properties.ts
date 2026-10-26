@@ -399,7 +399,7 @@ function generatePropertyIdImpl(property_defs: Record<string, PropertyDef>): str
       )
       .join("")} };
     const Map = comptime bun.ComptimeEnumMap(Enum);
-    if (Map.getASCIIICaseInsensitive(name1)) |prop| {
+    if (Map.getCaseInsensitiveASCII(name1)) |prop| {
       switch (prop) {
         ${Object.entries(property_defs).map(([name, meta]) => {
           return `.${escapeIdent(name)} => {

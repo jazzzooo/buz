@@ -12,15 +12,13 @@ pub const RegularExpression = opaque {
         sticky = 1 << 7,
     };
 
-    extern fn Yarr__RegularExpression__init(pattern: bun.String, flags: u16) *RegularExpression;
-    extern fn Yarr__RegularExpression__deinit(pattern: *RegularExpression) void;
-    extern fn Yarr__RegularExpression__isValid(this: *RegularExpression) bool;
-    extern fn Yarr__RegularExpression__matchedLength(this: *RegularExpression) i32;
-    extern fn Yarr__RegularExpression__searchRev(this: *RegularExpression) i32;
-    extern fn Yarr__RegularExpression__matches(this: *RegularExpression, string: bun.String) i32;
-
     pub inline fn init(pattern: bun.String, flags: Flags) error{InvalidRegExp}!*RegularExpression {
-        var regex = Yarr__RegularExpression__init(pattern, @backingInt(flags));
+        var bound_pattern = bun.bindgen.ThreadSafeDOMString.fromBunString(pattern.dupeRef()) catch bun.outOfMemory();
+        defer bound_pattern.deinit();
+        const regex: *RegularExpression = @ptrCast(bun.bindgen.Engine(RegularExpressionCreateSchema).call(.{
+            .pattern = bound_pattern.operand(),
+            .flags = @backingInt(flags),
+        }));
         if (!regex.isValid()) {
             regex.deinit();
             return error.InvalidRegExp;
@@ -29,29 +27,42 @@ pub const RegularExpression = opaque {
     }
 
     pub inline fn isValid(this: *RegularExpression) bool {
-        return Yarr__RegularExpression__isValid(this);
+        return bun.bindgen.Engine(RegularExpressionIsValidSchema).call(.{ .expression = @ptrCast(this) });
     }
 
-    // Reserving `match` for a full match result.
-    // pub inline fn match(this: *RegularExpression, str: bun.String, startFrom: i32) MatchResult {
-    // }
-
-    // Simple boolean matcher
     pub inline fn matches(this: *RegularExpression, str: bun.String) bool {
-        return Yarr__RegularExpression__matches(this, str) >= 0;
+        var string = bun.bindgen.ThreadSafeDOMString.fromBunString(str.dupeRef()) catch bun.outOfMemory();
+        defer string.deinit();
+        return bun.bindgen.Engine(RegularExpressionMatchesSchema).call(.{
+            .expression = @ptrCast(this),
+            .string = string.operand(),
+        }) >= 0;
     }
 
     pub inline fn searchRev(this: *RegularExpression, str: bun.String) i32 {
-        return Yarr__RegularExpression__searchRev(this, str);
+        var string = bun.bindgen.ThreadSafeDOMString.fromBunString(str.dupeRef()) catch bun.outOfMemory();
+        defer string.deinit();
+        return bun.bindgen.Engine(RegularExpressionSearchRevSchema).call(.{
+            .expression = @ptrCast(this),
+            .string = string.operand(),
+        });
     }
 
     pub inline fn matchedLength(this: *RegularExpression) i32 {
-        return Yarr__RegularExpression__matchedLength(this);
+        return bun.bindgen.Engine(RegularExpressionMatchedLengthSchema).call(.{ .expression = @ptrCast(this) });
     }
 
     pub inline fn deinit(this: *RegularExpression) void {
-        Yarr__RegularExpression__deinit(this);
+        bun.bindgen.Engine(RegularExpressionDestroySchema).call(.{ .expression = @ptrCast(this) });
     }
 };
 
 const bun = @import("bun");
+
+const RegularExpressionBindings = bun.bindgen.Module("regular_expressions");
+const RegularExpressionCreateSchema = RegularExpressionBindings.engineShim("regularExpressionCreate");
+const RegularExpressionDestroySchema = RegularExpressionBindings.engineShim("regularExpressionDestroy");
+const RegularExpressionIsValidSchema = RegularExpressionBindings.engineShim("regularExpressionIsValid");
+const RegularExpressionMatchedLengthSchema = RegularExpressionBindings.engineShim("regularExpressionMatchedLength");
+const RegularExpressionMatchesSchema = RegularExpressionBindings.engineShim("regularExpressionMatches");
+const RegularExpressionSearchRevSchema = RegularExpressionBindings.engineShim("regularExpressionSearchRev");

@@ -5,6 +5,7 @@ pub const Snapshots = struct {
 
     allocator: std.mem.Allocator,
     io: std.Io,
+    configuration: ?Configuration = null,
     update_snapshots: bool,
     total: usize = 0,
     added: usize = 0,
@@ -16,8 +17,18 @@ pub const Snapshots = struct {
     counts: *bun.StringHashMap(usize),
     _current_file: ?File = null,
     snapshot_dir_path: ?string = null,
-    inline_snapshots_to_write: *std.array_hash_map.Auto(TestRunner.File.ID, std.array_list.Managed(InlineSnapshotToWrite)),
+    inline_snapshots_to_write: *std.array_hash_map.Auto(FileID, std.array_list.Managed(InlineSnapshotToWrite)),
     last_error_snapshot_name: ?[]const u8 = null,
+
+    pub const FileID = u32;
+    pub const FileContext = opaque {};
+
+    pub const Configuration = struct {
+        file_context: *const FileContext,
+        file_path: *const fn (*const FileContext, FileID) []const u8,
+        parser_options: js_parser.Parser.Options,
+        define: *bun.options.Define,
+    };
 
     pub const InlineSnapshotToWrite = struct {
         line: c_ulong,
@@ -38,9 +49,18 @@ pub const Snapshots = struct {
     };
 
     const File = struct {
-        id: TestRunner.File.ID,
+        id: FileID,
         file: std.Io.File,
     };
+
+    pub fn configure(this: *Snapshots, configuration: Configuration) void {
+        this.configuration = configuration;
+    }
+
+    fn filePath(this: *const Snapshots, file_id: FileID) []const u8 {
+        const configuration = this.configuration orelse @panic("snapshot store is not configured");
+        return configuration.file_path(configuration.file_context, file_id);
+    }
 
     fn snapshotFilePath(test_path: string, buf: *bun.PathBuffer) error{NameTooLong}![:0]const u8 {
         const dir = std.fs.path.dirname(test_path) orelse ".";
@@ -56,23 +76,18 @@ pub const Snapshots = struct {
         while (it.next()) |v| v.* = 0;
     }
 
-    pub fn addCount(this: *Snapshots, expect: *Expect, hint: []const u8) !struct { []const u8, usize } {
-        this.total += 1;
-        const snapshot_name = try expect.getSnapshotName(this.allocator, hint);
-        const count_entry = try this.counts.getOrPut(snapshot_name);
-        if (count_entry.found_existing) {
-            this.allocator.free(snapshot_name);
-            count_entry.value_ptr.* += 1;
-            return .{ count_entry.key_ptr.*, count_entry.value_ptr.* };
+    pub fn nextSnapshotIndex(this: *Snapshots, snapshot_name: []const u8) !struct { []const u8, usize } {
+        if (this.counts.getPtr(snapshot_name)) |count| {
+            count.* += 1;
+            return .{ this.counts.getKey(snapshot_name).?, count.* };
         }
-        count_entry.value_ptr.* = 1;
-        return .{ count_entry.key_ptr.*, count_entry.value_ptr.* };
+        const owned_name = try this.allocator.dupe(u8, snapshot_name);
+        errdefer this.allocator.free(owned_name);
+        try this.counts.put(owned_name, 1);
+        return .{ owned_name, 1 };
     }
-    pub fn getOrPut(this: *Snapshots, expect: *Expect, target_value: []const u8, hint: string) !?string {
-        var buntest_strong = expect.bunTest() orelse return error.SnapshotFailed;
-        defer buntest_strong.deinit();
-        const bunTest = buntest_strong.get();
-        switch (try this.getSnapshotFile(bunTest.file_id)) {
+    pub fn getOrPut(this: *Snapshots, file_id: FileID, snapshot_name: []const u8, target_value: []const u8) !?string {
+        switch (try this.getSnapshotFile(file_id)) {
             .result => {},
             .err => |err| {
                 return switch (err.syscall) {
@@ -83,7 +98,7 @@ pub const Snapshots = struct {
             },
         }
 
-        const name, const counter = try this.addCount(expect, hint);
+        const name, const counter = try this.nextSnapshotIndex(snapshot_name);
 
         var counter_string_buf: [32]u8 = @splat(0);
         const counter_string = try std.fmt.bufPrint(&counter_string_buf, "{d}", .{counter});
@@ -133,23 +148,22 @@ pub const Snapshots = struct {
     pub fn parseFile(this: *Snapshots, file: File) !void {
         if (this.file_buf.items.len == 0) return;
 
-        const vm = VirtualMachine.get();
-        const opts = js_parser.Parser.Options.init(vm.transpiler.options.jsx, .js);
+        const configuration = this.configuration orelse @panic("snapshot store is not configured");
         var temp_log = logger.Log.init(this.allocator);
+        defer temp_log.deinit();
 
-        const test_file = Jest.runner.?.files.get(file.id);
         var snapshot_file_path_buf: bun.PathBuffer = undefined;
-        const snapshot_file_path = try snapshotFilePath(test_file.source.path.text, &snapshot_file_path_buf);
+        const snapshot_file_path = try snapshotFilePath(this.filePath(file.id), &snapshot_file_path_buf);
 
         var source_value = logger.Source.initPathString(snapshot_file_path, this.file_buf.items);
         try source_value.normalizeText(this.allocator);
         const source = &source_value;
 
         var parser = try js_parser.Parser.init(
-            opts,
+            configuration.parser_options,
             &temp_log,
             source,
-            vm.transpiler.options.define,
+            configuration.define,
             this.allocator,
         );
 
@@ -217,7 +231,7 @@ pub const Snapshots = struct {
         }
     }
 
-    pub fn addInlineSnapshotToWrite(self: *Snapshots, file_id: TestRunner.File.ID, value: InlineSnapshotToWrite) !void {
+    pub fn addInlineSnapshotToWrite(self: *Snapshots, file_id: FileID, value: InlineSnapshotToWrite) !void {
         const gpres = try self.inline_snapshots_to_write.getOrPut(self.allocator, file_id);
         if (!gpres.found_existing) {
             gpres.value_ptr.* = std.array_list.Managed(InlineSnapshotToWrite).init(self.allocator);
@@ -232,13 +246,13 @@ pub const Snapshots = struct {
         const arena = arena_backing.allocator();
 
         var success = true;
-        const vm = VirtualMachine.get();
-        const opts = js_parser.Parser.Options.init(vm.transpiler.options.jsx, .js);
+        const configuration = this.configuration orelse @panic("snapshot store is not configured");
 
         for (this.inline_snapshots_to_write.keys(), this.inline_snapshots_to_write.values()) |file_id, *ils_info| {
             _ = arena_backing.reset(.retain_capacity);
 
             var log = bun.logger.Log.init(arena);
+            defer log.deinit();
             defer if (log.errors > 0) {
                 log.print(bun.Output.errorWriter()) catch {};
                 success = false;
@@ -248,8 +262,7 @@ pub const Snapshots = struct {
             std.mem.sort(InlineSnapshotToWrite, ils_info.items, {}, InlineSnapshotToWrite.lessThanFn);
 
             // 2. load file text
-            const test_file = Jest.runner.?.files.get(file_id);
-            const test_filename = try arena.dupeSentinel(u8, test_file.source.path.text, 0);
+            const test_filename = try arena.dupeSentinel(u8, this.filePath(file_id), 0);
 
             const fd = switch (bun.sys.open(test_filename, bun.O.RDWR, 0o644)) {
                 .result => |r| r,
@@ -283,11 +296,10 @@ pub const Snapshots = struct {
             for (ils_info.items) |ils| {
                 if (ils.line == last_line and ils.col == last_col) {
                     if (!bun.strings.eql(ils.value, last_value)) {
-                        const DiffFormatter = @import("./diff_format.zig").DiffFormatter;
-                        try log.addErrorFmt(source, .{ .start = @intCast(uncommitted_segment_end) }, arena, "Failed to update inline snapshot: Multiple inline snapshots on the same line must all have the same value:\n{f}", .{DiffFormatter{
+                        try log.addErrorFmt(source, .{ .start = @intCast(uncommitted_segment_end) }, arena, "Failed to update inline snapshot: Multiple inline snapshots on the same line must all have the same value:\n{f}", .{StringDiffFormatter{
                             .received_string = ils.value,
                             .expected_string = last_value,
-                            .globalThis = vm.global,
+                            .io = this.io,
                         }});
                     }
                     continue;
@@ -325,7 +337,7 @@ pub const Snapshots = struct {
                     }
                     try lexer.next();
                     var parser: bun.js_parser.TSXParser = undefined;
-                    try bun.js_parser.TSXParser.init(arena, &log, source, vm.transpiler.options.define, lexer, opts, &parser);
+                    try bun.js_parser.TSXParser.init(arena, &log, source, configuration.define, lexer, configuration.parser_options, &parser);
 
                     try parser.lexer.expect(.t_open_paren);
                     const after_open_paren_loc = parser.lexer.loc().start;
@@ -456,7 +468,7 @@ pub const Snapshots = struct {
                 result_text_writer_state.finish();
                 try result_text.appendSlice("`");
 
-                if (ils.is_added) Jest.runner.?.snapshots.added += 1;
+                if (ils.is_added) this.added += 1;
             }
 
             // commit the last segment
@@ -481,12 +493,12 @@ pub const Snapshots = struct {
         return success;
     }
 
-    fn getSnapshotFile(this: *Snapshots, file_id: TestRunner.File.ID) !bun.sys.Maybe(void) {
+    fn getSnapshotFile(this: *Snapshots, file_id: FileID) !bun.sys.Maybe(void) {
         if (this._current_file == null or this._current_file.?.id != file_id) {
             try this.writeSnapshotFile();
 
-            const test_file = Jest.runner.?.files.get(file_id);
-            const dir_path = std.fs.path.dirname(test_file.source.path.text) orelse ".";
+            const test_path = this.filePath(file_id);
+            const dir_path = std.fs.path.dirname(test_path) orelse ".";
 
             var snapshot_file_path_buf: bun.PathBuffer = undefined;
 
@@ -508,7 +520,7 @@ pub const Snapshots = struct {
                 }
             }
 
-            const snapshot_file_path = try snapshotFilePath(test_file.source.path.text, &snapshot_file_path_buf);
+            const snapshot_file_path = try snapshotFilePath(test_path, &snapshot_file_path_buf);
 
             var flags: i32 = bun.O.CREAT | bun.O.RDWR;
             if (this.update_snapshots) flags |= bun.O.TRUNC;
@@ -548,17 +560,10 @@ pub const Snapshots = struct {
 const string = []const u8;
 
 const std = @import("std");
-const Expect = @import("./expect.zig").Expect;
-
-const jest = @import("./jest.zig");
-const Jest = jest.Jest;
-const TestRunner = jest.TestRunner;
+const StringDiffFormatter = @import("./diff_format.zig").StringDiffFormatter;
 
 const bun = @import("bun");
 const js_ast = bun.ast;
 const js_parser = bun.js_parser;
 const logger = bun.logger;
 const strings = bun.strings;
-
-const jsc = bun.jsc;
-const VirtualMachine = jsc.VirtualMachine;

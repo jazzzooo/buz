@@ -1,22 +1,31 @@
 #pragma once
-#include <JavaScriptCore/JSCJSValue.h>
+#include <JavaScriptCore/Strong.h>
 #include <memory>
-
-extern "C" void Bun__StrongRef__delete(JSC::JSValue* _Nonnull handleSlot);
-extern "C" JSC::JSValue* Bun__StrongRef__new(JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue encodedValue);
-extern "C" void Bun__StrongRef__set(JSC::JSValue* _Nonnull handleSlot, JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue encodedValue);
-extern "C" void Bun__StrongRef__clear(JSC::JSValue* _Nonnull handleSlot);
+#include <wtf/FastMalloc.h>
+#include <wtf/RefCounted.h>
 
 namespace Bun {
 
-struct StrongRefDeleter {
-    // `std::unique_ptr` will never call this with a null pointer.
-    void operator()(JSC::JSValue* _Nonnull handleSlot)
-    {
-        Bun__StrongRef__delete(handleSlot);
-    }
+class StrongRefStorage final : public WTF::RefCounted<StrongRefStorage> {
+public:
+    StrongRefStorage(JSC::JSGlobalObject*, JSC::JSValue);
+    void operator delete(void* reference) { WTF::fastFree(reference); }
+
+    JSC::JSGlobalObject* globalObject() const { return m_global.get(); }
+    JSC::JSValue value() const { return m_value.get(); }
+    const JSC::JSValue* slot() const { return static_cast<const JSC::Handle<JSC::Unknown>&>(m_value).slot(); }
+
+private:
+    JSC::Strong<JSC::JSGlobalObject> m_global;
+    JSC::Strong<JSC::Unknown> m_value;
 };
 
-using StrongRef = std::unique_ptr<JSC::JSValue, StrongRefDeleter>;
+struct StrongRefDeleter {
+    void operator()(StrongRefStorage* reference) const { reference->deref(); }
+};
+
+using StrongRef = std::unique_ptr<StrongRefStorage, StrongRefDeleter>;
+
+StrongRefStorage* createStrongRef(JSC::JSGlobalObject*, JSC::JSValue);
 
 }

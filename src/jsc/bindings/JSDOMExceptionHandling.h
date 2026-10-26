@@ -35,9 +35,6 @@ class TopExceptionScope;
 namespace WebCore {
 
 class CachedScript;
-class DeferredPromise;
-
-void throwAttributeTypeError(JSC::JSGlobalObject&, JSC::ThrowScope&, ASCIILiteral interfaceName, ASCIILiteral attributeName, ASCIILiteral expectedType);
 
 void throwDataCloneError(JSC::JSGlobalObject&, JSC::ThrowScope&);
 void throwDOMSyntaxError(JSC::JSGlobalObject&, JSC::ThrowScope&, ASCIILiteral); // Not the same as a JavaScript syntax error.
@@ -47,28 +44,16 @@ void throwNotSupportedError(JSC::JSGlobalObject&, JSC::ThrowScope&, ASCIILiteral
 void throwSecurityError(JSC::JSGlobalObject&, JSC::ThrowScope&, const String& message);
 WEBCORE_EXPORT void throwSequenceTypeError(JSC::JSGlobalObject&, JSC::ThrowScope&, ASCIILiteral functionName = {}, ASCIILiteral argumentName = {});
 
-WEBCORE_EXPORT JSC::EncodedJSValue throwArgumentMustBeEnumError(JSC::JSGlobalObject&, JSC::ThrowScope&, unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral functionInterfaceName, ASCIILiteral functionName, ASCIILiteral expectedValues);
-WEBCORE_EXPORT JSC::EncodedJSValue throwArgumentMustBeFunctionError(JSC::JSGlobalObject&, JSC::ThrowScope&, unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral functionInterfaceName, ASCIILiteral functionName);
-WEBCORE_EXPORT JSC::EncodedJSValue throwArgumentMustBeObjectError(JSC::JSGlobalObject&, JSC::ThrowScope&, unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral functionInterfaceName, ASCIILiteral functionName);
-WEBCORE_EXPORT JSC::EncodedJSValue throwArgumentTypeError(JSC::JSGlobalObject&, JSC::ThrowScope&, unsigned argumentIndex, ASCIILiteral argumentName, ASCIILiteral functionInterfaceName, ASCIILiteral functionName, ASCIILiteral expectedType);
-WEBCORE_EXPORT JSC::EncodedJSValue throwRequiredMemberTypeError(JSC::JSGlobalObject&, JSC::ThrowScope&, ASCIILiteral memberName, ASCIILiteral dictionaryName, ASCIILiteral expectedType);
 JSC::EncodedJSValue throwConstructorScriptExecutionContextUnavailableError(JSC::JSGlobalObject&, JSC::ThrowScope&, ASCIILiteral interfaceName);
 
 String makeThisTypeErrorMessage(ASCIILiteral interfaceName, ASCIILiteral functionName);
-String makeUnsupportedIndexedSetterErrorMessage(ASCIILiteral interfaceName);
 
 WEBCORE_EXPORT JSC::EncodedJSValue throwThisTypeError(JSC::JSGlobalObject&, JSC::ThrowScope&, ASCIILiteral interfaceName, ASCIILiteral attributeName);
-
-WEBCORE_EXPORT JSC::EncodedJSValue rejectPromiseWithGetterTypeError(JSC::JSGlobalObject&, const JSC::ClassInfo*, JSC::PropertyName attributeName);
-WEBCORE_EXPORT JSC::EncodedJSValue rejectPromiseWithThisTypeError(DeferredPromise&, ASCIILiteral interfaceName, ASCIILiteral operationName);
-WEBCORE_EXPORT JSC::EncodedJSValue rejectPromiseWithThisTypeError(JSC::JSGlobalObject&, ASCIILiteral interfaceName, ASCIILiteral operationName);
 
 String retrieveErrorMessageWithoutName(JSC::JSGlobalObject&, JSC::VM&, JSC::JSValue exception, JSC::TopExceptionScope&);
 String retrieveErrorMessage(JSC::JSGlobalObject&, JSC::VM&, JSC::JSValue exception, JSC::TopExceptionScope&);
 WEBCORE_EXPORT void reportException(JSC::JSGlobalObject*, JSC::JSValue exception, CachedScript* = nullptr, bool = false);
 WEBCORE_EXPORT void reportException(JSC::JSGlobalObject*, JSC::Exception*, CachedScript* = nullptr, bool = false, ExceptionDetails* = nullptr);
-WEBCORE_EXPORT void reportExceptionIfJSDOMWindow(JSC::JSGlobalObject*, JSC::JSValue exception);
-void reportCurrentException(JSC::JSGlobalObject*);
 
 JSC::JSValue createDOMException(JSC::JSGlobalObject&, Exception&&);
 JSC::JSValue createDOMException(JSC::JSGlobalObject*, ExceptionCode, const String& = emptyString());
@@ -100,10 +85,13 @@ template<typename Functor> void invokeFunctorPropagatingExceptionIfNecessary(JSC
 
     if constexpr (IsExceptionOr<ReturnType>) {
         auto result = functor();
+        RETURN_IF_EXCEPTION(throwScope, void());
         if (result.hasException()) [[unlikely]]
             propagateException(lexicalGlobalObject, throwScope, result.releaseException());
-    } else
+    } else {
         functor();
+        RETURN_IF_EXCEPTION(throwScope, void());
+    }
 }
 
 template<typename Functor> void invokeFunctorPropagatingExceptionIfNecessary(JSC::JSGlobalObject* lexicalGlobalObject, JSC::ThrowScope& throwScope, Functor&& functor)
@@ -112,10 +100,13 @@ template<typename Functor> void invokeFunctorPropagatingExceptionIfNecessary(JSC
 
     if constexpr (IsExceptionOr<ReturnType>) {
         auto result = functor();
+        RETURN_IF_EXCEPTION(throwScope, void());
         if (result.hasException()) [[unlikely]]
             propagateException(lexicalGlobalObject, throwScope, result.releaseException());
-    } else
+    } else {
         functor();
+        RETURN_IF_EXCEPTION(throwScope, void());
+    }
 }
 
 } // namespace WebCore

@@ -28,8 +28,7 @@
 
 #include "root.h"
 #include "Event.h"
-#include "JSValueInWrappedObject.h"
-// #include "SerializedScriptValue.h"
+#include "Bindgen/TracedAny.h"
 
 namespace WebCore {
 
@@ -42,22 +41,20 @@ public:
     static Ref<CustomEvent> create(IsTrusted = IsTrusted::No);
 
     struct Init : EventInit {
-        JSC::JSValue detail;
+        std::optional<Bun::Bindgen::CppAny> detail;
     };
 
     static Ref<CustomEvent> create(const AtomString& type, const Init&, IsTrusted = IsTrusted::No);
 
-    void initCustomEvent(const AtomString& type, bool canBubble, bool cancelable, JSC::JSValue detail = JSC::JSValue::JSUndefined);
+    void initCustomEvent(JSC::VM&, const AtomString& type, bool canBubble, bool cancelable, Bun::Bindgen::CppAny detail);
 
-    const JSValueInWrappedObject& detail() const { return m_detail; }
-    JSValueInWrappedObject& cachedDetail() { return m_cachedDetail; }
+    const Bun::Bindgen::CppTracedAny& detail() const { return m_detail; }
 
 private:
     CustomEvent(IsTrusted);
     CustomEvent(const AtomString& type, const Init& initializer, IsTrusted);
 
-    JSValueInWrappedObject m_detail;
-    JSValueInWrappedObject m_cachedDetail;
+    Bun::Bindgen::CppTracedAny m_detail;
 };
 
 } // namespace WebCore

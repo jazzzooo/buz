@@ -21,10 +21,14 @@ pub const Error = union(enum) {
         }
     }
 
-    pub fn toJS(this: *const @This(), globalObject: *jsc.JSGlobalObject) JSError!JSValue {
+    pub fn toPayload(this: *const @This()) bun.OOM!PostgresErrorJSC.OwnedPayload {
         return switch (this.*) {
-            .protocol => |err| err.toJS(globalObject),
-            .postgres_error => |err| postgresErrorToJS(globalObject, null, err),
+            .protocol => |err| ErrorResponseJSC.toPayload(err),
+            .postgres_error => |err| {
+                var message_buffer: [256]u8 = undefined;
+                const description = AnyPostgresErrorModule.describe(null, err, &message_buffer);
+                return PostgresErrorJSC.createPostgresErrorPayload(description.message, description.options);
+            },
         };
     }
 };
@@ -60,9 +64,9 @@ pub fn deinit(this: *PostgresSQLStatement) void {
     bun.default_allocator.destroy(this);
 }
 
-pub fn layout(this: *PostgresSQLStatement, owner: JSValue, globalObject: *jsc.JSGlobalObject) *const ResultLayout {
+pub fn layout(this: *PostgresSQLStatement, values: *const SQLTypes.BindingValues) bun.JSError!*const ResultLayout {
     if (!this.result_layout.initialized) {
-        this.result_layout.init(this.fields, owner, globalObject);
+        try this.result_layout.init(this.fields, values);
     }
     return &this.result_layout;
 }
@@ -70,17 +74,16 @@ pub fn layout(this: *PostgresSQLStatement, owner: JSValue, globalObject: *jsc.JS
 const debug = bun.Output.scoped(.Postgres, .visible);
 
 const ResultLayout = @import("../../sql_jsc/shared/ResultLayout.zig");
+const SQLTypes = @import("../../sql_jsc/shared/SQLTypes.zig");
 const Signature = @import("../../sql_jsc/postgres/Signature.zig");
 const protocol = @import("../../sql/postgres/PostgresProtocol.zig");
 
-const AnyPostgresError = @import("../../sql/postgres/AnyPostgresError.zig").AnyPostgresError;
-const postgresErrorToJS = @import("../../sql/postgres/AnyPostgresError.zig").postgresErrorToJS;
+const AnyPostgresErrorModule = @import("../../sql/postgres/AnyPostgresError.zig");
+const AnyPostgresError = AnyPostgresErrorModule.AnyPostgresError;
+const PostgresErrorJSC = @import("./error_jsc.zig");
+const ErrorResponseJSC = @import("./protocol/error_response_jsc.zig");
 
 const types = @import("../../sql/postgres/PostgresTypes.zig");
 const int4 = types.int4;
 
 const bun = @import("bun");
-const JSError = bun.JSError;
-
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;

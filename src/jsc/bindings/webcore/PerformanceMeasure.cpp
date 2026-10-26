@@ -41,7 +41,10 @@ size_t PerformanceMeasure::memoryCost() const
 
 ExceptionOr<Ref<PerformanceMeasure>> PerformanceMeasure::create(const String& name, double startTime, double endTime, RefPtr<SerializedScriptValue>&& serializedDetail)
 {
-    return adoptRef(*new PerformanceMeasure(name, startTime, endTime, WTF::move(serializedDetail)));
+    void* allocation = PerformanceEntryMalloc::tryMalloc(sizeof(PerformanceMeasure));
+    if (!allocation)
+        return Exception { OutOfMemoryError };
+    return adoptRef(*new (NotNull, allocation) PerformanceMeasure(name, startTime, endTime, WTF::move(serializedDetail)));
 }
 
 PerformanceMeasure::PerformanceMeasure(const String& name, double startTime, double endTime, RefPtr<SerializedScriptValue>&& serializedDetail)

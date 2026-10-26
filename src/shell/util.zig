@@ -10,8 +10,6 @@ pub const OutKind = enum {
     }
 };
 
-pub const Stdio = bun.spawn.Stdio;
-
 pub const WatchFd = if (Environment.isLinux) posix.fd_t else i32;
 
 const bun = @import("bun");

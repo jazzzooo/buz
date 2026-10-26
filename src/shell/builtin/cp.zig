@@ -191,7 +191,7 @@ pub fn writeFailingError(this: *Cp, buf: []const u8, exit_code: ExitCode) Yield 
     return this.bltn().done(exit_code);
 }
 
-pub fn onIOWriterChunk(this: *Cp, _: usize, e: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *Cp, _: usize, e: ?bun.sys.SystemError) Yield {
     if (e) |err| err.deref();
     if (this.state == .waiting_write_err) {
         return this.bltn().done(1);
@@ -264,13 +264,7 @@ pub fn printShellCpTask(this: *Cp, task: *ShellCpTask) Yield {
     return output_task.start(null);
 }
 
-pub const ShellCpOutputTask = OutputTask(Cp, .{
-    .writeErr = ShellCpOutputTaskVTable.writeErr,
-    .onWriteErr = ShellCpOutputTaskVTable.onWriteErr,
-    .writeOut = ShellCpOutputTaskVTable.writeOut,
-    .onWriteOut = ShellCpOutputTaskVTable.onWriteOut,
-    .onDone = ShellCpOutputTaskVTable.onDone,
-});
+pub const ShellCpOutputTask = OutputTask(Cp, ShellCpOutputTaskVTable);
 
 const ShellCpOutputTaskVTable = struct {
     pub fn writeErr(this: *Cp, childptr: anytype, errbuf: []const u8) ?Yield {
@@ -317,12 +311,33 @@ pub const ShellCpTask = struct {
     verbose_output_lock: std.Io.Mutex = .init,
     verbose_output: ArrayList(u8) = ArrayList(u8).init(bun.default_allocator),
 
-    task: jsc.BackgroundTask = .{ .callback = &runInBackground },
-    event_loop: jsc.EventLoopHandle,
-    concurrent_task: jsc.EventLoopTask,
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = &runInBackground },
+    scheduler: Interpreter.Scheduler,
+    main_task: Interpreter.Scheduler.Task = .{},
     err: ?bun.shell.ShellErr = null,
 
     const debug = bun.Output.scoped(.ShellCpTask, .visible);
+
+    const CopyHooks = struct {
+        shell_task: *ShellCpTask,
+
+        pub fn onCopy(this: *CopyHooks, src: anytype, dest: anytype) void {
+            this.shell_task.cpOnCopy(src, dest);
+        }
+
+        pub fn finish(this: *CopyHooks, task: anytype) void {
+            const shell_task = this.shell_task;
+            if (task.result.asErr()) |err| shell_task.err = bun.shell.ShellErr.newSys(err);
+            task.deinit();
+            shell_task.enqueueToEventLoop();
+        }
+
+        pub fn cancel(_: *CopyHooks) bool {
+            return true;
+        }
+    };
+
+    const CopyTask = NodeFSCopy.AsyncTask(CopyHooks);
 
     fn deinit(this: *ShellCpTask) void {
         debug("deinit", .{});
@@ -341,7 +356,7 @@ pub const ShellCpTask = struct {
 
     pub fn schedule(this: *@This()) void {
         debug("schedule", .{});
-        BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch |err| {
+        BackgroundWork.schedule(this.scheduler.backgroundTasks(), &this.task) catch |err| {
             this.err = .{ .custom = bun.handleOom(bun.default_allocator.dupe(u8, @errorName(err))) };
             this.enqueueToEventLoop();
         };
@@ -349,7 +364,7 @@ pub const ShellCpTask = struct {
 
     pub fn create(
         cp: *Cp,
-        evtloop: jsc.EventLoopHandle,
+        scheduler: Interpreter.Scheduler,
         opts: Opts,
         operands: usize,
         src: [:0]const u8,
@@ -363,8 +378,7 @@ pub const ShellCpTask = struct {
             .src = src,
             .tgt = tgt,
             .cwd_path = cwd_path,
-            .event_loop = evtloop,
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(evtloop),
+            .scheduler = scheduler,
         });
     }
 
@@ -407,11 +421,7 @@ pub const ShellCpTask = struct {
     }
 
     fn enqueueToEventLoop(this: *ShellCpTask) void {
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
+        this.scheduler.enqueue(&this.main_task, this);
     }
 
     pub fn runFromMainThread(this: *ShellCpTask) void {
@@ -485,8 +495,6 @@ pub const ShellCpTask = struct {
             },
         };
 
-        var copying_many = false;
-
         // Note:
         // The following logic is based on the POSIX spec:
         //   https://man7.org/linux/man-pages/man1/cp.1p.html
@@ -512,7 +520,6 @@ pub const ShellCpTask = struct {
                 const errmsg = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "directory {s} does not exist", .{this.tgt}));
                 return .{ .custom = errmsg };
             }
-            copying_many = true;
         }
         // Handle the "3rd synopsis": source_files... -> target
         else {
@@ -526,12 +533,11 @@ pub const ShellCpTask = struct {
             const joined = bun.handleOom(std.fs.path.joinZ(bun.default_allocator, parts));
             bun.default_allocator.free(this.tgt_absolute.?);
             this.tgt_absolute = joined;
-            copying_many = true;
         }
 
-        const args = jsc.Node.fs.Arguments.Cp{
-            .src = jsc.Node.PathLike{ .string = bun.PathString.init(this.src_absolute.?) },
-            .dest = jsc.Node.PathLike{ .string = bun.PathString.init(this.tgt_absolute.?) },
+        const args = NodeFSCopy.Arguments{
+            .src = NodeTypes.PathLike{ .string = bun.PathString.init(this.src_absolute.?) },
+            .dest = NodeTypes.PathLike{ .string = bun.PathString.init(this.tgt_absolute.?) },
             .flags = .{
                 .mode = @fromBackingInt(@intCast(0)),
                 .recursive = this.opts.recursive,
@@ -542,39 +548,22 @@ pub const ShellCpTask = struct {
         };
 
         debug("Scheduling {s} -> {s}", .{ this.src_absolute.?, this.tgt_absolute.? });
-        if (this.event_loop == .js) {
-            const vm: *jsc.VirtualMachine = this.event_loop.js.getVmImpl();
-            debug("Yoops", .{});
-            _ = bun.api.node.fs.ShellAsyncCpTask.createWithShellTask(
-                vm.global,
-                args,
-                vm,
-                bun.ArenaAllocator.init(bun.default_allocator),
-                this,
-                false,
-            );
-        } else {
-            _ = bun.api.node.fs.ShellAsyncCpTask.createMini(
-                args,
-                this.event_loop.mini,
-                bun.ArenaAllocator.init(bun.default_allocator),
-                this,
-            );
-        }
-
+        const task = CopyTask.init(
+            args,
+            this.scheduler.backgroundTasks(),
+            null,
+            if (bun.Environment.isWindows)
+                @as(NodeFSCopy.Copyfile, @fromBackingInt(@intCast(NodeFSCopy.Copyfile.force)))
+            else
+                null,
+            .{ .shell_task = this },
+        ) catch return bun.shell.ShellErr.newSys(bun.sys.Error.fromCode(.NOMEM, .copyfile));
+        task.schedule();
         return null;
     }
 
-    fn onSubtaskFinish(this: *ShellCpTask, err: Maybe(void)) void {
-        debug("onSubtaskFinish", .{});
-        if (err.asErr()) |e| {
-            this.err = bun.shell.ShellErr.newSys(e);
-        }
-        this.enqueueToEventLoop();
-    }
-
     pub fn onCopyImpl(this: *ShellCpTask, src: [:0]const u8, dest: [:0]const u8) void {
-        const io = this.event_loop.io();
+        const io = this.scheduler.io();
         this.verbose_output_lock.lockUncancelable(io);
         log("onCopy: {s} -> {s}\n", .{ src, dest });
         defer this.verbose_output_lock.unlock(io);
@@ -595,15 +584,11 @@ pub const ShellCpTask = struct {
             else => @compileError("Invalid type: " ++ @typeName(@TypeOf(src_))),
         };
         const dest: [:0]const u8 = switch (@TypeOf(dest_)) {
-            [:0]const u8, [:0]u8 => src_,
+            [:0]const u8, [:0]u8 => dest_,
             [:0]const u16, [:0]u16 => bun.strings.fromWPath(buf2[0..], dest_),
             else => @compileError("Invalid type: " ++ @typeName(@TypeOf(dest_))),
         };
         this.onCopyImpl(src, dest);
-    }
-
-    pub fn cpOnFinish(this: *ShellCpTask, result: Maybe(void)) void {
-        this.onSubtaskFinish(result);
     }
 };
 
@@ -749,12 +734,13 @@ const Builtin = Interpreter.Builtin;
 const Result = Interpreter.Builtin.Result;
 
 const bun = @import("bun");
+const NodeFSCopy = @import("../../runtime/node/NodeFSCopy.zig");
+const NodeTypes = @import("../../runtime/node/types.zig");
 const ResolvePath = bun.path;
 const assert = bun.assert;
 
-const jsc = bun.jsc;
-const BackgroundWork = jsc.BackgroundWork;
-const BackgroundTask = jsc.BackgroundTask;
+const BackgroundWork = bun.BackgroundWork;
+const BackgroundTask = bun.BackgroundTaskGroup.Task;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

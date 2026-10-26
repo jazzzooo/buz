@@ -1,23 +1,15 @@
 #pragma once
 
 #include "root.h"
-#include "_NativeModule.h"
 #include "BakeAdditionsToGlobalObject.h"
+#include "ZigGlobalObject.h"
 
-namespace Zig {
-using namespace WebCore;
-using namespace JSC;
+namespace Bun::Bindgen {
 
-DEFINE_NATIVE_MODULE(BunApp)
+inline JSC::JSValue constructBunAppResponse(JSC::VM&, JSC::JSObject* object)
 {
-    INIT_NATIVE_MODULE(1);
-
-    auto* zig = static_cast<Zig::GlobalObject*>(globalObject);
-    JSValue ssrResponseConstructor = zig->bakeAdditions().JSBakeResponseConstructor(zig);
-
-    put(JSC::Identifier::fromString(vm, "Response"_s), ssrResponseConstructor);
-
-    RETURN_NATIVE_MODULE();
+    auto* globalObject = static_cast<Zig::GlobalObject*>(object->globalObject());
+    return globalObject->bakeAdditions().JSBakeResponseConstructor(globalObject);
 }
 
-} // namespace Zig
+} // namespace Bun::Bindgen

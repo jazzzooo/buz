@@ -46,7 +46,7 @@ pub fn Visit(
             });
         }
 
-        pub fn visitFunc(p: *P, _func: G.Fn, open_parens_loc: logger.Loc) G.Fn {
+        pub fn visitFunc(p: *P, _func: G.Fn, open_parens_loc: logger.Loc) anyerror!G.Fn {
             if (only_scan_imports_and_do_not_visit) {
                 @compileError("only_scan_imports_and_do_not_visit must not run this.");
             }
@@ -59,18 +59,18 @@ pub fn Visit(
 
             if (func.name) |name| {
                 if (name.ref) |name_ref| {
-                    p.recordDeclaredSymbol(name_ref) catch unreachable;
+                    try p.recordDeclaredSymbol(name_ref);
                     const symbol_name = p.loadNameFromRef(name_ref);
                     if (isEvalOrArguments(symbol_name)) {
-                        p.markStrictModeFeature(.eval_or_arguments, js_lexer.rangeOfIdentifier(p.source, name.loc), symbol_name) catch unreachable;
+                        try p.markStrictModeFeature(.eval_or_arguments, js_lexer.rangeOfIdentifier(p.source, name.loc), symbol_name);
                     }
                 }
             }
 
             const body = func.body;
 
-            p.pushScopeForVisitPass(.function_args, open_parens_loc) catch unreachable;
-            p.visitArgs(
+            try p.pushScopeForVisitPass(.function_args, open_parens_loc);
+            try p.visitArgs(
                 func.args,
                 VisitArgsOpts{
                     .has_rest_arg = func.flags.contains(.has_rest_arg),
@@ -79,10 +79,10 @@ pub fn Visit(
                 },
             );
 
-            p.pushScopeForVisitPass(.function_body, body.loc) catch unreachable;
+            try p.pushScopeForVisitPass(.function_body, body.loc);
             var stmts = ListManaged(Stmt).fromOwnedSlice(p.allocator, body.stmts);
             var temp_opts = PrependTempRefsOpts{ .kind = StmtsKind.fn_body, .fn_body_loc = body.loc };
-            p.visitStmtsAndPrependTempRefs(&stmts, &temp_opts) catch unreachable;
+            try p.visitStmtsAndPrependTempRefs(&stmts, &temp_opts);
 
             if (p.options.features.react_fast_refresh) {
                 const hook_storage = p.react_refresh.hook_ctx_storage orelse
@@ -104,61 +104,53 @@ pub fn Visit(
             return func;
         }
 
-        pub fn visitArgs(p: *P, args: []G.Arg, opts: VisitArgsOpts) void {
+        pub fn visitArgs(p: *P, args: []G.Arg, opts: VisitArgsOpts) anyerror!void {
             const strict_loc = fnBodyContainsUseStrict(opts.body);
             const has_simple_args = isSimpleParameterList(args, opts.has_rest_arg);
-            var duplicate_args_check: ?*StringVoidMap.Node = null;
-            defer {
-                if (duplicate_args_check) |checker| {
-                    StringVoidMap.release(checker);
-                }
-            }
+            var duplicate_args_check: bun.StringHashMapUnmanaged(void) = .empty;
+            defer duplicate_args_check.deinit(p.allocator);
 
             // Section 15.2.1 Static Semantics: Early Errors: "It is a Syntax Error if
             // FunctionBodyContainsUseStrict of FunctionBody is true and
             // IsSimpleParameterList of FormalParameters is false."
             if (strict_loc != null and !has_simple_args) {
-                p.log.addRangeError(p.source, p.source.rangeOfString(strict_loc.?), "Cannot use a \"use strict\" directive in a function with a non-simple parameter list") catch unreachable;
+                try p.log.addRangeError(p.source, p.source.rangeOfString(strict_loc.?), "Cannot use a \"use strict\" directive in a function with a non-simple parameter list");
             }
 
             // Section 15.1.1 Static Semantics: Early Errors: "Multiple occurrences of
             // the same BindingIdentifier in a FormalParameterList is only allowed for
             // functions which have simple parameter lists and which are not defined in
             // strict mode code."
-            if (opts.is_unique_formal_parameters or strict_loc != null or !has_simple_args or p.isStrictMode()) {
-                duplicate_args_check = StringVoidMap.get(bun.default_allocator);
-            }
-
-            const duplicate_args_check_ptr: ?*StringVoidMap = if (duplicate_args_check != null)
-                &duplicate_args_check.?.data
+            const duplicate_args_check_ptr: ?*bun.StringHashMapUnmanaged(void) = if (opts.is_unique_formal_parameters or strict_loc != null or !has_simple_args or p.isStrictMode())
+                &duplicate_args_check
             else
                 null;
 
             for (args) |*arg| {
                 if (arg.ts_decorators.len > 0) {
-                    arg.ts_decorators = p.visitTSDecorators(arg.ts_decorators);
+                    arg.ts_decorators = try p.visitTSDecorators(arg.ts_decorators);
                 }
 
-                p.visitBinding(arg.binding, duplicate_args_check_ptr);
+                try p.visitBinding(arg.binding, duplicate_args_check_ptr);
                 if (arg.default) |default| {
-                    arg.default = p.visitExpr(default);
+                    arg.default = try p.visitExpr(default);
                 }
             }
         }
 
-        pub fn visitTSDecorators(p: *P, decs: ExprNodeList) ExprNodeList {
+        pub fn visitTSDecorators(p: *P, decs: ExprNodeList) anyerror!ExprNodeList {
             for (decs.slice()) |*dec| {
-                dec.* = p.visitExpr(dec.*);
+                dec.* = try p.visitExpr(dec.*);
             }
 
             return decs;
         }
 
-        pub fn visitDecls(noalias p: *P, decls: []G.Decl, was_const: bool, comptime is_possibly_decl_to_remove: bool) usize {
+        pub fn visitDecls(noalias p: *P, decls: []G.Decl, was_const: bool, comptime is_possibly_decl_to_remove: bool) anyerror!usize {
             var j: usize = 0;
             var out_decls = decls;
             for (decls) |*decl| {
-                p.visitBinding(decl.binding, null);
+                try p.visitBinding(decl.binding, null);
 
                 if (decl.value != null) {
                     var val = decl.value.?;
@@ -191,7 +183,7 @@ pub fn Visit(
                     if (was_anonymous_named_expr and val.data == .e_class and val.data.e_class.should_lower_standard_decorators and decl.binding.data == .b_identifier) {
                         p.decorator_class_name = p.loadNameFromRef(decl.binding.data.b_identifier.ref);
                     }
-                    decl.value = p.visitExprInOut(val, .{
+                    decl.value = try p.visitExprInOut(val, .{
                         .is_immediately_assigned_to_decl = true,
                     });
                     p.decorator_class_name = prev_decorator_class_name;
@@ -216,11 +208,11 @@ pub fn Visit(
                                     decl.value.?.data.e_require_string.unwrapped_id != std.math.maxInt(u32))
                                 {
                                     p.imports_to_convert_from_require.items[decl.value.?.data.e_require_string.unwrapped_id].namespace.ref = ref;
-                                    p.import_items_for_namespace.put(
+                                    try p.import_items_for_namespace.put(
                                         p.allocator,
                                         ref,
                                         .empty,
-                                    ) catch unreachable;
+                                    );
                                     continue;
                                 }
                             }
@@ -233,14 +225,14 @@ pub fn Visit(
                     if (comptime is_possibly_decl_to_remove) {
                         if (decl.binding.data == .b_identifier) {
                             if (replacement) |ptr| {
-                                if (!p.replaceDeclAndPossiblyRemove(decl, ptr)) {
+                                if (!(try p.replaceDeclAndPossiblyRemove(decl, ptr))) {
                                     continue;
                                 }
                             }
                         }
                     }
 
-                    p.visitDecl(
+                    try p.visitDecl(
                         decl,
                         was_anonymous_named_expr,
                         was_const and !p.current_scope.is_after_const_local_prefix,
@@ -252,16 +244,15 @@ pub fn Visit(
                 } else if (comptime is_possibly_decl_to_remove) {
                     if (decl.binding.data == .b_identifier) {
                         if (p.options.features.replace_exports.getPtr(p.loadNameFromRef(decl.binding.data.b_identifier.ref))) |ptr| {
-                            if (!p.replaceDeclAndPossiblyRemove(decl, ptr)) {
-                                p.visitDecl(
-                                    decl,
-                                    was_const and !p.current_scope.is_after_const_local_prefix,
-                                    false,
-                                    false,
-                                );
-                            } else {
+                            if (!(try p.replaceDeclAndPossiblyRemove(decl, ptr))) {
                                 continue;
                             }
+                            try p.visitDecl(
+                                decl,
+                                false,
+                                was_const and !p.current_scope.is_after_const_local_prefix,
+                                false,
+                            );
                         }
                     }
                 }
@@ -273,74 +264,64 @@ pub fn Visit(
             return j;
         }
 
-        pub fn visitBindingAndExprForMacro(p: *P, binding: Binding, expr: Expr) void {
+        pub fn visitBindingAndExprForMacro(p: *P, binding: Binding, expr: Expr) anyerror!void {
             switch (binding.data) {
                 .b_object => |bound_object| {
                     if (expr.data == .e_object and
                         expr.data.e_object.was_originally_macro)
                     {
-                        var object = expr.data.e_object;
+                        const object = expr.data.e_object;
                         for (bound_object.properties) |property| {
                             if (property.flags.contains(.is_spread)) return;
                         }
-                        var output_properties = object.properties.slice();
-                        var end: u32 = 0;
                         for (bound_object.properties) |property| {
-                            if (property.key.asStringLiteral(p.allocator)) |name| {
+                            if (property.key.data == .e_string) {
+                                const name = try property.key.data.e_string.string(p.allocator);
                                 if (object.asProperty(name)) |query| {
-                                    switch (query.expr.data) {
-                                        .e_object, .e_array => p.visitBindingAndExprForMacro(property.value, query.expr),
-                                        else => {
-                                            if (p.options.features.inlining) {
-                                                if (property.value.data == .b_identifier) {
-                                                    p.const_values.put(p.allocator, property.value.data.b_identifier.ref, query.expr) catch unreachable;
-                                                }
-                                            }
-                                        },
-                                    }
-                                    output_properties[end] = output_properties[query.i];
-                                    end += 1;
+                                    if (property.default_value != null and (query.expr.data == .e_undefined or query.expr.data == .e_missing)) continue;
+                                    try p.visitBindingAndExprForMacro(property.value, query.expr);
                                 }
                             }
                         }
-
-                        object.properties.len = end;
                     }
                 },
                 .b_array => |bound_array| {
                     if (expr.data == .e_array and
                         expr.data.e_array.was_originally_macro and !bound_array.has_spread)
                     {
-                        var array = expr.data.e_array;
-
-                        array.items.len = @min(array.items.len, @as(u32, @truncate(bound_array.items.len)));
-                        for (bound_array.items[0..array.items.len], array.items.slice()) |item, *child_expr| {
-                            if (item.binding.data == .b_missing) {
-                                child_expr.* = p.newExpr(E.Missing{}, expr.loc);
-                                continue;
-                            }
-
-                            p.visitBindingAndExprForMacro(item.binding, child_expr.*);
+                        const items = expr.data.e_array.items.slice();
+                        const count = @min(bound_array.items.len, items.len);
+                        for (bound_array.items[0..count], items[0..count]) |item, child_expr| {
+                            if (item.default_value != null and (child_expr.data == .e_undefined or child_expr.data == .e_missing)) continue;
+                            try p.visitBindingAndExprForMacro(item.binding, child_expr);
                         }
                     }
                 },
                 .b_identifier => |id| {
-                    if (p.options.features.inlining) {
-                        p.const_values.put(p.allocator, id.ref, expr) catch unreachable;
+                    if (p.options.features.inlining and p.symbols.items[id.ref.innerIndex()].kind == .constant) {
+                        if (expr.canBeConstValue()) {
+                            try p.const_values.put(p.allocator, id.ref, expr);
+                        } else if (macroValue(p, expr)) |value| {
+                            try p.macro_values.put(p.allocator, id.ref, value);
+                        }
                     }
                 },
                 else => {},
             }
         }
 
-        pub fn visitDecl(p: *P, decl: *Decl, was_anonymous_named_expr: bool, could_be_const_value: bool, could_be_macro: bool) void {
+        pub fn visitDecl(p: *P, decl: *Decl, was_anonymous_named_expr: bool, could_be_const_value: bool, could_be_macro: bool) anyerror!void {
             // Optionally preserve the name
             switch (decl.binding.data) {
                 .b_identifier => |id| {
-                    if (could_be_const_value or (allow_macros and could_be_macro)) {
+                    if ((could_be_const_value or (allow_macros and could_be_macro)) and p.symbols.items[id.ref.innerIndex()].kind == .constant) {
                         if (decl.value) |val| {
                             if (val.canBeConstValue()) {
-                                p.const_values.put(p.allocator, id.ref, val) catch unreachable;
+                                try p.const_values.put(p.allocator, id.ref, val);
+                            } else if (comptime allow_macros) {
+                                if (macroValue(p, val)) |value| {
+                                    try p.macro_values.put(p.allocator, id.ref, value);
+                                }
                             }
                         }
                     } else {
@@ -354,8 +335,10 @@ pub fn Visit(
                 },
                 .b_object, .b_array => {
                     if (comptime allow_macros) {
-                        if (could_be_macro and decl.value != null) {
-                            p.visitBindingAndExprForMacro(decl.binding, decl.value.?);
+                        if (decl.value) |val| {
+                            if (macroValue(p, val)) |value| {
+                                try p.visitBindingAndExprForMacro(decl.binding, value);
+                            }
                         }
                     }
                 },
@@ -363,18 +346,27 @@ pub fn Visit(
             }
         }
 
-        pub fn visitForLoopInit(p: *P, stmt: Stmt, is_in_or_of: bool) Stmt {
+        fn macroValue(p: *const P, expr: Expr) ?Expr {
+            return switch (expr.data) {
+                .e_object => |object| if (object.was_originally_macro) expr else null,
+                .e_array => |array| if (array.was_originally_macro) expr else null,
+                .e_identifier => |identifier| p.macro_values.get(identifier.ref),
+                else => null,
+            };
+        }
+
+        pub fn visitForLoopInit(p: *P, stmt: Stmt, is_in_or_of: bool) anyerror!Stmt {
             switch (stmt.data) {
                 .s_expr => |st| {
                     const assign_target = if (is_in_or_of) js_ast.AssignTarget.replace else js_ast.AssignTarget.none;
                     p.stmt_expr_value = st.value.data;
-                    st.value = p.visitExprInOut(st.value, ExprIn{ .assign_target = assign_target });
+                    st.value = try p.visitExprInOut(st.value, ExprIn{ .assign_target = assign_target });
                 },
                 .s_local => |st| {
                     for (st.decls.slice()) |*dec| {
-                        p.visitBinding(dec.binding, null);
+                        try p.visitBinding(dec.binding, null);
                         if (dec.value) |val| {
-                            dec.value = p.visitExpr(val);
+                            dec.value = try p.visitExpr(val);
                         }
                     }
                     st.kind = p.selectLocalKind(st.kind);
@@ -387,30 +379,30 @@ pub fn Visit(
             return stmt;
         }
 
-        pub fn visitBinding(noalias p: *P, binding: BindingNodeIndex, duplicate_arg_check: ?*StringVoidMap) void {
+        pub fn visitBinding(noalias p: *P, binding: BindingNodeIndex, duplicate_arg_check: ?*bun.StringHashMapUnmanaged(void)) anyerror!void {
             switch (binding.data) {
                 .b_missing => {},
                 .b_identifier => |bind| {
-                    p.recordDeclaredSymbol(bind.ref) catch unreachable;
+                    try p.recordDeclaredSymbol(bind.ref);
                     const name = p.symbols.items[bind.ref.innerIndex()].original_name;
                     if (isEvalOrArguments(name)) {
-                        p.markStrictModeFeature(.eval_or_arguments, js_lexer.rangeOfIdentifier(p.source, binding.loc), name) catch unreachable;
+                        try p.markStrictModeFeature(.eval_or_arguments, js_lexer.rangeOfIdentifier(p.source, binding.loc), name);
                     }
                     if (duplicate_arg_check) |dup| {
-                        if (dup.getOrPutContains(name)) {
-                            p.log.addRangeErrorFmt(
+                        if ((try dup.getOrPut(p.allocator, name)).found_existing) {
+                            try p.log.addRangeErrorFmt(
                                 p.source,
                                 js_lexer.rangeOfIdentifier(p.source, binding.loc),
                                 p.allocator,
                                 "\"{s}\" cannot be bound multiple times in the same parameter list",
                                 .{name},
-                            ) catch unreachable;
+                            );
                         }
                     }
                 },
                 .b_array => |bind| {
                     for (bind.items) |*item| {
-                        p.visitBinding(item.binding, duplicate_arg_check);
+                        try p.visitBinding(item.binding, duplicate_arg_check);
                         if (item.default_value) |default_value| {
                             const was_anonymous_named_expr = default_value.isAnonymousNamed();
                             const prev_decorator_class_name2 = p.decorator_class_name;
@@ -420,7 +412,7 @@ pub fn Visit(
                             {
                                 p.decorator_class_name = p.loadNameFromRef(item.binding.data.b_identifier.ref);
                             }
-                            item.default_value = p.visitExpr(default_value);
+                            item.default_value = try p.visitExpr(default_value);
                             p.decorator_class_name = prev_decorator_class_name2;
 
                             switch (item.binding.data) {
@@ -439,10 +431,10 @@ pub fn Visit(
                 .b_object => |bind| {
                     for (bind.properties) |*property| {
                         if (!property.flags.contains(.is_spread)) {
-                            property.key = p.visitExpr(property.key);
+                            property.key = try p.visitExpr(property.key);
                         }
 
-                        p.visitBinding(property.value, duplicate_arg_check);
+                        try p.visitBinding(property.value, duplicate_arg_check);
                         if (property.default_value) |default_value| {
                             const was_anonymous_named_expr = default_value.isAnonymousNamed();
                             const prev_decorator_class_name3 = p.decorator_class_name;
@@ -452,7 +444,7 @@ pub fn Visit(
                             {
                                 p.decorator_class_name = p.loadNameFromRef(property.value.data.b_identifier.ref);
                             }
-                            property.default_value = p.visitExpr(default_value);
+                            property.default_value = try p.visitExpr(default_value);
                             p.decorator_class_name = prev_decorator_class_name3;
 
                             switch (property.value.data) {
@@ -471,21 +463,21 @@ pub fn Visit(
             }
         }
 
-        pub fn visitLoopBody(noalias p: *P, stmt: StmtNodeIndex) StmtNodeIndex {
+        pub fn visitLoopBody(noalias p: *P, stmt: StmtNodeIndex) anyerror!StmtNodeIndex {
             const old_is_inside_loop = p.fn_or_arrow_data_visit.is_inside_loop;
             p.fn_or_arrow_data_visit.is_inside_loop = true;
             p.loop_body = stmt.data;
-            const res = p.visitSingleStmt(stmt, .loop_body);
+            const res = try p.visitSingleStmt(stmt, .loop_body);
             p.fn_or_arrow_data_visit.is_inside_loop = old_is_inside_loop;
             return res;
         }
 
-        pub fn visitSingleStmtBlock(noalias p: *P, stmt: Stmt, kind: StmtsKind) Stmt {
+        pub fn visitSingleStmtBlock(noalias p: *P, stmt: Stmt, kind: StmtsKind) anyerror!Stmt {
             var new_stmt = stmt;
-            p.pushScopeForVisitPass(.block, stmt.loc) catch unreachable;
-            var stmts = ListManaged(Stmt).initCapacity(p.allocator, stmt.data.s_block.stmts.len) catch unreachable;
-            stmts.appendSlice(stmt.data.s_block.stmts) catch unreachable;
-            p.visitStmts(&stmts, kind) catch unreachable;
+            try p.pushScopeForVisitPass(.block, stmt.loc);
+            var stmts = try ListManaged(Stmt).initCapacity(p.allocator, stmt.data.s_block.stmts.len);
+            try stmts.appendSlice(stmt.data.s_block.stmts);
+            try p.visitStmts(&stmts, kind);
             p.popScope();
             new_stmt.data.s_block.stmts = stmts.items;
             if (p.options.features.minify_syntax) {
@@ -495,7 +487,7 @@ pub fn Visit(
             return new_stmt;
         }
 
-        pub fn visitSingleStmt(noalias p: *P, stmt: Stmt, kind: StmtsKind) Stmt {
+        pub fn visitSingleStmt(noalias p: *P, stmt: Stmt, kind: StmtsKind) anyerror!Stmt {
             if (stmt.data == .s_block) {
                 return p.visitSingleStmtBlock(stmt, kind);
             }
@@ -507,12 +499,12 @@ pub fn Visit(
 
             // Introduce a fake block scope for function declarations inside if statements
             if (has_if_scope) {
-                p.pushScopeForVisitPass(.block, stmt.loc) catch unreachable;
+                try p.pushScopeForVisitPass(.block, stmt.loc);
             }
 
-            var stmts = ListManaged(Stmt).initCapacity(p.allocator, 1) catch unreachable;
-            stmts.append(stmt) catch unreachable;
-            p.visitStmts(&stmts, kind) catch unreachable;
+            var stmts = try ListManaged(Stmt).initCapacity(p.allocator, 1);
+            try stmts.append(stmt);
+            try p.visitStmts(&stmts, kind);
 
             if (has_if_scope) {
                 p.popScope();
@@ -521,18 +513,18 @@ pub fn Visit(
             return p.stmtsToSingleStmt(stmt.loc, stmts.items);
         }
 
-        pub fn visitClass(noalias p: *P, name_scope_loc: logger.Loc, noalias class: *G.Class, default_name_ref: Ref) Ref {
+        pub fn visitClass(noalias p: *P, name_scope_loc: logger.Loc, noalias class: *G.Class, default_name_ref: Ref) anyerror!Ref {
             if (only_scan_imports_and_do_not_visit) {
                 @compileError("only_scan_imports_and_do_not_visit must not run this.");
             }
 
-            class.ts_decorators = p.visitTSDecorators(class.ts_decorators);
+            class.ts_decorators = try p.visitTSDecorators(class.ts_decorators);
 
             if (class.class_name) |name| {
-                p.recordDeclaredSymbol(name.ref.?) catch unreachable;
+                try p.recordDeclaredSymbol(name.ref.?);
             }
 
-            p.pushScopeForVisitPass(.class_name, name_scope_loc) catch unreachable;
+            try p.pushScopeForVisitPass(.class_name, name_scope_loc);
             const old_enclosing_class_keyword = p.enclosing_class_keyword;
             p.enclosing_class_keyword = class.class_keyword;
             p.current_scope.recursiveSetStrictMode(.implicit_strict_mode_class);
@@ -547,24 +539,24 @@ pub fn Visit(
             // are not allowed to assign to this symbol (it throws a TypeError).
             if (class.class_name) |name| {
                 shadow_ref = name.ref.?;
-                p.current_scope.members.put(
+                try p.current_scope.members.put(
                     p.allocator,
                     p.symbols.items[shadow_ref.innerIndex()].original_name,
                     Scope.Member{ .ref = name.ref orelse Ref.None, .loc = name.loc },
-                ) catch unreachable;
+                );
             } else {
                 const name_str: []const u8 = if (default_name_ref.isNull()) "_this" else "_default";
-                shadow_ref = p.newSymbol(.constant, name_str) catch unreachable;
+                shadow_ref = try p.newSymbol(.constant, name_str);
             }
 
-            p.recordDeclaredSymbol(shadow_ref) catch unreachable;
+            try p.recordDeclaredSymbol(shadow_ref);
 
             if (class.extends) |extends| {
-                class.extends = p.visitExpr(extends);
+                class.extends = try p.visitExpr(extends);
             }
 
             {
-                p.pushScopeForVisitPass(.class_body, class.body_loc) catch unreachable;
+                try p.pushScopeForVisitPass(.class_body, class.body_loc);
                 defer {
                     p.popScope();
                     p.enclosing_class_keyword = old_enclosing_class_keyword;
@@ -581,13 +573,13 @@ pub fn Visit(
                             .class_name_ref = &shadow_ref,
                             .should_replace_this_with_class_name_ref = false,
                         };
-                        p.pushScopeForVisitPass(.class_static_init, property.class_static_block.?.loc) catch unreachable;
+                        try p.pushScopeForVisitPass(.class_static_init, property.class_static_block.?.loc);
 
                         // Make it an error to use "arguments" in a static class block
                         p.current_scope.forbid_arguments = true;
 
                         var list = property.class_static_block.?.stmts.moveToListManaged(p.allocator);
-                        p.visitStmts(&list, .fn_body) catch unreachable;
+                        try p.visitStmts(&list, .fn_body);
                         property.class_static_block.?.stmts = js_ast.BabyList(Stmt).moveFromList(&list);
                         p.popScope();
 
@@ -596,15 +588,15 @@ pub fn Visit(
 
                         continue;
                     }
-                    property.ts_decorators = p.visitTSDecorators(property.ts_decorators);
+                    property.ts_decorators = try p.visitTSDecorators(property.ts_decorators);
                     const is_private = if (property.key != null) @as(Expr.Tag, property.key.?.data) == .e_private_identifier else false;
 
                     // Special-case EPrivateIdentifier to allow it here
 
                     if (is_private) {
-                        p.recordDeclaredSymbol(property.key.?.data.e_private_identifier.ref) catch unreachable;
+                        try p.recordDeclaredSymbol(property.key.?.data.e_private_identifier.ref);
                     } else if (property.key) |key| {
-                        property.key = p.visitExpr(key);
+                        property.key = try p.visitExpr(key);
                     }
 
                     // Make it an error to use "arguments" in a class body
@@ -628,7 +620,7 @@ pub fn Visit(
                     if (is_private) {} else if (!property.flags.contains(.is_method) and !property.flags.contains(.is_computed)) {
                         if (property.key) |key| {
                             if (@as(Expr.Tag, key.data) == .e_string) {
-                                name_to_keep = key.data.e_string.string(p.allocator) catch unreachable;
+                                name_to_keep = try key.data.e_string.string(p.allocator);
                             }
                         }
                     } else if (property.flags.contains(.is_method)) {
@@ -649,10 +641,10 @@ pub fn Visit(
                             if (val.data == .e_class and val.data.e_class.class_name == null and val.data.e_class.should_lower_standard_decorators) {
                                 p.decorator_class_name = name;
                             }
-                            property.value = p.maybeKeepExprSymbolName(p.visitExpr(val), name, was_anon);
+                            property.value = p.maybeKeepExprSymbolName(try p.visitExpr(val), name, was_anon);
                             p.decorator_class_name = prev_dcn;
                         } else {
-                            property.value = p.visitExpr(val);
+                            property.value = try p.visitExpr(val);
                         }
 
                         if (comptime is_typescript_enabled) {
@@ -670,10 +662,10 @@ pub fn Visit(
                             if (val.data == .e_class and val.data.e_class.class_name == null and val.data.e_class.should_lower_standard_decorators) {
                                 p.decorator_class_name = name;
                             }
-                            property.initializer = p.maybeKeepExprSymbolName(p.visitExpr(val), name, was_anon);
+                            property.initializer = p.maybeKeepExprSymbolName(try p.visitExpr(val), name, was_anon);
                             p.decorator_class_name = prev_dcn2;
                         } else {
-                            property.initializer = p.visitExpr(val);
+                            property.initializer = try p.visitExpr(val);
                         }
                     }
                 }
@@ -699,9 +691,9 @@ pub fn Visit(
                         if (to_add > 0) {
                             // to match typescript behavior, we also must prepend to the class body
                             var stmts = std.array_list.Managed(Stmt).fromOwnedSlice(p.allocator, constructor.func.body.stmts);
-                            stmts.ensureUnusedCapacity(to_add) catch unreachable;
+                            try stmts.ensureUnusedCapacity(to_add);
                             var class_body = std.array_list.Managed(G.Property).fromOwnedSlice(p.allocator, class.properties);
-                            class_body.ensureUnusedCapacity(to_add) catch unreachable;
+                            try class_body.ensureUnusedCapacity(to_add);
                             var j: usize = 0;
 
                             for (constructor.func.args) |arg| {
@@ -712,20 +704,20 @@ pub fn Visit(
                                             const name = arg_symbol.original_name;
                                             const arg_ident = p.newExpr(E.Identifier{ .ref = id.ref }, arg.binding.loc);
 
-                                            stmts.insert(if (super_index) |k| j + k + 1 else j, Stmt.assign(
+                                            try stmts.insert(if (super_index) |k| j + k + 1 else j, Stmt.assign(
                                                 p.newExpr(E.Dot{
                                                     .target = p.newExpr(E.This{}, arg.binding.loc),
                                                     .name = name,
                                                     .name_loc = arg.binding.loc,
                                                 }, arg.binding.loc),
                                                 arg_ident,
-                                            )) catch unreachable;
+                                            ));
                                             // O(N)
                                             class_body.items.len += 1;
                                             bun.copy(G.Property, class_body.items[j + 1 ..], class_body.items[j .. class_body.items.len - 1]);
                                             // Copy the argument name symbol to prevent the class field declaration from being renamed
                                             // but not the constructor argument.
-                                            const field_symbol_ref = p.declareSymbol(.other, arg.binding.loc, name) catch id.ref;
+                                            const field_symbol_ref = try p.declareSymbol(.other, arg.binding.loc, name);
                                             field_symbol_ref.getSymbol(p.symbols.items).must_not_be_renamed = true;
                                             const field_ident = p.newExpr(E.Identifier{ .ref = field_symbol_ref }, arg.binding.loc);
                                             class_body.items[j] = G.Property{ .key = field_ident };
@@ -753,7 +745,7 @@ pub fn Visit(
                     .ref = shadow_ref,
                     .loc = name_scope_loc,
                 };
-                p.recordDeclaredSymbol(shadow_ref) catch unreachable;
+                try p.recordDeclaredSymbol(shadow_ref);
             }
 
             // class name scope
@@ -886,25 +878,25 @@ pub fn Visit(
                                         // Merge the two identifiers back into a single one
                                         p.symbols.items[hoisted_ref.innerIndex()].link = name_ref;
                                     }
-                                    bun.handleOom(non_fn_stmts.append(stmt));
+                                    try non_fn_stmts.append(stmt);
                                     continue;
                                 }
 
-                                const gpe = bun.handleOom(fn_stmts.getOrPut(name_ref));
-                                var index = gpe.value_ptr.*;
-                                if (!gpe.found_existing) {
-                                    index = @as(u32, @intCast(let_decls.items.len));
-                                    gpe.value_ptr.* = index;
-                                    let_decls.append(.{
+                                const existing = fn_stmts.get(name_ref);
+                                const index = existing orelse (std.math.cast(u32, let_decls.items.len) orelse return error.OutOfMemory);
+                                if (existing == null) {
+                                    try fn_stmts.ensureUnusedCapacity(1);
+                                    try let_decls.append(.{
                                         .binding = p.b(B.Identifier{
                                             .ref = name_ref,
                                         }, data.func.name.?.loc),
-                                    }) catch unreachable;
+                                    });
+                                    fn_stmts.putAssumeCapacityNoClobber(name_ref, index);
 
                                     // Also write the function to the hoisted sibling symbol if applicable
                                     if (p.hoisted_ref_for_sloppy_mode_block_fn.get(name_ref)) |hoisted_ref| {
                                         p.recordUsage(name_ref);
-                                        var_decls.append(.{
+                                        try var_decls.append(.{
                                             .binding = p.b(
                                                 B.Identifier{ .ref = hoisted_ref },
                                                 data.func.name.?.loc,
@@ -915,7 +907,7 @@ pub fn Visit(
                                                 },
                                                 data.func.name.?.loc,
                                             ),
-                                        }) catch |err| bun.handleOom(err);
+                                        });
                                     }
                                 }
 
@@ -929,13 +921,14 @@ pub fn Visit(
                                 );
                             },
                             else => {
-                                non_fn_stmts.append(stmt) catch unreachable;
+                                try non_fn_stmts.append(stmt);
                             },
                         }
                     }
                     before.items.len = 0;
 
-                    before.ensureUnusedCapacity(@as(usize, @intFromBool(let_decls.items.len > 0)) + @as(usize, @intFromBool(var_decls.items.len > 0)) + non_fn_stmts.items.len) catch unreachable;
+                    const extra_statements = std.math.add(usize, non_fn_stmts.items.len, @as(usize, @intFromBool(let_decls.items.len > 0)) + @as(usize, @intFromBool(var_decls.items.len > 0))) catch return error.OutOfMemory;
+                    try before.ensureUnusedCapacity(extra_statements);
 
                     if (let_decls.items.len > 0) {
                         const decls: Decl.List = .moveFromList(&let_decls);
@@ -1079,7 +1072,8 @@ pub fn Visit(
 
             var is_control_flow_dead = false;
 
-            var output = ListManaged(Stmt).initCapacity(p.allocator, stmts.items.len) catch unreachable;
+            var output = try ListManaged(Stmt).initCapacity(p.allocator, stmts.items.len);
+            errdefer output.deinit();
 
             const dead_code_elimination = p.options.features.dead_code_elimination;
             for (stmts.items) |stmt| {
@@ -1157,7 +1151,7 @@ pub fn Visit(
                                         // fail if something with side effects is in between the declaration
                                         // and the usage.
                                         if (symbol.use_count_estimate == 1) {
-                                            if (p.substituteSingleUseSymbolInStmt(stmt, id, last.value.?)) {
+                                            if (try p.substituteSingleUseSymbolInStmt(stmt, id, last.value.?)) {
                                                 switch (local.decls.len) {
                                                     1 => {
                                                         local.decls.len = 0;
@@ -1183,7 +1177,7 @@ pub fn Visit(
 
                 // don't merge super calls to ensure they are called before "this" is accessed
                 if (stmt.isSuperCall()) {
-                    output.append(stmt) catch unreachable;
+                    try output.append(stmt);
                     continue;
                 }
 
@@ -1203,10 +1197,10 @@ pub fn Visit(
                             if (prev_stmt.data == .s_local and
                                 local.canMergeWith(prev_stmt.data.s_local))
                             {
-                                prev_stmt.data.s_local.decls.appendSlice(
+                                try prev_stmt.data.s_local.decls.appendSlice(
                                     p.allocator,
                                     local.decls.slice(),
-                                ) catch |err| bun.handleOom(err);
+                                );
                                 continue;
                             }
                         }
@@ -1323,7 +1317,7 @@ pub fn Visit(
                     else => {},
                 }
 
-                output.append(stmt) catch unreachable;
+                try output.append(stmt);
             }
 
             stmts.deinit();
@@ -1394,7 +1388,6 @@ const Ref = js_parser.Ref;
 const RuntimeFeatures = js_parser.RuntimeFeatures;
 const SideEffects = js_parser.SideEffects;
 const StmtsKind = js_parser.StmtsKind;
-const StringVoidMap = js_parser.StringVoidMap;
 const TempRef = js_parser.TempRef;
 const TypeScript = js_parser.TypeScript;
 const VisitArgsOpts = js_parser.VisitArgsOpts;

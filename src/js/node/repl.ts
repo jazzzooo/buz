@@ -88,6 +88,7 @@ export default {
       getOwnPropertyDescriptor: () => undefined,
       set() {
         throwNotImplemented("node:repl");
+        return false;
       },
     },
   ),
@@ -116,6 +117,7 @@ export default {
       getOwnPropertyDescriptor: () => undefined,
       set() {
         throwNotImplemented("node:repl");
+        return false;
       },
     },
   ),

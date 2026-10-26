@@ -382,7 +382,7 @@ fn stepSequenceOne(buntest_strong: bun_test.BunTestPtr, globalThis: *jsc.JSGloba
     }
     this.onEntryStarted(next_item);
 
-    if (next_item.callback) |cb| {
+    if (next_item.callback) |*cb| {
         groupLog.log("runSequence queued callback", .{});
 
         const callback_data: bun_test.BunTest.RefDataValue = .{
@@ -397,7 +397,7 @@ fn stepSequenceOne(buntest_strong: bun_test.BunTestPtr, globalThis: *jsc.JSGloba
         };
         groupLog.log("runSequence queued callback: {f}", .{callback_data});
 
-        if (BunTest.runTestCallback(buntest_strong, globalThis, cb.get(), next_item.has_done_parameter, callback_data, &next_item.timespec) != null) {
+        if (BunTest.runTestCallback(buntest_strong, globalThis, cb, next_item.has_done_parameter, callback_data, &next_item.timespec) != null) {
             now.* = bun.timespec.now(.force_real_time);
             _ = next_item.evaluateTimeout(sequence, now);
 
@@ -460,7 +460,7 @@ pub fn getCurrentAndValidExecutionSequence(this: *Execution, data: bun_test.BunT
         groupLog.log("runOneCompleted: the data is for a previous repeat count (outdated)", .{});
         return null;
     }
-    if (@as(?*anyopaque, sequence.active_entry) != data.execution.entry_data.?.entry) {
+    if (sequence.active_entry != data.execution.entry_data.?.entry) {
         groupLog.log("runOneCompleted: the data is for a different sequence index (outdated)", .{});
         return null;
     }
@@ -643,7 +643,7 @@ pub fn resetSequence(this: *Execution, sequence: *ExecutionSequence) void {
     // not exist (https://github.com/oven-sh/bun/issues/23705).
     // Zeroing all entries matches Jest (SnapshotState.clear() on test_retry,
     // jestjs/jest#7493). Concurrent tests never touch the counts map — see
-    // SnapshotInConcurrentGroup in expect.zig.
+    // Snapshot matchers reject concurrent tests before touching the counts map.
     if (jsc.Jest.Jest.runner) |runner| runner.snapshots.resetCounts();
     _ = this;
 }

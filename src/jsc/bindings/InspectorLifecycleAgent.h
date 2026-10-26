@@ -8,7 +8,7 @@
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <wtf/Forward.h>
 #include <wtf/Noncopyable.h>
-#include "headers-handwritten.h"
+#include "SchemaBindings.h"
 namespace Inspector {
 
 class FrontendRouter;
@@ -36,7 +36,11 @@ public:
 
     // Public API
     void reportReload();
-    void reportError(ZigException&);
+    void reportError(
+        const WTF::String& message,
+        const WTF::String& name,
+        std::span<const Bun::Bindgen::ExceptionStackFrame> frames,
+        std::span<const Bun::Bindgen::ExceptionSourceLine> sourceLines);
     Protocol::ErrorStringOr<void> preventExit();
     Protocol::ErrorStringOr<void> stopPreventingExit();
 

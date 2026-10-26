@@ -23,13 +23,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-export function initializeReadableStreamBYOBRequest(this, controller, view) {
-  if (arguments.length !== 3 && arguments[2] !== $isReadableStream)
-    throw new TypeError("ReadableStreamBYOBRequest constructor should not be called directly");
-
-  return $privateInitializeReadableStreamBYOBRequest.$call(this, controller, view);
-}
-
 export function respond(this, bytesWritten) {
   if (!$isReadableStreamBYOBRequest(this)) throw $ERR_INVALID_THIS("ReadableStreamBYOBRequest");
 
@@ -47,10 +40,6 @@ export function respondWithNewView(this, view) {
 
   if ($getByIdDirectPrivate(this, "associatedReadableByteStreamController") == null)
     throw $ERR_INVALID_STATE_TypeError("This BYOB request has been invalidated");
-
-  if (!$isObject(view)) throw $ERR_INVALID_ARG_TYPE("view", "Buffer, TypedArray, or DataView", view);
-
-  if (!ArrayBuffer.$isView(view)) throw $ERR_INVALID_ARG_TYPE("view", "Buffer, TypedArray, or DataView", view);
 
   return $readableByteStreamControllerRespondWithNewView(
     $getByIdDirectPrivate(this, "associatedReadableByteStreamController"),

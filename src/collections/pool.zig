@@ -1,6 +1,6 @@
 pub fn ObjectPool(
     comptime Type: type,
-    comptime Init: ?fn (allocator: std.mem.Allocator) anyerror!Type,
+    comptime Init: anytype,
     comptime thread_local: bool,
     comptime max_count: comptime_int,
 ) type {
@@ -58,15 +58,20 @@ pub fn ObjectPool(
         }
 
         pub fn get(allocator: std.mem.Allocator) *Node {
+            return tryGet(allocator) catch |err| switch (err) {
+                error.OutOfMemory => bun.outOfMemory(),
+                else => unreachable,
+            };
+        }
+
+        pub fn tryGet(allocator: std.mem.Allocator) !*Node {
             if (pop()) |node| return node;
 
-            const new_node = bun.handleOom(allocator.create(Node));
+            const new_node = try allocator.create(Node);
+            errdefer allocator.destroy(new_node);
             new_node.* = .{
                 .allocator = allocator,
-                .data = if (comptime Init) |init|
-                    init(allocator) catch unreachable
-                else
-                    undefined,
+                .data = if (comptime @TypeOf(Init) == @TypeOf(null)) undefined else try Init(allocator),
             };
             return new_node;
         }

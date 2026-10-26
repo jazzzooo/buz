@@ -1,7 +1,11 @@
+#pragma once
+
+#include <span>
+#include <wtf/Expected.h>
+#include <wtf/text/WTFString.h>
+
 namespace Bun {
 
-// Expected to be ASCII input potentially encoded with %20, %21, etc.
-WTF::String decodeURIComponentSIMD(std::span<const uint8_t> input);
+Expected<WTF::String, WTF::UTF8ConversionError> decodeURIComponentSIMD(std::span<const uint8_t> input);
 
-JSC_DECLARE_HOST_FUNCTION(jsFunctionDecodeURIComponentSIMD);
 }

@@ -7,7 +7,6 @@
     "baseUrl": ".",
     "paths": {
       "bun-framework-react/*": ["./bun-framework-react/*"],
-      "bindgen": ["../codegen/bindgen-lib"]
     },
     "jsx": "react-jsx",
     "types": ["react/experimental"]

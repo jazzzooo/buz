@@ -1,4 +1,5 @@
 #include "root.h"
+#include "SchemaBindings.h"
 
 #include "JavaScriptCore/JSPromise.h"
 #include "JavaScriptCore/JSModuleRecord.h"
@@ -12,9 +13,7 @@
 #include "JavaScriptCore/ExceptionScope.h"
 #include "ZigSourceProvider.h"
 #include "ZigGlobalObject.h"
-#include "headers-handwritten.h"
 #include "IsolatedModuleCache.h"
-#include "BunAnalyzeTranspiledModule.h"
 
 // ref: JSModuleLoader.cpp
 // ref: ModuleAnalyzer.cpp
@@ -24,131 +23,148 @@
 #include "JavaScriptCore/ModuleAnalyzer.h"
 #include "JavaScriptCore/ErrorType.h"
 
-namespace JSC {
-
-String dumpRecordInfo(JSModuleRecord* moduleRecord);
-
-Identifier getFromIdentifierArray(VM& vm, Identifier* identifierArray, uint32_t n)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_compiler_module_records_compilerModuleRecordCreate(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_compiler_module_records_compilerModuleRecordCreate_Arguments& args)
 {
-    if (n == std::numeric_limits<uint32_t>::max()) {
-        return vm.propertyNames->starDefaultPrivateName;
+    auto* globalObject = &context.globalObject;
+    auto& vm = globalObject->vm();
+
+    WTF::Vector<JSC::Identifier> identifiers;
+    identifiers.reserveInitialCapacity(args.identifiers.size());
+    for (const auto& identifier : args.identifiers)
+        identifiers.unsafeAppendWithoutCapacityCheck(JSC::Identifier::fromString(vm, identifier));
+
+    auto identifierAt = [&](uint32_t index) -> JSC::Identifier {
+        if (index == std::numeric_limits<uint32_t>::max())
+            return vm.propertyNames->starDefaultPrivateName;
+        if (index == std::numeric_limits<uint32_t>::max() - 1)
+            return vm.propertyNames->starNamespacePrivateName;
+        RELEASE_ASSERT(index < identifiers.size());
+        return identifiers[index];
+    };
+
+    for (const auto& declaration : args.declarations) {
+        using Kind = decltype(declaration.kind);
+        switch (declaration.kind) {
+        case Kind::Declared:
+            args.declaredVariables->add(identifierAt(declaration.identifier));
+            break;
+        case Kind::Lexical:
+            args.lexicalVariables->add(identifierAt(declaration.identifier));
+            break;
+        }
     }
-    if (n == std::numeric_limits<uint32_t>::max() - 1) {
-        return vm.propertyNames->starNamespacePrivateName;
+
+    auto* moduleRecord = JSC::JSModuleRecord::create(
+        globalObject,
+        vm,
+        globalObject->moduleRecordStructure(),
+        *args.moduleKey,
+        *args.sourceCode,
+        *args.declaredVariables,
+        *args.lexicalVariables,
+        args.hasImportMeta ? JSC::ImportMetaFeature : 0);
+    moduleRecord->m_isTypeScript = args.isTypeScript;
+    moduleRecord->setHasTLA(args.hasTLA);
+
+    for (const auto& requestedModule : args.requestedModules) {
+        auto moduleName = identifierAt(requestedModule.moduleName);
+        using Kind = decltype(requestedModule.kind);
+        switch (requestedModule.kind) {
+        case Kind::None: {
+            RefPtr<JSC::ScriptFetchParameters> attributes;
+            moduleRecord->appendRequestedModule(moduleName, std::move(attributes));
+            break;
+        }
+        case Kind::JavaScript: {
+            Ref<JSC::ScriptFetchParameters> attributes = JSC::ScriptFetchParameters::create(JSC::ScriptFetchParameters::Type::JavaScript);
+            moduleRecord->appendRequestedModule(moduleName, std::move(attributes));
+            break;
+        }
+        case Kind::WebAssembly: {
+            Ref<JSC::ScriptFetchParameters> attributes = JSC::ScriptFetchParameters::create(JSC::ScriptFetchParameters::Type::WebAssembly);
+            moduleRecord->appendRequestedModule(moduleName, std::move(attributes));
+            break;
+        }
+        case Kind::JSON: {
+            Ref<JSC::ScriptFetchParameters> attributes = JSC::ScriptFetchParameters::create(JSC::ScriptFetchParameters::Type::JSON);
+            moduleRecord->appendRequestedModule(moduleName, std::move(attributes));
+            break;
+        }
+        case Kind::HostDefined: {
+            Ref<JSC::ScriptFetchParameters> attributes = JSC::ScriptFetchParameters::create(identifierAt(requestedModule.hostDefinedImportType).string());
+            moduleRecord->appendRequestedModule(moduleName, std::move(attributes));
+            break;
+        }
+        }
     }
-    return identifierArray[n];
+
+    for (const auto& import : args.imports) {
+        using Kind = decltype(import.kind);
+        switch (import.kind) {
+        case Kind::Single:
+            moduleRecord->addImportEntry(JSC::JSModuleRecord::ImportEntry {
+                .type = JSC::JSModuleRecord::ImportEntryType::Single,
+                .moduleRequest = identifierAt(import.moduleName),
+                .importName = identifierAt(import.importName),
+                .localName = identifierAt(import.localName),
+            });
+            break;
+        case Kind::SingleTypeScript:
+            moduleRecord->addImportEntry(JSC::JSModuleRecord::ImportEntry {
+                .type = JSC::JSModuleRecord::ImportEntryType::SingleTypeScript,
+                .moduleRequest = identifierAt(import.moduleName),
+                .importName = identifierAt(import.importName),
+                .localName = identifierAt(import.localName),
+            });
+            break;
+        case Kind::Namespace:
+            moduleRecord->addImportEntry(JSC::JSModuleRecord::ImportEntry {
+                .type = JSC::JSModuleRecord::ImportEntryType::Namespace,
+                .moduleRequest = identifierAt(import.moduleName),
+                .importName = identifierAt(import.importName),
+                .localName = identifierAt(import.localName),
+            });
+            break;
+        }
+    }
+
+    for (const auto& exportEntry : args.exports) {
+        using Kind = decltype(exportEntry.kind);
+        switch (exportEntry.kind) {
+        case Kind::Indirect:
+            moduleRecord->addExportEntry(JSC::JSModuleRecord::ExportEntry::createIndirect(
+                identifierAt(exportEntry.exportName),
+                identifierAt(exportEntry.importName),
+                identifierAt(exportEntry.moduleName)));
+            break;
+        case Kind::Local:
+            moduleRecord->addExportEntry(JSC::JSModuleRecord::ExportEntry::createLocal(
+                identifierAt(exportEntry.exportName),
+                identifierAt(exportEntry.localName)));
+            break;
+        case Kind::Namespace:
+            moduleRecord->addExportEntry(JSC::JSModuleRecord::ExportEntry::createNamespace(
+                identifierAt(exportEntry.exportName),
+                identifierAt(exportEntry.moduleName)));
+            break;
+        case Kind::Star:
+            moduleRecord->addStarExportEntry(identifierAt(exportEntry.moduleName));
+            break;
+        }
+    }
+
+    return JSC::JSValue(moduleRecord);
 }
 
-extern "C" JSModuleRecord* zig__ModuleInfoDeserialized__toJSModuleRecord(JSGlobalObject* globalObject, VM& vm, const Identifier& module_key, const SourceCode& source_code, VariableEnvironment& declared_variables, VariableEnvironment& lexical_variables, bun_ModuleInfoDeserialized* module_info);
-extern "C" void zig__renderDiff(const char* expected_ptr, size_t expected_len, const char* received_ptr, size_t received_len, JSGlobalObject* globalObject);
+namespace Zig {
+using namespace JSC;
 
-extern "C" Identifier* JSC__IdentifierArray__create(size_t len)
-{
-    return new Identifier[len];
-}
-extern "C" void JSC__IdentifierArray__destroy(Identifier* identifier)
-{
-    delete[] identifier;
-}
-extern "C" void JSC__IdentifierArray__setFromUtf8(Identifier* identifierArray, size_t n, VM& vm, char* str, size_t len)
-{
-    identifierArray[n] = Identifier::fromString(vm, AtomString::fromUTF8(std::span<const char>(str, len)));
-}
+static String dumpRecordInfo(JSModuleRecord* moduleRecord);
 
-extern "C" void JSC__VariableEnvironment__add(VariableEnvironment& environment, VM& vm, Identifier* identifierArray, uint32_t index)
-{
-    environment.add(getFromIdentifierArray(vm, identifierArray, index));
-}
-
-extern "C" VariableEnvironment* JSC_JSModuleRecord__declaredVariables(JSModuleRecord* moduleRecord)
-{
-    return const_cast<VariableEnvironment*>(&moduleRecord->declaredVariables());
-}
-extern "C" VariableEnvironment* JSC_JSModuleRecord__lexicalVariables(JSModuleRecord* moduleRecord)
-{
-    return const_cast<VariableEnvironment*>(&moduleRecord->lexicalVariables());
-}
-
-extern "C" JSModuleRecord* JSC_JSModuleRecord__create(JSGlobalObject* globalObject, VM& vm, const Identifier* moduleKey, const SourceCode& sourceCode, const VariableEnvironment& declaredVariables, const VariableEnvironment& lexicalVariables, bool hasImportMeta, bool isTypescript, bool hasTLA)
-{
-    JSModuleRecord* result = JSModuleRecord::create(globalObject, vm, globalObject->moduleRecordStructure(), *moduleKey, sourceCode, declaredVariables, lexicalVariables, hasImportMeta ? ImportMetaFeature : 0);
-    result->m_isTypeScript = isTypescript;
-    result->setHasTLA(hasTLA);
-    return result;
-}
-
-extern "C" void JSC_JSModuleRecord__addIndirectExport(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t exportName, uint32_t importName, uint32_t moduleName)
-{
-    moduleRecord->addExportEntry(JSModuleRecord::ExportEntry::createIndirect(getFromIdentifierArray(moduleRecord->vm(), identifierArray, exportName), getFromIdentifierArray(moduleRecord->vm(), identifierArray, importName), getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName)));
-}
-extern "C" void JSC_JSModuleRecord__addLocalExport(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t exportName, uint32_t localName)
-{
-    moduleRecord->addExportEntry(JSModuleRecord::ExportEntry::createLocal(getFromIdentifierArray(moduleRecord->vm(), identifierArray, exportName), getFromIdentifierArray(moduleRecord->vm(), identifierArray, localName)));
-}
-extern "C" void JSC_JSModuleRecord__addNamespaceExport(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t exportName, uint32_t moduleName)
-{
-    moduleRecord->addExportEntry(JSModuleRecord::ExportEntry::createNamespace(getFromIdentifierArray(moduleRecord->vm(), identifierArray, exportName), getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName)));
-}
-extern "C" void JSC_JSModuleRecord__addStarExport(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t moduleName)
-{
-    moduleRecord->addStarExportEntry(getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName));
-}
-extern "C" void JSC_JSModuleRecord__addRequestedModuleNullAttributesPtr(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t moduleName)
-{
-    RefPtr<ScriptFetchParameters> attributes = RefPtr<ScriptFetchParameters> {};
-    moduleRecord->appendRequestedModule(getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName), std::move(attributes));
-}
-extern "C" void JSC_JSModuleRecord__addRequestedModuleJavaScript(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t moduleName)
-{
-    Ref<ScriptFetchParameters> attributes = ScriptFetchParameters::create(ScriptFetchParameters::Type::JavaScript);
-    moduleRecord->appendRequestedModule(getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName), std::move(attributes));
-}
-extern "C" void JSC_JSModuleRecord__addRequestedModuleWebAssembly(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t moduleName)
-{
-    Ref<ScriptFetchParameters> attributes = ScriptFetchParameters::create(ScriptFetchParameters::Type::WebAssembly);
-    moduleRecord->appendRequestedModule(getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName), std::move(attributes));
-}
-extern "C" void JSC_JSModuleRecord__addRequestedModuleJSON(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t moduleName)
-{
-    Ref<ScriptFetchParameters> attributes = ScriptFetchParameters::create(ScriptFetchParameters::Type::JSON);
-    moduleRecord->appendRequestedModule(getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName), std::move(attributes));
-}
-extern "C" void JSC_JSModuleRecord__addRequestedModuleHostDefined(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t moduleName, uint32_t hostDefinedImportType)
-{
-    Ref<ScriptFetchParameters> attributes = ScriptFetchParameters::create(getFromIdentifierArray(moduleRecord->vm(), identifierArray, hostDefinedImportType).string());
-    moduleRecord->appendRequestedModule(getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName), std::move(attributes));
-}
-
-extern "C" void JSC_JSModuleRecord__addImportEntrySingle(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t importName, uint32_t localName, uint32_t moduleName)
-{
-    moduleRecord->addImportEntry(JSModuleRecord::ImportEntry {
-        .type = JSModuleRecord::ImportEntryType::Single,
-        .moduleRequest = getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName),
-        .importName = getFromIdentifierArray(moduleRecord->vm(), identifierArray, importName),
-        .localName = getFromIdentifierArray(moduleRecord->vm(), identifierArray, localName),
-    });
-}
-extern "C" void JSC_JSModuleRecord__addImportEntrySingleTypeScript(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t importName, uint32_t localName, uint32_t moduleName)
-{
-    moduleRecord->addImportEntry(JSModuleRecord::ImportEntry {
-        .type = JSModuleRecord::ImportEntryType::SingleTypeScript,
-        .moduleRequest = getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName),
-        .importName = getFromIdentifierArray(moduleRecord->vm(), identifierArray, importName),
-        .localName = getFromIdentifierArray(moduleRecord->vm(), identifierArray, localName),
-    });
-}
-extern "C" void JSC_JSModuleRecord__addImportEntryNamespace(JSModuleRecord* moduleRecord, Identifier* identifierArray, uint32_t importName, uint32_t localName, uint32_t moduleName)
-{
-    moduleRecord->addImportEntry(JSModuleRecord::ImportEntry {
-        .type = JSModuleRecord::ImportEntryType::Namespace,
-        .moduleRequest = getFromIdentifierArray(moduleRecord->vm(), identifierArray, moduleName),
-        .importName = getFromIdentifierArray(moduleRecord->vm(), identifierArray, importName),
-        .localName = getFromIdentifierArray(moduleRecord->vm(), identifierArray, localName),
-    });
-}
-
-static EncodedJSValue fallbackParse(JSGlobalObject* globalObject, const Identifier& moduleKey, const SourceCode& sourceCode, JSPromise* promise, JSModuleRecord* resultValue = nullptr);
-extern "C" EncodedJSValue Bun__analyzeTranspiledModule(JSGlobalObject* globalObject, const Identifier& moduleKey, const SourceCode& sourceCode, JSPromise* promise)
+static JSPromise* fallbackParse(JSGlobalObject* globalObject, const Identifier& moduleKey, const SourceCode& sourceCode, JSPromise* promise, JSModuleRecord* resultValue = nullptr);
+JSPromise* GlobalObject::moduleLoaderAnalyzeTranspiledModule(JSGlobalObject* globalObject, const Identifier& moduleKey, const SourceCode& sourceCode, JSPromise* promise)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -163,32 +179,40 @@ extern "C" EncodedJSValue Bun__analyzeTranspiledModule(JSGlobalObject* globalObj
 
     auto provider = static_cast<Zig::SourceProvider*>(sourceCode.provider());
 
-    if (provider->m_resolvedSource.module_info == nullptr) {
+    if (!provider->m_resolvedSource.moduleInfo) {
         dataLog("[note] module_info is null for module: ", moduleKey.utf8(), "\n");
-        RELEASE_AND_RETURN(scope, JSValue::encode(rejectWithError(createError(globalObject, WTF::String::fromLatin1("module_info is null")))));
+        RELEASE_AND_RETURN(scope, rejectWithError(createError(globalObject, WTF::String::fromLatin1("module_info is null"))));
     }
 
-    auto* moduleInfo = static_cast<bun_ModuleInfoDeserialized*>(provider->m_resolvedSource.module_info);
-    auto moduleRecord = zig__ModuleInfoDeserialized__toJSModuleRecord(globalObject, vm, moduleKey, sourceCode, declaredVariables, lexicalVariables, moduleInfo);
+    auto* moduleInfo = *provider->m_resolvedSource.moduleInfo;
+    auto moduleRecordValue = Bun::Bindgen::ZigExports::bunBindgenZig_compiler_module_records_compilerArtifactToModuleRecord(
+        globalObject,
+        &moduleKey,
+        &sourceCode,
+        &declaredVariables,
+        &lexicalVariables,
+        moduleInfo);
+    auto* moduleRecord = moduleRecordValue ? dynamicDowncast<JSC::JSModuleRecord>(*moduleRecordValue) : nullptr;
     // Under --isolate the same SourceProvider is reused across globals via the
     // IsolatedModuleCache, so module_info must remain alive on the provider;
     // ~SourceProvider frees it. Otherwise, free now.
-    if (!Bun::IsolatedModuleCache::canUse(vm, uncheckedDowncast<Zig::GlobalObject>(globalObject)->bunVM())) {
-        zig__ModuleInfoDeserialized__deinit(moduleInfo);
-        provider->m_resolvedSource.module_info = nullptr;
+    if (!Bun::IsolatedModuleCache::canUse(vm, defaultGlobalObject(globalObject)->bunVM())) {
+        Bun::Bindgen::Engine::releaseModuleInfoDeserialized(moduleInfo);
+        provider->m_resolvedSource.moduleInfo.reset();
     }
+    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(vm, scope));
     if (moduleRecord == nullptr) {
-        RELEASE_AND_RETURN(scope, JSValue::encode(rejectWithError(createError(globalObject, WTF::String::fromLatin1("parseFromSourceCode failed")))));
+        RELEASE_AND_RETURN(scope, rejectWithError(createError(globalObject, WTF::String::fromLatin1("parseFromSourceCode failed"))));
     }
 
 #if BUN_DEBUG
     RELEASE_AND_RETURN(scope, fallbackParse(globalObject, moduleKey, sourceCode, promise, moduleRecord));
 #else
     promise->resolve(globalObject, vm, moduleRecord);
-    RELEASE_AND_RETURN(scope, JSValue::encode(promise));
+    RELEASE_AND_RETURN(scope, promise);
 #endif
 }
-static EncodedJSValue fallbackParse(JSGlobalObject* globalObject, const Identifier& moduleKey, const SourceCode& sourceCode, JSPromise* promise, JSModuleRecord* resultValue)
+static JSPromise* fallbackParse(JSGlobalObject* globalObject, const Identifier& moduleKey, const SourceCode& sourceCode, JSPromise* promise, JSModuleRecord* resultValue)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -202,16 +226,16 @@ static EncodedJSValue fallbackParse(JSGlobalObject* globalObject, const Identifi
         vm, sourceCode, ImplementationVisibility::Public, JSParserBuiltinMode::NotBuiltin,
         StrictModeLexicallyScopedFeature, JSParserScriptMode::Module, SourceParseMode::ModuleAnalyzeMode, error);
     if (error.isValid())
-        RELEASE_AND_RETURN(scope, JSValue::encode(rejectWithError(error.toErrorObject(globalObject, sourceCode))));
+        RELEASE_AND_RETURN(scope, rejectWithError(error.toErrorObject(globalObject, sourceCode)));
     ASSERT(moduleProgramNode);
 
     ModuleAnalyzer moduleAnalyzer(globalObject, moduleKey, sourceCode, moduleProgramNode->varDeclarations(), moduleProgramNode->lexicalVariables(), moduleProgramNode->features());
-    RETURN_IF_EXCEPTION(scope, JSValue::encode(promise->rejectWithCaughtException(vm, scope)));
+    RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(vm, scope));
 
     auto result = moduleAnalyzer.analyze(*moduleProgramNode);
     if (!result) {
         auto [errorType, message] = std::move(result.error());
-        RELEASE_AND_RETURN(scope, JSValue::encode(rejectWithError(createError(globalObject, errorType, message))));
+        RELEASE_AND_RETURN(scope, rejectWithError(createError(globalObject, errorType, message)));
     }
 
     JSModuleRecord* moduleRecord = result.value();
@@ -224,15 +248,16 @@ static EncodedJSValue fallbackParse(JSGlobalObject* globalObject, const Identifi
             dataLog("  ------", "\n");
             dataLog("  BunAnalyzeTranspiledModule:", "\n");
 
-            zig__renderDiff(expected.utf8().data(), expected.utf8().length(), actual.utf8().data(), actual.utf8().length(), globalObject);
+            Bun::Bindgen::ZigExports::bunBindgenZig_compiler_module_records_compilerRenderDiff(globalObject, expected, actual);
+            RETURN_IF_EXCEPTION(scope, nullptr);
 
-            RELEASE_AND_RETURN(scope, JSValue::encode(rejectWithError(createError(globalObject, WTF::String::fromLatin1("Imports different between parseFromSourceCode and fallbackParse")))));
+            RELEASE_AND_RETURN(scope, rejectWithError(createError(globalObject, WTF::String::fromLatin1("Imports different between parseFromSourceCode and fallbackParse"))));
         }
     }
 
     scope.release();
     promise->resolve(globalObject, vm, resultValue == nullptr ? moduleRecord : resultValue);
-    return JSValue::encode(promise);
+    return promise;
 }
 
 String dumpRecordInfo(JSModuleRecord* moduleRecord)
@@ -346,4 +371,4 @@ String dumpRecordInfo(JSModuleRecord* moduleRecord)
     return stream.toString();
 }
 
-}
+} // namespace Zig

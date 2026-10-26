@@ -25,20 +25,23 @@ pub fn ParseImportExport(
 
             if (level.gt(.call)) {
                 const r = js_lexer.rangeOfIdentifier(p.source, loc);
-                p.log.addRangeError(p.source, r, "Cannot use an \"import\" expression here without parentheses") catch unreachable;
+                try p.log.addRangeError(p.source, r, "Cannot use an \"import\" expression here without parentheses");
             }
 
             // allow "in" inside call arguments;
             const old_allow_in = p.allow_in;
             p.allow_in = true;
+            defer p.allow_in = old_allow_in;
 
+            const old_preserve_comments = p.lexer.preserve_all_comments_before;
+            defer p.lexer.preserve_all_comments_before = old_preserve_comments;
             p.lexer.preserve_all_comments_before = true;
             try p.lexer.expect(.t_open_paren);
 
             // const comments = try p.lexer.comments_to_preserve_before.toOwnedSlice();
             p.lexer.comments_to_preserve_before.clearRetainingCapacity();
 
-            p.lexer.preserve_all_comments_before = false;
+            p.lexer.preserve_all_comments_before = old_preserve_comments;
 
             const value = try p.parseExpr(.comma);
 
@@ -59,8 +62,6 @@ pub fn ParseImportExport(
             }
 
             try p.lexer.expect(.t_close_paren);
-
-            p.allow_in = old_allow_in;
 
             if (comptime only_scan_imports_and_do_not_visit) {
                 if (value.data == .e_string and value.data.e_string.isUTF8() and value.data.e_string.isPresent()) {
@@ -89,6 +90,7 @@ pub fn ParseImportExport(
             p: *P,
         ) !ImportClause {
             var items = ListManaged(js_ast.ClauseItem).init(p.allocator);
+            errdefer items.deinit();
             try p.lexer.expect(.t_open_brace);
             var is_single_line = !p.lexer.has_newline_before;
             // this variable should not exist if we're not in a typescript file
@@ -237,7 +239,8 @@ pub fn ParseImportExport(
         }
 
         pub fn parseExportClause(p: *P) !ExportClauseResult {
-            var items = ListManaged(js_ast.ClauseItem).initCapacity(p.allocator, 1) catch unreachable;
+            var items = try ListManaged(js_ast.ClauseItem).initCapacity(p.allocator, 1);
+            errdefer items.deinit();
             try p.lexer.expect(.t_open_brace);
             var is_single_line = !p.lexer.has_newline_before;
             var first_non_identifier_loc = logger.Loc{ .start = 0 };
@@ -249,7 +252,7 @@ pub fn ParseImportExport(
 
                 const name = LocRef{
                     .loc = alias_loc,
-                    .ref = p.storeNameInRef(alias) catch unreachable,
+                    .ref = try p.storeNameInRef(alias),
                 };
                 const original_name = alias;
 
@@ -282,17 +285,17 @@ pub fn ParseImportExport(
                                     // "export { type as as as }"
                                     // "export { type as as foo }"
                                     // "export { type as as 'foo' }"
-                                    _ = p.parseClauseAlias("export") catch "";
+                                    _ = try p.parseClauseAlias("export");
                                     had_type_only_exports = true;
                                     try p.lexer.next();
                                 } else {
                                     // "export { type as as }"
-                                    items.append(js_ast.ClauseItem{
+                                    try items.append(js_ast.ClauseItem{
                                         .alias = alias,
                                         .alias_loc = alias_loc,
                                         .name = name,
                                         .original_name = original_name,
-                                    }) catch unreachable;
+                                    });
                                 }
                             } else if (p.lexer.token != .t_comma and p.lexer.token != .t_close_brace) {
                                 // "export { type as xxx }"
@@ -301,12 +304,12 @@ pub fn ParseImportExport(
                                 alias_loc = p.lexer.loc();
                                 try p.lexer.next();
 
-                                items.append(js_ast.ClauseItem{
+                                try items.append(js_ast.ClauseItem{
                                     .alias = alias,
                                     .alias_loc = alias_loc,
                                     .name = name,
                                     .original_name = original_name,
-                                }) catch unreachable;
+                                });
                             } else {
                                 had_type_only_exports = true;
                             }
@@ -332,12 +335,12 @@ pub fn ParseImportExport(
                             // "export { type default as if } from 'path'"
                             // "export { type xx as 'yy' }"
                             // "export { type 'xx' } from 'mod'"
-                            _ = p.parseClauseAlias("export") catch "";
+                            _ = try p.parseClauseAlias("export");
                             try p.lexer.next();
 
                             if (p.lexer.isContextualKeyword("as")) {
                                 try p.lexer.next();
-                                _ = p.parseClauseAlias("export") catch "";
+                                _ = try p.parseClauseAlias("export");
                                 try p.lexer.next();
                             }
 
@@ -352,12 +355,12 @@ pub fn ParseImportExport(
                             try p.lexer.next();
                         }
 
-                        items.append(js_ast.ClauseItem{
+                        try items.append(js_ast.ClauseItem{
                             .alias = alias,
                             .alias_loc = alias_loc,
                             .name = name,
                             .original_name = original_name,
-                        }) catch unreachable;
+                        });
                     }
                 } else {
                     if (p.lexer.isContextualKeyword("as")) {
@@ -368,12 +371,12 @@ pub fn ParseImportExport(
                         try p.lexer.next();
                     }
 
-                    items.append(js_ast.ClauseItem{
+                    try items.append(js_ast.ClauseItem{
                         .alias = alias,
                         .alias_loc = alias_loc,
                         .name = name,
                         .original_name = original_name,
-                    }) catch unreachable;
+                    });
                 }
 
                 // we're done if there's no comma

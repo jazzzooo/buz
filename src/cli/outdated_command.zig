@@ -39,6 +39,7 @@ pub const OutdatedCommand = struct {
     fn outdated(ctx: Command.Context, original_cwd: string, manager: *PackageManager) !void {
         const load_lockfile_result = manager.lockfile.loadFromCwd(
             manager,
+            bun.install.Dependency.ParseContext.fromPackageManager(manager),
             manager.allocator,
             manager.log,
             true,

@@ -26,6 +26,8 @@
 #pragma once
 
 #include <wtf/Noncopyable.h>
+#include <wtf/FastMalloc.h>
+#include <span>
 #include <wtf/Vector.h>
 #include <wtf/text/WTFString.h>
 
@@ -39,6 +41,7 @@ struct CryptoDigestContext;
 
 class CryptoDigest {
     WTF_MAKE_NONCOPYABLE(CryptoDigest);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(CryptoDigest);
 
 public:
     enum class Algorithm {
@@ -54,8 +57,9 @@ public:
     PAL_EXPORT static std::unique_ptr<CryptoDigest> create(Algorithm);
     PAL_EXPORT ~CryptoDigest();
 
-    PAL_EXPORT void addBytes(const void* input, size_t length);
-    PAL_EXPORT Vector<uint8_t> computeHash();
+    PAL_EXPORT bool addBytes(const void* input, size_t length);
+    PAL_EXPORT size_t digestLength() const;
+    PAL_EXPORT bool computeHash(std::span<uint8_t>);
     PAL_EXPORT String toHexString();
 
 private:

@@ -17,7 +17,7 @@ pub fn doPatchCommit(
     var folder_path_buf: bun.PathBuffer = undefined;
     var lockfile: *Lockfile = try manager.allocator.create(Lockfile);
     defer lockfile.deinit();
-    switch (lockfile.loadFromCwd(manager, manager.allocator, manager.log, true)) {
+    switch (lockfile.loadFromCwd(manager, Dependency.ParseContext.fromPackageManager(manager), manager.allocator, manager.log, true)) {
         .not_found => {
             Output.errGeneric("Cannot find lockfile. Install packages with `<cyan>bun install<r>` before patching them.", .{});
             Global.crash();
@@ -346,10 +346,17 @@ pub fn doPatchCommit(
             );
             Global.crash();
         };
-        const paths = bun.patch.gitDiffPreprocessPaths(bun.default_allocator, old_folder, new_folder, false);
-        const opts = bun.patch.spawnOpts(paths[0], paths[1], cwd, git, &manager.event_loop);
+        var command = try bun.patch.GitDiffCommand.init(
+            bun.default_allocator,
+            old_folder,
+            new_folder,
+            cwd,
+            git,
+        );
+        defer command.deinit();
+        command.setEventLoop(&manager.event_loop);
 
-        var spawn_result = switch (bun.spawnSync(&opts) catch |e| {
+        var spawn_result = switch (bun.spawnSync(&command.options) catch |e| {
             Output.prettyError(
                 "<r><red>error<r>: failed to make diff {s}<r>\n",
                 .{@errorName(e)},
@@ -365,8 +372,13 @@ pub fn doPatchCommit(
                 Global.crash();
             },
         };
+        defer spawn_result.deinit();
 
-        const contents = switch (bun.patch.diffPostProcess(&spawn_result, paths[0], paths[1]) catch |e| {
+        const contents = switch (bun.patch.diffPostProcess(
+            &spawn_result,
+            command.old_folder,
+            command.new_folder,
+        ) catch |e| {
             Output.prettyError(
                 "<r><red>error<r>: failed to make diff {s}<r>\n",
                 .{@errorName(e)},
@@ -451,11 +463,12 @@ pub fn doPatchCommit(
     ));
     defer manager.allocator.free(path_in_patches_dir);
 
-    var nodefs = bun.jsc.Node.fs.NodeFS{};
-    const args = bun.jsc.Node.fs.Arguments.Mkdir{
+    var mkdir_error_buffer: bun.PathBuffer = undefined;
+    const args = NodeFSCore.Mkdir{
         .path = .{ .string = bun.PathString.init(manager.options.patch_features.commit.patches_dir) },
+        .recursive = true,
     };
-    if (nodefs.mkdirRecursive(args).asErr()) |e| {
+    if (NodeFSCore.mkdir(&mkdir_error_buffer, args).asErr()) |e| {
         Output.err(e, "failed to make patches dir {f}", .{bun.fmt.quote(args.path.slice())});
         Global.crash();
     }
@@ -1059,10 +1072,10 @@ const Global = bun.Global;
 const JSON = bun.json;
 const Output = bun.Output;
 const default_allocator = bun.default_allocator;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 const File = bun.sys.File;
+const NodeFSCore = @import("../../runtime/node/NodeFSCore.zig");
 
 const Semver = bun.Semver;
 const String = Semver.String;

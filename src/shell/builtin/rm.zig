@@ -288,7 +288,7 @@ pub noinline fn next(this: *Rm) Yield {
     }
 }
 
-pub fn onIOWriterChunk(this: *Rm, _: usize, e: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *Rm, _: usize, e: ?bun.sys.SystemError) Yield {
     log("Rm(0x{x}).onIOWriterChunk()", .{@intFromPtr(this)});
     defer if (e) |err| err.deref();
     if (comptime bun.Environment.allow_assert) {
@@ -476,9 +476,9 @@ pub const ShellRmTask = struct {
     pending_main_callbacks: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
     err: ?Syscall.Error = null,
 
-    event_loop: jsc.EventLoopHandle,
-    concurrent_task: jsc.EventLoopTask,
-    task: jsc.BackgroundTask = .{ .callback = workPoolCallback },
+    scheduler: Interpreter.Scheduler,
+    main_task: Interpreter.Scheduler.Task = .{},
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = workPoolCallback },
     const CwdPath = if (bun.Environment.isWindows) [:0]const u8 else u0;
 
     const ParentRmTask = @This();
@@ -486,15 +486,15 @@ pub const ShellRmTask = struct {
     pub const DirTask = struct {
         task_manager: *ParentRmTask,
         parent_task: ?*DirTask,
+        main_task: Interpreter.Scheduler.Task = .{},
         path: [:0]const u8,
         is_absolute: bool = false,
         subtask_count: std.atomic.Value(usize),
         need_to_wait: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         deleting_after_waiting_for_children: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         kind_hint: EntryKindHint,
-        task: jsc.BackgroundTask = .{ .callback = runInBackground },
+        task: bun.BackgroundTaskGroup.Task = .{ .callback = runInBackground },
         deleted_entries: std.array_list.Managed(u8),
-        concurrent_task: jsc.EventLoopTask,
 
         const EntryKindHint = enum { idk, dir, file };
 
@@ -514,7 +514,7 @@ pub const ShellRmTask = struct {
             this.runFromMainThread();
         }
 
-        pub fn runInBackground(task: *jsc.BackgroundTask) void {
+        pub fn runInBackground(task: *bun.BackgroundTaskGroup.Task) void {
             var this: *DirTask = @fieldParentPtr("task", task);
             this.runInBackgroundImpl();
         }
@@ -534,7 +534,7 @@ pub const ShellRmTask = struct {
                         .result => |p| bun.handleOom(bun.default_allocator.dupeSentinel(u8, p, 0)),
                         .err => |err| {
                             debug("[runInBackgroundImpl:getcwd] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
-                            const io = this.task_manager.event_loop.io();
+                            const io = this.task_manager.scheduler.io();
                             this.task_manager.err_mutex.lockUncancelable(io);
                             defer this.task_manager.err_mutex.unlock(io);
                             if (this.task_manager.err == null) {
@@ -553,7 +553,7 @@ pub const ShellRmTask = struct {
             switch (this.task_manager.removeEntry(this, this.is_absolute)) {
                 .err => |err| {
                     debug("[runInBackgroundImpl] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(err.getErrno()), err.path });
-                    const io = this.task_manager.event_loop.io();
+                    const io = this.task_manager.scheduler.io();
                     this.task_manager.err_mutex.lockUncancelable(io);
                     defer this.task_manager.err_mutex.unlock(io);
                     if (this.task_manager.err == null) {
@@ -630,7 +630,7 @@ pub const ShellRmTask = struct {
             switch (this.task_manager.removeEntryDirAfterChildren(this)) {
                 .err => |e| {
                     debug("[deleteAfterWaitingForChildren] DirTask({x}) failed: {s}: {s}", .{ @intFromPtr(this), @tagName(e.getErrno()), e.path });
-                    const io = this.task_manager.event_loop.io();
+                    const io = this.task_manager.scheduler.io();
                     this.task_manager.err_mutex.lockUncancelable(io);
                     defer this.task_manager.err_mutex.unlock(io);
                     if (this.task_manager.err == null) {
@@ -653,11 +653,7 @@ pub const ShellRmTask = struct {
                 if (this.parent_task != null) this.deinit();
                 return;
             }
-            if (this.task_manager.event_loop == .js) {
-                this.task_manager.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-            } else {
-                this.task_manager.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-            }
+            this.task_manager.scheduler.enqueue(&this.main_task, this);
         }
 
         pub fn deinit(this: *DirTask) void {
@@ -685,17 +681,15 @@ pub const ShellRmTask = struct {
                 .subtask_count = std.atomic.Value(usize).init(1),
                 .kind_hint = .idk,
                 .deleted_entries = std.array_list.Managed(u8).init(bun.default_allocator),
-                .concurrent_task = jsc.EventLoopTask.fromEventLoop(rm.bltn().eventLoop()),
             },
-            .event_loop = rm.bltn().eventLoop(),
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(rm.bltn().eventLoop()),
+            .scheduler = rm.bltn().eventLoop(),
             .error_signal = error_signal,
         };
         return task;
     }
 
     pub fn schedule(this: *@This()) void {
-        jsc.BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch {
+        bun.BackgroundWork.schedule(this.scheduler.backgroundTasks(), &this.task) catch {
             this.err = Syscall.Error.fromCode(.AGAIN, .rm);
             this.error_signal.store(true, .seq_cst);
             this.root_task.postRun();
@@ -733,7 +727,6 @@ pub const ShellRmTask = struct {
             .subtask_count = std.atomic.Value(usize).init(1),
             .kind_hint = kind_hint,
             .deleted_entries = std.array_list.Managed(u8).init(bun.default_allocator),
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(this.event_loop),
         };
 
         const count = parent_task.subtask_count.fetchAdd(1, .monotonic);
@@ -741,8 +734,8 @@ pub const ShellRmTask = struct {
             assert(count > 0);
         }
 
-        jsc.BackgroundWork.schedule(this.event_loop.backgroundTasks(), &subtask.task) catch {
-            const io = this.event_loop.io();
+        bun.BackgroundWork.schedule(this.scheduler.backgroundTasks(), &subtask.task) catch {
+            const io = this.scheduler.io();
             this.err_mutex.lockUncancelable(io);
             if (this.err == null) {
                 this.err = Syscall.Error.fromCode(.AGAIN, .rm);
@@ -771,11 +764,7 @@ pub const ShellRmTask = struct {
 
     pub fn finishConcurrently(this: *ShellRmTask) void {
         debug("finishConcurrently", .{});
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
+        this.scheduler.enqueue(&this.main_task, this);
     }
 
     pub fn removeEntry(this: *ShellRmTask, dir_task: *DirTask, is_absolute: bool) Maybe(void) {
@@ -1138,7 +1127,7 @@ pub const ShellRmTask = struct {
         return err.withPath(bun.handleOom(bun.default_allocator.dupeSentinel(u8, path[0..path.len], 0)));
     }
 
-    pub fn workPoolCallback(task: *jsc.BackgroundTask) void {
+    pub fn workPoolCallback(task: *bun.BackgroundTaskGroup.Task) void {
         var this: *ShellRmTask = @alignCast(@fieldParentPtr("task", task));
         this.root_task.runInBackgroundImpl();
     }
@@ -1203,7 +1192,6 @@ const bun = @import("bun");
 const DirIterator = bun.DirIterator;
 const ResolvePath = bun.path;
 const assert = bun.assert;
-const jsc = bun.jsc;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

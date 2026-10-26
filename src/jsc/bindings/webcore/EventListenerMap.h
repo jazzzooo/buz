@@ -33,12 +33,14 @@
 #pragma once
 
 #include "RegisteredEventListener.h"
+#include "Bindgen/NativeResult.h"
 #include <atomic>
 #include <memory>
 #include <wtf/Assertions.h>
 #include <wtf/Forward.h>
 #include <wtf/Lock.h>
 #include <wtf/Threading.h>
+#include <wtf/Vector.h>
 #include <wtf/text/AtomString.h>
 
 namespace WebCore {
@@ -48,8 +50,31 @@ class EventTarget;
 using EventListenerVector = Vector<RefPtr<RegisteredEventListener>, 1, CrashOnOverflow, 2>;
 
 class EventListenerMap {
+    WTF_MAKE_NONCOPYABLE(EventListenerMap);
+
 public:
+    class DispatchCursor {
+        WTF_MAKE_NONCOPYABLE(DispatchCursor);
+
+    public:
+        DispatchCursor(EventListenerMap&, const AtomString&);
+        ~DispatchCursor();
+        RefPtr<RegisteredEventListener> next();
+
+    private:
+        friend class EventListenerMap;
+        EventListenerMap& m_map;
+        AtomString m_eventType;
+        DispatchCursor* m_previous { nullptr };
+        DispatchCursor* m_next { nullptr };
+        size_t m_position { 0 };
+        size_t m_end { 0 };
+    };
+
+    using Entries = Vector<std::pair<AtomString, EventListenerVector>, 0, CrashOnOverflow, 4>;
+
     EventListenerMap();
+    ~EventListenerMap();
 
     bool isEmpty() const { return m_entries.isEmpty(); }
     bool contains(const AtomString& eventType) const { return find(eventType); }
@@ -57,21 +82,18 @@ public:
     bool containsActive(const AtomString& eventType) const;
 
     void clear();
+    Entries takeAll();
 
-    void replace(const AtomString& eventType, EventListener& oldListener, Ref<EventListener>&& newListener, const RegisteredEventListener::Options&);
-    RegisteredEventListener* add(const AtomString& eventType, Ref<EventListener>&&, const RegisteredEventListener::Options&);
+    Bun::Bindgen::NativeAllocationResult<RegisteredEventListener*> add(const AtomString& eventType, Ref<EventListener>&&, const RegisteredEventListener::Options&);
     bool remove(const AtomString& eventType, EventListener&, bool useCapture);
-    WEBCORE_EXPORT EventListenerVector* find(const AtomString& eventType);
-    const EventListenerVector* find(const AtomString& eventType) const { return const_cast<EventListenerMap*>(this)->find(eventType); }
+    const EventListenerVector* find(const AtomString& eventType) const { return const_cast<EventListenerMap*>(this)->findMutable(eventType); }
     Vector<AtomString> eventTypes() const;
-
-    void removeFirstEventListenerCreatedFromMarkup(const AtomString& eventType);
-    void copyEventListenersNotCreatedFromMarkupToTarget(EventTarget*);
 
     template<typename Visitor> void visitJSEventListeners(Visitor&);
     Lock& lock() { return m_lock; }
 
 private:
+    EventListenerVector* findMutable(const AtomString&);
     void releaseAssertOrSetThreadUID()
     {
         if (!m_threadUID) {
@@ -84,7 +106,8 @@ private:
         RELEASE_ASSERT(Thread::mayBeGCThread());
     }
 
-    Vector<std::pair<AtomString, EventListenerVector>, 0, CrashOnOverflow, 4> m_entries;
+    Entries m_entries;
+    DispatchCursor* m_dispatchCursors { nullptr };
     Lock m_lock;
     uint32_t m_threadUID { 0 };
 };

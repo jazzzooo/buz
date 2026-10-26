@@ -251,6 +251,8 @@ public:
     JS_EXPORT_PRIVATE static RefPtr<ArrayBuffer> tryCreate(size_t numElements, unsigned elementByteSize, std::optional<size_t> maxByteLength = std::nullopt);
     JS_EXPORT_PRIVATE static RefPtr<ArrayBuffer> tryCreate(ArrayBuffer&);
     JS_EXPORT_PRIVATE static RefPtr<ArrayBuffer> tryCreate(std::span<const uint8_t> = { });
+    JS_EXPORT_PRIVATE static RefPtr<ArrayBuffer> tryCreate(ArrayBufferContents&&);
+    JS_EXPORT_PRIVATE static RefPtr<ArrayBuffer> tryCreateFromBytes(std::span<const uint8_t>, ArrayBufferDestructorFunction&&);
     JS_EXPORT_PRIVATE static RefPtr<ArrayBuffer> tryCreateShared(VM&, size_t numElements, unsigned elementByteSize, size_t maxByteLength);
 
     // Only for use by Uint8ClampedArray::tryCreateUninitialized and FragmentedSharedBuffer::tryCreateArrayBuffer.
@@ -283,6 +285,11 @@ public:
     inline void pin();
     inline void unpin();
     inline bool isDetachable() const;
+    inline bool canAcquireByteLease() const { return !isShared() && !m_isWasmMemory && data(); }
+    JS_EXPORT_PRIVATE void acquireByteLease(bool copyTransfers = false);
+    JS_EXPORT_PRIVATE void releaseByteLease(bool copyTransfers = false);
+    inline bool hasActiveByteLease() const { return m_byteLeaseCount; }
+    inline bool hasTransferBlockingByteLease() const { return m_byteLeaseCount.value() != m_copyTransferByteLeaseCount.value(); }
     // Calling this prevents the backing buffer from ever being detached. This can happen when an
     // API user fetched m_contents directly from a TypedArray object, the buffer is backed by a
     // WebAssembly.Memory, or is a SharedArrayBuffer.
@@ -316,8 +323,9 @@ public:
     Vector<uint8_t> toVector() const { return { span() }; }
 
 private:
+    friend class JSArrayBuffer;
+
     static Ref<ArrayBuffer> create(size_t numElements, unsigned elementByteSize, ArrayBufferContents::InitializationPolicy);
-    static Ref<ArrayBuffer> createInternal(ArrayBufferContents&&, const void*, size_t);
     static RefPtr<ArrayBuffer> tryCreate(size_t numElements, unsigned elementByteSize, std::optional<size_t> maxByteLength, ArrayBufferContents::InitializationPolicy);
     ArrayBuffer(ArrayBufferContents&&);
     inline size_t NODELETE clampIndex(double index) const;
@@ -332,6 +340,8 @@ public:
 private:
     static constexpr unsigned s_lockedFlag = INT32_MIN;
     Checked<unsigned> m_pinCount { 0 };
+    Checked<unsigned> m_byteLeaseCount { 0 };
+    Checked<unsigned> m_copyTransferByteLeaseCount { 0 };
     bool m_isWasmMemory { false };
 };
 

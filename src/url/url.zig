@@ -45,22 +45,6 @@ pub const URL = struct {
         return this.href.len == blob_specifier_len and strings.hasPrefixComptime(this.href, "blob:");
     }
 
-    pub const fromJS = @import("../url_jsc/url_jsc.zig").urlFromJS;
-
-    pub fn fromString(allocator: std.mem.Allocator, input: bun.String) !URL {
-        var href = jsc.URL.hrefFromString(input);
-        if (href.tag == .Dead) {
-            return error.InvalidURL;
-        }
-
-        defer href.deref();
-        return URL.parse(try href.toOwnedSlice(allocator));
-    }
-
-    pub fn fromUTF8(allocator: std.mem.Allocator, input: []const u8) !URL {
-        return fromString(allocator, bun.String.borrowUTF8(input));
-    }
-
     pub fn displayProtocol(this: *const URL) string {
         if (this.protocol.len > 0) {
             return this.protocol;
@@ -137,73 +121,28 @@ pub const URL = struct {
         return this.hostname.len > 0 and this.pathname.len > 0;
     }
 
-    pub fn joinNormalize(out: []u8, prefix: string, dirname: string, basename: string, extname: string) string {
-        var buf: [2048]u8 = undefined;
-
-        var path_parts: [10]string = undefined;
-        var path_end: usize = 0;
-
-        path_parts[0] = "/";
-        path_end += 1;
-
-        if (prefix.len > 0) {
-            path_parts[path_end] = prefix;
-            path_end += 1;
-        }
-
-        if (dirname.len > 0) {
-            path_parts[path_end] = std.mem.trim(u8, dirname, "/\\");
-            path_end += 1;
-        }
-
-        if (basename.len > 0) {
-            if (dirname.len > 0) {
-                path_parts[path_end] = "/";
-                path_end += 1;
-            }
-
-            path_parts[path_end] = std.mem.trim(u8, basename, "/\\");
-            path_end += 1;
-        }
-
-        if (extname.len > 0) {
-            path_parts[path_end] = extname;
-            path_end += 1;
-        }
-
-        var buf_i: usize = 0;
-        for (path_parts[0..path_end]) |part| {
-            bun.copy(u8, buf[buf_i..], part);
-            buf_i += part.len;
-        }
-        var fba = std.heap.FixedBufferAllocator.init(out);
-        return std.fs.path.resolvePosix(fba.allocator(), &.{buf[0..buf_i]}) catch @panic("normalized URL path exceeds buffer");
+    fn joinNormalize(allocator: std.mem.Allocator, prefix: string, dirname: string, basename: string, extname: string) bun.OOM![]u8 {
+        const path = try std.mem.concat(allocator, u8, &.{
+            "/",
+            prefix,
+            std.mem.trim(u8, dirname, "/\\"),
+            if (dirname.len > 0 and basename.len > 0) "/" else "",
+            std.mem.trim(u8, basename, "/\\"),
+            extname,
+        });
+        defer allocator.free(path);
+        return std.fs.path.resolvePosix(allocator, &.{path});
     }
 
-    pub fn joinWrite(
-        this: *const URL,
-        writer: *std.Io.Writer,
-        prefix: string,
-        dirname: string,
-        basename: string,
-        extname: string,
-    ) !void {
-        var out: [2048]u8 = undefined;
-        const normalized_path = joinNormalize(&out, prefix, dirname, basename, extname);
-
-        try writer.print("{s}/{s}", .{ this.origin, normalized_path });
-    }
-
-    pub fn joinAlloc(this: *const URL, allocator: std.mem.Allocator, prefix: string, dirname: string, basename: string, extname: string, absolute_path: string) !string {
+    pub fn joinAlloc(this: *const URL, allocator: std.mem.Allocator, prefix: string, dirname: string, basename: string, extname: string, absolute_path: string) bun.OOM!string {
         const has_uplevels = std.mem.indexOf(u8, dirname, "../") != null;
 
         if (has_uplevels) {
             return try std.fmt.allocPrint(allocator, "{s}/abs:{s}", .{ this.origin, absolute_path });
         } else {
-            var out: [2048]u8 = undefined;
-
-            const normalized_path = joinNormalize(&out, prefix, dirname, basename, extname);
-            return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ this.origin, normalized_path });
+            const normalized_path = try joinNormalize(allocator, prefix, dirname, basename, extname);
+            defer allocator.free(normalized_path);
+            return try std.fmt.allocPrint(allocator, "{s}{s}", .{ this.origin, normalized_path });
         }
     }
 
@@ -645,13 +584,13 @@ pub const QueryStringMap = struct {
             var value = result.value;
 
             name.offset = buf_writer_pos;
-            name.length = PercentEncoding.decodeFormComponent(writer, result.rawName(query_string)) catch continue;
+            name.length = PercentEncoding.decodeFormComponent(writer, result.rawName(query_string)) catch return error.OutOfMemory;
             buf_writer_pos += name.length;
             const name_slice = buf.written()[name.offset..][0..name.length];
             if (containsName(list.slice(), buf.written(), route_parameter_begin, name_slice)) continue;
 
             value.offset = buf_writer_pos;
-            value.length = PercentEncoding.decodeFormComponent(writer, result.rawValue(query_string)) catch continue;
+            value.length = PercentEncoding.decodeFormComponent(writer, result.rawValue(query_string)) catch return error.OutOfMemory;
             buf_writer_pos += value.length;
 
             list.appendAssumeCapacity(.{ .name = name, .value = value });
@@ -703,11 +642,11 @@ pub const QueryStringMap = struct {
             var value = result.value;
 
             name.offset = buf_writer_pos;
-            name.length = PercentEncoding.decodeFormComponent(writer, result.rawName(query_string)) catch continue;
+            name.length = PercentEncoding.decodeFormComponent(writer, result.rawName(query_string)) catch return error.OutOfMemory;
             buf_writer_pos += name.length;
 
             value.offset = buf_writer_pos;
-            value.length = PercentEncoding.decodeFormComponent(writer, result.rawValue(query_string)) catch continue;
+            value.length = PercentEncoding.decodeFormComponent(writer, result.rawValue(query_string)) catch return error.OutOfMemory;
             buf_writer_pos += value.length;
 
             list.appendAssumeCapacity(.{ .name = name, .value = value });
@@ -832,8 +771,6 @@ pub const PercentEncoding = struct {
     }
 };
 
-pub const FormData = @import("../runtime/webcore/FormData.zig").FormData;
-
 const QueryScanner = struct {
     query_string: string,
     cursor: usize,
@@ -891,12 +828,11 @@ const string = []const u8;
 
 const resolve_path = @import("../paths/resolve_path.zig");
 const std = @import("std");
-const ParamsList = @import("../router/router.zig").Param.List;
+const ParamsList = @import("../router/Param.zig").List;
 const expect = std.testing.expect;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
-const jsc = bun.jsc;
 const strings = bun.strings;
 const api = bun.schema.api;

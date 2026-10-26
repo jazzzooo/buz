@@ -21,12 +21,12 @@ pub fn openForWritingImpl(
     comptime openat: *const fn (dir: bun.FD, path: [:0]const u8, flags: i32, mode: bun.Mode) bun.sys.Maybe(bun.FD),
 ) bun.sys.Maybe(bun.FD) {
     const PathT = @TypeOf(input_path);
-    if (PathT != bun.webcore.PathOrFileDescriptor and PathT != [:0]const u8 and PathT != [:0]u8) {
+    if (PathT != PathOrFileDescriptor and PathT != [:0]const u8 and PathT != [:0]u8) {
         @compileError("Only string or PathOrFileDescriptor is supported but got: " ++ @typeName(PathT));
     }
 
     return switch (PathT) {
-        bun.webcore.PathOrFileDescriptor => switch (input_path) {
+        PathOrFileDescriptor => switch (input_path) {
             .path => |path| bun.sys.openatA(dir, path.slice(), input_flags, mode),
             .fd => |fd| bun.sys.dupWithFlags(fd, 0),
         },
@@ -36,3 +36,4 @@ pub fn openForWritingImpl(
 }
 
 const bun = @import("bun");
+const PathOrFileDescriptor = @import("./PathOrFileDescriptor.zig").PathOrFileDescriptor;

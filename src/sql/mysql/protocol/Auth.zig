@@ -19,10 +19,10 @@ pub const mysql_native_password = struct {
         }
 
         // Stage 1: SHA1(password)
-        bun.sha.SHA1.hash(password, &stage1, jsc.VirtualMachine.get().rareData().boringEngine());
+        bun.sha.SHA1.hash(password, &stage1, null);
 
         // Stage 2: SHA1(SHA1(password))
-        bun.sha.SHA1.hash(&stage1, &stage2, jsc.VirtualMachine.get().rareData().boringEngine());
+        bun.sha.SHA1.hash(&stage1, &stage2, null);
 
         // Stage 3: SHA1(nonce + SHA1(SHA1(password)))
         var sha1 = bun.sha.SHA1.init();
@@ -50,17 +50,17 @@ pub const caching_sha2_password = struct {
         var result: [32]u8 = @splat(0);
 
         // SHA256(password)
-        bun.sha.SHA256.hash(password, &digest1, jsc.VirtualMachine.get().rareData().boringEngine());
+        bun.sha.SHA256.hash(password, &digest1, null);
 
         // SHA256(SHA256(password))
-        bun.sha.SHA256.hash(&digest1, &digest2, jsc.VirtualMachine.get().rareData().boringEngine());
+        bun.sha.SHA256.hash(&digest1, &digest2, null);
 
         // SHA256(SHA256(SHA256(password)) + nonce)
         const combined = try bun.default_allocator.alloc(u8, nonce.len + digest2.len);
         defer bun.default_allocator.free(combined);
         @memcpy(combined[0..nonce.len], nonce);
         @memcpy(combined[nonce.len..], &digest2);
-        bun.sha.SHA256.hash(combined, &digest3, jsc.VirtualMachine.get().rareData().boringEngine());
+        bun.sha.SHA256.hash(combined, &digest3, null);
 
         // XOR(SHA256(password), digest3)
         for (&result, &digest1, &digest3) |*out, d1, d3| {
@@ -183,6 +183,7 @@ pub const caching_sha2_password = struct {
             const encrypted_password_slice = encrypted_password[0..@intCast(encrypted_password_len)];
 
             var packet = try writer.start(this.sequence_id);
+            defer packet.deinit();
             try writer.write(encrypted_password_slice);
             try packet.end();
         }
@@ -226,4 +227,3 @@ const writeWrap = @import("./NewWriter.zig").writeWrap;
 
 const bun = @import("bun");
 const BoringSSL = bun.BoringSSL;
-const jsc = bun.jsc;

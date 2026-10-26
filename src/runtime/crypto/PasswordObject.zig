@@ -10,120 +10,11 @@ pub const PasswordObject = struct {
             argon2i: Argon2Params,
             argon2d: Argon2Params,
             argon2id: Argon2Params,
-            // bcrypt only accepts "cost"
             bcrypt: u6,
-
-            pub const bcrpyt_default = 10;
 
             pub const default = Algorithm.Value{
                 .argon2id = .{},
             };
-
-            pub fn fromJS(globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError!Value {
-                if (value.isObject()) {
-                    if (try value.getOptional(globalObject, "algorithm", jsc.JSValue)) |algorithm_value| {
-                        if (!algorithm_value.isString()) {
-                            return globalObject.throwInvalidArgumentType("hash", "algorithm", "string");
-                        }
-
-                        const algorithm_string = try algorithm_value.getZigString(globalObject);
-
-                        switch (PasswordObject.Algorithm.label.getWithEql(algorithm_string, jsc.ZigString.eqlComptime) orelse {
-                            return globalObject.throwInvalidArgumentType("hash", "algorithm", unknown_password_algorithm_message);
-                        }) {
-                            .bcrypt => {
-                                var algorithm = PasswordObject.Algorithm.Value{
-                                    .bcrypt = PasswordObject.Algorithm.Value.bcrpyt_default,
-                                };
-
-                                if (try value.getOptional(globalObject, "cost", jsc.JSValue)) |rounds_value| {
-                                    if (!rounds_value.isNumber()) {
-                                        return globalObject.throwInvalidArgumentType("hash", "cost", "number");
-                                    }
-
-                                    const rounds = try rounds_value.coerce(i32, globalObject);
-
-                                    if (rounds < 4 or rounds > 31) {
-                                        return globalObject.throwInvalidArguments("Rounds must be between 4 and 31", .{});
-                                    }
-
-                                    algorithm.bcrypt = @as(u6, @intCast(rounds));
-                                }
-
-                                return algorithm;
-                            },
-                            inline .argon2id, .argon2d, .argon2i => |tag| {
-                                var argon = Algorithm.Argon2Params{};
-
-                                if (try value.getOptional(globalObject, "timeCost", jsc.JSValue)) |time_value| {
-                                    if (!time_value.isNumber()) {
-                                        return globalObject.throwInvalidArgumentType("hash", "timeCost", "number");
-                                    }
-
-                                    const time_cost = try time_value.coerce(i32, globalObject);
-
-                                    if (time_cost < 1) {
-                                        return globalObject.throwInvalidArguments("Time cost must be greater than 0", .{});
-                                    }
-
-                                    argon.time_cost = @as(u32, @intCast(time_cost));
-                                }
-
-                                if (try value.getOptional(globalObject, "memoryCost", jsc.JSValue)) |memory_value| {
-                                    if (!memory_value.isNumber()) {
-                                        return globalObject.throwInvalidArgumentType("hash", "memoryCost", "number");
-                                    }
-
-                                    const memory_cost = try memory_value.coerce(i32, globalObject);
-
-                                    if (memory_cost < 1) {
-                                        return globalObject.throwInvalidArguments("Memory cost must be greater than 0", .{});
-                                    }
-
-                                    argon.memory_cost = @as(u32, @intCast(memory_cost));
-                                }
-
-                                return @unionInit(Algorithm.Value, @tagName(tag), argon);
-                            },
-                        }
-
-                        unreachable;
-                    } else {
-                        return globalObject.throwInvalidArgumentType("hash", "options.algorithm", "string");
-                    }
-                } else if (value.isString()) {
-                    const algorithm_string = try value.getZigString(globalObject);
-
-                    switch (PasswordObject.Algorithm.label.getWithEql(algorithm_string, jsc.ZigString.eqlComptime) orelse {
-                        return globalObject.throwInvalidArgumentType("hash", "algorithm", unknown_password_algorithm_message);
-                    }) {
-                        .bcrypt => {
-                            return PasswordObject.Algorithm.Value{
-                                .bcrypt = PasswordObject.Algorithm.Value.bcrpyt_default,
-                            };
-                        },
-                        .argon2id => {
-                            return PasswordObject.Algorithm.Value{
-                                .argon2id = .{},
-                            };
-                        },
-                        .argon2d => {
-                            return PasswordObject.Algorithm.Value{
-                                .argon2d = .{},
-                            };
-                        },
-                        .argon2i => {
-                            return PasswordObject.Algorithm.Value{
-                                .argon2i = .{},
-                            };
-                        },
-                    }
-                } else {
-                    return globalObject.throwInvalidArgumentType("hash", "algorithm", "string");
-                }
-
-                unreachable;
-            }
         };
 
         pub const Argon2Params = struct {
@@ -139,20 +30,6 @@ pub const PasswordObject = struct {
                 };
             }
         };
-
-        pub const argon2 = Algorithm.argon2id;
-
-        pub const label = bun.ComptimeStringMap(
-            Algorithm,
-            .{
-                .{ "argon2i", .argon2i },
-                .{ "argon2d", .argon2d },
-                .{ "argon2id", .argon2id },
-                .{ "bcrypt", .bcrypt },
-            },
-        );
-
-        pub const default = Algorithm.argon2;
 
         pub fn get(pw: []const u8) ?Algorithm {
             if (pw[0] != '$') {
@@ -191,7 +68,7 @@ pub const PasswordObject = struct {
         io: std.Io,
         password: []const u8,
         algorithm: Algorithm.Value,
-    ) HashError![]const u8 {
+    ) HashError![]u8 {
         switch (algorithm) {
             inline .argon2i, .argon2d, .argon2id => |argon| {
                 var outbuf: [4096]u8 = undefined;
@@ -310,468 +187,468 @@ pub const PasswordObject = struct {
 };
 
 pub const JSPasswordObject = struct {
-    const PascalToUpperUnderscoreCaseFormatter = struct {
-        input: []const u8,
-        pub fn format(self: @This(), writer: *std.Io.Writer) !void {
-            for (self.input) |c| {
-                if (std.ascii.isUpper(c)) {
-                    try writer.writeByte('_');
-                    try writer.writeByte(c);
-                } else if (std.ascii.isLower(c)) {
-                    try writer.writeByte(std.ascii.toUpper(c));
-                } else {
-                    try writer.writeByte(c);
+    const BindingModule = bun.bindgen.Module("PasswordObject");
+    pub const HashSchema = BindingModule.function("hash");
+    pub const HashSyncSchema = BindingModule.function("hashSync");
+    pub const VerifySchema = BindingModule.function("verify");
+    pub const VerifySyncSchema = BindingModule.function("verifySync");
+    pub const HashBinding = bun.bindgen.Fn(HashSchema, bindHash);
+    pub const HashSyncBinding = bun.bindgen.Fn(HashSyncSchema, bindHashSync);
+    pub const VerifyBinding = bun.bindgen.Fn(VerifySchema, bindVerify);
+    pub const VerifySyncBinding = bun.bindgen.Fn(VerifySyncSchema, bindVerifySync);
+
+    comptime {
+        _ = HashBinding;
+        _ = HashSyncBinding;
+        _ = VerifyBinding;
+        _ = VerifySyncBinding;
+    }
+
+    fn parseAlgorithmName(name: anytype) ?PasswordObject.Algorithm {
+        if (name.eqlUTF8("argon2i")) return .argon2i;
+        if (name.eqlUTF8("argon2d")) return .argon2d;
+        if (name.eqlUTF8("argon2id")) return .argon2id;
+        if (name.eqlUTF8("bcrypt")) return .bcrypt;
+        return null;
+    }
+
+    fn defaultHashAlgorithm(algorithm: PasswordObject.Algorithm) PasswordObject.Algorithm.Value {
+        return switch (algorithm) {
+            .argon2i => .{ .argon2i = .{} },
+            .argon2d => .{ .argon2d = .{} },
+            .argon2id => .{ .argon2id = .{} },
+            .bcrypt => .{ .bcrypt = 10 },
+        };
+    }
+
+    fn algorithmNumber(
+        comptime Schema: type,
+        context: bun.bindgen.CallContext(Schema),
+        input: anytype,
+        default: i32,
+        comptime invalid_type: anytype,
+    ) bun.bindgen.CallError(Schema)!i32 {
+        const converted = try input.convert(context);
+        return switch (converted.value) {
+            .number => |number| number,
+            .null_value, .undefined_value => default,
+            .invalid => context.fail(invalid_type, {}),
+        };
+    }
+
+    fn hashAlgorithm(
+        comptime Schema: type,
+        context: bun.bindgen.CallContext(Schema),
+        argument: anytype,
+    ) bun.bindgen.CallError(Schema)!PasswordObject.Algorithm.Value {
+        const input = argument orelse return .default;
+        return switch (input) {
+            .name => |name| defaultHashAlgorithm(parseAlgorithmName(name) orelse return context.fail(.unknown_algorithm, {})),
+            .options => |options| options: {
+                const algorithm_input = options.algorithm orelse return context.fail(.missing_options_algorithm, {});
+                const name = switch (algorithm_input) {
+                    .name => |name| name,
+                    .null_value, .undefined_value => return context.fail(.missing_options_algorithm, {}),
+                    .invalid => return context.fail(.invalid_algorithm_type, {}),
+                };
+                const algorithm = parseAlgorithmName(name) orelse return context.fail(.unknown_algorithm, {});
+                if (algorithm == .bcrypt) {
+                    try options.time_cost.discard(context);
+                    try options.memory_cost.discard(context);
+                    const cost = try algorithmNumber(Schema, context, options.cost, 10, .invalid_cost_type);
+                    if (cost < 4 or cost > 31) return context.fail(.invalid_cost_range, {});
+                    break :options .{ .bcrypt = @intCast(cost) };
                 }
+
+                try options.cost.discard(context);
+                const time_cost = try algorithmNumber(Schema, context, options.time_cost, 2, .invalid_time_cost_type);
+                if (time_cost < 1) return context.fail(.invalid_time_cost_range, {});
+                const memory_cost = try algorithmNumber(Schema, context, options.memory_cost, 65536, .invalid_memory_cost_type);
+                if (memory_cost < 1) return context.fail(.invalid_memory_cost_range, {});
+                if (memory_cost < 8) return context.fail(.invalid_memory_cost_minimum, {});
+                const params: PasswordObject.Algorithm.Argon2Params = .{
+                    .time_cost = @intCast(time_cost),
+                    .memory_cost = @intCast(memory_cost),
+                };
+                break :options switch (algorithm) {
+                    .argon2i => .{ .argon2i = params },
+                    .argon2d => .{ .argon2d = params },
+                    .argon2id => .{ .argon2id = params },
+                    .bcrypt => unreachable,
+                };
+            },
+            .null_value, .undefined_value => .default,
+            .invalid => context.fail(.invalid_algorithm_type, {}),
+        };
+    }
+
+    fn verifyAlgorithm(
+        comptime Schema: type,
+        context: bun.bindgen.CallContext(Schema),
+        argument: anytype,
+    ) bun.bindgen.CallError(Schema)!?PasswordObject.Algorithm {
+        const input = argument orelse return null;
+        return switch (input) {
+            .name => |name| parseAlgorithmName(name) orelse return context.fail(.unknown_algorithm, {}),
+            .null_value, .undefined_value => null,
+            .invalid => context.fail(.invalid_algorithm_type, {}),
+        };
+    }
+
+    fn asyncInput(
+        comptime Schema: type,
+        context: bun.bindgen.CallContext(Schema),
+        argument: anytype,
+    ) bun.bindgen.CallError(Schema)![]u8 {
+        const converted = try argument.convert(context);
+        return switch (converted.value) {
+            .buffer => |bytes| try bytes.dupe(bun.default_allocator),
+            .string => |*text| try text.toOwnedSlice(bun.default_allocator),
+        };
+    }
+
+    const SyncInput = union(enum) {
+        buffer: []const u8,
+        string: bun.String.Slice,
+
+        fn slice(input: *const SyncInput) []const u8 {
+            return switch (input.*) {
+                .buffer => |bytes| bytes,
+                .string => |*text| text.slice(),
+            };
+        }
+
+        fn deinit(input: *SyncInput) void {
+            switch (input.*) {
+                .buffer => {},
+                .string => |*text| text.deinit(),
             }
         }
     };
 
-    pub export fn JSPasswordObject__create(globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-        var object = jsc.JSObject.createEmpty(globalObject, 4);
-        object.putDirect(globalObject, ZigString.static("hash"), jsc.JSFunction.create(globalObject, "hash", JSPasswordObject__hash, 2, .{}).toJS());
-        object.putDirect(globalObject, ZigString.static("hashSync"), jsc.JSFunction.create(globalObject, "hashSync", JSPasswordObject__hashSync, 2, .{}).toJS());
-        object.putDirect(globalObject, ZigString.static("verify"), jsc.JSFunction.create(globalObject, "verify", JSPasswordObject__verify, 2, .{}).toJS());
-        object.putDirect(globalObject, ZigString.static("verifySync"), jsc.JSFunction.create(globalObject, "verifySync", JSPasswordObject__verifySync, 2, .{}).toJS());
-        return object.toJS();
+    fn syncInput(
+        comptime Schema: type,
+        context: bun.bindgen.CallContext(Schema),
+        value: anytype,
+        comptime invalid_tag: anytype,
+    ) bun.bindgen.CallError(Schema)!SyncInput {
+        return switch (value.*) {
+            .buffer => |*bytes| .{
+                .buffer = bytes.unsafePtr("the generated C++ frame owns this password/hash byte lease through synchronous password processing"),
+            },
+            .string => |*text| .{ .string = try text.toUTF8(bun.default_allocator) },
+            .invalid => context.fail(invalid_tag, {}),
+        };
+    }
+
+    fn returnOperationError(
+        comptime Schema: type,
+        comptime Return: type,
+        context: bun.bindgen.CallContext(Schema),
+        err: PasswordObject.HashError,
+    ) bun.bindgen.CallError(Schema)!Return {
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.AuthenticationFailed => context.fail(.authentication_failed, {}),
+            error.OutputTooLong => context.fail(.output_too_long, {}),
+            error.IdentityElement => context.fail(.identity_element, {}),
+            error.InvalidEncoding => context.fail(.invalid_encoding, {}),
+            error.SignatureVerificationFailed => context.fail(.signature_verification_failed, {}),
+            error.KeyMismatch => context.fail(.key_mismatch, {}),
+            error.NonCanonical => context.fail(.non_canonical, {}),
+            error.NotSquare => context.fail(.not_square, {}),
+            error.PasswordVerificationFailed => context.fail(.password_verification_failed, {}),
+            error.WeakParameters => context.fail(.weak_parameters, {}),
+            error.WeakPublicKey => context.fail(.weak_public_key, {}),
+            error.UnexpectedSubgroup => context.fail(.unexpected_subgroup, {}),
+            error.ContextTooLong => context.fail(.context_too_long, {}),
+            error.ThreadQuotaExceeded => context.fail(.thread_quota_exceeded, {}),
+            error.SystemResources => context.fail(.system_resources, {}),
+            error.LockedMemoryLimitExceeded => context.fail(.locked_memory_limit_exceeded, {}),
+            error.Unexpected => context.fail(.unexpected, {}),
+            error.Canceled => context.fail(.canceled, {}),
+            error.NoSpaceLeft => context.fail(.no_space_left, {}),
+            error.AllocatorRequired => context.fail(.allocator_required, {}),
+            error.UnsupportedAlgorithm => context.fail(.unsupported_algorithm, {}),
+            error.ConcurrencyUnavailable => context.fail(.concurrency_unavailable, {}),
+        };
+    }
+
+    fn completeOperationError(completion: anytype, err: PasswordObject.HashError) void {
+        switch (err) {
+            error.OutOfMemory => completion.outOfMemory(),
+            error.AuthenticationFailed => completion.fail(.authentication_failed, {}),
+            error.OutputTooLong => completion.fail(.output_too_long, {}),
+            error.IdentityElement => completion.fail(.identity_element, {}),
+            error.InvalidEncoding => completion.fail(.invalid_encoding, {}),
+            error.SignatureVerificationFailed => completion.fail(.signature_verification_failed, {}),
+            error.KeyMismatch => completion.fail(.key_mismatch, {}),
+            error.NonCanonical => completion.fail(.non_canonical, {}),
+            error.NotSquare => completion.fail(.not_square, {}),
+            error.PasswordVerificationFailed => completion.fail(.password_verification_failed, {}),
+            error.WeakParameters => completion.fail(.weak_parameters, {}),
+            error.WeakPublicKey => completion.fail(.weak_public_key, {}),
+            error.UnexpectedSubgroup => completion.fail(.unexpected_subgroup, {}),
+            error.ContextTooLong => completion.fail(.context_too_long, {}),
+            error.ThreadQuotaExceeded => completion.fail(.thread_quota_exceeded, {}),
+            error.SystemResources => completion.fail(.system_resources, {}),
+            error.LockedMemoryLimitExceeded => completion.fail(.locked_memory_limit_exceeded, {}),
+            error.Unexpected => completion.fail(.unexpected, {}),
+            error.Canceled => completion.fail(.canceled, {}),
+            error.NoSpaceLeft => completion.fail(.no_space_left, {}),
+            error.AllocatorRequired => completion.fail(.allocator_required, {}),
+            error.UnsupportedAlgorithm => completion.fail(.unsupported_algorithm, {}),
+            error.ConcurrencyUnavailable => completion.fail(.concurrency_unavailable, {}),
+        }
     }
 
     const HashJob = struct {
         algorithm: PasswordObject.Algorithm.Value,
         io: std.Io,
-        password: []const u8,
-        promise: jsc.JSPromise.Strong,
-        event_loop: *jsc.EventLoop,
-        global: *jsc.JSGlobalObject,
-        ref: Async.KeepAlive = .{},
-        task: jsc.BackgroundTask = .{ .callback = &run },
+        password: []u8,
+        completion: bun.bindgen.OwnedCompletion(HashSchema),
+        task: bun.BackgroundTaskGroup.Task = .{ .callback = &run, .on_cancel = &cancel },
 
-        pub const new = bun.TrivialNew(@This());
-
-        pub const Result = struct {
-            value: Value,
-            ref: Async.KeepAlive = .{},
-
-            task: jsc.AnyTask = undefined,
-            promise: jsc.JSPromise.Strong,
-            global: *jsc.JSGlobalObject,
-
-            pub const new = bun.TrivialNew(@This());
-
-            pub const Value = union(enum) {
-                err: PasswordObject.HashError,
-                hash: []const u8,
-
-                pub fn toErrorInstance(this: Value, globalObject: *jsc.JSGlobalObject) bun.JSError!*jsc.JSObject {
-                    const error_code = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "PASSWORD{f}", .{PascalToUpperUnderscoreCaseFormatter{ .input = @errorName(this.err) }}));
-                    defer bun.default_allocator.free(error_code);
-                    const instance = try globalObject.createErrorInstance("Password hashing failed with error \"{s}\"", .{@errorName(this.err)});
-                    instance.putDirect(globalObject, ZigString.static("code"), jsc.ZigString.init(error_code).toJS(globalObject));
-                    return instance;
-                }
+        pub fn schedule(job: *HashJob, background_tasks: *bun.BackgroundTaskGroup) void {
+            bun.BackgroundWork.schedule(background_tasks, &job.task) catch {
+                job.completion.fail(.concurrency_unavailable, {});
+                job.deinit();
             };
-
-            pub fn runFromJS(this: *Result) bun.JSTerminated!void {
-                var promise = this.promise;
-                defer promise.deinit();
-                this.promise = .{};
-                this.ref.unref(this.global.bunVM());
-                const global = this.global;
-                switch (this.value) {
-                    .err => {
-                        const error_instance: bun.JSError!jsc.JSValue = if (this.value.toErrorInstance(global)) |instance| instance.toJS() else |err| err;
-                        bun.destroy(this);
-                        try promise.rejectWithAsyncStack(global, error_instance);
-                    },
-                    .hash => |value| {
-                        defer bun.default_allocator.free(value);
-                        const js_string = jsc.ZigString.init(value).toJS(global);
-                        bun.destroy(this);
-                        try promise.resolve(global, js_string);
-                    },
-                }
-            }
-        };
-
-        pub fn deinit(this: *HashJob) void {
-            this.promise.deinit();
-            bun.freeSensitive(bun.default_allocator, this.password);
-            bun.destroy(this);
         }
 
-        pub fn getValue(io: std.Io, password: []const u8, algorithm: PasswordObject.Algorithm.Value) Result.Value {
-            const value = PasswordObject.hash(bun.default_allocator, io, password, algorithm) catch |err| {
-                return Result.Value{ .err = err };
+        fn run(task: *bun.BackgroundTaskGroup.Task) void {
+            const job: *HashJob = @fieldParentPtr("task", task);
+            defer job.deinit();
+            const output = PasswordObject.hash(
+                bun.default_allocator,
+                job.io,
+                job.password,
+                job.algorithm,
+            ) catch |err| {
+                completeOperationError(&job.completion, err);
+                return;
             };
-            return Result.Value{ .hash = value };
+            defer bun.freeSensitive(bun.default_allocator, output);
+            const encoded = bun.bindgen.UTF8String.fromSlice(output) catch {
+                job.completion.outOfMemory();
+                return;
+            };
+            job.completion.resolve(encoded);
         }
 
-        pub fn run(task: *bun.BackgroundTaskGroup.Task) void {
-            var this: *HashJob = @fieldParentPtr("task", task);
-            this.finish(getValue(this.io, this.password, this.algorithm));
+        fn cancel(task: *bun.BackgroundTaskGroup.Task) void {
+            const job: *HashJob = @fieldParentPtr("task", task);
+            job.completion.release();
+            job.deinit();
         }
 
-        fn finish(this: *HashJob, value: Result.Value) void {
-            var result = Result.new(.{
-                .value = value,
-                .task = undefined,
-                .promise = this.promise,
-                .global = this.global,
-                .ref = this.ref,
-            });
-            this.promise = .empty;
-
-            result.task = jsc.AnyTask.New(Result, Result.runFromJS).init(result);
-            this.ref = .{};
-            this.event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(&result.task));
-            this.deinit();
+        fn deinit(job: *HashJob) void {
+            bun.freeSensitive(bun.default_allocator, job.password);
+            bun.destroy(job);
         }
     };
-
-    pub fn hash(globalObject: *jsc.JSGlobalObject, password: []const u8, algorithm: PasswordObject.Algorithm.Value, comptime sync: bool) bun.JSError!jsc.JSValue {
-        assert(password.len > 0); // caller must check
-
-        if (comptime sync) {
-            const value = HashJob.getValue(globalObject.bunVM().io, password, algorithm);
-            switch (value) {
-                .err => {
-                    const error_instance = try value.toErrorInstance(globalObject);
-                    return globalObject.throwValue(error_instance.toJS());
-                },
-                .hash => |h| {
-                    defer bun.default_allocator.free(h);
-                    return jsc.ZigString.init(h).toJS(globalObject);
-                },
-            }
-
-            unreachable;
-        }
-
-        const promise = jsc.JSPromise.Strong.init(globalObject);
-
-        var job = HashJob.new(.{
-            .algorithm = algorithm,
-            .io = globalObject.bunVM().io,
-            .password = password,
-            .promise = promise,
-            .event_loop = globalObject.bunVM().eventLoop(),
-            .global = globalObject,
-        });
-        job.ref.ref(globalObject.bunVM());
-        jsc.BackgroundWork.schedule(&globalObject.bunVM().background_tasks, &job.task) catch |err| {
-            job.finish(.{ .err = err });
-        };
-
-        return promise.value();
-    }
-
-    pub fn verify(globalObject: *jsc.JSGlobalObject, password: []const u8, prev_hash: []const u8, algorithm: ?PasswordObject.Algorithm, comptime sync: bool) bun.JSError!jsc.JSValue {
-        assert(password.len > 0); // caller must check
-
-        if (comptime sync) {
-            const value = VerifyJob.getValue(globalObject.bunVM().io, password, prev_hash, algorithm);
-            switch (value) {
-                .err => {
-                    const error_instance = try value.toErrorInstance(globalObject);
-                    return globalObject.throwValue(error_instance.toJS());
-                },
-                .pass => |pass| {
-                    return jsc.JSValue.jsBoolean(pass);
-                },
-            }
-
-            unreachable;
-        }
-
-        var promise = jsc.JSPromise.Strong.init(globalObject);
-
-        const job = VerifyJob.new(.{
-            .algorithm = algorithm,
-            .io = globalObject.bunVM().io,
-            .password = password,
-            .prev_hash = prev_hash,
-            .promise = promise,
-            .event_loop = globalObject.bunVM().eventLoop(),
-            .global = globalObject,
-        });
-        job.ref.ref(globalObject.bunVM());
-        jsc.BackgroundWork.schedule(&globalObject.bunVM().background_tasks, &job.task) catch |err| {
-            job.finish(.{ .err = err });
-        };
-
-        return promise.value();
-    }
-
-    // Once we have bindings generator, this should be replaced with a generated function
-    pub fn JSPasswordObject__hash(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const arguments_ = callframe.arguments_old(2);
-        const arguments = arguments_.ptr[0..arguments_.len];
-
-        if (arguments.len < 1) {
-            return globalObject.throwNotEnoughArguments("hash", 1, 0);
-        }
-
-        var algorithm = PasswordObject.Algorithm.Value.default;
-
-        if (arguments.len > 1 and !arguments[1].isEmptyOrUndefinedOrNull()) {
-            algorithm = try PasswordObject.Algorithm.Value.fromJS(globalObject, arguments[1]);
-        }
-
-        // TODO: this most likely should error like `hashSync` instead of stringifying.
-        //
-        // fromJS(...) orelse {
-        //   return globalObject.throwInvalidArgumentType("hash", "password", "string or TypedArray");
-        // }
-        const password_to_hash = try jsc.Node.StringOrBuffer.fromJSToOwnedSlice(globalObject, arguments[0], bun.default_allocator);
-        errdefer bun.default_allocator.free(password_to_hash);
-
-        if (password_to_hash.len == 0) {
-            return globalObject.throwInvalidArguments("password must not be empty", .{});
-        }
-
-        return hash(globalObject, password_to_hash, algorithm, false);
-    }
-
-    // Once we have bindings generator, this should be replaced with a generated function
-    pub fn JSPasswordObject__hashSync(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const arguments_ = callframe.arguments_old(2);
-        const arguments = arguments_.ptr[0..arguments_.len];
-
-        if (arguments.len < 1) {
-            return globalObject.throwNotEnoughArguments("hash", 1, 0);
-        }
-
-        var algorithm = PasswordObject.Algorithm.Value.default;
-
-        if (arguments.len > 1 and !arguments[1].isEmptyOrUndefinedOrNull()) {
-            algorithm = try PasswordObject.Algorithm.Value.fromJS(globalObject, arguments[1]);
-        }
-
-        var string_or_buffer = try jsc.Node.StringOrBuffer.fromJS(globalObject, bun.default_allocator, arguments[0]) orelse {
-            return globalObject.throwInvalidArgumentType("hash", "password", "string or TypedArray");
-        };
-        defer string_or_buffer.deinit();
-
-        if (string_or_buffer.slice().len == 0) {
-            return globalObject.throwInvalidArguments("password must not be empty", .{});
-        }
-
-        return hash(globalObject, string_or_buffer.slice(), algorithm, true);
-    }
 
     const VerifyJob = struct {
-        algorithm: ?PasswordObject.Algorithm = null,
+        algorithm: ?PasswordObject.Algorithm,
         io: std.Io,
-        password: []const u8,
-        prev_hash: []const u8,
-        promise: jsc.JSPromise.Strong,
-        event_loop: *jsc.EventLoop,
-        global: *jsc.JSGlobalObject,
-        ref: Async.KeepAlive = .{},
-        task: jsc.BackgroundTask = .{ .callback = &run },
+        password: []u8,
+        previous_hash: []u8,
+        completion: bun.bindgen.OwnedCompletion(VerifySchema),
+        task: bun.BackgroundTaskGroup.Task = .{ .callback = &run, .on_cancel = &cancel },
 
-        pub const new = bun.TrivialNew(@This());
-
-        pub const Result = struct {
-            value: Value,
-            ref: Async.KeepAlive = .{},
-
-            task: jsc.AnyTask = undefined,
-            promise: jsc.JSPromise.Strong,
-            global: *jsc.JSGlobalObject,
-
-            pub const new = bun.TrivialNew(@This());
-
-            pub const Value = union(enum) {
-                err: PasswordObject.HashError,
-                pass: bool,
-
-                pub fn toErrorInstance(this: Value, globalObject: *jsc.JSGlobalObject) bun.JSError!*jsc.JSObject {
-                    const error_code = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "PASSWORD{f}", .{PascalToUpperUnderscoreCaseFormatter{ .input = @errorName(this.err) }}));
-                    defer bun.default_allocator.free(error_code);
-                    const instance = try globalObject.createErrorInstance("Password verification failed with error \"{s}\"", .{@errorName(this.err)});
-                    instance.putDirect(globalObject, ZigString.static("code"), jsc.ZigString.init(error_code).toJS(globalObject));
-                    return instance;
-                }
+        pub fn schedule(job: *VerifyJob, background_tasks: *bun.BackgroundTaskGroup) void {
+            bun.BackgroundWork.schedule(background_tasks, &job.task) catch {
+                job.completion.fail(.concurrency_unavailable, {});
+                job.deinit();
             };
-
-            pub fn runFromJS(this: *Result) bun.JSTerminated!void {
-                var promise = this.promise;
-                defer promise.deinit();
-                this.promise = .{};
-                this.ref.unref(this.global.bunVM());
-                const global = this.global;
-                switch (this.value) {
-                    .err => {
-                        const error_instance: bun.JSError!jsc.JSValue = if (this.value.toErrorInstance(global)) |instance| instance.toJS() else |err| err;
-                        bun.destroy(this);
-                        try promise.rejectWithAsyncStack(global, error_instance);
-                    },
-                    .pass => |pass| {
-                        bun.destroy(this);
-                        try promise.resolve(global, jsc.JSValue.jsBoolean(pass));
-                    },
-                }
-            }
-        };
-
-        pub fn deinit(this: *VerifyJob) void {
-            this.promise.deinit();
-
-            bun.freeSensitive(bun.default_allocator, this.password);
-            bun.freeSensitive(bun.default_allocator, this.prev_hash);
-
-            bun.destroy(this);
         }
 
-        pub fn getValue(io: std.Io, password: []const u8, prev_hash: []const u8, algorithm: ?PasswordObject.Algorithm) Result.Value {
-            const pass = PasswordObject.verify(bun.default_allocator, io, password, prev_hash, algorithm) catch |err| {
-                return Result.Value{ .err = err };
+        fn run(task: *bun.BackgroundTaskGroup.Task) void {
+            const job: *VerifyJob = @fieldParentPtr("task", task);
+            defer job.deinit();
+            const passed = PasswordObject.verify(
+                bun.default_allocator,
+                job.io,
+                job.password,
+                job.previous_hash,
+                job.algorithm,
+            ) catch |err| {
+                completeOperationError(&job.completion, err);
+                return;
             };
-            return Result.Value{ .pass = pass };
+            job.completion.resolve(passed);
         }
 
-        pub fn run(task: *bun.BackgroundTaskGroup.Task) void {
-            var this: *VerifyJob = @fieldParentPtr("task", task);
-            this.finish(getValue(this.io, this.password, this.prev_hash, this.algorithm));
+        fn cancel(task: *bun.BackgroundTaskGroup.Task) void {
+            const job: *VerifyJob = @fieldParentPtr("task", task);
+            job.completion.release();
+            job.deinit();
         }
 
-        fn finish(this: *VerifyJob, value: Result.Value) void {
-            var result = Result.new(.{
-                .value = value,
-                .task = undefined,
-                .promise = this.promise,
-                .global = this.global,
-                .ref = this.ref,
-            });
-            this.promise = .empty;
-
-            result.task = jsc.AnyTask.New(Result, Result.runFromJS).init(result);
-            this.ref = .{};
-            this.event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(&result.task));
-            this.deinit();
+        fn deinit(job: *VerifyJob) void {
+            bun.freeSensitive(bun.default_allocator, job.password);
+            bun.freeSensitive(bun.default_allocator, job.previous_hash);
+            bun.destroy(job);
         }
     };
 
-    // Once we have bindings generator, this should be replaced with a generated function
-    pub fn JSPasswordObject__verify(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const arguments_ = callframe.arguments_old(3);
-        const arguments = arguments_.ptr[0..arguments_.len];
-
-        if (arguments.len < 2) {
-            return globalObject.throwNotEnoughArguments("verify", 2, 0);
-        }
-
-        var algorithm: ?PasswordObject.Algorithm = null;
-
-        if (arguments.len > 2 and !arguments[2].isEmptyOrUndefinedOrNull()) {
-            if (!arguments[2].isString()) {
-                return globalObject.throwInvalidArgumentType("verify", "algorithm", "string");
-            }
-
-            const algorithm_string = try arguments[2].getZigString(globalObject);
-
-            algorithm = PasswordObject.Algorithm.label.getWithEql(algorithm_string, jsc.ZigString.eqlComptime) orelse {
-                if (!globalObject.hasException()) {
-                    return globalObject.throwInvalidArgumentType("verify", "algorithm", unknown_password_algorithm_message);
-                }
-                return error.JSError;
-            };
-        }
-
-        // TODO: this most likely should error like `verifySync` instead of stringifying.
-        //
-        // fromJS(...) orelse {
-        //   return globalObject.throwInvalidArgumentType("hash", "password", "string or TypedArray");
-        // }
-        const owned_password = try jsc.Node.StringOrBuffer.fromJSToOwnedSlice(globalObject, arguments[0], bun.default_allocator);
-
-        // TODO: this most likely should error like `verifySync` instead of stringifying.
-        //
-        // fromJS(...) orelse {
-        //   return globalObject.throwInvalidArgumentType("hash", "password", "string or TypedArray");
-        // }
-        const owned_hash = jsc.Node.StringOrBuffer.fromJSToOwnedSlice(globalObject, arguments[1], bun.default_allocator) catch |err| {
-            bun.default_allocator.free(owned_password);
-            return err;
-        };
-
-        if (owned_hash.len == 0) {
-            bun.default_allocator.free(owned_password);
-            return jsc.JSPromise.resolvedPromiseValue(globalObject, .false);
-        }
-
-        if (owned_password.len == 0) {
-            bun.default_allocator.free(owned_hash);
-            return jsc.JSPromise.resolvedPromiseValue(globalObject, .false);
-        }
-
-        return verify(globalObject, owned_password, owned_hash, algorithm, false);
+    fn bindHash(
+        context: bun.bindgen.CallContext(HashSchema),
+        args: bun.bindgen.Args(HashSchema),
+    ) bun.bindgen.CallError(HashSchema)!void {
+        return startHash(bun.current_runtime.io(), bun.current_runtime.backgroundTasks(), context, args);
     }
 
-    // Once we have bindings generator, this should be replaced with a generated function
-    pub fn JSPasswordObject__verifySync(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const arguments_ = callframe.arguments_old(3);
-        const arguments = arguments_.ptr[0..arguments_.len];
+    pub fn startHash(
+        io: std.Io,
+        background_tasks: *bun.BackgroundTaskGroup,
+        context: bun.bindgen.CallContext(HashSchema),
+        args: bun.bindgen.Args(HashSchema),
+    ) bun.bindgen.CallError(HashSchema)!void {
+        const password_argument = args.password orelse return context.fail(.missing_password, {});
+        const algorithm = try hashAlgorithm(HashSchema, context, args.algorithm);
+        const password = try asyncInput(HashSchema, context, password_argument);
+        errdefer bun.freeSensitive(bun.default_allocator, password);
+        if (password.len == 0) return context.fail(.empty_password, {});
 
-        if (arguments.len < 2) {
-            return globalObject.throwNotEnoughArguments("verify", 2, 0);
-        }
-
-        var algorithm: ?PasswordObject.Algorithm = null;
-
-        if (arguments.len > 2 and !arguments[2].isEmptyOrUndefinedOrNull()) {
-            if (!arguments[2].isString()) {
-                return globalObject.throwInvalidArgumentType("verify", "algorithm", "string");
-            }
-
-            const algorithm_string = try arguments[2].getZigString(globalObject);
-
-            algorithm = PasswordObject.Algorithm.label.getWithEql(algorithm_string, jsc.ZigString.eqlComptime) orelse {
-                if (!globalObject.hasException()) {
-                    return globalObject.throwInvalidArgumentType("verify", "algorithm", unknown_password_algorithm_message);
-                }
-                return .zero;
-            };
-        }
-
-        var password = try jsc.Node.StringOrBuffer.fromJS(globalObject, bun.default_allocator, arguments[0]) orelse {
-            return globalObject.throwInvalidArgumentType("verify", "password", "string or TypedArray");
+        const job = bun.default_allocator.create(HashJob) catch {
+            bun.freeSensitive(bun.default_allocator, password);
+            var completion = context.completion();
+            completion.outOfMemory();
+            return;
         };
-
-        var hash_ = try jsc.Node.StringOrBuffer.fromJS(globalObject, bun.default_allocator, arguments[1]) orelse {
-            password.deinit();
-            return globalObject.throwInvalidArgumentType("verify", "hash", "string or TypedArray");
+        var completion = context.completion();
+        job.* = .{
+            .algorithm = algorithm,
+            .io = io,
+            .password = password,
+            .completion = completion.take(),
         };
+        job.schedule(background_tasks);
+    }
 
+    fn bindHashSync(
+        context: bun.bindgen.CallContext(HashSyncSchema),
+        args: bun.bindgen.Args(HashSyncSchema),
+    ) bun.bindgen.CallError(HashSyncSchema)!bun.bindgen.UTF8String {
+        return hashSync(bun.current_runtime.io(), context, args);
+    }
+
+    pub fn hashSync(
+        io: std.Io,
+        context: bun.bindgen.CallContext(HashSyncSchema),
+        args: bun.bindgen.Args(HashSyncSchema),
+    ) bun.bindgen.CallError(HashSyncSchema)!bun.bindgen.UTF8String {
+        const password_argument = args.password orelse return context.fail(.missing_password, {});
+        const algorithm = try hashAlgorithm(HashSyncSchema, context, args.algorithm);
+        const forced = try password_argument.convertLast(context);
+        try context.lease(forced.proof);
+        var password = try syncInput(HashSyncSchema, context, &forced.converted.value, .invalid_password);
         defer password.deinit();
-        defer hash_.deinit();
+        if (password.slice().len == 0) return context.fail(.empty_password, {});
 
-        if (hash_.slice().len == 0) {
-            return .false;
+        const output = PasswordObject.hash(
+            bun.default_allocator,
+            io,
+            password.slice(),
+            algorithm,
+        ) catch |err| return returnOperationError(HashSyncSchema, bun.bindgen.UTF8String, context, err);
+        defer bun.freeSensitive(bun.default_allocator, output);
+        return bun.bindgen.UTF8String.fromSlice(output);
+    }
+
+    fn bindVerify(
+        context: bun.bindgen.CallContext(VerifySchema),
+        args: bun.bindgen.Args(VerifySchema),
+    ) bun.bindgen.CallError(VerifySchema)!void {
+        return startVerify(bun.current_runtime.io(), bun.current_runtime.backgroundTasks(), context, args);
+    }
+
+    pub fn startVerify(
+        io: std.Io,
+        background_tasks: *bun.BackgroundTaskGroup,
+        context: bun.bindgen.CallContext(VerifySchema),
+        args: bun.bindgen.Args(VerifySchema),
+    ) bun.bindgen.CallError(VerifySchema)!void {
+        const password_argument = args.password orelse return context.fail(.missing_arguments, {});
+        const hash_argument = args.hash orelse return context.fail(.missing_arguments, {});
+        const algorithm = try verifyAlgorithm(VerifySchema, context, args.algorithm);
+
+        const password = try asyncInput(VerifySchema, context, password_argument);
+        errdefer bun.freeSensitive(bun.default_allocator, password);
+        const previous_hash = try asyncInput(VerifySchema, context, hash_argument);
+        errdefer bun.freeSensitive(bun.default_allocator, previous_hash);
+
+        if (password.len == 0 or previous_hash.len == 0) {
+            bun.freeSensitive(bun.default_allocator, password);
+            bun.freeSensitive(bun.default_allocator, previous_hash);
+            var completion = context.completion();
+            completion.resolve(false);
+            return;
         }
 
-        if (password.slice().len == 0) {
-            return .false;
-        }
+        const job = bun.default_allocator.create(VerifyJob) catch {
+            bun.freeSensitive(bun.default_allocator, password);
+            bun.freeSensitive(bun.default_allocator, previous_hash);
+            var completion = context.completion();
+            completion.outOfMemory();
+            return;
+        };
+        var completion = context.completion();
+        job.* = .{
+            .algorithm = algorithm,
+            .io = io,
+            .password = password,
+            .previous_hash = previous_hash,
+            .completion = completion.take(),
+        };
+        job.schedule(background_tasks);
+    }
 
-        return verify(globalObject, password.slice(), hash_.slice(), algorithm, true);
+    fn bindVerifySync(
+        context: bun.bindgen.CallContext(VerifySyncSchema),
+        args: bun.bindgen.Args(VerifySyncSchema),
+    ) bun.bindgen.CallError(VerifySyncSchema)!bool {
+        return verifySync(bun.current_runtime.io(), context, args);
+    }
+
+    pub fn verifySync(
+        io: std.Io,
+        context: bun.bindgen.CallContext(VerifySyncSchema),
+        args: bun.bindgen.Args(VerifySyncSchema),
+    ) bun.bindgen.CallError(VerifySyncSchema)!bool {
+        const password_argument = args.password orelse return context.fail(.missing_arguments, {});
+        const hash_argument = args.hash orelse return context.fail(.missing_arguments, {});
+        const algorithm = try verifyAlgorithm(VerifySyncSchema, context, args.algorithm);
+
+        const converted_password = try password_argument.convert(context);
+        const forced_hash = try hash_argument.convertLast(context);
+        try context.lease(forced_hash.proof);
+
+        var password = try syncInput(VerifySyncSchema, context, &converted_password.value, .invalid_password);
+        defer password.deinit();
+        var previous_hash = try syncInput(VerifySyncSchema, context, &forced_hash.converted.value, .invalid_hash);
+        defer previous_hash.deinit();
+
+        if (password.slice().len == 0 or previous_hash.slice().len == 0) return false;
+        return PasswordObject.verify(
+            bun.default_allocator,
+            io,
+            password.slice(),
+            previous_hash.slice(),
+            algorithm,
+        ) catch |err| return returnOperationError(VerifySyncSchema, bool, context, err);
     }
 };
 
-const unknown_password_algorithm_message = "unknown algorithm, expected one of: \"bcrypt\", \"argon2id\", \"argon2d\", \"argon2i\" (default is \"argon2id\")";
-
-const string = []const u8;
+comptime {
+    _ = JSPasswordObject.HashBinding;
+    _ = JSPasswordObject.HashSyncBinding;
+    _ = JSPasswordObject.VerifyBinding;
+    _ = JSPasswordObject.VerifySyncBinding;
+}
 
 const std = @import("std");
 
 const bun = @import("bun");
-const Async = bun.Async;
-const assert = bun.assert;
-const default_allocator = bun.default_allocator;
 const strings = bun.strings;
-
-const jsc = bun.jsc;
-const CallFrame = jsc.CallFrame;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;

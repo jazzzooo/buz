@@ -20,21 +20,21 @@
 
 const GarbageCollectionController = @This();
 
-gc_timer: *uws.Timer = undefined,
+gc_timer: EventLoopTimer = .initPaused(.GarbageCollection),
 gc_last_heap_size: usize = 0,
 gc_last_heap_size_on_repeating_timer: usize = 0,
 heap_size_didnt_change_for_repeating_timer_ticks_count: u8 = 0,
 gc_timer_state: GCTimerState = GCTimerState.pending,
-gc_repeating_timer: *uws.Timer = undefined,
+gc_repeating_timer: EventLoopTimer = .initPaused(.GarbageCollectionRepeat),
 gc_timer_interval: i32 = 0,
 gc_repeating_timer_fast: bool = true,
 disabled: bool = false,
+initialized: bool = false,
 
 pub fn init(this: *GarbageCollectionController, vm: *VirtualMachine) void {
     const actual = uws.Loop.get();
-    this.gc_timer = uws.Timer.createFallthrough(actual, this);
-    this.gc_repeating_timer = uws.Timer.createFallthrough(actual, this);
-    actual.internal_loop_data.jsc_vm = vm.jsc_vm;
+    jsc.setLoopVM(actual, vm.jsc_vm);
+    this.initialized = true;
 
     if (comptime Environment.isDebug) {
         if (bun.env_var.BUN_TRACK_LAST_FN_NAME.get()) {
@@ -55,7 +55,7 @@ pub fn init(this: *GarbageCollectionController, vm: *VirtualMachine) void {
     if (vm.transpiler.env.get("BUN_GC_RUNS_UNTIL_SKIP_RELEASE_ACCESS")) |val| {
         if (std.fmt.parseInt(c_int, val, 10)) |parsed| {
             if (parsed >= 0) {
-                VirtualMachine.Bun__defaultRemainingRunsUntilSkipReleaseAccess = parsed;
+                bun.bindgen.Engine(SetDefaultRemainingRunsSchema).call(.{ .value = parsed });
             }
         } else |_| {}
     }
@@ -63,26 +63,33 @@ pub fn init(this: *GarbageCollectionController, vm: *VirtualMachine) void {
     this.disabled = vm.transpiler.env.has("BUN_GC_TIMER_DISABLE");
 
     if (!this.disabled)
-        this.gc_repeating_timer.set(this, onGCRepeatingTimer, gc_timer_interval, gc_timer_interval);
+        this.scheduleRepeatingTimer();
 }
 
 pub fn deinit(this: *GarbageCollectionController) void {
-    this.gc_timer.deinit(true);
-    this.gc_repeating_timer.deinit(true);
+    const vm = this.bunVM();
+    this.initialized = false;
+    if (this.gc_timer.in_heap != .none) vm.timer.remove(&this.gc_timer);
+    if (this.gc_repeating_timer.in_heap != .none) vm.timer.remove(&this.gc_repeating_timer);
+    this.gc_timer.state = .CANCELLED;
+    this.gc_repeating_timer.state = .CANCELLED;
+    this.gc_timer_state = .pending;
 }
 
 pub fn scheduleGCTimer(this: *GarbageCollectionController) void {
+    if (!this.initialized or this.disabled or this.bunVM().isShuttingDown()) return;
     this.gc_timer_state = .scheduled;
-    this.gc_timer.set(this, onGCTimer, 16, 0);
+    const deadline = bun.timespec.now(.force_real_time).addMs(16);
+    this.bunVM().timer.update(&this.gc_timer, &deadline);
 }
 
 pub fn bunVM(this: *GarbageCollectionController) *VirtualMachine {
     return @alignCast(@fieldParentPtr("gc_controller", this));
 }
 
-pub fn onGCTimer(timer: *uws.Timer) callconv(.c) void {
-    var this = timer.as(*GarbageCollectionController);
-    if (this.disabled) return;
+pub fn onGCTimer(this: *GarbageCollectionController) void {
+    this.gc_timer.state = .FIRED;
+    if (!this.initialized or this.disabled or this.bunVM().isShuttingDown()) return;
     this.gc_timer_state = .run_on_next_tick;
 }
 
@@ -98,19 +105,28 @@ pub fn onGCTimer(timer: *uws.Timer) callconv(.c) void {
 // When the heap size is increasing, we always switch to fast mode
 // When the heap size has been the same or less for 30 seconds, we switch to slow mode
 pub fn updateGCRepeatTimer(this: *GarbageCollectionController, comptime setting: @EnumLiteral()) void {
+    if (!this.initialized or this.disabled or this.bunVM().isShuttingDown()) return;
     if (setting == .fast and !this.gc_repeating_timer_fast) {
         this.gc_repeating_timer_fast = true;
-        this.gc_repeating_timer.set(this, onGCRepeatingTimer, this.gc_timer_interval, this.gc_timer_interval);
+        this.scheduleRepeatingTimer();
         this.heap_size_didnt_change_for_repeating_timer_ticks_count = 0;
     } else if (setting == .slow and this.gc_repeating_timer_fast) {
         this.gc_repeating_timer_fast = false;
-        this.gc_repeating_timer.set(this, onGCRepeatingTimer, 30_000, 30_000);
+        this.scheduleRepeatingTimer();
         this.heap_size_didnt_change_for_repeating_timer_ticks_count = 0;
     }
 }
 
-pub fn onGCRepeatingTimer(timer: *uws.Timer) callconv(.c) void {
-    var this = timer.as(*GarbageCollectionController);
+fn scheduleRepeatingTimer(this: *GarbageCollectionController) void {
+    if (!this.initialized or this.disabled or this.bunVM().isShuttingDown()) return;
+    const interval = if (this.gc_repeating_timer_fast) this.gc_timer_interval else 30_000;
+    const deadline = bun.timespec.now(.force_real_time).addMs(interval);
+    this.bunVM().timer.update(&this.gc_repeating_timer, &deadline);
+}
+
+pub fn onGCRepeatingTimer(this: *GarbageCollectionController) void {
+    this.gc_repeating_timer.state = .FIRED;
+    if (!this.initialized or this.disabled or this.bunVM().isShuttingDown()) return;
     const prev_heap_size = this.gc_last_heap_size_on_repeating_timer;
     this.performGC();
     this.gc_last_heap_size_on_repeating_timer = this.gc_last_heap_size;
@@ -124,10 +140,11 @@ pub fn onGCRepeatingTimer(timer: *uws.Timer) callconv(.c) void {
         this.heap_size_didnt_change_for_repeating_timer_ticks_count = 0;
         this.updateGCRepeatTimer(.fast);
     }
+    if (this.gc_repeating_timer.state != .ACTIVE) this.scheduleRepeatingTimer();
 }
 
 pub fn processGCTimer(this: *GarbageCollectionController) void {
-    if (this.disabled) return;
+    if (!this.initialized or this.disabled or this.bunVM().isShuttingDown()) return;
     var vm = this.bunVM().jsc_vm;
     this.processGCTimerWithHeapSize(vm, vm.blockBytesAllocated());
 }
@@ -188,3 +205,7 @@ const uws = bun.uws;
 
 const jsc = bun.jsc;
 const VirtualMachine = jsc.VirtualMachine;
+const EventLoopTimer = @import("../event_loop/EventLoopTimer.zig");
+
+const GarbageCollectionBindings = bun.bindgen.Module("garbage_collection");
+const SetDefaultRemainingRunsSchema = GarbageCollectionBindings.engineShim("setDefaultRemainingRunsUntilSkipReleaseAccess");

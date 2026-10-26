@@ -1,18 +1,17 @@
 // Users may override the global fetch implementation, so we need to ensure these are the originals.
-const bindings = $cpp("NodeFetch.cpp", "createNodeFetchInternalBinding");
-const WebResponse: typeof globalThis.Response = bindings[0];
-const WebRequest: typeof globalThis.Request = bindings[1];
-const Blob: typeof globalThis.Blob = bindings[2];
-const WebHeaders: typeof globalThis.Headers = bindings[3];
-const FormData: typeof globalThis.FormData = bindings[4];
-const File: typeof globalThis.File = bindings[5];
+const WebResponse: typeof globalThis.Response = $bindgenClass("Response.schema.zig", "Response");
+const WebRequest: typeof globalThis.Request = $bindgenClass("Request.schema.zig", "Request");
+const Blob: typeof globalThis.Blob = $bindgenClass("Blob.schema.zig", "Blob");
+const WebHeaders: typeof globalThis.Headers = $bindgenClass("WebCoreHeaders.schema.zig", "Headers");
+const FormData: typeof globalThis.FormData = $bindgenClass("WebCoreFormData.schema.zig", "FormData");
+const File: typeof globalThis.File = $bindgenClass("Blob.schema.zig", "File");
 const nativeFetch = Bun.fetch;
 
 // node-fetch extends from URLSearchParams in their implementation...
 // https://github.com/node-fetch/node-fetch/blob/8b3320d2a7c07bce4afc6b2bf6c3bbddda85b01f/src/headers.js#L44
 class Headers extends WebHeaders {
   raw() {
-    const obj = this.toJSON();
+    const obj = this.toJSON() as unknown as Record<string, string | string[]>;
     for (const key in obj) {
       const val = obj[key];
       if (!$isJSArray(val)) {
@@ -35,14 +34,14 @@ const kHeaders = Symbol("kHeaders");
 const kBody = Symbol("kBody");
 const HeadersPrototype = Headers.prototype;
 
-class Response extends WebResponse {
+class Response extends (WebResponse as unknown as new (body?: any, init?: any) => any) {
   [kBody]: any;
   [kHeaders];
 
   constructor(body, init) {
     const { Readable, Stream } = require("node:stream");
     if (body && typeof body === "object" && (body instanceof Stream || body instanceof Readable)) {
-      body = Readable.toWeb(body);
+      body = Readable.toWeb(body as Parameters<typeof Readable.toWeb>[0]);
     }
 
     super(body, init);
@@ -117,7 +116,7 @@ var ResponsePrototype = Response.prototype;
 
 const kUrl = Symbol("kUrl");
 
-class Request extends WebRequest {
+class Request extends (WebRequest as unknown as new (input?: any, init?: any) => any) {
   [kUrl]?: string;
 
   constructor(input, init) {
@@ -166,7 +165,7 @@ async function fetch(
         readable.pipe(passthrough);
         readable = passthrough;
       }
-      init = { ...init, body: Readable.toWeb(readable) };
+      init = { ...init, body: Readable.toWeb(readable as Parameters<typeof Readable.toWeb>[0]) };
     }
   }
   const response = await nativeFetch.$call(undefined, url, init);

@@ -1,15 +1,9 @@
-/**
- * ZigException handling and error processing utilities.
- *
- * This file contains functions for converting JavaScript exceptions to Zig exceptions,
- * processing stack traces, and collecting source lines.
- */
 #include "root.h"
 
 #include "JavaScriptCore/ErrorType.h"
 #include "JavaScriptCore/TopExceptionScope.h"
 #include "JavaScriptCore/Exception.h"
-#include "ErrorCode+List.h"
+#include "SchemaBindingsErrorCodes.h"
 #include "ErrorCode.h"
 #include "JavaScriptCore/ThrowScope.h"
 
@@ -17,7 +11,7 @@
 #include "JavaScriptCore/JSType.h"
 #include "JavaScriptCore/JSCJSValue.h"
 #include "JavaScriptCore/JSGlobalObject.h"
-#include "headers.h"
+#include "SchemaBindings.h"
 
 #include "BunClientData.h"
 #include "WebCoreJSBuiltins.h"
@@ -38,6 +32,7 @@
 #include "wtf/Assertions.h"
 #include "wtf/text/OrdinalNumber.h"
 #include "wtf/text/StringView.h"
+#include "wtf/text/MakeString.h"
 #include "wtf/text/WTFString.h"
 #include "wtf/text/StringToIntegerConversion.h"
 
@@ -56,53 +51,113 @@ static WTF::StringView StringView_slice(WTF::StringView sv, unsigned start, unsi
 using namespace JSC;
 using namespace WebCore;
 
-enum PopulateStackTraceFlags {
-    OnlyPosition,
-    OnlySourceLines,
-};
-
-#define SYNTAX_ERROR_CODE 4
-
+using DiagnosticFrame = Bun::Bindgen::ExceptionStackFrameResult;
+using DiagnosticDetails = Bun::Bindgen::ExceptionDetailsResult;
+using DiagnosticSnapshot = Bun::Bindgen::ExceptionSnapshotResult;
+using DiagnosticSourceLine = Bun::Bindgen::ExceptionSourceLineResult;
+using DiagnosticErrorCode = Bun::Bindgen::ExceptionErrorCode;
 using Zig::FinalizerSafety;
 
-static void populateStackFrameMetadata(JSC::VM& vm, JSC::JSGlobalObject* globalObject, const JSC::StackFrame& stackFrame, ZigStackFrame& frame, FinalizerSafety finalizerSafety)
+static DiagnosticDetails emptyDiagnosticDetails()
+{
+    DiagnosticDetails result {};
+    result.errorCode = DiagnosticErrorCode::unknown;
+    result.runtimeType = Bun::Bindgen::ExceptionRuntimeType::nothing;
+    return result;
+}
+
+static DiagnosticErrorCode diagnosticErrorCode(const JSC::ErrorInstance& error)
+{
+    if (error.isStackOverflowError())
+        return DiagnosticErrorCode::stack_overflow;
+    if (error.isOutOfMemoryError())
+        return DiagnosticErrorCode::out_of_memory;
+    switch (error.errorType()) {
+    case JSC::ErrorType::Error:
+        return DiagnosticErrorCode::generic_error;
+    case JSC::ErrorType::EvalError:
+        return DiagnosticErrorCode::eval_error;
+    case JSC::ErrorType::RangeError:
+        return DiagnosticErrorCode::range_error;
+    case JSC::ErrorType::ReferenceError:
+        return DiagnosticErrorCode::reference_error;
+    case JSC::ErrorType::SyntaxError:
+        return DiagnosticErrorCode::syntax_error;
+    case JSC::ErrorType::TypeError:
+        return DiagnosticErrorCode::type_error;
+    case JSC::ErrorType::URIError:
+        return DiagnosticErrorCode::uri_error;
+    case JSC::ErrorType::AggregateError:
+        return DiagnosticErrorCode::aggregate_error;
+    case JSC::ErrorType::SuppressedError:
+        return DiagnosticErrorCode::suppressed_error;
+    }
+    RELEASE_ASSERT_NOT_REACHED();
+}
+
+static bool clearRecoverableDiagnosticException(JSC::TopExceptionScope& scope)
+{
+    if (auto* exception = scope.exception()) {
+        if (auto* error = dynamicDowncast<JSC::ErrorInstance>(exception->value()); error && error->isOutOfMemoryError())
+            return false;
+    }
+    return scope.clearExceptionExceptTermination();
+}
+
+static void throwDiagnosticOutOfMemory(JSC::JSGlobalObject& global)
+{
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    JSC::throwOutOfMemoryError(&global, scope);
+}
+
+static WTF::String copyDiagnosticText(JSC::JSGlobalObject& globalObject, WTF::StringView text)
+{
+    auto result = WTF::tryMakeString(text);
+    if (result.isNull()) {
+        auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
+        JSC::throwOutOfMemoryError(&globalObject, scope);
+    }
+    return result;
+}
+
+static void populateStackFrameMetadata(JSC::VM& vm, JSC::JSGlobalObject* globalObject, const JSC::StackFrame& stackFrame, DiagnosticFrame& frame, FinalizerSafety finalizerSafety)
 {
     if (stackFrame.isWasmFrame()) {
-        frame.code_type = ZigStackFrameCodeWasm;
+        frame.codeType = Bun::Bindgen::ExceptionStackFrameCode::wasm;
 
         auto name = Zig::functionName(vm, globalObject, stackFrame, finalizerSafety, nullptr);
         if (!name.isEmpty()) {
-            frame.function_name = Bun::toStringRef(name);
+            frame.functionName = WTF::move(name);
         }
 
         auto sourceURL = Zig::sourceURL(vm, stackFrame);
         if (sourceURL != "[wasm code]"_s) {
             // [wasm code] is a useless source URL, so we don't bother to set it.
             // It is the default value JSC returns.
-            frame.source_url = Bun::toStringRef(sourceURL);
+            frame.sourceURL = WTF::move(sourceURL);
         }
         return;
     }
 
     auto sourceURL = Zig::sourceURL(vm, stackFrame);
-    frame.source_url = Bun::toStringRef(sourceURL);
+    frame.sourceURL = WTF::move(sourceURL);
     auto m_codeBlock = stackFrame.codeBlock();
     if (m_codeBlock) {
         switch (m_codeBlock->codeType()) {
         case JSC::EvalCode: {
-            frame.code_type = ZigStackFrameCodeEval;
+            frame.codeType = Bun::Bindgen::ExceptionStackFrameCode::eval;
             return;
         }
         case JSC::ModuleCode: {
-            frame.code_type = ZigStackFrameCodeModule;
+            frame.codeType = Bun::Bindgen::ExceptionStackFrameCode::module;
             return;
         }
         case JSC::GlobalCode: {
-            frame.code_type = ZigStackFrameCodeGlobal;
+            frame.codeType = Bun::Bindgen::ExceptionStackFrameCode::global;
             return;
         }
         case JSC::FunctionCode: {
-            frame.code_type = !m_codeBlock->isConstructor() ? ZigStackFrameCodeFunction : ZigStackFrameCodeConstructor;
+            frame.codeType = !m_codeBlock->isConstructor() ? Bun::Bindgen::ExceptionStackFrameCode::function : Bun::Bindgen::ExceptionStackFrameCode::constructor;
             break;
         }
         default:
@@ -122,120 +177,91 @@ static void populateStackFrameMetadata(JSC::VM& vm, JSC::JSGlobalObject* globalO
         }
     }
     if (!functionName.isEmpty())
-        frame.function_name = Bun::toStringRef(functionName);
+        frame.functionName = WTF::move(functionName);
 
-    frame.is_async = stackFrame.isAsyncFrame();
+    frame.isAsync = stackFrame.isAsyncFrame();
 }
 
-static void populateStackFramePosition(const JSC::StackFrame& stackFrame, BunString* source_lines,
-    OrdinalNumber* source_line_numbers, uint8_t source_lines_count,
-    ZigStackFramePosition& position, JSC::SourceProvider** referenced_source_provider, PopulateStackTraceFlags flags)
+static void populateStackFramePosition(const JSC::StackFrame& stackFrame, DiagnosticFrame& frame)
 {
-    auto code = stackFrame.codeBlock();
-    if (!code)
+    auto* code = stackFrame.codeBlock();
+    if (!code || !code->source().provider() || code->source().provider()->source().isNull())
         return;
-
-    auto* provider = code->source().provider();
-    if (!provider) [[unlikely]]
-        return;
-    // Make sure the range is valid:
-    // https://github.com/oven-sh/bun/issues/6951
-    WTF::StringView sourceString = provider->source();
-    if (sourceString.isNull()) [[unlikely]]
-        return;
-
     if (!stackFrame.hasBytecodeIndex()) {
         if (stackFrame.hasLineAndColumnInfo()) {
-            auto lineColumn = stackFrame.computeLineAndColumn();
-            position.line_zero_based = OrdinalNumber::fromOneBasedInt(lineColumn.line).zeroBasedInt();
-            position.column_zero_based = OrdinalNumber::fromOneBasedInt(lineColumn.column).zeroBasedInt();
+            auto location = stackFrame.computeLineAndColumn();
+            frame.line = Bun::knownStackIndex(OrdinalNumber::fromOneBasedInt(location.line).zeroBasedInt());
+            frame.column = Bun::knownStackIndex(OrdinalNumber::fromOneBasedInt(location.column).zeroBasedInt());
         }
-
-        position.byte_position = -1;
         return;
     }
-
     auto location = Bun::getAdjustedPositionForBytecode(code, stackFrame.bytecodeIndex());
-    memcpy(&position, &location, sizeof(ZigStackFramePosition));
-    if (flags == PopulateStackTraceFlags::OnlyPosition)
+    frame.line = Bun::knownStackIndex(location.lineZeroBased);
+    frame.column = Bun::knownStackIndex(location.columnZeroBased);
+    frame.bytePosition = Bun::knownStackIndex(location.bytePosition);
+}
+
+static bool isVisibleStackFrame(const JSC::StackFrame& frame)
+{
+    return !Zig::isImplementationVisibilityPrivate(frame) && (frame.hasLineAndColumnInfo() || frame.isWasmFrame());
+}
+
+static void populateSourceLines(JSC::JSGlobalObject& global, const JSC::StackFrame& frame, Vector<DiagnosticSourceLine>& lines, size_t limit)
+{
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    auto* code = frame.codeBlock();
+    if (!limit || !code || !frame.hasBytecodeIndex())
+        return;
+    auto* provider = code->source().provider();
+    if (!provider)
+        return;
+    StringView source = provider->source();
+    auto location = Bun::getAdjustedPositionForBytecode(code, frame.bytecodeIndex());
+    if (source.isNull() || location.bytePosition < 0 || static_cast<size_t>(location.bytePosition) > source.length() || location.lineZeroBased < 0)
         return;
 
-    if (source_lines_count > 1 && source_lines != nullptr && sourceString.is8Bit()) {
-        // Search for the beginning of the line
-        unsigned int lineStart = location.byte_position;
-        while (lineStart > 0 && sourceString[lineStart] != '\n') {
-            lineStart--;
+    size_t start = location.bytePosition;
+    size_t end = start;
+    while (start && source[start - 1] != '\n')
+        --start;
+    while (end < source.length() && source[end] != '\n')
+        ++end;
+    uint32_t line = location.lineZeroBased;
+    while (lines.size() < limit) {
+        auto text = copyDiagnosticText(global, source.substring(start, end - start));
+        RETURN_IF_EXCEPTION(scope, );
+        if (!lines.tryAppend(DiagnosticSourceLine { WTF::move(text), line })) {
+            JSC::throwOutOfMemoryError(&global, scope);
+            return;
         }
-
-        // Search for the end of the line
-        unsigned int lineEnd = location.byte_position;
-        unsigned int maxSearch = sourceString.length();
-        while (lineEnd < maxSearch && sourceString[lineEnd] != '\n') {
-            lineEnd++;
-        }
-
-        const unsigned char* bytes = sourceString.span8().data();
-
-        // Most of the time, when you look at a stack trace, you want a couple lines above.
-
-        // It is key to not clone this data because source code strings are large.
-        // Usage of toStringView (non-owning) is safe as we ref the provider.
-        provider->ref();
-        if (*referenced_source_provider != nullptr) {
-            (*referenced_source_provider)->deref();
-        }
-        *referenced_source_provider = provider;
-        source_lines[0] = Bun::toStringView(sourceString.substring(lineStart, lineEnd - lineStart));
-        source_line_numbers[0] = location.line();
-
-        if (lineStart > 0) {
-            auto byte_offset_in_source_string = lineStart - 1;
-            uint8_t source_line_i = 1;
-            auto remaining_lines_to_grab = source_lines_count - 1;
-
-            {
-                // This should probably be code points instead of newlines
-                while (byte_offset_in_source_string > 0 && bytes[byte_offset_in_source_string] != '\n') {
-                    byte_offset_in_source_string--;
-                }
-
-                byte_offset_in_source_string -= byte_offset_in_source_string > 0;
-            }
-
-            while (byte_offset_in_source_string > 0 && remaining_lines_to_grab > 0) {
-                unsigned int end_of_line_offset = byte_offset_in_source_string;
-
-                // This should probably be code points instead of newlines
-                while (byte_offset_in_source_string > 0 && bytes[byte_offset_in_source_string] != '\n') {
-                    byte_offset_in_source_string--;
-                }
-
-                // We are at the beginning of the line
-                source_lines[source_line_i] = Bun::toStringView(sourceString.substring(byte_offset_in_source_string, end_of_line_offset - byte_offset_in_source_string + 1));
-
-                source_line_numbers[source_line_i] = location.line().fromZeroBasedInt(location.line().zeroBasedInt() - source_line_i);
-                source_line_i++;
-
-                remaining_lines_to_grab--;
-
-                byte_offset_in_source_string -= byte_offset_in_source_string > 0;
-            }
-        }
+        if (!start || !line)
+            return;
+        end = start - 1;
+        start = end;
+        while (start && source[start - 1] != '\n')
+            --start;
+        --line;
     }
 }
 
-static void populateStackFrame(JSC::VM& vm, ZigStackTrace& trace, const JSC::StackFrame& stackFrame,
-    ZigStackFrame& frame, bool is_top, JSC::SourceProvider** referenced_source_provider, JSC::JSGlobalObject* globalObject, PopulateStackTraceFlags flags, FinalizerSafety finalizerSafety)
+static void populateStackTrace(JSC::JSGlobalObject* global, const Vector<JSC::StackFrame>& frames, Vector<DiagnosticFrame>& result, size_t limit, FinalizerSafety safety = FinalizerSafety::NotInFinalizer)
 {
-    if (flags == PopulateStackTraceFlags::OnlyPosition) {
-        populateStackFrameMetadata(vm, globalObject, stackFrame, frame, finalizerSafety);
-        populateStackFramePosition(stackFrame, nullptr,
-            nullptr,
-            0, frame.position, referenced_source_provider, flags);
-    } else if (flags == PopulateStackTraceFlags::OnlySourceLines) {
-        populateStackFramePosition(stackFrame, is_top ? trace.source_lines_ptr : nullptr,
-            is_top ? trace.source_lines_numbers : nullptr,
-            is_top ? trace.source_lines_to_collect : 0, frame.position, referenced_source_provider, flags);
+    auto& vm = global->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    if (!result.tryReserveCapacity(std::min(frames.size(), limit))) {
+        JSC::throwOutOfMemoryError(global, scope);
+        return;
+    }
+    for (const auto& stackFrame : frames) {
+        if (result.size() == limit)
+            break;
+        if (!isVisibleStackFrame(stackFrame))
+            continue;
+        DiagnosticFrame frame {};
+        populateStackFrameMetadata(vm, global, stackFrame, frame, safety);
+        RETURN_IF_EXCEPTION(scope, );
+        populateStackFramePosition(stackFrame, frame);
+        result.append(WTF::move(frame));
     }
 }
 
@@ -245,8 +271,8 @@ public:
     public:
         StringView functionName {};
         StringView sourceURL {};
-        WTF::OrdinalNumber lineNumber = WTF::OrdinalNumber::fromZeroBasedInt(0);
-        WTF::OrdinalNumber columnNumber = WTF::OrdinalNumber::fromZeroBasedInt(0);
+        WTF::OrdinalNumber lineNumber = WTF::OrdinalNumber::beforeFirst();
+        WTF::OrdinalNumber columnNumber = WTF::OrdinalNumber::beforeFirst();
 
         bool isConstructor = false;
         bool isGlobalCode = false;
@@ -289,28 +315,16 @@ public:
         StringView line = stack.substring(start, end - start);
         offset = end;
 
-        // the proper singular spelling is parenthesis
-        auto openingParentheses = line.reverseFind('(');
-        auto closingParentheses = line.reverseFind(')');
-
-        if (openingParentheses > closingParentheses)
-            openingParentheses = WTF::notFound;
-
-        if (openingParentheses == WTF::notFound || closingParentheses == WTF::notFound) {
-            // Special case: "unknown" frames don't have parentheses but are valid
-            // These appear in stack traces from certain error paths
-            if (line == "unknown"_s) {
-                frame.sourceURL = line;
-                frame.functionName = StringView();
-                return true;
-            }
-
-            // For any other frame without parentheses, terminate parsing as before
-            offset = stack.length();
-            return false;
+        if (line.startsWith("async "_s)) {
+            frame.isAsync = true;
+            line = line.substring(6);
         }
 
-        auto lineInner = StringView_slice(line, openingParentheses + 1, closingParentheses);
+        auto openingParentheses = line.find(" ("_s);
+        bool hasFunctionName = openingParentheses != WTF::notFound && line.endsWith(')');
+        auto lineInner = hasFunctionName
+            ? line.substring(openingParentheses + 2, line.length() - openingParentheses - 3)
+            : line;
 
         {
             auto marker1 = 0;
@@ -383,16 +397,11 @@ public:
         }
     done_block:
 
-        StringView functionName = line.substring(0, openingParentheses - 1);
+        StringView functionName = hasFunctionName ? line.left(openingParentheses) : StringView();
 
         if (functionName == "global code"_s) {
             functionName = StringView();
             frame.isGlobalCode = true;
-        }
-
-        if (functionName.startsWith("async "_s)) {
-            frame.isAsync = true;
-            functionName = functionName.substring(6);
         }
 
         if (functionName.startsWith("new "_s)) {
@@ -421,41 +430,6 @@ public:
     }
 };
 
-static void populateStackTrace(JSC::VM& vm, const WTF::Vector<JSC::StackFrame>& frames, ZigStackTrace& trace, JSC::JSGlobalObject* globalObject, PopulateStackTraceFlags flags, FinalizerSafety finalizerSafety = FinalizerSafety::NotInFinalizer)
-{
-    if (flags == PopulateStackTraceFlags::OnlyPosition) {
-        uint8_t frame_i = 0;
-        size_t stack_frame_i = 0;
-        const size_t total_frame_count = frames.size();
-        const uint8_t frame_count = total_frame_count < trace.frames_cap ? total_frame_count : trace.frames_cap;
-
-        while (frame_i < frame_count && stack_frame_i < total_frame_count) {
-            // Skip native frames
-            while (stack_frame_i < total_frame_count && !(frames.at(stack_frame_i).hasLineAndColumnInfo()) && !(frames.at(stack_frame_i).isWasmFrame())) {
-                stack_frame_i++;
-            }
-            if (stack_frame_i >= total_frame_count)
-                break;
-
-            ZigStackFrame& frame = trace.frames_ptr[frame_i];
-            frame.jsc_stack_frame_index = static_cast<int32_t>(stack_frame_i);
-            populateStackFrame(vm, trace, frames[stack_frame_i], frame, frame_i == 0, &trace.referenced_source_provider, globalObject, flags, finalizerSafety);
-            stack_frame_i++;
-            frame_i++;
-        }
-        trace.frames_len = frame_i;
-    } else if (flags == PopulateStackTraceFlags::OnlySourceLines) {
-        for (uint8_t i = 0; i < trace.frames_len; i++) {
-            ZigStackFrame& frame = trace.frames_ptr[i];
-            // A call with flags set to OnlySourceLines always follows a call with flags set to OnlyPosition,
-            // so jsc_stack_frame_index is always a valid value here.
-            ASSERT(frame.jsc_stack_frame_index >= 0);
-            ASSERT(static_cast<size_t>(frame.jsc_stack_frame_index) < frames.size());
-            populateStackFrame(vm, trace, frames[frame.jsc_stack_frame_index], frame, i == 0, &trace.referenced_source_provider, globalObject, flags, finalizerSafety);
-        }
-    }
-}
-
 static JSC::JSValue getNonObservable(JSC::VM& vm, JSC::JSGlobalObject* global, JSC::JSObject* obj, const JSC::PropertyName& propertyName)
 {
     PropertySlot slot = PropertySlot(obj, PropertySlot::InternalMethodType::VMInquiry, &vm);
@@ -473,117 +447,90 @@ static JSC::JSValue getNonObservable(JSC::VM& vm, JSC::JSGlobalObject* global, J
     return {};
 }
 
-static void fromErrorInstance(ZigException& except, JSC::JSGlobalObject* global,
-    JSC::ErrorInstance* err, const Vector<JSC::StackFrame>* stackTrace,
-    JSC::JSValue val, PopulateStackTraceFlags flags)
+static Bun::Bindgen::ExceptionRuntimeType bindgenExceptionRuntimeType(JSC::RuntimeType type)
 {
+    using Type = Bun::Bindgen::ExceptionRuntimeType;
+    switch (type) {
+    case JSC::TypeNothing:
+        return Type::nothing;
+    case JSC::TypeFunction:
+        return Type::function_value;
+    case JSC::TypeUndefined:
+        return Type::undefined_value;
+    case JSC::TypeNull:
+        return Type::null_value;
+    case JSC::TypeBoolean:
+        return Type::boolean_value;
+    case JSC::TypeAnyInt:
+        return Type::integer;
+    case JSC::TypeNumber:
+        return Type::number;
+    case JSC::TypeString:
+        return Type::string;
+    case JSC::TypeObject:
+        return Type::object;
+    case JSC::TypeSymbol:
+        return Type::symbol;
+    case JSC::TypeBigInt:
+        return Type::bigint;
+    }
+    RELEASE_ASSERT_NOT_REACHED();
+}
+
+static void fromErrorInstance(DiagnosticSnapshot& snapshot, JSC::JSGlobalObject* global,
+    JSC::ErrorInstance* err, const Vector<JSC::StackFrame>* stackTrace,
+    JSC::JSValue val, size_t frameLimit, size_t sourceLineLimit)
+{
+    auto& except = snapshot.details;
     JSC::JSObject* obj = dynamicDowncast<JSC::JSObject>(val);
     auto& vm = JSC::getVM(global);
     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
 
     bool getFromSourceURL = false;
     if (stackTrace != nullptr && stackTrace->size() > 0) {
-        populateStackTrace(vm, *stackTrace, except.stack, global, flags);
+        populateStackTrace(global, *stackTrace, snapshot.frames, frameLimit);
 
     } else if (err->stackTrace() != nullptr && err->stackTrace()->size() > 0) {
-        populateStackTrace(vm, *err->stackTrace(), except.stack, global, flags, FinalizerSafety::MustNotTriggerGC);
+        populateStackTrace(global, *err->stackTrace(), snapshot.frames, frameLimit, FinalizerSafety::MustNotTriggerGC);
 
     } else {
         getFromSourceURL = true;
     }
-    except.type = (unsigned char)err->errorType();
-    if (err->isStackOverflowError()) {
-        except.type = 253;
-    }
-    if (err->isOutOfMemoryError()) {
-        except.type = 8;
-    }
-    if (except.type == SYNTAX_ERROR_CODE) {
-        except.message = Bun::toStringRef(err->sanitizedMessageString(global));
+    if (!clearRecoverableDiagnosticException(scope))
+        return;
+    except.errorCode = diagnosticErrorCode(*err);
+    if (except.errorCode == DiagnosticErrorCode::syntax_error) {
+        except.message = err->sanitizedMessageString(global);
 
     } else if (JSC::JSValue message = obj->getIfPropertyExists(global, vm.propertyNames->message)) {
-        except.message = Bun::toStringRef(global, message);
-        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
+        except.message = message.toWTFString(global);
+        if (!clearRecoverableDiagnosticException(scope)) [[unlikely]]
             return;
     } else {
 
-        except.message = Bun::toStringRef(err->sanitizedMessageString(global));
+        except.message = err->sanitizedMessageString(global);
     }
 
-    if (!scope.clearExceptionExceptTermination()) [[unlikely]] {
+    if (!clearRecoverableDiagnosticException(scope)) [[unlikely]] {
         return;
     }
 
-    except.name = Bun::toStringRef(err->sanitizedNameString(global));
-    if (!scope.clearExceptionExceptTermination()) [[unlikely]] {
+    except.name = err->sanitizedNameString(global);
+    if (!clearRecoverableDiagnosticException(scope)) [[unlikely]] {
         return;
     }
 
-    except.runtime_type = err->runtimeTypeForCause();
+    except.runtimeType = bindgenExceptionRuntimeType(err->runtimeTypeForCause());
 
     const auto& names = builtinNames(vm);
-    if (except.type != SYNTAX_ERROR_CODE) {
-
-        JSC::JSValue syscall = getNonObservable(vm, global, obj, names.syscallPublicName());
-        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-            return;
-        if (syscall) {
-            if (syscall.isString()) {
-                except.syscall = Bun::toStringRef(global, syscall);
-                if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-                    return;
-            }
-        }
-
-        JSC::JSValue code = getNonObservable(vm, global, obj, names.codePublicName());
-        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-            return;
-        if (code) {
-            if (code.isString() || code.isNumber()) {
-                except.system_code = Bun::toStringRef(global, code);
-                if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-                    return;
-            }
-        }
-
-        JSC::JSValue path = getNonObservable(vm, global, obj, names.pathPublicName());
-        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-            return;
-        if (path) {
-            if (path.isString()) {
-                except.path = Bun::toStringRef(global, path);
-                if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-                    return;
-            }
-        }
-
-        JSC::JSValue fd = getNonObservable(vm, global, obj, names.fdPublicName());
-        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-            return;
-        if (fd) {
-            if (fd.isNumber()) {
-                except.fd = fd.toInt32(global);
-            }
-        }
-
-        JSC::JSValue errno_ = getNonObservable(vm, global, obj, names.errnoPublicName());
-        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-            return;
-        if (errno_) {
-            if (errno_.isNumber()) {
-                except.errno_ = errno_.toInt32(global);
-            }
-        }
-    }
-
-    if (getFromSourceURL) {
+    if (getFromSourceURL && frameLimit) {
 
         // we don't want to serialize JSC::StackFrame longer than we need to
         // so in this case, we parse the stack trace as a string
 
         // This one intentionally calls getters.
         JSC::JSValue stackValue = obj->getIfPropertyExists(global, vm.propertyNames->stack);
-        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
+        if (!clearRecoverableDiagnosticException(scope)) [[unlikely]]
             return;
         if (stackValue) {
             // Prevent infinite recursion if stack property is the error object itself
@@ -592,116 +539,99 @@ static void fromErrorInstance(ZigException& except, JSC::JSGlobalObject* global,
             }
             if (stackValue.isString()) {
                 WTF::String stack = stackValue.toWTFString(global);
-                if (!scope.clearExceptionExceptTermination()) [[unlikely]] {
+                if (!clearRecoverableDiagnosticException(scope)) [[unlikely]] {
                     return;
                 }
                 if (!stack.isEmpty()) {
 
                     V8StackTraceIterator iterator(stack);
-                    const uint8_t frame_count = except.stack.frames_cap;
-
-                    except.stack.frames_len = 0;
-
-                    iterator.forEachFrame([&](const V8StackTraceIterator::StackFrame& frame, bool& stop) -> void {
-                        ASSERT(except.stack.frames_len < frame_count);
-                        auto& current = except.stack.frames_ptr[except.stack.frames_len];
-                        current = {};
-
-                        String functionName = frame.functionName.toString();
-                        String sourceURL = frame.sourceURL.toString();
-                        current.function_name = Bun::toStringRef(functionName);
-                        current.source_url = Bun::toStringRef(sourceURL);
-                        current.position.line_zero_based = frame.lineNumber.zeroBasedInt();
-                        current.position.column_zero_based = frame.columnNumber.zeroBasedInt();
-
-                        current.remapped = true;
-                        current.is_async = frame.isAsync;
-
-                        if (frame.isConstructor) {
-                            current.code_type = ZigStackFrameCodeConstructor;
-                        } else if (frame.isGlobalCode) {
-                            current.code_type = ZigStackFrameCodeGlobal;
+                    iterator.forEachFrame([&](const V8StackTraceIterator::StackFrame& frame, bool& stop) {
+                        DiagnosticFrame current {};
+                        current.functionName = copyDiagnosticText(*global, frame.functionName);
+                        if (scope.exception()) {
+                            stop = true;
+                            return;
                         }
-
-                        except.stack.frames_len += 1;
-
-                        stop = except.stack.frames_len >= frame_count;
+                        current.sourceURL = copyDiagnosticText(*global, frame.sourceURL);
+                        if (scope.exception()) {
+                            stop = true;
+                            return;
+                        }
+                        current.line = Bun::knownStackIndex(frame.lineNumber.zeroBasedInt());
+                        current.column = Bun::knownStackIndex(frame.columnNumber.zeroBasedInt());
+                        current.remapped = true;
+                        current.isAsync = frame.isAsync;
+                        if (frame.isConstructor)
+                            current.codeType = Bun::Bindgen::ExceptionStackFrameCode::constructor;
+                        else if (frame.isGlobalCode)
+                            current.codeType = Bun::Bindgen::ExceptionStackFrameCode::global;
+                        if (!snapshot.frames.tryAppend(WTF::move(current))) {
+                            throwDiagnosticOutOfMemory(*global);
+                            stop = true;
+                            return;
+                        }
+                        stop = snapshot.frames.size() >= frameLimit;
                     });
+                    if (!clearRecoverableDiagnosticException(scope))
+                        return;
 
-                    if (except.stack.frames_len > 0) {
+                    if (!snapshot.frames.isEmpty()) {
                         getFromSourceURL = false;
-                        except.remapped = true;
                     }
                 }
             }
         }
     }
 
-    if (except.stack.frames_len == 0 && getFromSourceURL) {
-        JSC::JSValue sourceURL = getNonObservable(vm, global, obj, vm.propertyNames->sourceURL);
-        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
+    if (snapshot.frames.isEmpty() && getFromSourceURL && frameLimit) {
+        auto sourceURL = getNonObservable(vm, global, obj, vm.propertyNames->sourceURL);
+        if (!clearRecoverableDiagnosticException(scope))
             return;
         if (sourceURL) {
+            DiagnosticFrame frame {};
             if (sourceURL.isString()) {
-                except.stack.frames_ptr[0].source_url.deref();
-                except.stack.frames_ptr[0].source_url = Bun::toStringRef(global, sourceURL);
-                if (!scope.clearExceptionExceptTermination()) [[unlikely]]
+                frame.sourceURL = sourceURL.toWTFString(global);
+                if (!clearRecoverableDiagnosticException(scope))
                     return;
-
-                // Take care not to make these getter calls observable.
-
-                JSC::JSValue column = getNonObservable(vm, global, obj, vm.propertyNames->column);
-                if (!scope.clearExceptionExceptTermination()) [[unlikely]]
+                auto column = getNonObservable(vm, global, obj, vm.propertyNames->column);
+                if (!clearRecoverableDiagnosticException(scope))
                     return;
-                if (column) {
-                    if (column.isNumber()) {
-                        except.stack.frames_ptr[0].position.column_zero_based = OrdinalNumber::fromOneBasedInt(column.toInt32(global)).zeroBasedInt();
-                    }
-                }
-
-                JSC::JSValue line = getNonObservable(vm, global, obj, vm.propertyNames->line);
-                if (!scope.clearExceptionExceptTermination()) [[unlikely]]
+                if (column && column.isNumber())
+                    frame.column = Bun::knownStackIndex(OrdinalNumber::fromOneBasedInt(column.toInt32(global)).zeroBasedInt());
+                auto line = getNonObservable(vm, global, obj, vm.propertyNames->line);
+                if (!clearRecoverableDiagnosticException(scope))
                     return;
-                if (line) {
-                    if (line.isNumber()) {
-                        except.stack.frames_ptr[0].position.line_zero_based = OrdinalNumber::fromOneBasedInt(line.toInt32(global)).zeroBasedInt();
-
-                        JSC::JSValue lineText = getNonObservable(vm, global, obj, builtinNames(vm).lineTextPublicName());
-                        if (!scope.clearExceptionExceptTermination()) [[unlikely]]
+                if (line && line.isNumber()) {
+                    frame.line = Bun::knownStackIndex(OrdinalNumber::fromOneBasedInt(line.toInt32(global)).zeroBasedInt());
+                    auto lineText = getNonObservable(vm, global, obj, builtinNames(vm).lineTextPublicName());
+                    if (!clearRecoverableDiagnosticException(scope))
+                        return;
+                    if (lineText && lineText.isString()) {
+                        auto text = lineText.toWTFString(global);
+                        if (!clearRecoverableDiagnosticException(scope))
                             return;
-                        if (lineText) {
-                            if (lineText.isString()) {
-                                if (JSC::JSString* jsStr = lineText.toStringOrNull(global)) {
-                                    auto str = jsStr->value(global);
-                                    except.stack.source_lines_ptr[0] = Bun::toStringRef(str);
-                                    except.stack.source_lines_numbers[0] = except.stack.frames_ptr[0].position.line();
-                                    except.stack.source_lines_len = 1;
-                                    except.remapped = true;
-                                }
+                        if (sourceLineLimit && frame.line) {
+                            if (!snapshot.sourceLines.tryAppend(DiagnosticSourceLine { WTF::move(text), *frame.line })) {
+                                throwDiagnosticOutOfMemory(*global);
+                                return;
                             }
                         }
                     }
                 }
             }
-
-            {
-                for (int i = 1; i < except.stack.frames_len; i++) {
-                    auto frame = except.stack.frames_ptr[i];
-                    frame.function_name.deref();
-                    frame.source_url.deref();
-                }
-                except.stack.frames_len = 1;
-                PropertySlot slot = PropertySlot(obj, PropertySlot::InternalMethodType::VMInquiry, &vm);
-                except.stack.frames_ptr[0].remapped = obj->getNonIndexPropertySlot(global, names.originalLinePublicName(), slot);
-                if (!scope.clearExceptionExceptTermination()) [[unlikely]]
-                    return;
-            }
+            PropertySlot slot(obj, PropertySlot::InternalMethodType::VMInquiry, &vm);
+            frame.remapped = obj->getNonIndexPropertySlot(global, names.originalLinePublicName(), slot);
+            if (!clearRecoverableDiagnosticException(scope))
+                return;
+            if (!snapshot.frames.tryAppend(WTF::move(frame)))
+                throwDiagnosticOutOfMemory(*global);
         }
     }
 }
 
-void exceptionFromString(ZigException& except, JSC::JSValue value, JSC::JSGlobalObject* global)
+static void exceptionFromValue(DiagnosticSnapshot& snapshot, JSC::JSValue value, JSC::JSGlobalObject* global, size_t frameLimit)
 {
+    auto& except = snapshot.details;
     auto& vm = JSC::getVM(global);
     if (vm.hasPendingTerminationException()) [[unlikely]] {
         return;
@@ -714,83 +644,93 @@ void exceptionFromString(ZigException& except, JSC::JSValue value, JSC::JSGlobal
     if (JSC::JSObject* obj = dynamicDowncast<JSC::JSObject>(value)) {
         auto name_value = obj->getIfPropertyExists(global, vm.propertyNames->name);
         if (scope.exception()) [[unlikely]] {
-            scope.clearExceptionExceptTermination();
+            if (!clearRecoverableDiagnosticException(scope)) return;
         }
         if (name_value) {
             if (name_value.isString()) {
                 auto name_str = name_value.toWTFString(global);
-                except.name = Bun::toStringRef(name_str);
+                if (!clearRecoverableDiagnosticException(scope))
+                    return;
+                except.name = name_str;
                 if (name_str == "Error"_s) {
-                    except.type = JSErrorCodeError;
+                    except.errorCode = DiagnosticErrorCode::generic_error;
                 } else if (name_str == "EvalError"_s) {
-                    except.type = JSErrorCodeEvalError;
+                    except.errorCode = DiagnosticErrorCode::eval_error;
                 } else if (name_str == "RangeError"_s) {
-                    except.type = JSErrorCodeRangeError;
+                    except.errorCode = DiagnosticErrorCode::range_error;
                 } else if (name_str == "ReferenceError"_s) {
-                    except.type = JSErrorCodeReferenceError;
+                    except.errorCode = DiagnosticErrorCode::reference_error;
                 } else if (name_str == "SyntaxError"_s) {
-                    except.type = JSErrorCodeSyntaxError;
+                    except.errorCode = DiagnosticErrorCode::syntax_error;
                 } else if (name_str == "TypeError"_s) {
-                    except.type = JSErrorCodeTypeError;
+                    except.errorCode = DiagnosticErrorCode::type_error;
                 } else if (name_str == "URIError"_s) {
-                    except.type = JSErrorCodeURIError;
+                    except.errorCode = DiagnosticErrorCode::uri_error;
                 } else if (name_str == "AggregateError"_s) {
-                    except.type = JSErrorCodeAggregateError;
+                    except.errorCode = DiagnosticErrorCode::aggregate_error;
                 }
             }
         }
 
         auto message = obj->getIfPropertyExists(global, vm.propertyNames->message);
         if (scope.exception()) [[unlikely]] {
-            scope.clearExceptionExceptTermination();
+            if (!clearRecoverableDiagnosticException(scope)) return;
         }
         if (message) {
             if (message.isString()) {
-                except.message = Bun::toStringRef(message.toWTFString(global));
+                except.message = message.toWTFString(global);
+                if (!clearRecoverableDiagnosticException(scope))
+                    return;
             }
         }
 
-        if (except.stack.frames_len == 0) {
+        if (snapshot.frames.isEmpty() && frameLimit) {
+            DiagnosticFrame frame {};
+            bool hasFrame = false;
             auto sourceURL = obj->getIfPropertyExists(global, vm.propertyNames->sourceURL);
             if (scope.exception()) [[unlikely]] {
-                scope.clearExceptionExceptTermination();
+                if (!clearRecoverableDiagnosticException(scope)) return;
             }
             if (sourceURL) {
                 if (sourceURL.isString()) {
-                    except.stack.frames_ptr[0].source_url = Bun::toStringRef(sourceURL.toWTFString(global));
-                    except.stack.frames_len = 1;
+                    frame.sourceURL = sourceURL.toWTFString(global);
+                    hasFrame = true;
                 }
             }
 
             if (scope.exception()) [[unlikely]] {
-                scope.clearExceptionExceptTermination();
+                if (!clearRecoverableDiagnosticException(scope)) return;
             }
 
             auto line = obj->getIfPropertyExists(global, vm.propertyNames->line);
             if (scope.exception()) [[unlikely]] {
-                scope.clearExceptionExceptTermination();
+                if (!clearRecoverableDiagnosticException(scope)) return;
             }
             if (line) {
                 if (line.isNumber()) {
-                    except.stack.frames_ptr[0].position.line_zero_based = OrdinalNumber::fromOneBasedInt(line.toInt32(global)).zeroBasedInt();
+                    frame.line = Bun::knownStackIndex(OrdinalNumber::fromOneBasedInt(line.toInt32(global)).zeroBasedInt());
 
                     // TODO: don't sourcemap it twice
                     auto originalLine = obj->getIfPropertyExists(global, builtinNames(vm).originalLinePublicName());
                     if (scope.exception()) [[unlikely]] {
-                        scope.clearExceptionExceptTermination();
+                        if (!clearRecoverableDiagnosticException(scope)) return;
                     }
                     if (originalLine) {
                         if (originalLine.isNumber()) {
-                            except.stack.frames_ptr[0].position.line_zero_based = OrdinalNumber::fromOneBasedInt(originalLine.toInt32(global)).zeroBasedInt();
+                            frame.line = Bun::knownStackIndex(OrdinalNumber::fromOneBasedInt(originalLine.toInt32(global)).zeroBasedInt());
                         }
                     }
-                    except.stack.frames_len = 1;
+                    hasFrame = true;
                 }
+            }
+            if (hasFrame && !snapshot.frames.tryAppend(WTF::move(frame))) {
+                throwDiagnosticOutOfMemory(*global);
+                return;
             }
         }
 
         if (scope.exception()) [[unlikely]] {
-            scope.clearExceptionExceptTermination();
+            if (!clearRecoverableDiagnosticException(scope)) return;
         }
 
         return;
@@ -806,9 +746,9 @@ void exceptionFromString(ZigException& except, JSC::JSValue value, JSC::JSGlobal
             auto* symbol = asSymbol(cell);
             auto& uid = symbol->uid();
             if (uid.isNullSymbol() || uid.isEmpty()) {
-                except.message = BunStringEmpty;
+                except.message = WTF::emptyString();
             } else {
-                except.message = Bun::toStringRef(static_cast<WTF::StringImpl*>(&uid));
+                except.message = WTF::String(static_cast<WTF::StringImpl*>(&uid));
             }
             return;
         }
@@ -821,76 +761,128 @@ void exceptionFromString(ZigException& except, JSC::JSValue value, JSC::JSGlobal
 
     auto str = value.toWTFString(global);
     if (scope.exception()) [[unlikely]] {
-        scope.clearExceptionExceptTermination();
+        clearRecoverableDiagnosticException(scope);
         return;
     }
 
-    except.message = Bun::toStringRef(str);
+    except.message = WTF::move(str);
 }
 
-extern "C" void JSC__Exception__getStackTrace(JSC::Exception* arg0, JSC::JSGlobalObject* global, ZigStackTrace* trace)
+static void populateDiagnostic(JSC::JSGlobalObject* global, JSC::JSValue value, DiagnosticSnapshot& snapshot, size_t frameLimit, size_t sourceLineLimit)
 {
-    populateStackTrace(arg0->vm(), arg0->stack(), *trace, global, PopulateStackTraceFlags::OnlyPosition);
-}
-
-extern "C" [[ZIG_EXPORT(check_slow)]] void JSC__JSValue__toZigException(JSC::EncodedJSValue jsException, JSC::JSGlobalObject* global, ZigException* exception)
-{
-    JSC::JSValue value = JSC::JSValue::decode(jsException);
-    if (value == JSC::JSValue {}) {
-        exception->type = JSErrorCodeError;
-        exception->name = Bun::toStringRef("Error"_s);
-        exception->message = Bun::toStringRef("Unknown error"_s);
-        return;
-    }
+    RELEASE_ASSERT(value);
+    auto scope = DECLARE_THROW_SCOPE(global->vm());
 
     if (value.classInfoOrNull() == JSC::Exception::info()) {
         auto* jscException = uncheckedDowncast<JSC::Exception>(value);
         JSValue unwrapped = jscException->value();
 
         if (JSC::ErrorInstance* error = dynamicDowncast<JSC::ErrorInstance>(unwrapped)) {
-            fromErrorInstance(*exception, global, error, &jscException->stack(), unwrapped, PopulateStackTraceFlags::OnlyPosition);
+            fromErrorInstance(snapshot, global, error, &jscException->stack(), unwrapped, frameLimit, sourceLineLimit);
             return;
         }
 
         if (jscException->stack().size() > 0) {
-            populateStackTrace(global->vm(), jscException->stack(), exception->stack, global, PopulateStackTraceFlags::OnlyPosition);
+            populateStackTrace(global, jscException->stack(), snapshot.frames, frameLimit);
+            RETURN_IF_EXCEPTION(scope, );
         }
 
-        exceptionFromString(*exception, unwrapped, global);
+        exceptionFromValue(snapshot, unwrapped, global, frameLimit);
         return;
     }
 
     if (JSC::ErrorInstance* error = dynamicDowncast<JSC::ErrorInstance>(value)) {
-        fromErrorInstance(*exception, global, error, nullptr, value, PopulateStackTraceFlags::OnlyPosition);
+        fromErrorInstance(snapshot, global, error, nullptr, value, frameLimit, sourceLineLimit);
         return;
     }
 
-    exceptionFromString(*exception, value, global);
+    exceptionFromValue(snapshot, value, global, frameLimit);
 }
 
-extern "C" void ZigException__collectSourceLines(JSC::EncodedJSValue jsException, JSC::JSGlobalObject* global, ZigException* exception)
+Bun::Bindgen::Engine::BunBindgenEngine_JSBundlerPlugin_describeException_Return
+Bun::Bindgen::Engine::bunBindgenEngine_JSBundlerPlugin_describeException(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_JSBundlerPlugin_describeException_Arguments& args)
 {
-    JSC::JSValue value = JSC::JSValue::decode(jsException);
-    if (value == JSC::JSValue {}) {
-        return;
-    }
-
-    if (value.classInfoOrNull() == JSC::Exception::info()) {
-        auto* jscException = uncheckedDowncast<JSC::Exception>(value);
-        JSValue unwrapped = jscException->value();
-
-        if (jscException->stack().size() > 0) {
-            populateStackTrace(global->vm(), jscException->stack(), exception->stack, global, PopulateStackTraceFlags::OnlySourceLines);
+    auto& globalObject = context.globalObject;
+    auto throwScope = DECLARE_THROW_SCOPE(globalObject.vm());
+    auto value = args.exception;
+    JSC::JSValue errorValue;
+    if (value.isCell()) {
+        auto* cell = value.asCell();
+        if (cell->type() == JSC::ErrorInstanceType) {
+            errorValue = value;
+        } else if (cell->type() == JSC::CellType && cell->inherits<JSC::Exception>()) {
+            errorValue = uncheckedDowncast<JSC::Exception>(cell)->value();
         }
-
-        exceptionFromString(*exception, unwrapped, global);
-        return;
     }
 
-    if (JSC::ErrorInstance* error = dynamicDowncast<JSC::ErrorInstance>(value)) {
-        if (error->stackTrace() != nullptr && error->stackTrace()->size() > 0) {
-            populateStackTrace(global->vm(), *error->stackTrace(), exception->stack, global, PopulateStackTraceFlags::OnlySourceLines, FinalizerSafety::MustNotTriggerGC);
+    if (!errorValue) {
+        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject.vm());
+        auto message = value.toWTFString(&globalObject);
+        if (scope.exception()) {
+            if (!clearRecoverableDiagnosticException(scope)) return {};
+            return {
+                .message = "A bundler plugin threw a value that could not be converted to a string"_s,
+                .conversionFailed = true,
+            };
         }
-        return;
+        return { .message = message, .conversionFailed = false };
     }
+
+    DiagnosticSnapshot snapshot { .details = emptyDiagnosticDetails() };
+    populateDiagnostic(&globalObject, errorValue, snapshot, 32, 6);
+    RETURN_IF_EXCEPTION(throwScope, {});
+
+    return { .message = WTF::move(snapshot.details.message), .conversionFailed = false };
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_errors_exceptionGetStackTrace_Return
+Bun::Bindgen::Engine::bunBindgenEngine_errors_exceptionGetStackTrace(
+    Bun::Bindgen::EngineCallContext& context,
+    const BunBindgenEngine_errors_exceptionGetStackTrace_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    auto* exception = WTF::downcast<JSC::Exception>(args.exception.asCell());
+    Vector<DiagnosticFrame> result;
+    populateStackTrace(&context.globalObject, exception->stack(), result, args.limit);
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_errors_jsValueDescribeException_Return
+Bun::Bindgen::Engine::bunBindgenEngine_errors_jsValueDescribeException(
+    Bun::Bindgen::EngineCallContext& context,
+    const BunBindgenEngine_errors_jsValueDescribeException_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    DiagnosticSnapshot result { .details = emptyDiagnosticDetails() };
+    populateDiagnostic(&context.globalObject, args.value, result, args.frameLimit, args.sourceLineLimit);
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_errors_exceptionSourceLines_Return
+Bun::Bindgen::Engine::bunBindgenEngine_errors_exceptionSourceLines(
+    Bun::Bindgen::EngineCallContext& context,
+    const BunBindgenEngine_errors_exceptionSourceLines_Arguments& args)
+{
+    auto& global = context.globalObject;
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    const Vector<JSC::StackFrame>* stack = nullptr;
+    if (auto* exception = dynamicDowncast<JSC::Exception>(args.value))
+        stack = &exception->stack();
+    else if (auto* error = dynamicDowncast<JSC::ErrorInstance>(args.value))
+        stack = error->stackTrace();
+    if (!stack || stack->isEmpty())
+        return std::nullopt;
+    Vector<DiagnosticSourceLine> result;
+    for (const auto& frame : *stack) {
+        if (!isVisibleStackFrame(frame))
+            continue;
+        populateSourceLines(global, frame, result, args.limit);
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        break;
+    }
+    return result;
 }

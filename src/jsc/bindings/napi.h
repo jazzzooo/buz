@@ -1,11 +1,11 @@
 #pragma once
 
 #include "root.h"
+#include "SchemaBindings+CrashHandler.h"
 #include <JavaScriptCore/DeferGC.h>
 #include <JavaScriptCore/JSFunction.h>
 #include <JavaScriptCore/VM.h>
 
-#include "headers-handwritten.h"
 #include "BunClientData.h"
 #include <JavaScriptCore/CallFrame.h>
 #include "node_api.h"
@@ -25,7 +25,6 @@
 
 extern "C" void napi_internal_register_cleanup_zig(napi_env env);
 extern "C" void napi_internal_suppress_crash_on_abort_if_desired();
-extern "C" void Bun__crashHandler(const char* message, size_t message_len);
 
 static bool equal(napi_async_cleanup_hook_handle, napi_async_cleanup_hook_handle);
 
@@ -123,7 +122,7 @@ private:
 
 using HookSet = std::unordered_set<EitherCleanupHook, EitherCleanupHook::Hash>;
 
-void defineProperty(napi_env env, JSC::JSObject* to, const napi_property_descriptor& property, bool isInstance, JSC::ThrowScope& scope);
+void defineProperty(napi_env env, JSC::JSObject* to, const napi_property_descriptor& property);
 }
 
 struct napi_async_cleanup_hook_handle__ {
@@ -147,10 +146,11 @@ static bool equal(napi_async_cleanup_hook_handle one, napi_async_cleanup_hook_ha
     return one == two || *one == *two;
 }
 
-#define NAPI_ABORT(message)                                    \
-    do {                                                       \
-        napi_internal_suppress_crash_on_abort_if_desired();    \
-        Bun__crashHandler(message "", sizeof(message "") - 1); \
+#define NAPI_ABORT(message)                                                               \
+    do {                                                                                  \
+        napi_internal_suppress_crash_on_abort_if_desired();                                 \
+        Bun::Bindgen::ZigExports::bunBindgenZig_CrashHandlerBindings_crash(                   \
+            std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(message ""), sizeof(message "") - 1 }); \
     } while (0)
 
 #define NAPI_PERISH(...)                                                      \
@@ -912,7 +912,7 @@ public:
         // TODO change to global? or find another way to avoid JSGlobalProxy
         JSC::JSObject* jscThis = globalObject->globalThis();
         if (!m_callFrame->thisValue().isUndefinedOrNull()) {
-            auto scope = DECLARE_THROW_SCOPE(JSC::getVM(globalObject));
+            auto scope = DECLARE_TOP_EXCEPTION_SCOPE(JSC::getVM(globalObject));
             jscThis = m_callFrame->thisValue().toObject(globalObject);
             // https://tc39.es/ecma262/#sec-toobject
             // toObject only throws for undefined and null, which we checked for

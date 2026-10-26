@@ -1,118 +1,98 @@
 #include "root.h"
+#include "SchemaBindings.h"
+#include "Bindgen/BindingRuntimeDeclarations.h"
 #include <JavaScriptCore/StrongInlines.h>
 #include "BunClientData.h"
 #include <JavaScriptCore/Weak.h>
 #include <JavaScriptCore/Strong.h>
+#include <wtf/FastMalloc.h>
 
 namespace Bun {
 
-enum class WeakRefType : uint32_t {
-    None = 0,
-    FetchResponse = 1,
-    PostgreSQLQueryClient = 2,
-};
+class WeakRef;
 
-typedef void (*WeakRefFinalizeFn)(void* context);
-
-// clang-format off
-#define FOR_EACH_WEAK_REF_TYPE(macro) \
-    macro(FetchResponse) \
-    macro(PostgreSQLQueryClient)
-
-// clang-format on
-
-#define DECLARE_WEAK_REF_OWNER(X) \
-    extern "C" void Bun__##X##_finalize(void* context);
-
-FOR_EACH_WEAK_REF_TYPE(DECLARE_WEAK_REF_OWNER);
-
-template<WeakRefType T>
-class WeakRefOwner : public JSC::WeakHandleOwner {
+class WeakRefOwner final : public JSC::WeakHandleOwner {
 public:
-    void finalize(JSC::Handle<JSC::Unknown> handle, void* context) final
-    {
-        if (context) [[likely]] {
-            switch (T) {
-            case WeakRefType::FetchResponse:
-                Bun__FetchResponse_finalize(context);
-                break;
-            case WeakRefType::PostgreSQLQueryClient:
-                // Bun__PostgreSQLQueryClient_finalize(context);
-                break;
-            default:
-                break;
-            }
-        }
-    }
+    void finalize(JSC::Handle<JSC::Unknown>, void*) final;
 };
 
-template<WeakRefType T>
-static JSC::WeakHandleOwner* getWeakRefOwner()
+static JSC::WeakHandleOwner* weakRefOwner()
 {
-    static NeverDestroyed<WeakRefOwner<T>> owner;
+    static NeverDestroyed<WeakRefOwner> owner;
     return &owner.get();
 }
 
-static JSC::WeakHandleOwner* getWeakRefOwner(WeakRefType type)
-{
-    switch (type) {
-    case WeakRefType::FetchResponse: {
-        return getWeakRefOwner<WeakRefType::FetchResponse>();
-    }
-    case WeakRefType::PostgreSQLQueryClient: {
-        return getWeakRefOwner<WeakRefType::PostgreSQLQueryClient>();
-    }
-    default: {
-        RELEASE_ASSERT_NOT_REACHED();
-    }
-    }
-
-    return nullptr;
-}
-
 class WeakRef {
-    WTF_MAKE_TZONE_ALLOCATED(WeakRef);
-
 public:
-    WeakRef(JSC::VM& vm, JSC::JSValue value, WeakRefType kind, void* ctx = nullptr)
+    WeakRef(JSC::JSObject* object, BunBindgenWeakRefFinalizer* finalizer)
+        : m_finalizer(finalizer)
     {
-
-        JSC::JSObject* object = value.getObject();
-        if (object->type() == JSC::JSType::GlobalProxyType)
-            object = uncheckedDowncast<JSC::JSGlobalProxy>(object)->target();
-
-        this->m_cell = JSC::Weak<JSC::JSObject>(object, getWeakRefOwner(kind), ctx);
+        if (finalizer)
+            m_cell = JSC::Weak<JSC::JSObject>(object, weakRefOwner(), this);
+        else
+            m_cell = JSC::Weak<JSC::JSObject>(object);
     }
 
-    WeakRef()
+    ~WeakRef()
     {
+        clear();
+    }
+
+    void clear()
+    {
+        m_finalizer = nullptr;
+        m_cell.clear();
+    }
+
+    void finalize()
+    {
+        auto* finalizer = m_finalizer;
+        m_finalizer = nullptr;
+        if (finalizer)
+            Bun::Bindgen::ZigExports::bunBindgenZig_weak_references_weakRefFinalizerRun(finalizer);
     }
 
     JSC::Weak<JSC::JSObject> m_cell;
+    BunBindgenWeakRefFinalizer* m_finalizer { nullptr };
 };
 
+void WeakRefOwner::finalize(JSC::Handle<JSC::Unknown>, void* context)
+{
+    static_cast<WeakRef*>(context)->finalize();
 }
 
-extern "C" void Bun__WeakRef__clear(Bun::WeakRef* weakRef)
-{
-    weakRef->m_cell.clear();
 }
 
-extern "C" void Bun__WeakRef__delete(Bun::WeakRef* weakRef)
+JSC::JSObject* bindingWeakRefObject(const BindWeakRefHandle* handle) noexcept
 {
-    Bun__WeakRef__clear(weakRef);
-    delete weakRef;
+    auto* reference = reinterpret_cast<const Bun::WeakRef*>(handle);
+    return reference->m_cell.get();
 }
 
-extern "C" Bun::WeakRef* Bun__WeakRef__new(JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue encodedValue, Bun::WeakRefType kind, void* ctx)
+void Bun::Bindgen::Engine::weakRefRelease(Bun::WeakRef* reference)
 {
-    return new Bun::WeakRef(globalObject->vm(), JSC::JSValue::decode(encodedValue), kind, ctx);
+    reference->~WeakRef();
+    WTF::fastFree(reference);
 }
 
-extern "C" JSC::EncodedJSValue Bun__WeakRef__get(Bun::WeakRef* weakRef)
+Bun::WeakRef* Bun::Bindgen::Engine::bunBindgenEngine_weak_references_weakRefCreate(
+    Bun::Bindgen::EngineCallContext& context,
+    const BunBindgenEngine_weak_references_weakRefCreate_Arguments& args)
 {
-    if (auto* cell = weakRef->m_cell.get()) {
-        return JSC::JSValue::encode(cell);
+    void* allocation = nullptr;
+    if (!WTF::tryFastMalloc(sizeof(Bun::WeakRef)).getValue(allocation)) {
+        auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+        JSC::throwOutOfMemoryError(&context.globalObject, scope);
+        return nullptr;
     }
-    return JSC::encodedJSValue();
+    return new (NotNull, allocation) Bun::WeakRef(JSC::asObject(args.value), args.finalizer.value_or(nullptr));
+}
+
+std::optional<JSC::JSValue> Bun::Bindgen::Engine::bunBindgenEngine_weak_references_weakRefGet(
+    Bun::Bindgen::EngineCallContext&,
+    const BunBindgenEngine_weak_references_weakRefGet_Arguments& args)
+{
+    if (auto* cell = args.reference->m_cell.get())
+        return cell;
+    return std::nullopt;
 }

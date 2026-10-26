@@ -7,7 +7,7 @@ const ObjectAssign = Object.assign;
 const ArrayPrototypeUnshift = Array.prototype.unshift;
 
 function request(...args) {
-  let options = {};
+  let options: any = {};
 
   if (typeof args[0] === "string") {
     const urlStr = ArrayPrototypeShift.$call(args);
@@ -23,7 +23,7 @@ function request(...args) {
   options._defaultAgent = https.globalAgent;
   ArrayPrototypeUnshift.$call(args, options);
 
-  return new http.ClientRequest(...args);
+  return new (http.ClientRequest as any)(...args);
 }
 
 function get(input, options, cb) {
@@ -32,21 +32,23 @@ function get(input, options, cb) {
   return req;
 }
 
-function Agent(options) {
-  if (!(this instanceof Agent)) return new Agent(options);
+type AgentCtor = new (options?: any) => any;
 
-  http.Agent.$apply(this, [options]);
-  this.defaultPort = 443;
-  this.protocol = "https:";
-  this.maxCachedSessions = this.options.maxCachedSessions;
-  if (this.maxCachedSessions === undefined) this.maxCachedSessions = 100;
+function Agent(this: any, options?) {
+  if (!(this instanceof Agent)) return new (Agent as unknown as AgentCtor)(options);
+
+  const self: any = this;
+  http.Agent.$apply(self, [options]);
+  self.defaultPort = 443;
+  self.protocol = "https:";
+  self.maxCachedSessions = self.options.maxCachedSessions;
+  if (self.maxCachedSessions === undefined) self.maxCachedSessions = 100;
 }
 $toClass(Agent, "Agent", http.Agent);
-Agent.prototype.createConnection = http.createConnection;
 
 var https = {
   Agent,
-  globalAgent: new Agent({ keepAlive: true, scheduling: "lifo", timeout: 5000 }),
+  globalAgent: new (Agent as unknown as AgentCtor)({ keepAlive: true, scheduling: "lifo", timeout: 5000 }),
   Server: http.Server,
   createServer: http.createServer,
   get,

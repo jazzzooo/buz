@@ -22,6 +22,7 @@
 #include "AsyncSocketData.h"
 #include "PerMessageDeflate.h"
 #include "TopicTree.h"
+#include "WebSocketUpgrade.h"
 
 #include <string>
 
@@ -58,18 +59,10 @@ public:
     /* node http compatibility callbacks */
     OnSocketClosedCallback onSocketClosed = nullptr;
 
-    WebSocketData(bool perMessageDeflate, CompressOptions compressOptions, BackPressure &&backpressure, void *socketData, OnSocketClosedCallback onSocketClosed) : AsyncSocketData<false>(std::move(backpressure)), WebSocketState<true>() {
-        compressionStatus = perMessageDeflate ? ENABLED : DISABLED;
-
-        /* Initialize the dedicated sliding window(s) */
-        if (perMessageDeflate) {
-            if ((compressOptions & CompressOptions::_COMPRESSOR_MASK) != CompressOptions::SHARED_COMPRESSOR) {
-                deflationStream = new DeflationStream(compressOptions);
-            }
-            if ((compressOptions & CompressOptions::_DECOMPRESSOR_MASK) != CompressOptions::SHARED_DECOMPRESSOR) {
-                inflationStream = new InflationStream(compressOptions);
-            }
-        }
+    WebSocketData(PreparedWebSocketUpgrade &&prepared, BackPressure &&backpressure, void *socketData, OnSocketClosedCallback onSocketClosed) : AsyncSocketData<false>(std::move(backpressure)), WebSocketState<true>() {
+        compressionStatus = prepared.negotiation.status == CompressionNegotiation::Status::Accepted ? ENABLED : DISABLED;
+        deflationStream = prepared.deflation.release();
+        inflationStream = prepared.inflation.release();
         // never close websocket sockets when closing idle connections
         this->isIdle = false;
         this->socketData = socketData;

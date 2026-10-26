@@ -34,31 +34,6 @@ pub fn deinit(this: *StringBuilder, allocator: Allocator) void {
     allocator.free(this.ptr.?[0..this.cap]);
 }
 
-pub fn count16Z(this: *StringBuilder, slice: [:0]const u16) void {
-    const result = bun.strings.elementLengthUTF16IntoUTF8(slice);
-    this.cap += result + 1;
-}
-
-pub fn append16(this: *StringBuilder, slice: []const u16, fallback_allocator: std.mem.Allocator) ?[:0]u8 {
-    var buf = this.writable();
-    if (slice.len == 0) {
-        buf[0] = 0;
-        this.len += 1;
-        return buf[0..0 :0];
-    }
-
-    const result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(slice, buf);
-    if (result.status == .success) {
-        this.len += result.count + 1;
-        buf[result.count] = 0;
-        return buf[0..result.count :0];
-    } else {
-        var list = std.array_list.Managed(u8).init(fallback_allocator);
-        var out = bun.strings.toUTF8ListWithTypeBun(&list, slice, false) catch return null;
-        return out.toOwnedSliceSentinel(0) catch null;
-    }
-}
-
 pub fn appendZ(this: *StringBuilder, slice: []const u8) [:0]const u8 {
     if (comptime Environment.allow_assert) {
         assert(this.len + 1 <= this.cap); // didn't count everything
@@ -75,8 +50,8 @@ pub fn appendZ(this: *StringBuilder, slice: []const u8) [:0]const u8 {
     return result;
 }
 
-pub fn appendStr(this: *StringBuilder, str: bun.String) []const u8 {
-    const slice = str.toUTF8(bun.default_allocator);
+pub fn appendStr(this: *StringBuilder, str: bun.String) bun.OOM![]const u8 {
+    const slice = try str.toUTF8(bun.default_allocator);
     defer slice.deinit();
     return this.append(slice.slice());
 }

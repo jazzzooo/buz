@@ -138,15 +138,20 @@ pub fn Parse(
             const body_loc = p.lexer.loc();
             try p.lexer.expect(T.t_open_brace);
             var properties = ListManaged(G.Property).init(p.allocator);
+            errdefer properties.deinit();
 
             // Allow "in" and private fields inside class bodies
             const old_allow_in = p.allow_in;
             const old_allow_private_identifiers = p.allow_private_identifiers;
             p.allow_in = true;
             p.allow_private_identifiers = true;
+            defer {
+                p.allow_in = old_allow_in;
+                p.allow_private_identifiers = old_allow_private_identifiers;
+            }
 
             // A scope is needed for private identifiers
-            const scopeIndex = p.pushScopeForParsePass(.class_body, body_loc) catch unreachable;
+            const scopeIndex = try p.pushScopeForParsePass(.class_body, body_loc);
 
             var opts = PropertyOpts{ .is_class = true, .allow_ts_decorators = class_opts.allow_ts_decorators, .class_has_extends = extends != null };
             while (!p.lexer.token.isCloseBraceOrEOF()) {
@@ -169,7 +174,7 @@ pub fn Parse(
 
                 // This property may turn out to be a type in TypeScript, which should be ignored
                 if (try p.parseProperty(.normal, &opts, null)) |property| {
-                    properties.append(property) catch unreachable;
+                    try properties.append(property);
                     has_auto_accessor = has_auto_accessor or property.kind == .auto_accessor;
 
                     // Forbid decorators on class constructors
@@ -177,7 +182,7 @@ pub fn Parse(
                         switch ((property.key orelse p.panic("Internal error: Expected property to have a key.", .{})).data) {
                             .e_string => |str| {
                                 if (str.eqlComptime("constructor")) {
-                                    p.log.addError(p.source, first_decorator_loc, "TypeScript does not allow decorators on class constructors") catch unreachable;
+                                    try p.log.addError(p.source, first_decorator_loc, "TypeScript does not allow decorators on class constructors");
                                 }
                             },
                             else => {},
@@ -194,8 +199,6 @@ pub fn Parse(
                 p.popScope();
             }
 
-            p.allow_in = old_allow_in;
-            p.allow_private_identifiers = old_allow_private_identifiers;
             const close_brace_loc = p.lexer.loc();
             try p.lexer.expect(.t_close_brace);
 
@@ -214,10 +217,12 @@ pub fn Parse(
         }
 
         pub fn parseTemplateParts(p: *P, include_raw: bool) ![]E.TemplatePart {
-            var parts = ListManaged(E.TemplatePart).initCapacity(p.allocator, 1) catch unreachable;
+            var parts = try ListManaged(E.TemplatePart).initCapacity(p.allocator, 1);
+            errdefer parts.deinit();
             // Allow "in" inside template literals
             const oldAllowIn = p.allow_in;
             p.allow_in = true;
+            defer p.allow_in = oldAllowIn;
 
             parseTemplatePart: while (true) {
                 try p.lexer.next();
@@ -227,14 +232,14 @@ pub fn Parse(
 
                 const tail: E.Template.Contents = brk: {
                     if (!include_raw) break :brk .{ .cooked = try p.lexer.toEString() };
-                    break :brk .{ .raw = p.lexer.rawTemplateContents() };
+                    break :brk .{ .raw = try p.lexer.rawTemplateContents() };
                 };
 
-                parts.append(E.TemplatePart{
+                try parts.append(E.TemplatePart{
                     .value = value,
                     .tail_loc = tail_loc,
                     .tail = tail,
-                }) catch unreachable;
+                });
 
                 if (p.lexer.token == .t_template_tail) {
                     try p.lexer.next();
@@ -243,8 +248,6 @@ pub fn Parse(
                 if (comptime Environment.allow_assert)
                     assert(p.lexer.token != .t_end_of_file);
             }
-
-            p.allow_in = oldAllowIn;
 
             return parts.items;
         }
@@ -267,6 +270,7 @@ pub fn Parse(
             defer p.allow_in = old_allow_in;
 
             var args = ListManaged(Expr).init(p.allocator);
+            errdefer args.deinit();
             try p.lexer.expect(.t_open_paren);
 
             while (p.lexer.token != .t_close_paren) {
@@ -280,7 +284,7 @@ pub fn Parse(
                 if (is_spread) {
                     arg = p.newExpr(E.Spread{ .value = arg }, loc);
                 }
-                args.append(arg) catch unreachable;
+                try args.append(arg);
                 if (p.lexer.token != .t_comma) {
                     break;
                 }
@@ -313,8 +317,8 @@ pub fn Parse(
         /// This assumes that the open parenthesis has already been parsed by the caller
         pub fn parseParenExpr(p: *P, loc: logger.Loc, level: Level, opts: ParenExprOpts) anyerror!Expr {
             var items_list = ListManaged(Expr).init(p.allocator);
+            errdefer items_list.deinit();
             var errors = DeferredErrors{};
-            var arrowArgErrors = DeferredArrowArgErrors{};
             var spread_range = logger.Range{};
             var type_colon_range = logger.Range{};
             var comma_after_spread: ?logger.Loc = null;
@@ -331,10 +335,12 @@ pub fn Parse(
             // Allow "in" inside parentheses
             const oldAllowIn = p.allow_in;
             p.allow_in = true;
+            defer p.allow_in = oldAllowIn;
 
             // Forbid "await" and "yield", but only for arrow functions
-            var old_fn_or_arrow_data = std.mem.toBytes(p.fn_or_arrow_data_parse);
-            p.fn_or_arrow_data_parse.arrow_arg_errors = arrowArgErrors;
+            const old_fn_or_arrow_data = p.fn_or_arrow_data_parse;
+            errdefer p.fn_or_arrow_data_parse = old_fn_or_arrow_data;
+            p.fn_or_arrow_data_parse.arrow_arg_errors = .{};
             p.fn_or_arrow_data_parse.track_arrow_arg_errors = true;
 
             // Scan over the comma-separated arguments or expressions
@@ -384,7 +390,7 @@ pub fn Parse(
                 // Eat the comma token
                 try p.lexer.next();
             }
-            var items = items_list.items;
+            const items = items_list.items;
 
             // The parenthetical construct must end with a close parenthesis
             try p.lexer.expect(.t_close_paren);
@@ -393,7 +399,8 @@ pub fn Parse(
             p.allow_in = oldAllowIn;
 
             // Also restore "await" and "yield" expression errors
-            p.fn_or_arrow_data_parse = std.mem.bytesToValue(@TypeOf(p.fn_or_arrow_data_parse), &old_fn_or_arrow_data);
+            const arrow_arg_errors = p.fn_or_arrow_data_parse.arrow_arg_errors;
+            p.fn_or_arrow_data_parse = old_fn_or_arrow_data;
 
             // Are these arguments to an arrow function?
             if (p.lexer.token == .t_equals_greater_than or opts.force_arrow_fn or (is_typescript_enabled and p.lexer.token == .t_colon)) {
@@ -404,30 +411,25 @@ pub fn Parse(
                 }
 
                 var invalidLog = LocList.init(p.allocator);
+                defer invalidLog.deinit();
                 var args = ListManaged(G.Arg).init(p.allocator);
-
-                if (opts.is_async) {
-                    // markl,oweredsyntaxpoksdpokasd
-                }
+                errdefer args.deinit();
 
                 // First, try converting the expressions to bindings
-                for (items, 0..) |_, i| {
+                for (items) |item| {
                     var is_spread = false;
-                    switch (items[i].data) {
-                        .e_spread => |v| {
+                    const value = switch (item.data) {
+                        .e_spread => |v| spread: {
                             is_spread = true;
-                            items[i] = v.value;
+                            break :spread v.value;
                         },
-                        else => {},
-                    }
-
-                    var item = items[i];
-                    const tuple = p.convertExprToBindingAndInitializer(&item, &invalidLog, is_spread);
-                    // double allocations
-                    args.append(G.Arg{
+                        else => item,
+                    };
+                    const tuple = try p.convertExprToBindingAndInitializer(value, &invalidLog, is_spread);
+                    try args.append(G.Arg{
                         .binding = tuple.binding orelse Binding{ .data = Prefill.Data.BMissing, .loc = item.loc },
                         .default = tuple.expr,
-                    }) catch unreachable;
+                    });
                 }
 
                 // Avoid parsing TypeScript code like "a ? (1 + 2) : (3 + 4)" as an arrow
@@ -437,17 +439,17 @@ pub fn Parse(
                 // there were no conversion errors.
                 if (p.lexer.token == .t_equals_greater_than or ((comptime is_typescript_enabled) and
                     invalidLog.items.len == 0 and
-                    p.trySkipTypeScriptArrowReturnTypeWithBacktracking()) or
+                    try p.trySkipTypeScriptArrowReturnTypeWithBacktracking()) or
                     opts.force_arrow_fn)
                 {
-                    p.maybeCommaSpreadError(comma_after_spread);
-                    p.logArrowArgErrors(&arrowArgErrors);
+                    try p.maybeCommaSpreadError(comma_after_spread);
+                    try p.logArrowArgErrors(&arrow_arg_errors);
 
                     // Now that we've decided we're an arrow function, report binding pattern
                     // conversion errors
                     if (invalidLog.items.len > 0) {
                         for (invalidLog.items) |_loc| {
-                            _loc.addError(
+                            try _loc.addError(
                                 p.log,
                                 p.source,
                             );
@@ -460,14 +462,23 @@ pub fn Parse(
                     arrow.is_async = opts.is_async;
                     arrow.has_rest_arg = spread_range.len > 0;
                     p.popScope();
+                    items_list.deinit();
                     return p.newExpr(arrow, loc);
                 }
+                args.deinit();
             }
 
             // If we get here, it's not an arrow function so undo the pushing of the
             // scope we did earlier. This needs to flatten any child scopes into the
             // parent scope as if the scope was never pushed in the first place.
-            p.popAndFlattenScope(scope_index);
+            try p.popAndFlattenScope(scope_index);
+
+            if (p.fn_or_arrow_data_parse.track_arrow_arg_errors) {
+                if (arrow_arg_errors.invalid_expr_await.len > 0)
+                    p.fn_or_arrow_data_parse.arrow_arg_errors.invalid_expr_await = arrow_arg_errors.invalid_expr_await;
+                if (arrow_arg_errors.invalid_expr_yield.len > 0)
+                    p.fn_or_arrow_data_parse.arrow_arg_errors.invalid_expr_yield = arrow_arg_errors.invalid_expr_yield;
+            }
 
             // If this isn't an arrow function, then types aren't allowed
             if (type_colon_range.len > 0) {
@@ -477,7 +488,7 @@ pub fn Parse(
 
             // Are these arguments for a call to a function named "async"?
             if (opts.is_async) {
-                p.logExprErrors(&errors);
+                try p.logExprErrors(&errors);
                 const async_expr = p.newExpr(E.Identifier{ .ref = try p.storeNameInRef("async") }, loc);
                 return p.newExpr(E.Call{
                     .target = async_expr,
@@ -487,14 +498,15 @@ pub fn Parse(
 
             // Is this a chain of expressions and comma operators?
             if (items.len > 0) {
-                p.logExprErrors(&errors);
+                try p.logExprErrors(&errors);
                 if (spread_range.len > 0) {
-                    try p.log.addRangeError(p.source, type_colon_range, "Unexpected \"...\"");
+                    try p.log.addRangeError(p.source, spread_range, "Unexpected \"...\"");
                     return error.SyntaxError;
                 }
 
                 var value = Expr.joinAllWithComma(items, p.allocator);
                 p.markExprAsParenthesized(&value);
+                items_list.deinit();
                 return value;
             }
 
@@ -544,7 +556,7 @@ pub fn Parse(
 
                 name = LocRef{ .loc = name_loc, .ref = null };
                 if (!opts.is_typescript_declare) {
-                    (name orelse unreachable).ref = p.declareSymbol(.class, name_loc, name_text) catch unreachable;
+                    (name orelse unreachable).ref = try p.declareSymbol(.class, name_loc, name_text);
                 }
             }
 
@@ -563,7 +575,7 @@ pub fn Parse(
                 class_opts.ts_decorators = dec.values;
             }
 
-            const scope_index = p.pushScopeForParsePass(.class_name, loc) catch unreachable;
+            const scope_index = try p.pushScopeForParsePass(.class_name, loc);
             const class = try p.parseClass(class_keyword, name, class_opts);
 
             if (comptime is_typescript_enabled) {
@@ -587,18 +599,17 @@ pub fn Parse(
         pub fn parseClauseAlias(p: *P, kind: string) !string {
             const loc = p.lexer.loc();
 
-            // The alias may now be a utf-16 (not wtf-16) string (see https://github.com/tc39/ecma262/pull/2154)
             if (p.lexer.token == .t_string_literal) {
                 var estr = try p.lexer.toEString();
                 if (estr.isUTF8()) {
                     return estr.slice8();
-                } else if (strings.toUTF8AllocWithTypeWithoutInvalidSurrogatePairs(p.lexer.allocator, estr.slice16())) |alias_utf8| {
-                    return alias_utf8;
-                } else |err| {
+                }
+                if (!bun.simdutf.validate.utf16le(estr.slice16())) {
                     const r = p.source.rangeOfString(loc);
-                    try p.log.addRangeErrorFmt(p.source, r, p.allocator, "Invalid {s} alias because it contains an unpaired Unicode surrogate ({s})", .{ kind, @errorName(err) });
+                    try p.log.addRangeErrorFmt(p.source, r, p.allocator, "Invalid {s} alias because it contains an unpaired Unicode surrogate", .{kind});
                     return p.source.textForRange(r);
                 }
+                return try strings.toUTF8Alloc(p.lexer.allocator, estr.slice16());
             }
 
             // The alias may be a keyword
@@ -762,11 +773,10 @@ pub fn Parse(
                 .t_identifier => {
                     const name = p.lexer.identifier;
                     if ((p.fn_or_arrow_data_parse.allow_await != .allow_ident and strings.eqlComptime(name, "await")) or (p.fn_or_arrow_data_parse.allow_yield != .allow_ident and strings.eqlComptime(name, "yield"))) {
-                        // TODO: add fmt to addRangeError
-                        p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"yield\" or \"await\" here.") catch unreachable;
+                        try p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"yield\" or \"await\" here.");
                     }
 
-                    const ref = p.storeNameInRef(name) catch unreachable;
+                    const ref = try p.storeNameInRef(name);
                     try p.lexer.next();
                     return p.b(B.Identifier{ .ref = ref }, loc);
                 },
@@ -775,17 +785,19 @@ pub fn Parse(
                         try p.lexer.next();
                         var is_single_line = !p.lexer.has_newline_before;
                         var items = ListManaged(js_ast.ArrayBinding).init(p.allocator);
+                        errdefer items.deinit();
                         var has_spread = false;
 
                         // "in" expressions are allowed
                         const old_allow_in = p.allow_in;
                         p.allow_in = true;
+                        defer p.allow_in = old_allow_in;
 
                         while (p.lexer.token != .t_close_bracket) {
                             if (p.lexer.token == .t_comma) {
-                                items.append(js_ast.ArrayBinding{
+                                try items.append(js_ast.ArrayBinding{
                                     .binding = Binding{ .data = Prefill.Data.BMissing, .loc = p.lexer.loc() },
-                                }) catch unreachable;
+                                });
                             } else {
                                 if (p.lexer.token == .t_dot_dot_dot) {
                                     try p.lexer.next();
@@ -806,11 +818,11 @@ pub fn Parse(
                                     default_value = try p.parseExpr(.comma);
                                 }
 
-                                items.append(js_ast.ArrayBinding{ .binding = binding, .default_value = default_value }) catch unreachable;
+                                try items.append(js_ast.ArrayBinding{ .binding = binding, .default_value = default_value });
 
                                 // Commas after spread elements are not allowed
                                 if (has_spread and p.lexer.token == .t_comma) {
-                                    p.log.addRangeError(p.source, p.lexer.range(), "Unexpected \",\" after rest pattern") catch unreachable;
+                                    try p.log.addRangeError(p.source, p.lexer.range(), "Unexpected \",\" after rest pattern");
                                     return error.SyntaxError;
                                 }
                             }
@@ -829,8 +841,6 @@ pub fn Parse(
                             }
                         }
 
-                        p.allow_in = old_allow_in;
-
                         if (p.lexer.has_newline_before) {
                             is_single_line = false;
                         }
@@ -848,18 +858,20 @@ pub fn Parse(
                         try p.lexer.next();
                         var is_single_line = !p.lexer.has_newline_before;
                         var properties = ListManaged(js_ast.B.Property).init(p.allocator);
+                        errdefer properties.deinit();
 
                         // "in" expressions are allowed
                         const old_allow_in = p.allow_in;
                         p.allow_in = true;
+                        defer p.allow_in = old_allow_in;
 
                         while (p.lexer.token != .t_close_brace) {
-                            var property = try p.parsePropertyBinding();
-                            properties.append(property) catch unreachable;
+                            const property = try p.parsePropertyBinding();
+                            try properties.append(property);
 
                             // Commas after spread elements are not allowed
                             if (property.flags.contains(.is_spread) and p.lexer.token == .t_comma) {
-                                p.log.addRangeError(p.source, p.lexer.range(), "Unexpected \",\" after rest pattern") catch unreachable;
+                                try p.log.addRangeError(p.source, p.lexer.range(), "Unexpected \",\" after rest pattern");
                                 return error.SyntaxError;
                             }
 
@@ -875,8 +887,6 @@ pub fn Parse(
                                 is_single_line = false;
                             }
                         }
-
-                        p.allow_in = old_allow_in;
 
                         if (p.lexer.has_newline_before) {
                             is_single_line = false;
@@ -905,7 +915,7 @@ pub fn Parse(
                     try p.lexer.next();
                     const value = p.b(
                         B.Identifier{
-                            .ref = p.storeNameInRef(p.lexer.identifier) catch unreachable,
+                            .ref = try p.storeNameInRef(p.lexer.identifier),
                         },
                         p.lexer.loc(),
                     );
@@ -953,7 +963,7 @@ pub fn Parse(
                     key = p.newExpr(E.String{ .data = name }, loc);
 
                     if (p.lexer.token != .t_colon and p.lexer.token != .t_open_paren) {
-                        const ref = p.storeNameInRef(name) catch unreachable;
+                        const ref = try p.storeNameInRef(name);
                         const value = p.b(B.Identifier{ .ref = ref }, loc);
                         var default_value: ?Expr = null;
                         if (p.lexer.token == .t_equals) {
@@ -991,11 +1001,12 @@ pub fn Parse(
 
         pub fn parseAndDeclareDecls(p: *P, kind: Symbol.Kind, opts: *ParseStatementOptions) anyerror!ListManaged(G.Decl) {
             var decls = ListManaged(G.Decl).init(p.allocator);
+            errdefer decls.deinit();
 
             while (true) {
                 // Forbid "let let" and "const let" but not "var let"
                 if ((kind == .other or kind == .constant) and p.lexer.isContextualKeyword("let")) {
-                    p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"let\" as an identifier here") catch unreachable;
+                    try p.log.addRangeError(p.source, p.lexer.range(), "Cannot use \"let\" as an identifier here");
                 }
 
                 var value: ?js_ast.Expr = null;
@@ -1004,7 +1015,7 @@ pub fn Parse(
                         .is_using_statement = is_using,
                     }),
                 };
-                p.declareBinding(kind, &local, opts) catch unreachable;
+                try p.declareBinding(kind, &local, opts);
 
                 // Skip over types
                 if (comptime is_typescript_enabled) {
@@ -1026,10 +1037,10 @@ pub fn Parse(
                     value = try p.parseExpr(.comma);
                 }
 
-                decls.append(G.Decl{
+                try decls.append(G.Decl{
                     .binding = local,
                     .value = value,
-                }) catch unreachable;
+                });
 
                 if (p.lexer.token != .t_comma) {
                     break;
@@ -1055,14 +1066,7 @@ pub fn Parse(
                 try p.lexer.expect(.t_string_literal);
             }
 
-            if (!p.lexer.has_newline_before and (
-                // Import Assertions are deprecated.
-                // Import Attributes are the new way to do this.
-                // But some code may still use "assert"
-                // We support both and treat them identically.
-                // Once Prettier & TypeScript support import attributes, we will add runtime support
-                p.lexer.isContextualKeyword("assert") or p.lexer.token == .t_with))
-            {
+            if (!p.lexer.has_newline_before and (p.lexer.isContextualKeyword("assert") or p.lexer.token == .t_with)) {
                 try p.lexer.next();
                 try p.lexer.expect(.t_open_brace);
 
@@ -1100,8 +1104,12 @@ pub fn Parse(
                     try p.lexer.next();
                     try p.lexer.expect(.t_colon);
 
-                    try p.lexer.expect(.t_string_literal);
+                    if (p.lexer.token != .t_string_literal) {
+                        try p.lexer.expected(.t_string_literal);
+                        return error.SyntaxError;
+                    }
                     const string_literal_text = (try p.lexer.toUTF8EString()).slice8();
+                    try p.lexer.next();
                     if (supported_attribute) |attr| {
                         switch (attr) {
                             .type => {
@@ -1243,7 +1251,7 @@ pub fn Parse(
                                 },
                                 async_range.loc,
                             ) };
-                            _ = p.pushScopeForParsePass(.function_args, async_range.loc) catch unreachable;
+                            _ = try p.pushScopeForParsePass(.function_args, async_range.loc);
                             var data = FnOrArrowDataParse{
                                 .needs_async_loc = async_range.loc,
                             };
@@ -1291,7 +1299,7 @@ pub fn Parse(
                     // "async <T>() => {}"
                     .t_less_than => {
                         if (is_typescript_enabled and (!is_jsx_enabled or try TypeScript.isTSArrowFnJSX(p))) {
-                            switch (p.trySkipTypeScriptTypeParametersThenOpenParenWithBacktracking()) {
+                            switch (try p.trySkipTypeScriptTypeParametersThenOpenParenWithBacktracking()) {
                                 .did_not_skip_anything => {},
                                 else => |result| {
                                     try p.lexer.next();
@@ -1353,7 +1361,6 @@ const T = js_lexer.T;
 
 const js_parser = bun.js_parser;
 const AwaitOrYield = js_parser.AwaitOrYield;
-const DeferredArrowArgErrors = js_parser.DeferredArrowArgErrors;
 const DeferredErrors = js_parser.DeferredErrors;
 const ExprListLoc = js_parser.ExprListLoc;
 const ExprOrLetStmt = js_parser.ExprOrLetStmt;

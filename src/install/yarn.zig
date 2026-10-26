@@ -464,7 +464,7 @@ fn processDeps(
                     parsed_version,
                     &Semver.SlicedString.init(parsed_version, parsed_version),
                     log,
-                    manager,
+                    Dependency.ParseContext.fromPackageManager(manager),
                 ) orelse Dependency.Version{},
                 .behavior = .{
                     .prod = dep_type == .production,
@@ -987,7 +987,7 @@ pub fn migrateYarnLockfile(
                         version_string.slice(this.buffers.string_bytes.items),
                         &version_string.sliced(this.buffers.string_bytes.items),
                         log,
-                        manager,
+                        Dependency.ParseContext.fromPackageManager(manager),
                     ) orelse Dependency.Version{},
                     .behavior = .{
                         .prod = dep.dep_type == .production,
@@ -1379,7 +1379,7 @@ pub fn migrateYarnLockfile(
                 dep_version_string.slice(this.buffers.string_bytes.items),
                 &sliced_string,
                 log,
-                manager,
+                Dependency.ParseContext.fromPackageManager(manager),
             ) orelse Dependency.Version{};
 
             parsed_version.literal = dep_version_string;
@@ -1445,7 +1445,7 @@ pub fn migrateYarnLockfile(
                     dep_version_string.slice(this.buffers.string_bytes.items),
                     &sliced_string,
                     log,
-                    manager,
+                    Dependency.ParseContext.fromPackageManager(manager),
                 ) orelse Dependency.Version{};
 
                 parsed_version.literal = dep_version_string;
@@ -1489,7 +1489,7 @@ pub fn migrateYarnLockfile(
                     dep_version_string.slice(this.buffers.string_bytes.items),
                     &sliced_string,
                     log,
-                    manager,
+                    Dependency.ParseContext.fromPackageManager(manager),
                 ) orelse Dependency.Version{};
 
                 parsed_version.literal = dep_version_string;
@@ -1533,7 +1533,7 @@ pub fn migrateYarnLockfile(
                     dep_version_string.slice(this.buffers.string_bytes.items),
                     &sliced_string,
                     log,
-                    manager,
+                    Dependency.ParseContext.fromPackageManager(manager),
                 ) orelse Dependency.Version{};
 
                 parsed_version.literal = dep_version_string;
@@ -1577,7 +1577,7 @@ pub fn migrateYarnLockfile(
                     dep_version_string.slice(this.buffers.string_bytes.items),
                     &sliced_string,
                     log,
-                    manager,
+                    Dependency.ParseContext.fromPackageManager(manager),
                 ) orelse Dependency.Version{};
 
                 parsed_version.literal = dep_version_string;

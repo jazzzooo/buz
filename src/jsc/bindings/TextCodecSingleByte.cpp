@@ -28,36 +28,14 @@
 // config.h removed - not needed in Bun
 #include "TextCodecSingleByte.h"
 
-#include "EncodingTables.h"
 #include <array>
-#include <mutex>
-#include <wtf/IteratorRange.h>
-#include <wtf/NeverDestroyed.h>
-#include <wtf/TZoneMallocInlines.h>
-#include <wtf/text/CodePointIterator.h>
+#include <wtf/ASCIICType.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/unicode/CharacterNames.h>
 
 namespace PAL {
 
-WTF_MAKE_TZONE_ALLOCATED_IMPL(TextCodecSingleByte);
-
-enum class TextCodecSingleByte::Encoding : uint8_t {
-    ISO_8859_3,
-    ISO_8859_6,
-    ISO_8859_7,
-    ISO_8859_8,
-    Windows_874,
-    Windows_1253,
-    Windows_1255,
-    Windows_1257,
-    IBM866,
-    KOI8U,
-};
-
 using SingleByteDecodeTable = std::array<char16_t, 128>;
-using SingleByteEncodeTableEntry = std::pair<char16_t, uint8_t>;
-using SingleByteEncodeTable = std::span<const SingleByteEncodeTableEntry>;
 
 // From https://encoding.spec.whatwg.org/index-iso-8859-3.txt with 0xFFFD filling the gaps
 static constexpr SingleByteDecodeTable iso88593 {
@@ -178,55 +156,6 @@ static constexpr SingleByteDecodeTable ibm866 {
     0x0401, 0x0451, 0x0404, 0x0454, 0x0407, 0x0457, 0x040E, 0x045E, 0x00B0, 0x2219, 0x00B7, 0x221A, 0x2116, 0x00A4, 0x25A0, 0x00A0
 };
 
-template<const SingleByteDecodeTable& decodeTable> SingleByteEncodeTable tableForEncoding()
-{
-    // Allocate this at runtime because building it at compile time would make the binary much larger and this is often not used.
-    static constexpr auto size = std::size(decodeTable) - std::count(std::begin(decodeTable), std::end(decodeTable), replacementCharacter);
-    static const std::array<SingleByteEncodeTableEntry, size>* entries;
-    static std::once_flag once;
-    std::call_once(once, [&] {
-        auto* mutableEntries = new std::array<SingleByteEncodeTableEntry, size>();
-        size_t j = 0;
-        for (size_t i = 0; i < std::size(decodeTable); ++i) {
-            if (decodeTable[i] != replacementCharacter)
-                (*mutableEntries)[j++] = { decodeTable[i], i + 0x80 };
-        }
-        ASSERT(j == size);
-        auto collection = std::span { *mutableEntries };
-        sortByFirst(collection);
-        ASSERT(sortedFirstsAreUnique(collection));
-        entries = mutableEntries;
-    });
-    return std::span { *entries };
-}
-
-static SingleByteEncodeTable tableForEncoding(TextCodecSingleByte::Encoding encoding)
-{
-    switch (encoding) {
-    case TextCodecSingleByte::Encoding::ISO_8859_3:
-        return tableForEncoding<iso88593>();
-    case TextCodecSingleByte::Encoding::ISO_8859_6:
-        return tableForEncoding<iso88596>();
-    case TextCodecSingleByte::Encoding::ISO_8859_7:
-        return tableForEncoding<iso88597>();
-    case TextCodecSingleByte::Encoding::ISO_8859_8:
-        return tableForEncoding<iso88598>();
-    case TextCodecSingleByte::Encoding::Windows_874:
-        return tableForEncoding<windows874>();
-    case TextCodecSingleByte::Encoding::Windows_1253:
-        return tableForEncoding<windows1253>();
-    case TextCodecSingleByte::Encoding::Windows_1255:
-        return tableForEncoding<windows1255>();
-    case TextCodecSingleByte::Encoding::Windows_1257:
-        return tableForEncoding<windows1257>();
-    case TextCodecSingleByte::Encoding::IBM866:
-        return tableForEncoding<ibm866>();
-    case TextCodecSingleByte::Encoding::KOI8U:
-        return tableForEncoding<koi8u>();
-    }
-    RELEASE_ASSERT_NOT_REACHED();
-}
-
 static const SingleByteDecodeTable& tableForDecoding(TextCodecSingleByte::Encoding encoding)
 {
     switch (encoding) {
@@ -254,31 +183,12 @@ static const SingleByteDecodeTable& tableForDecoding(TextCodecSingleByte::Encodi
     RELEASE_ASSERT_NOT_REACHED();
 }
 
-// https://encoding.spec.whatwg.org/#single-byte-encoder
-static Vector<uint8_t> encode(const SingleByteEncodeTable& table, StringView string, Function<void(char32_t, Vector<uint8_t>&)>&& unencodableHandler)
-{
-    // FIXME: Consider adding an ASCII fast path like the one in TextCodecLatin1::decode.
-    Vector<uint8_t> result;
-    result.reserveInitialCapacity(string.length());
-    for (auto codePoint : string.codePoints()) {
-        if (isASCII(codePoint)) {
-            result.append(codePoint);
-            continue;
-        }
-        auto byte = findFirstInSortedPairs(table, codePoint);
-        if (!byte) {
-            unencodableHandler(codePoint, result);
-            continue;
-        }
-        result.append(*byte);
-    }
-    return result;
-}
-
 // https://encoding.spec.whatwg.org/#single-byte-decoder
-static String decode(const SingleByteDecodeTable& table, std::span<const uint8_t> bytes, bool, bool stopOnError, bool& sawError)
+static String decode(const SingleByteDecodeTable& table, std::span<const uint8_t>& bytes, bool stopOnError, bool& sawError)
 {
-    StringBuilder result;
+    if (bytes.size() > String::MaxLength)
+        return {};
+    StringBuilder result(OverflowPolicy::RecordOverflow);
     result.reserveCapacity(bytes.size());
     auto parseByte = [&](uint8_t byte) {
         if (isASCII(byte)) {
@@ -286,162 +196,35 @@ static String decode(const SingleByteDecodeTable& table, std::span<const uint8_t
             return;
         }
         char16_t codePoint = table[byte - 0x80];
-        if (codePoint == replacementCharacter)
+        if (codePoint == replacementCharacter) {
             sawError = true;
+            if (stopOnError)
+                return;
+        }
         result.append(codePoint);
     };
-    if (stopOnError) {
-        for (auto byte : bytes) {
-            parseByte(byte);
-            if (sawError)
-                return result.toString();
-        }
-    } else {
-        for (auto byte : bytes)
-            parseByte(byte);
+    while (!bytes.empty()) {
+        if (result.hasOverflowed())
+            return {};
+        auto byte = bytes.front();
+        bytes = bytes.subspan(1);
+        parseByte(byte);
+        if (sawError && stopOnError)
+            return emptyString();
     }
-    return result.toString();
+    return finishTextDecode(result);
 }
 
-Vector<uint8_t> TextCodecSingleByte::encode(StringView string, UnencodableHandling handling) const
+String TextCodecSingleByte::decode(std::span<const uint8_t> bytes, bool, bool stopOnError, bool& sawError)
 {
-    return PAL::encode(tableForEncoding(m_encoding), string, unencodableHandler(handling));
-}
-
-String TextCodecSingleByte::decode(std::span<const uint8_t> bytes, bool flush, bool stopOnError, bool& sawError)
-{
-    return PAL::decode(tableForDecoding(m_encoding), bytes, flush, stopOnError, sawError);
+    return decodeWithQueue(bytes, [&](std::span<const uint8_t>& input) {
+        return PAL::decode(tableForDecoding(m_encoding), input, stopOnError, sawError);
+    });
 }
 
 TextCodecSingleByte::TextCodecSingleByte(Encoding encoding)
     : m_encoding(encoding)
 {
-}
-
-void TextCodecSingleByte::registerEncodingNames(EncodingNameRegistrar registrar)
-{
-    // https://encoding.spec.whatwg.org/#names-and-labels
-    auto registerAliases = [&](std::initializer_list<ASCIILiteral> list) {
-        for (auto& alias : list)
-            registrar(alias, *list.begin());
-    };
-    registerAliases({ "ISO-8859-3"_s,
-        "csisolatin3"_s,
-        "iso-ir-109"_s,
-        "iso8859-3"_s,
-        "iso88593"_s,
-        "iso_8859-3"_s,
-        "iso_8859-3:1988"_s,
-        "l3"_s,
-        "latin3"_s });
-
-    registerAliases({ "ISO-8859-6"_s,
-        "arabic"_s,
-        "asmo-708"_s,
-        "csiso88596e"_s,
-        "csiso88596i"_s,
-        "csisolatinarabic"_s,
-        "ecma-114"_s,
-        "iso-8859-6-e"_s,
-        "iso-8859-6-i"_s,
-        "iso-ir-127"_s,
-        "iso8859-6"_s,
-        "iso88596"_s,
-        "iso_8859-6"_s,
-        "iso_8859-6:1987"_s });
-
-    registerAliases({ "ISO-8859-7"_s,
-        "csisolatingreek"_s,
-        "ecma-118"_s,
-        "elot_928"_s,
-        "greek"_s,
-        "greek8"_s,
-        "iso-ir-126"_s,
-        "iso8859-7"_s,
-        "iso88597"_s,
-        "iso_8859-7"_s,
-        "iso_8859-7:1987"_s,
-        "sun_eu_greek"_s });
-
-    registerAliases({ "ISO-8859-8"_s,
-        "csiso88598e"_s,
-        "csisolatinhebrew"_s,
-        "hebrew"_s,
-        "iso-8859-8-e"_s,
-        "iso-ir-138"_s,
-        "iso8859-8"_s,
-        "iso88598"_s,
-        "iso_8859-8"_s,
-        "iso_8859-8:1988"_s,
-        "visual"_s });
-
-    registerAliases({ "ISO-8859-8-I"_s,
-        "csiso88598i"_s,
-        "logical"_s });
-
-    registerAliases({ "windows-874"_s,
-        "dos-874"_s,
-        "iso-8859-11"_s,
-        "iso8859-11"_s,
-        "iso885911"_s,
-        "tis-620"_s });
-
-    registerAliases({ "windows-1253"_s,
-        "cp1253"_s,
-        "x-cp1253"_s });
-
-    registerAliases({ "windows-1255"_s,
-        "cp1255"_s,
-        "x-cp1255"_s });
-
-    registerAliases({ "windows-1257"_s,
-        "cp1257"_s,
-        "x-cp1257"_s });
-
-    registerAliases({ "KOI8-U"_s,
-        "koi8-ru"_s });
-
-    registerAliases({ "IBM866"_s,
-        "866"_s,
-        "cp866"_s,
-        "csibm866"_s });
-}
-
-void TextCodecSingleByte::registerCodecs(TextCodecRegistrar registrar)
-{
-    registrar("ISO-8859-3"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::ISO_8859_3);
-    });
-    registrar("ISO-8859-6"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::ISO_8859_6);
-    });
-    registrar("ISO-8859-7"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::ISO_8859_7);
-    });
-    registrar("ISO-8859-8"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::ISO_8859_8);
-    });
-    registrar("ISO-8859-8-I"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::ISO_8859_8);
-    });
-    registrar("windows-874"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::Windows_874);
-    });
-    registrar("windows-1253"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::Windows_1253);
-    });
-    registrar("windows-1255"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::Windows_1255);
-    });
-    registrar("windows-1257"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::Windows_1257);
-    });
-    registrar("KOI8-U"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::KOI8U);
-    });
-    registrar("IBM866"_s, [] {
-        return makeUnique<TextCodecSingleByte>(Encoding::IBM866);
-    });
 }
 
 }

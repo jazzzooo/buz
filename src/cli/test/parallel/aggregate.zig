@@ -9,7 +9,14 @@ fn attrValue(head: []const u8, comptime name: []const u8) u32 {
     return std.fmt.parseInt(u32, head[start..end], 10) catch 0;
 }
 
-pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *const TestRunner.Summary) void {
+pub fn mergeJUnitFragments(
+    io: std.Io,
+    start_time: i128,
+    fragments: []const []const u8,
+    crashed_files: []const []const u8,
+    outfile: []const u8,
+    expectations: u32,
+) void {
     var body: std.ArrayListUnmanaged(u8) = .empty;
     defer body.deinit(bun.default_allocator);
     // Crashed workers never reach workerFlushAggregates, so any files they ran
@@ -18,8 +25,8 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
     // sum of inner <testsuite> elements; CI tools schema-validate this.
     var totals: struct { tests: u32 = 0, failures: u32 = 0, skipped: u32 = 0 } = .{};
 
-    for (coord.junit_fragments.items) |path| {
-        const file = std.Io.Dir.cwd().readFileAlloc(coord.vm.io, path, bun.default_allocator, .unlimited) catch continue;
+    for (fragments) |path| {
+        const file = std.Io.Dir.cwd().readFileAlloc(io, path, bun.default_allocator, .unlimited) catch continue;
         defer bun.default_allocator.free(file);
         // Each fragment is a full <testsuites> document; extract its header
         // attributes for the merged totals and its body for the inner suites.
@@ -41,13 +48,11 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
     {
         var body_writer_state = bun.UnmanagedWriter.init(&body, bun.default_allocator);
         const w = body_writer_state.writer();
-        for (coord.crashed_files.items) |idx| {
-            const rel = bun.handleOom(coord.relPath(bun.default_allocator, idx));
-            defer bun.default_allocator.free(rel);
+        for (crashed_files) |path| {
             w.writeAll("  <testsuite name=\"") catch bun.outOfMemory();
-            test_command.escapeXml(rel, w) catch bun.outOfMemory();
+            reporting.escapeXml(path, w) catch bun.outOfMemory();
             w.writeAll("\" tests=\"1\" assertions=\"0\" failures=\"1\" skipped=\"0\" time=\"0\">\n    <testcase name=\"(worker crashed)\" classname=\"") catch bun.outOfMemory();
-            test_command.escapeXml(rel, w) catch bun.outOfMemory();
+            reporting.escapeXml(path, w) catch bun.outOfMemory();
             w.writeAll(
                 \\">
                 \\      <failure message="worker process crashed before reporting results"></failure>
@@ -63,20 +68,20 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
 
     var contents: std.ArrayListUnmanaged(u8) = .empty;
     defer contents.deinit(bun.default_allocator);
-    const elapsed_time = @as(f64, @floatFromInt(bun.awakeNanoseconds(coord.vm.io) - coord.start_time)) / std.time.ns_per_s;
+    const elapsed_time = @as(f64, @floatFromInt(bun.awakeNanoseconds(io) - start_time)) / std.time.ns_per_s;
     {
         var contents_writer_state = bun.UnmanagedWriter.init(&contents, bun.default_allocator);
         contents_writer_state.writer().print(
             \\<?xml version="1.0" encoding="UTF-8"?>
             \\<testsuites name="bun test" tests="{d}" assertions="{d}" failures="{d}" skipped="{d}" time="{d}">
             \\
-        , .{ totals.tests, summary.expectations, totals.failures, totals.skipped, elapsed_time }) catch bun.outOfMemory();
+        , .{ totals.tests, expectations, totals.failures, totals.skipped, elapsed_time }) catch bun.outOfMemory();
         contents_writer_state.finish();
     }
     bun.handleOom(contents.appendSlice(bun.default_allocator, body.items));
     bun.handleOom(contents.appendSlice(bun.default_allocator, "</testsuites>\n"));
 
-    std.Io.Dir.cwd().writeFile(coord.vm.io, .{ .sub_path = outfile, .data = contents.items }) catch |err|
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = outfile, .data = contents.items }) catch |err|
         Output.err(error.JUnitReportFailed, "Failed to write JUnit report to {s}: {s}", .{ outfile, @errorName(err) });
 }
 
@@ -99,7 +104,7 @@ const FileCoverage = struct {
 /// emit per-function FN/FNDA records yet, so disjoint per-worker function hits
 /// can't be unioned; this under-reports % Funcs when workers cover different
 /// functions of the same file. The non-parallel path has the same FN/FNDA gap.
-pub fn mergeCoverageFragments(io: std.Io, paths: []const []const u8, opts: *TestCommand.CodeCoverageOptions, comptime enable_colors: bool) void {
+pub fn mergeCoverageFragments(io: std.Io, paths: []const []const u8, opts: *CodeCoverageOptions, comptime enable_colors: bool) void {
     var arena_state = std.heap.ArenaAllocator.init(bun.default_allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -150,9 +155,10 @@ pub fn mergeCoverageFragments(io: std.Io, paths: []const []const u8, opts: *Test
     by_file.sort(Ctx{ .keys = by_file.keys() });
 
     if (opts.reporters.lcov) {
-        var fs = bun.jsc.Node.fs.NodeFS{};
-        _ = fs.mkdirRecursive(.{
-            .path = .{ .encoded_slice = jsc.ZigString.Slice.fromUTF8NeverFree(opts.reports_directory) },
+        var mkdir_error_buffer: bun.PathBuffer = undefined;
+        _ = NodeFSCore.mkdir(&mkdir_error_buffer, .{
+            .path = .{ .encoded_slice = bun.String.Slice.fromUTF8NeverFree(opts.reports_directory) },
+            .recursive = true,
             .always_return_none = true,
         });
         var path_buf: bun.PathBuffer = undefined;
@@ -265,14 +271,10 @@ fn writeRange(w: *std.Io.Writer, first: *bool, a: u32, b: u32, comptime colors: 
 }
 
 const std = @import("std");
-const Coordinator = @import("./Coordinator.zig").Coordinator;
-
-const test_command = @import("../../test_command.zig");
-const TestCommand = test_command.TestCommand;
-
 const bun = @import("bun");
 const Output = bun.Output;
-const jsc = bun.jsc;
-const CoverageFraction = bun.SourceMap.coverage.Fraction;
-const TestRunner = jsc.Jest.TestRunner;
-const CoverageReportText = bun.SourceMap.coverage.Report.Text;
+const reporting = @import("../reporting.zig");
+const NodeFSCore = @import("../../../runtime/node/NodeFSCore.zig");
+const CodeCoverageOptions = @import("../../../options_types/CodeCoverageOptions.zig").CodeCoverageOptions;
+const CoverageFraction = @import("../../../sourcemap/CoverageFraction.zig").Fraction;
+const CoverageReportText = @import("../../../sourcemap/CoverageReportText.zig");

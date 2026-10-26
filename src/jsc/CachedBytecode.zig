@@ -1,36 +1,26 @@
-pub const CachedBytecode = opaque {
-    extern fn generateCachedModuleByteCodeFromSourceCode(sourceProviderURL: *bun.String, input_code: [*]const u8, inputSourceCodeSize: usize, outputByteCode: *?[*]u8, outputByteCodeSize: *usize, cached_bytecode: *?*CachedBytecode) bool;
-    extern fn generateCachedCommonJSProgramByteCodeFromSourceCode(sourceProviderURL: *bun.String, input_code: [*]const u8, inputSourceCodeSize: usize, outputByteCode: *?[*]u8, outputByteCodeSize: *usize, cached_bytecode: *?*CachedBytecode) bool;
+pub const CachedBytecode = struct {
+    release_allocator: bun.allocators.ReleaseAllocator,
+    resource: CachedBytecodeResource,
 
-    pub fn generateForESM(sourceProviderURL: *bun.String, input: []const u8) ?struct { []const u8, *CachedBytecode } {
-        var this: ?*CachedBytecode = null;
-
-        var input_code_size: usize = 0;
-        var input_code_ptr: ?[*]u8 = null;
-        if (generateCachedModuleByteCodeFromSourceCode(sourceProviderURL, input.ptr, input.len, &input_code_ptr, &input_code_size, &this)) {
-            return .{ input_code_ptr.?[0..input_code_size], this.? };
-        }
-
-        return null;
+    pub fn generateForESM(sourceProviderURL: *bun.String, input: []const u8) ?*CachedBytecode {
+        return generateKind(sourceProviderURL, input, .esm);
     }
 
-    pub fn generateForCJS(sourceProviderURL: *bun.String, input: []const u8) ?struct { []const u8, *CachedBytecode } {
-        var this: ?*CachedBytecode = null;
-        var input_code_size: usize = 0;
-        var input_code_ptr: ?[*]u8 = null;
-        if (generateCachedCommonJSProgramByteCodeFromSourceCode(sourceProviderURL, input.ptr, input.len, &input_code_ptr, &input_code_size, &this)) {
-            return .{ input_code_ptr.?[0..input_code_size], this.? };
-        }
-
-        return null;
+    pub fn generateForCJS(sourceProviderURL: *bun.String, input: []const u8) ?*CachedBytecode {
+        return generateKind(sourceProviderURL, input, .cjs);
     }
 
-    extern "c" fn CachedBytecode__deref(this: *CachedBytecode) void;
     pub fn deref(this: *CachedBytecode) void {
-        return CachedBytecode__deref(this);
+        this.release_allocator.release();
     }
 
-    pub fn generate(format: bun.options.Format, input: []const u8, source_provider_url: *bun.String) ?struct { []const u8, *CachedBytecode } {
+    fn release(release_allocator: *bun.allocators.ReleaseAllocator) void {
+        const this: *CachedBytecode = @fieldParentPtr("release_allocator", release_allocator);
+        this.resource.deinit();
+        bun.default_allocator.destroy(this);
+    }
+
+    pub fn generate(format: bun.options.Format, input: []const u8, source_provider_url: *bun.String) ?*CachedBytecode {
         return switch (format) {
             .esm => generateForESM(source_provider_url, input),
             .cjs => generateForCJS(source_provider_url, input),
@@ -38,39 +28,40 @@ pub const CachedBytecode = opaque {
         };
     }
 
-    pub const VTable = &std.mem.Allocator.VTable{
-        .alloc = struct {
-            pub fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
-                _ = ctx;
-                _ = len;
-                _ = alignment;
-                _ = ret_addr;
-                @panic("Unexpectedly called CachedBytecode.alloc");
-            }
-        }.alloc,
-        .free = struct {
-            pub fn free(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
-                _ = buf;
-                _ = alignment;
-                _ = ret_addr;
-                CachedBytecode__deref(@ptrCast(ctx));
-            }
-        }.free,
-        .resize = &std.mem.Allocator.noResize,
-        .remap = &std.mem.Allocator.noRemap,
-    };
-
     pub fn allocator(this: *CachedBytecode) std.mem.Allocator {
-        return .{
-            .ptr = this,
-            .vtable = VTable,
-        };
+        return this.release_allocator.allocator();
     }
 
-    pub fn isInstance(allocator_: std.mem.Allocator) bool {
-        return allocator_.vtable == VTable;
+    pub fn bytes(this: *const CachedBytecode) []const u8 {
+        return this.resource.slice();
+    }
+
+    fn generateKind(source_provider_url: *bun.String, input: []const u8, kind: CachedBytecodeKind) ?*CachedBytecode {
+        var url = bun.bindgen.ThreadSafeDOMString.fromBunString(source_provider_url.dupeRef()) catch bun.outOfMemory();
+        defer url.deinit();
+
+        var owner = bun.bindgen.Engine(GenerateCachedBytecodeSchema).call(.{
+            .sourceProviderURL = url.operand(),
+            .source = bun.bindgen.BytesOperand.fromSlice(input),
+            .kind = kind,
+        }) orelse return null;
+        var resource = owner.takeByteResource();
+        const this = bun.default_allocator.create(CachedBytecode) catch {
+            resource.deinit();
+            bun.outOfMemory();
+        };
+        this.* = .{
+            .release_allocator = .init(release),
+            .resource = resource.take(),
+        };
+        return this;
     }
 };
 
 const bun = @import("bun");
 const std = @import("std");
+const CachedBytecodeBindings = bun.bindgen.Module("cached_bytecode");
+const GenerateCachedBytecodeSchema = CachedBytecodeBindings.engineShim("generateCachedBytecode");
+const CachedBytecodeKind = @FieldType(bun.bindgen.Args(GenerateCachedBytecodeSchema), "kind");
+const CachedBytecodeOwner = @typeInfo(bun.bindgen.Return(GenerateCachedBytecodeSchema)).optional.child;
+const CachedBytecodeResource = CachedBytecodeOwner.ByteResource;

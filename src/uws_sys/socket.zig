@@ -1,5 +1,4 @@
-//! High-level socket wrapper over `us_socket_t` / `ConnectingSocket` /
-//! `UpgradedDuplex` / `WindowsNamedPipe`. The `comptime is_ssl` parameter is
+//! High-level socket wrapper over uSockets and adapted transports. The `comptime is_ssl` parameter is
 //! kept so callers can pick `*BoringSSL.SSL` vs `fd` for `getNativeHandle`
 //! and `fd()`, but it is NOT forwarded to C — TLS is per-socket there.
 //!
@@ -46,8 +45,8 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
         pub fn getVerifyError(this: ThisSocket) uws.us_bun_verify_error_t {
             switch (this.socket) {
                 .connected => |socket| return socket.getVerifyError(),
-                .upgradedDuplex => |socket| return socket.sslError(),
-                .pipe => |pipe| if (Environment.isWindows) return pipe.sslError() else return std.mem.zeroes(us_bun_verify_error_t),
+                .upgradedDuplex => |socket| return socket.verifyError(),
+                .pipe => |pipe| if (Environment.isWindows) return pipe.verifyError() else return std.mem.zeroes(us_bun_verify_error_t),
                 .connecting, .detached => return std.mem.zeroes(us_bun_verify_error_t),
             }
         }
@@ -159,7 +158,7 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
             };
         }
 
-        /// Group this socket is linked into. Null for non-uSockets transports.
+        /// Group this socket is currently linked into, if any.
         pub fn group(this: ThisSocket) ?*SocketGroup {
             switch (this.socket) {
                 .connected => |socket| return socket.group(),
@@ -179,8 +178,8 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
 
         pub fn write(this: ThisSocket, data: []const u8) i32 {
             return switch (this.socket) {
-                .upgradedDuplex => |socket| socket.encodeAndWrite(data),
-                .pipe => |pipe| if (comptime Environment.isWindows) pipe.encodeAndWrite(data) else 0,
+                .upgradedDuplex => |socket| socket.write(data),
+                .pipe => |pipe| if (comptime Environment.isWindows) pipe.write(data) else 0,
                 .connected => |socket| socket.write(data),
                 .connecting, .detached => 0,
             };
@@ -191,6 +190,14 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
                 .upgradedDuplex, .pipe => this.write(data),
                 .connected => |socket| socket.writeFd(data, file_descriptor),
                 .connecting, .detached => 0,
+            };
+        }
+
+        pub fn writeIPC(this: ThisSocket, data: []const u8) bun.sys.Maybe(u32) {
+            if (comptime is_ssl) @compileError("IPC sockets cannot use TLS");
+            return switch (this.socket) {
+                .connected => |socket| socket.writeIPC(data),
+                .upgradedDuplex, .pipe, .connecting, .detached => .{ .err = bun.sys.Error.fromCode(.PIPE, .write) },
             };
         }
 
@@ -246,22 +253,22 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
             if (this.isClosed() or this.isShutdown()) {
                 return true;
             }
-            return this.getError() != 0;
+            return this.hasError();
         }
 
-        pub fn getError(this: ThisSocket) i32 {
+        pub fn hasError(this: ThisSocket) bool {
             switch (this.socket) {
                 .connected => |socket| {
                     debug("us_socket_get_error({d})", .{@intFromPtr(socket)});
-                    return socket.getError();
+                    return socket.getError() != 0;
                 },
                 .connecting => |socket| {
-                    debug("us_connecting_socket_get_error({d})", .{@intFromPtr(socket)});
-                    return socket.getError();
+                    debug("us_connecting_socket_get_failure({d})", .{@intFromPtr(socket)});
+                    return socket.getFailure().hasError();
                 },
-                .detached => return 0,
-                .upgradedDuplex => |socket| return socket.sslError().error_no,
-                .pipe => |pipe| return if (Environment.isWindows) pipe.sslError().error_no else 0,
+                .detached => return false,
+                .upgradedDuplex => |socket| return socket.verifyError().error_no != 0,
+                .pipe => |pipe| return if (Environment.isWindows) pipe.verifyError().error_no != 0 else false,
             }
         }
 
@@ -305,16 +312,18 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
             };
         }
 
-        pub fn fromDuplex(duplex: *UpgradedDuplex) ThisSocket {
-            return ThisSocket{ .socket = .{ .upgradedDuplex = duplex } };
+        pub fn fromDuplex(duplex: anytype) ThisSocket {
+            return ThisSocket{ .socket = .{ .upgradedDuplex = .init(duplex, false) } };
         }
 
-        pub fn fromNamedPipe(pipe: *WindowsNamedPipe) ThisSocket {
+        pub fn fromNamedPipe(pipe: anytype) ThisSocket {
             if (Environment.isWindows) {
-                return ThisSocket{ .socket = .{ .pipe = pipe } };
+                return ThisSocket{ .socket = .{ .pipe = .init(pipe, true) } };
             }
             @compileError("WindowsNamedPipe is only available on Windows");
         }
+
+        pub const FromFdResult = union(enum) { socket: ThisSocket, failed: uws.ConnectFailure };
 
         /// Wrap an already-open fd. Ext stores `*This`; the socket is linked
         /// into `g` with kind `k`.
@@ -326,15 +335,18 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
             this: *This,
             comptime socket_field_name: ?[]const u8,
             is_ipc: bool,
-        ) ?ThisSocket {
-            const raw = g.fromFd(k, null, @sizeOf(?*This), handle.native(), is_ipc) orelse return null;
+        ) FromFdResult {
+            const raw = switch (g.fromFd(k, null, @sizeOf(?*This), handle.native(), is_ipc)) {
+                .socket => |socket| socket,
+                .failed => |failure| return .{ .failed = failure },
+            };
             const socket_ = ThisSocket{ .socket = .{ .connected = raw } };
 
             raw.ext(?*This).* = this;
             if (comptime socket_field_name) |field| {
                 @field(this, field) = socket_;
             }
-            return socket_;
+            return .{ .socket = socket_ };
         }
 
         /// Connect via a `SocketGroup` and stash `owner` in the socket ext.
@@ -363,11 +375,11 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
                 @memcpy(stack[0..host.len], host);
                 stack[host.len] = 0;
                 break :blk stack[0..host.len :0];
-            } else bun.handleOom(bun.default_allocator.dupeSentinel(u8, host, 0));
+            } else try bun.default_allocator.dupeSentinel(u8, host, 0);
             defer if (hostZ.ptr != &stack) bun.default_allocator.free(hostZ);
 
             return switch (g.connect(kind, ssl_ctx, hostZ, @intCast(port), opts, @sizeOf(?*Owner))) {
-                .failed => error.FailedToOpenSocket,
+                .failed => |failure| if (failure.isOutOfMemory()) error.OutOfMemory else error.FailedToOpenSocket,
                 .socket => |s| blk: {
                     s.ext(?*Owner).* = owner;
                     break :blk .{ .socket = .{ .connected = s } };
@@ -389,8 +401,10 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
         ) !ThisSocket {
             const Owner = @typeInfo(@TypeOf(owner)).pointer.child;
             const opts: c_int = if (allow_half_open) uws.LIBUS_SOCKET_ALLOW_HALF_OPEN else 0;
-            const s = g.connectUnix(kind, ssl_ctx, path.ptr, path.len, opts, @sizeOf(?*Owner)) orelse
-                return error.FailedToOpenSocket;
+            const s = switch (g.connectUnix(kind, ssl_ctx, path.ptr, path.len, opts, @sizeOf(?*Owner))) {
+                .socket => |socket| socket,
+                .failed => |failure| return if (failure.isOutOfMemory()) error.OutOfMemory else error.FailedToOpenSocket,
+            };
             s.ext(?*Owner).* = owner;
             return .{ .socket = .{ .connected = s } };
         }
@@ -431,8 +445,8 @@ pub const InternalSocket = union(enum) {
     connected: *us_socket_t,
     connecting: *ConnectingSocket,
     detached: void,
-    upgradedDuplex: *uws.UpgradedDuplex,
-    pipe: if (Environment.isWindows) *uws.WindowsNamedPipe else void,
+    upgradedDuplex: SocketTransport,
+    pipe: if (Environment.isWindows) SocketTransport else void,
 
     pub fn pauseResume(this: InternalSocket, pause: bool) bool {
         switch (this) {
@@ -442,13 +456,8 @@ pub const InternalSocket = union(enum) {
                 return true;
             },
             .connecting => return false,
-            .upgradedDuplex => return false, // TODO: pause/resume upgraded duplex
-            .pipe => |pipe| {
-                if (Environment.isWindows) {
-                    return if (pause) pipe.pauseStream() else pipe.resumeStream();
-                }
-                return false;
-            },
+            .upgradedDuplex => |socket| return socket.pauseResume(pause),
+            .pipe => |pipe| if (Environment.isWindows) return pipe.pauseResume(pause) else return false,
         }
     }
     pub fn isDetached(this: InternalSocket) bool {
@@ -517,11 +526,11 @@ pub const InternalSocket = union(enum) {
                 .upgradedDuplex, .connected, .connecting, .pipe => false,
             },
             .upgradedDuplex => switch (other) {
-                .upgradedDuplex => this.upgradedDuplex == other.upgradedDuplex,
+                .upgradedDuplex => this.upgradedDuplex.eql(other.upgradedDuplex),
                 .connected, .connecting, .detached, .pipe => false,
             },
             .pipe => switch (other) {
-                .pipe => if (Environment.isWindows) this.pipe == other.pipe else false,
+                .pipe => if (Environment.isWindows) this.pipe.eql(other.pipe) else false,
                 .connected, .connecting, .detached, .upgradedDuplex => false,
             },
         };
@@ -647,7 +656,6 @@ const uws = bun.uws;
 const ConnectingSocket = uws.ConnectingSocket;
 const SocketGroup = uws.SocketGroup;
 const SocketKind = uws.SocketKind;
-const UpgradedDuplex = uws.UpgradedDuplex;
-const WindowsNamedPipe = uws.WindowsNamedPipe;
+const SocketTransport = @import("./SocketTransport.zig");
 const us_bun_verify_error_t = uws.us_bun_verify_error_t;
 const us_socket_t = uws.us_socket_t;

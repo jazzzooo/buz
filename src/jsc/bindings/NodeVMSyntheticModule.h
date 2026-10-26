@@ -13,7 +13,14 @@ class NodeVMSyntheticModule final : public NodeVMModule {
 public:
     using Base = NodeVMModule;
 
-    static NodeVMSyntheticModule* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, ArgList args);
+    static NodeVMSyntheticModule* create(
+        JSC::VM& vm,
+        JSC::JSGlobalObject* globalObject,
+        WTF::String identifier,
+        JSC::JSObject* context,
+        WTF::Vector<WTF::String> exportNames,
+        JSC::JSValue syntheticEvaluationSteps,
+        JSC::JSValue moduleWrapper);
 
     template<typename, JSC::SubspaceAccess mode> static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm)
     {
@@ -38,7 +45,7 @@ public:
     void ensureModuleRecord(JSGlobalObject* globalObject);
     bool hasModuleRecord() const { return !!m_moduleRecord; }
     AbstractModuleRecord* moduleRecord(JSGlobalObject* globalObject);
-    JSValue link(JSGlobalObject* globalObject, JSArray* specifiers, JSArray* moduleNatives, JSValue scriptFetcher);
+    JSValue link(JSGlobalObject* globalObject);
     JSValue instantiate(JSGlobalObject* globalObject);
     JSValue evaluate(JSGlobalObject* globalObject);
     void setExport(JSGlobalObject* globalObject, WTF::String exportName, JSValue value);

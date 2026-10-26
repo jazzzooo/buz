@@ -495,6 +495,9 @@ inline int64_t equivalentTime(int64_t ms)
 }
 
 WTF_EXPORT_PRIVATE bool isTimeZoneValid(StringView);
+
+// Swaps in a validated identifier without allocation; an empty identifier clears the override.
+WTF_EXPORT_PRIVATE void commitTimeZoneOverride(Vector<char16_t>&);
 WTF_EXPORT_PRIVATE bool setTimeZoneOverride(StringView);
 WTF_EXPORT_PRIVATE void getTimeZoneOverride(Vector<char16_t, 32>& timeZoneID);
 

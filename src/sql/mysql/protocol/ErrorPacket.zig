@@ -14,7 +14,21 @@ pub const MySQLErrorOptions = struct {
     sqlState: ?[5]u8 = null,
 };
 
-pub const createMySQLError = @import("../../../sql_jsc/mysql/protocol/error_packet_jsc.zig").createMySQLError;
+pub const ErrorDescription = struct {
+    message: []const u8,
+    options: MySQLErrorOptions,
+};
+
+pub fn describe(this: ErrorPacket) ErrorDescription {
+    return .{
+        .message = if (this.error_message.slice().len == 0) "MySQL error occurred" else this.error_message.slice(),
+        .options = .{
+            .code = if (this.error_code == 1064) "ERR_MYSQL_SYNTAX_ERROR" else "ERR_MYSQL_SERVER_ERROR",
+            .errno = this.error_code,
+            .sqlState = this.sql_state,
+        },
+    };
+}
 
 pub fn decodeInternal(this: *ErrorPacket, comptime Context: type, reader: NewReader(Context)) !void {
     this.header = try reader.int(u8);
@@ -41,8 +55,6 @@ pub fn decodeInternal(this: *ErrorPacket, comptime Context: type, reader: NewRea
 }
 
 pub const decode = decoderWrap(ErrorPacket, decodeInternal).decode;
-
-pub const toJS = @import("../../../sql_jsc/mysql/protocol/error_packet_jsc.zig").toJS;
 
 const Data = @import("../../shared/Data.zig").Data;
 

@@ -40,19 +40,8 @@ namespace WebCore {
 class ScriptWrappable {
     WTF_MAKE_TZONE_ALLOCATED(ScriptWrappable);
 
-public:
-    JSDOMObject* wrapper() const;
-    void setWrapper(JSDOMObject*, JSC::WeakHandleOwner*, void*);
-    void clearWrapper(JSDOMObject*);
-
-    template<typename Derived>
-    static ptrdiff_t offsetOfWrapper() { return CAST_OFFSET(Derived*, ScriptWrappable*) + OBJECT_OFFSETOF(ScriptWrappable, m_wrapper); }
-
 protected:
     ~ScriptWrappable() = default;
-
-private:
-    JSC::Weak<JSDOMObject> m_wrapper;
 };
 
 } // namespace WebCore

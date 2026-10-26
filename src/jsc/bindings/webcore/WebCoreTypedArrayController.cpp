@@ -27,18 +27,13 @@
 
 #include "WebCoreTypedArrayController.h"
 
-#include "JSDOMConvertBufferSource.h"
+#include "JSBufferSource.h"
 
 #include "JSDOMGlobalObject.h"
 
 #include <JavaScriptCore/ArrayBuffer.h>
 
 #include <JavaScriptCore/JSArrayBuffer.h>
-
-static inline WebCore::JSDOMGlobalObject* getDefaultGlobal(JSC::JSGlobalObject* lexicalGlobalObject)
-{
-    return defaultGlobalObject(lexicalGlobalObject);
-}
 
 namespace WebCore {
 
@@ -51,12 +46,12 @@ WebCoreTypedArrayController::~WebCoreTypedArrayController() = default;
 
 JSC::JSArrayBuffer* WebCoreTypedArrayController::toJS(JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSGlobalObject* globalObject, JSC::ArrayBuffer& buffer)
 {
-    return uncheckedDowncast<JSC::JSArrayBuffer>(WebCore::toJS(lexicalGlobalObject, getDefaultGlobal(globalObject), buffer));
+    return uncheckedDowncast<JSC::JSArrayBuffer>(WebCore::toJS(lexicalGlobalObject, globalObject, buffer));
 }
 
 void WebCoreTypedArrayController::registerWrapper(JSC::JSGlobalObject* globalObject, JSC::ArrayBuffer& native, JSC::JSArrayBuffer& wrapper)
 {
-    cacheWrapper(static_cast<JSVMClientData*>(JSC::getVM(globalObject).clientData)->normalWorld(), &native, &wrapper);
+    cacheWrapper(currentWorld(*globalObject), &native, &wrapper);
 }
 
 bool WebCoreTypedArrayController::isAtomicsWaitAllowedOnCurrentThread()

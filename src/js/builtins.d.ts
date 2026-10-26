@@ -1,14 +1,18 @@
-/// <reference types="../../build/debug/codegen/generated.d.ts" />
-/// <reference types="../../build/debug/codegen/ErrorCode.d.ts" />
-/// <reference types="../../build/debug/codegen/ZigGeneratedClasses.d.ts" />
-/// <reference types="../../build/debug/codegen/WebCoreJSBuiltins.d.ts" />
+/// <reference types="../../build/zig/debug/codegen/generated.d.ts" />
+/// <reference types="../../build/zig/debug/codegen/ErrorCode.d.ts" />
+/// <reference types="../../build/zig/debug/codegen/SchemaBindings.d.ts" />
+/// <reference types="../../build/zig/debug/codegen/WebCoreJSBuiltins.d.ts" />
 
 // Typedefs for JSC intrinsics. Instead of @, we use $
 type TODO = any;
+/** Matches lib.dom's VoidFunction, absent from the ES-only libs this project compiles against. */
+type VoidFunction = () => void;
+/** Matches lib.dom's QueuingStrategyHighWaterMark, absent from the ES-only libs. */
+type QueuingStrategyHighWaterMark = number;
 
 declare module "bun" {
   interface Socket {
-    $write(data: string | BufferSource, byteOffset?: number, byteLength?: number): number;
+    $write(data: string | BufferSource, offsetOrEncoding?: number | string, lengthOrEncoding?: number | string): number;
     $end(): void;
   }
 }
@@ -60,20 +64,11 @@ declare var $sloppy;
 /** Place this directly above a function declaration (like a decorator) to always inline the function */
 declare var $alwaysInline;
 
-declare function $extractHighWaterMarkFromQueuingStrategyInit(obj: any): any;
 /**
  * Overrides **
  */
 
-class ReadableStreamDefaultController<R = any> extends _ReadableStreamDefaultController<R> {
-  constructor(
-    stream: unknown,
-    underlyingSource: unknown,
-    size: unknown,
-    highWaterMark: unknown,
-    $isReadableStream: typeof $isReadableStream,
-  );
-
+interface ReadableStreamDefaultController<R = any> {
   $controlledReadableStream: ReadableStream<R>;
   $underlyingSource: UnderlyingSource;
   $queue: any;
@@ -84,26 +79,42 @@ class ReadableStreamDefaultController<R = any> extends _ReadableStreamDefaultCon
   $strategy: any;
 
   $pullAlgorithm(): void;
-  $pull: typeof ReadableStreamDefaultController.prototype.pull;
-  $cancel: typeof ReadableStreamDefaultController.prototype.cancel;
+  $pull: ReadableStreamDefaultController<R>["pull"];
+  $cancel: ReadableStreamDefaultController<R>["cancel"];
   $cancelAlgorithm: (reason?: any) => void;
-  $close: typeof ReadableStreamDefaultController.prototype.close;
-  $enqueue: typeof ReadableStreamDefaultController.prototype.enqueue;
-  $error: typeof ReadableStreamDefaultController.prototype.error;
+  $close: ReadableStreamDefaultController<R>["close"];
+  $enqueue: ReadableStreamDefaultController<R>["enqueue"];
+  $error: ReadableStreamDefaultController<R>["error"];
 }
 
-interface ReadableStream<R = any> extends _ReadableStream<R> {
+interface ReadableStream<R = any> {
   $highWaterMark: number;
   $bunNativePtr: undefined | TODO;
-  $asyncContext?: {};
+  $bunNativeType: number;
+  $nativeTransferred: boolean;
+  $transferredNativePtr: undefined | TODO;
+  $asyncContext?: ReadonlyArray<any>;
   $disturbed: boolean;
   $state: $streamClosed | $streamErrored | $streamReadable | $streamWritable | $streamClosedAndErrored;
+  $readableStreamController: ReadableStreamDefaultController | ReadableByteStreamController | ReadableStreamDirectController | null;
 }
 
-declare var ReadableStream: {
-  prototype: ReadableStream;
-  new (): ReadableStream;
-};
+interface ReadableByteStreamController {
+  $controlledReadableStream: ReadableStream;
+  $cancel?: (controller: ReadableByteStreamController, reason: any) => Promise<unknown>;
+  close(reason?: any): void;
+}
+
+interface ReadableStreamDirectController {
+  $cancel?: (controller: ReadableStreamDirectController, reason: any) => Promise<unknown>;
+  $controlledReadableStream: ReadableStream;
+  $underlyingSource: any;
+  _deferClose: number;
+  _deferFlush: number;
+  _deferCloseReason: any;
+  _pendingRead: Promise<unknown> | undefined;
+  _handleError: ((e: any) => void) | undefined;
+}
 
 interface Console {
   $writer: ReturnType<typeof Bun.stdout.writer>;
@@ -186,9 +197,8 @@ declare function $idWithProfile(): TODO;
  * @see [JIT implementation](https://github.com/oven-sh/WebKit/blob/433f7598bf3537a295d0af5ffd83b9a307abec4e/Source/JavaScriptCore/jit/JITOpcodes.cpp#L311)
  */
 declare function $isObject(obj: unknown): obj is object;
-declare function $isArray<T>(obj: T): obj is Extract<T, any[]> | Extract<T, readonly any[]>;
 declare function $isArray(obj: unknown): obj is any[];
-declare function $isCallable(fn: unknown): fn is CallableFunction;
+declare function $isCallable(fn: unknown): fn is (...args: any[]) => any;
 declare function $isConstructor(fn: unknown): fn is { new (...args: any[]): any };
 declare function $isJSArray(obj: unknown): obj is any[];
 declare function $isProxyObject(obj: unknown): obj is Proxy;
@@ -226,10 +236,10 @@ declare function $putByIdDirect(obj: any, key: PropertyKey, value: any): void;
  * @param key The key of the private property (without the "$" prefix)
  * @param value The value to set the private property to
  */
-declare function $putByIdDirectPrivate<T extends Record<`$${K}`, unknown>, K extends string>(
+declare function $putByIdDirectPrivate<T, K extends string>(
   obj: T,
   key: K,
-  value: T[`$${K}`],
+  value: (T extends { [P in `$${K}`]: infer V } ? V : unknown) | undefined,
 ): void;
 
 declare function $putByValDirect(obj: any, key: PropertyKey, value: any): void;
@@ -273,6 +283,12 @@ declare function $newArrayWithSize<T>(size: number): T[];
  */
 declare function $newArrayWithSpecies<T>(size: number, array: T[]): T[];
 declare function $newPromise(): TODO;
+declare function $performPromiseThen(
+  promise: Promise<unknown>,
+  onFulfilled: ((value: unknown) => unknown) | undefined,
+  onRejected: ((reason: unknown) => unknown) | undefined,
+  result: Promise<unknown>,
+): void;
 declare function $createPromise(): TODO;
 declare const $iterationKindKey: TODO;
 declare const $iterationKindValue: TODO;
@@ -304,7 +320,8 @@ declare const $mapIteratorFieldMapBucket: TODO;
 declare const $setIteratorFieldSetBucket: TODO;
 declare const $processBindingConstants: {
   os: typeof import("os").constants;
-  fs: typeof import("fs").constants;
+  // O_RSYNC is platform-dependent and absent from the public fs.constants type
+  fs: typeof import("fs").constants & { O_RSYNC?: number };
   crypto: typeof import("crypto").constants;
   zlib: typeof import("zlib").constants;
 };
@@ -315,7 +332,7 @@ declare const $asyncContext: InternalFieldObject<[ReadonlyArray<any> | undefined
 declare var $_events: TODO;
 declare function $abortAlgorithm(): TODO;
 declare function $abortSteps(): TODO;
-declare function $addAbortAlgorithmToSignal(signal: AbortSignal, algorithm: () => void): TODO;
+declare function $addAbortAlgorithmToSignal(signal: AbortSignal, algorithm: (reason?: any) => void): TODO;
 declare function $assignToStream(): TODO;
 declare function $assignStreamIntoResumableSink(): TODO;
 declare function $associatedReadableByteStreamController(): TODO;
@@ -340,7 +357,8 @@ declare function $code(): TODO;
 declare function $controlledReadableStream(): TODO;
 declare function $controller(): TODO;
 declare function $createEmptyReadableStream(): TODO;
-declare function $createFIFO(): TODO;
+type Dequeue<T = any> = import("./internal/fifo.ts").default<T>;
+declare function $createFIFO<T = any>(): Dequeue<T>;
 declare function $createNativeReadableStream(): TODO;
 declare function $createUninitializedArrayBuffer(size: number): ArrayBuffer;
 declare function $createWritableStreamFromInternal(...args: any[]): TODO;
@@ -375,7 +393,7 @@ declare function $ignoreBOM(): TODO;
 declare function $importer(): TODO;
 declare function $inFlightCloseRequest(): TODO;
 declare function $inFlightWriteRequest(): TODO;
-declare function $internalRequire(id: string, parent: JSCommonJSModule): TODO;
+declare function $internalRequire(id: string, parent: JSCommonJSModule, filename: string): TODO;
 declare function $internalWritable(): TODO;
 declare function $isAbortSignal(signal: unknown): signal is AbortSignal;
 declare function $isAbsolute(): TODO;
@@ -431,7 +449,6 @@ declare function $sink(): TODO;
 declare function $size(): TODO;
 declare function $start(): TODO;
 declare function $startAlgorithm(): TODO;
-declare function $startDirectStream(): TODO;
 declare function $started(): TODO;
 declare function $state(): TODO;
 declare function $status(): TODO;
@@ -446,7 +463,7 @@ declare function $streamErrored(): TODO;
 declare function $streamReadable(): TODO;
 declare function $streamWaiting(): TODO;
 declare function $streamWritable(): TODO;
-declare function $structuredCloneForStream(): TODO;
+declare function $structuredCloneForStream(value: unknown): any;
 declare function $syscall(): TODO;
 declare function $textDecoderStreamDecoder(): TODO;
 declare function $textDecoderStreamTransform(): TODO;
@@ -506,7 +523,7 @@ declare interface ArrayBufferConstructor extends ClassWithIntrinsics<ArrayBuffer
 declare interface PromiseConstructor extends ClassWithIntrinsics<PromiseConstructor> {}
 
 declare interface UnderlyingSource {
-  $lazy?: boolean;
+  $deferredNativeSource?: boolean;
   $bunNativePtr?: undefined | TODO;
   autoAllocateChunkSize?: number;
   $stream?: ReadableStream;
@@ -517,25 +534,14 @@ declare class OutOfMemoryError {
 }
 
 declare class ReadableByteStreamController {
-  constructor(
-    stream: unknown,
-    underlyingSource: unknown,
-    strategy: unknown,
-    $isReadableStream: typeof $isReadableStream,
-  );
-}
-declare class ReadableStreamBYOBRequest {
-  constructor(stream: unknown, view: unknown, $isReadableStream: typeof $isReadableStream);
+  constructor(stream: ReadableStream, highWaterMark: number, underlyingSource: UnderlyingSource);
 }
 declare class ReadableStreamBYOBReader {
   constructor(stream: unknown);
 }
 
 // Inlining our enum types
-declare const $ImportKindIdToLabel: Array<import("bun").ImportKind>;
 declare const $ImportKindLabelToId: Record<import("bun").ImportKind, number>;
-declare const $LoaderIdToLabel: Array<import("bun").Loader>;
-declare const $LoaderLabelToId: Record<import("bun").Loader, number>;
 
 // not a builtin, but a build-time macro of our own
 /** Returns a not implemented error that points to a github issue. */
@@ -579,6 +585,8 @@ declare var $Buffer: {
 
 declare interface Error {
   code?: string;
+  errno?: number | string;
+  syscall?: string;
 }
 
 declare function $makeAbortError(message?: string, options?: { cause: Error }): Error;
@@ -586,8 +594,7 @@ declare function $makeAbortError(message?: string, options?: { cause: Error }): 
 /**
  * -- Error Codes with manual messages
  */
-declare function $ERR_INVALID_ARG_TYPE(argName: string, expectedType: string, actualValue: any): TypeError;
-declare function $ERR_INVALID_ARG_TYPE(argName: string, expectedTypes: string[], actualValue: any): TypeError;
+declare function $ERR_INVALID_ARG_TYPE(argName: string, expectedTypes: string | string[], actualValue: any): TypeError;
 declare function $ERR_INVALID_ARG_VALUE(name: string, value: any, reason?: string): TypeError;
 declare function $ERR_UNKNOWN_ENCODING(enc: string): TypeError;
 declare function $ERR_STREAM_DESTROYED(method: string): Error;
@@ -742,11 +749,16 @@ interface Map<K, V> {
 }
 
 interface ObjectConstructor {
+  $keys: typeof Object.keys;
   $defineProperty: typeof Object.defineProperty;
   $defineProperties: typeof Object.defineProperties;
 }
 
 declare const $Object: ObjectConstructor;
+declare const $Set: SetConstructor;
+declare const $Map: MapConstructor;
+declare const $stringSubstring: String["substring"];
+declare const $regExpBuiltinExec: RegExp["exec"];
 
 /** gets a property on an object */
 declare function $getByIdDirect<T, K extends keyof T>(obj: T, key: K): T[K];
@@ -762,12 +774,24 @@ declare function $getByIdDirect<T, K extends keyof T>(obj: T, key: K): T[K];
 declare function $getByIdDirectPrivate<T = any, K extends string = string>(
   obj: T,
   key: K,
-): K extends keyof T ? T[`$${K}`] : T extends { [P in `$${K}`]: infer V } ? V : never;
+): `$${K}` extends keyof T ? T[`$${K}`] : T extends { [P in `$${K}`]: infer V } ? V : any;
 
 declare var $Promise: PromiseConstructor;
+/** Sets an object's prototype without triggering setPrototypeOf traps. Used as `$setPrototypeDirect.$call(obj, proto)`. */
+declare var $setPrototypeDirect: (proto: unknown) => void;
+declare var $ArrayBuffer: typeof ArrayBuffer & { $isView: typeof ArrayBuffer.isView };
+/** Private-name global for the native TextEncoderStreamEncoder class. */
+declare var $TextEncoderStreamEncoder: new () => {
+  encode(input: string): Uint8Array | undefined;
+  flush(): Uint8Array | undefined;
+};
 
-declare function $isPromise<T>(value: unknown): value is Promise<T>;
+declare function $isPromise<T = any>(value: unknown): value is Promise<T>;
 
+declare const $ReadableStream: typeof ReadableStream & (new (underlyingSource?: unknown, strategy?: unknown) => ReadableStream);
+declare const $ReadableStreamBYOBReader: typeof ReadableStreamBYOBReader;
+declare const $ReadableStreamDefaultReader: typeof ReadableStreamDefaultReader;
+declare const $ReadableStreamDefaultController: typeof ReadableStreamDefaultController;
 declare type $ReadableStream = ReadableStream;
 declare type $ReadableStreamBYOBReader = ReadableStreamBYOBReader;
 declare type $ReadableStreamDefaultReader = ReadableStreamDefaultReader;

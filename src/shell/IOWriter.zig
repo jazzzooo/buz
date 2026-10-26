@@ -14,30 +14,22 @@
 
 const IOWriter = @This();
 
-pub const RefCount = bun.ptr.RefCount(@This(), "ref_count", asyncDeinit, .{});
+pub const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
 pub const ref = RefCount.ref;
 pub const deref = RefCount.deref;
 
 ref_count: RefCount,
 writer: WriterImpl = if (bun.Environment.isWindows) .{
-    // Tell the Windows PipeWriter impl to *not* close the file descriptor,
-    // unfortunately this won't work if it creates a uv_pipe or uv_tty as those
-    // types own their file descriptor
     .owns_fd = false,
 } else .{ .close_fd = false },
 fd: MovableIfWindowsFd,
 writers: Writers = .{ .inlined = .{} },
 buf: std.ArrayListUnmanaged(u8) = .empty,
-/// quick hack to get windows working
-/// ideally this should be removed
-winbuf: if (bun.Environment.isWindows) std.ArrayListUnmanaged(u8) else u0 = if (bun.Environment.isWindows) .empty else 0,
 writer_idx: usize = 0,
 total_bytes_written: usize = 0,
-err: ?jsc.SystemError = null,
-evtloop: jsc.EventLoopHandle,
-concurrent_task: jsc.EventLoopTask,
+err: ?bun.sys.SystemError = null,
+scheduler: Interpreter.Scheduler,
 is_writing: bool = false,
-async_deinit: AsyncDeinitWriter = .{},
 started: bool = false,
 options: Options = .{},
 broken_pipe: bool = false,
@@ -71,7 +63,6 @@ pub fn dupeRef(this: *IOWriter) *IOWriter {
 pub fn memoryCost(this: *const IOWriter) usize {
     var cost: usize = @sizeOf(IOWriter);
     cost += this.buf.allocatedSlice().len;
-    cost += if (comptime bun.Environment.isWindows) this.winbuf.allocatedSlice().len else 0;
     cost += this.writers.memoryCost();
     cost += this.writer.memoryCost();
     return cost;
@@ -83,12 +74,11 @@ pub const Options = struct {
     child_sigpipe: bool = false,
 };
 
-pub fn init(fd: bun.FD, options: Options, evtloop: jsc.EventLoopHandle) *IOWriter {
+pub fn init(fd: bun.FD, options: Options, scheduler: Interpreter.Scheduler) *IOWriter {
     const this = bun.new(IOWriter, .{
         .ref_count = .init(),
         .fd = MovableIfWindowsFd.init(fd),
-        .evtloop = evtloop,
-        .concurrent_task = jsc.EventLoopTask.fromEventLoop(evtloop),
+        .scheduler = scheduler,
     });
 
     this.writer.parent = this;
@@ -100,6 +90,8 @@ pub fn init(fd: bun.FD, options: Options, evtloop: jsc.EventLoopHandle) *IOWrite
 }
 
 pub fn __start(this: *IOWriter) Maybe(void) {
+    this.ref();
+    defer this.deref();
     bun.assert(this.fd.isOwned());
     debug("IOWriter(0x{x}, fd={f}) __start()", .{ @intFromPtr(this), this.fd });
     if (this.writer.start(&this.fd, .{
@@ -114,32 +106,28 @@ pub fn __start(this: *IOWriter) Maybe(void) {
     return .success;
 }
 
-pub fn eventLoop(this: *IOWriter) jsc.EventLoopHandle {
-    return this.evtloop;
+pub fn eventLoop(this: *IOWriter) bun.RuntimeLoopHandle {
+    return this.scheduler.runtimeLoopHandle();
 }
 
 pub fn loop(this: *IOWriter) *bun.Async.Loop {
-    if (comptime bun.Environment.isWindows) {
-        return this.evtloop.loop().uv_loop;
-    } else {
-        return this.evtloop.loop();
-    }
+    return this.scheduler.platformLoop();
 }
 
 /// Idempotent write call
-fn write(this: *IOWriter) enum {
+fn write(this: *IOWriter) union(enum) {
     suspended,
-    failed,
+    failed: Yield,
     is_actually_file,
 } {
+    this.ref();
+    defer this.deref();
+    bun.assert(this.err == null);
     if (!this.started) {
         log("IOWriter(0x{x}, fd={f}) starting", .{ @intFromPtr(this), this.fd });
-        // Set before onError: the callback chain may deref to 0 and asyncDeinit's
-        // never-started fast-path would synchronously destroy us mid-onError.
         this.started = true;
         if (this.__start().asErr()) |e| {
-            this.onError(e);
-            return .failed;
+            return .{ .failed = this.fail(e) };
         }
         if (comptime bun.Environment.isPosix) {
             // if `handle == .fd` it means it's a file which does not
@@ -158,8 +146,7 @@ fn write(this: *IOWriter) enum {
         if (this.is_writing) return .suspended;
         this.is_writing = true;
         if (this.writer.startWithCurrentPipe().asErr()) |e| {
-            this.onError(e);
-            return .failed;
+            return .{ .failed = this.fail(e) };
         }
         return .suspended;
     }
@@ -168,8 +155,7 @@ fn write(this: *IOWriter) enum {
     bun.assert(this.writer.handle == .poll);
     if (this.writer.handle.poll.isWatching()) return .suspended;
     if (this.writer.waitForWritable().asErr()) |err| {
-        this.failWriter(err);
-        return .failed;
+        return .{ .failed = this.fail(err) };
     }
     return .suspended;
 }
@@ -239,6 +225,8 @@ pub fn skipDead(this: *IOWriter) void {
 }
 
 pub fn doFileWrite(this: *IOWriter) Yield {
+    this.ref();
+    defer this.deref();
     if (comptime bun.Environment.isPosix) {
         assert(this.writer_idx < this.writers.len());
 
@@ -252,23 +240,18 @@ pub fn doFileWrite(this: *IOWriter) Yield {
         assert(buf.len > 0);
 
         var pending = false;
+        var failure: ?bun.sys.Error = null;
         const writeResult = this.writer.drainBufferedData(buf, std.math.maxInt(u32), false);
         const amt = switch (writeResult) {
             .done => |amt| amt,
-            // .wrote can be returned if an error was encountered but there we wrote
-            // some data before it happened. In that case, onError will also be
-            // called so we should just return.
-            .wrote => |amt| amt: {
-                if (this.err != null) return .done;
-                break :amt amt;
-            },
+            .wrote => |amt| amt,
             .pending => |amt| amt: {
                 pending = true;
                 break :amt amt;
             },
-            .err => |e| {
-                this.failWriter(e);
-                return .done;
+            .err => |err| amt: {
+                failure = err.cause;
+                break :amt err.written;
             },
         };
         if (child.bytelist) |bl| {
@@ -277,10 +260,12 @@ pub fn doFileWrite(this: *IOWriter) Yield {
         }
         this.total_bytes_written += amt;
         child.written += amt;
+        if (failure) |err| {
+            return this.fail(err);
+        }
         if (pending) {
             if (this.writer.waitForWritable().asErr()) |err| {
-                this.failWriter(err);
-                return .done;
+                return this.fail(err);
             }
             return .suspended;
         }
@@ -296,6 +281,8 @@ pub fn doFileWrite(this: *IOWriter) Yield {
 }
 
 pub fn onWritePollable(this: *IOWriter, amount: usize, status: bun.io.WriteStatus) void {
+    this.ref();
+    defer this.deref();
     this.setWriting(false);
     debug("IOWriter(0x{x}, fd={f}) onWrite({d}, {})", .{ @intFromPtr(this), this.fd, amount, status });
     if (this.writer_idx >= this.writers.len()) return;
@@ -353,31 +340,14 @@ pub fn onWritePollable(this: *IOWriter, amount: usize, status: bun.io.WriteStatu
             this.writer.write();
         } else {
             bun.assert(this.writer.handle == .poll);
-            if (this.writer.waitForWritable().asErr()) |err| this.failWriter(err);
+            if (this.writer.waitForWritable().asErr()) |err| this.onError(err);
         }
     }
 }
 
 pub fn brokenPipeForWriters(this: *IOWriter) void {
     bun.assert(this.broken_pipe);
-    var offset: usize = 0;
-    const writers = this.writers.sliceMutable()[this.writer_idx..];
-    for (writers) |*w| {
-        if (w.isDead()) {
-            offset += w.len;
-            continue;
-        }
-        log("IOWriter(0x{x}, fd={f}) brokenPipeForWriters Writer(0x{x}) {s}(0x{x})", .{ @intFromPtr(this), this.fd, @intFromPtr(w), @tagName(w.ptr.ptr.tag()), w.ptr.ptr.repr._ptr });
-        const err: jsc.SystemError = bun.sys.Error.fromCode(.PIPE, .write).toSystemError();
-        w.ptr.onIOWriterChunk(0, err).run();
-        offset += w.len;
-        this.cancelChunks(w.ptr);
-    }
-
-    this.total_bytes_written = 0;
-    this.writers.clearRetainingCapacity();
-    this.buf.clearRetainingCapacity();
-    this.writer_idx = 0;
+    this.onError(bun.sys.Error.fromCode(.PIPE, .write));
 }
 
 pub fn wroteEverything(this: *IOWriter) bool {
@@ -389,6 +359,12 @@ pub fn onClose(this: *IOWriter) void {
 }
 
 pub fn onError(this: *IOWriter, err__: bun.sys.Error) void {
+    this.fail(err__).run();
+}
+
+fn fail(this: *IOWriter, err__: bun.sys.Error) Yield {
+    if (this.err != null) return .done;
+    this.ref();
     this.setWriting(false);
     const ee = err__.toShellSystemError();
     this.err = ee;
@@ -396,54 +372,46 @@ pub fn onError(this: *IOWriter, err__: bun.sys.Error) void {
     if (err__.getErrno() == .PIPE) {
         this.broken_pipe = true;
     }
+    this.writer.close();
     log("IOWriter(0x{x}, fd={f}) onError errno={s} errmsg={f} errsyscall={f}", .{ @intFromPtr(this), this.fd, @tagName(ee.getErrno()), ee.message, ee.syscall });
-    var seen_alloc_buffer: [64]usize = undefined;
-    var seen_alloc: std.heap.BufferFirstAllocator = .init(@ptrCast(&seen_alloc_buffer), bun.default_allocator);
-    var seen = bun.handleOom(std.array_list.Managed(usize).initCapacity(seen_alloc.allocator(), 64));
-    defer seen.deinit();
-    // Writers before writer_idx have already had their onIOWriterChunk callback fired and may
-    // have been freed; only notify the still-pending ones.
-    writer_loop: for (this.writers.slice()[this.writer_idx..]) |w| {
-        if (w.isDead()) continue;
-        const ptr = w.ptr.ptr.ptr();
-        if (seen.items.len < 8) {
-            for (seen.items[0..]) |item| {
-                if (item == @intFromPtr(ptr)) {
-                    continue :writer_loop;
-                }
-            }
-        } else if (std.mem.indexOfScalar(usize, seen.items[0..], @intFromPtr(ptr)) != null) {
-            continue :writer_loop;
+    return .{ .io_writer_error = this };
+}
+
+pub fn hasPendingErrorNotifications(this: *const IOWriter) bool {
+    return this.writer_idx < this.writers.len();
+}
+
+pub fn nextError(this: *IOWriter) ?Yield {
+    bun.assert(this.err != null);
+    while (this.writer_idx < this.writers.len()) {
+        const child = this.writers.get(this.writer_idx).ptr;
+        this.writer_idx += 1;
+        if (child.ptr.isNull()) continue;
+        // Consume duplicates before a callback can destroy the child or cancel other requests.
+        this.cancelChunks(child);
+        // Each consumer owns an error reference independently of this writer.
+        this.err.?.ref();
+        while (this.writer_idx < this.writers.len() and this.writers.get(this.writer_idx).isDead()) {
+            this.writer_idx += 1;
         }
-
-        bun.handleOom(seen.append(@intFromPtr(ptr)));
-        // Callee consumes the error (derefs it). Ref before each pass so deinitOnMainThread's
-        // deref of this.err is balanced and multiple callees don't over-deref. Matches IOReader.
-        if (this.err) |*e| e.ref();
-        // TODO: This probably shouldn't call .run()
-        w.ptr.onIOWriterChunk(0, this.err).run();
+        if (!this.hasPendingErrorNotifications()) this.clearFailedQueue();
+        return .{ .on_io_writer_chunk = .{ .child = child, .written = 0, .err = this.err } };
     }
+    this.clearFailedQueue();
+    return null;
+}
 
+fn clearFailedQueue(this: *IOWriter) void {
     this.total_bytes_written = 0;
     this.writer_idx = 0;
     this.buf.clearRetainingCapacity();
     this.writers.clearRetainingCapacity();
 }
 
-fn failWriter(this: *IOWriter, err: bun.sys.Error) void {
-    this.onError(err);
-    this.writer.close();
-}
-
 /// Returns the buffer of data that needs to be written
 /// for the *current* writer.
 pub fn getBuffer(this: *IOWriter) []const u8 {
     const result = this.getBufferImpl();
-    if (comptime bun.Environment.isWindows) {
-        this.winbuf.clearRetainingCapacity();
-        bun.handleOom(this.winbuf.appendSlice(bun.default_allocator, result));
-        return this.winbuf.items;
-    }
     log("IOWriter(0x{x}, fd={f}) getBuffer = {d} bytes", .{ @intFromPtr(this), this.fd, result.len });
     return result;
 }
@@ -546,27 +514,28 @@ pub fn enqueueInternal(this: *IOWriter) Yield {
             bun.assert(bun.Environment.isPosix);
             return this.enqueueFile();
         },
-        // FIXME
-        .failed => return .failed,
+        .failed => |yield| return yield,
     }
 }
 
-pub fn handleBrokenPipe(this: *IOWriter, ptr: ChildPtr) ?Yield {
-    if (this.broken_pipe) {
-        const err: jsc.SystemError = bun.sys.Error.fromCode(.PIPE, .write).toSystemError();
-        log("IOWriter(0x{x}, fd={f}) broken pipe {s}(0x{x})", .{ @intFromPtr(this), this.fd, @tagName(ptr.ptr.tag()), @intFromPtr(ptr.ptr.ptr()) });
-        return .{ .on_io_writer_chunk = .{ .child = ptr.asAnyOpaque(), .written = 0, .err = err } };
-    }
-    return null;
+pub fn handleFailure(this: *IOWriter, ptr: ChildPtr) ?Yield {
+    const err = if (this.err) |*stored| failure: {
+        stored.ref();
+        break :failure stored.*;
+    } else if (this.broken_pipe)
+        bun.sys.Error.fromCode(.PIPE, .write).toSystemError()
+    else
+        return null;
+    return .{ .on_io_writer_chunk = .{ .child = ptr, .written = 0, .err = err } };
 }
 
 pub fn enqueue(this: *IOWriter, ptr: anytype, bytelist: ?*bun.ByteList, buf: []const u8) Yield {
     const childptr = if (@TypeOf(ptr) == ChildPtr) ptr else ChildPtr.init(ptr);
-    if (this.handleBrokenPipe(childptr)) |yield| return yield;
+    if (this.handleFailure(childptr)) |yield| return yield;
 
     if (buf.len == 0) {
         log("IOWriter(0x{x}, fd={f}) enqueue EMPTY", .{ @intFromPtr(this), this.fd });
-        return .{ .on_io_writer_chunk = .{ .child = childptr.asAnyOpaque(), .written = 0, .err = null } };
+        return .{ .on_io_writer_chunk = .{ .child = childptr, .written = 0, .err = null } };
     }
     const writer: Writer = .{
         .ptr = childptr,
@@ -599,15 +568,14 @@ pub fn enqueueFmt(
     comptime fmt: []const u8,
     args: anytype,
 ) Yield {
+    const childptr = if (@TypeOf(ptr) == ChildPtr) ptr else ChildPtr.init(ptr);
+    if (this.handleFailure(childptr)) |yield| return yield;
     const start = this.buf.items.len;
     {
         var writer_state = bun.UnmanagedWriter.init(&this.buf, bun.default_allocator);
         defer writer_state.finish();
         writer_state.writer().print(fmt, args) catch bun.outOfMemory();
     }
-
-    const childptr = if (@TypeOf(ptr) == ChildPtr) ptr else ChildPtr.init(ptr);
-    if (this.handleBrokenPipe(childptr)) |yield| return yield;
 
     const end = this.buf.items.len;
     const writer: Writer = .{
@@ -620,35 +588,15 @@ pub fn enqueueFmt(
     return this.enqueueInternal();
 }
 
-fn asyncDeinit(this: *@This()) void {
-    debug("IOWriter(0x{x}, fd={f}) asyncDeinit", .{ @intFromPtr(this), this.fd });
-    bun.assert(!this.is_writing);
-    // The async hop guards against being deref'd from inside a write callback while
-    // PipeWriter is still on the stack. If we never started, no callback can be in
-    // flight, so close synchronously to avoid holding the fd until the next tick.
-    if (!this.started) {
-        this.deinitOnMainThread();
-        return;
-    }
-    this.async_deinit.enqueue();
-}
-
-pub fn deinitOnMainThread(this: *IOWriter) void {
+fn deinit(this: *IOWriter) void {
     debug("IOWriter(0x{x}, fd={f}) deinit", .{ @intFromPtr(this), this.fd });
     if (bun.Environment.allow_assert) this.ref_count.assertNoRefs();
+    this.writer.close();
     this.buf.deinit(bun.default_allocator);
     this.writers.deinit();
     if (this.err) |*e| e.deref();
-    if (comptime bun.Environment.isPosix) {
-        if (this.writer.handle == .poll) {
-            this.writer.handle.closeImpl(null, {}, false);
-        }
-    } else {
-        this.writer.close();
-        this.winbuf.deinit(bun.default_allocator);
-    }
     if (this.fd.isValid()) this.fd.close();
-    this.writer.disableKeepingProcessAlive(this.evtloop);
+    this.writer.disableKeepingProcessAlive(this.scheduler);
     bun.destroy(this);
 }
 
@@ -681,16 +629,8 @@ pub const IOWriterChildPtr = struct {
         };
     }
 
-    pub fn asAnyOpaque(this: IOWriterChildPtr) *anyopaque {
-        return this.ptr.ptr();
-    }
-
-    pub fn fromAnyOpaque(p: *anyopaque) IOWriterChildPtr {
-        return .{ .ptr = ChildPtrRaw.from(p) };
-    }
-
     /// Called when the IOWriter writes a complete chunk of data the child enqueued
-    pub fn onIOWriterChunk(this: IOWriterChildPtr, amount: usize, err: ?jsc.SystemError) Yield {
+    pub fn onIOWriterChunk(this: IOWriterChildPtr, amount: usize, err: ?bun.sys.SystemError) Yield {
         return this.ptr.call("onIOWriterChunk", .{ amount, err }, Yield);
     }
 };
@@ -726,47 +666,6 @@ pub const ChildPtrRaw = bun.TaggedPointerUnion(.{
     shell.subproc.PipeReader.CapturedWriter,
 });
 
-/// TODO: Investigate what we need to do to remove this since we did most of the leg
-///       work in removing recursion in the shell. That is what caused the need for
-///       making deinitialization asynchronous in the first place.
-///
-///       There are two areas which need to change:
-///
-///       1. `IOWriter.onWritePollable` calls `this.bump(child).run()` which could
-///          deinitialize the child which will deref and potentially deinitalize the
-///          `IOWriter`. Simple solution is to ref and defer ref the `IOWriter`
-///
-///       2. `PipeWriter` seems to try to use this struct after IOWriter
-///          deinitializes. We might not be able to get around this.
-pub const AsyncDeinitWriter = struct {
-    ran: bool = false,
-
-    pub fn enqueue(this: *@This()) void {
-        if (this.ran) return;
-        this.ran = true;
-
-        var iowriter = this.writer();
-
-        if (iowriter.evtloop == .js) {
-            iowriter.evtloop.js.enqueueTaskConcurrent(iowriter.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            iowriter.evtloop.mini.enqueueTaskConcurrent(iowriter.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
-    }
-
-    pub fn writer(this: *@This()) *IOWriter {
-        return @alignCast(@fieldParentPtr("async_deinit", this));
-    }
-
-    pub fn runFromMainThread(this: *@This()) void {
-        this.writer().deinitOnMainThread();
-    }
-
-    pub fn runFromMainThreadMini(this: *@This(), _: *void) void {
-        this.runFromMainThread();
-    }
-};
-
 const log = bun.Output.scoped(.IOWriter, .hidden);
 
 const std = @import("std");
@@ -774,7 +673,6 @@ const std = @import("std");
 const bun = @import("bun");
 const MovableIfWindowsFd = bun.MovableIfWindowsFd;
 const assert = bun.assert;
-const jsc = bun.jsc;
 const Maybe = bun.sys.Maybe;
 
 const shell = bun.shell;

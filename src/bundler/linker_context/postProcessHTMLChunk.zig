@@ -3,29 +3,28 @@ pub fn postProcessHTMLChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chu
     const c = ctx.c;
     var j = StringJoiner{
         .allocator = worker.allocator,
-        .watcher = .{
-            .input = chunk.unique_key,
-        },
     };
+    defer j.deinit();
 
     const compile_results = chunk.compile_results_for_chunk;
 
-    for (compile_results) |compile_result| {
-        j.push(compile_result.code(), bun.default_allocator);
+    for (compile_results) |*compile_result| {
+        try j.push(compile_result.takeCode(), bun.default_allocator);
     }
 
-    j.ensureNewlineAtEnd();
+    try j.ensureNewlineAtEnd();
 
-    chunk.intermediate_output = c.breakOutputIntoPieces(
+    chunk.intermediate_output = try c.breakOutputIntoPieces(
         worker.allocator,
         &j,
-        @as(u32, @truncate(ctx.chunks.len)),
-    ) catch |err| bun.handleOom(err);
+        std.math.cast(u32, ctx.chunks.len) orelse return error.OutOfMemory,
+    );
 
     chunk.isolated_hash = c.generateIsolatedHash(chunk);
 }
 
 const bun = @import("bun");
+const std = @import("std");
 const StringJoiner = bun.StringJoiner;
 
 const Chunk = bun.bundle_v2.Chunk;

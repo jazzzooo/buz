@@ -31,8 +31,8 @@
 // ever reaching entangle() (e.g. the carrying message lands on a closed
 // port, or the destination's inbox is discarded on close()), the
 // destructor marks that side Closed so the peer port's hasPendingActivity
-// can fall to false and the peer becomes collectable. entangle() takes the
-// pipe via releaseNonNull(), so on the happy path the destructor is a no-op.
+// can fall to false and the peer becomes collectable. Adoption clears the
+// pipe reference after every receiver has been prepared.
 
 #pragma once
 

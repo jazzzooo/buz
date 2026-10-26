@@ -4,6 +4,7 @@
 pub const ServerComponentParseTask = @This();
 
 task: ExecutorTypes.Task = .{ .callback = &taskCallbackWrap },
+result: ParseTask.Result = undefined,
 data: Data,
 ctx: *BundleV2,
 source: Logger.Source,
@@ -30,39 +31,33 @@ fn taskCallbackWrap(executor_task: *ExecutorTypes.Task) void {
     var worker = Executor.Worker.get(task.ctx);
     defer worker.unget();
     var log = Logger.Log.init(worker.allocator);
+    defer log.deinit();
 
-    const result = bun.handleOom(bun.default_allocator.create(ParseTask.Result));
+    const parsed: error{ OutOfMemory, Canceled }!ParseTask.Result.Success = if (task.ctx.isCancelRequested())
+        error.Canceled
+    else
+        taskCallback(task, &log, worker.allocator);
+    const result = &task.result;
     result.* = .{
         .ctx = task.ctx,
-        .task = undefined,
-
-        .value = if (taskCallback(
-            task,
-            &log,
-            worker.allocator,
-        )) |success|
+        .value = if (parsed) |success|
             .{ .success = success }
-        else |err| switch (err) {
-            error.OutOfMemory => bun.outOfMemory(),
-        },
+        else |err|
+            .{ .err = .{
+                .err = err,
+                .step = .parse,
+                .log = log.take(),
+                .source_index = task.source.index,
+                .target = switch (task.data) {
+                    .client_reference_proxy => task.ctx.transpiler.options.target,
+                    .client_entry_wrapper => .browser,
+                },
+            } },
 
         .watcher_data = .none,
     };
 
-    switch (worker.ctx.loop().*) {
-        .js => |jsc_event_loop| {
-            jsc_event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.fromCallback(result, ParseTask.onComplete));
-        },
-        .mini => |*mini| {
-            mini.enqueueTaskConcurrentWithExtraCtx(
-                ParseTask.Result,
-                BundleV2,
-                result,
-                BundleV2.onParseTaskComplete,
-                .task,
-            );
-        },
-    }
+    task.ctx.onParseAsync(result);
 }
 
 fn taskCallback(
@@ -70,7 +65,7 @@ fn taskCallback(
     log: *Logger.Log,
     allocator: std.mem.Allocator,
 ) bun.OOM!ParseTask.Result.Success {
-    var ab = try AstBuilder.init(allocator, &task.source, task.ctx.transpiler.options.hot_module_reloading);
+    var ab = try AstBuilder.init(allocator, &task.source, log, task.ctx.transpiler.options.hot_module_reloading);
 
     switch (task.data) {
         .client_reference_proxy => |data| try task.generateClientReferenceProxy(data, &ab),
@@ -92,7 +87,7 @@ fn taskCallback(
         .ast = bundled_ast,
         .source = task.source,
         .loader = .js,
-        .log = log.*,
+        .log = log.take(),
         .use_directive = .none,
         .side_effects = .no_side_effects__pure_data,
     };
@@ -213,7 +208,6 @@ pub const Ref = bun.ast.Ref;
 
 pub const Index = bun.ast.Index;
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
@@ -228,7 +222,6 @@ const OOM = bun.OOM;
 const ExecutorTypes = bun.bundle_v2.Executor;
 const default_allocator = bun.default_allocator;
 const js_parser = bun.js_parser;
-const jsc = bun.jsc;
 const strings = bun.strings;
 const BabyList = bun.collections.BabyList;
 

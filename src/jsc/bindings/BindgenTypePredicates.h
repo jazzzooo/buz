@@ -1,0 +1,93 @@
+#pragma once
+
+#include <JavaScriptCore/JSCJSValue.h>
+
+namespace Bun::Bindgen::TypePredicates {
+
+bool isDate(JSC::JSValue) noexcept;
+bool isCommonJSModule(JSC::JSValue) noexcept;
+bool isBunRequest(JSC::JSValue) noexcept;
+bool isProcessObject(JSC::JSValue) noexcept;
+bool isCallable(JSC::JSValue) noexcept;
+bool isConstructor(JSC::JSValue) noexcept;
+bool isNumber(JSC::JSValue) noexcept;
+bool isAnyInt(JSC::JSValue) noexcept;
+bool isString(JSC::JSValue) noexcept;
+bool isStringLike(JSC::JSValue) noexcept;
+bool isTypedArray(JSC::JSValue) noexcept;
+bool isNodeBuffer(JSC::JSValue) noexcept;
+bool isStringOrRegExp(JSC::JSValue) noexcept;
+bool isNodeIPCMessage(JSC::JSValue) noexcept;
+bool isRedisResponseValue(JSC::JSValue) noexcept;
+bool isPresent(JSC::JSValue) noexcept;
+bool isFetchHeaders(JSC::JSValue) noexcept;
+bool isDOMURL(JSC::JSValue) noexcept;
+bool isObject(JSC::JSValue) noexcept;
+bool isFixedBufferSource(JSC::JSValue) noexcept;
+bool isWasmBufferSource(JSC::JSValue) noexcept;
+bool isDetachedBufferSource(JSC::JSValue) noexcept;
+bool isArray(JSC::JSValue) noexcept;
+bool isCell(JSC::JSValue) noexcept;
+bool isStructure(JSC::JSValue) noexcept;
+bool isArrayBufferView(JSC::JSValue) noexcept;
+bool isInternalFieldTuple(JSC::JSValue) noexcept;
+bool isErrorInstance(JSC::JSValue) noexcept;
+bool isException(JSC::JSValue) noexcept;
+bool isBoundFunction(JSC::JSValue) noexcept;
+bool isBigInt(JSC::JSValue) noexcept;
+bool isBigIntOrNumber(JSC::JSValue) noexcept;
+bool isSymbol(JSC::JSValue) noexcept;
+bool isArgumentsObject(JSC::JSValue) noexcept;
+bool isBigIntObject(JSC::JSValue) noexcept;
+bool isBooleanObject(JSC::JSValue) noexcept;
+bool isNumberObject(JSC::JSValue) noexcept;
+bool isStringObject(JSC::JSValue) noexcept;
+bool isSymbolObject(JSC::JSValue) noexcept;
+bool isRegExp(JSC::JSValue) noexcept;
+bool isAsyncFunction(JSC::JSValue) noexcept;
+bool isGeneratorFunction(JSC::JSValue) noexcept;
+bool isGeneratorObject(JSC::JSValue) noexcept;
+bool isPromise(JSC::JSValue) noexcept;
+bool isMap(JSC::JSValue) noexcept;
+bool isSet(JSC::JSValue) noexcept;
+bool isMapIterator(JSC::JSValue) noexcept;
+bool isSetIterator(JSC::JSValue) noexcept;
+bool isWeakMap(JSC::JSValue) noexcept;
+bool isWeakSet(JSC::JSValue) noexcept;
+bool isArrayBuffer(JSC::JSValue) noexcept;
+bool isAnyArrayBuffer(JSC::JSValue) noexcept;
+bool isDataView(JSC::JSValue) noexcept;
+bool isSharedArrayBuffer(JSC::JSValue) noexcept;
+bool isProxy(JSC::JSValue) noexcept;
+bool isModuleNamespaceObject(JSC::JSValue) noexcept;
+bool isUint8Array(JSC::JSValue) noexcept;
+bool isUint8ClampedArray(JSC::JSValue) noexcept;
+bool isUint16Array(JSC::JSValue) noexcept;
+bool isUint32Array(JSC::JSValue) noexcept;
+bool isInt8Array(JSC::JSValue) noexcept;
+bool isInt16Array(JSC::JSValue) noexcept;
+bool isInt32Array(JSC::JSValue) noexcept;
+bool isFloat16Array(JSC::JSValue) noexcept;
+bool isFloat32Array(JSC::JSValue) noexcept;
+bool isFloat64Array(JSC::JSValue) noexcept;
+bool isBigInt64Array(JSC::JSValue) noexcept;
+bool isBigUint64Array(JSC::JSValue) noexcept;
+bool isInternalWritableStream(JSC::JSValue) noexcept;
+bool isReadableByteStreamController(JSC::JSValue) noexcept;
+bool isReadableStreamDefaultController(JSC::JSValue) noexcept;
+bool isReadableStreamDefaultReader(JSC::JSValue) noexcept;
+bool isReadableStreamBYOBReader(JSC::JSValue) noexcept;
+bool isReadableStreamBYOBRequest(JSC::JSValue) noexcept;
+bool isTransformStreamDefaultController(JSC::JSValue) noexcept;
+bool isWritableStreamDefaultWriter(JSC::JSValue) noexcept;
+bool isWritableStreamDefaultController(JSC::JSValue) noexcept;
+bool isAbortSignal(JSC::JSValue) noexcept;
+bool isTextEncoder(JSC::JSValue) noexcept;
+bool isPerformanceObserverEntryList(JSC::JSValue) noexcept;
+bool isReadableStreamIterator(JSC::JSValue) noexcept;
+bool isPerformanceTiming(JSC::JSValue) noexcept;
+bool isNodeFSStatValue(JSC::JSGlobalObject&, JSC::JSValue) noexcept;
+bool isNodeFSStatFsValue(JSC::JSGlobalObject&, JSC::JSValue) noexcept;
+bool isMIMEParamsObject(JSC::JSGlobalObject&, JSC::JSValue) noexcept;
+
+}

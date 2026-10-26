@@ -63,8 +63,6 @@ pub const Array = struct {
         return out;
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").arrayToJS;
-
     /// Assumes each item in the array is a string
     pub fn alphabetizeStrings(this: *Array) void {
         if (comptime Environment.allow_assert) {
@@ -132,7 +130,6 @@ pub const Binary = struct {
 
 pub const Boolean = struct {
     value: bool,
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").boolToJS;
 };
 pub const Super = struct {};
 pub const Null = struct {};
@@ -310,6 +307,13 @@ pub const ImportIdentifier = struct {
 pub const CommonJSExportIdentifier = struct {
     ref: Ref = Ref.None,
     base: Base = .exports,
+    export_index: ExportIndex = .none,
+
+    // Linker-created identifiers have no entry in the parser's export table.
+    pub const ExportIndex = enum(u32) {
+        none = std.math.maxInt(u32),
+        _,
+    };
 
     /// The original variant of the dot expression must be known so that in the case that we
     /// - fail to convert this to ESM
@@ -471,8 +475,6 @@ pub const Number = struct {
     pub fn jsonStringify(self: *const Number, writer: anytype) !void {
         return try writer.write(self.value);
     }
-
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").numberToJS;
 };
 
 pub const BigInt = struct {
@@ -483,8 +485,6 @@ pub const BigInt = struct {
     pub fn jsonStringify(self: *const @This(), writer: anytype) !void {
         return try writer.write(self.value);
     }
-
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").bigIntToJS;
 };
 
 pub const Object = struct {
@@ -515,8 +515,6 @@ pub const Object = struct {
     pub fn get(self: *const Object, key: string) ?Expr {
         return if (asProperty(self, key)) |query| query.expr else @as(?Expr, null);
     }
-
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").objectToJS;
 
     pub fn put(self: *Object, allocator: std.mem.Allocator, key: string, expr: Expr) !void {
         if (asProperty(self, key)) |query| {
@@ -1119,16 +1117,6 @@ pub const String = struct {
         return hasher.final();
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").stringToJS;
-
-    pub fn toZigString(s: *String, allocator: std.mem.Allocator) jsc.ZigString {
-        if (s.isUTF8()) {
-            return jsc.ZigString.fromUTF8(s.slice(allocator));
-        } else {
-            return jsc.ZigString.initUTF16(s.slice16());
-        }
-    }
-
     pub fn format(s: String, writer: *std.Io.Writer) !void {
         try writer.writeAll("E.String");
         if (s.next == null) {
@@ -1297,45 +1285,7 @@ pub const Template = struct {
 pub const RegExp = struct {
     value: string,
 
-    // This exists for JavaScript bindings
-    // The RegExp constructor expects flags as a second argument.
-    // We want to avoid re-lexing the flags, so we store them here.
-    // This is the index of the first character in a flag, not the "/"
-    // /foo/gim
-    //      ^
-    flags_offset: ?u16 = null,
-
     pub var empty = RegExp{ .value = "" };
-
-    pub fn pattern(this: RegExp) string {
-
-        // rewind until we reach the /foo/gim
-        //                               ^
-        // should only ever be a single character
-        // but we're being cautious
-        if (this.flags_offset) |i_| {
-            var i = i_;
-            while (i > 0 and this.value[i] != '/') {
-                i -= 1;
-            }
-
-            return std.mem.trim(u8, this.value[0..i], "/");
-        }
-
-        return std.mem.trim(u8, this.value, "/");
-    }
-
-    pub fn flags(this: RegExp) string {
-        // rewind until we reach the /foo/gim
-        //                               ^
-        // should only ever be a single character
-        // but we're being cautious
-        if (this.flags_offset) |i| {
-            return this.value[i..];
-        }
-
-        return "";
-    }
 
     pub fn jsonStringify(self: *const RegExp, writer: anytype) !void {
         return try writer.write(self.value);
@@ -1432,7 +1382,6 @@ const ComptimeStringMap = bun.ComptimeStringMap;
 const Environment = bun.Environment;
 const ImportRecord = bun.ImportRecord;
 const OOM = bun.OOM;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 const Loader = bun.options.Loader;

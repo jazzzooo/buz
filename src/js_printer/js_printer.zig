@@ -383,7 +383,7 @@ pub const Options = struct {
     css_import_behavior: api.CssInJsBehavior = api.CssInJsBehavior.facade,
     target: options.Target = .browser,
 
-    runtime_transpiler_cache: ?*bun.jsc.RuntimeTranspilerCache = null,
+    runtime_transpiler_cache: ?*RuntimeTranspilerCache = null,
     module_info: ?*analyze_transpiled_module.ModuleInfo = null,
     input_files_for_dev_server: ?[]logger.Source = null,
 
@@ -483,6 +483,35 @@ fn isIdentifierOrNumericConstantOrPropertyAccess(expr: *const Expr) bool {
 pub const PrintResult = union(enum) {
     result: Success,
     err: anyerror,
+
+    pub fn checkForError(self: *const PrintResult) !void {
+        switch (self.*) {
+            .result => {},
+            .err => |err| return err,
+        }
+    }
+
+    pub fn takeCode(self: *PrintResult) []u8 {
+        return switch (self.*) {
+            .result => |*result| blk: {
+                const code = result.code;
+                result.code = &.{};
+                break :blk code;
+            },
+            .err => &.{},
+        };
+    }
+
+    pub fn deinit(self: *PrintResult, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .result => |*result| {
+                allocator.free(result.code);
+                if (result.source_map) |*map| map.deinit();
+            },
+            .err => {},
+        }
+        self.* = .{ .result = .{ .code = &.{} } };
+    }
 
     pub const Success = struct {
         code: []u8,
@@ -4606,29 +4635,14 @@ fn NewPrinter(
 
                     p.printImportRecordPath(record);
 
-                    // backwards compatibility: previously, we always stripped type
-                    if (comptime is_bun_platform) if (record.loader) |loader| switch (loader) {
-                        .jsx => p.printWhitespacer(ws(" with { type: \"jsx\" }")),
-                        .js => p.printWhitespacer(ws(" with { type: \"js\" }")),
-                        .ts => p.printWhitespacer(ws(" with { type: \"ts\" }")),
-                        .tsx => p.printWhitespacer(ws(" with { type: \"tsx\" }")),
-                        .css => p.printWhitespacer(ws(" with { type: \"css\" }")),
-                        .file => p.printWhitespacer(ws(" with { type: \"file\" }")),
-                        .json => p.printWhitespacer(ws(" with { type: \"json\" }")),
-                        .jsonc => p.printWhitespacer(ws(" with { type: \"jsonc\" }")),
-                        .toml => p.printWhitespacer(ws(" with { type: \"toml\" }")),
-                        .yaml => p.printWhitespacer(ws(" with { type: \"yaml\" }")),
-                        .json5 => p.printWhitespacer(ws(" with { type: \"json5\" }")),
-                        .wasm => p.printWhitespacer(ws(" with { type: \"wasm\" }")),
-                        .napi => p.printWhitespacer(ws(" with { type: \"napi\" }")),
-                        .base64 => p.printWhitespacer(ws(" with { type: \"base64\" }")),
-                        .dataurl => p.printWhitespacer(ws(" with { type: \"dataurl\" }")),
-                        .text => p.printWhitespacer(ws(" with { type: \"text\" }")),
-                        .bunsh => p.printWhitespacer(ws(" with { type: \"sh\" }")),
-                        .sqlite, .sqlite_embedded => p.printWhitespacer(ws(" with { type: \"sqlite\" }")),
-                        .html => p.printWhitespacer(ws(" with { type: \"html\" }")),
-                        .md => p.printWhitespacer(ws(" with { type: \"md\" }")),
-                    };
+                    if (comptime is_bun_platform) {
+                        if (record.loader) |loader| {
+                            p.printWhitespacer(ws(" with { type: "));
+                            p.printStringLiteralUTF8(loader.importAttributeType(), false);
+                            if (loader == .sqlite_embedded) p.printWhitespacer(ws(", embed: \"true\""));
+                            p.printWhitespacer(ws(" }"));
+                        }
+                    }
                     p.printSemicolonAfterStatement();
 
                     if (may_have_module_info) {
@@ -4637,25 +4651,8 @@ fn NewPrinter(
                             const irp_id = bun.handleOom(mi.str(import_record_path));
                             const fetch_parameters: analyze_transpiled_module.ModuleInfo.FetchParameters = if (comptime is_bun_platform) (if (record.loader) |loader| switch (loader) {
                                 .json => .json,
-                                .jsx => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("jsx"))),
-                                .js => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("js"))),
-                                .ts => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("ts"))),
-                                .tsx => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("tsx"))),
-                                .css => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("css"))),
-                                .file => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("file"))),
-                                .jsonc => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("jsonc"))),
-                                .toml => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("toml"))),
-                                .yaml => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("yaml"))),
-                                .wasm => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("wasm"))),
-                                .napi => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("napi"))),
-                                .base64 => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("base64"))),
-                                .dataurl => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("dataurl"))),
-                                .text => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("text"))),
-                                .bunsh => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("sh"))),
-                                .sqlite, .sqlite_embedded => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("sqlite"))),
-                                .html => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("html"))),
-                                .json5 => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("json5"))),
-                                .md => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("md"))),
+                                .sqlite_embedded => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("sqlite_embedded"))),
+                                else => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str(loader.importAttributeType()))),
                             } else .none) else .none;
                             bun.handleOom(mi.requestModule(irp_id, fetch_parameters));
 
@@ -4956,14 +4953,14 @@ fn NewPrinter(
             }
         }
 
-        pub fn tryToGetImportedEnumValue(p: *Printer, target: Expr, name: []const u8) ?js_ast.InlinedEnumValue.Decoded {
+        pub fn tryToGetImportedEnumValue(p: *Printer, target: Expr, name: []const u8) ?js_ast.InlinedEnumValue {
             if (target.data.as(.e_import_identifier)) |id| {
                 const ref = p.symbols().follow(id.ref);
                 if (p.symbols().get(ref)) |symbol| {
                     if (symbol.kind == .ts_enum) {
                         if (p.options.ts_enums.get(ref)) |enum_value| {
                             if (enum_value.get(name)) |value|
-                                return value.decode();
+                                return value;
                         }
                     }
                 }
@@ -4973,7 +4970,7 @@ fn NewPrinter(
 
         pub fn printInlinedEnum(
             p: *Printer,
-            inlined: js_ast.InlinedEnumValue.Decoded,
+            inlined: js_ast.InlinedEnumValue,
             comment: []const u8,
             level: Level,
         ) void {
@@ -5702,9 +5699,9 @@ pub fn getSourceMapBuilder(
     opts: Options,
     source: *const logger.Source,
     tree: *const Ast,
-) SourceMap.Chunk.Builder {
+) bun.OOM!SourceMap.Chunk.Builder {
     if (comptime generate_source_map == .disable)
-        return undefined;
+        return @as(SourceMap.Chunk.Builder, undefined);
 
     return .{
         .source_map = .init(
@@ -5715,13 +5712,10 @@ pub fn getSourceMapBuilder(
         .approximate_input_line_count = tree.approximate_newline_count,
         .prepend_count = is_bun_platform and generate_source_map == .lazy,
         .line_offset_tables = opts.line_offset_tables orelse brk: {
-            if (generate_source_map == .lazy) break :brk SourceMap.LineOffsetTable.generate(
+            if (generate_source_map == .lazy) break :brk try SourceMap.LineOffsetTable.generate(
                 opts.source_map_allocator orelse opts.allocator,
                 source.wtf8View(),
-                @as(
-                    i32,
-                    @intCast(tree.approximate_newline_count),
-                ),
+                tree.approximate_newline_count,
             );
             break :brk .empty;
         },
@@ -5828,11 +5822,14 @@ pub fn printAst(
         tree.import_records.slice(),
         opts,
         renamer,
-        getSourceMapBuilder(if (generate_source_map) .lazy else .disable, ascii_only, opts, source, &tree),
+        try getSourceMapBuilder(if (generate_source_map) .lazy else .disable, ascii_only, opts, source, &tree),
     );
     defer {
         if (comptime generate_source_map) {
-            printer.source_map_builder.line_offset_tables.deinit(opts.allocator);
+            printer.source_map_builder.source_map.deinit();
+            if (opts.line_offset_tables == null) {
+                SourceMap.LineOffsetTable.deinitList(&printer.source_map_builder.line_offset_tables, opts.source_map_allocator orelse opts.allocator);
+            }
         }
     }
     printer.was_lazy_export = tree.has_lazy_export;
@@ -5887,7 +5884,7 @@ pub fn printAst(
 
     var source_maps_chunk: ?SourceMap.Chunk = if (comptime generate_source_map)
         if (opts.source_map_handler != null)
-            printer.source_map_builder.generateChunk(printer.writer.ctx.getWritten())
+            try printer.source_map_builder.generateChunk(printer.writer.ctx.getWritten())
         else
             null
     else
@@ -6047,8 +6044,9 @@ pub fn printWithWriterAndPlatform(
         import_records,
         opts,
         renamer,
-        getSourceMapBuilder(if (generate_source_maps) .eager else .disable, is_bun_platform, opts, source, &ast),
+        getSourceMapBuilder(if (generate_source_maps) .eager else .disable, is_bun_platform, opts, source, &ast) catch |err| return .{ .err = err },
     );
+    defer if (generate_source_maps) printer.source_map_builder.source_map.deinit();
     printer.was_lazy_export = ast.has_lazy_export;
     if (PrinterType.may_have_module_info) {
         printer.module_info = opts.module_info;
@@ -6084,29 +6082,29 @@ pub fn printWithWriterAndPlatform(
     }
 
     printer.writer.done() catch |err| {
-        // In bundle_v2, this is backed by an arena, but incremental uses
-        // `dev.allocator` for this buffer, so it must be freed.
-        printer.source_map_builder.source_map.ctx.data.deinit();
-
         return .{ .err = err };
     };
 
     const written = printer.writer.ctx.getWritten();
-    const source_map: ?SourceMap.Chunk = if (generate_source_maps) brk: {
+    var source_map: ?SourceMap.Chunk = if (generate_source_maps) brk: {
         if (written.len == 0 or printer.source_map_builder.source_map.shouldIgnore()) {
-            printer.source_map_builder.source_map.ctx.data.deinit();
             break :brk null;
         }
-        const chunk = printer.source_map_builder.generateChunk(written);
+        const chunk = printer.source_map_builder.generateChunk(written) catch |err| return .{ .err = err };
         assert(!chunk.should_ignore);
         break :brk chunk;
     } else null;
 
     var buffer: MutableString = printer.writer.takeBuffer();
+    defer buffer.deinit();
+    const code = buffer.list.toOwnedSlice(buffer.allocator) catch |err| {
+        if (source_map) |*map| map.deinit();
+        return .{ .err = err };
+    };
 
     return .{
         .result = .{
-            .code = buffer.takeSlice(),
+            .code = code,
             .source_map = source_map,
         },
     };
@@ -6134,8 +6132,14 @@ pub fn printCommonJS(
         tree.import_records.slice(),
         opts,
         renamer.toRenamer(),
-        getSourceMapBuilder(if (generate_source_map) .lazy else .disable, false, opts, source, &tree),
+        try getSourceMapBuilder(if (generate_source_map) .lazy else .disable, false, opts, source, &tree),
     );
+    defer if (generate_source_map) {
+        printer.source_map_builder.source_map.deinit();
+        if (opts.line_offset_tables == null) {
+            SourceMap.LineOffsetTable.deinitList(&printer.source_map_builder.line_offset_tables, opts.source_map_allocator orelse opts.allocator);
+        }
+    };
     var bin_stack_heap_buffer: [1024]u8 = undefined;
     var bin_stack_heap: std.heap.BufferFirstAllocator = .init(&bin_stack_heap_buffer, bun.default_allocator);
     printer.binary_expression_stack = std.array_list.Managed(PrinterType.BinaryExpressionVisitor).init(bin_stack_heap.allocator());
@@ -6156,7 +6160,7 @@ pub fn printCommonJS(
 
     if (comptime generate_source_map) {
         if (opts.source_map_handler) |handler| {
-            var chunk = printer.source_map_builder.generateChunk(printer.writer.ctx.getWritten());
+            var chunk = try printer.source_map_builder.generateChunk(printer.writer.ctx.getWritten());
             defer chunk.deinit();
             try handler.onSourceMapChunk(chunk, source);
         }
@@ -6167,12 +6171,10 @@ pub fn printCommonJS(
     return @as(usize, @intCast(@max(printer.writer.written, 0)));
 }
 
-/// Serializes ModuleInfo to an owned byte slice. Returns null on failure.
 /// The caller is responsible for freeing the returned slice with bun.default_allocator.
-pub fn serializeModuleInfo(module_info: ?*analyze_transpiled_module.ModuleInfo) ?[]const u8 {
-    const mi = module_info orelse return null;
+pub fn serializeModuleInfo(mi: *analyze_transpiled_module.ModuleInfo) ![]const u8 {
     if (!mi.finalized) {
-        mi.finalize() catch return null;
+        try mi.finalize();
     }
     const deserialized = mi.asDeserialized();
     var buf: std.ArrayList(u8) = .empty;
@@ -6180,10 +6182,10 @@ pub fn serializeModuleInfo(module_info: ?*analyze_transpiled_module.ModuleInfo) 
     var writer_state = bun.UnmanagedWriter.init(&buf, bun.default_allocator);
     var writer_finished = false;
     defer if (!writer_finished) writer_state.finish();
-    deserialized.serialize(writer_state.writer()) catch return null;
+    try deserialized.serialize(writer_state.writer());
     writer_state.finish();
     writer_finished = true;
-    return buf.toOwnedSlice(bun.default_allocator) catch null;
+    return try buf.toOwnedSlice(bun.default_allocator);
 }
 
 const string = []const u8;
@@ -6195,6 +6197,7 @@ const importRecord = @import("../options_types/import_record.zig");
 const options = @import("../bundler/options.zig");
 const rename = @import("./renamer.zig");
 const runtime = @import("../js_parser/runtime.zig");
+const RuntimeTranspilerCache = @import("../js_parser/RuntimeTranspilerCache.zig").RuntimeTranspilerCache;
 const std = @import("std");
 
 const bun = @import("bun");

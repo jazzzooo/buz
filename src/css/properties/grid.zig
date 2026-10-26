@@ -478,7 +478,7 @@ pub const GridTemplateAreas = union(enum) {
 
     const HTML_SPACE_CHARACTERS: []const u8 = &.{ 0x0020, 0x0009, 0x000a, 0x000c, 0x000d };
 
-    fn parseString(allocator: Allocator, s: []const u8, tokens: *SmallList(?[]const u8, 1)) bun.Maybe(u32, void) {
+    fn parseString(allocator: Allocator, s: []const u8, tokens: *SmallList(?[]const u8, 1)) css.Outcome(u32, void) {
         var string = s;
         var column = 0;
 

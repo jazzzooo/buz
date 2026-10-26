@@ -1,7 +1,7 @@
 #include "root.h"
 #include "BunInjectedScriptHost.h"
 
-#include "ZigGeneratedClasses.h"
+#include "SchemaBindings.h"
 #include "DOMException.h"
 
 #include "JSDOMException.h"
@@ -27,7 +27,7 @@ JSValue BunInjectedScriptHost::subtype(JSGlobalObject* exec, JSValue value)
     VM& vm = exec->vm();
 
     if (
-        value.inherits<JSDOMException>() || value.inherits<JSResolveMessage>() || value.inherits<JSBuildMessage>())
+        value.inherits<JSDOMException>() || bun_bindgen_class_ResolveMessage_ResolveMessage_try_cast_value(value) || bun_bindgen_class_BuildMessage_BuildMessage_try_cast_value(value))
         return jsNontrivialString(vm, "error"_s);
 
     return jsUndefined();
@@ -141,52 +141,54 @@ JSValue BunInjectedScriptHost::getInternalProperties(VM& vm, JSGlobalObject* exe
         return array;
     }
 
-    if (value.isCell()) {
-        JSC::JSCell* cell = value.asCell();
-        JSC::JSType type = cell->type();
+    if (auto* cookie = dynamicDowncast<JSCookie>(value)) {
+        auto* array = constructEmptyArray(exec, nullptr);
+        RETURN_IF_EXCEPTION(scope, {});
+        auto properties = WebCore::getInternalProperties(vm, exec, cookie);
+        RETURN_IF_EXCEPTION(scope, {});
+        constructDataProperties(vm, exec, array, properties);
+        RETURN_IF_EXCEPTION(scope, {});
+        return array;
+    }
 
-        if (type == JSDOMWrapperType) {
-            if (auto* headers = dynamicDowncast<JSFetchHeaders>(value)) {
-                auto* array = constructEmptyArray(exec, nullptr);
-                RETURN_IF_EXCEPTION(scope, {});
-                constructDataProperties(vm, exec, array, WebCore::getInternalProperties(vm, exec, headers));
-                RETURN_IF_EXCEPTION(scope, {});
-                return array;
-            }
+    if (auto* cookieMap = dynamicDowncast<JSCookieMap>(value)) {
+        auto* array = constructEmptyArray(exec, nullptr);
+        RETURN_IF_EXCEPTION(scope, {});
+        auto properties = WebCore::getInternalProperties(vm, exec, cookieMap);
+        RETURN_IF_EXCEPTION(scope, {});
+        constructDataProperties(vm, exec, array, properties);
+        RETURN_IF_EXCEPTION(scope, {});
+        return array;
+    }
 
-            if (auto* formData = dynamicDowncast<JSDOMFormData>(value)) {
-                auto* array = constructEmptyArray(exec, nullptr);
-                RETURN_IF_EXCEPTION(scope, {});
-                constructDataProperties(vm, exec, array, WebCore::getInternalProperties(vm, exec, formData));
-                RETURN_IF_EXCEPTION(scope, {});
-                return array;
-            }
+    if (auto* headers = dynamicDowncast<JSFetchHeaders>(value)) {
+        auto* array = constructEmptyArray(exec, nullptr);
+        RETURN_IF_EXCEPTION(scope, {});
+        auto properties = WebCore::getInternalProperties(vm, exec, headers);
+        RETURN_IF_EXCEPTION(scope, {});
+        constructDataProperties(vm, exec, array, properties);
+        RETURN_IF_EXCEPTION(scope, {});
+        return array;
+    }
 
-        } else if (type == JSAsJSONType) {
-            if (auto* params = dynamicDowncast<JSURLSearchParams>(value)) {
-                auto* array = constructEmptyArray(exec, nullptr);
-                RETURN_IF_EXCEPTION(scope, {});
-                constructDataProperties(vm, exec, array, WebCore::getInternalProperties(vm, exec, params));
-                RETURN_IF_EXCEPTION(scope, {});
-                return array;
-            }
+    if (auto* formData = dynamicDowncast<JSDOMFormData>(value)) {
+        auto* array = constructEmptyArray(exec, nullptr);
+        RETURN_IF_EXCEPTION(scope, {});
+        auto properties = WebCore::getInternalProperties(vm, exec, formData);
+        RETURN_IF_EXCEPTION(scope, {});
+        constructDataProperties(vm, exec, array, properties);
+        RETURN_IF_EXCEPTION(scope, {});
+        return array;
+    }
 
-            if (auto* cookie = dynamicDowncast<JSCookie>(value)) {
-                auto* array = constructEmptyArray(exec, nullptr);
-                RETURN_IF_EXCEPTION(scope, {});
-                constructDataProperties(vm, exec, array, WebCore::getInternalProperties(vm, exec, cookie));
-                RETURN_IF_EXCEPTION(scope, {});
-                return array;
-            }
-
-            if (auto* cookieMap = dynamicDowncast<JSCookieMap>(value)) {
-                auto* array = constructEmptyArray(exec, nullptr);
-                RETURN_IF_EXCEPTION(scope, {});
-                constructDataProperties(vm, exec, array, WebCore::getInternalProperties(vm, exec, cookieMap));
-                RETURN_IF_EXCEPTION(scope, {});
-                return array;
-            }
-        }
+    if (auto* params = dynamicDowncast<JSURLSearchParams>(value)) {
+        auto* array = constructEmptyArray(exec, nullptr);
+        RETURN_IF_EXCEPTION(scope, {});
+        auto properties = WebCore::getInternalProperties(vm, exec, params);
+        RETURN_IF_EXCEPTION(scope, {});
+        constructDataProperties(vm, exec, array, properties);
+        RETURN_IF_EXCEPTION(scope, {});
+        return array;
     }
 
     if (auto* eventTarget = JSEventTarget::toWrapped(vm, value)) {

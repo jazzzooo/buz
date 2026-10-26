@@ -1,4 +1,5 @@
 #include "JSKeyObjectConstructor.h"
+#include "JSDOMExceptionHandling.h"
 #include "JSKeyObject.h"
 #include "ErrorCode.h"
 #include "JSBufferEncodingType.h"
@@ -10,7 +11,7 @@
 #include "openssl/bn.h"
 #include "openssl/err.h"
 #include "ncrypto.h"
-#include "JSCryptoKey.h"
+#include "WebCryptoKey.h"
 #include "JSSecretKeyObject.h"
 #include "JSPublicKeyObject.h"
 #include "JSPrivateKeyObject.h"
@@ -26,11 +27,10 @@ using namespace ncrypto;
 
 namespace Bun {
 
-JSC_DECLARE_HOST_FUNCTION(jsKeyObjectConstructor_from);
 
-static const JSC::HashTableValue JSKeyObjectConstructorTableValues[] = {
-    { "from"_s, static_cast<unsigned>(PropertyAttribute::Function | PropertyAttribute::DontEnum), NoIntrinsic, { HashTableValue::NativeFunctionType, jsKeyObjectConstructor_from, 1 } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_JSKeyObjectConstructor
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSKeyObjectConstructor
 
 const JSC::ClassInfo JSKeyObjectConstructor::s_info = { "KeyObject"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSKeyObjectConstructor) };
 
@@ -38,59 +38,43 @@ void JSKeyObjectConstructor::finishCreation(VM& vm, JSGlobalObject* globalObject
 {
     Base::finishCreation(vm, 2, "KeyObject"_s);
     putDirect(vm, vm.propertyNames->prototype, prototype, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::DontDelete | JSC::PropertyAttribute::ReadOnly);
-    reifyStaticProperties(vm, JSKeyObjectConstructor::info(), JSKeyObjectConstructorTableValues, *this);
+    bunBindgenObjectSurface_JSKeyObjectConstructor_install(vm, JSKeyObjectConstructor::info(), *this);
 }
 
-JSC_DEFINE_HOST_FUNCTION(callKeyObject, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_keyObjectConstructorCall(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_keyObjectConstructorCall_Arguments&)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     VM& vm = lexicalGlobalObject->vm();
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
     throwTypeError(lexicalGlobalObject, scope, "Cannot call KeyObject class constructor without |new|"_s);
-    return {};
 }
 
-JSC_DEFINE_HOST_FUNCTION(constructKeyObject, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_keyObjectConstructorConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_keyObjectConstructorConstruct_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     JSC::VM& vm = lexicalGlobalObject->vm();
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
 
-    JSValue typeValue = callFrame->argument(0);
+    (void)args.type;
 
-    if (!typeValue.isString()) {
-        // always INVALID_ARG_VALUE
-        // https://github.com/nodejs/node/blob/e1fabe4f58722af265d11081b91ce287f90738f4/lib/internal/crypto/keys.js#L108
-        return ERR::INVALID_ARG_VALUE(scope, lexicalGlobalObject, "type"_s, typeValue);
-    }
-
-    JSString* typeString = typeValue.toString(lexicalGlobalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    GCOwnedDataScope<WTF::StringView> typeView = typeString->view(lexicalGlobalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (typeView != "secret"_s && typeView != "public"_s && typeView != "private"_s) {
-        return ERR::INVALID_ARG_VALUE(scope, lexicalGlobalObject, "type"_s, typeValue);
-    }
-
-    JSValue handleValue = callFrame->argument(1);
-    // constructing a KeyObject is impossible
-    return ERR::INVALID_ARG_TYPE(scope, lexicalGlobalObject, "handle"_s, "object"_s, handleValue);
+    JSValue handleValue = args.handle.value_or(JSC::jsUndefined());
+    ERR::INVALID_ARG_TYPE(scope, lexicalGlobalObject, "handle"_s, "object"_s, handleValue);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsKeyObjectConstructor_from, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_keyObjectFrom(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_keyObjectFrom_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     VM& vm = lexicalGlobalObject->vm();
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
 
-    // 1. Validate Input Argument
-    JSValue keyValue = callFrame->argument(0);
-    JSCryptoKey* cryptoKey = dynamicDowncast<JSCryptoKey>(keyValue);
-
-    if (!cryptoKey) {
-        return ERR::INVALID_ARG_TYPE_INSTANCE(scope, globalObject, "key"_s, "CryptoKey"_s, keyValue);
-    }
-
-    WebCore::CryptoKey& wrappedKey = cryptoKey->wrapped();
+    WebCore::CryptoKey& wrappedKey = webCryptoKey(args.key);
 
     auto keyObjectResult = KeyObject::create(wrappedKey);
     if (keyObjectResult.hasException()) [[unlikely]] {
@@ -104,26 +88,26 @@ JSC_DEFINE_HOST_FUNCTION(jsKeyObjectConstructor_from, (JSGlobalObject * lexicalG
     case CryptoKeyType::Secret: {
         auto* structure = globalObject->m_JSSecretKeyObjectClassStructure.get(globalObject);
         JSSecretKeyObject* instance = JSSecretKeyObject::create(vm, structure, globalObject, keyObjectResult.releaseReturnValue());
-        RELEASE_AND_RETURN(scope, JSValue::encode(instance));
+        RELEASE_AND_RETURN(scope, instance);
     }
 
     case CryptoKeyType::Public: {
         auto* structure = globalObject->m_JSPublicKeyObjectClassStructure.get(globalObject);
         JSPublicKeyObject* instance = JSPublicKeyObject::create(vm, structure, globalObject, keyObjectResult.releaseReturnValue());
-        RELEASE_AND_RETURN(scope, JSValue::encode(instance));
+        RELEASE_AND_RETURN(scope, instance);
     }
 
     case CryptoKeyType::Private: {
         auto* structure = globalObject->m_JSPrivateKeyObjectClassStructure.get(globalObject);
         JSPrivateKeyObject* instance = JSPrivateKeyObject::create(vm, structure, globalObject, keyObjectResult.releaseReturnValue());
-        RELEASE_AND_RETURN(scope, JSValue::encode(instance));
+        RELEASE_AND_RETURN(scope, instance);
     }
     }
 
     ASSERT_NOT_REACHED();
 
     // Should not be reached
-    RELEASE_AND_RETURN(scope, JSValue::encode(jsUndefined()));
+    RELEASE_AND_RETURN(scope, jsUndefined());
 }
 
 } // namespace Bun

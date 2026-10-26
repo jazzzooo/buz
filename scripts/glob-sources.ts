@@ -45,10 +45,6 @@ const patterns = {
   nodeFallbacks: {
     paths: ["src/node-fallbacks/*.js"],
   },
-  /** `*.classes.ts` — input to generate-classes codegen */
-  zigGeneratedClasses: {
-    paths: ["src/**/*.classes.ts"],
-  },
   /** built-in modules bundled at build time */
   js: {
     paths: ["src/js/**/*.{js,ts}", "src/install/PackageManager/scanner-entry.ts"],
@@ -62,18 +58,6 @@ const patterns = {
     paths: ["src/bake/*.ts", "src/bake/*/*.{ts,css}"],
     exclude: ["src/bake/generated.ts"],
   },
-  /** legacy bindgen input */
-  bindgen: {
-    paths: ["src/**/*.bind.ts"],
-  },
-  /** v2 bindgen input */
-  bindgenV2: {
-    paths: ["src/**/*.bindv2.ts"],
-  },
-  /** bindgen v2 generator code */
-  bindgenV2Internal: {
-    paths: ["src/codegen/bindgenv2/**/*.ts"],
-  },
   /** NOT filtered; includes codegen-written files (see bun.ts) */
   zig: {
     paths: ["src/**/*.zig"],
@@ -82,6 +66,12 @@ const patterns = {
   cxx: {
     paths: [
       "src/io/*.cpp",
+      "src/libc_sys/*.cpp",
+      "src/highway_sys/*.cpp",
+      "src/image_sys/*.cpp",
+      "src/perf_sys/*.cpp",
+      "src/rescle_sys/*.cpp",
+      "src/webview_sys/*.cpp",
       "src/jsc/modules/*.cpp",
       "src/jsc/bindings/*.cpp",
       "src/jsc/bindings/webcore/*.cpp",
@@ -93,6 +83,7 @@ const patterns = {
       "src/jsc/bindings/node/http/*.cpp",
       "src/jsc/bindings/v8/*.cpp",
       "src/jsc/bindings/v8/shim/*.cpp",
+      "src/runtime/valkey_jsc/*.cpp",
       "src/runtime/webview/*.cpp",
       "src/bake/*.cpp",
       "src/uws_sys/*.cpp",
@@ -104,6 +95,10 @@ const patterns = {
   /** all `*.c` compiled into bun (usockets, llhttp, uv polyfills) */
   c: {
     paths: [
+      "src/libc_sys/*.c",
+      "src/lshpack_sys/*.c",
+      "src/exe_format/*.c",
+      "src/tcc_sys/*.c",
       "packages/bun-usockets/src/*.c",
       "packages/bun-usockets/src/eventing/*.c",
       "packages/bun-usockets/src/internal/*.c",

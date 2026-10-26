@@ -6,6 +6,8 @@
 #include "EventNames.h"
 #include "JSErrorHandler.h"
 #include "JSEventListener.h"
+#include "SchemaBindings.h"
+#include "ZigGlobalObject.h"
 #include <wtf/MainThread.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/Ref.h>
@@ -116,8 +118,7 @@ bool EventEmitter::emitForBindings(const Identifier& eventType, const MarkedArgu
     if (!scriptExecutionContext())
         return false;
 
-    emit(eventType, arguments);
-    return true;
+    return fireEventListeners(eventType, arguments, ExceptionHandling::Propagate);
 }
 
 bool EventEmitter::emit(const Identifier& eventType, const MarkedArgumentBuffer& arguments)
@@ -156,11 +157,11 @@ int EventEmitter::listenerCount(const Identifier& eventType)
     return result;
 }
 
-Vector<JSObject*> EventEmitter::getListeners(const Identifier& eventType)
+std::optional<Vector<JSObject*>> EventEmitter::getListeners(const Identifier& eventType)
 {
     auto* data = eventTargetData();
     if (!data)
-        return {};
+        return Vector<JSObject*> {};
     Vector<JSObject*> listeners;
     if (auto* listenersVector = data->eventListenerMap.find(eventType)) {
         for (auto& registeredListener : *listenersVector) {
@@ -168,7 +169,8 @@ Vector<JSObject*> EventEmitter::getListeners(const Identifier& eventType)
                 continue;
 
             if (JSC::JSObject* jsFunction = registeredListener->callback().jsFunction()) {
-                listeners.append(jsFunction);
+                if (!listeners.tryAppend(jsFunction))
+                    return std::nullopt;
             }
         }
     }
@@ -176,7 +178,7 @@ Vector<JSObject*> EventEmitter::getListeners(const Identifier& eventType)
 }
 
 // https://dom.spec.whatwg.org/#concept-event-listener-invoke
-bool EventEmitter::fireEventListeners(const Identifier& eventType, const MarkedArgumentBuffer& arguments)
+bool EventEmitter::fireEventListeners(const Identifier& eventType, const MarkedArgumentBuffer& arguments, ExceptionHandling exceptionHandling)
 {
 
     auto* data = eventTargetData();
@@ -191,7 +193,7 @@ bool EventEmitter::fireEventListeners(const Identifier& eventType, const MarkedA
             if (!thisObject)
                 return false;
 
-            Bun__reportUnhandledError(thisObject->globalObject(), JSValue::encode(arguments.at(0)));
+            Bun::Bindgen::ZigExports::bunBindgenZig_errors_reportUnhandledError(thisObject->globalObject(), arguments.at(0));
             return false;
         }
         return false;
@@ -199,7 +201,7 @@ bool EventEmitter::fireEventListeners(const Identifier& eventType, const MarkedA
 
     bool prevFiringEventListeners = data->isFiringEventListeners;
     data->isFiringEventListeners = true;
-    auto fired = innerInvokeEventListeners(eventType, *listenersVector, arguments);
+    auto fired = innerInvokeEventListeners(eventType, *listenersVector, arguments, exceptionHandling);
     data->isFiringEventListeners = prevFiringEventListeners;
     return fired;
 }
@@ -207,7 +209,7 @@ bool EventEmitter::fireEventListeners(const Identifier& eventType, const MarkedA
 // Intentionally creates a copy of the listeners vector to avoid event listeners added after this point from being run.
 // Note that removal still has an effect due to the removed field in RegisteredEventListener.
 // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
-bool EventEmitter::innerInvokeEventListeners(const Identifier& eventType, SimpleEventListenerVector listeners, const MarkedArgumentBuffer& arguments)
+bool EventEmitter::innerInvokeEventListeners(const Identifier& eventType, SimpleEventListenerVector listeners, const MarkedArgumentBuffer& arguments, ExceptionHandling exceptionHandling)
 {
     Ref<EventEmitter> protectedThis(*this);
     ASSERT(!listeners.isEmpty());
@@ -252,6 +254,8 @@ bool EventEmitter::innerInvokeEventListeners(const Identifier& eventType, Simple
         call(lexicalGlobalObject, jsFunction, callData, thisValue, arguments);
 
         if (auto* exception = scope.exception()) [[unlikely]] {
+            if (exceptionHandling == ExceptionHandling::Propagate)
+                return fired;
             if (!scope.clearExceptionExceptTermination())
                 return fired;
 
@@ -259,7 +263,7 @@ bool EventEmitter::innerInvokeEventListeners(const Identifier& eventType, Simple
             auto hasErrorListener = this->hasActiveEventListeners(errorIdentifier);
             if (!hasErrorListener || eventType == errorIdentifier) {
                 // If the event type is error, report the exception to the console.
-                Bun__reportUnhandledError(lexicalGlobalObject, JSValue::encode(JSValue(exception)));
+                Zig::GlobalObject::reportUncaughtExceptionAtEventLoop(lexicalGlobalObject, exception);
             } else {
                 MarkedArgumentBuffer exceptionArguments;
                 JSValue errorValue = exception->value();

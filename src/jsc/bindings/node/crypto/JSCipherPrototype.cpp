@@ -1,5 +1,6 @@
 #include "JSCipherPrototype.h"
 #include "JSCipher.h"
+#include "SchemaBindings.h"
 #include "ErrorCode.h"
 #include "CryptoUtil.h"
 #include "BunProcess.h"
@@ -8,75 +9,65 @@
 #include <JavaScriptCore/TypedArrayInlines.h>
 #include <JavaScriptCore/JSCJSValueInlines.h>
 
-extern "C" bool Bun__Node__ProcessNoDeprecation;
-
 using namespace Bun;
 using namespace JSC;
 using namespace WebCore;
 using namespace ncrypto;
 
-// Declare host function prototypes
-JSC_DECLARE_HOST_FUNCTION(jsCipherUpdate);
-JSC_DECLARE_HOST_FUNCTION(jsCipherFinal);
-JSC_DECLARE_HOST_FUNCTION(jsCipherSetAutoPadding);
-JSC_DECLARE_HOST_FUNCTION(jsCipherGetAuthTag);
-JSC_DECLARE_HOST_FUNCTION(jsCipherSetAuthTag);
-JSC_DECLARE_HOST_FUNCTION(jsCipherSetAAD);
+static JSCipher* cipherObject(JSC::JSValue value)
+{
+    auto* cipher = dynamicDowncast<JSCipher>(value);
+    RELEASE_ASSERT(cipher);
+    return cipher;
+}
 
 const JSC::ClassInfo JSCipherPrototype::s_info = { "Cipher"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSCipherPrototype) };
 
-static const JSC::HashTableValue JSCipherPrototypeTableValues[] = {
-    { "update"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { HashTableValue::NativeFunctionType, jsCipherUpdate, 2 } },
-    { "final"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { HashTableValue::NativeFunctionType, jsCipherFinal, 0 } },
-    { "setAutoPadding"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { HashTableValue::NativeFunctionType, jsCipherSetAutoPadding, 1 } },
-    { "getAuthTag"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { HashTableValue::NativeFunctionType, jsCipherGetAuthTag, 0 } },
-    { "setAuthTag"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { HashTableValue::NativeFunctionType, jsCipherSetAuthTag, 1 } },
-    { "setAAD"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { HashTableValue::NativeFunctionType, jsCipherSetAAD, 2 } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_JSCipherPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSCipherPrototype
 
 void JSCipherPrototype::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
-    reifyStaticProperties(vm, JSCipherPrototype::info(), JSCipherPrototypeTableValues, *this);
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+    bunBindgenObjectSurface_JSCipherPrototype_install(vm, JSCipherPrototype::info(), *this);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsCipherUpdate, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+std::optional<Bun::Bindgen::CppBytes> Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_cipherUpdate(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_cipherUpdate_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     auto& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
+    JSCipher* cipher = cipherObject(args.bindingThis);
 
-    JSCipher* cipher = dynamicDowncast<JSCipher>(callFrame->thisValue());
-    if (!cipher) {
-        throwThisTypeError(*lexicalGlobalObject, scope, "Cipher"_s, "update"_s);
-        return {};
+    if (!args.data) {
+        ERR::INVALID_ARG_TYPE(scope, lexicalGlobalObject, "data"_s, "string or an instance of Buffer, TypedArray, or DataView"_s, jsUndefined());
+        return std::nullopt;
     }
 
-    JSValue dataValue = callFrame->argument(0);
-    JSValue encodingValue = callFrame->argument(1);
+    std::optional<Bindgen::NodeStringEncoding> encoding;
+    if (!convertStringInputEncodingAndLease(context, scope, *args.data, args.encoding, encoding))
+        return std::nullopt;
 
-    WTF::String dataString = WTF::nullString();
-    WTF::String encodingString = WTF::nullString();
-
-    JSArrayBufferView* dataView = getArrayBufferOrView(lexicalGlobalObject, scope, dataValue, "data"_s, encodingValue);
+    auto data = getStringOrBufferBytes(lexicalGlobalObject, scope, *args.data, nodeEncodingOrDefault(encoding, BufferEncodingType::utf8));
     RETURN_IF_EXCEPTION(scope, {});
 
     MarkPopErrorOnReturn popError;
 
-    if (dataView->byteLength() > INT_MAX) {
-        return ERR::OUT_OF_RANGE(scope, lexicalGlobalObject, "data is too big"_s, 0, INT_MAX, jsNumber(dataView->byteLength()));
+    if (data->size() > INT_MAX) {
+        ERR::OUT_OF_RANGE(scope, lexicalGlobalObject, "data is too big"_s, 0, INT_MAX, jsNumber(data->size()));
+        return std::nullopt;
     }
 
     if (!cipher->m_ctx) {
         throwCryptoError(lexicalGlobalObject, scope, popError.peekError(), "Trying to add data in unsupported state");
-        return {};
+        return std::nullopt;
     }
 
-    if (cipher->m_ctx.isCcmMode() && !cipher->checkCCMMessageLength(dataView->byteLength())) {
-        // return undefined
-        // https://github.com/nodejs/node/blob/6b4255434226491449b7d925038008439e5586b2/src/crypto/crypto_cipher.cc#L742
-        return JSValue::encode(jsUndefined());
+    if (cipher->m_ctx.isCcmMode() && !cipher->checkCCMMessageLength(data->size())) {
+        return std::nullopt;
     }
 
     if (cipher->m_kind == CipherKind::Decipher && cipher->isAuthenticatedMode()) {
@@ -84,65 +75,65 @@ JSC_DEFINE_HOST_FUNCTION(jsCipherUpdate, (JSC::JSGlobalObject * lexicalGlobalObj
     }
 
     const int32_t blockSize = cipher->m_ctx.getBlockSize();
-    if (dataView->byteLength() + blockSize > INT_MAX) {
+    if (data->size() + blockSize > INT_MAX) {
         throwCryptoError(lexicalGlobalObject, scope, popError.peekError(), "Trying to add data in unsupported state");
-        return {};
+        return std::nullopt;
     }
-    int32_t bufLen = dataView->byteLength() + blockSize;
+    int32_t bufLen = data->size() + blockSize;
 
     ncrypto::Buffer<const uint8_t> buf {
-        .data = reinterpret_cast<uint8_t*>(dataView->vector()),
-        .len = dataView->byteLength(),
+        .data = data->data(),
+        .len = data->size(),
     };
 
     if (cipher->m_kind == CipherKind::Cipher && cipher->m_ctx.isWrapMode() && !cipher->m_ctx.update(buf, nullptr, &bufLen)) {
         throwCryptoError(lexicalGlobalObject, scope, popError.peekError(), "Trying to add data in unsupported state");
-        return {};
+        return std::nullopt;
     }
 
-    RefPtr<ArrayBuffer> outBuf = JSC::ArrayBuffer::tryCreateUninitialized(bufLen, 1);
-    if (!outBuf) {
+    WTF::Vector<uint8_t> outBuf;
+    if (!outBuf.tryGrow(bufLen)) {
         throwOutOfMemoryError(lexicalGlobalObject, scope);
-        return {};
+        return std::nullopt;
     }
 
     buf = {
-        .data = reinterpret_cast<uint8_t*>(dataView->vector()),
-        .len = dataView->byteLength(),
+        .data = data->data(),
+        .len = data->size(),
     };
 
-    bool res = cipher->m_ctx.update(buf, static_cast<unsigned char*>(outBuf->data()), &bufLen);
-    ASSERT(static_cast<size_t>(bufLen) <= outBuf->byteLength());
+    bool res = cipher->m_ctx.update(buf, outBuf.mutableSpan().data(), &bufLen);
+    ASSERT(static_cast<size_t>(bufLen) <= outBuf.size());
 
     if (!res && cipher->m_kind == CipherKind::Decipher && cipher->m_ctx.isCcmMode()) {
         cipher->m_pendingAuthFailed = true;
-        RELEASE_AND_RETURN(scope, JSValue::encode(JSUint8Array::create(lexicalGlobalObject, globalObject->JSBufferSubclassStructure(), WTF::move(outBuf), 0, bufLen)));
+        outBuf.shrink(bufLen);
+        return outBuf;
     }
 
     if (res != 1) {
         throwCryptoError(lexicalGlobalObject, scope, popError.peekError(), "Trying to add data in unsupported state");
-        return {};
+        return std::nullopt;
     }
 
-    RELEASE_AND_RETURN(scope, JSValue::encode(JSUint8Array::create(lexicalGlobalObject, globalObject->JSBufferSubclassStructure(), WTF::move(outBuf), 0, bufLen)));
+    outBuf.shrink(bufLen);
+    return outBuf;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsCipherFinal, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+Bun::Bindgen::CppBytes Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_cipherFinal(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_cipherFinal_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     auto& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-
     MarkPopErrorOnReturn popError;
 
-    JSCipher* cipher = dynamicDowncast<JSCipher>(callFrame->thisValue());
-    if (!cipher) {
-        throwThisTypeError(*lexicalGlobalObject, scope, "Cipher"_s, "final"_s);
-        return {};
-    }
+    JSCipher* cipher = cipherObject(args.bindingThis);
 
     if (!cipher->m_ctx) {
-        return ERR::CRYPTO_INVALID_STATE(scope, lexicalGlobalObject, "final"_s);
+        ERR::CRYPTO_INVALID_STATE(scope, lexicalGlobalObject, "final"_s);
+        return {};
     }
 
     const bool isAuthMode = cipher->isAuthenticatedMode();
@@ -152,8 +143,8 @@ JSC_DEFINE_HOST_FUNCTION(jsCipherFinal, (JSC::JSGlobalObject * lexicalGlobalObje
     };
 
     int32_t outLen = cipher->m_ctx.getBlockSize();
-    RefPtr<ArrayBuffer> outBuf = ArrayBuffer::tryCreateUninitialized(outLen, 1);
-    if (!outBuf) {
+    WTF::Vector<uint8_t> outBuf;
+    if (!outBuf.tryGrow(outLen)) {
         throwOutOfMemoryError(lexicalGlobalObject, scope);
         return {};
     }
@@ -172,8 +163,8 @@ JSC_DEFINE_HOST_FUNCTION(jsCipherFinal, (JSC::JSGlobalObject * lexicalGlobalObje
         ok = !cipher->m_pendingAuthFailed;
         outLen = 0;
     } else {
-        ok = cipher->m_ctx.update({}, static_cast<unsigned char*>(outBuf->data()), &outLen, true);
-        ASSERT(outLen <= outBuf->byteLength());
+        ok = cipher->m_ctx.update({}, outBuf.mutableSpan().data(), &outLen, true);
+        ASSERT(static_cast<size_t>(outLen) <= outBuf.size());
 
         if (ok && cipher->m_kind == CipherKind::Cipher && cipher->isAuthenticatedMode()) {
             if (!cipher->m_authTagLen.has_value()) {
@@ -192,88 +183,85 @@ JSC_DEFINE_HOST_FUNCTION(jsCipherFinal, (JSC::JSGlobalObject * lexicalGlobalObje
         return {};
     }
 
-    RELEASE_AND_RETURN(scope, JSValue::encode(JSUint8Array::create(lexicalGlobalObject, globalObject->JSBufferSubclassStructure(), WTF::move(outBuf), 0, outLen)));
+    outBuf.shrink(outLen);
+    return outBuf;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsCipherSetAutoPadding, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_cipherSetAutoPadding(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_cipherSetAutoPadding_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSCipher* cipher = dynamicDowncast<JSCipher>(callFrame->thisValue());
-    if (!cipher) {
-        throwThisTypeError(*globalObject, scope, "Cipher"_s, "setAutoPadding"_s);
-        return {};
-    }
-
-    JSValue paddingValue = callFrame->argument(0);
-
-    bool padding = paddingValue.toBoolean(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
+    JSCipher* cipher = cipherObject(args.bindingThis);
 
     MarkPopErrorOnReturn popError;
-    if (!cipher->m_ctx.setPadding(padding)) {
-        return ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAutoPadding"_s);
+    if (!cipher->m_ctx.setPadding(args.padding)) {
+        ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAutoPadding"_s);
+        return;
     }
-
-    return JSValue::encode(jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsCipherGetAuthTag, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+Bun::Bindgen::CppBytes Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_cipherGetAuthTag(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_cipherGetAuthTag_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     auto& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSCipher* cipher = dynamicDowncast<JSCipher>(callFrame->thisValue());
-    if (!cipher) {
-        throwThisTypeError(*lexicalGlobalObject, scope, "Cipher"_s, "getAuthTag"_s);
+    JSCipher* cipher = cipherObject(args.bindingThis);
+
+    if (cipher->m_ctx || cipher->m_kind != CipherKind::Cipher || !cipher->m_authTagLen) {
+        ERR::CRYPTO_INVALID_STATE(scope, lexicalGlobalObject, "getAuthTag"_s);
         return {};
     }
 
-    if (cipher->m_ctx || cipher->m_kind != CipherKind::Cipher || !cipher->m_authTagLen) {
-        return ERR::CRYPTO_INVALID_STATE(scope, lexicalGlobalObject, "getAuthTag"_s);
-    }
-
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-
-    JSC::JSUint8Array* buf = JSC::JSUint8Array::createUninitialized(lexicalGlobalObject, globalObject->JSBufferSubclassStructure(), *cipher->m_authTagLen);
-    RETURN_IF_EXCEPTION(scope, {});
-    if (!buf) {
+    WTF::Vector<uint8_t> result;
+    if (!result.tryGrow(*cipher->m_authTagLen)) {
         throwOutOfMemoryError(lexicalGlobalObject, scope);
         return {};
     }
 
-    memcpy(buf->vector(), cipher->m_authTag, *cipher->m_authTagLen);
-
-    return JSValue::encode(buf);
+    memcpy(result.mutableSpan().data(), cipher->m_authTag, *cipher->m_authTagLen);
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsCipherSetAuthTag, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_cipherSetAuthTag(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_cipherSetAuthTag_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSCipher* cipher = dynamicDowncast<JSCipher>(callFrame->thisValue());
-    if (!cipher) {
-        throwThisTypeError(*globalObject, scope, "Cipher"_s, "setAuthTag"_s);
-        return {};
+    JSCipher* cipher = cipherObject(args.bindingThis);
+
+    if (!args.authTag) {
+        ERR::INVALID_ARG_TYPE(scope, globalObject, "buffer"_s, "string or an instance of Buffer, TypedArray, or DataView"_s, jsUndefined());
+        return;
     }
 
-    JSValue authTagValue = callFrame->argument(0);
-    JSValue encodingValue = callFrame->argument(1);
-    JSArrayBufferView* authTag = getArrayBufferOrView(globalObject, scope, authTagValue, "buffer"_s, encodingValue);
-    RETURN_IF_EXCEPTION(scope, {});
-    ASSERT(authTag);
+    std::optional<Bindgen::NodeStringEncoding> encoding;
+    if (!convertStringInputEncodingAndLease(context, scope, *args.authTag, args.encoding, encoding))
+        return;
+
+    auto authTag = getStringOrBufferBytes(globalObject, scope, *args.authTag, nodeEncodingOrDefault(encoding, BufferEncodingType::utf8));
+    RETURN_IF_EXCEPTION(scope, void());
 
     if (!cipher->m_ctx || !cipher->isAuthenticatedMode() || cipher->m_kind != CipherKind::Decipher || cipher->m_authTagState != AuthTagState::AuthTagUnknown) {
-        return ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAuthTag"_s);
+        ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAuthTag"_s);
+        return;
     }
 
-    if (authTag->byteLength() > INT_MAX) {
-        return ERR::OUT_OF_RANGE(scope, globalObject, "buffer is too big"_s, 0, INT_MAX, jsNumber(authTag->byteLength()));
+    if (authTag->size() > INT_MAX) {
+        ERR::OUT_OF_RANGE(scope, globalObject, "buffer is too big"_s, 0, INT_MAX, jsNumber(authTag->size()));
+        return;
     }
 
-    uint32_t tagLen = authTag->byteLength();
+    uint32_t tagLen = authTag->size();
 
     bool isValid;
     if (cipher->m_ctx.isGcmMode()) {
@@ -285,69 +273,62 @@ JSC_DEFINE_HOST_FUNCTION(jsCipherSetAuthTag, (JSC::JSGlobalObject * globalObject
     }
 
     if (!isValid) {
-        WTF::StringBuilder builder;
-        builder.append("Invalid authentication tag length: "_s);
-        builder.append(tagLen);
-        return ERR::CRYPTO_INVALID_AUTH_TAG(scope, globalObject, builder.toString());
+        auto message = WTF::tryMakeString("Invalid authentication tag length: "_s, tagLen);
+        if (message.isNull()) {
+            throwOutOfMemoryError(globalObject, scope);
+            return;
+        }
+        ERR::CRYPTO_INVALID_AUTH_TAG(scope, globalObject, message);
+        return;
     }
 
-    if (cipher->m_ctx.isGcmMode() && !cipher->m_authTagLen.has_value() && tagLen != 16 && !Bun__Node__ProcessNoDeprecation) {
-        Bun::Process::emitWarning(globalObject, jsString(vm, makeString("Using AES-GCM authentication tags of less than 128 bits without specifying the authTagLength option when initializing decryption is deprecated."_s)), jsString(vm, makeString("DeprecationWarning"_s)), jsString(vm, makeString("DEP0182"_s)), jsUndefined());
-        CLEAR_IF_EXCEPTION(scope);
+    if (cipher->m_ctx.isGcmMode() && !cipher->m_authTagLen.has_value() && tagLen != 16 && !Process::noDeprecation()) {
+        Bun::Process::emitWarning(globalObject, "Using AES-GCM authentication tags of less than 128 bits without specifying the authTagLength option when initializing decryption is deprecated."_s, "DeprecationWarning"_s, "DEP0182"_s);
+        RETURN_IF_EXCEPTION(scope, void());
     }
 
     cipher->m_authTagLen = tagLen;
     cipher->m_authTagState = AuthTagState::AuthTagKnown;
 
     memset(cipher->m_authTag, 0, sizeof(cipher->m_authTag));
-    memcpy(cipher->m_authTag, authTag->vector(), *cipher->m_authTagLen);
-
-    return JSValue::encode(jsUndefined());
+    memcpy(cipher->m_authTag, authTag->data(), *cipher->m_authTagLen);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsCipherSetAAD, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_cipherSetAAD(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_cipherSetAAD_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSCipher* cipher = dynamicDowncast<JSCipher>(callFrame->thisValue());
-    if (!cipher) {
-        throwThisTypeError(*globalObject, scope, "Cipher"_s, "setAAD"_s);
-        return {};
-    }
+    JSCipher* cipher = cipherObject(args.bindingThis);
 
-    JSValue aadbufValue = callFrame->argument(0);
-    JSValue optionsValue = callFrame->argument(1);
-
-    JSValue encodingValue = jsUndefined();
+    BufferEncodingType encoding = BufferEncodingType::utf8;
     std::optional<uint32_t> plaintextLength = std::nullopt;
-    if (optionsValue.pureToBoolean() != TriState::False) {
-        encodingValue = optionsValue.get(globalObject, Identifier::fromString(vm, "encoding"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (!encodingValue.isUndefinedOrNull()) {
-            V::validateString(scope, globalObject, encodingValue, "options.encoding"_s);
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-
-        JSValue plaintextLengthValue = optionsValue.get(globalObject, Identifier::fromString(vm, "plaintextLength"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!plaintextLengthValue.isUndefinedOrNull()) {
-            std::optional<int32_t> maybePlaintextLength = plaintextLengthValue.tryGetAsInt32();
-            if (!maybePlaintextLength || *maybePlaintextLength < 0) {
-                return ERR::INVALID_ARG_VALUE(scope, globalObject, "options.plaintextLength"_s, plaintextLengthValue);
-            }
-
-            plaintextLength = *maybePlaintextLength;
-        }
+    if (args.options && args.options->is_options()) {
+        const auto& value = args.options->options();
+        if (value.encoding)
+            encoding = nodeEncodingToBufferEncoding(*value.encoding);
+        plaintextLength = value.plaintext_length;
     }
 
-    JSArrayBufferView* aadbuf = getArrayBufferOrView(globalObject, scope, aadbufValue, "aadbuf"_s, encodingValue);
-    RETURN_IF_EXCEPTION(scope, {});
-    ASSERT(aadbuf);
+    const auto* aad = Bindgen::convertLastAndLease(context, args.aad);
+    RETURN_IF_EXCEPTION(scope, void());
+    if (!aad)
+        return;
 
-    if (aadbuf->byteLength() > std::numeric_limits<int>::max()) {
-        return ERR::OUT_OF_RANGE(scope, globalObject, "buffer is too big"_s, 0, INT_MAX, jsNumber(aadbuf->byteLength()));
+    auto aadbuf = [&]() -> GCOwnedDataScope<std::span<const uint8_t>> {
+        if (aad->is_buffer())
+            return { nullptr, { aad->buffer().unsafePtr("The entry frame holds the authentication data lease through the synchronous cipher operation"_s), aad->buffer().size() } };
+        auto* view = encodeCryptoString(globalObject, scope, aad->string(), encoding);
+        return { view, view ? view->span() : std::span<const uint8_t> {} };
+    }();
+    RETURN_IF_EXCEPTION(scope, void());
+
+    if (aadbuf->size() > std::numeric_limits<int>::max()) {
+        ERR::OUT_OF_RANGE(scope, globalObject, "buffer is too big"_s, 0, INT_MAX, jsNumber(aadbuf->size()));
+        return;
     }
 
     MarkPopErrorOnReturn popError;
@@ -356,15 +337,18 @@ JSC_DEFINE_HOST_FUNCTION(jsCipherSetAAD, (JSC::JSGlobalObject * globalObject, JS
 
     if (cipher->m_ctx.isCcmMode()) {
         if (!plaintextLength.has_value()) {
-            return ERR::MISSING_ARGS(scope, globalObject, "options.plaintextLength required for CCM mode with AAD"_s);
+            ERR::MISSING_ARGS(scope, globalObject, "options.plaintextLength required for CCM mode with AAD"_s);
+            return;
         }
 
         if (!cipher->checkCCMMessageLength(*plaintextLength)) {
-            return ERR::CRYPTO_INVALID_MESSAGELEN(scope, globalObject);
+            ERR::CRYPTO_INVALID_MESSAGELEN(scope, globalObject);
+            return;
         }
 
         if (cipher->m_kind == CipherKind::Decipher && !cipher->maybePassAuthTagToOpenSSL()) {
-            return ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAAD"_s);
+            ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAAD"_s);
+            return;
         }
 
         ncrypto::Buffer<const unsigned char> buf {
@@ -373,18 +357,18 @@ JSC_DEFINE_HOST_FUNCTION(jsCipherSetAAD, (JSC::JSGlobalObject * globalObject, JS
         };
 
         if (!cipher->m_ctx.update(buf, nullptr, &outlen)) {
-            return ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAAD"_s);
+            ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAAD"_s);
+            return;
         }
     }
 
     ncrypto::Buffer<const unsigned char> buf {
-        .data = reinterpret_cast<uint8_t*>(aadbuf->vector()),
-        .len = aadbuf->byteLength(),
+        .data = aadbuf->data(),
+        .len = aadbuf->size(),
     };
 
     if (!cipher->m_ctx.update(buf, nullptr, &outlen)) {
-        return ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAAD"_s);
+        ERR::CRYPTO_INVALID_STATE(scope, globalObject, "setAAD"_s);
+        return;
     }
-
-    return JSValue::encode(jsUndefined());
 }

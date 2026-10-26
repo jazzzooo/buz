@@ -1,5 +1,5 @@
 pub const S3Credentials = struct {
-    const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
+    const RefCount = bun.ptr.ThreadSafeRefCount(@This(), "ref_count", deinit, .{});
     pub const ref = RefCount.ref;
     pub const deref = RefCount.deref;
 
@@ -21,45 +21,27 @@ pub const S3Credentials = struct {
         return @sizeOf(S3Credentials) + this.accessKeyId.len + this.region.len + this.secretAccessKey.len + this.endpoint.len + this.bucket.len;
     }
 
-    pub const getCredentialsWithOptions = @import("../runtime/webcore/s3/credentials_jsc.zig").getCredentialsWithOptions;
-
-    pub fn dupe(this: *const @This()) *S3Credentials {
-        return bun.new(S3Credentials, .{
+    pub fn dupe(this: *const @This()) bun.OOM!*S3Credentials {
+        const owned = try bun.default_allocator.create(S3Credentials);
+        owned.* = .{
             .ref_count = .init(),
             .io = this.io,
-            .accessKeyId = if (this.accessKeyId.len > 0)
-                bun.handleOom(bun.default_allocator.dupe(u8, this.accessKeyId))
-            else
-                "",
-
-            .secretAccessKey = if (this.secretAccessKey.len > 0)
-                bun.handleOom(bun.default_allocator.dupe(u8, this.secretAccessKey))
-            else
-                "",
-
-            .region = if (this.region.len > 0)
-                bun.handleOom(bun.default_allocator.dupe(u8, this.region))
-            else
-                "",
-
-            .endpoint = if (this.endpoint.len > 0)
-                bun.handleOom(bun.default_allocator.dupe(u8, this.endpoint))
-            else
-                "",
-
-            .bucket = if (this.bucket.len > 0)
-                bun.handleOom(bun.default_allocator.dupe(u8, this.bucket))
-            else
-                "",
-
-            .sessionToken = if (this.sessionToken.len > 0)
-                bun.handleOom(bun.default_allocator.dupe(u8, this.sessionToken))
-            else
-                "",
-
+            .accessKeyId = "",
+            .secretAccessKey = "",
+            .region = "",
+            .endpoint = "",
+            .bucket = "",
+            .sessionToken = "",
+            .storage_class = this.storage_class,
             .insecure_http = this.insecure_http,
             .virtual_hosted_style = this.virtual_hosted_style,
-        });
+        };
+        errdefer owned.deref();
+        inline for (.{ "accessKeyId", "secretAccessKey", "region", "endpoint", "bucket", "sessionToken" }) |field| {
+            const value = @field(this, field);
+            if (value.len > 0) @field(owned, field) = try bun.default_allocator.dupe(u8, value);
+        }
+        return owned;
     }
     fn deinit(this: *@This()) void {
         if (this.accessKeyId.len > 0) {
@@ -91,13 +73,7 @@ pub const S3Credentials = struct {
         date: []const u8,
     };
 
-    fn getAMZDate(allocator: std.mem.Allocator, io: std.Io) DateResult {
-        // We can also use Date.now() but would be slower and would add jsc dependency
-        // var buffer: [28]u8 = undefined;
-        // the code bellow is the same as new Date(Date.now()).toISOString()
-        // Date.now() ISO string via JS removed; uses libc gmtime_r
-
-        // Create UTC timestamp
+    fn getAMZDate(allocator: std.mem.Allocator, io: std.Io) bun.OOM!DateResult {
         const secs: u64 = @intCast(bun.realSeconds(io));
         const utc_seconds = std.time.epoch.EpochSeconds{ .secs = secs };
         const utc_day = utc_seconds.getEpochDay();
@@ -117,14 +93,14 @@ pub const S3Credentials = struct {
         // Format the date
         return .{
             .numeric_day = secs - time.secs,
-            .date = std.fmt.allocPrint(allocator, "{d:0>4}{d:0>2}{d:0>2}T{d:0>2}{d:0>2}{d:0>2}Z", .{
+            .date = try std.fmt.allocPrint(allocator, "{d:0>4}{d:0>2}{d:0>2}T{d:0>2}{d:0>2}{d:0>2}Z", .{
                 year,
                 month,
                 day,
                 hours,
                 minutes,
                 seconds,
-            }) catch |err| bun.handleOom(err),
+            }),
         };
     }
 
@@ -266,45 +242,26 @@ pub const S3Credentials = struct {
         // no endpoint so we default to us-east-1 because s3.us-east-1.amazonaws.com is the default endpoint
         return "us-east-1";
     }
-    fn toHexChar(value: u8) !u8 {
-        return switch (value) {
-            0...9 => value + '0',
-            10...15 => (value - 10) + 'A',
-            else => error.InvalidHexChar,
-        };
-    }
-    pub fn encodeURIComponent(input: []const u8, buffer: []u8, comptime encode_slash: bool) ![]const u8 {
-        var written: usize = 0;
-
+    pub fn writeURIComponent(input: []const u8, writer: *std.Io.Writer, comptime encode_slash: bool) std.Io.Writer.Error!void {
+        const hex = "0123456789ABCDEF";
         for (input) |c| {
             switch (c) {
-                // RFC 3986 Unreserved Characters (do not encode)
-                'A'...'Z', 'a'...'z', '0'...'9', '-', '_', '.', '~' => {
-                    if (written >= buffer.len) return error.BufferTooSmall;
-                    buffer[written] = c;
-                    written += 1;
-                },
-                // All other characters need to be percent-encoded
+                'A'...'Z', 'a'...'z', '0'...'9', '-', '_', '.', '~' => try writer.writeByte(c),
                 else => {
                     if (!encode_slash and (c == '/' or c == '\\')) {
-                        if (written >= buffer.len) return error.BufferTooSmall;
-                        buffer[written] = if (c == '\\') '/' else c;
-                        written += 1;
+                        try writer.writeByte('/');
                         continue;
                     }
-                    if (written + 3 > buffer.len) return error.BufferTooSmall;
-                    buffer[written] = '%';
-                    // Convert byte to hex
-                    const high_nibble: u8 = (c >> 4) & 0xF;
-                    const low_nibble: u8 = c & 0xF;
-                    buffer[written + 1] = try toHexChar(high_nibble);
-                    buffer[written + 2] = try toHexChar(low_nibble);
-                    written += 3;
+                    try writer.writeAll(&.{ '%', hex[c >> 4], hex[c & 0xF] });
                 },
             }
         }
+    }
 
-        return buffer[0..written];
+    pub fn encodeURIComponent(input: []const u8, buffer: []u8, comptime encode_slash: bool) error{BufferTooSmall}![]const u8 {
+        var writer: std.Io.Writer = .fixed(buffer);
+        writeURIComponent(input, &writer, encode_slash) catch return error.BufferTooSmall;
+        return writer.buffered();
     }
 
     fn normalizeName(name: []const u8) []const u8 {
@@ -317,10 +274,13 @@ pub const S3Credentials = struct {
         const request_path = signOptions.path;
         const content_hash = signOptions.content_hash;
         var content_md5 = signOptions.content_md5;
+        var owned_content_md5: ?[]u8 = null;
+        defer if (owned_content_md5) |bytes| bun.default_allocator.free(bytes);
 
         if (content_md5) |content_md5_val| {
             const len = bun.base64.encodeLen(content_md5_val);
-            const content_md5_as_base64 = bun.handleOom(bun.default_allocator.alloc(u8, len));
+            const content_md5_as_base64 = try bun.default_allocator.alloc(u8, len);
+            owned_content_md5 = content_md5_as_base64;
             content_md5 = content_md5_as_base64[0..bun.base64.encode(content_md5_as_base64, content_md5_val)];
         }
 
@@ -439,7 +399,7 @@ pub const S3Credentials = struct {
             }
         };
 
-        const date_result = getAMZDate(bun.default_allocator, this.io);
+        const date_result = try getAMZDate(bun.default_allocator, this.io);
         const amz_date = date_result.date;
         errdefer bun.default_allocator.free(amz_date);
 
@@ -468,8 +428,7 @@ pub const S3Credentials = struct {
 
             const sigDateRegionServiceReq = brk_sign: {
                 const key = try std.fmt.bufPrint(&tmp_buffer, "{s}{s}{s}", .{ region, service_name, this.secretAccessKey });
-                var cache = (jsc.VirtualMachine.getMainThreadVM() orelse jsc.VirtualMachine.get()).rareData().awsCache();
-                if (cache.get(date_result.numeric_day, key)) |cached| {
+                if (signing_key_cache.get(this.io, date_result.numeric_day, key)) |cached| {
                     break :brk_sign cached;
                 }
                 // not cached yet lets generate a new one
@@ -478,8 +437,9 @@ pub const S3Credentials = struct {
                 const sigDateRegionService = bun.hmac.generate(sigDateRegion, service_name, .sha256, &hmac_sig_service) orelse return error.FailedToGenerateSignature;
                 const result = bun.hmac.generate(sigDateRegionService, "aws4_request", .sha256, &hmac_sig_service2) orelse return error.FailedToGenerateSignature;
 
-                cache.set(date_result.numeric_day, key, hmac_sig_service2[0..DIGESTED_HMAC_256_LEN].*);
-                break :brk_sign result;
+                const signing_key = result[0..DIGESTED_HMAC_256_LEN].*;
+                try signing_key_cache.set(this.io, date_result.numeric_day, key, signing_key);
+                break :brk_sign signing_key;
             };
             if (signQuery) {
                 var token_encoded_buffer: [2048]u8 = undefined; // token is normaly like 600-700 but can be up to 2k
@@ -556,11 +516,11 @@ pub const S3Credentials = struct {
 
                 const canonical = try std.fmt.bufPrint(&tmp_buffer, "{s}\n{s}\n{s}\nhost:{s}\n\nhost\n{s}", .{ method_name, normalizedPath, query_string.items, host, aws_content_hash });
                 var sha_digest = std.mem.zeroes(bun.sha.SHA256.Digest);
-                bun.sha.SHA256.hash(canonical, &sha_digest, jsc.VirtualMachine.get().rareData().boringEngine());
+                bun.sha.SHA256.hash(canonical, &sha_digest, null);
 
                 const signValue = try std.fmt.bufPrint(&tmp_buffer, "AWS4-HMAC-SHA256\n{s}\n{s}/{s}/{s}/aws4_request\n{s}", .{ amz_date, amz_day, region, service_name, std.fmt.bytesToHex(sha_digest[0..bun.sha.SHA256.digest], .lower) });
 
-                const signature = bun.hmac.generate(sigDateRegionServiceReq, signValue, .sha256, &hmac_sig_service) orelse return error.FailedToGenerateSignature;
+                const signature = bun.hmac.generate(&sigDateRegionServiceReq, signValue, .sha256, &hmac_sig_service) orelse return error.FailedToGenerateSignature;
 
                 break :brk try std.fmt.allocPrint(
                     bun.default_allocator,
@@ -593,11 +553,11 @@ pub const S3Credentials = struct {
                     signed_headers,
                 );
                 var sha_digest = std.mem.zeroes(bun.sha.SHA256.Digest);
-                bun.sha.SHA256.hash(canonical, &sha_digest, jsc.VirtualMachine.get().rareData().boringEngine());
+                bun.sha.SHA256.hash(canonical, &sha_digest, null);
 
                 const signValue = try std.fmt.bufPrint(&tmp_buffer, "AWS4-HMAC-SHA256\n{s}\n{s}/{s}/{s}/aws4_request\n{s}", .{ amz_date, amz_day, region, service_name, std.fmt.bytesToHex(sha_digest[0..bun.sha.SHA256.digest], .lower) });
 
-                const signature = bun.hmac.generate(sigDateRegionServiceReq, signValue, .sha256, &hmac_sig_service) orelse return error.FailedToGenerateSignature;
+                const signature = bun.hmac.generate(&sigDateRegionServiceReq, signValue, .sha256, &hmac_sig_service) orelse return error.FailedToGenerateSignature;
 
                 break :brk try std.fmt.allocPrint(
                     bun.default_allocator,
@@ -622,10 +582,22 @@ pub const S3Credentials = struct {
             };
         }
 
+        const session_token_value = if (session_token) |value| try bun.default_allocator.dupe(u8, value) else "";
+        errdefer if (session_token_value.len > 0) bun.freeSensitive(bun.default_allocator, session_token_value);
+        const content_disposition_value = if (content_disposition) |value| try bun.default_allocator.dupe(u8, value) else "";
+        errdefer if (content_disposition_value.len > 0) bun.default_allocator.free(content_disposition_value);
+        const content_encoding_value = if (content_encoding) |value| try bun.default_allocator.dupe(u8, value) else "";
+        errdefer if (content_encoding_value.len > 0) bun.default_allocator.free(content_encoding_value);
+        const content_md5_value = if (content_md5) |value| try bun.default_allocator.dupe(u8, value) else "";
+        errdefer if (content_md5_value.len > 0) bun.default_allocator.free(content_md5_value);
         var result = SignResult{
             .amz_date = amz_date,
             .host = host,
             .authorization = authorization,
+            .session_token = session_token_value,
+            .content_disposition = content_disposition_value,
+            .content_encoding = content_encoding_value,
+            .content_md5 = content_md5_value,
             .acl = signOptions.acl,
             .storage_class = signOptions.storage_class,
             .request_payer = request_payer,
@@ -651,9 +623,7 @@ pub const S3Credentials = struct {
             result._headers_len += 1;
         }
 
-        if (session_token) |token| {
-            const session_token_value = bun.handleOom(bun.default_allocator.dupe(u8, token));
-            result.session_token = session_token_value;
+        if (session_token != null) {
             result._headers[result._headers_len] = .{ .name = "x-amz-security-token", .value = session_token_value };
             result._headers_len += 1;
         }
@@ -662,23 +632,17 @@ pub const S3Credentials = struct {
             result._headers_len += 1;
         }
 
-        if (content_disposition) |cd| {
-            const content_disposition_value = bun.handleOom(bun.default_allocator.dupe(u8, cd));
-            result.content_disposition = content_disposition_value;
+        if (content_disposition != null) {
             result._headers[result._headers_len] = .{ .name = "content-disposition", .value = content_disposition_value };
             result._headers_len += 1;
         }
 
-        if (content_encoding) |ce| {
-            const content_encoding_value = bun.handleOom(bun.default_allocator.dupe(u8, ce));
-            result.content_encoding = content_encoding_value;
+        if (content_encoding != null) {
             result._headers[result._headers_len] = .{ .name = "content-encoding", .value = content_encoding_value };
             result._headers_len += 1;
         }
 
-        if (content_md5) |c_md5| {
-            const content_md5_value = bun.handleOom(bun.default_allocator.dupe(u8, c_md5));
-            result.content_md5 = content_md5_value;
+        if (content_md5 != null) {
             result._headers[result._headers_len] = .{ .name = "content-md5", .value = content_md5_value };
             result._headers_len += 1;
         }
@@ -706,15 +670,15 @@ pub const S3CredentialsWithOptions = struct {
     changed_credentials: bool = false,
     /// indicates if the virtual hosted style is used
     virtual_hosted_style: bool = false,
-    _accessKeyIdSlice: ?jsc.ZigString.Slice = null,
-    _secretAccessKeySlice: ?jsc.ZigString.Slice = null,
-    _regionSlice: ?jsc.ZigString.Slice = null,
-    _endpointSlice: ?jsc.ZigString.Slice = null,
-    _bucketSlice: ?jsc.ZigString.Slice = null,
-    _sessionTokenSlice: ?jsc.ZigString.Slice = null,
-    _contentDispositionSlice: ?jsc.ZigString.Slice = null,
-    _contentTypeSlice: ?jsc.ZigString.Slice = null,
-    _contentEncodingSlice: ?jsc.ZigString.Slice = null,
+    _accessKeyIdSlice: ?bun.String.Slice = null,
+    _secretAccessKeySlice: ?bun.String.Slice = null,
+    _regionSlice: ?bun.String.Slice = null,
+    _endpointSlice: ?bun.String.Slice = null,
+    _bucketSlice: ?bun.String.Slice = null,
+    _sessionTokenSlice: ?bun.String.Slice = null,
+    _contentDispositionSlice: ?bun.String.Slice = null,
+    _contentTypeSlice: ?bun.String.Slice = null,
+    _contentEncodingSlice: ?bun.String.Slice = null,
 
     pub fn deinit(this: *@This()) void {
         if (this._accessKeyIdSlice) |slice| slice.deinit();
@@ -866,10 +830,10 @@ fn appendQueryParameter(query: *std.ArrayList(u8), allocator: std.mem.Allocator,
 
 const std = @import("std");
 const ACL = @import("./acl.zig").ACL;
-const MultiPartUploadOptions = @import("../runtime/webcore/s3/multipart_options.zig").MultiPartUploadOptions;
+const MultiPartUploadOptions = @import("./multipart_options.zig").MultiPartUploadOptions;
 const StorageClass = @import("./storage_class.zig").StorageClass;
+const signing_key_cache = @import("./SigningKeyCache.zig");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 const picohttp = bun.picohttp;
 const strings = bun.strings;

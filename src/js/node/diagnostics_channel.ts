@@ -303,7 +303,7 @@ class TracingChannel {
     return done;
   }
 
-  traceSync(fn, context = {}, thisArg, ...args) {
+  traceSync(fn, context: any = {}, thisArg?, ...args) {
     const { start, end, error } = this;
 
     return start.runStores(context, () => {
@@ -321,7 +321,7 @@ class TracingChannel {
     });
   }
 
-  tracePromise(fn, context = {}, thisArg, ...args) {
+  tracePromise(fn, context: any = {}, thisArg?, ...args) {
     const { start, end, asyncStart, asyncEnd, error } = this;
 
     function reject(err) {
@@ -359,7 +359,7 @@ class TracingChannel {
     });
   }
 
-  traceCallback(fn, position = -1, context = {}, thisArg, ...args) {
+  traceCallback(fn, position = -1, context: any = {}, thisArg?, ...args) {
     const { start, end, asyncStart, asyncEnd, error } = this;
 
     function wrappedCallback(err, res) {

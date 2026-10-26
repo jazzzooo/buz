@@ -1,21 +1,59 @@
 // Hardcoded module "node:path"
 const { validateString } = require("internal/validators");
+const StringPrototypeReplaceAll = String.prototype.replaceAll;
+const toNamespacedPathWindowsString = $bindgenFn("Path.schema.zig", "toNamespacedPathWindows");
 
-const [bindingPosix, bindingWin32] = $cpp("Path.cpp", "createNodePathBinding");
-const toNamespacedPathPosix = bindingPosix.toNamespacedPath.bind(bindingPosix);
-const toNamespacedPathWin32 = bindingWin32.toNamespacedPath.bind(bindingWin32);
+function formatPath(pathObject, separator) {
+  const isArray = $isJSArray(pathObject);
+  if (pathObject === null || typeof pathObject !== "object" || isArray) {
+    throw $bindgenFn("ErrorCode.schema.zig", "createFromMessage")(
+      "ERR_INVALID_ARG_TYPE",
+      `The "pathObject" property must be of type object, got ${isArray ? "array" : typeof pathObject}`,
+    );
+  }
+
+  let dir = pathObject.dir;
+  if (!dir) dir = pathObject.root;
+
+  let base = pathObject.base;
+  if (!base) {
+    const name = pathObject.name;
+    const nameString = name ? String(name) : "";
+    const extension = pathObject.ext;
+    let extensionString = "";
+    let prependDot = false;
+    if (extension) {
+      const first = extension[0];
+      prependDot = typeof first !== "string" || String(first) !== ".";
+      extensionString = String(extension);
+    }
+    base = `${nameString}${prependDot ? "." : ""}${extensionString}`;
+  }
+
+  if (!dir) return base;
+  const root = pathObject.root;
+  return `${String(dir)}${dir === root ? "" : separator}${String(base)}`;
+}
+
+function toNamespacedPathPosix(path) {
+  return path;
+}
+
+function toNamespacedPathWin32(path) {
+  return typeof path === "string" ? toNamespacedPathWindowsString(path) : path;
+}
 const posix = {
-  resolve: bindingPosix.resolve.bind(bindingPosix),
-  normalize: bindingPosix.normalize.bind(bindingPosix),
-  isAbsolute: bindingPosix.isAbsolute.bind(bindingPosix),
-  join: bindingPosix.join.bind(bindingPosix),
-  relative: bindingPosix.relative.bind(bindingPosix),
+  resolve: $bindgenFn("Path.schema.zig", "resolvePosix"),
+  normalize: $bindgenFn("Path.schema.zig", "normalizePosix"),
+  isAbsolute: $bindgenFn("Path.schema.zig", "isAbsolutePosix"),
+  join: $bindgenFn("Path.schema.zig", "joinPosix"),
+  relative: $bindgenFn("Path.schema.zig", "relativePosix"),
   toNamespacedPath: toNamespacedPathPosix,
-  dirname: bindingPosix.dirname.bind(bindingPosix),
-  basename: bindingPosix.basename.bind(bindingPosix),
-  extname: bindingPosix.extname.bind(bindingPosix),
-  format: bindingPosix.format.bind(bindingPosix),
-  parse: bindingPosix.parse.bind(bindingPosix),
+  dirname: $bindgenFn("Path.schema.zig", "dirnamePosix"),
+  basename: $bindgenFn("Path.schema.zig", "basenamePosix"),
+  extname: $bindgenFn("Path.schema.zig", "extnamePosix"),
+  format: pathObject => formatPath(pathObject, "/"),
+  parse: $bindgenFn("Path.schema.zig", "parsePosix"),
   sep: "/",
   delimiter: ":",
   win32: undefined as typeof win32,
@@ -23,17 +61,17 @@ const posix = {
   _makeLong: toNamespacedPathPosix,
 };
 const win32 = {
-  resolve: bindingWin32.resolve.bind(bindingWin32),
-  normalize: bindingWin32.normalize.bind(bindingWin32),
-  isAbsolute: bindingWin32.isAbsolute.bind(bindingWin32),
-  join: bindingWin32.join.bind(bindingWin32),
-  relative: bindingWin32.relative.bind(bindingWin32),
+  resolve: $bindgenFn("Path.schema.zig", "resolveWindows"),
+  normalize: $bindgenFn("Path.schema.zig", "normalizeWindows"),
+  isAbsolute: $bindgenFn("Path.schema.zig", "isAbsoluteWindows"),
+  join: $bindgenFn("Path.schema.zig", "joinWindows"),
+  relative: $bindgenFn("Path.schema.zig", "relativeWindows"),
   toNamespacedPath: toNamespacedPathWin32,
-  dirname: bindingWin32.dirname.bind(bindingWin32),
-  basename: bindingWin32.basename.bind(bindingWin32),
-  extname: bindingWin32.extname.bind(bindingWin32),
-  format: bindingWin32.format.bind(bindingWin32),
-  parse: bindingWin32.parse.bind(bindingWin32),
+  dirname: $bindgenFn("Path.schema.zig", "dirnameWindows"),
+  basename: $bindgenFn("Path.schema.zig", "basenameWindows"),
+  extname: $bindgenFn("Path.schema.zig", "extnameWindows"),
+  format: pathObject => formatPath(pathObject, "\\"),
+  parse: $bindgenFn("Path.schema.zig", "parseWindows"),
   sep: "\\",
   delimiter: ";",
   win32: undefined as typeof win32,
@@ -50,29 +88,17 @@ type Glob = import("bun").Glob;
 let prevGlob: Glob | undefined;
 let prevPattern: string | undefined;
 function matchesGlob(isWindows, path, pattern) {
-  let glob: Glob;
-
   validateString(path, "path");
-  if (isWindows) path = path.replaceAll("\\", "/");
-
-  if (prevGlob) {
-    $assert(prevPattern !== undefined);
-    if (prevPattern === pattern) {
-      glob = prevGlob;
-    } else {
-      validateString(pattern, "pattern");
-      if (isWindows) pattern = pattern.replaceAll("\\", "/");
-      glob = prevGlob = new Bun.Glob(pattern);
-      prevPattern = pattern;
-    }
-  } else {
-    validateString(pattern, "pattern");
-    if (isWindows) pattern = pattern.replaceAll("\\", "/");
-    glob = prevGlob = new Bun.Glob(pattern);
+  validateString(pattern, "pattern");
+  if (isWindows) {
+    path = StringPrototypeReplaceAll.$call(path, "\\", "/");
+    pattern = StringPrototypeReplaceAll.$call(pattern, "\\", "/");
+  }
+  if (!prevGlob || prevPattern !== pattern) {
+    prevGlob = new Bun.Glob(pattern);
     prevPattern = pattern;
   }
-
-  return glob.match(path);
+  return prevGlob.match(path);
 }
 
 posix.matchesGlob = matchesGlob.bind(null, false);

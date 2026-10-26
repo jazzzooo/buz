@@ -657,7 +657,7 @@ describe("cookie.serialize(name, value, options)", function () {
       expect(cookie.serialize("foo", "bar", { sameSite: false })).toEqual("foo=bar");
     });
 
-    it.failing("should set sameSite case insensitive", function () {
+    it("should set sameSite case insensitive", function () {
       expect(cookie.serialize("foo", "bar", { sameSite: "Lax" })).toEqual("foo=bar; SameSite=Lax");
     });
   });

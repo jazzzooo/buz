@@ -19,9 +19,6 @@ pub var experimental_http3_client_from_cli: bool = false;
 const MAX_REDIRECT_URL_LENGTH = 128 * 1024;
 
 pub var max_http_header_size: usize = 16 * 1024;
-comptime {
-    @export(&max_http_header_size, .{ .name = "BUN_DEFAULT_MAX_HTTP_HEADER_SIZE" });
-}
 
 /// Idle timeout for HTTP client sockets, in seconds. The timer is armed in
 /// `onOpen` (so it covers the TLS handshake) and re-armed on every read/write;
@@ -66,8 +63,7 @@ fn getTlsHostname(client: *const HTTPClient, allowProxyUrl: bool) []const u8 {
     // Prefer the explicit TLS server_name (e.g. from Node.js servername option)
     if (client.tls_props) |props| {
         if (props.get().server_name) |sn| {
-            const sn_slice = std.mem.sliceTo(sn, 0);
-            if (sn_slice.len > 0) return sn_slice;
+            if (sn.len > 0) return sn;
         }
     }
     // client.hostname comes from the Host header and may include ":port"
@@ -282,15 +278,20 @@ pub fn h3AltSvcEnabled() bool {
         bun.feature_flag.BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT.get();
 }
 
+fn canUseH3Transport(client: *const HTTPClient) bool {
+    if (client.http_proxy != null or client.unix_socket_path.length() > 0) return false;
+    if (client.tls_props) |tls| {
+        if (tls.get().requires_custom_request_ctx) return false;
+    }
+    return !client.signals.get(.cert_errors);
+}
+
 /// Whether this request shape is eligible to *use* a cached Alt-Svc h3
-/// alternative (HTTPS, no proxy/unix-socket, no sendfile, not pinned to a
-/// specific protocol). When true, `start_()` consults `H3.AltSvc.lookup`
-/// before opening TCP.
+/// alternative. When true, `start_()` consults `H3.AltSvc.lookup` before TCP.
 pub fn canTryH3AltSvc(client: *const HTTPClient) bool {
     if (client.flags.force_http1 or client.flags.force_http2) return false;
-    if (client.http_proxy != null) return false;
+    if (!client.canUseH3Transport()) return false;
     if (client.flags.is_preconnect_only) return false;
-    if (client.unix_socket_path.length() > 0) return false;
     if (client.state.original_request_body == .sendfile) return false;
     return h3AltSvcEnabled();
 }
@@ -392,9 +393,7 @@ pub fn onClose(
         return;
     }
     if (client.proxy_tunnel) |tunnel| {
-        client.proxy_tunnel = null;
         // always detach the socket from the tunnel onClose (timeout, connectError will call fail that will do the same)
-        tunnel.shutdown();
         tunnel.detachAndDeref();
     }
     const in_progress = client.state.stage != .done and client.state.stage != .fail and client.state.flags.is_redirect_pending == false;
@@ -451,9 +450,10 @@ pub fn onTimeout(
 }
 pub fn onConnectError(
     client: *HTTPClient,
+    failure: uws.ConnectFailure,
 ) void {
     log("onConnectError  {s}\n", .{client.url.href});
-    client.fail(error.ConnectionRefused);
+    client.fail(if (failure.isOutOfMemory()) error.OutOfMemory else error.ConnectionRefused);
 }
 
 const max_tls_record_size = 16 * 1024;
@@ -652,7 +652,8 @@ pub const Flags = packed struct(u32) {
     /// Set after the first H3 retry so a stale-session/GOAWAY race retries
     /// once on a fresh connection but never loops.
     h3_retried: bool = false,
-    _: u13 = 0,
+    response_read_paused: bool = false,
+    _: u12 = 0,
 };
 
 // TODO: reduce the size of this struct
@@ -663,6 +664,7 @@ header_buf: string,
 url: URL,
 connected_url: URL = URL{},
 allocator: std.mem.Allocator,
+javascript_semantics: JavaScriptSemantics,
 verbose: HTTPVerboseLevel = .none,
 remaining_redirect_count: i8 = default_redirect_count,
 allow_retry: bool = false,
@@ -710,7 +712,7 @@ pending_h2: ?*H2.PendingConnect = null,
 signals: Signals = .{},
 async_http_id: u32 = 0,
 hostname: ?[]u8 = null,
-unix_socket_path: jsc.ZigString.Slice = jsc.ZigString.Slice.empty,
+unix_socket_path: bun.String.Slice = bun.String.Slice.empty,
 
 pub fn deinit(this: *HTTPClient) void {
     if (this.redirect.len > 0) {
@@ -730,7 +732,6 @@ pub fn deinit(this: *HTTPClient) void {
         this.proxy_headers = null;
     }
     if (this.proxy_tunnel) |tunnel| {
-        this.proxy_tunnel = null;
         tunnel.detachAndDeref();
     }
     // The session detaches `h2` before any terminal callback, so this should
@@ -742,7 +743,7 @@ pub fn deinit(this: *HTTPClient) void {
     if (this.custom_ssl_ctx) |ctx| ctx.deref();
     this.custom_ssl_ctx = null;
     this.unix_socket_path.deinit();
-    this.unix_socket_path = jsc.ZigString.Slice.empty;
+    this.unix_socket_path = bun.String.Slice.empty;
 }
 
 pub fn isKeepAlivePossible(this: *HTTPClient) bool {
@@ -917,8 +918,6 @@ fn getUserAgentHeader() picohttp.Header {
 pub fn headerStr(this: *const HTTPClient, ptr: api.StringPointer) string {
     return this.header_buf[ptr.offset..][0..ptr.length];
 }
-
-pub const HeaderBuilder = @import("./HeaderBuilder.zig");
 
 pub fn buildRequest(this: *HTTPClient, body_len: usize) picohttp.Request {
     var header_count: usize = 0;
@@ -1117,7 +1116,7 @@ pub fn doRedirect(
     }
 
     this.unix_socket_path.deinit();
-    this.unix_socket_path = jsc.ZigString.Slice.empty;
+    this.unix_socket_path = bun.String.Slice.empty;
     // TODO: what we do with stream body?
     const request_body = if (this.state.flags.resend_request_body_on_redirect and this.state.original_request_body == .bytes)
         this.state.original_request_body.bytes
@@ -1139,8 +1138,6 @@ pub fn doRedirect(
     // original host. Close the tunnel on redirect; only pool the raw socket.
     if (this.proxy_tunnel) |tunnel| {
         log("close the tunnel in redirect", .{});
-        this.proxy_tunnel = null;
-        tunnel.shutdown();
         tunnel.detachAndDeref();
         NewHTTPContext(is_ssl).closeSocket(socket);
     } else if (this.state.request_stage == .done and this.isKeepAlivePossible() and !socket.isClosedOrHasError()) {
@@ -1184,7 +1181,6 @@ pub fn doRedirect(
     // also reset proxy to redirect
     this.flags.proxy_tunneling = false;
     if (this.proxy_tunnel) |tunnel| {
-        this.proxy_tunnel = null;
         tunnel.detachAndDeref();
     }
     this.flags.protocol = .http1_1;
@@ -1263,9 +1259,7 @@ fn start_(this: *HTTPClient, comptime is_ssl: bool) void {
         if (!this.flags.force_http3 and this.canTryH3AltSvc()) {
             if (H3.AltSvc.lookup(this.url.hostname, this.url.getPortAuto())) |alt_port| {
                 if (H3.ClientContext.getOrCreate(http_thread.io, http_thread.loop.loop)) |ctx| {
-                    if (!ctx.connect(this, this.url.hostname, alt_port)) {
-                        this.fail(error.ConnectionRefused);
-                    }
+                    ctx.connect(this, this.url.hostname, alt_port);
                     return;
                 }
                 // engine init failed: fall through to TCP
@@ -1278,7 +1272,7 @@ fn start_(this: *HTTPClient, comptime is_ssl: bool) void {
             this.fail(error.HTTP3Unsupported);
             return;
         }
-        if (this.http_proxy != null or this.unix_socket_path.length() > 0) {
+        if (!this.canUseH3Transport()) {
             this.fail(error.HTTP3Unsupported);
             return;
         }
@@ -1286,9 +1280,7 @@ fn start_(this: *HTTPClient, comptime is_ssl: bool) void {
             this.fail(error.HTTP3Unsupported);
             return;
         };
-        if (!ctx.connect(this, this.url.hostname, this.url.getPortAuto())) {
-            this.fail(error.ConnectionRefused);
-        }
+        ctx.connect(this, this.url.hostname, this.url.getPortAuto());
         return;
     }
 
@@ -1628,7 +1620,7 @@ pub fn onWritable(this: *HTTPClient, comptime is_first_call: bool, comptime is_s
     }
 
     if (this.proxy_tunnel) |proxy| {
-        proxy.onWritable(is_ssl, socket);
+        if (!proxy.onWritable(is_ssl, socket)) return;
     }
 
     switch (this.state.request_stage) {
@@ -1843,7 +1835,10 @@ pub fn closeAndFail(this: *HTTPClient, err: anyerror, comptime is_ssl: bool, soc
 fn startProxyHandshake(this: *HTTPClient, comptime is_ssl: bool, socket: NewHTTPContext(is_ssl).HTTPSocket, start_payload: []const u8) void {
     log("startProxyHandshake", .{});
     // if we have options we pass them (ca, reject_unauthorized, etc) otherwise use the default
-    const ssl_options = if (this.tls_props) |tls| tls.get().* else jsc.API.ServerConfig.SSLConfig.zero;
+    const ssl_options = if (this.tls_props) |tls|
+        tls.get().asUSocketsForClientVerification()
+    else
+        SSLConfig.zero.asUSocketsForClientVerification();
     ProxyTunnel.start(this, is_ssl, socket, ssl_options, start_payload);
 }
 
@@ -1950,6 +1945,22 @@ pub fn handleOnDataHeaders(
         break;
     }
     var response = this.state.pending_response.?;
+    if (this.flags.proxy_tunneling and this.proxy_tunnel == null) {
+        if (response.status_code >= 200 and response.status_code < 300) {
+            if (this.verbose != .none) printResponse(response);
+            this.state.pending_response = null;
+            // CONNECT ends at the headers. Keep any buffered TLS payload alive
+            // through the handshake without retaining it in the origin parser.
+            var connect_buffer = this.state.response_message_buffer;
+            this.state.response_message_buffer = .initEmpty(bun.default_allocator);
+            defer connect_buffer.deinit();
+            this.startProxyHandshake(is_ssl, socket, to_read);
+            return;
+        }
+
+        this.flags.proxy_tunneling = false;
+        this.flags.disable_keepalive = true;
+    }
     const should_continue = this.handleResponseMetadata(
         &response,
     ) catch |err| {
@@ -1980,12 +1991,6 @@ pub fn handleOnDataHeaders(
         // if is not we ignore the content_length
         this.state.content_length = 0;
         this.progressUpdate(is_ssl, ctx, socket);
-        return;
-    }
-
-    if (this.flags.proxy_tunneling and this.proxy_tunnel == null) {
-        // we are proxing we dont need to cloneMetadata yet
-        this.startProxyHandshake(is_ssl, socket, to_read);
         return;
     }
 
@@ -2167,8 +2172,6 @@ fn fail(this: *HTTPClient, err: anyerror) void {
     this.resolvePendingH2(.leader_failed);
 
     if (this.proxy_tunnel) |tunnel| {
-        this.proxy_tunnel = null;
-        tunnel.shutdown();
         // always detach the socket from the tunnel in case of fail
         tunnel.detachAndDeref();
     }
@@ -2257,6 +2260,8 @@ pub fn drainResponseBody(this: *HTTPClient, comptime is_ssl: bool, socket: NewHT
         return;
     }
 
+    if (this.flags.protocol == .http1_1) this.updateResponseReadState(is_ssl, socket);
+
     const body_out_str = this.state.body_out_str orelse return;
     if (body_out_str.list.items.len == 0) {
         // No update! Don't do anything.
@@ -2264,6 +2269,17 @@ pub fn drainResponseBody(this: *HTTPClient, comptime is_ssl: bool, socket: NewHT
     }
 
     this.sendProgressUpdateWithoutStageCheck(is_ssl, this.getSslCtx(is_ssl), socket);
+}
+
+fn updateResponseReadState(this: *HTTPClient, comptime is_ssl: bool, socket: NewHTTPContext(is_ssl).HTTPSocket) void {
+    const paused = this.signals.shouldPauseResponse();
+    if (paused == this.flags.response_read_paused) return;
+    this.flags.response_read_paused = paused;
+    if (paused) {
+        _ = socket.pauseStream();
+    } else {
+        _ = socket.resumeStream();
+    }
 }
 
 fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool, ctx: *NewHTTPContext(is_ssl), socket: NewHTTPContext(is_ssl).HTTPSocket) void {
@@ -2278,6 +2294,10 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
     const callback = this.result_callback;
 
     if (is_done) {
+        if (this.flags.response_read_paused) {
+            this.flags.response_read_paused = false;
+            _ = socket.resumeStream();
+        }
         this.unregisterAbortTracker();
         // is_done is response-driven. A server can reply early (HTTP 413)
         // with keep-alive while request_stage is still .proxy_body or the
@@ -2301,8 +2321,7 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
         if (this.isKeepAlivePossible() and !socket.isClosedOrHasError() and tunnel_poolable) {
             log("release socket", .{});
             const tunnel = this.proxy_tunnel;
-            this.proxy_tunnel = null;
-            if (tunnel) |t| t.detachOwner(this);
+            if (tunnel) |t| t.detachOwner();
             // target_hostname = url.hostname (the CONNECT TCP target at
             // writeProxyConnect line 346). The SNI override (hostname) is
             // hashed into proxyAuthHash separately — both must match, but
@@ -2322,8 +2341,6 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
         } else {
             if (this.proxy_tunnel) |tunnel| {
                 log("close the tunnel", .{});
-                this.proxy_tunnel = null;
-                tunnel.shutdown();
                 tunnel.detachAndDeref();
             }
             NewHTTPContext(is_ssl).closeSocket(socket);
@@ -2340,6 +2357,8 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
 
     result.body.?.* = body;
     callback.run(@fieldParentPtr("client", this), result);
+
+    if (!is_done) this.updateResponseReadState(is_ssl, socket);
 
     if (comptime print_every > 0) {
         print_every_i += 1;
@@ -2386,7 +2405,7 @@ fn doRedirectMultiplexed(this: *HTTPClient) void {
         this.flags.is_streaming_request_body = false;
     }
     this.unix_socket_path.deinit();
-    this.unix_socket_path = jsc.ZigString.Slice.empty;
+    this.unix_socket_path = bun.String.Slice.empty;
     const request_body = if (this.state.flags.resend_request_body_on_redirect and this.state.original_request_body == .bytes)
         this.state.original_request_body.bytes
     else
@@ -2461,7 +2480,7 @@ pub const HTTPClientResult = struct {
     body_size: BodySize = .unknown,
     certificate_info: ?CertificateInfo = null,
 
-    pub fn abortReason(this: *const HTTPClientResult) ?jsc.CommonAbortReason {
+    pub fn abortReason(this: *const HTTPClientResult) ?CommonAbortReason {
         if (this.isTimeout()) {
             return .Timeout;
         }
@@ -2492,10 +2511,11 @@ pub const HTTPClientResult = struct {
     }
 
     pub const Callback = struct {
-        ctx: *anyopaque,
+        pub const Context = bun.bindgen.NativeCallbackContext(.vm);
+        ctx: Context,
         function: Function,
 
-        pub const Function = *const fn (*anyopaque, *AsyncHTTP, HTTPClientResult) void;
+        pub const Function = *const fn (Context, *AsyncHTTP, HTTPClientResult) void;
 
         pub fn run(self: Callback, async_http: *AsyncHTTP, result: HTTPClientResult) void {
             self.function(self.ctx, async_http, result);
@@ -2505,13 +2525,13 @@ pub const HTTPClientResult = struct {
             return struct {
                 pub fn init(this: Type) Callback {
                     return Callback{
-                        .ctx = this,
+                        .ctx = .init(this),
                         .function = @This().wrapped_callback,
                     };
                 }
 
-                pub fn wrapped_callback(ptr: *anyopaque, async_http: *AsyncHTTP, result: HTTPClientResult) void {
-                    const casted = @as(Type, @ptrCast(@alignCast(ptr)));
+                pub fn wrapped_callback(ptr: Context, async_http: *AsyncHTTP, result: HTTPClientResult) void {
+                    const casted = ptr.get(Type);
                     @call(bun.callmod_inline, callback, .{ casted, async_http, result });
                 }
             };
@@ -2953,17 +2973,6 @@ pub fn handleResponseMetadata(
         }
     }
 
-    if (this.flags.proxy_tunneling and this.proxy_tunnel == null) {
-        if (response.status_code == 200) {
-            // signal to continue the proxing
-            return ShouldContinue.continue_streaming;
-        }
-
-        // proxy denied connection so return proxy result (407, 403 etc)
-        this.flags.proxy_tunneling = false;
-        this.flags.disable_keepalive = true;
-    }
-
     const status_code = response.status_code;
 
     if (status_code == 407) {
@@ -3033,10 +3042,12 @@ pub fn handleResponseMetadata(
                             if (comptime Environment.allow_assert)
                                 assert(string_builder.cap == string_builder.len);
 
-                            const normalized_url = jsc.URL.hrefFromString(bun.String.fromBytes(string_builder.allocatedSlice()));
+                            const redirect_url = bun.String.cloneUTF8(string_builder.allocatedSlice());
+                            defer redirect_url.deref();
+                            const normalized_url = try this.javascript_semantics.normalizeURL(redirect_url);
                             defer normalized_url.deref();
                             if (normalized_url.tag == .Dead) {
-                                // URL__getHref failed, dont pass dead tagged string to toOwnedSlice.
+                                // A dead string cannot be converted with toOwnedSlice.
                                 return error.RedirectURLInvalid;
                             }
                             const normalized_url_str = try normalized_url.toOwnedSlice(bun.default_allocator);
@@ -3082,7 +3093,9 @@ pub fn handleResponseMetadata(
                             if (comptime Environment.allow_assert)
                                 assert(string_builder.cap == string_builder.len);
 
-                            const normalized_url = jsc.URL.hrefFromString(bun.String.fromBytes(string_builder.allocatedSlice()));
+                            const redirect_url = bun.String.cloneUTF8(string_builder.allocatedSlice());
+                            defer redirect_url.deref();
+                            const normalized_url = try this.javascript_semantics.normalizeURL(redirect_url);
                             defer normalized_url.deref();
                             const normalized_url_str = try normalized_url.toOwnedSlice(bun.default_allocator);
 
@@ -3095,19 +3108,18 @@ pub fn handleResponseMetadata(
                         } else {
                             const original_url = this.url;
 
-                            const new_url_ = bun.jsc.URL.join(
-                                bun.String.fromBytes(original_url.href),
-                                bun.String.fromBytes(location),
-                            );
+                            const base_url = bun.String.cloneUTF8(original_url.href);
+                            defer base_url.deref();
+                            const location_url = bun.String.cloneUTF8(location);
+                            defer location_url.deref();
+                            const new_url_ = try this.javascript_semantics.joinURL(base_url, location_url);
                             defer new_url_.deref();
 
                             if (new_url_.isEmpty()) {
                                 return error.InvalidRedirectURL;
                             }
 
-                            const new_url = new_url_.toOwnedSlice(bun.default_allocator) catch {
-                                return error.RedirectURLTooLong;
-                            };
+                            const new_url = try new_url_.toOwnedSlice(bun.default_allocator);
                             this.url = URL.parse(new_url);
                             is_same_origin = strings.eqlCaseInsensitiveASCII(strings.withoutTrailingSlash(this.url.origin), strings.withoutTrailingSlash(original_url.origin), true);
                             bun.debugAssert(this.prev_redirect.len == 0);
@@ -3248,6 +3260,7 @@ pub const ThreadlocalAsyncHTTP = struct {
 };
 
 pub const ETag = @import("../http_types/ETag.zig");
+pub const MethodModule = @import("../http_types/Method.zig");
 pub const Method = @import("../http_types/Method.zig").Method;
 pub const Headers = @import("./Headers.zig");
 pub const MimeType = @import("../http_types/MimeType.zig");
@@ -3277,6 +3290,7 @@ const HTTPCertError = @import("./HTTPCertError.zig");
 const ProxyTunnel = @import("./ProxyTunnel.zig");
 const std = @import("std");
 const URL = @import("../url/url.zig").URL;
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
@@ -3287,14 +3301,14 @@ const Output = bun.Output;
 const Progress = bun.Progress;
 const StringBuilder = bun.StringBuilder;
 const assert = bun.assert;
-const jsc = bun.jsc;
 const picohttp = bun.picohttp;
 const strings = bun.strings;
 const uws = bun.uws;
 const Arena = bun.allocators.MimallocArena;
 const BoringSSL = bun.BoringSSL.c;
 const api = bun.schema.api;
-const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
+const SSLConfig = @import("../runtime/socket/SSLConfig.zig");
+const CommonAbortReason = @import("../http_types/CommonAbortReason.zig").CommonAbortReason;
 
 const posix = std.posix;
 const SOCK = posix.SOCK;

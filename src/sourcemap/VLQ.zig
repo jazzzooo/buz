@@ -4,8 +4,7 @@
 
 const VLQ = @This();
 
-/// Encoding min and max ints are "//////D" and "+/////D", respectively.
-/// These are 7 bytes long. This makes the `VLQ` struct 8 bytes.
+/// The maximum encoding length is seven bytes, making `VLQ` eight bytes.
 bytes: [vlq_max_in_bytes]u8,
 /// This is a u8 and not a u4 because non^2 integers are really slow in Zig.
 len: u8 = 0,
@@ -21,6 +20,7 @@ pub fn writeTo(self: VLQ, writer: anytype) !void {
 pub const zero = vlq_lookup_table[0];
 
 const vlq_lookup_table: [256]VLQ = brk: {
+    @setEvalBranchQuota(10_000);
     var entries: [256]VLQ = undefined;
     var i: usize = 0;
     var j: i32 = 0;
@@ -56,7 +56,10 @@ fn encodeSlowPath(value: i32) VLQ {
     var len: u8 = 0;
     var bytes: [vlq_max_in_bytes]u8 = undefined;
 
-    var vlq: u32 = if (value >= 0)
+    // ECMA-426 uses the zero-magnitude negative encoding for i32::MIN.
+    var vlq: u32 = if (value == std.math.minInt(i32))
+        1
+    else if (value >= 0)
         @as(u32, @bitCast(value << 1))
     else
         @as(u32, @bitCast((-value << 1) | 1));
@@ -91,9 +94,9 @@ pub const VLQResult = struct {
 const base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 // base64 stores values up to 7 bits
-const base64_lut: [std.math.maxInt(u7)]u8 = brk: {
+const base64_lut: [128]u8 = brk: {
     @setEvalBranchQuota(9999);
-    var bytes: [std.math.maxInt(u7)]u8 = @splat(std.math.maxInt(u7));
+    var bytes: [128]u8 = @splat(std.math.maxInt(u7));
 
     for (base64, 0..) |c, i| {
         bytes[c] = i;
@@ -103,65 +106,59 @@ const base64_lut: [std.math.maxInt(u7)]u8 = brk: {
 };
 
 pub fn decode(encoded: []const u8, start: usize) VLQResult {
-    var shift: u8 = 0;
+    if (start >= encoded.len) return .{};
+    var shift: u6 = 0;
     var vlq: u32 = 0;
-
-    // hint to the compiler what the maximum value is
-    const encoded_ = encoded[start..][0..@min(encoded.len - start, comptime (vlq_max_in_bytes + 1))];
-
-    // inlining helps for the 1 or 2 byte case, hurts a little for larger
-    inline for (0..vlq_max_in_bytes + 1) |i| {
-        const index = @as(u32, base64_lut[@as(u7, @truncate(encoded_[i]))]);
-
-        // decode a byte
-        vlq |= (index & 31) << @as(u5, @truncate(shift));
-        shift += 5;
-
-        // Stop if there's no continuation bit
-        if ((index & 32) == 0) {
+    for (encoded[start..], start..) |byte, position| {
+        if (byte >= base64_lut.len) return .{};
+        const digit = base64_lut[byte];
+        if (digit == std.math.maxInt(u7)) return .{};
+        const payload: u32 = digit & 31;
+        if (shift > 30) {
+            if (payload != 0) return .{};
+        } else {
+            if (shift == 30 and payload > 3) return .{};
+            vlq |= payload << @as(u5, @intCast(shift));
+        }
+        if (digit & 32 == 0) {
             return VLQResult{
-                .start = start + comptime (i + 1),
-                .value = if ((vlq & 1) == 0)
+                .start = position + 1,
+                .value = if (vlq == 1)
+                    std.math.minInt(i32)
+                else if ((vlq & 1) == 0)
                     @as(i32, @intCast(vlq >> 1))
                 else
                     -@as(i32, @intCast((vlq >> 1))),
             };
         }
+        shift = @min(shift + 5, 35);
     }
-
-    return VLQResult{ .start = start + encoded_.len, .value = 0 };
+    return .{};
 }
 
 pub fn decodeAssumeValid(encoded: []const u8, start: usize) VLQResult {
-    var shift: u8 = 0;
-    var vlq: u32 = 0;
+    const result = decode(encoded, start);
+    bun.assert(result.start > start);
+    return result;
+}
 
-    // hint to the compiler what the maximum value is
-    const encoded_ = encoded[start..][0..@min(encoded.len - start, comptime (vlq_max_in_bytes + 1))];
-
-    // inlining helps for the 1 or 2 byte case, hurts a little for larger
-    inline for (0..vlq_max_in_bytes + 1) |i| {
-        bun.assert(encoded_[i] < std.math.maxInt(u7)); // invalid base64 character
-        const index = @as(u32, base64_lut[@as(u7, @truncate(encoded_[i]))]);
-        bun.assert(index != std.math.maxInt(u7)); // invalid base64 character
-
-        // decode a byte
-        vlq |= (index & 31) << @as(u5, @truncate(shift));
-        shift += 5;
-
-        // Stop if there's no continuation bit
-        if ((index & 32) == 0) {
-            return VLQResult{
-                .start = start + comptime (i + 1),
-                .value = if ((vlq & 1) == 0)
-                    @as(i32, @intCast(vlq >> 1))
-                else
-                    -@as(i32, @intCast((vlq >> 1))),
-            };
-        }
+test "VLQ covers signed boundaries and rejects malformed input" {
+    for ([_]i32{ std.math.minInt(i32), -2147483647, -256, -1, 0, 1, 255, 256, std.math.maxInt(i32) }) |value| {
+        const encoded = encode(value);
+        const decoded = decode(encoded.slice(), 0);
+        try std.testing.expectEqual(value, decoded.value);
+        try std.testing.expectEqual(@as(usize, encoded.len), decoded.start);
+        try std.testing.expectEqual(value, decodeAssumeValid(encoded.slice(), 0).value);
     }
-
-    return .{ .start = start + encoded_.len, .value = 0 };
+    const minimum = encode(std.math.minInt(i32));
+    try std.testing.expectEqualStrings("B", minimum.slice());
+    for ([_][]const u8{ "", "?", "\x7f", "\xc1", "g", "gggggg", "//////E", "gggggggB" }) |invalid| {
+        try std.testing.expectEqual(@as(usize, 0), decode(invalid, 0).start);
+    }
+    try std.testing.expectEqual(@as(usize, 0), decode("A", 2).start);
+    try std.testing.expectEqual(@as(i32, 1), decode("!C?", 1).value);
+    try std.testing.expectEqual(@as(usize, 2), decode("!C?", 1).start);
+    try std.testing.expectEqual(@as(usize, 9), decode("ggggggggA", 0).start);
 }
 
 const bun = @import("bun");

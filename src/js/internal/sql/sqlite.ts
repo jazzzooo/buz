@@ -1,14 +1,19 @@
 import type * as BunSQLiteModule from "bun:sqlite";
-import type { BaseQueryHandle, Query, SQLQueryResultMode } from "./query";
-import type { ArrayType, DatabaseAdapter, OnConnected, SQLArrayParameter, SQLHelper, SQLResultArray } from "./shared";
+import type { BaseQueryHandle } from "./query";
+import type { ArrayType, DatabaseAdapter, OnConnected, SQLArrayParameter } from "./shared";
 
-const { SQLHelper, SQLResultArray, buildDefinedColumnsAndQuery } = require("internal/sql/shared");
+const { SQLHelper, SQLResultArray, buildDefinedColumnsAndQuery } = require("internal/sql/shared") as (typeof import("./shared"))["default"];
 const {
   Query,
   SQLQueryResultMode,
   symbols: { _strings, _values },
-} = require("internal/sql/query");
+} = require("internal/sql/query") as (typeof import("./query"))["default"];
 const { SQLiteError } = require("internal/sql/errors");
+
+type Query<T, Handle extends BaseQueryHandle<any>> = import("./query").Query<T, Handle>;
+type SQLQueryResultMode = import("./query").SQLQueryResultMode;
+type SQLHelper<T = any> = import("./shared").SQLHelper<T>;
+type SQLResultArray<T = any> = import("./shared").SQLResultArray<T>;
 
 let lazySQLiteModule: typeof BunSQLiteModule;
 function getSQLiteModule() {
@@ -259,7 +264,7 @@ class SQLiteQueryHandle implements BaseQueryHandle<BunSQLiteModule.Database> {
         query.resolve(sqlResult);
       } else {
         // For INSERT/UPDATE/DELETE/CREATE etc., use db.run() which handles multiple statements natively
-        const changes = db.run.$apply(db, [sql].concat(values));
+        const changes = db.run.$apply(db, [sql, ...values] as [string, ...unknown[]]);
         const sqlResult = new SQLResultArray();
 
         sqlResult.command = commandToString(command, parsedInfo.lastToken);
@@ -542,7 +547,7 @@ class SQLiteAdapter implements DatabaseAdapter<BunSQLiteModule.Database, BunSQLi
                   continue;
                 }
                 // SQLite uses ? for placeholders
-                query += `${this.escapeIdentifier(column)} = ?${i < lastColumnIndex ? ", " : ""}`;
+                query += `${this.escapeIdentifier(String(column))} = ?${i < lastColumnIndex ? ", " : ""}`;
                 if (typeof columnValue === "undefined") {
                   binding_values.push(null);
                 } else {
@@ -716,6 +721,8 @@ class SQLiteAdapter implements DatabaseAdapter<BunSQLiteModule.Database, BunSQLi
 
 export default {
   SQLiteAdapter,
+  // @ts-expect-error we're exporting a const enum which works in our builtins
+  // generator but not in typescript officially
   SQLCommand,
   commandToString,
   parseSQLQuery,

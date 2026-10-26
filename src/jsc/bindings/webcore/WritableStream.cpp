@@ -27,36 +27,8 @@
 #include "WritableStream.h"
 
 #include "JSWritableStream.h"
-#include "JSWritableStreamSink.h"
 
 namespace WebCore {
-
-ExceptionOr<Ref<WritableStream>> WritableStream::create(JSC::JSGlobalObject& globalObject, std::optional<JSC::Strong<JSC::JSObject>>&& underlyingSink, std::optional<JSC::Strong<JSC::JSObject>>&& strategy)
-{
-    JSC::JSValue underlyingSinkValue = JSC::jsUndefined();
-    if (underlyingSink)
-        underlyingSinkValue = underlyingSink->get();
-
-    JSC::JSValue strategyValue = JSC::jsUndefined();
-    if (strategy)
-        strategyValue = strategy->get();
-
-    return create(globalObject, underlyingSinkValue, strategyValue);
-}
-
-ExceptionOr<Ref<WritableStream>> WritableStream::create(JSC::JSGlobalObject& globalObject, JSC::JSValue underlyingSink, JSC::JSValue strategy)
-{
-    auto result = InternalWritableStream::createFromUnderlyingSink(*uncheckedDowncast<JSDOMGlobalObject>(&globalObject), underlyingSink, strategy);
-    if (result.hasException())
-        return result.releaseException();
-
-    return adoptRef(*new WritableStream(result.releaseReturnValue()));
-}
-
-ExceptionOr<Ref<WritableStream>> WritableStream::create(JSDOMGlobalObject& globalObject, Ref<WritableStreamSink>&& sink)
-{
-    return create(globalObject, toJSNewlyCreated(&globalObject, &globalObject, WTF::move(sink)), JSC::jsUndefined());
-}
 
 Ref<WritableStream> WritableStream::create(Ref<InternalWritableStream>&& internalWritableStream)
 {
@@ -66,21 +38,6 @@ Ref<WritableStream> WritableStream::create(Ref<InternalWritableStream>&& interna
 WritableStream::WritableStream(Ref<InternalWritableStream>&& internalWritableStream)
     : m_internalWritableStream(WTF::move(internalWritableStream))
 {
-}
-
-JSC::JSValue JSWritableStream::abort(JSC::JSGlobalObject& globalObject, JSC::CallFrame& callFrame)
-{
-    return wrapped().internalWritableStream().abort(globalObject, callFrame.argument(0));
-}
-
-JSC::JSValue JSWritableStream::close(JSC::JSGlobalObject& globalObject, JSC::CallFrame&)
-{
-    return wrapped().internalWritableStream().close(globalObject);
-}
-
-JSC::JSValue JSWritableStream::getWriter(JSC::JSGlobalObject& globalObject, JSC::CallFrame&)
-{
-    return wrapped().internalWritableStream().getWriter(globalObject);
 }
 
 } // namespace WebCore

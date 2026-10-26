@@ -140,6 +140,10 @@ struct us_poll_t;
 struct us_udp_socket_t;
 struct us_udp_packet_buffer_t;
 
+/* Completion borrows the connecting socket through DNS queue drainage. */
+void us_internal_dns_callback(struct us_connecting_socket_t *socket);
+void us_internal_dns_callback_threadsafe(struct us_connecting_socket_t *socket);
+
 /* BoringSSL/OpenSSL forward decls so the API can be typed without dragging in
  * the OpenSSL headers. These match openssl/base.h's `typedef struct ssl_ctx_st
  * SSL_CTX` / `typedef struct ssl_st SSL`. */
@@ -187,11 +191,8 @@ struct us_udp_packet_buffer_t *us_create_udp_packet_buffer();
 /* Creates a (heavy-weight) UDP socket with a user space ring buffer. Again, this one is heavy weight and
  * shoud be reused. One entire QUIC server can be implemented using only one single UDP socket so weight
  * is not a concern as is the case for TCP sockets which are 1-to-1 with TCP connections. */
-//struct us_udp_socket_t *us_create_udp_socket(us_loop_r loop, void (*read_cb)(struct us_udp_socket_t *), unsigned short port);
-
-//struct us_udp_socket_t *us_create_udp_socket(us_loop_r loop, void (*data_cb)(struct us_udp_socket_t *, struct us_udp_packet_buffer_t *, int), void (*drain_cb)(struct us_udp_socket_t *), char *host, unsigned short port);
-
-struct us_udp_socket_t *us_create_udp_socket(us_loop_r loop, void (*data_cb)(struct us_udp_socket_t *, void *, int), void (*drain_cb)(struct us_udp_socket_t *), void (*close_cb)(struct us_udp_socket_t *), void (*recv_error_cb)(struct us_udp_socket_t *, int), const char *host, unsigned short port, int flags, int *err, void *user);
+struct us_udp_error_t;
+struct us_udp_socket_t *us_create_udp_socket(us_loop_r loop, void (*data_cb)(struct us_udp_socket_t *, void *, int), void (*drain_cb)(struct us_udp_socket_t *), void (*close_cb)(struct us_udp_socket_t *), void (*recv_error_cb)(struct us_udp_socket_t *, int), const char *host, unsigned short port, int flags, struct us_udp_error_t *err, void *user);
 
 void us_udp_socket_close(struct us_udp_socket_t *s);
 
@@ -202,24 +203,6 @@ void *us_udp_socket_user(struct us_udp_socket_t *s);
 
 /* Binds the UDP socket to an interface and port */
 int us_udp_socket_bind(struct us_udp_socket_t *s, const char *hostname, unsigned int port);
-
-/* Public interfaces for timers */
-
-/* Create a new high precision, low performance timer. May fail and return null */
-struct us_timer_t *us_create_timer(us_loop_r loop, int fallthrough, unsigned int ext_size);
-
-/* Returns user data extension for this timer */
-void *us_timer_ext(struct us_timer_t *timer);
-
-/* */
-void us_timer_close(struct us_timer_t *timer, int fallthrough);
-
-/* Arm a timer with a delay from now and eventually a repeat delay.
- * Specify 0 as repeat delay to disable repeating. Specify both 0 to disarm. */
-void us_timer_set(struct us_timer_t *timer, void (*cb)(struct us_timer_t *t), int ms, int repeat_ms);
-
-/* Returns the loop for this timer */
-struct us_loop_t *us_timer_loop(struct us_timer_t *t);
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Socket groups & dispatch
@@ -245,8 +228,9 @@ struct us_bun_verify_error_t {
     const char* reason;
 };
 
-/* Immutable callback table. ~20 instances total (one per kind), all static
- * const / .rodata. Nullable entries are skipped by dispatch. */
+/* The callback table and its owner outlive every socket in the group.
+ * on_fd takes ownership of its descriptor; an absent callback closes it. */
+struct us_connect_error_t;
 struct us_socket_vtable_t {
     struct us_socket_t *(*on_open)(us_socket_r, int is_client, char *ip, int ip_length);
     struct us_socket_t *(*on_data)(us_socket_r, char *data, int length);
@@ -256,9 +240,15 @@ struct us_socket_vtable_t {
     struct us_socket_t *(*on_timeout)(us_socket_r);
     struct us_socket_t *(*on_long_timeout)(us_socket_r);
     struct us_socket_t *(*on_end)(us_socket_r);
-    struct us_socket_t *(*on_connect_error)(us_socket_r, int code);
-    struct us_connecting_socket_t *(*on_connecting_error)(struct us_connecting_socket_t *, int code);
+    struct us_socket_t *(*on_connect_error)(us_socket_r, const struct us_connect_error_t *error);
+    struct us_connecting_socket_t *(*on_connecting_error)(struct us_connecting_socket_t *, const struct us_connect_error_t *error);
     void (*on_handshake)(us_socket_r, int success, struct us_bun_verify_error_t, void *custom_data);
+    struct us_socket_t *(*on_ssl_raw_data)(us_socket_r, char *data, int length);
+    void (*on_connecting_timeout)(struct us_connecting_socket_t *);
+    void (*on_connecting_long_timeout)(struct us_connecting_socket_t *);
+    /* Bulk close pins owners whose last socket can release their group. */
+    void (*retain_group)(struct us_socket_group_t *);
+    void (*release_group)(struct us_socket_group_t *);
 };
 
 /* Mutable list-head + sweep state. Zero-initialise then us_socket_group_init().
@@ -271,20 +261,16 @@ struct us_socket_group_t {
     struct us_connecting_socket_t *head_connecting_sockets;
     struct us_listen_socket_t *head_listen_sockets;
     struct us_socket_t *iterator;
+    struct us_connecting_socket_t *connecting_iterator;
     struct us_socket_group_t *prev, *next;
     uint32_t global_tick;
-    /* Sockets currently parked in loop->data.low_prio_head with s->group == this.
-     * They are NOT in head_sockets while queued, so close_all/deinit must
-     * account for them separately. */
-    uint16_t low_prio_count;
     unsigned char timestamp;
     unsigned char long_timestamp;
     unsigned char linked;
 };
 
-/* Initialise an embedded group. Does NOT link into the loop — that happens
- * lazily on first socket add. Idempotent. vtable/ext may be NULL (Zig kinds
- * use neither). */
+/* Initialise a zeroed, empty group. The loop links it on first socket add.
+ * vtable is required; ext may be NULL. */
 void us_socket_group_init(us_socket_group_r group, us_loop_r loop,
     const struct us_socket_vtable_t *vtable, void *ext) __attribute__((nonnull(1, 2)));
 
@@ -331,19 +317,55 @@ void us_socket_start_tls_handshake(us_socket_r s) nonnull_fn_decl;
  * The listener owns: an embedded group for accepted sockets, the SSL_CTX
  * (borrowed ref, optional), the SNI tree (optional), and the kind to stamp on
  * accepted sockets. */
+struct us_listen_error_t;
 struct us_listen_socket_t *us_socket_group_listen(us_socket_group_r group,
     unsigned char kind, struct ssl_ctx_st *ssl_ctx,
-    const char *host, int port, int options, int socket_ext_size, int *error)
+    const char *host, int port, int options, int socket_ext_size, struct us_listen_error_t *error)
     __attribute__((nonnull(1, 8)));  /* ssl_ctx, host nullable */
 struct us_listen_socket_t *us_socket_group_listen_unix(us_socket_group_r group,
     unsigned char kind, struct ssl_ctx_st *ssl_ctx,
-    const char *path, size_t pathlen, int options, int socket_ext_size, int *error)
+    const char *path, size_t pathlen, int options, int socket_ext_size, struct us_listen_error_t *error)
     __attribute__((nonnull(1, 4, 8)));  /* ssl_ctx nullable */
 void us_listen_socket_close(struct us_listen_socket_t *ls) nonnull_fn_decl;
 
 /* SNI: tree hangs off the listen socket. ssl_ctx is up_ref'd; user is opaque
  * (uWS stores a per-domain HttpRouter*). user may be NULL. */
+enum us_server_name_error_t {
+    US_SERVER_NAME_OK = 0,
+    US_SERVER_NAME_DUPLICATE = 1,
+    US_SERVER_NAME_OUT_OF_MEMORY = 2,
+    US_SERVER_NAME_INVALID = 3,
+};
+enum us_poll_error_domain_t {
+    US_POLL_ERROR_NONE = 0,
+    US_POLL_ERROR_SYSTEM,
+    US_POLL_ERROR_LIBUV,
+    US_POLL_ERROR_MACH,
+};
+struct us_poll_error_t {
+    enum us_poll_error_domain_t domain;
+    int code;
+};
+struct us_udp_error_t {
+    int system_error;
+    int address_error;
+    struct us_poll_error_t poll_error;
+};
+struct us_connect_error_t {
+    int system_error;
+    int dns_error;
+    struct us_poll_error_t poll_error;
+};
+struct us_listen_error_t {
+    int system_error;
+    enum us_server_name_error_t server_name_error;
+    struct us_poll_error_t poll_error;
+    int socket_bound;
+};
 int us_listen_socket_add_server_name(struct us_listen_socket_t *ls,
+    const char *hostname_pattern, struct ssl_ctx_st *ssl_ctx, void *user)
+    __attribute__((nonnull(1, 2, 3)));
+int us_listen_socket_replace_server_name(struct us_listen_socket_t *ls,
     const char *hostname_pattern, struct ssl_ctx_st *ssl_ctx, void *user)
     __attribute__((nonnull(1, 2, 3)));
 void us_listen_socket_remove_server_name(struct us_listen_socket_t *ls,
@@ -360,12 +382,12 @@ void *us_socket_server_name_userdata(us_socket_r s);
  * ssl_ctx may be NULL for plain TCP. */
 void *us_socket_group_connect(us_socket_group_r group, unsigned char kind,
     struct ssl_ctx_st *ssl_ctx, const char *host, int port, int options,
-    int socket_ext_size, int *is_connecting)
-    __attribute__((nonnull(1, 4, 8)));  /* ssl_ctx nullable */
+    int socket_ext_size, int *has_dns_resolved, struct us_connect_error_t *error)
+    __attribute__((nonnull(1, 4, 8, 9)));  /* ssl_ctx nullable */
 struct us_socket_t *us_socket_group_connect_unix(us_socket_group_r group,
     unsigned char kind, struct ssl_ctx_st *ssl_ctx,
-    const char *server_path, size_t pathlen, int options, int socket_ext_size)
-    __attribute__((nonnull(1, 4)));  /* ssl_ctx nullable */
+    const char *server_path, size_t pathlen, int options, int socket_ext_size, struct us_connect_error_t *error)
+    __attribute__((nonnull(1, 4, 8)));  /* ssl_ctx nullable */
 
 int us_socket_is_established(us_socket_r s) nonnull_fn_decl;
 void us_connecting_socket_free(struct us_connecting_socket_t *c) nonnull_fn_decl;
@@ -376,7 +398,7 @@ void us_connecting_socket_shutdown(struct us_connecting_socket_t *c) nonnull_fn_
 void us_connecting_socket_shutdown_read(struct us_connecting_socket_t *c) nonnull_fn_decl;
 int us_connecting_socket_is_shut_down(struct us_connecting_socket_t *c) nonnull_fn_decl;
 int us_connecting_socket_is_closed(struct us_connecting_socket_t *c) nonnull_fn_decl;
-int us_connecting_socket_get_error(struct us_connecting_socket_t *c) nonnull_fn_decl;
+void us_connecting_socket_get_failure(struct us_connecting_socket_t *c, struct us_connect_error_t *error) nonnull_fn_decl;
 void *us_connecting_socket_get_native_handle(struct us_connecting_socket_t *c) nonnull_fn_decl;
 struct us_loop_t *us_connecting_socket_get_loop(struct us_connecting_socket_t *c) nonnull_fn_decl;
 struct us_socket_group_t *us_connecting_socket_group(struct us_connecting_socket_t *c) nonnull_fn_decl;
@@ -416,11 +438,12 @@ enum create_bun_socket_error_t {
     CREATE_BUN_SOCKET_ERROR_INVALID_CA_FILE,
     CREATE_BUN_SOCKET_ERROR_INVALID_CA,
     CREATE_BUN_SOCKET_ERROR_INVALID_CIPHERS,
+    CREATE_BUN_SOCKET_ERROR_OUT_OF_MEMORY,
 };
 
 /* Build an SSL_CTX from options. Returns the BoringSSL SSL_CTX*; caller owns
  * one reference and releases with SSL_CTX_free() (no wrapper struct — the
- * SSL_CTX's own refcount is the refcount). The strdup'd passphrase is freed
+ * SSL_CTX's own refcount is the refcount). The owned passphrase is freed
  * inside this call once private-key load completes, so a plain SSL_CTX_free()
  * is sufficient on every path.
  *
@@ -443,7 +466,7 @@ long us_ssl_ctx_live_count(void);
 
 /* Returns a new event loop with user data extension */
 struct us_loop_t *us_create_loop(void *hint, void (*wakeup_cb)(us_loop_r loop),
-    void (*pre_cb)(us_loop_r loop), void (*post_cb)(us_loop_r loop), unsigned int ext_size);
+    void (*pre_cb)(us_loop_r loop), void (*post_cb)(us_loop_r loop), unsigned int ext_size, struct us_poll_error_t *failure);
 
 /* Frees the loop immediately */
 void us_loop_free(us_loop_r loop) nonnull_fn_decl;
@@ -459,9 +482,6 @@ void us_loop_run(us_loop_r loop) nonnull_fn_decl;
  * This is the only fully thread-safe function and serves as the basis for thread safety */
 void us_wakeup_loop(us_loop_r loop) nonnull_fn_decl;
 
-/* Hook up timers in existing loop */
-void us_loop_integrate(us_loop_r loop) nonnull_fn_decl;
-
 /* Returns the loop iteration number */
 long long us_loop_iteration_number(us_loop_r loop) nonnull_fn_decl;
 
@@ -476,10 +496,9 @@ void us_poll_free(us_poll_r p, struct us_loop_t *loop);
 /* Associate this poll with a socket descriptor and poll type */
 void us_poll_init(us_poll_r p, LIBUS_SOCKET_DESCRIPTOR fd, int poll_type);
 
-/* Start, change and stop polling for events */
-void us_poll_start(us_poll_r p, us_loop_r loop, int events) nonnull_fn_decl;
-/* Returns 0 if successful */
-int us_poll_start_rc(us_poll_r p, us_loop_r loop, int events) nonnull_fn_decl;
+/* Returns zero on success. Failure leaves event state unchanged and records
+ * the error before cleanup can overwrite the platform's error slot. */
+int us_poll_start(us_poll_r p, us_loop_r loop, int events, struct us_poll_error_t *error) nonnull_fn_decl;
 void us_poll_change(us_poll_r p, us_loop_r loop, int events) nonnull_fn_decl;
 void us_poll_stop(us_poll_r p, struct us_loop_t *loop) nonnull_fn_decl;
 
@@ -500,6 +519,22 @@ struct us_poll_t *us_poll_resize(us_poll_r p, us_loop_r loop, unsigned int old_e
 
 /* SSL* if TLS, else (void*)(intptr_t)fd. */
 void *us_socket_get_native_handle(us_socket_r s) nonnull_fn_decl;
+
+enum us_socket_write_status {
+    US_SOCKET_WRITE_COMPLETE,
+    US_SOCKET_WRITE_BACKPRESSURE,
+    US_SOCKET_WRITE_CLOSED,
+    US_SOCKET_WRITE_FAILED
+};
+
+struct us_socket_write_result {
+    int written;
+    enum us_socket_write_status status;
+};
+
+/* Checked writes report terminal failures without initiating socket closure. */
+struct us_socket_write_result us_socket_write_checked(us_socket_r s, const char *data, int length);
+struct us_socket_write_result us_socket_raw_write_checked(us_socket_r s, const char *data, int length);
 
 /* Plaintext write (TLS-encrypts if `s->ssl`). Returns bytes accepted; on
  * partial write the next on_writable will fire. */
@@ -537,8 +572,9 @@ void us_socket_local_address(us_socket_r s, char *nonnull_arg buf, int *nonnull_
 
 struct us_socket_t *us_socket_detach(us_socket_r s) nonnull_fn_decl;
 int us_socket_ipc_write_fd(us_socket_r s, const char *data, int length, int fd) nonnull_fn_decl;
+/* Non-TLS IPC write: bytes written, zero for backpressure, or negative errno. */
+int us_socket_ipc_write(us_socket_r s, const char *data, int length) nonnull_fn_decl;
 void us_socket_sendfile_needs_more(us_socket_r s) nonnull_fn_decl;
-void *us_listen_socket_ext(struct us_listen_socket_t *ls) nonnull_fn_decl;
 LIBUS_SOCKET_DESCRIPTOR us_listen_socket_get_fd(struct us_listen_socket_t *ls) nonnull_fn_decl;
 int us_listen_socket_port(struct us_listen_socket_t *ls) nonnull_fn_decl;
 struct us_socket_group_t *us_listen_socket_group(struct us_listen_socket_t *ls) nonnull_fn_decl;
@@ -550,13 +586,12 @@ struct us_listen_socket_t *us_listen_socket_next(struct us_listen_socket_t *ls) 
 LIBUS_SOCKET_DESCRIPTOR us_socket_get_fd(us_socket_r s) nonnull_fn_decl;
 
 /* Bun extras */
-struct us_socket_t *us_socket_pair(us_socket_group_r group, unsigned char kind, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR *fds) nonnull_fn_decl;
-struct us_socket_t *us_socket_from_fd(us_socket_group_r group, unsigned char kind, struct ssl_ctx_st *ssl_ctx, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR fd, int ipc)
-    __attribute__((nonnull(1)));  /* ssl_ctx nullable */
+struct us_socket_t *us_socket_from_fd(us_socket_group_r group, unsigned char kind, struct ssl_ctx_st *ssl_ctx, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR fd, int ipc, struct us_connect_error_t *failure)
+    __attribute__((nonnull(1, 7)));  /* ssl_ctx nullable */
 struct us_socket_t *us_socket_open(struct us_socket_t *s, int is_client, char *ip, int ip_length);
 int us_raw_root_certs(struct us_cert_string_t **out);
-unsigned int us_get_remote_address_info(char *buf, us_socket_r s, const char **dest, int *port, int *is_ipv6);
-unsigned int us_get_local_address_info(char *buf, us_socket_r s, const char **dest, int *port, int *is_ipv6);
+unsigned int us_get_remote_address_info(char *buf, us_socket_r s, int *port);
+unsigned int us_get_local_address_info(char *buf, us_socket_r s, int *port);
 int us_socket_get_error(us_socket_r s);
 
 void us_socket_ref(us_socket_r s);

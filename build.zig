@@ -16,7 +16,8 @@
 //! immediately runs disable incremental compilation so their output is not
 //! held open by a persistent compiler.
 //!
-//! Builds on x86_64-linux only; the check-* steps type-check other targets.
+//! Builds on x86_64-linux only; the check-* steps provide experimental
+//! semantic checks for other targets.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -62,7 +63,6 @@ const BunBuildOptions = struct {
     /// is set (to allow CI to build a portable executable). Affected files:
     ///
     /// - src/bake/runtime.ts (bundled)
-    /// - src/runtime/api/FFI.h
     ///
     /// A similar technique is used in C++ code for JavaScript builtins
     codegen_embed: bool = false,
@@ -79,6 +79,7 @@ const BunBuildOptions = struct {
 
     /// The codegen graph; codegen_path is its stable synced dir.
     codegen: *const bun_exe.Codegen,
+    binding_codegen: *bun_exe.BindingCodegen,
     unicode_data: *Module,
 
     pub fn isBaseline(this: *const BunBuildOptions) bool {
@@ -226,10 +227,18 @@ pub fn build(b: *Build) !void {
     const pkgs = b.graph.arena.create(bun_exe.DepPkgs) catch @panic("OOM");
     pkgs.* = resolved;
     const cpp_deps = bun_exe.addCppDeps(b, pkgs, mode, optimize);
-    const cg = bun_exe.addCodegen(b, pkgs, mode, cpp_deps.zstd);
+    const binding_codegen = bun_exe.addBindingCodegen(b);
+    const cg = bun_exe.addCodegen(b, pkgs, mode, binding_codegen, cpp_deps.zstd);
+    const emit_bindings = b.step("emit-bindings", "Generate JS/native bindings for the selected target");
+    if (binding_codegen.forTarget(b, target)) |bindings| {
+        emit_bindings.dependOn(bindings.step);
+    } else {
+        emit_bindings.dependOn(bindingTargetUnavailable(b, target));
+    }
+    addBindgenTests(b);
     const webkit_derived = bun_webkit.addStep(b, pkgs, mode, optimize);
     const webkit_ctx = b.graph.arena.create(bun_webkit.Ctx) catch @panic("OOM");
-    webkit_ctx.* = bun_webkit.addLibs(b, pkgs, mode, optimize, webkit_derived);
+    webkit_ctx.* = bun_webkit.addLibs(b, pkgs, mode, optimize, webkit_derived, cg.schema_bindings_dirs);
     const icu_ctx = b.graph.arena.create(bun_icu.Ctx) catch @panic("OOM");
     icu_ctx.* = bun_icu.addLibs(b, pkgs, optimize);
     const unicode_data = bun_unicode_data.addModule(b, pkgs.icu);
@@ -304,6 +313,7 @@ pub fn build(b: *Build) !void {
         .freebsd_sysroot_x86_64 = freebsd_sysroot_x86_64,
         .freebsd_sysroot_aarch64 = freebsd_sysroot_aarch64,
         .codegen = cg,
+        .binding_codegen = binding_codegen,
         .unicode_data = unicode_data,
     };
 
@@ -312,6 +322,8 @@ pub fn build(b: *Build) !void {
         var o = build_options;
         // The executable and its C++ dependencies share the host target.
         o.target = b.graph.host;
+        o.os = .linux;
+        o.arch = .x86_64;
         o.cached_options_module = null;
         const obj = addBunObject(b, &o);
 
@@ -330,7 +342,8 @@ pub fn build(b: *Build) !void {
         const built = bun_exe.addLink(b, pkgs, archives, obj.getEmittedBin(), cg, exe_opts);
         // The executable is pinned to this target; fail loudly rather than
         // silently overriding an explicit -Dtarget/-Dcpu.
-        if ((target_query.abi != null and target_query.abi.? != .gnu) or
+        if (os != .linux or arch != .x86_64 or
+            (target_query.abi != null and target_query.abi.? != .gnu) or
             target_query.cpu_model != .determined_by_arch_os)
         {
             const fail = b.addFail("the bun executable is pinned to x86_64-linux-gnu (native cpu); -Dtarget/-Dcpu apply only to the check steps");
@@ -374,7 +387,7 @@ pub fn build(b: *Build) !void {
 
     // zig build check-all
     {
-        const step = b.step("check-all", "Check for semantic analysis errors on all supported platforms");
+        const step = b.step("check-all", "Check for semantic analysis errors across the native target matrix");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .windows, .arch = .x86_64 },
             .{ .os = .windows, .arch = .aarch64 },
@@ -389,7 +402,7 @@ pub fn build(b: *Build) !void {
 
     // zig build check-all-debug
     {
-        const step = b.step("check-all-debug", "Check for semantic analysis errors on all supported platforms in debug mode");
+        const step = b.step("check-all-debug", "Check for semantic analysis errors across the native target matrix in debug mode");
         addMultiCheck(b, step, build_options, &.{
             .{ .os = .windows, .arch = .x86_64 },
             .{ .os = .windows, .arch = .aarch64 },
@@ -509,6 +522,7 @@ pub fn build(b: *Build) !void {
                 .codegen_embed = build_options.codegen_embed,
                 .codegen_path = build_options.codegen_path,
                 .codegen = build_options.codegen,
+                .binding_codegen = build_options.binding_codegen,
                 .unicode_data = build_options.unicode_data,
                 .override_no_export_cpp_apis = true,
             };
@@ -517,18 +531,108 @@ pub fn build(b: *Build) !void {
             step.dependOn(&obj.step);
         }
     }
+}
 
-    // zig build enum-extractor
-    {
-        // const step = b.step("enum-extractor", "Extract enum definitions (invoked by a code generator)");
-        // const exe = b.addExecutable(.{
-        //     .name = "enum_extractor",
-        //     .root_source_file = b.path("./src/generated_enum_extractor.zig"),
-        //     .target = b.graph.host,
-        //     .optimize = .debug,
-        // });
-        // const run = b.addRunArtifact(exe);
-        // step.dependOn(&run.step);
+fn addBindgenTests(b: *Build) void {
+    const step = b.step("test-bindgen", "Run binding normalizer, IR, and compile-failure tests");
+    const ir = b.createModule(.{
+        .root_source_file = b.path("src/bindgen/ir.zig"),
+    });
+    const schema = b.createModule(.{
+        .root_source_file = b.path("src/bindgen/schema.zig"),
+    });
+    schema.addImport("bindgen_ir", ir);
+    const class_field_validation = b.createModule(.{
+        .root_source_file = b.path("src/bindgen/class_field_validation.zig"),
+    });
+    const shared_schema = b.createModule(.{
+        .root_source_file = b.path("src/jsc/bindgen_shared.schema.zig"),
+    });
+    shared_schema.addImport("bindgen_schema", schema);
+    const archetypes_schema = b.createModule(.{
+        .root_source_file = b.path("src/bindgen/archetypes.schema.zig"),
+    });
+    archetypes_schema.addImport("bindgen_schema", schema);
+    const hash_types_schema = b.createModule(.{
+        .root_source_file = b.path("src/runtime/crypto/HashTypes.schema.zig"),
+    });
+    hash_types_schema.addImport("bindgen_schema", schema);
+    hash_types_schema.addImport("binding_schema_archetypes", archetypes_schema);
+    const structured_clone_schema = b.createModule(.{
+        .root_source_file = b.path("src/runtime/webcore/StructuredClone.schema.zig"),
+    });
+    structured_clone_schema.addImport("bindgen_schema", schema);
+    const test_schema = b.createModule(.{
+        .root_source_file = b.path("src/jsc/bindgen_test.schema.zig"),
+    });
+    test_schema.addImport("bindgen_schema", schema);
+    test_schema.addImport("binding_schema_bindgen_shared", shared_schema);
+    test_schema.addImport("binding_schema_archetypes", archetypes_schema);
+    test_schema.addImport("binding_schema_HashTypes", hash_types_schema);
+    test_schema.addImport("binding_schema_StructuredClone", structured_clone_schema);
+
+    inline for (.{
+        .{ "bindgen-normalize", "src/bindgen/normalize_test.zig" },
+        .{ "bindgen-ir", "src/bindgen/ir_test.zig" },
+    }) |entry| {
+        const name, const source = entry;
+        const root = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = b.graph.host,
+            .optimize = .debug,
+        });
+        root.addImport("bindgen_ir", ir);
+        root.addImport("bindgen_schema", schema);
+        root.addImport("rapidhash", b.createModule(.{ .root_source_file = b.path("src/hash/rapidhash.zig") }));
+        root.addImport("bindgen_test_schema", test_schema);
+        root.addImport("binding_schema_archetypes", archetypes_schema);
+        const tests = b.addTest(.{ .name = name, .root_module = root });
+        tests.incremental = false;
+        step.dependOn(&b.addRunArtifact(tests).step);
+    }
+
+    const field_validation_tests = b.addTest(.{
+        .name = "bindgen-class-fields",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bindgen/class_field_validation.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+        }),
+    });
+    field_validation_tests.incremental = false;
+    step.dependOn(&b.addRunArtifact(field_validation_tests).step);
+
+    inline for (.{
+        .{ "gc_raw_value_field", "bound class field 'Invalid.value' must use a bindgen root or typed weak handle" },
+        .{ "gc_pointer_field", "bound class field 'Invalid.pointer' has unapproved pointer type '*u8'; use an explicit owned, referenced, or borrowed native wrapper" },
+        .{ "gc_function_pointer_field", "bound class field 'Invalid.callback' has unapproved pointer type '*const fn () void'; use an explicit owned, referenced, or borrowed native wrapper" },
+        .{ "native_data_nested_pointer", "NativeData payload 'Invalid.nested.items' contains pointer type '[]const u8'; use an explicit owned, referenced, or borrowed native wrapper" },
+        .{ "native_data_unsupported_type", "NativeData payload 'Callback' has unsupported runtime type 'fn () void'" },
+        .{ "native_data_engine_value", "NativeData payload 'Invalid.value' contains an engine value; use a root or typed handle" },
+        .{ "native_data_focused_value", "NativeData payload 'Invalid.value' contains a focused engine value; use a root for storage" },
+        .{ "gc_forged_token", "bound class field 'Invalid.value' has an invalid bindgen GC token" },
+        .{ "gc_vm_affine_any_thread", "bound class field 'Invalid.value' requires VM-affine reference handling" },
+        .{ "native_resource_engine_value", "native resource 'native_resource_engine_value.Nested.values[]' must use a bindgen root or typed weak handle" },
+        .{ "native_resource_scoped_view", "native resource 'Owner.*.view.token' contains a call-scoped view" },
+        .{ "native_resource_nested_affinity", "native resource 'native_resource_nested_affinity.Resource.root' requires VM-affine reference handling" },
+        .{ "native_resource_raw_pointer", "native resource 'Owner.*.pointer' has an untyped native pointer; use a nominal resource type" },
+        .{ "native_resource_unnamed", "native resource 'Owner.*' requires a typed pointee" },
+    }) |case| {
+        const name, const expected = case;
+        const root = b.createModule(.{
+            .root_source_file = b.path("test/bindgen/compile_fail/" ++ name ++ ".zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+        });
+        root.addImport("bindgen_class_field_validation", class_field_validation);
+        const compile_fail = b.addTest(.{
+            .name = "bindgen-compile-fail-" ++ name,
+            .root_module = root,
+            .emit_object = true,
+        });
+        compile_fail.incremental = false;
+        compile_fail.expect_errors = .{ .contains = expected };
+        step.dependOn(&compile_fail.step);
     }
 }
 
@@ -577,6 +681,7 @@ fn addMultiCheck(
                 .freebsd_sysroot_x86_64 = root_build_options.freebsd_sysroot_x86_64,
                 .freebsd_sysroot_aarch64 = root_build_options.freebsd_sysroot_aarch64,
                 .codegen = root_build_options.codegen,
+                .binding_codegen = root_build_options.binding_codegen,
                 .unicode_data = root_build_options.unicode_data,
             };
 
@@ -683,14 +788,12 @@ fn getTranslateC(b: *Build, initial_target: std.Build.ResolvedTarget, optimize: 
     return translate_c.getOutput();
 }
 
-pub fn addBunObject(b: *Build, opts: *BunBuildOptions) *Compile {
-    // Create `@import("bun")`, containing most of Bun's code.
-    const bun = b.createModule(.{
-        .root_source_file = b.path("src/bun.zig"),
-    });
-    bun.addImport("bun", bun); // allow circular "bun" import
-    addInternalImports(b, bun, opts);
+fn bindingTargetUnavailable(b: *Build, target: ResolvedTarget) *Step {
+    const triple = target.result.zigTriple(b.graph.arena) catch @panic("OOM");
+    return &b.addFail(b.fmt("JS/native bindings are not available for {s}", .{triple})).step;
+}
 
+pub fn addBunObject(b: *Build, opts: *BunBuildOptions) *Compile {
     const root = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
 
@@ -698,15 +801,27 @@ pub fn addBunObject(b: *Build, opts: *BunBuildOptions) *Compile {
         .target = opts.target,
         .optimize = opts.optimize,
     });
-    root.addImport("bun", bun);
-
     const obj = b.addObject(.{
         .name = if (opts.optimize == .debug) "bun-debug" else "bun",
         .root_module = root,
     });
+    const bindings = opts.binding_codegen.forTarget(b, opts.target) orelse {
+        obj.step.dependOn(bindingTargetUnavailable(b, opts.target));
+        return obj;
+    };
+
+    // Create `@import("bun")`, containing most of Bun's code.
+    const bun = b.createModule(.{
+        .root_source_file = b.path("src/bun.zig"),
+    });
+    bun.addImport("bun", bun); // allow circular "bun" import
+    addInternalImports(b, bun, opts, bindings);
+    root.addImport("bun", bun);
+
     configureObj(opts, obj);
-    // Generated imports come from the stable synced dir.
+    // Runtime assets are imported from the stable synced dir.
     obj.step.dependOn(opts.codegen.sync_step);
+    obj.step.dependOn(opts.binding_codegen.checkWireTypes(b, opts.target));
     return obj;
 }
 
@@ -715,7 +830,7 @@ fn addBunWasmObject(b: *Build, opts: *BunBuildOptions) *Compile {
         .root_source_file = b.path("src/bun.zig"),
     });
     bun.addImport("bun", bun);
-    addInternalImports(b, bun, opts);
+    addInternalImports(b, bun, opts, null);
 
     const root = b.createModule(.{
         .root_source_file = b.path("src/main_wasm.zig"),
@@ -788,11 +903,188 @@ fn packageJsonVersion(b: *Build) ?[]const u8 {
     return content[start..end];
 }
 
-fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
+fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions, bindings: ?*const bun_exe.BindingArtifacts) void {
     const os = opts.os;
+    var shared_modules: std.ArrayList(*Module) = .empty;
+    shared_modules.appendSlice(b.graph.arena, &.{
+        opts.unicode_data,
+        opts.binding_codegen.ir_module,
+        opts.codegen.mysql_domain,
+    }) catch @panic("OOM");
 
-    mod.addImport("build_options", opts.buildOptionsModule(b));
+    const build_options = opts.buildOptionsModule(b);
+    mod.addImport("build_options", build_options);
     mod.addImport("unicode_data", opts.unicode_data);
+    mod.addImport("bindgen_ir", opts.binding_codegen.ir_module);
+    mod.addImport("mysql_domain", opts.codegen.mysql_domain);
+    mod.addImport("network_core", b.createModule(.{
+        .root_source_file = b.path("src/runtime/network_core/root.zig"),
+    }));
+    if (bindings) |artifacts| {
+        const binding_ir = b.createModule(.{ .root_source_file = artifacts.ir });
+        mod.addImport("binding_ir", binding_ir);
+        const binding_fingerprint = b.createModule(.{ .root_source_file = artifacts.fingerprint });
+        mod.addImport("binding_fingerprint", binding_fingerprint);
+        shared_modules.appendSlice(b.graph.arena, &.{ binding_ir, binding_fingerprint }) catch @panic("OOM");
+
+        const binding_implementations = b.createModule(.{
+            .root_source_file = artifacts.implementations,
+        });
+        binding_implementations.addImport("bun", mod);
+        mod.addImport("binding_implementations", binding_implementations);
+
+        const binding_wire_translate = b.addTranslateC(.{
+            .root_source_file = artifacts.wire_header,
+            .target = opts.target,
+            .optimize = opts.optimize,
+            .link_libc = true,
+        });
+        const binding_wire = b.createModule(.{
+            .root_source_file = binding_wire_translate.getOutput(),
+        });
+        mod.addImport("binding_wire", binding_wire);
+    }
+
+    const lshpack_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/lshpack_sys/BunHpack.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("lshpack-ffi", b.createModule(.{
+        .root_source_file = lshpack_translate.getOutput(),
+    }));
+
+    const highway_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/highway_sys/BunHighway.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("highway-ffi", b.createModule(.{
+        .root_source_file = highway_translate.getOutput(),
+    }));
+
+    const webview_host_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/webview_sys/BunWebViewHost.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("webview-host-ffi", b.createModule(.{
+        .root_source_file = webview_host_translate.getOutput(),
+    }));
+
+    const rescle_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/rescle_sys/BunResources.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("rescle-ffi", b.createModule(.{
+        .root_source_file = rescle_translate.getOutput(),
+    }));
+
+    const image_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/image_sys/BunImage.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("image-ffi", b.createModule(.{
+        .root_source_file = image_translate.getOutput(),
+    }));
+
+    const perf_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/perf_sys/BunPerf.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("perf-ffi", b.createModule(.{
+        .root_source_file = perf_translate.getOutput(),
+    }));
+
+    const tcc_stdio_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/tcc_sys/TccStdio.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("tcc-stdio", b.createModule(.{
+        .root_source_file = tcc_stdio_translate.getOutput(),
+    }));
+
+    const libc_stdio_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/libc_sys/BunStdio.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("libc-stdio", b.createModule(.{
+        .root_source_file = libc_stdio_translate.getOutput(),
+    }));
+
+    const libc_process_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/libc_sys/BunProcessMemory.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("libc-process", b.createModule(.{
+        .root_source_file = libc_process_translate.getOutput(),
+    }));
+
+    const libc_spawn_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/libc_sys/BunSpawn.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("libc-spawn", b.createModule(.{
+        .root_source_file = libc_spawn_translate.getOutput(),
+    }));
+
+    const dns_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/dns/BunDNS.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("dns-native", b.createModule(.{
+        .root_source_file = dns_translate.getOutput(),
+    }));
+
+    const native_stack_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/debugger_sys/BunNativeStack.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("debugger-native-stack", b.createModule(.{
+        .root_source_file = native_stack_translate.getOutput(),
+    }));
+
+    const embedded_data_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/exe_format/EmbeddedData.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    mod.addImport("embedded-data", b.createModule(.{
+        .root_source_file = embedded_data_translate.getOutput(),
+    }));
+
+    const usockets_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/uws_sys/UwsNative.h"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+    });
+    usockets_translate.defineCMacro("BUN_DEBUG", "1");
+    mod.addImport("usockets-native", b.createModule(.{
+        .root_source_file = usockets_translate.getOutput(),
+    }));
 
     const translated_c = if (os == .wasm)
         b.path("src/codegen/translated_c_stub.zig")
@@ -822,10 +1114,6 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
 
     // Generated code exposed as individual modules.
     inline for (.{
-        .{ .file = "ZigGeneratedClasses.zig", .import = "ZigGeneratedClasses" },
-        .{ .file = "bindgen_generated.zig", .import = "bindgen_generated" },
-        .{ .file = "ResolvedSourceTag.zig", .import = "ResolvedSourceTag" },
-        .{ .file = "ErrorCode.zig", .import = "ErrorCode" },
         .{ .file = "runtime.out.js", .enable = opts.shouldEmbedCode() },
         .{ .file = "bake.client.js", .import = "bake-codegen/bake.client.js", .enable = opts.shouldEmbedCode() },
         .{ .file = "bake.error.js", .import = "bake-codegen/bake.error.js", .enable = opts.shouldEmbedCode() },
@@ -872,13 +1160,6 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
         }
     }
     {
-        const cppImport = b.createModule(.{
-            .root_source_file = (std.Build.LazyPath{ .cwd_relative = opts.codegen_path }).path(b, "cpp.zig"),
-        });
-        mod.addImport("cpp", cppImport);
-        cppImport.addImport("bun", mod);
-    }
-    {
         const ciInfoImport = b.createModule(.{
             .root_source_file = (std.Build.LazyPath{ .cwd_relative = opts.codegen_path }).path(b, "ci_info.zig"),
         });
@@ -902,14 +1183,16 @@ fn addInternalImports(b: *Build, mod: *Module, opts: *BunBuildOptions) void {
     }
 
     // Finally, make it so all modules share the same import table.
-    propagateImports(mod) catch @panic("OOM");
+    propagateImports(mod, shared_modules.items) catch @panic("OOM");
 }
 
 /// Makes all imports of `source_mod` visible to all of its dependencies.
+/// Shared modules retain their own import graphs to avoid mixing target-specific imports.
 /// Does not replace existing imports.
-fn propagateImports(source_mod: *Module) !void {
+fn propagateImports(source_mod: *Module, shared_modules: []const *Module) !void {
     var seen = std.AutoHashMap(*Module, void).init(source_mod.owner.graph.arena);
     defer seen.deinit();
+    for (shared_modules) |mod| try seen.put(mod, {});
     var queue = std.array_list.Managed(*Module).init(source_mod.owner.graph.arena);
     defer queue.deinit();
     try queue.appendSlice(source_mod.import_table.values());

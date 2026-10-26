@@ -1,8 +1,8 @@
 // clang-format off
 #include "root.h"
 #include "ModuleLoader.h"
-#include "headers-handwritten.h"
 #include "PathInlines.h"
+#include "SchemaBindings.h"
 #include "JSCommonJSModule.h"
 
 #include <JavaScriptCore/JSBoundFunction.h>
@@ -18,92 +18,84 @@
 #undef assert
 
 #define FOREACH_EXPOSED_BUILTIN_IMR(v)     \
-    v(ffi,                    Bun::InternalModuleRegistry::BunFFI) \
-    v(assert,                 Bun::InternalModuleRegistry::NodeAssert) \
-    v(async_hooks,            Bun::InternalModuleRegistry::NodeAsyncHooks) \
-    v(child_process,          Bun::InternalModuleRegistry::NodeChildProcess) \
-    v(cluster,                Bun::InternalModuleRegistry::NodeCluster) \
-    v(dgram,                  Bun::InternalModuleRegistry::NodeDgram) \
-    v(diagnostics_channel,    Bun::InternalModuleRegistry::NodeDiagnosticsChannel) \
-    v(dns,                    Bun::InternalModuleRegistry::NodeDNS) \
-    v(domain,                 Bun::InternalModuleRegistry::NodeDomain) \
-    v(events,                 Bun::InternalModuleRegistry::NodeEvents) \
-    v(fs,                     Bun::InternalModuleRegistry::NodeFS) \
-    v(http,                   Bun::InternalModuleRegistry::NodeHttp) \
-    v(http2,                  Bun::InternalModuleRegistry::NodeHttp2) \
-    v(https,                  Bun::InternalModuleRegistry::NodeHttps) \
-    v(inspector,              Bun::InternalModuleRegistry::NodeInspector) \
-    v(net,                    Bun::InternalModuleRegistry::NodeNet) \
-    v(os,                     Bun::InternalModuleRegistry::NodeOS) \
-    v(path,                   Bun::InternalModuleRegistry::NodePath) \
-    v(perf_hooks,             Bun::InternalModuleRegistry::NodePerfHooks) \
-    v(punycode,               Bun::InternalModuleRegistry::NodePunycode) \
-    v(querystring,            Bun::InternalModuleRegistry::NodeQuerystring) \
-    v(readline,               Bun::InternalModuleRegistry::NodeReadline) \
-    v(stream,                 Bun::InternalModuleRegistry::NodeStream) \
-    v(sys,                    Bun::InternalModuleRegistry::NodeUtil) \
-    v(timers,                 Bun::InternalModuleRegistry::NodeTimers) \
-    v(tls,                    Bun::InternalModuleRegistry::NodeTLS) \
-    v(trace_events,           Bun::InternalModuleRegistry::NodeTraceEvents) \
-    v(tty,                    Bun::InternalModuleRegistry::NodeTty) \
-    v(url,                    Bun::InternalModuleRegistry::NodeUrl) \
-    v(util,                   Bun::InternalModuleRegistry::NodeUtil) \
-    v(v8,                     Bun::InternalModuleRegistry::NodeV8) \
-    v(vm,                     Bun::InternalModuleRegistry::NodeVM) \
-    v(wasi,                   Bun::InternalModuleRegistry::NodeWasi) \
-    v(sqlite,                 Bun::InternalModuleRegistry::BunSqlite) \
-    v(worker_threads,         Bun::InternalModuleRegistry::NodeWorkerThreads) \
-    v(zlib,                   Bun::InternalModuleRegistry::NodeZlib) \
-    v(constants,              Bun::InternalModuleRegistry::NodeConstants) \
-    v(string_decoder,         Bun::InternalModuleRegistry::NodeStringDecoder) \
-    v(buffer,                 Bun::InternalModuleRegistry::NodeBuffer) \
-    v(jsc,                    Bun::InternalModuleRegistry::BunJSC) \
+    v(ffi,                    BunFFI) \
+    v(assert,                 NodeAssert) \
+    v(async_hooks,            NodeAsyncHooks) \
+    v(child_process,          NodeChildProcess) \
+    v(cluster,                NodeCluster) \
+    v(dgram,                  NodeDgram) \
+    v(diagnostics_channel,    NodeDiagnosticsChannel) \
+    v(dns,                    NodeDNS) \
+    v(domain,                 NodeDomain) \
+    v(events,                 NodeEvents) \
+    v(fs,                     NodeFS) \
+    v(http,                   NodeHttp) \
+    v(http2,                  NodeHttp2) \
+    v(https,                  NodeHttps) \
+    v(inspector,              NodeInspector) \
+    v(net,                    NodeNet) \
+    v(os,                     NodeOS) \
+    v(path,                   NodePath) \
+    v(perf_hooks,             NodePerfHooks) \
+    v(punycode,               NodePunycode) \
+    v(querystring,            NodeQuerystring) \
+    v(readline,               NodeReadline) \
+    v(stream,                 NodeStream) \
+    v(sys,                    NodeUtil) \
+    v(timers,                 NodeTimers) \
+    v(tls,                    NodeTLS) \
+    v(trace_events,           NodeTraceEvents) \
+    v(tty,                    NodeTty) \
+    v(url,                    NodeUrl) \
+    v(util,                   NodeUtil) \
+    v(v8,                     NodeV8) \
+    v(vm,                     NodeVM) \
+    v(wasi,                   NodeWasi) \
+    v(sqlite,                 BunSqlite) \
+    v(worker_threads,         NodeWorkerThreads) \
+    v(zlib,                   NodeZlib) \
+    v(constants,              NodeConstants) \
+    v(string_decoder,         NodeStringDecoder) \
+    v(buffer,                 NodeBuffer) \
+    v(jsc,                    BunJSC) \
 
-namespace ExposeNodeModuleGlobalGetters {
-
-#define DECL_GETTER(id, field) \
-    JSC_DEFINE_CUSTOM_GETTER(id, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName)) \
-    { \
-        Zig::GlobalObject* thisObject = defaultGlobalObject(lexicalGlobalObject); \
-        JSC::VM& vm = thisObject->vm(); \
-        return JSC::JSValue::encode(thisObject->internalModuleRegistry()->requireId(thisObject, vm, field)); \
+#define DECL_GETTER(id, field)                                                                                  \
+    JSC::JSValue Bun::Bindgen::Cpp::bunBindgenCpp_ExposeNodeModuleGlobalsHost_##id(                            \
+        Bun::Bindgen::CppCallContext& context,                                                                 \
+        const Bun::Bindgen::Cpp::BunBindgenCpp_ExposeNodeModuleGlobalsHost_##id##_Arguments&)                  \
+    {                                                                                                          \
+        auto* globalObject = defaultGlobalObject(&context.globalObject);                                       \
+        return globalObject->internalModuleRegistry()->requireId(globalObject, globalObject->vm(), Bun::Bindgen::InternalModuleId::field); \
     }
 FOREACH_EXPOSED_BUILTIN_IMR(DECL_GETTER)
-#undef DECL_GETTER    
+#undef DECL_GETTER
 
-} // namespace ExposeNodeModuleGlobalGetters
+#define BUN_BINDGEN_OBJECT_SURFACE_ExposedNodeModuleGlobals
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_ExposedNodeModuleGlobals
 
-extern "C" [[ZIG_EXPORT(nothrow)]] void Bun__ExposeNodeModuleGlobals(Zig::GlobalObject* globalObject)
+void Bun::Bindgen::Engine::bunBindgenEngine_ExposeNodeModuleGlobalsHost_exposeNodeModuleGlobals(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_ExposeNodeModuleGlobalsHost_exposeNodeModuleGlobals_Arguments& args)
 {
-
+    UNUSED_PARAM(args);
+    auto* globalObject = static_cast<::Zig::GlobalObject*>(&context.globalObject);
     auto& vm = JSC::getVM(globalObject);
-#define PUT_CUSTOM_GETTER_SETTER(id, field) \
-    globalObject->putDirectCustomAccessor( \
-        vm, \
-        JSC::Identifier::fromString(vm, #id##_s), \
-        JSC::CustomGetterSetter::create( \
-            vm, \
-            ExposeNodeModuleGlobalGetters::id, \
-            nullptr), \
-        0 | JSC::PropertyAttribute::CustomValue \
-    );
-
-    FOREACH_EXPOSED_BUILTIN_IMR(PUT_CUSTOM_GETTER_SETTER)
-#undef PUT_CUSTOM_GETTER_SETTER
+    bunBindgenObjectSurface_ExposedNodeModuleGlobals_install(vm, globalObject->classInfo(), *globalObject);
 }
 
 // Set up require(), module, __filename, __dirname on globalThis for the REPL.
 // Creates a CommonJS module object rooted at the given directory so require() resolves correctly.
-extern "C" [[ZIG_EXPORT(check_slow)]] void Bun__REPL__setupGlobalRequire(
-    Zig::GlobalObject* globalObject,
-    const unsigned char* cwdPtr,
-    size_t cwdLen)
+void Bun::Bindgen::Engine::bunBindgenEngine_ExposeNodeModuleGlobalsHost_setupGlobalRequire(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_ExposeNodeModuleGlobalsHost_setupGlobalRequire_Arguments& args)
 {
     using namespace JSC;
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
     auto& vm = getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto cwdStr = WTF::String::fromUTF8(std::span { cwdPtr, cwdLen });
+    const auto& cwdStr = args.cwd;
     auto* filename = jsString(vm, makeString(cwdStr, PLATFORM_SEP_s, "[repl]"_s));
     auto* dirname = jsString(vm, WTF::String(cwdStr));
 

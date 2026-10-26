@@ -26,10 +26,11 @@
 // birth records its uniqueid — is narrowed by the freeze-then-rescan loop in
 // `killTracked()` but cannot be fully closed from userspace.
 //
-// All state is process-global; spawnSync is single-threaded by design (see
-// Bun__currentSyncPID), so no locking.
+// All state is process-global; spawnSync is single-threaded by design, so no
+// locking.
 
 #include "root.h"
+#include "SchemaBindings.h"
 
 #if OS(DARWIN)
 
@@ -65,9 +66,8 @@ static_assert(sizeof(ProcUniqIdentifierInfo) == 56, "xnu ABI");
 class NoOrphansTracker {
 public:
     // Function-local static: lazy first-use construction, no global ctor,
-    // thread-safe per C++11 [stmt.dcl]. spawnSync is single-threaded anyway
-    // (see Bun__currentSyncPID), but this keeps the binary's static-init
-    // section clean.
+    // thread-safe per C++11 [stmt.dcl]. spawnSync is single-threaded anyway,
+    // but this keeps the binary's static-init section clean.
     static NoOrphansTracker& get()
     {
         static NoOrphansTracker instance;
@@ -262,18 +262,61 @@ private:
 
 } // namespace Bun
 
-extern "C" void Bun__noOrphans_begin(int kq, pid_t root) { Bun::NoOrphansTracker::get().begin(kq, root); }
-extern "C" void Bun__noOrphans_releaseKq() { Bun::NoOrphansTracker::get().releaseKq(); }
-extern "C" void Bun__noOrphans_onFork() { Bun::NoOrphansTracker::get().scan(); }
-extern "C" void Bun__noOrphans_onExit(pid_t pid) { Bun::NoOrphansTracker::get().onExit(pid); }
-extern "C" void Bun__noOrphans_killTracked() { Bun::NoOrphansTracker::get().killTracked(); }
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerBegin(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerBegin_Arguments& args)
+{
+    Bun::NoOrphansTracker::get().begin(args.kqueueFd, args.rootPid);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerReleaseKqueue(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerReleaseKqueue_Arguments&)
+{
+    Bun::NoOrphansTracker::get().releaseKq();
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerScan(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerScan_Arguments&)
+{
+    Bun::NoOrphansTracker::get().scan();
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerRemoveExited(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerRemoveExited_Arguments& args)
+{
+    Bun::NoOrphansTracker::get().onExit(args.pid);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerKill(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerKill_Arguments&)
+{
+    Bun::NoOrphansTracker::get().killTracked();
+}
 
 #else // !OS(DARWIN)
 
-extern "C" void Bun__noOrphans_begin(int, int) {}
-extern "C" void Bun__noOrphans_releaseKq() {}
-extern "C" void Bun__noOrphans_onFork() {}
-extern "C" void Bun__noOrphans_onExit(int) {}
-extern "C" void Bun__noOrphans_killTracked() {}
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerBegin(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerBegin_Arguments&)
+{
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerReleaseKqueue(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerReleaseKqueue_Arguments&)
+{
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerScan(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerScan_Arguments&)
+{
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerRemoveExited(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerRemoveExited_Arguments&)
+{
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_no_orphans_tracker_noOrphansTrackerKill(
+    const Bun::Bindgen::Engine::BunBindgenEngine_no_orphans_tracker_noOrphansTrackerKill_Arguments&)
+{
+}
 
 #endif

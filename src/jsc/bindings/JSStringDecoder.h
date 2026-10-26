@@ -1,7 +1,7 @@
 #pragma once
 
 #include "root.h"
-#include "BufferEncodingType.h"
+#include "SchemaBindingsEnumerations.h"
 
 namespace WebCore {
 using namespace JSC;
@@ -10,7 +10,9 @@ class JSStringDecoder : public JSC::JSDestructibleObject {
     using Base = JSC::JSDestructibleObject;
 
 public:
-    JSStringDecoder(JSC::VM& vm, JSC::Structure* structure, BufferEncodingType encoding)
+    using Encoding = Bun::Bindgen::CoercedNodeStringEncoding;
+
+    JSStringDecoder(JSC::VM& vm, JSC::Structure* structure, Encoding encoding)
         : Base(vm, structure)
         , m_lastNeed(0)
         , m_lastTotal(0)
@@ -38,7 +40,7 @@ public:
             JSC::TypeInfo(JSC::ObjectType, StructureFlags), info());
     }
 
-    static JSStringDecoder* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::Structure* structure, BufferEncodingType encoding)
+    static JSStringDecoder* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::Structure* structure, Encoding encoding)
     {
         JSStringDecoder* accessor = new (NotNull, JSC::allocateCell<JSStringDecoder>(vm)) JSStringDecoder(vm, structure, encoding);
         accessor->finishCreation(vm, globalObject);
@@ -52,18 +54,18 @@ public:
     }
 
     // These return nullptr with an exception pending on failure.
-    JSC::JSString* write(JSC::VM&, JSC::JSGlobalObject*, uint8_t*, uint32_t);
-    JSC::JSString* end(JSC::VM&, JSC::JSGlobalObject*, uint8_t*, uint32_t);
+    JSC::JSString* write(JSC::VM&, JSC::JSGlobalObject*, const uint8_t*, size_t);
+    JSC::JSString* end(JSC::VM&, JSC::JSGlobalObject*, const uint8_t*, size_t);
 
     uint8_t m_lastNeed = 0;
     uint8_t m_lastTotal = 0;
     uint8_t m_lastChar[4] = { 0, 0, 0, 0 };
-    BufferEncodingType m_encoding = BufferEncodingType::utf8;
+    Encoding m_encoding = Encoding::utf8;
 
 private:
-    JSC::JSString* fillLast(JSC::VM&, JSC::JSGlobalObject*, uint8_t*, uint32_t);
-    JSC::JSString* text(JSC::VM&, JSC::JSGlobalObject*, uint8_t*, uint32_t, uint32_t);
-    uint8_t utf8CheckIncomplete(uint8_t*, uint32_t, uint32_t);
+    JSC::JSString* fillLast(JSC::VM&, JSC::JSGlobalObject*, const uint8_t*, size_t);
+    JSC::JSString* text(JSC::VM&, JSC::JSGlobalObject*, const uint8_t*, size_t, size_t);
+    uint8_t utf8CheckIncomplete(const uint8_t*, size_t, size_t);
 };
 
 class JSStringDecoderPrototype : public JSC::JSNonFinalObject {
@@ -112,8 +114,6 @@ public:
 
     void initializeProperties(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSStringDecoderPrototype* prototype);
 
-    // Must be defined for each specialization class.
-    static JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES construct(JSC::JSGlobalObject*, JSC::CallFrame*);
     DECLARE_EXPORT_INFO;
 
 private:

@@ -99,8 +99,4 @@ private:
     Ref<ImplementationClass, PtrTraits> m_wrapped;
 };
 
-template<typename ImplementationClass> struct JSDOMWrapperConverterTraits;
-
-JSC::JSValue cloneAcrossWorlds(JSC::JSGlobalObject&, const JSDOMObject& owner, JSC::JSValue);
-
 } // namespace WebCore

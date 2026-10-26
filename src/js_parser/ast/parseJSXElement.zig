@@ -23,6 +23,7 @@ pub fn ParseJSXElement(
 
             var previous_string_with_backslash_loc = logger.Loc{};
             var properties = G.Property.List{};
+            errdefer properties.deinit(p.allocator);
             var key_prop_i: i32 = -1;
             var flags = Flags.JSXElement.Bitset{};
             var start_tag: ?ExprNodeIndex = null;
@@ -34,6 +35,7 @@ pub fn ParseJSXElement(
 
                 var spread_loc: logger.Loc = logger.Loc.Empty;
                 var props = ListManaged(G.Property).init(p.allocator);
+                errdefer props.deinit();
                 var first_spread_prop_i: i32 = -1;
                 var i: i32 = 0;
                 parse_attributes: while (true) {
@@ -198,7 +200,7 @@ pub fn ParseJSXElement(
             // Use ExpectJSXElementChild() so we parse child strings
             try p.lexer.expectJSXElementChild(.t_greater_than);
             var children = ListManaged(Expr).init(p.allocator);
-            // var last_element_i: usize = 0;
+            errdefer children.deinit();
 
             while (true) {
                 switch (p.lexer.token) {
@@ -234,7 +236,7 @@ pub fn ParseJSXElement(
                         if (p.lexer.token != .t_slash) {
                             // This is a child element
 
-                            children.append(try p.parseJSXElement(less_than_loc)) catch unreachable;
+                            try children.append(try p.parseJSXElement(less_than_loc));
 
                             // The call to parseJSXElement() above doesn't consume the last
                             // TGreaterThan because the caller knows what Next() function to call.

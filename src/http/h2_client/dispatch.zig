@@ -13,13 +13,11 @@ pub fn parseFrames(session: *ClientSession, buf: []const u8) usize {
     while (true) {
         const remaining = buf[consumed..];
         if (remaining.len < wire.FrameHeader.byteSize) break;
-        var header: wire.FrameHeader = .{ .flags = 0 };
-        wire.FrameHeader.from(&header, remaining[0..wire.FrameHeader.byteSize], 0, true);
-        header.streamIdentifier = wire.UInt31WithReserved.from(header.streamIdentifier).uint31;
+        const header = wire.FrameHeader.decode(remaining[0..wire.FrameHeader.byteSize]);
         // RFC 9113 §4.2: a frame larger than the local SETTINGS_MAX_FRAME_SIZE
         // (we never advertise above the 16384 default) is a connection
         // FRAME_SIZE_ERROR. Bounding here also caps `read_buffer` growth.
-        if (header.length > wire.DEFAULT_MAX_FRAME_SIZE) {
+        if (header.length > wire.default_max_frame_size) {
             session.fatal_error = error.HTTP2FrameSizeError;
             break;
         }
@@ -67,8 +65,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             }
             var i: usize = 0;
             while (i + wire.SettingsPayloadUnit.byteSize <= payload.len) : (i += wire.SettingsPayloadUnit.byteSize) {
-                var unit: wire.SettingsPayloadUnit = undefined;
-                wire.SettingsPayloadUnit.from(&unit, payload[i .. i + wire.SettingsPayloadUnit.byteSize], 0, true);
+                const unit = wire.SettingsPayloadUnit.decode(payload[i .. i + wire.SettingsPayloadUnit.byteSize]);
                 switch (@as(wire.SettingsType, @fromBackingInt(@intCast(unit.type)))) {
                     .SETTINGS_MAX_FRAME_SIZE => {
                         // RFC 9113 §6.5.2: values outside [16384, 2^24-1]
@@ -76,26 +73,19 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                         // lower bound, a 0 here makes writeHeaderBlock /
                         // writeDataWindowed spin forever emitting empty
                         // frames.
-                        if (unit.value < wire.DEFAULT_MAX_FRAME_SIZE or unit.value > wire.MAX_FRAME_SIZE) {
+                        if (unit.value < wire.default_max_frame_size or unit.value > wire.max_frame_size) {
                             session.fatal_error = error.HTTP2ProtocolError;
                             return;
                         }
                         session.remote_max_frame_size = @truncate(unit.value);
                     },
                     .SETTINGS_MAX_CONCURRENT_STREAMS => session.remote_max_concurrent_streams = unit.value,
-                    .SETTINGS_HEADER_TABLE_SIZE => {
-                        // RFC 9113 §4.3.1 / RFC 7541 §4.2: encoder MUST
-                        // acknowledge a reduced limit with a Dynamic Table
-                        // Size Update at the start of the next header
-                        // block. Track the minimum seen so a reduce-then-
-                        // raise between two blocks still signals the dip.
-                        session.pending_hpack_enc_capacity = @min(session.pending_hpack_enc_capacity orelse unit.value, unit.value);
-                    },
+                    .SETTINGS_HEADER_TABLE_SIZE => session.hpack.setEncoderMaxCapacity(unit.value),
                     .SETTINGS_INITIAL_WINDOW_SIZE => {
                         // RFC 9113 §6.5.2 / §6.9.2: values above 2^31-1, or
                         // a delta that pushes any open stream's window past
                         // that, are a connection FLOW_CONTROL_ERROR.
-                        if (unit.value > wire.MAX_WINDOW_SIZE) {
+                        if (unit.value > wire.max_window_size) {
                             session.fatal_error = error.HTTP2FlowControlError;
                             return;
                         }
@@ -103,7 +93,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                         session.remote_initial_window_size = unit.value;
                         for (session.streams.values()) |s| {
                             const next = @as(i64, s.send_window) + delta;
-                            if (next > wire.MAX_WINDOW_SIZE) {
+                            if (next > wire.max_window_size) {
                                 session.fatal_error = error.HTTP2FlowControlError;
                                 return;
                             }
@@ -135,7 +125,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                     return;
                 }
                 const next = @as(i64, session.conn_send_window) + inc;
-                if (next > wire.MAX_WINDOW_SIZE) {
+                if (next > wire.max_window_size) {
                     session.fatal_error = error.HTTP2FlowControlError;
                     return;
                 }
@@ -150,7 +140,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
                     return;
                 }
                 const next = @as(i64, stream.send_window) + inc;
-                if (next > wire.MAX_WINDOW_SIZE) {
+                if (next > wire.max_window_size) {
                     stream.rst(.FLOW_CONTROL_ERROR);
                     stream.fatal_error = error.HTTP2FlowControlError;
                     return;
@@ -362,7 +352,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             const had_response = stream.remoteClosed();
             stream.rst_done = true;
             stream.state = .closed;
-            const code: u32 = wire.u32FromBytes(payload[0..4]);
+            const code = wire.decodeU32(payload[0..4]);
             // RFC 9113 §8.1: RST_STREAM(NO_ERROR) is the server's "stop
             // uploading, I've already sent the full response" signal —
             // valid only if END_STREAM had already arrived. Otherwise the
@@ -384,7 +374,7 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
             }
             session.goaway_received = true;
             session.goaway_last_stream_id = wire.UInt31WithReserved.fromBytes(payload[0..4]).uint31;
-            const code: u32 = wire.u32FromBytes(payload[4..8]);
+            const code = wire.decodeU32(payload[4..8]);
             const graceful = code == @backingInt(wire.ErrorCode.NO_ERROR);
             var it = session.streams.iterator();
             while (it.next()) |e| {
@@ -408,13 +398,12 @@ pub fn dispatchFrame(session: *ClientSession, header: wire.FrameHeader, payload:
 /// decoder purely to keep the dynamic table in sync, then discard.
 pub fn decodeDiscardOrphan(session: *ClientSession) void {
     defer session.orphan_header_block.clearRetainingCapacity();
-    var offset: usize = 0;
-    while (offset < session.orphan_header_block.items.len) {
-        const result = session.hpack.decode(session.orphan_header_block.items[offset..]) catch {
-            session.fatal_error = error.HTTP2CompressionError;
+    var block = session.hpack.decodeBlock(session.orphan_header_block.items);
+    while (true) {
+        _ = (block.next() catch |err| {
+            session.fatal_error = if (err == error.OutOfMemory) err else error.HTTP2CompressionError;
             return;
-        };
-        offset += result.next;
+        }) orelse break;
     }
 }
 
@@ -437,18 +426,17 @@ pub fn decodeHeaderBlock(session: *ClientSession, stream: *Stream) void {
     // applied once decoding completes.
     var malformed = false;
 
-    var offset: usize = 0;
-    while (offset < stream.header_block.items.len) {
-        const result = session.hpack.decode(stream.header_block.items[offset..]) catch {
+    var block = session.hpack.decodeBlock(stream.header_block.items);
+    while (true) {
+        const result = (block.next() catch |err| {
             // The decoder has already committed earlier fields from this
             // block to the connection-level dynamic table; the table is
             // now out of sync with the server's encoder. RFC 9113 §4.3:
             // a decoding error MUST be treated as a connection error of
             // type COMPRESSION_ERROR.
-            session.fatal_error = error.HTTP2CompressionError;
+            session.fatal_error = if (err == error.OutOfMemory) err else error.HTTP2CompressionError;
             return;
-        };
-        offset += result.next;
+        }) orelse break;
         if (result.name.len > 0 and result.name[0] == ':') {
             // §8.3.2: only `:status` is defined for responses, MUST appear
             // before any regular field, and MUST NOT repeat. §8.1: not
@@ -573,7 +561,7 @@ const log = bun.Output.scoped(.h2_client, .hidden);
 const ClientSession = @import("./ClientSession.zig");
 const Stream = @import("./Stream.zig");
 const std = @import("std");
-const wire = @import("../H2FrameParser.zig");
+const wire = @import("../H2Frame.zig");
 
 const H2 = @import("../H2Client.zig");
 const local_max_header_list_size = H2.local_max_header_list_size;

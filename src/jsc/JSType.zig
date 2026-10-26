@@ -1,567 +1,102 @@
-/// JSType is a critical performance optimization in JavaScriptCore that enables O(1) type
-/// identification for JavaScript values without virtual function calls or expensive RTTI.
-///
-/// THE FUNDAMENTAL ARCHITECTURE:
-///
-/// JSValue (64-bit on modern platforms):
-/// ┌─────────────────────────────────────────────────────────────────┐
-/// │ Either: Immediate value (int32, bool, null, undefined, double)   │
-/// │    Or:  Pointer to JSCell + type bits                           │
-/// └─────────────────────────────────────────────────────────────────┘
-///
-/// JSCell (base class for all heap objects):
-/// ┌─────────────────────────────────────────────────────────────────┐
-/// │ m_structureID │ m_indexingTypeAndMisc │ m_type │ m_flags │ ...   │
-/// │               │                       │ (u8)   │         │       │
-/// └─────────────────────────────────────────────────────────────────┘
-///                                           ↑
-///                                      JSType enum
-///
-/// PERFORMANCE CRITICAL DESIGN:
-///
-/// Instead of virtual function calls like:
-///   if (cell->isString()) // virtual call overhead
-///
-/// JavaScriptCore uses direct memory access:
-///   if (cell->type() == StringType) // single memory load + compare
-///
-/// This JSType enum provides the complete taxonomy of JavaScript runtime types,
-/// enabling the engine to make blazing-fast type decisions that are essential
-/// for JavaScript's dynamic nature.
-///
-/// TYPE HIERARCHY MAPPING:
-///
-/// JavaScript Primitives → JSType:
-/// • string → String (heap-allocated) or immediate (small strings)
-/// • number → immediate double/int32 or HeapBigInt
-/// • boolean → immediate true/false
-/// • symbol → Symbol
-/// • bigint → HeapBigInt or BigInt32 (immediate)
-/// • null/undefined → immediate values
-///
-/// JavaScript Objects → JSType:
-/// • {} → Object, FinalObject
-/// • [] → Array, DerivedArray
-/// • function → JSFunction, InternalFunction
-/// • new Int8Array() → Int8Array
-/// • new Error() → ErrorInstance
-/// • arguments → DirectArguments, ScopedArguments
-///
-/// Engine Internals → JSType:
-/// • Structure → metadata for object layout optimization
-/// • CodeBlock → compiled JavaScript bytecode
-/// • Executable → function compilation units
-///
-/// FAST PATH OPTIMIZATIONS:
-///
-/// The JSType enables JavaScriptCore's legendary performance through:
-///
-/// 1. Inline Caching: "This property access was on a String last time,
-///    check if it's still a String with one comparison"
-///
-/// 2. Speculative Compilation: "This function usually gets Arrays,
-///    generate optimized code for Arrays and deoptimize if wrong"
-///
-/// 3. Polymorphic Inline Caches: "This call site sees Objects and Arrays,
-///    generate a fast switch on JSType"
-///
-/// 4. Type Guards: "Assume this is a String, insert a type check,
-///    and generate optimal string operations"
-///
-/// MEMORY LAYOUT OPTIMIZATION:
-///
-/// JSType is strategically placed in JSCell's header for cache efficiency.
-/// A typical property access like obj.prop becomes:
-///
-/// 1. Load JSCell* from JSValue (1 instruction)
-/// 2. Load JSType from JSCell header (1 instruction, same cache line)
-/// 3. Compare JSType against expected type (1 instruction)
-/// 4. Branch to optimized or generic path
-///
-/// This 3-instruction type check is what makes JavaScript competitive
-/// with statically typed languages in hot code paths.
-///
-/// The enum values are carefully ordered to enable range checks:
-/// • All typed arrays are consecutive (Int8Array..Float64Array)
-/// • All function types are grouped together
-/// • All array types are adjacent
-///
-/// This allows optimizations like:
-///   if (type >= Int8Array && type <= Float64Array) // single range check
-///   if (type >= JSFunction && type <= InternalFunction) // function check
+/// Cell tags returned by the engine's `jsValueType` shim. Numeric values match
+/// JSC::JSType; embedder tags occupy the high end of the range.
 pub const JSType = enum(u8) {
-    /// Base type for all JavaScript values that are heap-allocated.
-    /// Every object, function, string, etc. in JavaScript inherits from JSCell.
     Cell = 0,
-
-    /// Metadata object that describes the layout and properties of JavaScript objects.
-    /// Critical for property access optimization and inline caching.
     Structure = 1,
-
-    /// JavaScript string primitive.
-    /// ```js
-    /// "hello"
-    /// 'world'
-    /// `template ${string}`
-    /// ```
     String = 2,
-
-    /// Arbitrary precision integer type for JavaScript BigInt values.
-    /// ```js
-    /// 123n
-    /// BigInt(456)
-    /// 0x1ffffffffffffffffn
-    /// ```
     HeapBigInt = 3,
-
-    /// JavaScript Symbol primitive - unique identifiers.
-    /// ```js
-    /// Symbol()
-    /// Symbol('description')
-    /// Symbol.for('key')
-    /// ```
     Symbol = 4,
-
-    /// Accessor property descriptor containing getter and/or setter functions.
-    /// ```js
-    /// Object.defineProperty(obj, 'prop', {
-    ///   get() { return this._value; },
-    ///   set(v) { this._value = v; }
-    /// })
-    /// ```
     GetterSetter = 5,
-
-    /// Custom native getter/setter implementation for built-in properties.
-    /// ```js
-    /// // Built-in properties like Array.prototype.length
-    /// const arr = [1, 2, 3];
-    /// arr.length; // uses CustomGetterSetter
-    /// ```
     CustomGetterSetter = 6,
-
-    /// Wrapper for native API values exposed to JavaScript.
     APIValueWrapper = 7,
-
-    /// Compiled native code executable for built-in functions.
-    /// ```js
-    /// // Built-in functions like:
-    /// parseInt("42")
-    /// Array.from([1, 2, 3])
-    /// ```
     NativeExecutable = 8,
-
-    /// Compiled executable for top-level program code.
     ProgramExecutable = 9,
-
-    /// Compiled executable for ES6 module code.
     ModuleProgramExecutable = 10,
-
-    /// Compiled executable for eval() expressions.
-    /// ```js
-    /// eval('var x = 42; console.log(x);')
-    /// ```
     EvalExecutable = 11,
-
-    /// Compiled executable for function bodies.
-    /// ```js
-    /// function foo() { return 42; }
-    /// const bar = () => 123
-    /// ```
     FunctionExecutable = 12,
-
     UnlinkedFunctionExecutable = 13,
     UnlinkedProgramCodeBlock = 14,
     UnlinkedModuleProgramCodeBlock = 15,
     UnlinkedEvalCodeBlock = 16,
     UnlinkedFunctionCodeBlock = 17,
-
-    /// Compiled bytecode block ready for execution.
     CodeBlock = 18,
-
     JSCellButterfly = 19,
     JSSourceCode = 20,
-
-    /// Slim promise reaction (no rejection handler / context payload).
-    /// Internal object used in the promise resolution mechanism.
     SlimPromiseReaction = 21,
-
-    /// Full promise reaction (carries onFulfilled/onRejected and async context).
-    /// Internal object used in the promise resolution mechanism.
     FullPromiseReaction = 22,
-
-    /// Context object for Promise.all() operations.
-    /// Internal object used to track the state of Promise.all() resolution.
-    /// Note: Moved before ObjectType in recent WebKit.
     PromiseAllContext = 23,
-
-    /// Global context for Promise.all() (new in recent WebKit).
     PromiseAllGlobalContext = 24,
-
     WebAssemblyStreamingContext = 25,
-
-    /// Microtask dispatcher for promise/microtask queue management.
     JSMicrotaskDispatcher = 26,
-
-    /// Module loader registry entry (new C++ module loader).
     ModuleRegistryEntry = 27,
-
-    /// Module loading context (new C++ module loader).
     ModuleLoadingContext = 28,
-
-    /// Module loader payload (new C++ module loader).
     ModuleLoaderPayload = 29,
-
-    /// Module graph loading state (new C++ module loader).
     ModuleGraphLoadingState = 30,
-
-    /// JSModuleLoader cell type (new C++ module loader).
     JSModuleLoader = 31,
-
     Sentinel = 32,
-
-    /// Base JavaScript object type.
-    /// ```js
-    /// {}
-    /// new Object()
-    /// ```
     Object = 33,
-
-    /// Optimized object type for object literals with fixed properties.
-    /// ```js
-    /// { a: 1, b: 2 }
-    /// ```
     FinalObject = 34,
-
     JSCallee = 35,
-
-    /// JavaScript function object created from JavaScript source code.
-    /// ```js
-    /// function foo() {}
-    /// const bar = () => {}
-    /// class MyClass {
-    ///   method() {}
-    /// }
-    /// ```
     JSFunction = 36,
-
-    /// Built-in function implemented in native code.
-    /// ```js
-    /// Array.prototype.push
-    /// Object.keys
-    /// parseInt
-    /// console.log
-    /// ```
     InternalFunction = 37,
-
     NullSetterFunction = 38,
-
-    /// Boxed Boolean object.
-    /// ```js
-    /// new Boolean(true)
-    /// new Boolean(false)
-    /// ```
     BooleanObject = 39,
-
-    /// Boxed Number object.
-    /// ```js
-    /// new Number(42)
-    /// new Number(3.14)
-    /// ```
     NumberObject = 40,
-
-    /// JavaScript Error object and its subclasses.
-    /// ```js
-    /// new Error('message')
-    /// new TypeError()
-    /// throw new RangeError()
-    /// ```
     ErrorInstance = 41,
-
     GlobalProxy = 42,
-
-    /// Arguments object for function parameters.
-    /// ```js
-    /// function foo() {
-    ///   console.log(arguments[0]);
-    ///   console.log(arguments.length);
-    /// }
-    /// ```
     DirectArguments = 43,
-
     ScopedArguments = 44,
     ClonedArguments = 45,
-
-    /// JavaScript Array object.
-    /// ```js
-    /// []
-    /// [1, 2, 3]
-    /// new Array(10)
-    /// Array.from(iterable)
-    /// ```
     Array = 46,
-
-    /// Array subclass created through class extension.
-    /// ```js
-    /// class MyArray extends Array {}
-    /// const arr = new MyArray();
-    /// ```
     DerivedArray = 47,
-
-    /// ArrayBuffer for binary data storage.
-    /// ```js
-    /// new ArrayBuffer(1024)
-    /// ```
     ArrayBuffer = 48,
-
-    /// Typed array for 8-bit signed integers.
-    /// ```js
-    /// new Int8Array(buffer)
-    /// new Int8Array([1, -1, 127])
-    /// ```
     Int8Array = 49,
-
-    /// Typed array for 8-bit unsigned integers.
-    /// ```js
-    /// new Uint8Array(buffer)
-    /// new Uint8Array([0, 255])
-    /// ```
     Uint8Array = 50,
-
-    /// Typed array for 8-bit unsigned integers with clamping.
-    /// ```js
-    /// new Uint8ClampedArray([0, 300]) // 300 becomes 255
-    /// ```
     Uint8ClampedArray = 51,
-
-    /// Typed array for 16-bit signed integers.
-    /// ```js
-    /// new Int16Array(buffer)
-    /// ```
     Int16Array = 52,
-
-    /// Typed array for 16-bit unsigned integers.
-    /// ```js
-    /// new Uint16Array(buffer)
-    /// ```
     Uint16Array = 53,
-
-    /// Typed array for 32-bit signed integers.
-    /// ```js
-    /// new Int32Array(buffer)
-    /// ```
     Int32Array = 54,
-
-    /// Typed array for 32-bit unsigned integers.
-    /// ```js
-    /// new Uint32Array(buffer)
-    /// ```
     Uint32Array = 55,
-
-    /// Typed array for 16-bit floating point numbers.
-    /// ```js
-    /// new Float16Array(buffer)
-    /// ```
     Float16Array = 56,
-
-    /// Typed array for 32-bit floating point numbers.
-    /// ```js
-    /// new Float32Array(buffer)
-    /// ```
     Float32Array = 57,
-
-    /// Typed array for 64-bit floating point numbers.
-    /// ```js
-    /// new Float64Array(buffer)
-    /// ```
     Float64Array = 58,
-
-    /// Typed array for 64-bit signed BigInt values.
-    /// ```js
-    /// new BigInt64Array([123n, -456n])
-    /// ```
     BigInt64Array = 59,
-
-    /// Typed array for 64-bit unsigned BigInt values.
-    /// ```js
-    /// new BigUint64Array([123n, 456n])
-    /// ```
     BigUint64Array = 60,
-
-    /// DataView for flexible binary data access.
-    /// ```js
-    /// new DataView(buffer)
-    /// view.getInt32(0)
-    /// view.setFloat64(8, 3.14)
-    /// ```
     DataView = 61,
-
-    /// Global object containing all global variables and functions.
-    /// ```js
-    /// globalThis
-    /// window // in browsers
-    /// global // in Node.js
-    /// ```
     GlobalObject = 62,
-
     GlobalLexicalEnvironment = 63,
     LexicalEnvironment = 64,
     ModuleEnvironment = 65,
     StrictEvalActivation = 66,
-
-    /// Scope object for with statements.
-    /// ```js
-    /// with (obj) {
-    ///   prop; // looks up prop in obj first
-    /// }
-    /// ```
     WithScope = 67,
-
     AsyncDisposableStack = 68,
     DisposableStack = 69,
-
-    /// Namespace object for ES6 modules.
-    /// ```js
-    /// import * as ns from 'module';
-    /// ns.exportedFunction()
-    /// ```
     ModuleNamespaceObject = 70,
-
     ShadowRealm = 71,
-
-    /// Regular expression object.
-    /// ```js
-    /// /pattern/flags
-    /// new RegExp('pattern', 'flags')
-    /// /abc/gi
-    /// ```
     RegExpObject = 72,
-
-    /// JavaScript Date object for date/time operations.
-    /// ```js
-    /// new Date()
-    /// new Date('2023-01-01')
-    /// Date.now()
-    /// ```
     JSDate = 73,
-
-    /// Proxy object that intercepts operations on another object.
-    /// ```js
-    /// new Proxy(target, {
-    ///   get(obj, prop) { return obj[prop]; }
-    /// })
-    /// ```
     ProxyObject = 74,
-
-    /// Generator object created by generator functions.
-    /// ```js
-    /// function* gen() { yield 1; yield 2; }
-    /// const g = gen();
-    /// g.next()
-    /// ```
     Generator = 75,
-
-    /// Async generator object for asynchronous iteration.
-    /// ```js
-    /// async function* asyncGen() {
-    ///   yield await promise;
-    /// }
-    /// ```
     AsyncFunctionGenerator = 76,
-
     AsyncGenerator = 77,
-
-    /// Iterator for Array objects.
-    /// ```js
-    /// [1,2,3][Symbol.iterator]()
-    /// for (const x of array) {}
-    /// ```
     JSArrayIterator = 78,
-
     Iterator = 79,
     IteratorHelper = 80,
-
-    /// Iterator for Map objects.
-    /// ```js
-    /// map.keys()
-    /// map.values()
-    /// map.entries()
-    /// for (const [k,v] of map) {}
-    /// ```
     MapIterator = 81,
-
-    /// Iterator for Set objects.
-    /// ```js
-    /// set.values()
-    /// for (const value of set) {}
-    /// ```
     SetIterator = 82,
-
-    /// Iterator for String objects.
-    /// ```js
-    /// 'hello'[Symbol.iterator]()
-    /// for (const char of string) {}
-    /// ```
     StringIterator = 83,
-
     WrapForValidIterator = 84,
-
-    /// Iterator for RegExp string matching.
-    /// ```js
-    /// 'abc'.matchAll(/./g)
-    /// for (const match of string.matchAll(regex)) {}
-    /// ```
     RegExpStringIterator = 85,
-
     AsyncFromSyncIterator = 86,
-
-    /// JavaScript Promise object for asynchronous operations.
-    /// ```js
-    /// new Promise((resolve, reject) => {})
-    /// Promise.resolve(42)
-    /// async function foo() { await promise; }
-    /// ```
     JSPromise = 87,
-
-    /// JavaScript Map object for key-value storage.
-    /// ```js
-    /// new Map()
-    /// map.set(key, value)
-    /// map.get(key)
-    /// ```
     Map = 88,
-
-    /// JavaScript Set object for unique value storage.
-    /// ```js
-    /// new Set()
-    /// set.add(value)
-    /// set.has(value)
-    /// ```
     Set = 89,
-
-    /// WeakMap for weak key-value references.
-    /// ```js
-    /// new WeakMap()
-    /// weakMap.set(object, value)
-    /// ```
     WeakMap = 90,
-
-    /// WeakSet for weak value references.
-    /// ```js
-    /// new WeakSet()
-    /// weakSet.add(object)
-    /// ```
     WeakSet = 91,
-
     WebAssemblyModule = 92,
     WebAssemblyInstance = 93,
     WebAssemblyGCObject = 94,
-
-    /// Boxed String object.
-    /// ```js
-    /// new String("hello")
-    /// ```
     StringObject = 95,
-
     DerivedStringObject = 96,
     InternalFieldTuple = 97,
 
@@ -570,8 +105,7 @@ pub const JSType = enum(u8) {
     DOMWrapper = 0b11101110,
     EmbedderArrayLike = 0b11101101,
 
-    /// This means that we don't have Zig bindings for the type yet, but it
-    /// implements .toJSON()
+    /// An embedder type handled through its `toJSON()` method.
     JSAsJSONType = 0b11110000 | 1,
     _,
 
@@ -647,63 +181,13 @@ pub const JSType = enum(u8) {
         };
     }
 
-    pub fn isTypedArrayOrArrayBuffer(this: JSType) bool {
+    pub fn typedArrayElementSize(this: JSType) ?u8 {
         return switch (this) {
-            .ArrayBuffer,
-            .BigInt64Array,
-            .BigUint64Array,
-            .Float32Array,
-            .Float16Array,
-            .Float64Array,
-            .Int16Array,
-            .Int32Array,
-            .Int8Array,
-            .Uint16Array,
-            .Uint32Array,
-            .Uint8Array,
-            .Uint8ClampedArray,
-            => true,
-            else => false,
-        };
-    }
-
-    pub fn isArrayBufferLike(this: JSType) bool {
-        return switch (this) {
-            .DataView,
-            .ArrayBuffer,
-            .BigInt64Array,
-            .BigUint64Array,
-            .Float32Array,
-            .Float16Array,
-            .Float64Array,
-            .Int16Array,
-            .Int32Array,
-            .Int8Array,
-            .Uint16Array,
-            .Uint32Array,
-            .Uint8Array,
-            .Uint8ClampedArray,
-            => true,
-            else => false,
-        };
-    }
-
-    pub fn toTypedArrayType(this: JSType) bun.jsc.ArrayBuffer.TypedArrayType {
-        return switch (this) {
-            .Int8Array => .TypeInt8,
-            .Int16Array => .TypeInt16,
-            .Int32Array => .TypeInt32,
-            .Uint8Array => .TypeUint8,
-            .Uint8ClampedArray => .TypeUint8Clamped,
-            .Uint16Array => .TypeUint16,
-            .Uint32Array => .TypeUint32,
-            .Float16Array => .TypeFloat16,
-            .Float32Array => .TypeFloat32,
-            .Float64Array => .TypeFloat64,
-            .BigInt64Array => .TypeBigInt64,
-            .BigUint64Array => .TypeBigUint64,
-            .DataView => .TypeDataView,
-            else => .TypeNone,
+            .Uint8Array, .Uint8ClampedArray, .Int8Array => 1,
+            .Uint16Array, .Int16Array, .Float16Array => 2,
+            .Uint32Array, .Int32Array, .Float32Array => 4,
+            .BigUint64Array, .BigInt64Array, .Float64Array => 8,
+            else => null,
         };
     }
 
@@ -830,5 +314,3 @@ pub const JSType = enum(u8) {
         };
     }
 };
-
-const bun = @import("bun");

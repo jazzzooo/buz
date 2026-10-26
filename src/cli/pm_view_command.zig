@@ -14,6 +14,7 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
                         .result => |str| {
                             const source = &logger.Source.initPathString("package.json", str);
                             var log = logger.Log.init(allocator);
+                            defer log.deinit();
                             const json = JSON.parse(source, &log, allocator, false) catch break :from_package_json;
                             if (json.getStringCloned(allocator, "name") catch null) |name| {
                                 if (name.len > 0) {
@@ -42,21 +43,13 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
         encoded_name,
     }));
 
-    var headers: http.HeaderBuilder = .{};
-    headers.count("Accept", "application/json");
+    var headers: http.Headers = .{ .allocator = allocator };
+    defer headers.deinit();
+    try headers.append("Accept", "application/json");
     if (scope.token.len > 0) {
-        headers.count("Authorization", "");
-        headers.content.cap += "Bearer ".len + scope.token.len;
+        try headers.appendFmt("Authorization", "Bearer {s}", .{scope.token});
     } else if (scope.auth.len > 0) {
-        headers.count("Authorization", "");
-        headers.content.cap += "Basic ".len + scope.auth.len;
-    }
-    try headers.allocate(allocator);
-    headers.append("Accept", "application/json");
-    if (scope.token.len > 0) {
-        headers.appendFmt("Authorization", "Bearer {s}", .{scope.token});
-    } else if (scope.auth.len > 0) {
-        headers.appendFmt("Authorization", "Basic {s}", .{scope.auth});
+        try headers.appendFmt("Authorization", "Basic {s}", .{scope.auth});
     }
 
     var response_buf = try MutableString.init(allocator, 2048);
@@ -65,9 +58,10 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
         .GET,
         url,
         headers.entries,
-        headers.content.ptr.?[0..headers.content.len],
+        headers.buf.items,
         &response_buf,
         "",
+        manager.javascript_semantics,
         manager.httpProxy(url),
         null,
         .follow,
@@ -84,6 +78,7 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
     }
 
     var log = logger.Log.init(allocator);
+    defer log.deinit();
     const source = &logger.Source.initPathString("view.json", response_buf.list.items);
     var json = JSON.parseUTF8(source, &log, allocator) catch |err| {
         Output.err(err, "failed to parse response body as JSON", .{});
@@ -105,6 +100,7 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
         "", // etag (not needed for view)
         0, // public_max_age (not needed for view)
         true, // is_extended_manifest (view uses application/json Accept header)
+        manager.javascript_semantics,
     ) catch |err| {
         Output.err(err, "failed to parse package manifest", .{});
         Global.exit(1);

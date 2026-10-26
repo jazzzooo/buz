@@ -1,42 +1,44 @@
 #include "root.h"
 
 #include "FormatStackTraceForJS.h"
+#include "SchemaBindings.h"
 #include "ZigGlobalObject.h"
 #include "helpers.h"
 
 #include "JavaScriptCore/ArgList.h"
 #include "JavaScriptCore/CallData.h"
-#include "JavaScriptCore/TopExceptionScope.h"
 #include "JavaScriptCore/Error.h"
 #include "JavaScriptCore/ErrorInstance.h"
 #include "JavaScriptCore/ExceptionScope.h"
-#include "JavaScriptCore/Identifier.h"
+#include "JavaScriptCore/GetterSetter.h"
 #include "JavaScriptCore/JSArray.h"
 #include "JavaScriptCore/JSCast.h"
 #include "JavaScriptCore/JSCJSValue.h"
 #include "JavaScriptCore/JSObject.h"
 #include "JavaScriptCore/JSString.h"
+#include "JavaScriptCore/PropertyDescriptor.h"
 #include "JavaScriptCore/StackFrame.h"
 #include "JavaScriptCore/VM.h"
 
 #include "BunClientData.h"
 #include "CallSite.h"
+#include "ErrorStackFrame.h"
 #include "ErrorStackTrace.h"
-#include "headers-handwritten.h"
+#include <wtf/SetForScope.h>
+#include <wtf/text/MakeString.h>
 
 using namespace JSC;
 using namespace WebCore;
 
 namespace Bun {
 
-static JSValue formatStackTraceToJSValue(JSC::VM& vm, Zig::GlobalObject* globalObject, JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSObject* errorObject, JSC::JSArray* callSites)
+static String formatCallSites(JSC::VM& vm, JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSObject* errorObject, JSC::JSArray* callSites)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    // default formatting
     size_t framesCount = callSites->length();
 
-    WTF::StringBuilder sb;
+    WTF::StringBuilder sb(OverflowPolicy::RecordOverflow);
 
     auto errorMessage = errorObject->getIfPropertyExists(lexicalGlobalObject, vm.propertyNames->message);
     RETURN_IF_EXCEPTION(scope, {});
@@ -57,6 +59,10 @@ static JSValue formatStackTraceToJSValue(JSC::VM& vm, Zig::GlobalObject* globalO
 
     for (size_t i = 0; i < framesCount; i++) {
         sb.append("\n    at "_s);
+        if (sb.hasOverflowed()) {
+            throwOutOfMemoryError(lexicalGlobalObject, scope);
+            return {};
+        }
 
         JSC::JSValue callSiteValue = callSites->getIndex(lexicalGlobalObject, i);
         RETURN_IF_EXCEPTION(scope, {});
@@ -75,64 +81,87 @@ static JSValue formatStackTraceToJSValue(JSC::VM& vm, Zig::GlobalObject* globalO
         }
     }
 
-    return jsString(vm, sb.toString());
+    if (sb.hasOverflowed()) {
+        throwOutOfMemoryError(lexicalGlobalObject, scope);
+        return {};
+    }
+    auto result = tryMakeString(StringView(sb));
+    if (result.isNull())
+        throwOutOfMemoryError(lexicalGlobalObject, scope);
+    return result;
 }
 
-static JSValue formatStackTraceToJSValue(JSC::VM& vm, Zig::GlobalObject* globalObject, JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSObject* errorObject, JSC::JSArray* callSites, JSValue prepareStackTrace)
+class RecursiveStackAccessorScope {
+public:
+    RecursiveStackAccessorScope(JSGlobalObject* globalObject, JSObject* errorObject, GetterSetter* accessor, bool* stackPropertyChanged)
+        : m_globalObject(globalObject)
+        , m_errorObject(errorObject)
+        , m_accessor(accessor)
+        , m_stackPropertyChanged(stackPropertyChanged)
+        , m_original(errorObject->getDirect(globalObject->vm(), globalObject->vm().propertyNames->stack, m_originalAttributes))
+    {
+        m_errorObject->putDirectNonIndexAccessor(globalObject->vm(), globalObject->vm().propertyNames->stack, accessor, PropertyAttribute::Accessor | PropertyAttribute::DontEnum);
+    }
+
+    ~RecursiveStackAccessorScope()
+    {
+        auto& vm = m_globalObject->vm();
+        unsigned attributes = 0;
+        auto current = m_errorObject->getDirect(vm, vm.propertyNames->stack, attributes);
+        if (current != m_accessor || attributes != (PropertyAttribute::Accessor | PropertyAttribute::DontEnum)) {
+            if (m_stackPropertyChanged)
+                *m_stackPropertyChanged = true;
+            if (auto* error = dynamicDowncast<ErrorInstance>(m_errorObject))
+                error->setStackPropertyAlreadyMaterialized();
+            return;
+        }
+
+        if (m_originalAttributes & PropertyAttribute::Accessor)
+            m_errorObject->putDirectNonIndexAccessor(vm, vm.propertyNames->stack, uncheckedDowncast<GetterSetter>(m_original), m_originalAttributes);
+        else if (m_originalAttributes & PropertyAttribute::CustomAccessorOrValue)
+            m_errorObject->putDirectCustomAccessor(vm, vm.propertyNames->stack, m_original, m_originalAttributes);
+        else if (m_original)
+            m_errorObject->putDirect(vm, vm.propertyNames->stack, m_original, m_originalAttributes);
+        else {
+            DeletePropertySlot slot;
+            JSObject::deleteProperty(m_errorObject, m_globalObject, vm.propertyNames->stack, slot);
+        }
+    }
+
+private:
+    JSGlobalObject* m_globalObject;
+    JSObject* m_errorObject;
+    GetterSetter* m_accessor;
+    bool* m_stackPropertyChanged;
+    unsigned m_originalAttributes = 0;
+    JSValue m_original;
+};
+
+static JSValue formatStackTraceToJSValue(JSC::VM& vm, Zig::GlobalObject* globalObject, JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSObject* errorObject, JSC::JSArray* callSites, JSValue prepareStackTrace, bool* stackPropertyChanged)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
-    auto stackStringValue = formatStackTraceToJSValue(vm, globalObject, lexicalGlobalObject, errorObject, callSites);
+    auto callData = JSC::getCallData(prepareStackTrace);
+    RELEASE_ASSERT(callData.type != JSC::CallData::Type::None);
+
+    MarkedArgumentBuffer arguments;
+    arguments.append(errorObject);
+    arguments.append(callSites);
+    if (arguments.hasOverflowed()) {
+        throwOutOfMemoryError(lexicalGlobalObject, scope);
+        return {};
+    }
+
+    auto factory = bun_bindgen_source_function_RuntimeFunctions_createRecursiveStackAccessor_value(globalObject);
+    RETURN_IF_EXCEPTION(scope, {});
+    auto accessors = profiledCall(lexicalGlobalObject, ProfilingReason::Other, factory, getCallData(factory), jsUndefined(), arguments);
+    RETURN_IF_EXCEPTION(scope, {});
+    auto* accessor = uncheckedDowncast<GetterSetter>(asObject(accessors)->getDirect(vm, vm.propertyNames->stack));
+    RecursiveStackAccessorScope recursiveStack(lexicalGlobalObject, errorObject, accessor, stackPropertyChanged);
     RETURN_IF_EXCEPTION(scope, {});
 
-    if (prepareStackTrace && prepareStackTrace.isObject()) {
-        JSC::CallData prepareStackTraceCallData = JSC::getCallData(prepareStackTrace);
-
-        if (prepareStackTraceCallData.type != JSC::CallData::Type::None) {
-            // In Node, if you console.log(error.stack) inside Error.prepareStackTrace
-            // it will display the stack as a formatted string, so we have to do the same.
-            errorObject->putDirect(vm, vm.propertyNames->stack, stackStringValue, 0);
-
-            JSC::MarkedArgumentBuffer arguments;
-            arguments.append(errorObject);
-            arguments.append(callSites);
-
-            JSC::JSValue result = profiledCall(
-                lexicalGlobalObject,
-                JSC::ProfilingReason::Other,
-                prepareStackTrace,
-                prepareStackTraceCallData,
-                lexicalGlobalObject->m_errorStructure.constructor(globalObject),
-                arguments);
-
-            RETURN_IF_EXCEPTION(scope, stackStringValue);
-
-            if (result.isUndefinedOrNull()) {
-                result = jsUndefined();
-            }
-
-            return result;
-        }
-    }
-
-    return stackStringValue;
-}
-
-static JSValue formatStackTraceToJSValueWithoutPrepareStackTrace(JSC::VM& vm, Zig::GlobalObject* globalObject, JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSObject* errorObject, JSC::JSArray* callSites)
-{
-    JSValue prepareStackTrace = {};
-    if (lexicalGlobalObject->inherits<Zig::GlobalObject>()) {
-        if (auto prepare = globalObject->m_errorConstructorPrepareStackTraceValue.get()) {
-            prepareStackTrace = prepare;
-        }
-    } else {
-        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-
-        auto* errorConstructor = lexicalGlobalObject->m_errorStructure.constructor(globalObject);
-        prepareStackTrace = errorConstructor->getIfPropertyExists(lexicalGlobalObject, JSC::Identifier::fromString(vm, "prepareStackTrace"_s));
-        CLEAR_IF_EXCEPTION(scope);
-    }
-
-    return formatStackTraceToJSValue(vm, globalObject, lexicalGlobalObject, errorObject, callSites, prepareStackTrace);
+    RELEASE_AND_RETURN(scope, profiledCall(
+        lexicalGlobalObject, ProfilingReason::Other, prepareStackTrace, callData,
+        lexicalGlobalObject->m_errorStructure.constructor(lexicalGlobalObject), arguments));
 }
 
 WTF::String formatStackTrace(
@@ -159,13 +188,11 @@ WTF::String formatStackTrace(
         sb.append(message);
     }
 
-    // FIXME: why can size == 6 and capacity == 0?
-    // https://discord.com/channels/876711213126520882/1174901590457585765/1174907969419350036
     size_t framesCount = stackTrace.size();
 
     bool hasSet = false;
-    void* bunVM = nullptr;
-    const auto getBunVM = [&]() -> void* {
+    VirtualMachine* bunVM = nullptr;
+    const auto getBunVM = [&]() -> VirtualMachine* {
         if (!bunVM) {
             bunVM = clientData(vm)->bunVM;
         }
@@ -181,11 +208,10 @@ WTF::String formatStackTrace(
                 // "".test(/[a-0]/);
                 auto originalLine = WTF::OrdinalNumber::fromOneBasedInt(err->line());
 
-                ZigStackFrame remappedFrame = {};
-                memset(&remappedFrame, 0, sizeof(ZigStackFrame));
+                Bun::RemappableStackFrame remappedFrame;
 
-                remappedFrame.position.line_zero_based = originalLine.zeroBasedInt();
-                remappedFrame.position.column_zero_based = 0;
+                remappedFrame.position.lineZeroBased = originalLine.zeroBasedInt();
+                remappedFrame.position.columnZeroBased = 0;
 
                 String sourceURLForFrame = err->sourceURL();
 
@@ -193,11 +219,10 @@ WTF::String formatStackTrace(
                 if (globalObject && !sourceURLForFrame.isEmpty()) {
                     // https://github.com/oven-sh/bun/issues/3595
                     if (!sourceURLForFrame.isEmpty()) {
-                        remappedFrame.source_url = Bun::toStringRef(sourceURLForFrame);
-                        // This ensures the lifetime of the sourceURL is accounted for correctly
-                        Bun__remapStackFramePositions(getBunVM(), &remappedFrame, 1);
+                        remappedFrame.sourceURL = sourceURLForFrame;
+                        Bun::remapStackFramePosition(getBunVM(), remappedFrame);
 
-                        sourceURLForFrame = remappedFrame.source_url.toWTFString();
+                        sourceURLForFrame = remappedFrame.sourceURL;
                     }
                 }
 
@@ -207,7 +232,7 @@ WTF::String formatStackTrace(
 
                 sb.append("    at <parse> ("_s);
 
-                sb.append(remappedFrame.source_url.toWTFString());
+                sb.append(remappedFrame.sourceURL);
 
                 if (remappedFrame.remapped) {
                     errorInstance->putDirect(vm, builtinNames(vm).originalLinePublicName(), jsNumber(originalLine.oneBasedInt()), PropertyAttribute::DontEnum | 0);
@@ -235,28 +260,18 @@ WTF::String formatStackTrace(
 
     sb.append("\n"_s);
 
-    // Pass 1: collect (line, col, source_url) for frames that should be
-    // source-mapped, then batch the remap so the Zig side can resolve each
-    // file's map once instead of per frame.
-    WTF::Vector<ZigStackFrame, 8> remappedFrames;
+    // Pass 1: collect the source positions for frames that should be source-mapped.
+    WTF::Vector<Bun::RemappableStackFrame, 8> remappedFrames;
     WTF::Vector<WTF::String, 8> sourceURLs;
     WTF::Vector<LineColumn, 8> originalLineColumns;
     remappedFrames.grow(framesCount);
-    memset(remappedFrames.begin(), 0, sizeof(ZigStackFrame) * framesCount);
     sourceURLs.grow(framesCount);
     originalLineColumns.grow(framesCount);
     bool anyRemap = false;
 
     for (size_t i = 0; i < framesCount; i++) {
         StackFrame& frame = stackTrace.at(i);
-        ZigStackFrame& remappedFrame = remappedFrames[i];
-        // Match `ZigStackFramePosition.invalid` exactly so the Zig batch loop's
-        // `position.isInvalid()` skips frames we never populate (vm-context
-        // frames, frames without line/col info). memset alone leaves
-        // `line_start_byte = 0` which fails that byte-compare.
-        remappedFrame.position.line_zero_based = -1;
-        remappedFrame.position.column_zero_based = -1;
-        remappedFrame.position.byte_position = -1;
+        auto& remappedFrame = remappedFrames[i];
         originalLineColumns[i] = {};
 
         if (!frame.hasLineAndColumnInfo()) continue;
@@ -277,23 +292,23 @@ WTF::String formatStackTrace(
         if (isDefinitelyNotRunninginNodeVMGlobalObject || isDefaultGlobalObjectInAFinalizer) {
             // https://github.com/oven-sh/bun/issues/3595
             if (!sourceURLs[i].isEmpty()) {
-                remappedFrame.position.line_zero_based = OrdinalNumber::fromOneBasedInt(originalLineColumns[i].line).zeroBasedInt();
-                remappedFrame.position.column_zero_based = OrdinalNumber::fromOneBasedInt(originalLineColumns[i].column).zeroBasedInt();
-                remappedFrame.source_url = Bun::toStringRef(sourceURLs[i]);
+                remappedFrame.position.lineZeroBased = OrdinalNumber::fromOneBasedInt(originalLineColumns[i].line).zeroBasedInt();
+                remappedFrame.position.columnZeroBased = OrdinalNumber::fromOneBasedInt(originalLineColumns[i].column).zeroBasedInt();
+                remappedFrame.sourceURL = sourceURLs[i];
                 anyRemap = true;
             }
         }
     }
 
     if (anyRemap) {
-        Bun__remapStackFramePositions(getBunVM(), remappedFrames.begin(), framesCount);
+        Bun::remapStackFramePositions(getBunVM(), remappedFrames.mutableSpan());
     }
 
-    // Pass 2: format. Everything except (display line/col, source_url) is
+    // Pass 2: format. Everything except the display position and source URL is
     // re-derived from `frame`; only the remap output is read from pass 1.
     for (size_t i = 0; i < framesCount; i++) {
         StackFrame& frame = stackTrace.at(i);
-        ZigStackFrame& remappedFrame = remappedFrames[i];
+        auto& remappedFrame = remappedFrames[i];
         unsigned int flags = static_cast<unsigned int>(FunctionNameFlags::AddNewKeyword);
 
         JSC::JSGlobalObject* globalObjectForFrame = lexicalGlobalObject;
@@ -321,7 +336,7 @@ WTF::String formatStackTrace(
             if (remappedFrame.remapped) {
                 displayLine = remappedFrame.position.line();
                 displayColumn = remappedFrame.position.column();
-                sourceURLForFrame = remappedFrame.source_url.toWTFString();
+                sourceURLForFrame = remappedFrame.sourceURL;
             }
 
             if (!hasSet) {
@@ -406,7 +421,6 @@ static String computeErrorInfoWithoutPrepareStackTrace(
     WTF::String message;
 
     if (errorInstance) {
-        // Note that we are not allowed to allocate memory in here. It's called inside a finalizer.
         if (auto* instance = dynamicDowncast<ErrorInstance>(errorInstance)) {
             if (!lexicalGlobalObject) {
                 lexicalGlobalObject = errorInstance->globalObject();
@@ -425,38 +439,48 @@ static String computeErrorInfoWithoutPrepareStackTrace(
     return Bun::formatStackTrace(vm, globalObject, lexicalGlobalObject, name, message, line, column, sourceURL, stackTrace, errorInstance);
 }
 
-static JSValue computeErrorInfoWithPrepareStackTrace(JSC::VM& vm, Zig::GlobalObject* globalObject, JSC::JSGlobalObject* lexicalGlobalObject, Vector<StackFrame>& stackFrames, OrdinalNumber& line, OrdinalNumber& column, String& sourceURL, JSObject* errorObject, JSObject* prepareStackTrace)
+static JSValue computeErrorInfoWithPrepareStackTrace(JSC::VM& vm, Zig::GlobalObject* globalObject, JSC::JSGlobalObject* lexicalGlobalObject, Vector<StackFrame>& stackFrames, OrdinalNumber& line, OrdinalNumber& column, String& sourceURL, JSObject* errorObject, JSObject* prepareStackTrace, bool* stackPropertyChanged)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSCStackTrace stackTrace = JSCStackTrace::fromExisting(vm, stackFrames);
-
-    // Note: we cannot use tryCreateUninitializedRestricted here because we cannot allocate memory inside initializeIndex()
+    MarkedArgumentBuffer frameRoots;
+    for (const auto& frame : stackFrames) {
+        if (auto* callee = frame.callee())
+            frameRoots.append(callee);
+        if (auto* codeBlock = frame.codeBlock())
+            frameRoots.append(codeBlock);
+        if (frameRoots.hasOverflowed()) {
+            throwOutOfMemoryError(lexicalGlobalObject, scope);
+            return {};
+        }
+    }
     MarkedArgumentBuffer callSites;
+    WTF::Vector<size_t> visibleFrameIndices;
 
-    // Create the call sites (one per frame)
-    Zig::createCallSitesFromFrames(globalObject, lexicalGlobalObject, stackTrace, callSites);
+    Zig::createCallSitesFromFrames(globalObject, lexicalGlobalObject, stackFrames, callSites, visibleFrameIndices);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (callSites.hasOverflowed()) {
+        throwOutOfMemoryError(lexicalGlobalObject, scope);
+        return {};
+    }
 
     // We need to sourcemap it if it's a GlobalObject.
 
-    const int n = stackTrace.size();
-    WTF::Vector<ZigStackFrame, 8> remappedFrames;
+    const size_t n = visibleFrameIndices.size();
+    WTF::Vector<Bun::RemappableStackFrame, 8> remappedFrames;
     WTF::Vector<WTF::String, 8> sourceURLs;
     WTF::Vector<bool, 8> didRemap;
-    remappedFrames.grow(n);
-    memset(remappedFrames.begin(), 0, sizeof(ZigStackFrame) * n);
-    sourceURLs.grow(n);
-    didRemap.grow(n);
+    if (!remappedFrames.tryGrow(n) || !sourceURLs.tryGrow(n) || !didRemap.tryGrow(n)) {
+        throwOutOfMemoryError(lexicalGlobalObject, scope);
+        return {};
+    }
     bool anyRemap = false;
 
-    for (int i = 0; i < n; i++) {
-        ZigStackFrame& frame = remappedFrames[i];
-        auto& stackFrame = stackFrames.at(i);
+    for (size_t i = 0; i < n; i++) {
+        auto& frame = remappedFrames[i];
+        auto& stackFrame = stackFrames.at(visibleFrameIndices[i]);
         sourceURLs[i] = Zig::sourceURL(vm, stackFrame);
         didRemap[i] = false;
-        frame.position.line_zero_based = -1;
-        frame.position.column_zero_based = -1;
-        frame.position.byte_position = -1;
 
         // When you use node:vm, the global object can be different on a
         // per-frame basis. We should sourcemap the frames which are in Bun's
@@ -475,13 +499,12 @@ static JSValue computeErrorInfoWithPrepareStackTrace(JSC::VM& vm, Zig::GlobalObj
         }
 
         if (globalObjectForFrame == globalObject) {
-            if (JSCStackFrame::SourcePositions* sourcePositions = stackTrace.at(i).getSourcePositions()) {
-                frame.position.line_zero_based = sourcePositions->line.zeroBasedInt();
-                frame.position.column_zero_based = sourcePositions->column.zeroBasedInt();
-            }
+            auto* callSite = uncheckedDowncast<CallSite>(callSites.at(i));
+            frame.position.lineZeroBased = callSite->lineNumber().zeroBasedInt();
+            frame.position.columnZeroBased = callSite->columnNumber().zeroBasedInt();
 
             if (!sourceURLs[i].isEmpty()) {
-                frame.source_url = Bun::toStringRef(sourceURLs[i]);
+                frame.sourceURL = sourceURLs[i];
                 didRemap[i] = true;
                 anyRemap = true;
             }
@@ -489,17 +512,20 @@ static JSValue computeErrorInfoWithPrepareStackTrace(JSC::VM& vm, Zig::GlobalObj
     }
 
     if (anyRemap) {
-        Bun__remapStackFramePositions(globalObject->bunVM(), remappedFrames.begin(), n);
+        Bun::remapStackFramePositions(globalObject->bunVM(), remappedFrames.mutableSpan());
     }
 
-    for (int i = 0; i < n; i++) {
-        ZigStackFrame& frame = remappedFrames[i];
-        WTF::String sourceURLForFrame = didRemap[i] ? frame.source_url.toWTFString() : sourceURLs[i];
+    for (size_t i = 0; i < n; i++) {
+        auto& frame = remappedFrames[i];
+        WTF::String sourceURLForFrame = didRemap[i] ? frame.sourceURL : sourceURLs[i];
 
         auto* callsite = uncheckedDowncast<CallSite>(callSites.at(i));
 
-        if (!sourceURLForFrame.isEmpty())
-            callsite->setSourceURL(vm, jsString(vm, sourceURLForFrame));
+        if (!sourceURLForFrame.isEmpty()) {
+            auto* source = jsString(vm, sourceURLForFrame);
+            RETURN_IF_EXCEPTION(scope, {});
+            callsite->setSourceURL(vm, source);
+        }
 
         if (frame.remapped) {
             callsite->setLineNumber(frame.position.line());
@@ -510,21 +536,13 @@ static JSValue computeErrorInfoWithPrepareStackTrace(JSC::VM& vm, Zig::GlobalObj
     JSArray* callSitesArray = JSC::constructArray(globalObject, globalObject->arrayStructureForIndexingTypeDuringAllocation(JSC::ArrayWithContiguous), callSites);
     RETURN_IF_EXCEPTION(scope, {});
 
-    RELEASE_AND_RETURN(scope, formatStackTraceToJSValue(vm, globalObject, lexicalGlobalObject, errorObject, callSitesArray, prepareStackTrace));
+    RELEASE_AND_RETURN(scope, formatStackTraceToJSValue(vm, globalObject, lexicalGlobalObject, errorObject, callSitesArray, prepareStackTrace, stackPropertyChanged));
 }
 
-static String computeErrorInfoToString(JSC::VM& vm, Vector<StackFrame>& stackTrace, OrdinalNumber& line, OrdinalNumber& column, String& sourceURL)
+static JSValue computeErrorInfoToJSValue(JSC::VM& vm, Vector<StackFrame>& stackTrace, OrdinalNumber& line, OrdinalNumber& column, String& sourceURL, JSObject* errorInstance, bool* stackPropertyChanged = nullptr)
 {
-
-    Zig::GlobalObject* globalObject = nullptr;
-    JSC::JSGlobalObject* lexicalGlobalObject = nullptr;
-
-    return computeErrorInfoWithoutPrepareStackTrace(vm, globalObject, lexicalGlobalObject, stackTrace, line, column, sourceURL, nullptr);
-}
-
-static JSValue computeErrorInfoToJSValueWithoutSkipping(JSC::VM& vm, Vector<StackFrame>& stackTrace, OrdinalNumber& line, OrdinalNumber& column, String& sourceURL, JSObject* errorInstance, void* bunErrorData)
-{
-    UNUSED_PARAM(bunErrorData);
+    if (stackPropertyChanged)
+        *stackPropertyChanged = false;
 
     Zig::GlobalObject* globalObject = nullptr;
     JSC::JSGlobalObject* lexicalGlobalObject = nullptr;
@@ -532,44 +550,22 @@ static JSValue computeErrorInfoToJSValueWithoutSkipping(JSC::VM& vm, Vector<Stac
     globalObject = dynamicDowncast<Zig::GlobalObject>(lexicalGlobalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    // Error.prepareStackTrace - https://v8.dev/docs/stack-trace-api#customizing-stack-traces
-    if (!globalObject) {
-        // node:vm will use a different JSGlobalObject
+    if (!globalObject)
         globalObject = defaultGlobalObject();
-        if (!globalObject->isInsideErrorPrepareStackTraceCallback) {
-            auto* errorConstructor = lexicalGlobalObject->m_errorStructure.constructor(lexicalGlobalObject);
-            auto prepareStackTrace = errorConstructor->getIfPropertyExists(lexicalGlobalObject, Identifier::fromString(vm, "prepareStackTrace"_s));
-            RETURN_IF_EXCEPTION(scope, {});
-            if (prepareStackTrace) {
-                if (prepareStackTrace.isCell() && prepareStackTrace.isObject() && prepareStackTrace.isCallable()) {
-                    globalObject->isInsideErrorPrepareStackTraceCallback = true;
-                    auto result = computeErrorInfoWithPrepareStackTrace(vm, globalObject, lexicalGlobalObject, stackTrace, line, column, sourceURL, errorInstance, prepareStackTrace.getObject());
-                    globalObject->isInsideErrorPrepareStackTraceCallback = false;
-                    RELEASE_AND_RETURN(scope, result);
-                }
-            }
-        }
-    } else if (!globalObject->isInsideErrorPrepareStackTraceCallback) {
-        if (JSValue prepareStackTrace = globalObject->m_errorConstructorPrepareStackTraceValue.get()) {
-            if (prepareStackTrace) {
-                if (prepareStackTrace.isCallable()) {
-                    globalObject->isInsideErrorPrepareStackTraceCallback = true;
-                    auto result = computeErrorInfoWithPrepareStackTrace(vm, globalObject, lexicalGlobalObject, stackTrace, line, column, sourceURL, errorInstance, prepareStackTrace.getObject());
-                    globalObject->isInsideErrorPrepareStackTraceCallback = false;
-                    RELEASE_AND_RETURN(scope, result);
-                }
-            }
-        }
+    if (!globalObject->isInsideErrorPrepareStackTraceCallback) {
+        SetForScope preparingStack(globalObject->isInsideErrorPrepareStackTraceCallback, true);
+        auto* errorConstructor = lexicalGlobalObject->m_errorStructure.constructor(lexicalGlobalObject);
+        auto prepareStackTrace = errorConstructor->getIfPropertyExists(lexicalGlobalObject, builtinNames(vm).prepareStackTracePublicName());
+        RETURN_IF_EXCEPTION(scope, {});
+        // The built-in formatter value selects the native default formatting path.
+        bool isDefaultFormatter = lexicalGlobalObject == globalObject && prepareStackTrace == globalObject->m_errorConstructorPrepareStackTraceInternalValue.get(globalObject);
+        if (prepareStackTrace && prepareStackTrace.isCallable() && !isDefaultFormatter)
+            RELEASE_AND_RETURN(scope, computeErrorInfoWithPrepareStackTrace(vm, globalObject, lexicalGlobalObject, stackTrace, line, column, sourceURL, errorInstance, prepareStackTrace.getObject(), stackPropertyChanged));
     }
 
     String result = computeErrorInfoWithoutPrepareStackTrace(vm, globalObject, lexicalGlobalObject, stackTrace, line, column, sourceURL, errorInstance);
     RETURN_IF_EXCEPTION(scope, {});
     return jsString(vm, result);
-}
-
-static JSValue computeErrorInfoToJSValue(JSC::VM& vm, Vector<StackFrame>& stackTrace, OrdinalNumber& line, OrdinalNumber& column, String& sourceURL, JSObject* errorInstance, void* bunErrorData)
-{
-    return computeErrorInfoToJSValueWithoutSkipping(vm, stackTrace, line, column, sourceURL, errorInstance, bunErrorData);
 }
 
 WTF::String computeErrorInfoWrapperToString(JSC::VM& vm, Vector<StackFrame>& stackTrace, unsigned int& line_in, unsigned int& column_in, String& sourceURL, void* bunErrorData)
@@ -579,14 +575,7 @@ WTF::String computeErrorInfoWrapperToString(JSC::VM& vm, Vector<StackFrame>& sta
     OrdinalNumber line = OrdinalNumber::fromOneBasedInt(line_in);
     OrdinalNumber column = OrdinalNumber::fromOneBasedInt(column_in);
 
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-    WTF::String result = computeErrorInfoToString(vm, stackTrace, line, column, sourceURL);
-    if (scope.exception()) {
-        // TODO: is this correct? vm.setOnComputeErrorInfo doesnt appear to properly handle a function that can throw
-        // test/js/node/test/parallel/test-stream-writable-write-writev-finish.js is the one that trips the exception checker
-        (void)scope.tryClearException();
-        result = WTF::emptyString();
-    }
+    WTF::String result = formatStackTrace(vm, defaultGlobalObject(), nullptr, "Error"_s, {}, line, column, sourceURL, stackTrace, nullptr);
 
     line_in = line.oneBasedInt();
     column_in = column.oneBasedInt();
@@ -604,147 +593,154 @@ void computeLineColumnWithSourcemap(JSC::VM& vm, JSC::SourceProvider* _Nonnull s
     OrdinalNumber line = OrdinalNumber::fromOneBasedInt(lineColumn.line);
     OrdinalNumber column = OrdinalNumber::fromOneBasedInt(lineColumn.column);
 
-    ZigStackFrame frame = {};
-    frame.position.line_zero_based = line.zeroBasedInt();
-    frame.position.column_zero_based = column.zeroBasedInt();
-    frame.source_url = Bun::toStringRef(sourceURL);
+    Bun::RemappableStackFrame frame;
+    frame.position.lineZeroBased = line.zeroBasedInt();
+    frame.position.columnZeroBased = column.zeroBasedInt();
+    frame.sourceURL = sourceURL;
 
-    Bun__remapStackFramePositions(Bun::vm(vm), &frame, 1);
+    Bun::remapStackFramePosition(Bun::vm(vm), frame);
 
     if (frame.remapped) {
         lineColumn.line = frame.position.line().oneBasedInt();
         lineColumn.column = frame.position.column().oneBasedInt();
-        remappedSourceURL = frame.source_url.toWTFString();
+        remappedSourceURL = frame.sourceURL;
     }
 }
 
 JSC::JSValue computeErrorInfoWrapperToJSValue(JSC::VM& vm, Vector<StackFrame>& stackTrace, unsigned int& line_in, unsigned int& column_in, String& sourceURL, JSObject* errorInstance, void* bunErrorData)
 {
+    UNUSED_PARAM(bunErrorData);
+    auto scope = DECLARE_THROW_SCOPE(vm);
     OrdinalNumber line = OrdinalNumber::fromOneBasedInt(line_in);
     OrdinalNumber column = OrdinalNumber::fromOneBasedInt(column_in);
+    String formattedSourceURL = sourceURL;
 
-    JSValue result = computeErrorInfoToJSValue(vm, stackTrace, line, column, sourceURL, errorInstance, bunErrorData);
+    JSValue result = computeErrorInfoToJSValue(vm, stackTrace, line, column, formattedSourceURL, errorInstance);
+    RETURN_IF_EXCEPTION(scope, {});
 
     line_in = line.oneBasedInt();
     column_in = column.oneBasedInt();
+    sourceURL = WTF::move(formattedSourceURL);
 
     return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(errorConstructorFuncAppendStackTrace, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+} // namespace Bun
+
+void Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_errorConstructorFuncAppendStackTrace(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_errorConstructorFuncAppendStackTrace_Arguments& args)
 {
-    Zig::GlobalObject* globalObject = static_cast<Zig::GlobalObject*>(lexicalGlobalObject);
+    JSC::JSGlobalObject* lexicalGlobalObject = &context.globalObject;
+    const std::optional<JSC::JSValue>& sourceInput = args.source;
+    const std::optional<JSC::JSValue>& destinationInput = args.destination;
+    Zig::GlobalObject* globalObject = defaultGlobalObject(lexicalGlobalObject);
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSC::ErrorInstance* source = dynamicDowncast<JSC::ErrorInstance>(callFrame->argument(0));
-    JSC::ErrorInstance* destination = dynamicDowncast<JSC::ErrorInstance>(callFrame->argument(1));
+    auto* source = sourceInput ? dynamicDowncast<JSC::ErrorInstance>(*sourceInput) : nullptr;
+    auto* destination = destinationInput ? dynamicDowncast<JSC::ErrorInstance>(*destinationInput) : nullptr;
 
     if (!source || !destination) {
         throwTypeError(lexicalGlobalObject, scope, "First & second argument must be an Error object"_s);
-        return {};
+        return;
+    }
+    if (source == destination)
+        return;
+
+    MarkedArgumentBuffer sourceRoots;
+    if (auto* frames = source->stackTrace()) {
+        for (const auto& frame : *frames) {
+            if (auto* callee = frame.callee())
+                sourceRoots.append(callee);
+            if (auto* codeBlock = frame.codeBlock())
+                sourceRoots.append(codeBlock);
+            if (sourceRoots.hasOverflowed()) {
+                throwOutOfMemoryError(lexicalGlobalObject, scope);
+                return;
+            }
+        }
     }
 
     if (!destination->stackTrace()) {
         destination->captureStackTrace(vm, globalObject, 1);
+        RETURN_IF_EXCEPTION(scope, void());
     }
 
     if (source->stackTrace()) {
-        destination->stackTrace()->appendVector(*source->stackTrace());
-        source->stackTrace()->clear();
+        bool appended;
+        {
+            Locker locker { destination->cellLock() };
+            appended = destination->stackTrace()->tryAppend(source->stackTrace()->span());
+        }
+        if (!appended) {
+            throwOutOfMemoryError(lexicalGlobalObject, scope);
+            return;
+        }
+        {
+            Locker locker { source->cellLock() };
+            source->stackTrace()->clear();
+        }
+        vm.writeBarrier(destination);
     }
 
-    return JSC::JSValue::encode(jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionDefaultErrorPrepareStackTrace, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
+WTF::String Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionDefaultErrorPrepareStackTrace(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionDefaultErrorPrepareStackTrace_Arguments& args)
 {
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-
-    auto errorObject = dynamicDowncast<JSC::ErrorInstance>(callFrame->argument(0));
-    auto callSites = dynamicDowncast<JSC::JSArray>(callFrame->argument(1));
-    if (!errorObject) {
-        throwTypeError(lexicalGlobalObject, scope, "First argument must be an Error object"_s);
-        return {};
-    }
-    if (!callSites) {
+    auto* globalObject = &context.globalObject;
+    auto& vm = globalObject->vm();
+    auto* callSites = args.callSites ? uncheckedDowncast<JSC::JSArray>(*args.callSites) : nullptr;
+    if (!callSites)
         callSites = JSArray::create(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(JSC::ArrayWithContiguous), 0);
-    }
-
-    JSValue result = formatStackTraceToJSValue(vm, globalObject, lexicalGlobalObject, errorObject, callSites, jsUndefined());
-
-    RETURN_IF_EXCEPTION(scope, {});
-
-    return JSC::JSValue::encode(result);
+    return Bun::formatCallSites(vm, globalObject, JSC::asObject(args.error), callSites);
 }
 
-JSC_DEFINE_CUSTOM_GETTER(errorInstanceLazyStackCustomGetter, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, PropertyName))
+void Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_errorConstructorFuncCaptureStackTrace(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_errorConstructorFuncCaptureStackTrace_Arguments& args)
 {
+    JSC::JSGlobalObject* lexicalGlobalObject = &context.globalObject;
+    JSC::JSObject* errorObject = JSC::asObject(args.target);
+    JSC::JSValue caller = args.caller;
+    Zig::GlobalObject* globalObject = defaultGlobalObject(lexicalGlobalObject);
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    auto* errorObject = dynamicDowncast<ErrorInstance>(JSValue::decode(thisValue));
 
-    // This shouldn't be possible.
-    if (!errorObject) {
-        return JSValue::encode(jsUndefined());
+    bool extensible = errorObject->isExtensible(lexicalGlobalObject);
+    RETURN_IF_EXCEPTION(scope, void());
+    if (!extensible) {
+        throwTypeError(lexicalGlobalObject, scope, "Cannot define property stack, object is not extensible"_s);
+        return;
     }
 
-    OrdinalNumber line;
-    OrdinalNumber column;
-    String sourceURL;
-    auto stackTrace = errorObject->stackTrace();
-
-    JSValue result;
-    if (stackTrace == nullptr) {
-        WTF::Vector<JSC::StackFrame> emptyTrace;
-        result = computeErrorInfoToJSValue(vm, emptyTrace, line, column, sourceURL, errorObject, nullptr);
+    auto* instance = dynamicDowncast<JSC::ErrorInstance>(errorObject);
+    bool configurable = true;
+    if (instance) {
+        unsigned attributes = 0;
+        if (instance->getDirect(vm, vm.propertyNames->stack, attributes))
+            configurable = !(attributes & PropertyAttribute::DontDelete);
     } else {
-        result = computeErrorInfoToJSValue(vm, *stackTrace, line, column, sourceURL, errorObject, nullptr);
-        stackTrace->clear();
-        errorObject->setStackFrames(vm, {});
+        PropertyDescriptor descriptor;
+        if (errorObject->getOwnPropertyDescriptor(lexicalGlobalObject, vm.propertyNames->stack, descriptor))
+            configurable = descriptor.configurable();
+        RETURN_IF_EXCEPTION(scope, void());
     }
-    RETURN_IF_EXCEPTION(scope, {});
-    errorObject->putDirect(vm, vm.propertyNames->stack, result, 0);
-    return JSValue::encode(result);
-}
-
-JSC_DEFINE_CUSTOM_SETTER(errorInstanceLazyStackCustomSetter, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue value, PropertyName))
-{
-    auto& vm = JSC::getVM(globalObject);
-    JSValue decodedValue = JSValue::decode(thisValue);
-    if (auto* object = decodedValue.getObject()) {
-        object->putDirect(vm, vm.propertyNames->stack, JSValue::decode(value), 0);
+    if (!configurable) {
+        throwTypeError(lexicalGlobalObject, scope, "Cannot redefine property: stack"_s);
+        return;
     }
-
-    return true;
-}
-
-JSC_DEFINE_HOST_FUNCTION(errorConstructorFuncCaptureStackTrace, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
-{
-    Zig::GlobalObject* globalObject = static_cast<Zig::GlobalObject*>(lexicalGlobalObject);
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    JSC::JSValue objectArg = callFrame->argument(0);
-    if (!objectArg.isObject()) {
-        return JSC::JSValue::encode(throwTypeError(lexicalGlobalObject, scope, "invalid_argument"_s));
-    }
-
-    JSC::JSObject* errorObject = objectArg.asCell()->getObject();
-    JSC::JSValue caller = callFrame->argument(1);
 
     size_t stackTraceLimit = globalObject->stackTraceLimit().value_or(DEFAULT_ERROR_STACK_TRACE_LIMIT);
-    if (stackTraceLimit == 0) {
-        stackTraceLimit = DEFAULT_ERROR_STACK_TRACE_LIMIT;
-    }
 
     WTF::Vector<JSC::StackFrame> stackTrace;
-    JSCStackTrace::getFramesForCaller(vm, callFrame, errorObject, caller, stackTrace, stackTraceLimit);
+    Zig::getFramesForCaller(vm, errorObject, caller, stackTrace, stackTraceLimit);
+    RETURN_IF_EXCEPTION(scope, void());
 
-    if (auto* instance = dynamicDowncast<JSC::ErrorInstance>(errorObject)) {
-        if (instance->hasMaterializedErrorInfo()) {
+    if (instance) {
+        if (instance->hasMaterializedErrorInfo() || instance->isMaterializingErrorInfo()) {
             // Error info was already materialized (e.g. .stack was previously accessed).
             // Don't call setStackFrames — it would leave m_errorInfoMaterialized=true with
             // a non-null m_stackTrace, causing ASSERT(!m_errorInfoMaterialized) in
@@ -753,41 +749,45 @@ JSC_DEFINE_HOST_FUNCTION(errorConstructorFuncCaptureStackTrace, (JSC::JSGlobalOb
             OrdinalNumber line;
             OrdinalNumber column;
             String sourceURL;
-            JSValue result = computeErrorInfoToJSValue(vm, stackTrace, line, column, sourceURL, errorObject, nullptr);
-            RETURN_IF_EXCEPTION(scope, {});
-            errorObject->putDirect(vm, vm.propertyNames->stack, result, 0);
-        } else {
-            // Not yet materialized — safe to install new frames with a lazy getter.
-            instance->setStackFrames(vm, WTF::move(stackTrace));
-
-            {
-                const auto& propertyName = vm.propertyNames->stack;
-                VM::DeletePropertyModeScope deleteScope(vm, VM::DeletePropertyMode::IgnoreConfigurable);
-                DeletePropertySlot slot;
-                JSObject::deleteProperty(instance, globalObject, propertyName, slot);
+            bool stackPropertyChanged;
+            JSValue result = computeErrorInfoToJSValue(vm, stackTrace, line, column, sourceURL, errorObject, &stackPropertyChanged);
+            RETURN_IF_EXCEPTION(scope, void());
+            if (!stackPropertyChanged) {
+                PropertyDescriptor descriptor(result, static_cast<unsigned>(PropertyAttribute::DontEnum));
+                errorObject->methodTable()->defineOwnProperty(errorObject, lexicalGlobalObject, vm.propertyNames->stack, descriptor, true);
+                RETURN_IF_EXCEPTION(scope, void());
             }
-            RETURN_IF_EXCEPTION(scope, {});
-
-            instance->putDirectCustomAccessor(vm, vm.propertyNames->stack, globalObject->m_lazyStackCustomGetterSetter.get(globalObject), JSC::PropertyAttribute::CustomAccessor | 0);
+        } else {
+            DeletePropertySlot slot;
+            bool deleted = JSObject::deleteProperty(instance, globalObject, vm.propertyNames->stack, slot);
+            RETURN_IF_EXCEPTION(scope, void());
+            if (!deleted) {
+                throwTypeError(lexicalGlobalObject, scope, "Cannot redefine property: stack"_s);
+                return;
+            }
+            instance->setStackFrames(vm, WTF::move(stackTrace));
         }
     } else {
         OrdinalNumber line;
         OrdinalNumber column;
         String sourceURL;
-        JSValue result = computeErrorInfoToJSValue(vm, stackTrace, line, column, sourceURL, errorObject, nullptr);
-        RETURN_IF_EXCEPTION(scope, {});
-        errorObject->putDirect(vm, vm.propertyNames->stack, result, 0);
+        bool stackPropertyChanged;
+        JSValue result = computeErrorInfoToJSValue(vm, stackTrace, line, column, sourceURL, errorObject, &stackPropertyChanged);
+        RETURN_IF_EXCEPTION(scope, void());
+        if (!stackPropertyChanged) {
+            PropertyDescriptor descriptor(result, static_cast<unsigned>(PropertyAttribute::DontEnum));
+            errorObject->methodTable()->defineOwnProperty(errorObject, lexicalGlobalObject, vm.propertyNames->stack, descriptor, true);
+            RETURN_IF_EXCEPTION(scope, void());
+        }
     }
-
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
-
-} // namespace Bun
 
 namespace Zig {
 
-void createCallSitesFromFrames(Zig::GlobalObject* globalObject, JSC::JSGlobalObject* lexicalGlobalObject, JSCStackTrace& stackTrace, MarkedArgumentBuffer& callSites)
+void createCallSitesFromFrames(Zig::GlobalObject* globalObject, JSC::JSGlobalObject* lexicalGlobalObject, const WTF::Vector<JSC::StackFrame>& stackTrace, MarkedArgumentBuffer& callSites, WTF::Vector<size_t>& visibleFrameIndices)
 {
+    auto& vm = lexicalGlobalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
     /* From v8's "Stack Trace API" (https://github.com/v8/v8/wiki/Stack-Trace-API):
      * "To maintain restrictions imposed on strict mode functions, frames that have a
      * strict mode function and all frames below (its caller etc.) are not allow to access
@@ -797,16 +797,30 @@ void createCallSitesFromFrames(Zig::GlobalObject* globalObject, JSC::JSGlobalObj
 
     // TODO: is it safe to use CallSite structure from a different JSGlobalObject? This case would happen within a node:vm
     JSC::Structure* callSiteStructure = globalObject->callSiteStructure();
+    RETURN_IF_EXCEPTION(scope, void());
     size_t framesCount = stackTrace.size();
+    if (!visibleFrameIndices.tryReserveInitialCapacity(framesCount)) {
+        throwOutOfMemoryError(lexicalGlobalObject, scope);
+        return;
+    }
 
     for (size_t i = 0; i < framesCount; i++) {
-        CallSite* callSite = CallSite::create(lexicalGlobalObject, callSiteStructure, stackTrace.at(i), encounteredStrictFrame);
+        if (isImplementationVisibilityPrivate(stackTrace.at(i)))
+            continue;
+        JSCStackFrame frame(vm, stackTrace.at(i));
+        CallSite* callSite = CallSite::create(lexicalGlobalObject, callSiteStructure, frame, encounteredStrictFrame);
+        RETURN_IF_EXCEPTION(scope, void());
 
         if (!encounteredStrictFrame) {
             encounteredStrictFrame = callSite->isStrict();
         }
 
         callSites.append(callSite);
+        if (callSites.hasOverflowed()) {
+            throwOutOfMemoryError(lexicalGlobalObject, scope);
+            return;
+        }
+        visibleFrameIndices.append(i);
     }
 }
 

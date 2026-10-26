@@ -313,7 +313,7 @@ When you're done with a JSCallback, you should call `close()` to free the memory
 
 `JSCallback` has experimental support for callbacks invoked by arbitrary native threads. Enable it with the optional `threadsafe` parameter. Bun queues each invocation on the JavaScript context that created the callback, so thread-safe callbacks are asynchronous and must return `void`.
 
-Thread-safe callback arguments may be scalar or pointer FFI types. JavaScript-managed argument types such as `buffer`, `napi_env`, and `napi_value` are not supported. Any native memory referenced by a pointer argument must remain valid until the callback runs.
+Thread-safe callback arguments may be scalar or pointer FFI types. JavaScript-managed argument types such as `buffer`, `napi_env`, and `napi_value` are not supported. Argument values are copied; native memory referenced by a pointer argument must remain valid until the JavaScript callback returns.
 
 ```ts
 const onResult = new JSCallback(
@@ -355,17 +355,7 @@ setOnResolve(onResolve);
 
 ## Pointers
 
-Bun represents [pointers](<https://en.wikipedia.org/wiki/Pointer_(computer_programming)>) as a `number` in JavaScript.
-
-<Accordion title="How does a 64 bit pointer fit in a JavaScript number?">
-
-64-bit processors support up to [52 bits of addressable space](https://en.wikipedia.org/wiki/64-bit_computing#Limits_of_processors). [JavaScript numbers](https://en.wikipedia.org/wiki/Double-precision_floating-point_format#IEEE_754_double-precision_binary_floating-point_format:_binary64) support 53 bits of usable space, so that leaves us with about 11 bits of extra space.
-
-**Why not `BigInt`?** `BigInt` is slower. JavaScript engines allocate a separate `BigInt` which means they can't fit into a regular JavaScript value. If you pass a `BigInt` to a function, it will be converted to a `number`
-
-**Windows Note**: The Windows API type HANDLE does not represent a virtual address, and using `ptr` for it will _not_ work as expected. Use `u64` to safely represent HANDLE values.
-
-</Accordion>
+Bun represents pointers within JavaScript's safe integer range as a `number` and larger addresses as a `bigint`. Pointer arguments accept either representation. Use a `bigint` for addresses that cannot be represented exactly as a JavaScript number.
 
 To convert from a `TypedArray` to a pointer:
 

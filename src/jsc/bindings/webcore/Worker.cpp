@@ -32,9 +32,9 @@
 #include "Event.h"
 #include "EventNames.h"
 #include "StructuredSerializeOptions.h"
+#include "StructuredSerializeBinding.h"
 #include <JavaScriptCore/IteratorOperations.h>
 #include <JavaScriptCore/ScriptCallStack.h>
-#include <wtf/TZoneMallocInlines.h>
 #include <wtf/Scope.h>
 #include "SerializedScriptValue.h"
 #include "ScriptExecutionContext.h"
@@ -43,55 +43,206 @@
 #include "MessageEvent.h"
 #include "BunWorkerGlobalScope.h"
 #include "CloseEvent.h"
+#include "SchemaBindings.h"
 #include "JSMessagePort.h"
 #include "JSBroadcastChannel.h"
+#include "JSDOMExceptionHandling.h"
+#include "NativeEventLoopTarget.h"
+#include <JavaScriptCore/TopExceptionScope.h>
+#include <algorithm>
+#include <type_traits>
+#include <wtf/text/StringImpl.h>
 
 namespace WebCore {
 
-WTF_MAKE_TZONE_ALLOCATED_IMPL(Worker);
+class Worker::ParentMessageDelivery final : public Bun::NativeEventLoopTarget {
+public:
+    static RefPtr<ParentMessageDelivery> tryCreate(Worker& worker)
+    {
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(ParentMessageDelivery)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) ParentMessageDelivery(worker));
+    }
 
-// ---- Zig FFI -----------------------------------------------------------------------------------
-// The Zig WebWorker struct is owned by this Worker (freed in ~Worker) and drives the worker
-// thread. See src/jsc/web_worker.zig for the matching side of each entry point.
-extern "C" {
+    void run(JSC::JSGlobalObject*) noexcept final
+    {
+        RefPtr worker = m_worker;
+        if (!worker)
+            return;
+        auto* context = worker->scriptExecutionContext();
+        if (context)
+            worker->drainToParent(*context);
+    }
 
-// Allocate the Zig WebWorker, take a keep-alive on the parent event loop, and spawn the worker
-// thread. Returns null (and sets errorMessage) on any failure; nothing needs cleanup in that case.
-void* WebWorker__create(
-    Worker* worker,
-    void* parent,
-    BunString name,
-    BunString url,
-    BunString* errorMessage,
-    uint32_t parentContextId,
-    uint32_t contextId,
-    bool miniMode,
-    bool unrefByDefault,
-    bool evalMode,
-    StringImpl** argvPtr,
-    size_t argvLen,
-    bool defaultExecArgv,
-    StringImpl** execArgvPtr,
-    size_t execArgvLen,
-    BunString* preloadModulesPtr,
-    size_t preloadModulesLen);
+    void stop() noexcept final
+    {
+        auto worker = std::exchange(m_worker, nullptr);
+        if (worker)
+            worker->m_toParent.close();
+    }
 
-// worker.terminate() — set requested_terminate, raise TerminationException in the worker VM,
-// wake the worker loop. Parent thread only.
-void WebWorker__notifyNeedTermination(void* worker);
+private:
+    explicit ParentMessageDelivery(Worker& worker)
+        : m_worker(&worker)
+    {
+    }
 
-// worker.ref()/.unref() — toggle the keep-alive on the parent event loop. Parent thread only.
-void WebWorker__setRef(void* worker, bool ref);
+    RefPtr<Worker> m_worker;
+};
 
-// Release the keep-alive on the parent event loop. Called from the close task on the parent
-// thread.
-void WebWorker__releaseParentPollRef(void* worker);
+template<bool isExit>
+class Worker::LifecycleDelivery final : public Bun::NativeEventLoopTarget {
+public:
+    static RefPtr<LifecycleDelivery> tryCreate(Worker& worker)
+    {
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(LifecycleDelivery)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) LifecycleDelivery(worker));
+    }
 
-// Free the Zig WebWorker struct. Called from ~Worker.
-void WebWorker__destroy(void* worker);
+    ~LifecycleDelivery()
+    {
+        ASSERT(!m_ownerSignal);
+        Locker locker { m_lock };
+        ASSERT(!m_sender);
+    }
 
-} // extern "C"
-// -------------------------------------------------------------------------------------------------
+    void setSignal(Bun::NativeEventLoopSignal* signal)
+    {
+        ASSERT(!m_ownerSignal);
+        m_ownerSignal = signal;
+        Locker locker { m_lock };
+        m_sender = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_retainNativeEventSignal(signal);
+    }
+
+    bool notify(int32_t exitCode) requires(isExit) { return notifyValue(exitCode); }
+    bool notify() requires(!isExit) { return notifyValue(0); }
+
+private:
+    bool notifyValue(int32_t exitCode)
+    {
+        Bun::NativeEventLoopSignal* sender;
+        {
+            Locker locker { m_lock };
+            if (!m_sender)
+                return false;
+            RELEASE_ASSERT(!m_posted);
+            m_posted = true;
+            m_exitCode = exitCode;
+            sender = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_retainNativeEventSignal(m_sender);
+        }
+        bool accepted = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_notifyNativeEventSignal(sender);
+        Bun::Bindgen::Engine::releaseNativeEventLoopSignal(sender);
+        return accepted;
+    }
+
+public:
+    void run(JSC::JSGlobalObject*) noexcept final
+    {
+        RefPtr worker = m_worker;
+        if (!worker)
+            return;
+        [[maybe_unused]] int32_t exitCode;
+        {
+            Locker locker { m_lock };
+            RELEASE_ASSERT(m_posted);
+            exitCode = m_exitCode;
+        }
+        if constexpr (isExit)
+            worker->finishExit(exitCode, true);
+        else {
+            stop();
+            if (worker->hasEventListeners(eventNames().openEvent))
+                worker->dispatchSimpleEvent(eventNames().openEvent);
+        }
+    }
+
+    void stop() noexcept final
+    {
+        Ref protectedThis { *this };
+        auto worker = std::exchange(m_worker, nullptr);
+        auto* owner = std::exchange(m_ownerSignal, nullptr);
+        Bun::NativeEventLoopSignal* sender;
+        {
+            Locker locker { m_lock };
+            sender = std::exchange(m_sender, nullptr);
+        }
+        if (sender)
+            Bun::Bindgen::Engine::releaseNativeEventLoopSignal(sender);
+        if (owner)
+            Bun::Bindgen::Engine::releaseNativeEventLoopSignalOwner(owner);
+    }
+
+private:
+    explicit LifecycleDelivery(Worker& worker)
+        : m_worker(&worker)
+    {
+    }
+
+    RefPtr<Worker> m_worker;
+    Bun::NativeEventLoopSignal* m_ownerSignal { nullptr };
+    Lock m_lock;
+    Bun::NativeEventLoopSignal* m_sender WTF_GUARDED_BY_LOCK(m_lock) { nullptr };
+    int32_t m_exitCode WTF_GUARDED_BY_LOCK(m_lock) { 0 };
+    bool m_posted WTF_GUARDED_BY_LOCK(m_lock) { false };
+};
+
+class Worker::WorkerMessageDelivery final : public Bun::NativeEventLoopTarget, public ScriptExecutionContext::NativeLifetime {
+public:
+    static RefPtr<WorkerMessageDelivery> tryCreate(Worker& worker)
+    {
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(WorkerMessageDelivery)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) WorkerMessageDelivery(worker));
+    }
+
+    ~WorkerMessageDelivery()
+    {
+        ASSERT(!m_signal);
+        detach();
+    }
+
+    void setSignal(Bun::NativeEventLoopSignal* signal)
+    {
+        ASSERT(!m_signal);
+        m_signal = signal;
+    }
+
+    void run(JSC::JSGlobalObject*) noexcept final
+    {
+        RefPtr worker = m_worker;
+        auto* scriptContext = context();
+        if (worker && scriptContext)
+            worker->drainToWorker(*scriptContext);
+    }
+
+    void stop() noexcept final
+    {
+        Ref protectedThis { *this };
+        detach();
+        auto worker = std::exchange(m_worker, nullptr);
+        auto* signal = std::exchange(m_signal, nullptr);
+        if (worker)
+            worker->m_toWorker.close();
+        if (signal)
+            Bun::Bindgen::Engine::releaseNativeEventLoopSignalOwner(signal);
+    }
+
+private:
+    explicit WorkerMessageDelivery(Worker& worker)
+        : m_worker(&worker)
+    {
+    }
+
+    void contextClosed() noexcept final { stop(); }
+
+    // Worker VM endpoints are closed before the thread-held Worker ref is released.
+    RefPtr<Worker> m_worker;
+    Bun::NativeEventLoopSignal* m_signal { nullptr };
+};
 
 Worker::Worker(ScriptExecutionContext& context, WorkerOptions&& options)
     : EventTargetWithInlineData()
@@ -102,9 +253,13 @@ Worker::Worker(ScriptExecutionContext& context, WorkerOptions&& options)
 {
 }
 
-ExceptionOr<Ref<Worker>> Worker::create(ScriptExecutionContext& context, const String& urlInit, WorkerOptions&& options)
+ExceptionOr<Ref<Worker>> Worker::prepare(ScriptExecutionContext& context, const String& urlInit, WorkerOptions&& options)
 {
-    auto worker = adoptRef(*new Worker(context, WTF::move(options)));
+    auto scope = DECLARE_THROW_SCOPE(context.jsGlobalObject()->vm());
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(Worker)).getValue(allocation))
+        return Exception { OutOfMemoryError };
+    auto worker = adoptRef(*new (NotNull, allocation) Worker(context, WTF::move(options)));
 
     WTF::String url = urlInit;
     if (url.startsWith("file://"_s)) {
@@ -115,84 +270,233 @@ ExceptionOr<Ref<Worker>> Worker::create(ScriptExecutionContext& context, const S
             return Exception { TypeError, makeString("Invalid file URL: \""_s, urlInit, '"') };
         }
     }
-    BunString urlStr = Bun::toString(url);
-    BunString errorMessage = BunStringEmpty;
-    BunString nameStr = Bun::toString(worker->m_options.name);
-
     auto& preloadModuleStrings = worker->m_options.preloadModules;
-    Vector<BunString> preloadModules;
-    preloadModules.reserveInitialCapacity(preloadModuleStrings.size());
     for (auto& str : preloadModuleStrings) {
         if (str.startsWith("file://"_s)) {
             WTF::URL urlObject = WTF::URL(str);
             if (!urlObject.isValid()) {
                 return Exception { TypeError, makeString("Invalid file URL: \""_s, str, '"') };
             }
-            // Replace in-place so the storage outlives the BunString borrow below.
             str = urlObject.fileSystemPath();
         }
-        preloadModules.append(Bun::toString(str));
     }
 
-    // try to ensure the cast from String* to StringImpl** is sane
-    static_assert(sizeof(WTF::String) == sizeof(WTF::StringImpl*));
-    std::span<WTF::StringImpl*> execArgv = worker->m_options.execArgv
-                                               .transform([](Vector<String>& vec) -> std::span<WTF::StringImpl*> {
-                                                   return { reinterpret_cast<WTF::StringImpl**>(vec.begin()), vec.size() };
-                                               })
-                                               .value_or(std::span<WTF::StringImpl*> {});
+    std::span<const WTF::String> execArgv = worker->m_options.execArgv
+                                                .transform([](Vector<String>& vec) -> std::span<const WTF::String> {
+                                                    return { vec.begin(), vec.size() };
+                                                })
+                                                .value_or(std::span<const WTF::String> {});
 
-    // Take the worker-thread-held ref BEFORE spawning. The spawned thread will
-    // eventually call dispatchExit(), whose posted task (running back on THIS
-    // thread) drops this ref. If creation fails below we drop it ourselves.
+    auto cancelDelivery = makeScopeExit([&] {
+        worker->closeParentMessageDelivery();
+        worker->closeLifecycleDelivery();
+    });
+    auto delivery = worker->prepareParentMessageDelivery();
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (delivery.hasException())
+        return delivery.releaseException();
+    auto exitDelivery = worker->prepareLifecycleDelivery<true>();
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (exitDelivery.hasException())
+        return exitDelivery.releaseException();
+    worker->m_exitDelivery = exitDelivery.releaseReturnValue();
+    auto onlineDelivery = worker->prepareLifecycleDelivery<false>();
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (onlineDelivery.hasException())
+        return onlineDelivery.releaseException();
+    worker->m_onlineDelivery = onlineDelivery.releaseReturnValue();
+
+    // Exit delivery or the parent's thread join releases this reference.
     worker->ref();
+    auto releaseThreadReference = makeScopeExit([&] {
+        worker->m_state.store(State::Closed);
+        worker->deref();
+    });
 
-    void* impl = WebWorker__create(
+    auto creationResult = Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerCreate(
+        context.jsGlobalObject(),
         worker.ptr(),
-        bunVM(context.jsGlobalObject()),
-        nameStr,
-        urlStr,
-        &errorMessage,
+        worker->m_options.name,
+        url,
         static_cast<uint32_t>(worker->m_parentContextId),
         static_cast<uint32_t>(worker->m_clientIdentifier),
         worker->m_options.mini,
         worker->m_options.unref,
         worker->m_options.evalMode,
-        reinterpret_cast<WTF::StringImpl**>(worker->m_options.argv.begin()),
-        worker->m_options.argv.size(),
         !worker->m_options.execArgv.has_value(),
-        execArgv.data(),
-        execArgv.size(),
-        preloadModules.begin(),
-        preloadModules.size());
+        std::span<const WTF::String> { worker->m_options.argv.begin(), worker->m_options.argv.size() },
+        execArgv,
+        std::span<const WTF::String> { preloadModuleStrings.begin(), preloadModuleStrings.size() });
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
 
     preloadModuleStrings.clear();
 
-    if (!impl) {
-        worker->m_state.store(State::Closed);
-        worker->deref(); // undo the thread-held ref above
-        return Exception { TypeError, errorMessage.toWTFString(BunString::ZeroCopy) };
+    if (!creationResult.state) {
+        return Exception { TypeError, WTF::move(creationResult.errorMessage) };
     }
 
-    // Parent-thread-only field; the close task can't run until we return to
-    // the event loop, so it's safe to set after the thread has been spawned.
-    worker->impl_ = impl;
+    // The new thread cannot access Worker until startup is committed.
+    worker->impl_ = *creationResult.state;
+    releaseThreadReference.release();
+    cancelDelivery.release();
 
     return worker;
 }
 
+ExceptionOr<void> Worker::commitStartup(JSC::JSGlobalObject& globalObject, MessagePort::PreparedMessage&& prepared)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
+    auto validation = prepared.validateForCommit(globalObject);
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (validation.hasException())
+        return validation.releaseException();
+    if (m_exitFinalized.load() || m_terminateRequested.load() || !scriptExecutionContext())
+        return Exception { InvalidStateError };
+    auto message = prepared.commitValidated(globalObject.vm());
+    m_options.workerDataAndEnvironmentData = WTF::move(message.message);
+    m_options.dataMessagePorts = WTF::move(message.transferredPorts);
+    Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerCommitStartup(impl_);
+    return {};
+}
+
+void Worker::cancelStartup()
+{
+    if (m_exitFinalized.load())
+        return;
+    terminate();
+    finishExit(0, false);
+}
+
 Worker::~Worker()
 {
+    closeLifecycleDelivery();
+    closeParentMessageDelivery();
+    m_toWorker.close();
+    m_toParent.close();
     if (impl_) {
-        WebWorker__destroy(impl_);
+        Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerDestroy(impl_);
     }
 }
 
-bool Worker::postTaskToParent(Function<void(ScriptExecutionContext&)>&& task)
+template<bool isExit>
+ExceptionOr<Ref<Worker::LifecycleDelivery<isExit>>> Worker::prepareLifecycleDelivery()
 {
-    // By stable identifier, not pointer — postTaskTo locks the global map and
-    // returns false if the parent context is gone. Safe from any thread.
-    return ScriptExecutionContext::postTaskTo(m_parentContextId, WTF::move(task));
+    auto target = LifecycleDelivery<isExit>::tryCreate(*this);
+    if (!target)
+        return Exception { OutOfMemoryError };
+    auto* global = scriptExecutionContext()->globalObject();
+    auto scope = DECLARE_THROW_SCOPE(global->vm());
+    auto signal = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_createNativeEventSignal(global, target.get());
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (!signal)
+        return Exception { InvalidStateError };
+    target->setSignal(*signal);
+    return target.releaseNonNull();
+}
+
+void Worker::closeLifecycleDelivery()
+{
+    if (m_exitDelivery)
+        m_exitDelivery->stop();
+    if (m_onlineDelivery)
+        m_onlineDelivery->stop();
+}
+
+ExceptionOr<void> Worker::prepareParentMessageDelivery()
+{
+    auto target = ParentMessageDelivery::tryCreate(*this);
+    if (!target)
+        return Exception { OutOfMemoryError };
+    auto* global = scriptExecutionContext()->globalObject();
+    auto scope = DECLARE_THROW_SCOPE(global->vm());
+    auto signal = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_createNativeEventSignal(global, target.get());
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (!signal)
+        return Exception { InvalidStateError };
+    m_parentMessageSignal = *signal;
+    if (!m_toParent.setSignal(*signal)) {
+        closeParentMessageDelivery();
+        return Exception { InvalidStateError };
+    }
+    return {};
+}
+
+ExceptionOr<void> Worker::prepareWorkerMessageDelivery(ScriptExecutionContext& context)
+{
+    auto target = WorkerMessageDelivery::tryCreate(*this);
+    if (!target)
+        return Exception { OutOfMemoryError };
+    if (!target->attach(context))
+        return Exception { InvalidStateError };
+    auto* global = context.globalObject();
+    auto scope = DECLARE_THROW_SCOPE(global->vm());
+    auto signal = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_createNativeEventSignal(global, target.get());
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (!signal)
+        return Exception { InvalidStateError };
+    target->setSignal(*signal);
+    if (!m_toWorker.setSignal(*signal)) {
+        target->stop();
+        return Exception { InvalidStateError };
+    }
+    return {};
+}
+
+void Worker::closeParentMessageDelivery()
+{
+    m_toParent.close();
+    if (auto* signal = std::exchange(m_parentMessageSignal, nullptr))
+        Bun::Bindgen::Engine::releaseNativeEventLoopSignalOwner(signal);
+}
+
+void Worker::MessageInbox::close()
+{
+    MessageQueue dropped;
+    Bun::NativeEventLoopSignal* releasedSignal;
+    {
+        Locker locker { lock };
+        closed.store(true, std::memory_order_release);
+        drainScheduled.store(false, std::memory_order_relaxed);
+        dropped = std::exchange(queue, {});
+        releasedSignal = std::exchange(signal, nullptr);
+    }
+    if (releasedSignal)
+        Bun::Bindgen::Engine::releaseNativeEventLoopSignal(releasedSignal);
+}
+
+bool Worker::MessageInbox::setSignal(Bun::NativeEventLoopSignal* preparedSignal)
+{
+    Locker locker { lock };
+    if (closed.load(std::memory_order_relaxed))
+        return false;
+    RELEASE_ASSERT(!signal);
+    signal = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_retainNativeEventSignal(preparedSignal);
+    return true;
+}
+
+void Worker::MessageInbox::notify()
+{
+    Bun::NativeEventLoopSignal* sender;
+    {
+        Locker locker { lock };
+        if (closed.load(std::memory_order_relaxed))
+            return;
+        RELEASE_ASSERT(signal);
+        sender = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_retainNativeEventSignal(signal);
+    }
+    bool accepted = Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_notifyNativeEventSignal(sender);
+    Bun::Bindgen::Engine::releaseNativeEventLoopSignal(sender);
+    if (!accepted)
+        close();
+}
+
+void Worker::contextDestroyed(ScriptExecutionContext&)
+{
+    Ref protectedThis { *this };
+    closeLifecycleDelivery();
+    closeParentMessageDelivery();
+    m_toWorker.close();
+    m_toParent.close();
 }
 
 // ---- Parent-thread API ------------------------------------------------------
@@ -202,84 +506,61 @@ ExceptionOr<void> Worker::postMessage(JSC::JSGlobalObject& state, JSC::JSValue m
     if (m_state.load() == State::Closed)
         return Exception { InvalidStateError, "Worker has been terminated"_s };
 
-    Vector<RefPtr<MessagePort>> ports;
-    auto serialized = SerializedScriptValue::create(state, messageValue, WTF::move(options.transfer), ports, SerializationForStorage::No, SerializationContext::WorkerPostMessage);
-    if (serialized.hasException())
-        return serialized.releaseException();
-
-    ExceptionOr<Vector<TransferredMessagePort>> disentangledPorts = MessagePort::disentanglePorts(WTF::move(ports));
-    if (disentangledPorts.hasException()) {
-        return disentangledPorts.releaseException();
-    }
-
-    enqueueToWorker(MessageWithMessagePorts { serialized.releaseReturnValue(), disentangledPorts.releaseReturnValue() });
+    auto scope = DECLARE_THROW_SCOPE(state.vm());
+    auto node = MessageQueue::Node::tryCreate();
+    if (!node)
+        return Exception { OutOfMemoryError };
+    auto prepared = MessagePort::prepareMessage(state, messageValue, WTF::move(options.transfer));
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (prepared.hasException())
+        return prepared.releaseException();
+    auto message = prepared.releaseReturnValue().commit(state);
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (message.hasException())
+        return message.releaseException();
+    node->message = message.releaseReturnValue();
+    enqueueToWorker(WTF::move(node));
     return {};
 }
 
-void Worker::enqueueToWorker(MessageWithMessagePorts&& message)
+void Worker::enqueueToWorker(std::unique_ptr<MessageQueue::Node>&& message)
 {
     {
         Locker locker { m_toWorker.lock };
+        if (m_toWorker.closed.load(std::memory_order_relaxed))
+            return;
         m_toWorker.queue.append(WTF::move(message));
-        // If the worker isn't Running yet, just buffer; fireEarlyMessages()
-        // drains the inbox on the worker thread once it is. If Closing/
-        // Closed, also buffer (dropped with the Worker) — postMessage()
-        // already rejects on Closed, so only the close-handler window lands
-        // here. If a drain is already scheduled, don't double-schedule.
-        // drainScheduled is only set/cleared under the lock so the
-        // load/store pair is not a race.
+        // Pending workers begin draining after their entry point has loaded.
         if (m_state.load() != State::Running || m_toWorker.drainScheduled.load(std::memory_order_relaxed))
             return;
         m_toWorker.drainScheduled.store(true, std::memory_order_relaxed);
     }
-    bool posted = ScriptExecutionContext::postTaskTo(m_clientIdentifier, [protectedThis = Ref { *this }](ScriptExecutionContext& context) {
-        protectedThis->drainToWorker(context);
-    });
-    if (!posted) {
-        Locker locker { m_toWorker.lock };
-        m_toWorker.drainScheduled.store(false, std::memory_order_relaxed);
-    }
+    m_toWorker.notify();
 }
 
-void Worker::enqueueToParent(MessageWithMessagePorts&& message)
+void Worker::enqueueToParent(std::unique_ptr<MessageQueue::Node>&& message)
 {
     {
         Locker locker { m_toParent.lock };
+        if (m_toParent.closed.load(std::memory_order_relaxed))
+            return;
         m_toParent.queue.append(WTF::move(message));
         if (m_toParent.drainScheduled.load(std::memory_order_relaxed))
             return;
         m_toParent.drainScheduled.store(true, std::memory_order_relaxed);
     }
-    // By stable identifier — this runs on the worker thread, so don't touch
-    // the parent's ScriptExecutionContext pointer directly.
-    bool posted = postTaskToParent([protectedThis = Ref { *this }](ScriptExecutionContext& context) {
-        protectedThis->drainToParent(context);
-    });
-    if (!posted) {
-        Locker locker { m_toParent.lock };
-        m_toParent.drainScheduled.store(false, std::memory_order_relaxed);
-    }
+    m_toParent.notify();
 }
 
-// Shared drain loop for the two inboxes. Mirrors MessagePortPipe's
-// drainAndDispatch (and Node's MessagePort::OnMessage): one task drains up to
-// max(initial queue size, 1000) messages, running microtasks between each so
-// queueMicrotask/Promise callbacks observe messages one at a time, then
-// yields and reschedules if more remain.
-//
-// Unlike MessagePortPipe, Worker sides never transfer, so we don't need to
-// re-check port identity each iteration — which lets us swap the whole inbox
-// into a local deque under the lock and dispatch without contending with the
-// sender. A sustained producer (e.g. a tight postMessage loop) would otherwise
-// make every per-message pop a contended acquire.
-template<typename Dispatch>
-static inline bool drainInbox(Worker::MessageInbox& inbox, Zig::GlobalObject* globalObject, ScriptExecutionContext& context, Dispatch&& dispatch)
+// Worker inboxes do not transfer, so a drain can take a batch while holding
+// the lock once and preserve the undelivered tail ahead of new messages.
+static bool drainInbox(Worker::MessageInbox& inbox, Zig::GlobalObject* globalObject, ScriptExecutionContext& context, EventTarget& target)
 {
     size_t limit;
-    Deque<MessageWithMessagePorts> batch;
+    MessageQueue batch;
     {
         Locker locker { inbox.lock };
-        if (inbox.queue.isEmpty()) {
+        if (inbox.closed.load(std::memory_order_relaxed) || inbox.queue.isEmpty()) {
             inbox.drainScheduled.store(false, std::memory_order_relaxed);
             return false;
         }
@@ -289,32 +570,61 @@ static inline bool drainInbox(Worker::MessageInbox& inbox, Zig::GlobalObject* gl
 
     while (true) {
         while (!batch.isEmpty()) {
+            if (inbox.closed.load(std::memory_order_acquire))
+                return false;
             if (limit-- == 0) {
                 // Yield to the rest of the event loop. Return the undrained
                 // tail to the front of the inbox so it stays ahead of
                 // anything enqueued concurrently; caller reschedules.
                 Locker locker { inbox.lock };
-                while (!batch.isEmpty())
-                    inbox.queue.prepend(batch.takeLast());
+                if (inbox.closed.load(std::memory_order_relaxed))
+                    return false;
+                inbox.queue.prepend(WTF::move(batch));
                 return true;
             }
-            auto message = batch.takeFirst();
-
-            auto ports = MessagePort::entanglePorts(context, WTF::move(message.transferredPorts));
-            auto event = MessageEvent::create(*context.jsGlobalObject(), message.message.releaseNonNull(), nullptr, WTF::move(ports));
-            dispatch(event.event);
+            auto node = batch.takeFirst();
+            {
+                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
+                const auto deliver = [&](auto& message) {
+                    auto throwScope = DECLARE_THROW_SCOPE(globalObject->vm());
+                    using Payload = std::remove_cvref_t<decltype(message)>;
+                    if constexpr (std::is_same_v<Payload, MessageWithMessagePorts>) {
+                        auto ports = MessagePort::entanglePorts(context, message.transferredPorts.mutableSpan());
+                        RETURN_IF_EXCEPTION(throwScope, void());
+                        if (ports.hasException()) {
+                            propagateException(*globalObject, throwScope, ports.releaseException());
+                            return;
+                        }
+                        auto event = MessageEvent::create(*context.jsGlobalObject(), message.message.releaseNonNull(), nullptr, ports.releaseReturnValue());
+                        RETURN_IF_EXCEPTION(throwScope, void());
+                        if (event)
+                            target.dispatchEvent(event->event);
+                    } else {
+                        ErrorEvent::Init init;
+                        if constexpr (std::is_same_v<Payload, MessageQueue::ErrorMessage>)
+                            init.message = message.text;
+                        else {
+                            init.error = message.value->deserialize(*globalObject, globalObject);
+                            RETURN_IF_EXCEPTION(throwScope, void());
+                        }
+                        ErrorEvent::dispatch(target, init, EventIsTrusted::Yes);
+                    }
+                };
+                if (!scope.exception())
+                    std::visit(deliver, node->message);
+                if (auto* exception = scope.exception())
+                    reportException(globalObject, exception);
+            }
 
             if (globalObject->drainMicrotasks()) {
-                // Termination pending. Drop the rest — dispatch is a no-op
-                // once m_terminateRequested is set (drainToParent), and the
-                // worker thread is tearing down (drainToWorker).
+                inbox.close();
                 return false;
             }
         }
 
         // Batch exhausted — see if more arrived while we were dispatching.
         Locker locker { inbox.lock };
-        if (inbox.queue.isEmpty()) {
+        if (inbox.closed.load(std::memory_order_relaxed) || inbox.queue.isEmpty()) {
             inbox.drainScheduled.store(false, std::memory_order_relaxed);
             return false;
         }
@@ -328,43 +638,45 @@ void Worker::drainToWorker(ScriptExecutionContext& context)
 {
     auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(context.jsGlobalObject());
     if (!globalObject) {
-        Locker locker { m_toWorker.lock };
-        m_toWorker.drainScheduled.store(false, std::memory_order_relaxed);
+        m_toWorker.close();
         return;
     }
-    bool reschedule = drainInbox(m_toWorker, globalObject, context, [&](Event& event) {
-        globalObject->globalEventScope->dispatchEvent(event);
-    });
+    bool reschedule = drainInbox(m_toWorker, globalObject, context, globalObject->globalEventScope.get());
     if (reschedule) {
-        ScriptExecutionContext::postTaskTo(m_clientIdentifier, [protectedThis = Ref { *this }](ScriptExecutionContext& ctx) {
-            protectedThis->drainToWorker(ctx);
-        });
+        m_toWorker.notify();
     }
 }
 
 void Worker::drainToParent(ScriptExecutionContext& context)
 {
-    auto* globalObject = defaultGlobalObject(context.jsGlobalObject());
-    if (!globalObject) {
-        Locker locker { m_toParent.lock };
-        m_toParent.drainScheduled.store(false, std::memory_order_relaxed);
+    if (m_parentDrainActive)
         return;
-    }
-    bool reschedule = drainInbox(m_toParent, globalObject, context, [&](Event& event) {
-        dispatchEvent(event);
-    });
-    if (reschedule) {
-        postTaskToParent([protectedThis = Ref { *this }](ScriptExecutionContext& c) {
-            protectedThis->drainToParent(c);
-        });
-    }
+    Ref protectedThis { *this };
+    m_parentDrainActive = true;
+    auto finishDrain = makeScopeExit([&] { m_parentDrainActive = false; });
+
+    auto* globalObject = defaultGlobalObject(context.jsGlobalObject());
+    bool reschedule = false;
+    if (globalObject)
+        reschedule = drainInbox(m_toParent, globalObject, context, *this);
+    else
+        m_toParent.close();
+    if (reschedule)
+        m_toParent.notify();
+
+    if (reschedule && !m_toParent.closed.load(std::memory_order_acquire))
+        return;
+    if (m_pendingExitCode)
+        finalizeExit(*m_pendingExitCode, scriptExecutionContext() && globalObject);
 }
 
 void Worker::terminate()
 {
     if (m_terminateRequested.exchange(true))
         return;
-    WebWorker__notifyNeedTermination(impl_);
+    m_toWorker.close();
+    m_toParent.close();
+    Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerNotifyNeedTermination(impl_);
 }
 
 void Worker::setKeepAlive(bool keepAlive)
@@ -374,7 +686,7 @@ void Worker::setKeepAlive(bool keepAlive)
     // task is the last thing to touch parent_poll_ref.
     if (m_terminateRequested.load() || m_state.load() >= State::Closing)
         return;
-    WebWorker__setRef(impl_, keepAlive);
+    Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerSetRef(impl_, keepAlive);
 }
 
 void Worker::dispatchEvent(Event& event)
@@ -412,19 +724,17 @@ bool Worker::postTaskToWorkerGlobalScope(Function<void(ScriptExecutionContext&)>
 
 // ---- Worker-thread entry points ---------------------------------------------
 
-void Worker::dispatchOnline(Zig::GlobalObject* workerGlobalObject)
+ExceptionOr<void> Worker::dispatchOnline(Zig::GlobalObject* workerGlobalObject)
 {
-    postTaskToParent([protectedThis = Ref { *this }](ScriptExecutionContext&) {
-        if (protectedThis->hasEventListeners(eventNames().openEvent)) {
-            auto event = Event::create(eventNames().openEvent, Event::CanBubble::No, Event::IsCancelable::No);
-            protectedThis->dispatchEvent(event);
-        }
-    });
-
     auto* thisContext = workerGlobalObject->scriptExecutionContext();
-    if (!thisContext) {
-        return;
-    }
+    if (!thisContext)
+        return Exception { InvalidStateError };
+    auto delivery = prepareWorkerMessageDelivery(*thisContext);
+    if (delivery.hasException())
+        return delivery.releaseException();
+
+    m_onlineDelivery->notify();
+
     RELEASE_ASSERT(&thisContext->vm() == &workerGlobalObject->vm());
     RELEASE_ASSERT(thisContext == workerGlobalObject->globalEventScope->scriptExecutionContext());
 
@@ -433,21 +743,25 @@ void Worker::dispatchOnline(Zig::GlobalObject* workerGlobalObject)
     // fireEarlyMessages) or posts directly — never both, never neither.
     Locker lock(m_pendingTasksMutex);
     m_state.store(State::Running);
+    return {};
 }
 
 // Kick off the first drain of messages that arrived before the worker was
 // online. A parent enqueue that observed State::Running (set in
 // dispatchOnline, which runs just before fireEarlyMessages) may have already
 // scheduled one — drainScheduled, set under the inbox lock, arbitrates.
-static inline void workerScheduleInitialDrain(Worker& worker, Worker::MessageInbox& inbox, ScriptExecutionContext& ctx)
+static inline void workerScheduleInitialDrain(Worker& worker, Worker::MessageInbox& inbox, ScriptExecutionContext& ctx, bool immediately = true)
 {
     {
         Locker locker { inbox.lock };
-        if (inbox.queue.isEmpty() || inbox.drainScheduled.load(std::memory_order_relaxed))
+        if (inbox.closed.load(std::memory_order_relaxed) || inbox.queue.isEmpty() || inbox.drainScheduled.load(std::memory_order_relaxed))
             return;
         inbox.drainScheduled.store(true, std::memory_order_relaxed);
     }
-    worker.drainToWorker(ctx);
+    if (immediately)
+        worker.drainToWorker(ctx);
+    else
+        inbox.notify();
 }
 
 void Worker::fireEarlyMessages(Zig::GlobalObject* workerGlobalObject)
@@ -463,6 +777,8 @@ void Worker::fireEarlyMessages(Zig::GlobalObject* workerGlobalObject)
             task(*thisContext);
         }
         workerScheduleInitialDrain(*this, m_toWorker, *thisContext);
+    } else if (tasks.isEmpty()) {
+        workerScheduleInitialDrain(*this, m_toWorker, *thisContext, false);
     } else {
         thisContext->postTask([tasks = WTF::move(tasks), protectedThis = Ref { *this }](auto& ctx) mutable {
             for (auto& task : tasks) {
@@ -473,65 +789,123 @@ void Worker::fireEarlyMessages(Zig::GlobalObject* workerGlobalObject)
     }
 }
 
-void Worker::dispatchErrorWithMessage(WTF::String message)
+Bun::Bindgen::NativeAllocationResult<void> Worker::dispatchErrorWithMessage(const WTF::String& message)
 {
-    postTaskToParent([protectedThis = Ref { *this }, message = message.isolatedCopy()](ScriptExecutionContext&) {
-        ErrorEvent::Init init;
-        init.message = message;
-
-        auto event = ErrorEvent::create(eventNames().errorEvent, init, EventIsTrusted::Yes);
-        protectedThis->dispatchEvent(event);
-    });
+    auto node = MessageQueue::Node::tryCreate();
+    if (!node)
+        return Bun::Bindgen::nativeAllocationFailure();
+    RefPtr<StringImpl> text;
+    if (message.is8Bit()) {
+        std::span<Latin1Character> characters;
+        text = StringImpl::tryCreateUninitialized(message.length(), characters);
+        if (!text)
+            return Bun::Bindgen::nativeAllocationFailure();
+        std::copy(message.span8().begin(), message.span8().end(), characters.begin());
+    } else {
+        std::span<char16_t> characters;
+        text = StringImpl::tryCreateUninitialized(message.length(), characters);
+        if (!text)
+            return Bun::Bindgen::nativeAllocationFailure();
+        std::copy(message.span16().begin(), message.span16().end(), characters.begin());
+    }
+    node->message = MessageQueue::ErrorMessage { String { WTF::move(text) } };
+    enqueueToParent(WTF::move(node));
+    return {};
 }
 
-bool Worker::dispatchErrorWithValue(Zig::GlobalObject* workerGlobalObject, JSValue value)
+ExceptionOr<bool> Worker::dispatchErrorWithValue(Zig::GlobalObject* workerGlobalObject, JSValue value)
 {
-    auto serialized = SerializedScriptValue::create(*workerGlobalObject, value, SerializationForStorage::No, SerializationErrorMode::NonThrowing);
-    if (!serialized)
-        return false;
-
-    return postTaskToParent([protectedThis = Ref { *this }, serialized](ScriptExecutionContext& context) {
-        auto* globalObject = context.globalObject();
-        auto& vm = JSC::getVM(globalObject);
-        auto scope = DECLARE_THROW_SCOPE(vm);
-        ErrorEvent::Init init;
-        JSValue deserialized = serialized->deserialize(*globalObject, globalObject, SerializationErrorMode::NonThrowing);
-        RETURN_IF_EXCEPTION(scope, );
-        init.error = deserialized;
-
-        auto event = ErrorEvent::create(eventNames().errorEvent, init, EventIsTrusted::Yes);
-        protectedThis->dispatchEvent(event);
-    });
+    auto& vm = workerGlobalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto node = MessageQueue::Node::tryCreate();
+    if (!node)
+        return Exception { OutOfMemoryError };
+    Vector<RefPtr<MessagePort>> ports;
+    auto serialized = SerializedScriptValue::prepare(*workerGlobalObject, value, {}, ports);
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    vm.hasExceptionsAfterHandlingTraps();
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    if (serialized.hasException()) {
+        auto exception = serialized.releaseException();
+        if (exception.code() == DataCloneError)
+            return false;
+        return exception;
+    }
+    ASSERT(ports.isEmpty());
+    auto prepared = serialized.releaseReturnValue();
+    auto validation = prepared.validateTransfers();
+    if (validation.hasException())
+        return validation.releaseException();
+    node->message = MessageQueue::ErrorValue { prepared.commit(vm) };
+    enqueueToParent(WTF::move(node));
+    return true;
 }
 
 bool Worker::dispatchExit(int32_t exitCode)
 {
-    return postTaskToParent([exitCode, protectedThis = Ref { *this }](ScriptExecutionContext&) {
-        protectedThis->finishExit(exitCode, true);
-    });
+    Ref delivery { *m_exitDelivery };
+    return delivery->notify(exitCode);
 }
 
 void Worker::finishExit(int32_t exitCode, bool shouldDispatchEvent)
+{
+    if (m_exitFinalized.load())
+        return;
+    if (shouldDispatchEvent) {
+        m_pendingExitCode = exitCode;
+        if (auto* context = scriptExecutionContext()) {
+            drainToParent(*context);
+            return;
+        }
+    }
+    finalizeExit(exitCode, false);
+}
+
+void Worker::finalizeExit(int32_t exitCode, bool shouldDispatchEvent)
 {
     if (m_exitFinalized.exchange(true))
         return;
 
     Ref protectedThis { *this };
-    m_state.store(State::Closing);
+    m_pendingExitCode.reset();
+    auto releaseThreadReference = makeScopeExit([&] {
+        m_state.store(State::Closed);
+        Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerReleaseParentPollRef(impl_);
+        deref();
+    });
+    closeLifecycleDelivery();
+    m_toWorker.close();
+    m_toParent.close();
+    closeParentMessageDelivery();
+    auto abandonedTasks = [&]() {
+        Locker lock(m_pendingTasksMutex);
+        m_state.store(State::Closing);
+        return std::exchange(m_pendingTasks, {});
+    }();
+    abandonedTasks.clear();
     if (shouldDispatchEvent && hasEventListeners(eventNames().closeEvent)) {
-        auto event = CloseEvent::create(exitCode == 0, static_cast<unsigned short>(exitCode), exitCode == 0 ? "Worker terminated normally"_s : "Worker exited abnormally"_s);
-        EventTargetWithInlineData::dispatchEvent(event);
+        auto event = CloseEvent::tryCreate(exitCode == 0, static_cast<unsigned short>(exitCode), exitCode == 0 ? "Worker terminated normally"_s : "Worker exited abnormally"_s);
+        if (!event) {
+            if (auto* context = scriptExecutionContext()) {
+                auto* global = context->globalObject();
+                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(global->vm());
+                if (!scope.exception()) {
+                    auto throwScope = DECLARE_THROW_SCOPE(global->vm());
+                    throwOutOfMemoryError(global, throwScope);
+                }
+                if (auto* exception = scope.exception())
+                    reportException(global, exception);
+            }
+            return;
+        }
+        EventTargetWithInlineData::dispatchEvent(*event);
     }
-    m_state.store(State::Closed);
-    WebWorker__releaseParentPollRef(impl_);
-    deref();
 }
 
-// ---- extern "C" shims (called from Zig) -------------------------------------
-
-extern "C" void Bun__teardownThreadJSCVM(Zig::GlobalObject* globalObject)
+static void teardownThreadJSCVM(Zig::GlobalObject* globalObject)
 {
     auto& vm = JSC::getVM(globalObject);
+    JSC::JSLockHolder lock(vm);
     vm.setHasTerminationRequest();
 
     {
@@ -546,99 +920,27 @@ extern "C" void Bun__teardownThreadJSCVM(Zig::GlobalObject* globalObject)
 
     vm.heap.collectNow(JSC::Sync, JSC::CollectionScope::Full);
 
-    vm.derefSuppressingSaferCPPChecking(); // NOLINT
-    vm.derefSuppressingSaferCPPChecking(); // NOLINT
+    vm.derefSuppressingSaferCPPChecking();
 }
 
-extern "C" void WebWorker__teardownJSCVM(Zig::GlobalObject* globalObject)
-{
-    Bun__teardownThreadJSCVM(globalObject);
-}
-
-extern "C" void WebWorker__dispatchExit(Worker* worker, int32_t exitCode)
-{
-    worker->dispatchExit(exitCode);
-}
-
-extern "C" void WebWorker__finishExit(Worker* worker, int32_t exitCode, bool dispatchEvent)
-{
-    worker->finishExit(exitCode, dispatchEvent);
-}
-
-extern "C" void WebWorker__dispatchOnline(Worker* worker, Zig::GlobalObject* globalObject)
-{
-    worker->dispatchOnline(globalObject);
-}
-
-extern "C" void WebWorker__fireEarlyMessages(Worker* worker, Zig::GlobalObject* globalObject)
-{
-    worker->fireEarlyMessages(globalObject);
-}
-
-extern "C" void WebWorker__dispatchError(Zig::GlobalObject* globalObject, Worker* worker, BunString message, JSC::EncodedJSValue errorValue)
-{
-    JSValue error = JSC::JSValue::decode(errorValue);
-    ErrorEvent::Init init;
-    init.message = message.toWTFString(BunString::ZeroCopy).isolatedCopy();
-    init.error = error;
-    init.cancelable = false;
-    init.bubbles = false;
-
-    globalObject->globalEventScope->dispatchEvent(ErrorEvent::create(eventNames().errorEvent, init, EventIsTrusted::Yes));
-    switch (worker->options().kind) {
-    case WorkerOptions::Kind::Web:
-        return worker->dispatchErrorWithMessage(message.toWTFString(BunString::ZeroCopy));
-    case WorkerOptions::Kind::Node:
-        if (!worker->dispatchErrorWithValue(globalObject, error)) {
-            // If serialization threw an error, use the string instead
-            worker->dispatchErrorWithMessage(message.toWTFString(BunString::ZeroCopy));
-        }
-        return;
-    }
-}
-
-extern "C" WebCore::Worker* WebWorker__getParentWorker(void* bunVM);
-
-JSC_DEFINE_HOST_FUNCTION(jsReceiveMessageOnPort, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (callFrame->argumentCount() < 1) {
-        throwTypeError(lexicalGlobalObject, scope, "receiveMessageOnPort needs 1 argument"_s);
-        return {};
-    }
-
-    auto port = callFrame->argument(0);
-
-    if (!port.isObject()) {
-        return Bun::throwError(lexicalGlobalObject, scope, Bun::ErrorCode::ERR_INVALID_ARG_TYPE, "The \"port\" argument must be a MessagePort instance"_s);
-    }
-
-    if (auto* messagePort = dynamicDowncast<JSMessagePort>(port)) {
-        RELEASE_AND_RETURN(scope, JSC::JSValue::encode(messagePort->wrapped().tryTakeMessage(lexicalGlobalObject)));
-    } else if (dynamicDowncast<JSBroadcastChannel>(port)) {
-        // TODO: support broadcast channels
-        return JSC::JSValue::encode(jsUndefined());
-    }
-
-    return Bun::throwError(lexicalGlobalObject, scope, Bun::ErrorCode::ERR_INVALID_ARG_TYPE, "The \"port\" argument must be a MessagePort instance"_s);
-}
-
-JSValue createNodeWorkerThreadsBinding(Zig::GlobalObject* globalObject)
+static JSValue initializeNodeWorkerData(Zig::GlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
 
     auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     JSValue workerData = jsNull();
-    JSValue threadId = jsNumber(0);
     JSMap* environmentData = nullptr;
 
-    if (auto* worker = WebWorker__getParentWorker(globalObject->bunVM())) {
-        auto& options = worker->options();
-        auto ports = MessagePort::entanglePorts(*ScriptExecutionContext::getScriptExecutionContext(worker->clientIdentifier()), WTF::move(options.dataMessagePorts));
+    if (auto worker = Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerGetParent(globalObject)) {
+        auto& options = (*worker)->options();
+        auto ports = MessagePort::entanglePorts(*globalObject->scriptExecutionContext(), options.dataMessagePorts.mutableSpan());
+        RETURN_IF_EXCEPTION(scope, {});
+        if (ports.hasException()) {
+            propagateException(*globalObject, scope, ports.releaseException());
+            return {};
+        }
         RefPtr<WebCore::SerializedScriptValue> serialized = WTF::move(options.workerDataAndEnvironmentData);
-        JSValue deserialized = serialized->deserialize(*globalObject, globalObject, WTF::move(ports));
+        JSValue deserialized = serialized->deserialize(*globalObject, globalObject, ports.releaseReturnValue());
         RETURN_IF_EXCEPTION(scope, {});
         // Should always be set to an Array of length 2 in the constructor in JSWorker.cpp
         auto* pair = uncheckedDowncast<JSArray>(deserialized);
@@ -651,9 +953,6 @@ JSValue createNodeWorkerThreadsBinding(Zig::GlobalObject* globalObject)
         // it might not be a Map if the parent had not set up environmentData yet
         environmentData = environmentDataValue ? dynamicDowncast<JSMap>(environmentDataValue) : nullptr;
         RETURN_IF_EXCEPTION(scope, {});
-
-        // Main thread starts at 1
-        threadId = jsNumber(worker->clientIdentifier() - 1);
     }
     if (!environmentData) {
         environmentData = JSMap::create(vm, globalObject->mapStructure());
@@ -661,76 +960,153 @@ JSValue createNodeWorkerThreadsBinding(Zig::GlobalObject* globalObject)
     }
     ASSERT(environmentData);
     globalObject->setNodeWorkerEnvironmentData(environmentData);
-
-    JSObject* array = constructEmptyArray(globalObject, nullptr, 4);
-    RETURN_IF_EXCEPTION(scope, {});
-    array->putDirectIndex(globalObject, 0, workerData);
-    array->putDirectIndex(globalObject, 1, threadId);
-    array->putDirectIndex(globalObject, 2, JSFunction::create(vm, globalObject, 1, "receiveMessageOnPort"_s, jsReceiveMessageOnPort, ImplementationVisibility::Public, NoIntrinsic));
-    array->putDirectIndex(globalObject, 3, environmentData);
-    return array;
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionPostMessage,
-    (JSC::JSGlobalObject * leixcalGlobalObject, JSC::CallFrame* callFrame))
-{
-    JSC::VM& vm = leixcalGlobalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    Zig::GlobalObject* globalObject = dynamicDowncast<Zig::GlobalObject>(leixcalGlobalObject);
-    if (!globalObject) [[unlikely]]
-        return JSValue::encode(jsUndefined());
-
-    Worker* worker = WebWorker__getParentWorker(globalObject->bunVM());
-    if (worker == nullptr)
-        return JSValue::encode(jsUndefined());
-
-    JSC::JSValue value = callFrame->argument(0);
-    JSC::JSValue options = callFrame->argument(1);
-
-    Vector<JSC::Strong<JSC::JSObject>> transferList;
-
-    if (options.isObject()) {
-        JSC::JSValue transferListValue;
-        // postMessage(message, sequence<object>) overload — second argument is the transfer list itself.
-        bool isSequence = hasIteratorMethod(globalObject, options);
-        RETURN_IF_EXCEPTION(scope, {});
-        if (isSequence) {
-            transferListValue = options;
-        } else {
-            // postMessage(message, { transfer }) overload.
-            JSC::JSObject* optionsObject = options.getObject();
-            transferListValue = optionsObject->get(globalObject, vm.propertyNames->transfer);
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-        if (transferListValue.isObject()) {
-            forEachInIterable(globalObject, transferListValue, [&transferList](JSC::VM& vm, JSC::JSGlobalObject*, JSC::JSValue nextValue) {
-                if (nextValue.isObject()) {
-                    transferList.append(JSC::Strong<JSC::JSObject>(vm, nextValue.getObject()));
-                }
-            });
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-    }
-
-    Vector<RefPtr<MessagePort>> ports;
-    ExceptionOr<Ref<SerializedScriptValue>> serialized = SerializedScriptValue::create(*globalObject, value, WTF::move(transferList), ports, SerializationForStorage::No, SerializationContext::WorkerPostMessage);
-    if (serialized.hasException()) {
-        WebCore::propagateException(*globalObject, scope, serialized.releaseException());
-        RELEASE_AND_RETURN(scope, {});
-    }
-    scope.assertNoException();
-
-    ExceptionOr<Vector<TransferredMessagePort>> disentangledPorts = MessagePort::disentanglePorts(WTF::move(ports));
-    if (disentangledPorts.hasException()) {
-        WebCore::propagateException(*globalObject, scope, disentangledPorts.releaseException());
-        RELEASE_AND_RETURN(scope, {});
-    }
-    scope.assertNoException();
-
-    worker->enqueueToParent(MessageWithMessagePorts { serialized.releaseReturnValue(), disentangledPorts.releaseReturnValue() });
-
-    return JSValue::encode(jsUndefined());
+    return workerData;
 }
 
 } // namespace WebCore
+
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_WebCoreFunctions_initializeWorkerData(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebCoreFunctions_initializeWorkerData_Arguments&)
+{
+    return WebCore::initializeNodeWorkerData(static_cast<Zig::GlobalObject*>(&context.globalObject));
+}
+
+double Bun::Bindgen::Cpp::bunBindgenCpp_WebCoreFunctions_workerThreadId(
+    Bun::Bindgen::CppCallContext& context,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_WebCoreFunctions_workerThreadId_Arguments&)
+{
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    if (auto worker = Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerGetParent(globalObject))
+        return static_cast<double>((*worker)->clientIdentifier() - 1);
+    return 0;
+}
+
+JSC::JSValue Bun::Bindgen::Cpp::bunBindgenCpp_WebCoreFunctions_workerEnvironmentData(
+    Bun::Bindgen::CppCallContext& context,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_WebCoreFunctions_workerEnvironmentData_Arguments&)
+{
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    if (auto* environmentData = globalObject->nodeWorkerEnvironmentData())
+        return environmentData;
+
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto* environmentData = JSC::JSMap::create(globalObject->vm(), globalObject->mapStructure());
+    RETURN_IF_EXCEPTION(scope, {});
+    globalObject->setNodeWorkerEnvironmentData(environmentData);
+    return environmentData;
+}
+
+std::optional<JSC::JSValue> Bun::Bindgen::Engine::bunBindgenEngine_WebCoreFunctions_receiveMessageOnPort(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebCoreFunctions_receiveMessageOnPort_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
+    if (args.port.is_broadcast_channel())
+        return std::nullopt;
+    auto* messagePort = WTF::dynamicDowncast<WebCore::JSMessagePort>(args.port.message_port());
+    RELEASE_ASSERT(messagePort);
+    return messagePort->wrapped().tryTakeMessage(globalObject);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_WebCoreFunctions_postMessage(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebCoreFunctions_postMessage_Arguments& args)
+{
+    auto* globalObject = dynamicDowncast<Zig::GlobalObject>(&context.globalObject);
+    if (!globalObject) [[unlikely]]
+        return;
+
+    auto worker = Bun::Bindgen::ZigExports::bunBindgenZig_WebWorkerEngine_webWorkerGetParent(globalObject);
+    if (!worker)
+        return;
+
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto options = Bun::Bindgen::structuredSerializeOptionsFromBinding(*globalObject, args.transfer);
+    RETURN_IF_EXCEPTION(scope, );
+    RELEASE_ASSERT(options);
+
+    auto node = WebCore::MessageQueue::Node::tryCreate();
+    if (!node) {
+        throwOutOfMemoryError(globalObject, scope);
+        return;
+    }
+    auto prepared = WebCore::MessagePort::prepareMessage(*globalObject, args.value, WTF::move(options->transfer));
+    RETURN_IF_EXCEPTION(scope, );
+    if (prepared.hasException()) {
+        WebCore::propagateException(*globalObject, scope, prepared.releaseException());
+        return;
+    }
+    auto message = prepared.releaseReturnValue().commit(*globalObject);
+    RETURN_IF_EXCEPTION(scope, );
+    if (message.hasException()) {
+        WebCore::propagateException(*globalObject, scope, message.releaseException());
+        return;
+    }
+    node->message = message.releaseReturnValue();
+    (*worker)->enqueueToParent(WTF::move(node));
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_jsc_thread_teardown_teardownThreadJSCVM(
+    const Bun::Bindgen::Engine::BunBindgenEngine_jsc_thread_teardown_teardownThreadJSCVM_Arguments& args)
+{
+    WebCore::teardownThreadJSCVM(args.globalObject);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_WebWorkerEngine_webWorkerDispatchExit(
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebWorkerEngine_webWorkerDispatchExit_Arguments& args)
+{
+    args.worker->dispatchExit(args.exitCode);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_WebWorkerEngine_webWorkerFinishExit(
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebWorkerEngine_webWorkerFinishExit_Arguments& args)
+{
+    args.worker->finishExit(args.exitCode, args.dispatchEvent);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_WebWorkerEngine_webWorkerDispatchOnline(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebWorkerEngine_webWorkerDispatchOnline_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    auto result = args.worker->dispatchOnline(uncheckedDowncast<Zig::GlobalObject>(&context.globalObject));
+    RETURN_IF_EXCEPTION(scope, void());
+    if (result.hasException())
+        WebCore::propagateException(context.globalObject, scope, result.releaseException());
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_WebWorkerEngine_webWorkerFireEarlyMessages(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebWorkerEngine_webWorkerFireEarlyMessages_Arguments& args)
+{
+    args.worker->fireEarlyMessages(uncheckedDowncast<Zig::GlobalObject>(&context.globalObject));
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_WebWorkerEngine_webWorkerDispatchError(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebWorkerEngine_webWorkerDispatchError_Arguments& args)
+{
+    auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(&context.globalObject);
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    WebCore::ErrorEvent::Init init;
+    init.message = args.message;
+    init.error = args.error;
+    init.cancelable = false;
+    init.bubbles = false;
+
+    WebCore::ErrorEvent::dispatch(globalObject->globalEventScope.get(), init, WebCore::EventIsTrusted::Yes);
+    RETURN_IF_EXCEPTION(scope, void());
+    if (args.worker->options().kind == WebCore::WorkerOptions::Kind::Node) {
+        auto result = args.worker->dispatchErrorWithValue(globalObject, args.error);
+        RETURN_IF_EXCEPTION(scope, void());
+        if (result.hasException()) {
+            WebCore::propagateException(*globalObject, scope, result.releaseException());
+            return;
+        }
+        if (result.releaseReturnValue())
+            return;
+    }
+    if (!args.worker->dispatchErrorWithMessage(args.message))
+        throwOutOfMemoryError(globalObject, scope);
+}

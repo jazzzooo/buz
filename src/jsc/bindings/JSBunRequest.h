@@ -2,17 +2,17 @@
 
 #include "JSCookieMap.h"
 #include "root.h"
-#include "ZigGeneratedClasses.h"
+#include "SchemaBindings.h"
 
 namespace Bun {
 using namespace JSC;
 using namespace WebCore;
 
-class JSBunRequest : public JSRequest {
+class JSBunRequest : public BunBindgen_Request_Request {
 public:
-    using Base = JSRequest;
+    using Base = BunBindgen_Request_Request;
 
-    static JSBunRequest* create(JSC::VM& vm, JSC::Structure* structure, void* sinkPtr, JSObject* params);
+    static JSBunRequest* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::Structure* structure, void* sinkPtr, JSObject* params);
     static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype);
 
     template<typename, JSC::SubspaceAccess mode>
@@ -29,17 +29,18 @@ public:
 
     DECLARE_VISIT_CHILDREN;
     DECLARE_INFO;
+    static void destroy(JSC::JSCell*);
 
     JSObject* params() const;
     void setParams(JSObject* params);
 
     JSObject* cookies() const;
-    void setCookies(JSObject* cookies);
+    void setCookies(JSGlobalObject*, JSObject* cookies);
 
     JSBunRequest* clone(JSC::VM& vm, JSGlobalObject* globalObject);
 
 private:
-    JSBunRequest(JSC::VM& vm, JSC::Structure* structure, void* sinkPtr, JSC::JSObject* params);
+    JSBunRequest(JSC::VM& vm, JSC::Structure* structure, JSC::JSObject* params);
     void finishCreation(JSC::VM& vm);
 
     mutable JSC::WriteBarrier<JSC::JSObject> m_params;

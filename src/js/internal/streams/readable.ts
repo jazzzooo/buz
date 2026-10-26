@@ -1252,7 +1252,7 @@ function streamToAsyncIterator(stream, options?) {
     stream = Readable.wrap(stream, { objectMode: true });
   }
 
-  const iter = createAsyncIterator(stream, options);
+  const iter = createAsyncIterator(stream, options) as AsyncGenerator<any, void, unknown> & { stream: any };
   iter.stream = stream;
   return iter;
 }
@@ -1271,7 +1271,7 @@ async function* createAsyncIterator(stream, options) {
 
   stream.on("readable", next);
 
-  let error: Error | null;
+  let error: Error | null | undefined;
   const cleanup = eos(stream, { writable: false }, err => {
     error = err ? aggregateTwoErrors(error as Error, err) : null;
     callback();

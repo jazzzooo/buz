@@ -27,6 +27,7 @@ pub const TOML = struct {
     }
 
     const Rope = js_ast.E.Object.Rope;
+    const AssignmentContext = enum { document, inline_table };
 
     pub fn parseKeySegment(p: *TOML) anyerror!?Expr {
         const loc = p.lexer.loc();
@@ -118,63 +119,54 @@ pub const TOML = struct {
                 .t_end_of_file => {
                     return root;
                 },
-                // child table
                 .t_open_bracket => {
                     try p.lexer.next();
+                    const is_array_of_tables = p.lexer.token == .t_open_bracket;
+                    if (is_array_of_tables) try p.lexer.next();
                     const key = try p.parseKey(key_allocator);
 
                     try p.lexer.expect(.t_close_bracket);
-                    if (!p.lexer.has_newline_before) {
+                    if (is_array_of_tables) try p.lexer.expect(.t_close_bracket);
+                    if (!p.lexer.atStatementEnd()) {
                         try p.lexer.expectedString("line break");
                     }
 
-                    const parent_object = root.data.e_object.getOrPutObject(key, p.allocator) catch |err| {
-                        switch (err) {
-                            error.Clobber => {
-                                try p.lexer.addDefaultError("Table already defined");
-                                return error.SyntaxError;
-                            },
-                            else => return err,
-                        }
-                    };
-                    head = parent_object.data.e_object;
-                    stack.fixed_buffer_allocator.reset();
-                },
-                // child table array
-                .t_open_bracket_double => {
-                    try p.lexer.next();
-
-                    const key = try p.parseKey(key_allocator);
-
-                    try p.lexer.expect(.t_close_bracket_double);
-                    if (!p.lexer.has_newline_before) {
-                        try p.lexer.expectedString("line break");
+                    if (is_array_of_tables) {
+                        var array = root.data.e_object.getOrPutArray(key, p.allocator) catch |err| {
+                            switch (err) {
+                                error.Clobber => {
+                                    try p.lexer.addDefaultError("Cannot overwrite table array");
+                                    return error.SyntaxError;
+                                },
+                                else => return err,
+                            }
+                        };
+                        const new_head = p.e(E.Object{}, loc);
+                        try array.data.e_array.push(p.allocator, new_head);
+                        head = new_head.data.e_object;
+                    } else {
+                        const parent_object = root.data.e_object.getOrPutObject(key, p.allocator) catch |err| {
+                            switch (err) {
+                                error.Clobber => {
+                                    try p.lexer.addDefaultError("Table already defined");
+                                    return error.SyntaxError;
+                                },
+                                else => return err,
+                            }
+                        };
+                        head = parent_object.data.e_object;
                     }
-
-                    var array = root.data.e_object.getOrPutArray(key, p.allocator) catch |err| {
-                        switch (err) {
-                            error.Clobber => {
-                                try p.lexer.addDefaultError("Cannot overwrite table array");
-                                return error.SyntaxError;
-                            },
-                            else => return err,
-                        }
-                    };
-                    const new_head = p.e(E.Object{}, loc);
-                    try array.data.e_array.push(p.allocator, new_head);
-                    head = new_head.data.e_object;
                     stack.fixed_buffer_allocator.reset();
                 },
                 else => {
-                    try p.parseAssignment(head, key_allocator);
+                    try p.parseAssignment(head, key_allocator, .document);
                     stack.fixed_buffer_allocator.reset();
                 },
             }
         }
     }
 
-    pub fn parseAssignment(p: *TOML, obj: *E.Object, allocator: std.mem.Allocator) anyerror!void {
-        p.lexer.allow_double_bracket = false;
+    pub fn parseAssignment(p: *TOML, obj: *E.Object, allocator: std.mem.Allocator, comptime context: AssignmentContext) anyerror!void {
         const rope = try p.parseKey(allocator);
         const rope_end = p.lexer.start;
 
@@ -185,7 +177,13 @@ pub const TOML = struct {
 
         try p.lexer.expectAssignment();
         if (!is_array) {
-            obj.setRope(rope, p.allocator, try p.parseValue()) catch |err| {
+            const value = try p.parseValue();
+            if (comptime context == .document) {
+                if (!p.lexer.atStatementEnd()) {
+                    return p.lexer.addDefaultError("Expected a newline or end of file after a key/value pair");
+                }
+            }
+            obj.setRope(rope, p.allocator, value) catch |err| {
                 switch (err) {
                     error.Clobber => {
                         const loc = rope.head.loc;
@@ -199,7 +197,6 @@ pub const TOML = struct {
                 }
             };
         }
-        p.lexer.allow_double_bracket = true;
     }
 
     pub fn parseValue(p: *TOML) anyerror!Expr {
@@ -208,8 +205,6 @@ pub const TOML = struct {
         }
 
         const loc = p.lexer.loc();
-
-        p.lexer.allow_double_bracket = true;
 
         switch (p.lexer.token) {
             .t_false => {
@@ -237,22 +232,27 @@ pub const TOML = struct {
                 return p.e(str, loc);
             },
             .t_numeric_literal => {
-                const value = p.lexer.number;
+                const value = try p.parseNumber(.positive);
                 try p.lexer.next();
                 return p.e(E.Number{ .value = value }, loc);
             },
+            .t_date_time_literal => {
+                const value = p.lexer.raw();
+                try p.lexer.next();
+                return p.e(E.String{ .data = value }, loc);
+            },
             .t_minus => {
                 try p.lexer.next();
-                const value = p.lexer.number;
-
-                try p.lexer.expect(.t_numeric_literal);
-                return p.e(E.Number{ .value = -value }, loc);
+                if (p.lexer.token != .t_numeric_literal) try p.lexer.expected(.t_numeric_literal);
+                const value = try p.parseNumber(.negative);
+                try p.lexer.next();
+                return p.e(E.Number{ .value = value }, loc);
             },
             .t_plus => {
                 try p.lexer.next();
-                const value = p.lexer.number;
-
-                try p.lexer.expect(.t_numeric_literal);
+                if (p.lexer.token != .t_numeric_literal) try p.lexer.expected(.t_numeric_literal);
+                const value = try p.parseNumber(.positive);
+                try p.lexer.next();
                 return p.e(E.Number{ .value = value }, loc);
             },
             .t_open_brace => {
@@ -276,37 +276,34 @@ pub const TOML = struct {
                             is_single_line = false;
                         }
                     }
-                    try p.parseAssignment(obj, key_allocator);
-                    p.lexer.allow_double_bracket = false;
+                    try p.parseAssignment(obj, key_allocator, .inline_table);
                     stack.fixed_buffer_allocator.reset();
                 }
 
                 if (p.lexer.has_newline_before) {
                     is_single_line = false;
                 }
-                p.lexer.allow_double_bracket = true;
                 try p.lexer.expect(.t_close_brace);
                 return expr;
             },
             .t_empty_array => {
                 try p.lexer.next();
-                p.lexer.allow_double_bracket = true;
                 return p.e(E.Array{}, loc);
             },
             .t_open_bracket => {
+                p.lexer.scan_date_time_literal_next = true;
                 try p.lexer.next();
                 var is_single_line = !p.lexer.has_newline_before;
                 const array_ = p.e(E.Array{}, loc);
                 var array = array_.data.e_array;
                 const allocator = p.allocator;
-                p.lexer.allow_double_bracket = false;
-
                 while (p.lexer.token != .t_close_bracket) {
                     if (array.items.len > 0) {
                         if (p.lexer.has_newline_before) {
                             is_single_line = false;
                         }
 
+                        p.lexer.scan_date_time_literal_next = true;
                         if (!try p.parseMaybeTrailingComma(.t_close_bracket)) {
                             break;
                         }
@@ -316,13 +313,12 @@ pub const TOML = struct {
                         }
                     }
 
-                    array.push(allocator, try p.parseValue()) catch unreachable;
+                    try array.push(allocator, try p.parseValue());
                 }
 
                 if (p.lexer.has_newline_before) {
                     is_single_line = false;
                 }
-                p.lexer.allow_double_bracket = true;
                 try p.lexer.expect(.t_close_bracket);
                 return array_;
             },
@@ -331,6 +327,42 @@ pub const TOML = struct {
                 return error.SyntaxError;
             },
         }
+    }
+
+    const NumberSign = enum { positive, negative };
+
+    fn parseNumber(p: *TOML, sign: NumberSign) anyerror!f64 {
+        if (p.lexer.number_error) |number_error| {
+            const message = switch (number_error) {
+                .leading_zero => "Leading zeros are not allowed in numbers",
+                .underscores => "Underscores in numbers must be surrounded by digits",
+                .invalid => "Invalid number",
+            };
+            p.lexer.addError(p.lexer.start, "{s}", .{message});
+            return error.SyntaxError;
+        }
+
+        if (!p.lexer.number_is_integer) {
+            return if (sign == .negative) -p.lexer.number else p.lexer.number;
+        }
+
+        const magnitude = p.lexer.integer_magnitude;
+        const signed_limit: u64 = if (sign == .negative)
+            @as(u64, @intCast(std.math.maxInt(i64))) + 1
+        else
+            std.math.maxInt(i64);
+        if (p.lexer.integer_magnitude_overflow or magnitude > signed_limit) {
+            p.lexer.addError(p.lexer.start, "Integer is outside the 64-bit signed range", .{});
+            return error.SyntaxError;
+        }
+        if (magnitude > 9007199254740991) {
+            p.lexer.addError(p.lexer.start, "Integer cannot be losslessly represented as a JavaScript number; it must be within +/-(2^53 - 1)", .{});
+            return error.SyntaxError;
+        }
+
+        if (magnitude == 0) return 0;
+        const value: f64 = @floatFromInt(magnitude);
+        return if (sign == .negative) -value else value;
     }
 
     pub fn parseMaybeTrailingComma(p: *TOML, closer: T) !bool {

@@ -13,6 +13,10 @@ test("V8StackTraceIterator handles frames without parentheses (issue #23022)", a
 
   const err = await promise;
 
+  // Explicit stack input exercises parsing independently of error-factory frames.
+  const stack = err.stack!.replace("\n", "\n    at unknown\n    at parser-fixture.js:1:2\n");
+  err.stack = stack;
+
   // Get the formatted error string (which internally uses V8StackTraceIterator after stack access)
   const inspected = Bun.inspect(err);
 
@@ -24,8 +28,10 @@ test("V8StackTraceIterator handles frames without parentheses (issue #23022)", a
   expect(frameCount).toBeGreaterThan(3);
 
   // Verify the stack property itself is intact
-  const stackFrames = err.stack?.split("\n").filter(line => line.trim().startsWith("at"));
-  expect(stackFrames?.length).toBeGreaterThan(3);
+  const stackFrames = stack.split("\n").filter(line => line.trim().startsWith("at"));
+  expect(stackFrames.length).toBeGreaterThan(3);
+  expect(frameCount).toBe(stackFrames.length);
+  expect(err.stack).toBe(stack);
 
   // Ensure both "unknown" frames and regular frames are present
   expect(inspected).toContain("at unknown");

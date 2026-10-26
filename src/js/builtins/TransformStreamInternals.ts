@@ -27,11 +27,11 @@
 // @internal
 
 export function isTransformStream(stream) {
-  return $isObject(stream) && !!$getByIdDirectPrivate(stream, "readable");
+  return $bindgenFn("NativeTypePredicates.schema.zig", "isTransformStream")(stream);
 }
 
 export function isTransformStreamDefaultController(controller) {
-  return $isObject(controller) && !!$getByIdDirectPrivate(controller, "transformAlgorithm");
+  return $bindgenFn("NativeTypePredicates.schema.zig", "isTransformStreamDefaultController")(controller);
 }
 
 export function createTransformStream(
@@ -119,10 +119,11 @@ export function initializeTransformStream(
   $putByIdDirectPrivate(underlyingSource, "start", startAlgorithm);
   $putByIdDirectPrivate(underlyingSource, "pull", pullAlgorithm);
   $putByIdDirectPrivate(underlyingSource, "cancel", cancelAlgorithm);
-  const options = {};
-  $putByIdDirectPrivate(options, "size", readableSizeAlgorithm);
-  $putByIdDirectPrivate(options, "highWaterMark", readableHighWaterMark);
-  const readable = new ReadableStream(underlyingSource, options);
+  const readable = new ReadableStream(underlyingSource, {
+    __proto__: null,
+    highWaterMark: readableHighWaterMark,
+    size: readableSizeAlgorithm,
+  });
 
   // The writable to expose to JS through writable getter.
   $putByIdDirectPrivate(stream, "writable", writable);
@@ -172,9 +173,10 @@ export function setUpTransformStreamDefaultController(stream, controller, transf
   $putByIdDirectPrivate(stream, "controller", controller);
   $putByIdDirectPrivate(controller, "transformAlgorithm", transformAlgorithm);
   $putByIdDirectPrivate(controller, "flushAlgorithm", flushAlgorithm);
+  $putByIdDirectPrivate(controller, "transformControllerBrand", true);
 }
 
-export function setUpTransformStreamDefaultControllerFromTransformer(stream, transformer, transformerDict) {
+export function setUpTransformStreamDefaultControllerFromTransformer(stream, transformer, transformMethod, flushMethod) {
   const controller = new TransformStreamDefaultController();
   let transformAlgorithm = chunk => {
     try {
@@ -188,14 +190,14 @@ export function setUpTransformStreamDefaultControllerFromTransformer(stream, tra
     return Promise.$resolve();
   };
 
-  if ("transform" in transformerDict)
+  if (transformMethod !== undefined)
     transformAlgorithm = chunk => {
-      return $promiseInvokeOrNoopMethod(transformer, transformerDict["transform"], [chunk, controller]);
+      return $promiseInvokeOrNoopMethod(transformer, transformMethod, [chunk, controller]);
     };
 
-  if ("flush" in transformerDict) {
+  if (flushMethod !== undefined) {
     flushAlgorithm = () => {
-      return $promiseInvokeOrNoopMethod(transformer, transformerDict["flush"], [controller]);
+      return $promiseInvokeOrNoopMethod(transformer, flushMethod, [controller]);
     };
   }
 
@@ -203,8 +205,7 @@ export function setUpTransformStreamDefaultControllerFromTransformer(stream, tra
 }
 
 export function transformStreamDefaultControllerClearAlgorithms(controller) {
-  // We set transformAlgorithm to true to allow GC but keep the isTransformStreamDefaultController check.
-  $putByIdDirectPrivate(controller, "transformAlgorithm", true);
+  $putByIdDirectPrivate(controller, "transformAlgorithm", undefined);
   $putByIdDirectPrivate(controller, "flushAlgorithm", undefined);
 }
 

@@ -13,7 +13,7 @@ pub fn ParseProperty(
             }
 
             const loc = p.lexer.loc();
-            const scope_index = p.pushScopeForParsePass(.function_args, loc) catch unreachable;
+            const scope_index = try p.pushScopeForParsePass(.function_args, loc);
             var is_constructor = false;
 
             // Forbid the names "constructor" and "prototype" in some cases
@@ -22,18 +22,18 @@ pub fn ParseProperty(
                     .e_string => |str| {
                         if (!opts.is_static and str.eqlComptime("constructor")) {
                             if (kind == .get) {
-                                p.log.addRangeError(p.source, key_range, "Class constructor cannot be a getter") catch unreachable;
+                                try p.log.addRangeError(p.source, key_range, "Class constructor cannot be a getter");
                             } else if (kind == .set) {
-                                p.log.addRangeError(p.source, key_range, "Class constructor cannot be a setter") catch unreachable;
+                                try p.log.addRangeError(p.source, key_range, "Class constructor cannot be a setter");
                             } else if (opts.is_async) {
-                                p.log.addRangeError(p.source, key_range, "Class constructor cannot be an async function") catch unreachable;
+                                try p.log.addRangeError(p.source, key_range, "Class constructor cannot be an async function");
                             } else if (opts.is_generator) {
-                                p.log.addRangeError(p.source, key_range, "Class constructor cannot be a generator function") catch unreachable;
+                                try p.log.addRangeError(p.source, key_range, "Class constructor cannot be a generator function");
                             } else {
                                 is_constructor = true;
                             }
                         } else if (opts.is_static and str.eqlComptime("prototype")) {
-                            p.log.addRangeError(p.source, key_range, "Invalid static method name \"prototype\"") catch unreachable;
+                            try p.log.addRangeError(p.source, key_range, "Invalid static method name \"prototype\"");
                         }
                     },
                     else => {},
@@ -74,7 +74,7 @@ pub fn ParseProperty(
                 .get => {
                     if (func.args.len > 0) {
                         const r = js_lexer.rangeOfIdentifier(p.source, func.args[0].binding.loc);
-                        p.log.addRangeErrorFmt(p.source, r, p.allocator, "Getter {s} must have zero arguments", .{p.keyNameForError(key)}) catch unreachable;
+                        try p.log.addRangeErrorFmt(p.source, r, p.allocator, "Getter {s} must have zero arguments", .{try p.keyNameForError(key)});
                     }
                 },
                 .set => {
@@ -83,7 +83,7 @@ pub fn ParseProperty(
                         if (func.args.len > 1) {
                             r = js_lexer.rangeOfIdentifier(p.source, func.args[1].binding.loc);
                         }
-                        p.log.addRangeErrorFmt(p.source, r, p.allocator, "Setter {s} must have exactly 1 argument (there are {d})", .{ p.keyNameForError(key), func.args.len }) catch unreachable;
+                        try p.log.addRangeErrorFmt(p.source, r, p.allocator, "Setter {s} must have exactly 1 argument (there are {d})", .{ try p.keyNameForError(key), func.args.len });
                     }
                 },
                 else => {},
@@ -110,9 +110,9 @@ pub fn ParseProperty(
 
                     const name = p.loadNameFromRef(private.ref);
                     if (strings.eqlComptime(name, "#constructor")) {
-                        p.log.addRangeError(p.source, key_range, "Invalid method name \"#constructor\"") catch unreachable;
+                        try p.log.addRangeError(p.source, key_range, "Invalid method name \"#constructor\"");
                     }
-                    private.ref = p.declareSymbol(declare, key.loc, name) catch unreachable;
+                    private.ref = try p.declareSymbol(declare, key.loc, name);
                 },
                 else => {},
             }
@@ -161,7 +161,7 @@ pub fn ParseProperty(
                             try p.lexer.expected(.t_identifier);
                         }
 
-                        key = p.newExpr(E.PrivateIdentifier{ .ref = p.storeNameInRef(p.lexer.identifier) catch unreachable }, p.lexer.loc());
+                        key = p.newExpr(E.PrivateIdentifier{ .ref = try p.storeNameInRef(p.lexer.identifier) }, p.lexer.loc());
                         try p.lexer.next();
                     },
                     .t_open_bracket => {
@@ -322,6 +322,7 @@ pub fn ParseProperty(
                                 try p.lexer.next();
 
                                 const old_fn_or_arrow_data_parse = p.fn_or_arrow_data_parse;
+                                defer p.fn_or_arrow_data_parse = old_fn_or_arrow_data_parse;
                                 p.fn_or_arrow_data_parse = .{
                                     .is_return_disallowed = true,
                                     .allow_super_property = true,
@@ -334,12 +335,11 @@ pub fn ParseProperty(
 
                                 p.popScope();
 
-                                p.fn_or_arrow_data_parse = old_fn_or_arrow_data_parse;
                                 try p.lexer.expect(.t_close_brace);
 
-                                const block = p.allocator.create(
+                                const block = try p.allocator.create(
                                     G.ClassStaticBlock,
-                                ) catch unreachable;
+                                );
 
                                 block.* = G.ClassStaticBlock{
                                     .stmts = js_ast.BabyList(Stmt).fromOwnedSlice(stmts),
@@ -356,7 +356,7 @@ pub fn ParseProperty(
                         // Handle invalid identifiers in property names
                         // https://github.com/oven-sh/bun/issues/12039
                         if (p.lexer.token == .t_syntax_error) {
-                            bun.handleOom(p.log.addRangeErrorFmt(p.source, name_range, p.allocator, "Unexpected {f}", .{bun.fmt.quote(name)}));
+                            try p.log.addRangeErrorFmt(p.source, name_range, p.allocator, "Unexpected {f}", .{bun.fmt.quote(name)});
                             return error.SyntaxError;
                         }
 
@@ -379,13 +379,13 @@ pub fn ParseProperty(
                                     strings.eqlComptime(name, "yield")))
                             {
                                 if (strings.eqlComptime(name, "await")) {
-                                    p.log.addRangeError(p.source, name_range, "Cannot use \"await\" here") catch unreachable;
+                                    try p.log.addRangeError(p.source, name_range, "Cannot use \"await\" here");
                                 } else {
-                                    p.log.addRangeError(p.source, name_range, "Cannot use \"yield\" here") catch unreachable;
+                                    try p.log.addRangeError(p.source, name_range, "Cannot use \"yield\" here");
                                 }
                             }
 
-                            const ref = p.storeNameInRef(name) catch unreachable;
+                            const ref = try p.storeNameInRef(name);
                             const value = p.newExpr(E.Identifier{ .ref = ref }, key.loc);
 
                             // Destructuring patterns have an optional default value
@@ -454,7 +454,7 @@ pub fn ParseProperty(
                             .e_string => |str| {
                                 if (str.eqlComptime("constructor") or (opts.is_static and str.eqlComptime("prototype"))) {
                                     // TODO: fmt error message to include string value.
-                                    p.log.addRangeError(p.source, key_range, "Invalid field name") catch unreachable;
+                                    try p.log.addRangeError(p.source, key_range, "Invalid field name");
                                 }
                             },
                             else => {},
@@ -485,13 +485,14 @@ pub fn ParseProperty(
                         // "this" and "super" property access is allowed in field initializers
                         const old_is_this_disallowed = p.fn_or_arrow_data_parse.is_this_disallowed;
                         const old_allow_super_property = p.fn_or_arrow_data_parse.allow_super_property;
+                        defer {
+                            p.fn_or_arrow_data_parse.is_this_disallowed = old_is_this_disallowed;
+                            p.fn_or_arrow_data_parse.allow_super_property = old_allow_super_property;
+                        }
                         p.fn_or_arrow_data_parse.is_this_disallowed = false;
                         p.fn_or_arrow_data_parse.allow_super_property = true;
 
                         initializer = try p.parseExpr(.comma);
-
-                        p.fn_or_arrow_data_parse.is_this_disallowed = old_is_this_disallowed;
-                        p.fn_or_arrow_data_parse.allow_super_property = old_allow_super_property;
                     }
 
                     // Special-case private identifiers
@@ -499,7 +500,7 @@ pub fn ParseProperty(
                         .e_private_identifier => |*private| {
                             const name = p.loadNameFromRef(private.ref);
                             if (strings.eqlComptime(name, "#constructor")) {
-                                p.log.addRangeError(p.source, key_range, "Invalid field name \"#constructor\"") catch unreachable;
+                                try p.log.addRangeError(p.source, key_range, "Invalid field name \"#constructor\"");
                             }
 
                             const declare: js_ast.Symbol.Kind = if (opts.is_static)
@@ -507,7 +508,7 @@ pub fn ParseProperty(
                             else
                                 .private_field;
 
-                            private.ref = p.declareSymbol(declare, key.loc, name) catch unreachable;
+                            private.ref = try p.declareSymbol(declare, key.loc, name);
                         },
                         else => {},
                     }
@@ -529,7 +530,7 @@ pub fn ParseProperty(
 
                 // Auto-accessor fields cannot be methods
                 if (kind == .auto_accessor and p.lexer.token == .t_open_paren) {
-                    p.log.addRangeError(p.source, key_range, "auto-accessor properties cannot have a method body") catch unreachable;
+                    try p.log.addRangeError(p.source, key_range, "auto-accessor properties cannot have a method body");
                     return error.SyntaxError;
                 }
 

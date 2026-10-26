@@ -3,23 +3,14 @@
 #include <JavaScriptCore/JSInternalFieldObjectImpl.h>
 #include <JavaScriptCore/JSInternalFieldObjectImplInlines.h>
 #include "BunClientData.h"
-#include "InternalModuleRegistry+numberOfModules.h"
-#include "_NativeModule.h"
+#include "SchemaBindingsModuleRegistry.h"
 
 namespace Bun {
 using namespace JSC;
 
-// Internal module registry is an array of lazily initialized "modules". Module
-// IDs are generated pre-build by `bundle-modules.ts` and inlined into JS code
-// and the C++ enum (InternalModuleRegistry::Field) This allows modules
-// depending on each other to skip the module resolver.
-//
-// Modules come from two sources:
-// - some are written in JS (src/js, there is a readme file that explain those files more.
-// - others are native code (src/jsc/modules), see _NativeModule.h in there.
-class InternalModuleRegistry : public JSInternalFieldObjectImpl<BUN_INTERNAL_MODULE_COUNT> {
+class InternalModuleRegistry : public JSInternalFieldObjectImpl<Bindgen::internalModuleCount> {
 public:
-    using Base = JSInternalFieldObjectImpl<BUN_INTERNAL_MODULE_COUNT>;
+    using Base = JSInternalFieldObjectImpl<Bindgen::internalModuleCount>;
 
     DECLARE_EXPORT_INFO;
 
@@ -29,9 +20,7 @@ public:
         return sizeof(InternalModuleRegistry);
     }
 
-    enum Field : uint8_t {
-#include "InternalModuleRegistry+enum.h"
-    };
+    using Field = Bindgen::InternalModuleId;
 
     const WriteBarrier<Unknown>& internalField(Field field) const { return Base::internalField(static_cast<uint32_t>(field)); }
     WriteBarrier<Unknown>& internalField(Field field) { return Base::internalField(static_cast<uint32_t>(field)); }
@@ -53,8 +42,6 @@ public:
     static Structure* createStructure(VM& vm, JSGlobalObject* globalObject);
 
     JSValue requireId(JSGlobalObject* globalObject, VM& vm, Field id);
-
-    static JSC_DECLARE_HOST_FUNCTION(jsCreateInternalModuleById);
 
 private:
     JS_EXPORT_PRIVATE InternalModuleRegistry(VM&, Structure*);

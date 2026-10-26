@@ -11,64 +11,119 @@ const TestCategory = enum {
     parser_options,
 };
 
-pub fn minifyErrorTestWithOptions(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return testingImpl(globalThis, callframe, .minify, .parser_options);
+pub fn minifyErrorTestWithOptions(
+    context: bun.bindgen.CallContext(MinifyErrorTestWithOptionsSchema),
+    args: bun.bindgen.Args(MinifyErrorTestWithOptionsSchema),
+) bun.bindgen.CallError(MinifyErrorTestWithOptionsSchema)!bun.bindgen.Return(MinifyErrorTestWithOptionsSchema) {
+    return testingImpl(
+        context,
+        args.source,
+        args.expected,
+        args.options,
+        .minify,
+        .parser_options,
+    );
 }
 
-pub fn minifyTestWithOptions(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return testingImpl(globalThis, callframe, .minify, .parser_options);
+pub fn minifyTestWithOptions(
+    context: bun.bindgen.CallContext(MinifyTestWithOptionsSchema),
+    args: bun.bindgen.Args(MinifyTestWithOptionsSchema),
+) bun.bindgen.CallError(MinifyTestWithOptionsSchema)!bun.bindgen.Return(MinifyTestWithOptionsSchema) {
+    return testingImpl(
+        context,
+        args.source,
+        args.expected,
+        args.options,
+        .minify,
+        .parser_options,
+    );
 }
 
-pub fn prefixTestWithOptions(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return testingImpl(globalThis, callframe, .prefix, .parser_options);
+pub fn prefixTestWithOptions(
+    context: bun.bindgen.CallContext(PrefixTestWithOptionsSchema),
+    args: bun.bindgen.Args(PrefixTestWithOptionsSchema),
+) bun.bindgen.CallError(PrefixTestWithOptionsSchema)!bun.bindgen.Return(PrefixTestWithOptionsSchema) {
+    return testingImpl(
+        context,
+        args.source,
+        args.expected,
+        args.options,
+        .prefix,
+        .parser_options,
+    );
 }
 
-pub fn testWithOptions(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return testingImpl(globalThis, callframe, .normal, .parser_options);
+pub fn testWithOptions(
+    context: bun.bindgen.CallContext(TestWithOptionsSchema),
+    args: bun.bindgen.Args(TestWithOptionsSchema),
+) bun.bindgen.CallError(TestWithOptionsSchema)!bun.bindgen.Return(TestWithOptionsSchema) {
+    return testingImpl(
+        context,
+        args.source,
+        args.expected,
+        args.options,
+        .normal,
+        .parser_options,
+    );
 }
 
-pub fn minifyTest(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return testingImpl(globalThis, callframe, .minify, .normal);
+pub fn minifyTest(
+    context: bun.bindgen.CallContext(MinifyTestSchema),
+    args: bun.bindgen.Args(MinifyTestSchema),
+) bun.bindgen.CallError(MinifyTestSchema)!bun.bindgen.Return(MinifyTestSchema) {
+    return testingImpl(
+        context,
+        args.source,
+        args.expected,
+        args.targets,
+        .minify,
+        .normal,
+    );
 }
 
-pub fn prefixTest(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return testingImpl(globalThis, callframe, .prefix, .normal);
+pub fn prefixTest(
+    context: bun.bindgen.CallContext(PrefixTestSchema),
+    args: bun.bindgen.Args(PrefixTestSchema),
+) bun.bindgen.CallError(PrefixTestSchema)!bun.bindgen.Return(PrefixTestSchema) {
+    return testingImpl(
+        context,
+        args.source,
+        args.expected,
+        args.targets,
+        .prefix,
+        .normal,
+    );
 }
 
-pub fn _test(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    return testingImpl(globalThis, callframe, .normal, .normal);
+pub fn _test(
+    context: bun.bindgen.CallContext(TestSchema),
+    args: bun.bindgen.Args(TestSchema),
+) bun.bindgen.CallError(TestSchema)!bun.bindgen.Return(TestSchema) {
+    return testingImpl(
+        context,
+        args.source,
+        args.expected,
+        args.targets,
+        .normal,
+        .normal,
+    );
 }
 
-pub fn testingImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, comptime test_kind: TestKind, comptime test_category: TestCategory) bun.JSError!jsc.JSValue {
+pub fn testingImpl(
+    context: anytype,
+    source_value: anytype,
+    expected_value: anytype,
+    browser_options: anytype,
+    comptime test_kind: TestKind,
+    comptime test_category: TestCategory,
+) bun.bindgen.CallError(@TypeOf(context))!bun.bindgen.DOMString {
     var arena = bun.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const arguments_ = callframe.arguments_old(3);
-    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
-    const source_arg: jsc.JSValue = arguments.nextEat() orelse {
-        return globalThis.throw("minifyTestWithOptions: expected 2 arguments, got 0", .{});
-    };
-    if (!source_arg.isString()) {
-        return globalThis.throw("minifyTestWithOptions: expected source to be a string", .{});
-    }
-    const source_bunstr = try source_arg.toBunString(globalThis);
-    defer source_bunstr.deref();
-    const source = source_bunstr.toUTF8(bun.default_allocator);
+    const source = try source_value.toUTF8(bun.default_allocator);
     defer source.deinit();
-
-    const expected_arg = arguments.nextEat() orelse {
-        return globalThis.throw("minifyTestWithOptions: expected 2 arguments, got 1", .{});
-    };
-    if (!expected_arg.isString()) {
-        return globalThis.throw("minifyTestWithOptions: expected `expected` arg to be a string", .{});
-    }
-    const expected_bunstr = try expected_arg.toBunString(globalThis);
-    defer expected_bunstr.deref();
-    const expected = expected_bunstr.toUTF8(bun.default_allocator);
-    defer expected.deinit();
-
-    const browser_options_arg = arguments.nextEat();
+    _ = expected_value;
 
     var log = bun.logger.Log.init(alloc);
     defer log.deinit();
@@ -80,18 +135,10 @@ pub fn testingImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, c
 
         switch (test_category) {
             .normal => {
-                if (browser_options_arg) |optargs| {
-                    if (optargs.isObject()) {
-                        browsers = try targetsFromJS(globalThis, optargs);
-                    }
-                }
+                if (browser_options) |targets| browsers = browsersFromOptions(targets);
             },
             .parser_options => {
-                if (browser_options_arg) |optargs| {
-                    if (optargs.isObject()) {
-                        try parserOptionsFromJS(globalThis, alloc, &opts, optargs);
-                    }
-                }
+                if (browser_options) |options| applyParserOptions(&opts, options);
             },
         }
 
@@ -112,9 +159,7 @@ pub fn testingImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, c
             minify_options.targets.browsers = browsers;
             switch (stylesheet.minify(alloc, minify_options, &extra)) {
                 .result => {},
-                .err => |*err| {
-                    return globalThis.throwValue((try err.toErrorInstance(globalThis)).toJS());
-                },
+                .err => |err| return failFormatted(context, "{f}", .{err.kind}),
             }
 
             const symbols = bun.ast.Symbol.Map{};
@@ -136,165 +181,69 @@ pub fn testingImpl(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, c
                 &symbols,
             )) {
                 .result => |result| result,
-                .err => |*err| {
-                    return globalThis.throwValue((try err.toErrorInstance(globalThis)).toJS());
-                },
+                .err => |err| return failFormatted(context, "{f}", .{err.kind}),
             };
 
-            return bun.String.fromBytes(result.code).toJS(globalThis);
+            return bun.bindgen.DOMString.fromUTF8(result.code);
         },
         .err => |err| {
             if (log.hasErrors()) {
-                return log.toJS(globalThis, bun.default_allocator, "parsing failed:");
+                return failLog(context, "parsing failed: ", &log);
             }
-            return globalThis.throw("parsing failed: {f}", .{err.kind});
+            return failFormatted(context, "parsing failed: {f}", .{err.kind});
         },
     }
 }
 
-fn parserOptionsFromJS(globalThis: *jsc.JSGlobalObject, allocator: Allocator, opts: *bun.css.ParserOptions, jsobj: JSValue) bun.JSError!void {
-    _ = allocator; // autofix
-    if (try jsobj.getOptional(globalThis, "flags", JSValue)) |val| {
-        if (val.isArray()) {
-            var iter = try val.arrayIterator(globalThis);
-            while (try iter.next()) |item| {
-                const bunstr = try item.toBunString(globalThis);
-                defer bunstr.deref();
-                const str = bunstr.toUTF8(bun.default_allocator);
-                defer str.deinit();
-                if (std.mem.eql(u8, str.slice(), "DEEP_SELECTOR_COMBINATOR")) {
-                    opts.flags.deep_selector_combinator = true;
-                } else {
-                    return globalThis.throw("invalid flag: {s}", .{str.slice()});
-                }
-            }
-        } else {
-            return globalThis.throw("flags must be an array", .{});
-        }
-    }
-
-    // if (try jsobj.getOptional(globalThis, "css_modules", JSValue)) |val| {
-    //     opts.css_modules = bun.css.css_modules.Config{
-
-    //     };
-    //     if (val.isObject()) {
-    //         if (try val.getOptional(globalThis, "pure", JSValue)) |pure_val| {
-    //             opts.css_modules.pure = pure_val.toBoolean();
-    //         }
-    //     }
-    // }
+fn failFormatted(context: anytype, comptime format: []const u8, args: anytype) bun.bindgen.CallError(@TypeOf(context)) {
+    const message = std.fmt.allocPrint(bun.default_allocator, format, args) catch return error.OutOfMemory;
+    defer bun.default_allocator.free(message);
+    return context.fail(.css_error, try bun.bindgen.DOMString.fromUTF8(message));
 }
 
-fn targetsFromJS(globalThis: *jsc.JSGlobalObject, jsobj: JSValue) bun.JSError!bun.css.targets.Browsers {
-    var targets = bun.css.targets.Browsers{};
-
-    if (try jsobj.getOptional(globalThis, "android", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.android = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-    if (try jsobj.getOptional(globalThis, "chrome", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.chrome = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-    if (try jsobj.getOptional(globalThis, "edge", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.edge = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-    if (try jsobj.getOptional(globalThis, "firefox", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.firefox = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-    if (try jsobj.getOptional(globalThis, "ie", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.ie = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-    if (try jsobj.getOptional(globalThis, "ios_saf", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.ios_saf = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-    if (try jsobj.getOptional(globalThis, "opera", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.opera = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-    if (try jsobj.getOptional(globalThis, "safari", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.safari = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-    if (try jsobj.getOptional(globalThis, "samsung", JSValue)) |val| {
-        if (val.isInt32()) {
-            if (val.getNumber()) |value| {
-                targets.samsung = bun.intFromFloat(u32, value);
-            }
-        }
-    }
-
-    return targets;
+fn failLog(context: anytype, prefix: []const u8, log: *const bun.logger.Log) bun.bindgen.CallError(@TypeOf(context)) {
+    var output = std.Io.Writer.Allocating.init(bun.default_allocator);
+    defer output.deinit();
+    output.writer.writeAll(prefix) catch return error.OutOfMemory;
+    log.printWithEnableAnsiColors(&output.writer, false) catch return error.OutOfMemory;
+    return context.fail(.css_error, try bun.bindgen.DOMString.fromUTF8(output.written()));
 }
 
-pub fn attrTest(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+fn applyParserOptions(opts: *bun.css.ParserOptions, options: anytype) void {
+    const flags = options.flags orelse return;
+    for (0..flags.len()) |index| switch (flags.at(index).?) {
+        .deep_selector_combinator => opts.flags.deep_selector_combinator = true,
+    };
+}
+
+fn browsersFromOptions(options: anytype) bun.css.targets.Browsers {
+    return .{
+        .android = options.android,
+        .chrome = options.chrome,
+        .edge = options.edge,
+        .firefox = options.firefox,
+        .ie = options.ie,
+        .ios_saf = options.ios_saf,
+        .opera = options.opera,
+        .safari = options.safari,
+        .samsung = options.samsung,
+    };
+}
+
+pub fn attrTest(
+    context: bun.bindgen.CallContext(AttrTestSchema),
+    args: bun.bindgen.Args(AttrTestSchema),
+) bun.bindgen.CallError(AttrTestSchema)!bun.bindgen.Return(AttrTestSchema) {
     var arena = bun.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const arguments_ = callframe.arguments_old(4);
-    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
-    const source_arg: jsc.JSValue = arguments.nextEat() orelse {
-        return globalThis.throw("attrTest: expected 3 arguments, got 0", .{});
-    };
-    if (!source_arg.isString()) {
-        return globalThis.throw("attrTest: expected source to be a string", .{});
-    }
-    const source_bunstr = try source_arg.toBunString(globalThis);
-    defer source_bunstr.deref();
-    const source = source_bunstr.toUTF8(bun.default_allocator);
+    const source = try args.source.toUTF8(bun.default_allocator);
     defer source.deinit();
-
-    const expected_arg = arguments.nextEat() orelse {
-        return globalThis.throw("attrTest: expected 3 arguments, got 1", .{});
-    };
-    if (!expected_arg.isString()) {
-        return globalThis.throw("attrTest: expected `expected` arg to be a string", .{});
-    }
-    const expected_bunstr = try expected_arg.toBunString(globalThis);
-    defer expected_bunstr.deref();
-    const expected = expected_bunstr.toUTF8(bun.default_allocator);
-    defer expected.deinit();
-
-    const minify_arg: jsc.JSValue = arguments.nextEat() orelse {
-        return globalThis.throw("attrTest: expected 3 arguments, got 2", .{});
-    };
-    const minify = minify_arg.isBoolean() and minify_arg.toBoolean();
+    _ = args.expected;
 
     var targets: bun.css.targets.Targets = .{};
-    if (arguments.nextEat()) |arg| {
-        if (arg.isObject()) {
-            targets.browsers = try targetsFromJS(globalThis, arg);
-        }
-    }
+    if (args.targets) |browser_targets| targets.browsers = browsersFromOptions(browser_targets);
 
     var log = bun.logger.Log.init(alloc);
     defer log.deinit();
@@ -312,30 +261,51 @@ pub fn attrTest(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.
             const result = stylesheet.toCss(
                 alloc,
                 bun.css.PrinterOptions{
-                    .minify = minify,
+                    .minify = args.minify,
                     .targets = targets,
                 },
                 .initOutsideOfBundler(&import_records),
-            ) catch |e| {
-                bun.handleErrorReturnTrace(e, @errorReturnTrace());
-                return .js_undefined;
-            };
+            ) catch return error.OutOfMemory;
 
-            return bun.String.fromBytes(result.code).toJS(globalThis);
+            return bun.bindgen.DOMString.fromUTF8(result.code);
         },
         .err => |err| {
             if (log.hasAny()) {
-                return log.toJS(globalThis, bun.default_allocator, "parsing failed:");
+                return failLog(context, "parsing failed: ", &log);
             }
-            return globalThis.throw("parsing failed: {f}", .{err.kind});
+            return failFormatted(context, "parsing failed: {f}", .{err.kind});
         },
     }
 }
 
 const bun = @import("bun");
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 
-const jsc = bun.jsc;
-const JSGlobalObject = bun.jsc.JSGlobalObject;
-const JSValue = bun.jsc.JSValue;
+const InternalTestingBindings = bun.bindgen.Module("InternalTesting");
+const MinifyErrorTestWithOptionsSchema = InternalTestingBindings.function("cssMinifyErrorTestWithOptions");
+const MinifyTestWithOptionsSchema = InternalTestingBindings.function("cssMinifyTestWithOptions");
+const PrefixTestWithOptionsSchema = InternalTestingBindings.function("cssPrefixTestWithOptions");
+const TestWithOptionsSchema = InternalTestingBindings.function("cssTestWithOptions");
+const MinifyTestSchema = InternalTestingBindings.function("cssMinifyTest");
+const PrefixTestSchema = InternalTestingBindings.function("cssPrefixTest");
+const TestSchema = InternalTestingBindings.function("cssTest");
+const AttrTestSchema = InternalTestingBindings.function("cssAttrTest");
+const MinifyErrorTestWithOptionsBinding = bun.bindgen.Fn(MinifyErrorTestWithOptionsSchema, minifyErrorTestWithOptions);
+const MinifyTestWithOptionsBinding = bun.bindgen.Fn(MinifyTestWithOptionsSchema, minifyTestWithOptions);
+const PrefixTestWithOptionsBinding = bun.bindgen.Fn(PrefixTestWithOptionsSchema, prefixTestWithOptions);
+const TestWithOptionsBinding = bun.bindgen.Fn(TestWithOptionsSchema, testWithOptions);
+const MinifyTestBinding = bun.bindgen.Fn(MinifyTestSchema, minifyTest);
+const PrefixTestBinding = bun.bindgen.Fn(PrefixTestSchema, prefixTest);
+const TestBinding = bun.bindgen.Fn(TestSchema, _test);
+const AttrTestBinding = bun.bindgen.Fn(AttrTestSchema, attrTest);
+
+comptime {
+    _ = MinifyErrorTestWithOptionsBinding;
+    _ = MinifyTestWithOptionsBinding;
+    _ = PrefixTestWithOptionsBinding;
+    _ = TestWithOptionsBinding;
+    _ = MinifyTestBinding;
+    _ = PrefixTestBinding;
+    _ = TestBinding;
+    _ = AttrTestBinding;
+}

@@ -12,7 +12,25 @@ const isTypedArray = ArrayBuffer.isView;
 let internalFieldTuple;
 
 function initializeSQL() {
-  ({ 0: SQL, 1: internalFieldTuple } = $cpp("JSSQLStatement.cpp", "createJSSQLStatementConstructor"));
+  SQL = {
+    open: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementOpenStatementFunction"),
+    close: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementCloseStatementFunction"),
+    prepare: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementPrepareStatementFunction"),
+    run: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementExecuteFunction"),
+    isInTransaction: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementIsInTransactionFunction"),
+    loadExtension: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementLoadExtensionFunction"),
+    setCustomSQLite: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementSetCustomSQLite"),
+    serialize: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementSerialize"),
+    deserialize: $bindgenFn("SQLiteStatementHost.schema.zig", "jsSQLStatementDeserialize"),
+    controlInt32: $bindgenFn("SQLiteControl.schema.zig", "int32"),
+    controlInt64: $bindgenFn("SQLiteControl.schema.zig", "int64"),
+    controlRetry: $bindgenFn("SQLiteControl.schema.zig", "retry"),
+    controlString: $bindgenFn("SQLiteControl.schema.zig", "string"),
+    controlPragma: $bindgenFn("SQLiteControl.schema.zig", "pragma"),
+    controlQuery: $bindgenFn("SQLiteControl.schema.zig", "query"),
+    controlNotify: $bindgenFn("SQLiteControl.schema.zig", "notify"),
+  };
+  internalFieldTuple = $bindgenFn("SQLiteStatementHost.schema.zig", "createInternalFieldTuple")();
 }
 
 function createChangesObject() {
@@ -92,9 +110,9 @@ const constants = {
   SQLITE_FCNTL_EXTERNAL_READER: 40,
   SQLITE_FCNTL_CKSM_FILE: 41,
   SQLITE_FCNTL_RESET_CACHE: 42,
+  SQLITE_FCNTL_BLOCK_ON_CONNECT: 44,
 };
 
-// This is interface is the JS equivalent of what JSSQLStatement.cpp defines
 interface CppSQLStatement {
   run: (...args: TODO[]) => TODO;
   get: (...args: TODO[]) => TODO;
@@ -111,17 +129,26 @@ interface CppSQLStatement {
   columnTypes: string[];
   declaredTypes: (string | null)[];
   safeIntegers: boolean;
+  readonly isFinalized: boolean;
 }
 
 interface CppSQL {
-  open(filename: string, flags: number, db: Database): TODO;
+  open(filename: string, flags: number): TODO;
+  run(handle: TODO, internalFlags: number, tuple: TODO, query: string, ...params: TODO[]): void;
+  prepare(handle: TODO, query: string, params: TODO, flags: number, internalFlags: number): CppSQLStatement;
   isInTransaction(handle: TODO): boolean;
   loadExtension(handle: TODO, name: string, entryPoint: string): void;
   serialize(handle: TODO, name: string): Buffer;
   deserialize(serialized: NodeJS.TypedArray | ArrayBufferLike, openFlags: number, deserializeFlags: number): TODO;
-  fcntl(handle: TODO, ...args: TODO[]): TODO;
+  controlInt32(handle: TODO, name: string | null, op: number, arg: TODO): SqliteTypes.FileControlResult;
+  controlInt64(handle: TODO, name: string | null, op: number, arg: TODO): SqliteTypes.FileControlResult;
+  controlRetry(handle: TODO, name: string | null, op: number, arg: TODO): SqliteTypes.FileControlResult;
+  controlString(handle: TODO, name: string | null, op: number, arg: TODO): SqliteTypes.FileControlResult;
+  controlPragma(handle: TODO, name: string | null, op: number, arg: TODO): SqliteTypes.FileControlResult;
+  controlQuery(handle: TODO, name: string | null, op: number, arg: TODO): SqliteTypes.FileControlResult;
+  controlNotify(handle: TODO, name: string | null, op: number, arg: TODO): SqliteTypes.FileControlResult;
   close(handle: TODO, throwOnError: boolean): void;
-  setCustomSQLite(path: string): void;
+  setCustomSQLite(path: string): boolean;
 }
 
 let SQL: CppSQL;
@@ -161,7 +188,9 @@ class Statement {
   values: SqliteTypes.Statement["values"];
   raw: SqliteTypes.Statement["raw"];
   run: SqliteTypes.Statement["run"];
-  isFinalized = false;
+  get isFinalized() {
+    return this.#raw.isFinalized;
+  }
 
   toJSON() {
     return {
@@ -325,7 +354,6 @@ class Statement {
   }
 
   finalize(...args) {
-    this.isFinalized = true;
     return this.#raw.finalize(...args);
   }
 
@@ -344,7 +372,7 @@ const cachedCount = Symbol.for("Bun.Database.cache.count");
 
 class Database implements SqliteTypes.Database {
   constructor(
-    filenameGiven: string | undefined | NodeJS.TypedArray | Buffer<ArrayBufferLike>,
+    filenameGiven: string | undefined | NodeJS.TypedArray | ArrayBufferLike | Buffer<ArrayBufferLike>,
     options?: SqliteTypes.DatabaseOptions | number,
   ) {
     if (typeof filenameGiven === "undefined") {
@@ -420,7 +448,7 @@ class Database implements SqliteTypes.Database {
       initializeSQL();
     }
 
-    this.#handle = SQL.open(anonymous ? ":memory:" : filename, flags, this);
+    this.#handle = SQL.open(anonymous ? ":memory:" : filename, flags);
     this.filename = filename;
   }
 
@@ -432,7 +460,7 @@ class Database implements SqliteTypes.Database {
   filename;
   #hasClosed = false;
   get handle() {
-    return this.#handle;
+    return this.#handle.id;
   }
 
   get inTransaction() {
@@ -487,14 +515,54 @@ class Database implements SqliteTypes.Database {
     return SQL.setCustomSQLite(path);
   }
 
-  fileControl(_cmd, _arg) {
+  fileControl(cmd, arg) {
     const handle = this.#handle;
-
-    if (arguments.length <= 2) {
-      return SQL.fcntl(handle, null, arguments[0], arguments[1]);
+    let databaseName: string | null = null;
+    if (typeof cmd === "string") {
+      databaseName = cmd;
+      cmd = arg;
+      arg = arguments[2];
     }
-
-    return SQL.fcntl(handle, ...arguments);
+    if (typeof cmd !== "number") {
+      throw new TypeError("SQLite file-control operation must be a number");
+    }
+    switch (cmd) {
+      case 1: // LOCKSTATE
+      case 4: // LAST_ERRNO
+      case 6: // CHUNK_SIZE
+      case 10: // PERSIST_WAL
+      case 13: // POWERSAFE_OVERWRITE
+      case 20: // HAS_MOVED
+      case 34: // LOCK_TIMEOUT
+      case 35: // DATA_VERSION
+      case 38: // RESERVE_BYTES
+      case 40: // EXTERNAL_READER
+      case 44: // BLOCK_ON_CONNECT
+        return SQL.controlInt32(handle, databaseName, cmd, arg);
+      case 5: // SIZE_HINT
+      case 18: // MMAP_SIZE
+      case 36: // SIZE_LIMIT
+        return SQL.controlInt64(handle, databaseName, cmd, arg);
+      case 9: // WIN32_AV_RETRY
+        return SQL.controlRetry(handle, databaseName, cmd, arg);
+      case 3: // SET_LOCKPROXYFILE
+      case 19: // TRACE
+        return SQL.controlString(handle, databaseName, cmd, arg);
+      case 14: // PRAGMA
+        return SQL.controlPragma(handle, databaseName, cmd, arg);
+      case 2: // GET_LOCKPROXYFILE
+      case 7: // FILE_POINTER
+      case 12: // VFSNAME
+      case 16: // TEMPFILENAME
+      case 27: // VFS_POINTER
+      case 28: // JOURNAL_POINTER
+      case 29: // WIN32_GET_HANDLE
+        return SQL.controlQuery(handle, databaseName, cmd, arg);
+      case 42: // RESET_CACHE
+        return SQL.controlNotify(handle, databaseName, cmd, arg);
+      default:
+        throw new RangeError("Unsupported SQLite file-control operation");
+    }
   }
 
   close(throwOnError = false) {
@@ -503,7 +571,6 @@ class Database implements SqliteTypes.Database {
     if (controllers) {
       const controller = controllers.get(this);
       if (controller) {
-        controllers.delete(this);
         const seen = new Set();
         for (const ctrl of [controller.default, controller.deferred, controller.immediate, controller.exclusive]) {
           if (!ctrl) continue;
@@ -514,10 +581,11 @@ class Database implements SqliteTypes.Database {
             }
           }
         }
+        controllers.delete(this);
       }
     }
+    SQL.close(this.#handle, throwOnError);
     this.#hasClosed = true;
-    return SQL.close(this.#handle, throwOnError);
   }
   clearQueryCache() {
     for (let item of this.#cachedQueriesValues) {
@@ -544,7 +612,7 @@ class Database implements SqliteTypes.Database {
     return createChangesObject();
   }
 
-  prepare(query: string, params: any[] | undefined, flags: number = 0) {
+  prepare(query: string, params?: any, flags: number = 0): any {
     return new Statement(SQL.prepare(this.#handle, query, params, flags || 0, this.#internalFlags));
   }
 
@@ -554,7 +622,7 @@ class Database implements SqliteTypes.Database {
     return this.#cachedQueriesKeys.length;
   }
 
-  query(query) {
+  query(query): any {
     if (typeof query !== "string") {
       throw new TypeError(`Expected 'query' to be a string, got '${typeof query}'`);
     }
@@ -598,7 +666,9 @@ class Database implements SqliteTypes.Database {
   // Code for transactions is largely copied from better-sqlite3
   // https://github.com/JoshuaWise/better-sqlite3/blob/master/lib/methods/transaction.js
   // thank you @JoshuaWise!
-  transaction(fn, self) {
+  declare exec: Database["run"];
+
+  transaction(fn, self?): any {
     if (typeof fn !== "function") throw new TypeError("Expected first argument to be a function");
 
     const db = this;
@@ -627,7 +697,6 @@ class Database implements SqliteTypes.Database {
   }
 }
 
-// @ts-expect-error
 Database.prototype.exec = Database.prototype.run;
 
 // Return the database's cached transaction controller, or create a new one

@@ -26,6 +26,9 @@ const Build = std.Build;
 const Step = Build.Step;
 const LazyPath = Build.LazyPath;
 
+const schema_bindings_cpp_shard_count = 8;
+const binding_rapidhash_source = "src/hash/rapidhash.zig";
+
 pub const Mode = enum { debug, release };
 
 pub const NodejsCompatibility = struct {
@@ -37,6 +40,7 @@ pub const NodejsCompatibility = struct {
 /// Patches applied to vendored dep sources before compiling. Entries that are
 /// not .patch files are overlays copied into the source root.
 const dep_patches = [_]struct { dep: []const u8, files: []const []const u8 }{
+    .{ .dep = "boringssl", .files = &.{"patches/boringssl/transactional-server-name.patch"} },
     .{ .dep = "zlib", .files = &.{"patches/zlib/clang-cl-arm64.patch"} },
     .{ .dep = "libarchive", .files = &.{
         "patches/libarchive/archive_write_add_filter_gzip.c.patch",
@@ -47,8 +51,9 @@ const dep_patches = [_]struct { dep: []const u8, files: []const []const u8 }{
         "patches/libjpeg-turbo/jbun_stubs.c",
     } },
     .{ .dep = "hdrhistogram", .files = &.{"patches/hdrhistogram/bitscan-type.patch"} },
+    .{ .dep = "cares", .files = &.{"patches/cares/allocation-free-cancel.patch"} },
     .{ .dep = "highway", .files = &.{"patches/highway/silence-warnings.patch"} },
-    .{ .dep = "lshpack", .files = &.{"patches/lshpack/bss-huff-tables.patch"} },
+    .{ .dep = "lshpack", .files = &.{ "patches/lshpack/bss-huff-tables.patch", "patches/lshpack/encoder-clone.patch", "patches/lshpack/decoder-results.patch" } },
     .{ .dep = "lsqpack", .files = &.{"patches/lsqpack/bss-huff-tables.patch"} },
     .{ .dep = "lsquic", .files = &.{
         "patches/lsquic/versions-to-string.patch",
@@ -64,18 +69,18 @@ const dep_patches = [_]struct { dep: []const u8, files: []const []const u8 }{
 /// collisions, and files whose conditional compilation is corrupted by
 /// macros leaking from bundle siblings.
 const no_unify = [_][]const u8{
+    "src/jsc/modules/BunJSCModule.cpp",
     "src/jsc/bindings/ZigGlobalObject.cpp",
     "src/jsc/bindings/BunObject.cpp",
-    "src/jsc/bindings/bindings.cpp",
+    "src/jsc/bindings/EngineBindings.cpp",
+    "src/jsc/bindings/DeepEqualityBindings.cpp",
+    "src/jsc/bindings/PropertyBindings.cpp",
     "src/jsc/bindings/BunProcess.cpp",
     "src/jsc/bindings/JSBuffer.cpp",
     "src/jsc/bindings/napi.cpp",
     "src/jsc/bindings/webcore/SerializedScriptValue.cpp",
     "src/jsc/bindings/webcore/HTTPParsers.cpp",
-    "src/jsc/bindings/webcore/JSMIMEType.cpp",
     "src/jsc/bindings/webcore/JSWasmStreamingCompiler.cpp",
-    "src/jsc/bindings/webcore/JSDOMPromiseDeferred.cpp",
-    "src/jsc/bindings/webcore/JSMessageEventCustom.cpp",
     "src/jsc/bindings/sqlite/JSSQLStatement.cpp",
     "src/jsc/bindings/webcrypto/CryptoAlgorithmAES_CBC.cpp",
     "src/jsc/bindings/webcrypto/CryptoAlgorithmAES_CBCOpenSSL.cpp",
@@ -95,20 +100,34 @@ const no_unify = [_][]const u8{
     "src/jsc/bindings/webcrypto/SubtleCrypto.cpp",
     "src/jsc/bindings/ProcessBindingUV.cpp",
     "src/jsc/bindings/ProcessBindingConstants.cpp",
-    "src/jsc/bindings/workaround-missing-symbols.cpp",
+    "src/libc_sys/WindowsCompatibility.cpp",
+    "src/libc_sys/LibCppAbort.cpp",
     "packages/bun-usockets/src/crypto/root_certs_windows.cpp",
     "packages/bun-usockets/src/crypto/root_certs_darwin.cpp",
-    "src/jsc/bindings/image_resize.cpp",
     // Highway's per-target include guards require each dispatching kernel to
     // compile in its own translation unit.
-    "src/jsc/bindings/xxhash3.cpp",
-    "src/jsc/bindings/image_coregraphics_shim.cpp",
-    "src/jsc/bindings/image_wic_shim.cpp",
+    "src/image_sys/Kernels.cpp",
+    "src/highway_sys/Hash.cpp",
+    "src/highway_sys/Strings.cpp",
+    "src/image_sys/CoreGraphics.cpp",
+    "src/image_sys/Wic.cpp",
+    "src/perf_sys/Signpost.cpp",
+    "src/rescle_sys/Resources.cpp",
+    "src/rescle_sys/rescle.cpp",
+    "src/webview_sys/host_main.cpp",
+    "src/webview_sys/ObjCRuntime.cpp",
+    "src/webview_sys/WebViewHost.cpp",
 };
 
 /// Directories scanned (non-recursively) for bun's own C++ sources.
 const cxx_dirs = [_][]const u8{
     "src/io",
+    "src/libc_sys",
+    "src/highway_sys",
+    "src/image_sys",
+    "src/perf_sys",
+    "src/rescle_sys",
+    "src/webview_sys",
     "src/jsc/modules",
     "src/jsc/bindings",
     "src/jsc/bindings/webcore",
@@ -119,6 +138,7 @@ const cxx_dirs = [_][]const u8{
     "src/jsc/bindings/node/http",
     "src/jsc/bindings/v8",
     "src/jsc/bindings/v8/shim",
+    "src/runtime/valkey_jsc",
     "src/runtime/webview",
     "src/bake",
     "src/uws_sys",
@@ -129,6 +149,10 @@ const cxx_dirs = [_][]const u8{
 
 /// Directories scanned (non-recursively) for bun's own C sources.
 const c_dirs = [_][]const u8{
+    "src/libc_sys",
+    "src/lshpack_sys",
+    "src/exe_format",
+    "src/tcc_sys",
     "packages/bun-usockets/src",
     "packages/bun-usockets/src/eventing",
     "packages/bun-usockets/src/internal",
@@ -163,10 +187,99 @@ pub const Options = struct {
     icu: *const @import("icu.zig").Ctx,
 };
 
-/// What downstream consumers need from codegen.
+pub const BindingArtifacts = struct {
+    step: *Step,
+    headers_dir: LazyPath,
+    wire_dir: LazyPath,
+    typescript_dir: LazyPath,
+    cpp_dir: LazyPath,
+    wire_header: LazyPath,
+    ir: LazyPath,
+    fingerprint: LazyPath,
+    implementations: LazyPath,
+};
+
+pub const BindingCodegen = struct {
+    ir_module: *Build.Module,
+    generator: *Step.Compile,
+    sources: []const []const u8,
+    artifacts: std.array_hash_map.String(*const BindingArtifacts) = .empty,
+    posix_implementations: ?LazyPath = null,
+    windows_implementations: ?LazyPath = null,
+    wire_checks: std.ArrayList(struct {
+        query: std.Target.Query,
+        step: *Step,
+    }) = .empty,
+
+    pub fn forTarget(self: *BindingCodegen, b: *Build, target: Build.ResolvedTarget) ?*const BindingArtifacts {
+        const name = bindingTargetName(target) orelse return null;
+        if (self.artifacts.get(name)) |artifacts| return artifacts;
+
+        const implementations = if (target.result.os.tag == .windows)
+            &self.windows_implementations
+        else
+            &self.posix_implementations;
+        if (implementations.* == null)
+            implementations.* = bindingImplementationAggregator(b, self.sources, target);
+
+        const emit_run = b.addRunArtifact(self.generator);
+        emit_run.addArgs(&.{ "--target", name, "--cpp-shards", b.fmt("{d}", .{schema_bindings_cpp_shard_count}) });
+        const headers_dir = emit_run.addPrefixedOutputDirectoryArg("--headers=", "schema-bindings-headers");
+        const wire_dir = emit_run.addPrefixedOutputDirectoryArg("--wire=", "schema-bindings-wire");
+        const typescript_dir = emit_run.addPrefixedOutputDirectoryArg("--typescript=", "schema-bindings-typescript");
+        const cpp_dir = emit_run.addPrefixedOutputDirectoryArg("--cpp=", "schema-bindings-cpp");
+        const artifacts = b.graph.arena.create(BindingArtifacts) catch @panic("OOM");
+        artifacts.* = .{
+            .step = &emit_run.step,
+            .headers_dir = headers_dir,
+            .wire_dir = wire_dir,
+            .typescript_dir = typescript_dir,
+            .cpp_dir = cpp_dir,
+            .wire_header = wire_dir.path(b, "SchemaBindingsWire.h"),
+            .ir = emit_run.addPrefixedOutputFileArg("--ir=", "BindingIR.zon"),
+            .fingerprint = emit_run.addPrefixedOutputFileArg("--fingerprint=", "BindingFingerprint.zon"),
+            .implementations = implementations.*.?,
+        };
+        self.artifacts.put(b.graph.arena, name, artifacts) catch @panic("OOM");
+        return artifacts;
+    }
+
+    pub fn checkWireTypes(self: *BindingCodegen, b: *Build, target: Build.ResolvedTarget) *Step {
+        for (self.wire_checks.items) |check| {
+            if (check.query.eql(target.query)) return check.step;
+        }
+        const artifacts = self.forTarget(b, target).?;
+        const translate = b.addTranslateC(.{
+            .root_source_file = artifacts.wire_header,
+            .target = target,
+            .optimize = .debug,
+            .link_libc = true,
+        });
+        const check = b.addObject(.{
+            .name = "check-wire-types",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/bindgen/wire_check_main.zig"),
+                .target = target,
+                .optimize = .debug,
+                .imports = &.{
+                    .{ .name = "bindgen_ir", .module = self.ir_module },
+                    .{ .name = "binding_ir", .module = b.createModule(.{ .root_source_file = artifacts.ir }) },
+                    .{ .name = "binding_wire", .module = b.createModule(.{ .root_source_file = translate.getOutput() }) },
+                },
+            }),
+        });
+        check.incremental = false;
+        self.wire_checks.append(b.graph.arena, .{ .query = target.query, .step = &check.step }) catch @panic("OOM");
+        return &check.step;
+    }
+};
+
+/// What downstream consumers need from host asset codegen.
 pub const Codegen = struct {
     /// Generated .cpp files, compiled straight from their generating steps.
     cpp_sources: []const LazyPath,
+    /// Raw schema artifacts used by compiler-adjacent native consumers.
+    schema_bindings_dirs: []const LazyPath,
     /// Absolute path of the stable codegen dir; baked as
     /// build_options.codegen_path and used as -I for C/C++.
     codegen_install_abs: []const u8,
@@ -174,6 +287,7 @@ pub const Codegen = struct {
     js_install_abs: []const u8,
     /// Absolute path of the stable dir holding the precompiled header.
     pch_install_abs: []const u8,
+    mysql_domain: *Build.Module,
     /// Mirrors step outputs into the stable dirs. Everything that reads the
     /// stable dirs must depend on it.
     sync_step: *Step,
@@ -188,10 +302,10 @@ pub const DepPkgs = struct {
     /// would shadow BoringSSL's and bun's own uv shims).
     nodejs: LazyPath,
     /// dep name → source root to compile from (patched copy when needed).
-    srcs: std.StringArrayHashMapUnmanaged(LazyPath),
+    srcs: std.array_hash_map.String(LazyPath),
     /// dep name → absolute path of the pristine zon package, for
     /// configure-time reads of files patches don't touch (*.h.in templates).
-    srcs_abs: std.StringArrayHashMapUnmanaged([]const u8),
+    srcs_abs: std.array_hash_map.String([]const u8),
 };
 
 pub const BunExe = struct {
@@ -215,7 +329,7 @@ pub fn resolveDeps(b: *Build) ?DepPkgs {
     const icu = lazyDep(b, "icu", &ok);
     const nodejs = lazyDep(b, "nodejs_headers", &ok);
     const mold = lazyDep(b, "mold", &ok);
-    var pkgs: std.StringArrayHashMapUnmanaged(*Build.Dependency) = .empty;
+    var pkgs: std.array_hash_map.String(*Build.Dependency) = .empty;
     for (recipes.all) |dep| {
         if (dep.in_tree) continue;
         const pkg = lazyDep(b, zonName(b, dep.name), &ok) orelse continue;
@@ -225,8 +339,8 @@ pub fn resolveDeps(b: *Build) ?DepPkgs {
 
     // The fetcher strips each archive's single root directory.
     const bun_exe = bootstrap.?.path("bun");
-    var srcs: std.StringArrayHashMapUnmanaged(LazyPath) = .empty;
-    var srcs_abs: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+    var srcs: std.array_hash_map.String(LazyPath) = .empty;
+    var srcs_abs: std.array_hash_map.String([]const u8) = .empty;
     for (pkgs.keys(), pkgs.values()) |name, pkg| {
         srcs.put(arena, name, patchedRoot(b, name, bun_exe, pkg.path(""))) catch @panic("OOM");
         srcs_abs.put(arena, name, depRootAbs(b, pkg)) catch @panic("OOM");
@@ -348,13 +462,15 @@ fn zonUrl(b: *Build, dep_name: []const u8) []const u8 {
 /// The ref a pinned source-archive URL points at: the path segment before
 /// ".tar.gz"/".zip" for /archive/<ref> URLs, the "autobuild-<hash>" tag for
 /// WebKit, "vX.Y.Z" for the Node headers.
-/// The oven-sh/WebKit commit recorded in vendor/webkit/VENDOR.
+/// The engine metadata recorded in vendor/webkit/VENDOR.
+fn webkitVendorMetadata(b: *Build) []const u8 {
+    const path = "vendor/webkit/VENDOR";
+    b.dependOnFileContents(b.path(path));
+    return readRootFile(b, path);
+}
+
 fn webkitVendorCommit(b: *Build) []const u8 {
-    const arena = b.graph.arena;
-    const io = b.graph.io;
-    var dir = std.Io.Dir.openDirAbsolute(io, rootJoin(b, "vendor/webkit"), .{}) catch @panic("open vendor/webkit");
-    defer dir.close(io);
-    const text = dir.readFileAlloc(io, "VENDOR", arena, .limited(64 * 1024)) catch @panic("read vendor/webkit/VENDOR");
+    const text = webkitVendorMetadata(b);
     const marker = "commit: ";
     const start = (std.mem.indexOf(u8, text, marker) orelse @panic("no commit in VENDOR")) + marker.len;
     const end = std.mem.indexOfAnyPos(u8, text, start, " \n") orelse text.len;
@@ -404,9 +520,82 @@ const SyncPairs = struct {
     }
 };
 
-pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode, zstd: *Step.Compile) *Codegen {
+pub fn addBindingCodegen(b: *Build) *BindingCodegen {
+    const arena = b.graph.arena;
+    const binding_codegen = arena.create(BindingCodegen) catch @panic("OOM");
+    const zig_sources = listFiles(b, "src", ".zig", true);
+
+    const bindgen_ir = b.createModule(.{
+        .root_source_file = b.path("src/bindgen/ir.zig"),
+    });
+    const bindgen_schema = b.createModule(.{
+        .root_source_file = b.path("src/bindgen/schema.zig"),
+    });
+    bindgen_schema.addImport("bindgen_ir", bindgen_ir);
+
+    checkGeneratorHostIndependence(b);
+    const schema_graph = resolveSchemaGraph(b, listFiles(b, "src", ".schema.zig", true));
+    const schema_imports = b.addWriteFiles();
+    var schema_aggregator: std.ArrayList(u8) = .empty;
+    for (schema_graph.order, 0..) |_, i| {
+        schema_aggregator.print(arena, "const schema_{d} = @import(\"binding_schema_{d}\");\n", .{ i, i }) catch @panic("OOM");
+    }
+    schema_aggregator.appendSlice(arena, "\npub const modules = .{\n") catch @panic("OOM");
+    for (schema_graph.order, 0..) |_, i| {
+        schema_aggregator.print(arena, "    schema_{d}.schema,\n", .{i}) catch @panic("OOM");
+    }
+    schema_aggregator.appendSlice(arena, "};\n") catch @panic("OOM");
+    schema_aggregator.appendSlice(arena, "\npub const source_stems = .{\n") catch @panic("OOM");
+    for (schema_graph.order) |source_index| {
+        const basename = std.fs.path.basename(schema_graph.sources[source_index]);
+        const stem = basename[0 .. basename.len - ".schema.zig".len];
+        schema_aggregator.print(arena, "    \"{s}\",\n", .{stem}) catch @panic("OOM");
+    }
+    schema_aggregator.appendSlice(arena, "};\n") catch @panic("OOM");
+    const schema_aggregator_file = schema_imports.add("binding_schemas.zig", schema_aggregator.items);
+    const binding_schemas = b.createModule(.{ .root_source_file = schema_aggregator_file });
+    const schema_modules = createSchemaModules(b, schema_graph, bindgen_schema);
+    for (schema_graph.order, 0..) |source_index, i| {
+        binding_schemas.addImport(b.fmt("binding_schema_{d}", .{i}), schema_modules[source_index]);
+    }
+    const generator = b.addExecutable(.{
+        .name = "binding-generator",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bindgen/generator.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+            .strip = true,
+            .imports = &.{
+                .{ .name = "bindgen_ir", .module = bindgen_ir },
+                .{ .name = "bindgen_schema", .module = bindgen_schema },
+                .{ .name = "binding_schemas", .module = binding_schemas },
+                .{ .name = "rapidhash", .module = b.createModule(.{ .root_source_file = b.path(binding_rapidhash_source) }) },
+            },
+        }),
+    });
+    generator.incremental = false;
+    binding_codegen.* = .{
+        .ir_module = bindgen_ir,
+        .generator = generator,
+        .sources = zig_sources,
+    };
+    return binding_codegen;
+}
+
+pub fn addCodegen(
+    b: *Build,
+    deps: *const DepPkgs,
+    mode: Mode,
+    binding_codegen: *BindingCodegen,
+    zstd: *Step.Compile,
+) *Codegen {
     const arena = b.graph.arena;
     const cg = arena.create(Codegen) catch @panic("OOM");
+    const target = b.graph.host;
+    const bindings = binding_codegen.forTarget(b, target).?;
+    const mysql_domain = b.createModule(.{
+        .root_source_file = b.path("src/sql/mysql/domain.zig"),
+    });
 
     const stable_root = rootJoin(b, b.fmt("build/zig/{s}", .{@tagName(mode)}));
     const sync = b.addRunFile(deps.bun);
@@ -418,9 +607,11 @@ pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode, zstd: *Step.Compi
 
     cg.* = .{
         .cpp_sources = &.{},
+        .schema_bindings_dirs = undefined,
         .codegen_install_abs = std.fs.path.join(arena, &.{ stable_root, "codegen" }) catch @panic("OOM"),
         .js_install_abs = std.fs.path.join(arena, &.{ stable_root, "js" }) catch @panic("OOM"),
         .pch_install_abs = std.fs.path.join(arena, &.{ stable_root, "pch" }) catch @panic("OOM"),
+        .mysql_domain = mysql_domain,
         .sync_step = &sync.step,
     };
 
@@ -453,35 +644,43 @@ pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode, zstd: *Step.Compi
         sp.addFile(out, "codegen/add-completions.txt.zst");
     }
 
-    // ─── generate-node-errors.ts <outdir> ───
-    const node_errors_dir = blk: {
+    // ─── schema bindings ───
+    const schema_bindings_headers_dir = bindings.headers_dir;
+    const schema_bindings_wire_dir = bindings.wire_dir;
+    const schema_bindings_typescript_dir = bindings.typescript_dir;
+    const schema_bindings_cpp_dir = bindings.cpp_dir;
+    sync.step.dependOn(binding_codegen.checkWireTypes(b, target));
+    for (0..schema_bindings_cpp_shard_count) |shard| {
+        cpp_sources.append(
+            arena,
+            schema_bindings_cpp_dir.path(b, b.fmt("SchemaBindings{d}.cpp", .{shard})),
+        ) catch @panic("OOM");
+    }
+    cpp_sources.append(arena, schema_bindings_wire_dir.path(b, "NativeModuleRegistry.cpp")) catch @panic("OOM");
+    cpp_sources.append(arena, schema_bindings_wire_dir.path(b, "SchemaBindingsIdentifiers.cpp")) catch @panic("OOM");
+    sp.add(schema_bindings_headers_dir, "codegen");
+    sp.add(schema_bindings_wire_dir, "codegen");
+    sp.add(schema_bindings_typescript_dir, "codegen");
+
+    const node_error_types = blk: {
         const run = script(b, deps, "src/codegen/generate-node-errors.ts", .{ .use_run = true });
-        run.addFileInput(b.path("src/jsc/bindings/ErrorCode.ts"));
-        run.addFileInput(b.path("src/jsc/bindings/ErrorCode.cpp"));
-        run.addFileInput(b.path("src/jsc/bindings/ErrorCode.h"));
-        break :blk run.addOutputDirectoryArg("codegen");
+        const out = run.addOutputDirectoryArg("codegen");
+        run.addFileArg(schema_bindings_wire_dir.path(b, "SchemaBindingsLinkMetadata.json"));
+        run.addFileInput(b.path("src/js/builtins.d.ts"));
+        break :blk out;
     };
-    sp.add(node_errors_dir, "codegen");
+    sp.add(node_error_types, "codegen");
 
-    // ─── generate-classes.ts <classes...> <outdir> ───
-    const classes_dir = blk: {
-        const run = script(b, deps, "src/codegen/generate-classes.ts", .{ .use_run = true });
-        run.addFileInput(b.path("src/jsc/bindings/js_classes.ts"));
-        for (listFiles(b, "src", ".classes.ts", true)) |f| run.addFileArg(b.path(f));
-        break :blk run.addOutputDirectoryArg("codegen");
-    };
-    cpp_sources.append(arena, classes_dir.path(b, "ZigGeneratedClasses.cpp")) catch @panic("OOM");
-    sp.add(classes_dir, "codegen");
-
-    // ─── bundle-modules.ts --debug=X <BUILD_PATH> ───
+    // ─── bundle-modules.ts --debug=X <BUILD_PATH> <NATIVE_MODULE_MANIFEST> <BINDGEN_LINK_METADATA> ───
     const bundle_dir = blk: {
         const run = script(b, deps, "src/codegen/bundle-modules.ts", .{ .use_run = true });
         run.addArg(debug_flag);
         const out = run.addOutputDirectoryArg("bundle-modules");
+        run.addFileArg(schema_bindings_wire_dir.path(b, "NativeModuleManifest.json"));
+        run.addFileArg(schema_bindings_wire_dir.path(b, "SchemaBindingsLinkMetadata.json"));
         for (listFiles(b, "src/js", ".ts", true)) |f| run.addFileInput(b.path(f));
         for (listFiles(b, "src/js", ".js", true)) |f| run.addFileInput(b.path(f));
         run.addFileInput(b.path("src/install/PackageManager/scanner-entry.ts"));
-        run.addFileInput(b.path("src/jsc/bindings/js_classes.ts"));
         run.addFileInput(b.path("src/jsc/bindings/InternalModuleRegistry.cpp"));
         break :blk out;
     };
@@ -490,108 +689,37 @@ pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode, zstd: *Step.Compi
     sp.add(bundle_codegen, "codegen");
     if (mode == .debug) sp.add(bundle_dir.path(b, "js"), "js");
 
-    // GeneratedJS2Native.zig lives in the source tree (relative imports).
-    // Copying from the step output keeps it present even when the step is
-    // skipped by a cache hit.
-    const usf = b.addUpdateSourceFiles();
-    usf.addCopyFileToSource(bundle_codegen.path(b, "GeneratedJS2Native.zig"), "src/jsc/bindings/GeneratedJS2Native.zig");
-    sync.step.dependOn(&usf.step);
-
-    // ─── generate-jssink.ts <outdir> ───
-    const jssink_dir = blk: {
-        const run = script(b, deps, "src/codegen/generate-jssink.ts", .{ .use_run = true });
-        run.addFileInput(b.path("src/codegen/create-hash-table.ts"));
-        run.addFileInput(b.path("src/codegen/create_hash_table"));
-        break :blk run.addOutputDirectoryArg("codegen");
-    };
-    cpp_sources.append(arena, jssink_dir.path(b, "JSSink.cpp")) catch @panic("OOM");
-    sp.add(jssink_dir, "codegen");
-
-    // ─── create-hash-table.ts <src> <out> (object LUTs) ───
-    const luts_dir = blk: {
-        const wf = b.addWriteFiles();
-        const lut_pairs = [_][2][]const u8{
-            .{ "src/jsc/bindings/BunObject.cpp", "BunObject.lut.h" },
-            .{ "src/jsc/bindings/ZigGlobalObject.lut.txt", "ZigGlobalObject.lut.h" },
-            .{ "src/jsc/bindings/JSBuffer.cpp", "JSBuffer.lut.h" },
-            .{ "src/jsc/bindings/BunProcess.cpp", "BunProcess.lut.h" },
-            .{ "src/jsc/bindings/ProcessBindingBuffer.cpp", "ProcessBindingBuffer.lut.h" },
-            .{ "src/jsc/bindings/ProcessBindingConstants.cpp", "ProcessBindingConstants.lut.h" },
-            .{ "src/jsc/bindings/ProcessBindingFs.cpp", "ProcessBindingFs.lut.h" },
-            .{ "src/jsc/bindings/ProcessBindingNatives.cpp", "ProcessBindingNatives.lut.h" },
-            .{ "src/jsc/bindings/ProcessBindingHTTPParser.cpp", "ProcessBindingHTTPParser.lut.h" },
-            .{ "src/jsc/modules/NodeModuleModule.cpp", "NodeModuleModule.lut.h" },
-            .{ "src/jsc/bindings/webcore/JSEvent.cpp", "JSEvent.lut.h" },
-        };
-        for (lut_pairs) |pair| {
-            const run = script(b, deps, "src/codegen/create-hash-table.ts", .{ .use_run = true });
-            run.addFileInput(b.path("src/codegen/create_hash_table"));
-            run.addFileArg(b.path(pair[0]));
-            _ = wf.addCopyFile(run.addOutputFileArg(pair[1]), pair[1]);
-        }
-        const run = script(b, deps, "src/codegen/create-hash-table.ts", .{ .use_run = true });
-        run.addFileInput(b.path("src/codegen/create_hash_table"));
-        run.addFileArg(classes_dir.path(b, "ZigGeneratedClasses.lut.txt"));
-        _ = wf.addCopyFile(run.addOutputFileArg("ZigGeneratedClasses.lut.h"), "ZigGeneratedClasses.lut.h");
-        break :blk wf.getDirectory();
-    };
-    sp.add(luts_dir, "codegen");
-
-    // ─── bindgen.ts ───
-    const bindgen_dir = blk: {
-        const run = script(b, deps, "src/codegen/bindgen.ts", .{ .use_run = true });
-        run.addArg(debug_flag);
-        const out = run.addOutputDirectoryArg2("codegen", .{ .prefix = "--codegen-root=", .make_absolute = true });
-        for (listFiles(b, "src", ".bind.ts", true)) |f| run.addFileInput(b.path(f));
-        break :blk out;
-    };
-    cpp_sources.append(arena, bindgen_dir.path(b, "GeneratedBindings.cpp")) catch @panic("OOM");
-    sp.add(bindgen_dir, "codegen");
-    usf.addCopyFileToSource(bindgen_dir.path(b, "GeneratedBindings.zig"), "src/jsc/bindings/GeneratedBindings.zig");
-
-    // ─── bindgenv2 ───
-    const bindv2_sources = listFiles(b, "src", ".bindv2.ts", true);
-    const bindv2_dir = blk: {
-        const run = script(b, deps, "src/codegen/bindgenv2/script.ts", .{ .use_run = true });
-        run.addArg("--command=generate");
-        const out = run.addOutputDirectoryArg2("codegen", .{ .prefix = "--codegen-path=", .make_absolute = true });
-        var list: std.ArrayList(u8) = .empty;
-        list.appendSlice(arena, "--sources=") catch @panic("OOM");
-        for (bindv2_sources, 0..) |f, i| {
-            if (i > 0) list.append(arena, ',') catch @panic("OOM");
-            list.appendSlice(arena, rootJoin(b, f)) catch @panic("OOM");
-            run.addFileInput(b.path(f));
-        }
-        run.addArg(list.items);
-        for (listFiles(b, "src/codegen/bindgenv2", ".ts", true)) |f| run.addFileInput(b.path(f));
-        break :blk out;
-    };
-    sp.add(bindv2_dir, "codegen");
-    // Fixed-name aggregate that #includes the per-type .cpp outputs. Compiled
-    // from the stable dir: its quoted includes must resolve to the same
-    // header paths as the -I'd stable codegen dir, or #pragma once sees two
-    // copies of each generated header in one TU.
-    cpp_sources.append(arena, .{
-        .cwd_relative = std.fs.path.join(arena, &.{ cg.codegen_install_abs, "bindgen_generated.cpp" }) catch @panic("OOM"),
-    }) catch @panic("OOM");
-
-    // ─── cppbind.ts <srcdir> <outdir> <cxx-sources.txt> ───
-    const cppbind_dir = blk: {
-        const run = script(b, deps, "src/codegen/cppbind.ts", .{ .use_run = false });
-        run.addArg(rootJoin(b, "src"));
-        const out = run.addOutputDirectoryArg("codegen");
-        const wf = b.addWriteFiles();
-        var list: std.ArrayList(u8) = .empty;
-        for (allCxxSources(b)) |f| {
-            list.appendSlice(arena, f) catch @panic("OOM");
-            list.append(arena, '\n') catch @panic("OOM");
-            run.addFileInput(b.path(f));
-        }
-        run.addFileArg(wf.add("cxx-sources.txt", list.items));
-        usesInstall(run, install_root); // lezer-cpp from root node_modules
-        break :blk out;
-    };
-    sp.add(cppbind_dir, "codegen");
+    // ─── wire layout verification (checked builds) ───
+    // Compares the clang-compiled sizeof/alignof/offsetof table against Zig's
+    // view of the translated wire header; the two target compilers are the two
+    // derivations of the physical ABI.
+    if (mode == .debug) {
+        const layout_module = b.createModule(.{
+            .root_source_file = b.path("src/bindgen/layout_check.zig"),
+            .target = target,
+            .optimize = .debug,
+            .link_libcpp = true,
+        });
+        const layout_wire_translate = b.addTranslateC(.{
+            .root_source_file = bindings.wire_header,
+            .target = target,
+            .optimize = .debug,
+            .link_libc = true,
+        });
+        layout_module.addImport("binding_wire", b.createModule(.{
+            .root_source_file = layout_wire_translate.getOutput(),
+        }));
+        layout_module.addCSourceFile(.{
+            .file = schema_bindings_wire_dir.path(b, "SchemaWireLayout.cpp"),
+            .flags = &.{ "-std=c++20", "-fno-exceptions", "-fno-rtti" },
+        });
+        const layout_exe = b.addExecutable(.{
+            .name = "check-wire-layout",
+            .root_module = layout_module,
+        });
+        layout_exe.incremental = false;
+        sync.step.dependOn(&b.addRunArtifact(layout_exe).step);
+    }
 
     // ─── ci_info.ts <out> ───
     {
@@ -610,6 +738,7 @@ pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode, zstd: *Step.Compi
             run.addFileInput(b.path(f));
         }
         for (listFiles(b, "src/bake", ".css", true)) |f| run.addFileInput(b.path(f));
+        run.addFileInput(b.path("src/bake/DevServerProtocol.zig"));
         break :blk out;
     };
     sp.add(bake_dir, "codegen");
@@ -647,6 +776,7 @@ pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode, zstd: *Step.Compi
         const run = b.addRunFile(esbuild);
         run.setCwd(b.path("."));
         run.addFileArg(b.path("src/runtime.bun.js"));
+        run.addFileInput(b.path("src/runtime.js"));
         const out = run.addPrefixedOutputFileArg("--outfile=", "runtime.out.js");
         run.addArgs(&.{
             "--define:process.env.NODE_ENV=\"production\"",
@@ -684,6 +814,7 @@ pub fn addCodegen(b: *Build, deps: *const DepPkgs, mode: Mode, zstd: *Step.Compi
     }
 
     cg.cpp_sources = cpp_sources.items;
+    cg.schema_bindings_dirs = arena.dupe(LazyPath, &.{ schema_bindings_headers_dir, schema_bindings_wire_dir }) catch @panic("OOM");
     return cg;
 }
 
@@ -758,7 +889,7 @@ fn baseCFlags(b: *Build, mode: Mode, optimize: std.builtin.Optimize) []const []c
 pub const CppDeps = struct {
     archives: []const *Step.Compile,
     zstd: *Step.Compile,
-    gen_dirs: std.StringArrayHashMapUnmanaged(LazyPath),
+    gen_dirs: std.array_hash_map.String(LazyPath),
 };
 
 pub fn addCppDeps(
@@ -768,12 +899,16 @@ pub fn addCppDeps(
     optimize: std.builtin.Optimize,
 ) CppDeps {
     const arena = b.graph.arena;
-    const base_flags = baseCFlags(b, mode, optimize);
     const gen_dirs = makeGenDirs(b, deps);
     var archives: std.ArrayList(*Step.Compile) = .empty;
     var zstd: ?*Step.Compile = null;
 
     for (recipes.all) |dep| {
+        const library_optimize: std.builtin.Optimize = if (mode == .debug) switch (dep.debug_optimize) {
+            .debug => .debug,
+            .safe => .safe,
+        } else optimize;
+        const base_flags = baseCFlags(b, mode, library_optimize);
         const root: ?LazyPath = if (dep.in_tree) null else deps.srcs.get(dep.name).?;
         for (dep.groups, 0..) |group, gi| {
             const group_flags = if (mode == .release and group.flags_release != null)
@@ -782,7 +917,7 @@ pub fn addCppDeps(
                 group.flags;
             const cxx_lang = group.cxx or hasLangOverride(group_flags);
             const name = if (dep.groups.len == 1) dep.name else b.fmt("{s}-{d}", .{ dep.name, gi });
-            const lib = newCppLib(b, name, optimize, cxx_lang, groupFeatures(b, group_flags));
+            const lib = newCppLib(b, name, library_optimize, cxx_lang, groupFeatures(b, group_flags));
 
             var flags: std.ArrayList([]const u8) = .empty;
             if (!group.no_base) flags.appendSlice(arena, base_flags) catch @panic("OOM");
@@ -913,7 +1048,7 @@ fn addPch(
     cg: *const Codegen,
     wk: *const @import("webkit.zig").Ctx,
     cxx_flags: []const []const u8,
-    gen_dirs: *const std.StringArrayHashMapUnmanaged(LazyPath),
+    gen_dirs: *const std.array_hash_map.String(LazyPath),
     versions_dir: LazyPath,
 ) *Step {
     const arena = b.graph.arena;
@@ -1047,6 +1182,24 @@ pub fn cppTarget(b: *Build, extra_features: []const []const u8) Build.ResolvedTa
     return b.resolveTargetQuery(query);
 }
 
+fn bindingTargetName(target: Build.ResolvedTarget) ?[]const u8 {
+    return switch (target.result.cpu.arch) {
+        .x86_64 => switch (target.result.os.tag) {
+            .linux => "x86_64-linux",
+            .macos => "x86_64-macos",
+            .windows => "x86_64-windows",
+            else => null,
+        },
+        .aarch64 => switch (target.result.os.tag) {
+            .linux => "aarch64-linux",
+            .macos => "aarch64-macos",
+            .windows => "aarch64-windows",
+            else => null,
+        },
+        else => null,
+    };
+}
+
 /// Map a compile group's -m<feature> flags to zig target feature names.
 fn groupFeatures(b: *Build, flags: []const []const u8) []const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
@@ -1133,9 +1286,25 @@ var zig_cxx_runtime_cache: ?ZigCxxRuntime = null;
 
 /// Generated per-dep config headers (the `gen` include kind): substituted
 /// .in templates, snapshotted configs, tinycc's tccdefs_.h.
-fn makeGenDirs(b: *Build, deps: *const DepPkgs) std.StringArrayHashMapUnmanaged(LazyPath) {
+fn makeGenDirs(b: *Build, deps: *const DepPkgs) std.array_hash_map.String(LazyPath) {
     const arena = b.graph.arena;
-    var dirs: std.StringArrayHashMapUnmanaged(LazyPath) = .empty;
+    var dirs: std.array_hash_map.String(LazyPath) = .empty;
+
+    {
+        const root_abs = deps.srcs_abs.get("libffi").?;
+        const wf = b.addWriteFiles();
+        _ = wf.add("ffi.h", substFile(b, root_abs, "include/ffi.h.in", &.{
+            .{ "@VERSION@", "3.8.0" },
+            .{ "@TARGET@", "X86_64" },
+            .{ "@HAVE_LONG_DOUBLE@", "1" },
+            .{ "@FFI_EXEC_TRAMPOLINE_TABLE@", "0" },
+            .{ "@FFI_VERSION_STRING@", "3.8.0" },
+            .{ "@FFI_VERSION_NUMBER@", "30800" },
+        }));
+        _ = wf.addCopyFile(b.path("src/build/assets/libffi/fficonfig.h"), "fficonfig.h");
+        _ = wf.addCopyFile(deps.srcs.get("libffi").?.path(b, "src/x86/ffitarget.h"), "ffitarget.h");
+        dirs.put(arena, "libffi", wf.getDirectory()) catch @panic("OOM");
+    }
 
     // zlib: configure-file templates (read from the pristine package; the
     // zlib patch doesn't touch them).
@@ -1298,7 +1467,7 @@ fn addCppDepInclude(
     lib: *Step.Compile,
     inc: recipes.Include,
     deps: *const DepPkgs,
-    gen_dirs: *const std.StringArrayHashMapUnmanaged(LazyPath),
+    gen_dirs: *const std.array_hash_map.String(LazyPath),
 ) void {
     switch (inc) {
         .dep => |d| {
@@ -1321,7 +1490,7 @@ fn addInclude(
     deps: *const DepPkgs,
     cg: *const Codegen,
     wk: *const @import("webkit.zig").Ctx,
-    gen_dirs: *const std.StringArrayHashMapUnmanaged(LazyPath),
+    gen_dirs: *const std.array_hash_map.String(LazyPath),
     versions_dir: LazyPath,
 ) void {
     switch (inc) {
@@ -1369,10 +1538,10 @@ fn unifiedSplit(b: *Build, mode: Mode) UnifiedSplit {
     const arena = b.graph.arena;
     const bundle_size: usize = if (mode == .debug) 8 else 32;
 
-    var skip: std.StringArrayHashMapUnmanaged(void) = .empty;
+    var skip: std.array_hash_map.String(void) = .empty;
     for (no_unify) |f| skip.put(arena, f, {}) catch @panic("OOM");
 
-    var by_dir: std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)) = .empty;
+    var by_dir: std.array_hash_map.String(std.ArrayList([]const u8)) = .empty;
     var standalone: std.ArrayList([]const u8) = .empty;
 
     for (allCxxSources(b)) |f| {
@@ -1496,6 +1665,484 @@ fn listFiles(b: *Build, dir: []const u8, suffix: []const u8, recursive: bool) []
     return listFilesAny(b, dir, &.{suffix}, recursive);
 }
 
+fn bindingImplementationAggregator(
+    b: *Build,
+    sources: []const []const u8,
+    target: Build.ResolvedTarget,
+) LazyPath {
+    const arena = b.graph.arena;
+    const public_paths = bindingPublicImportPaths(b);
+    var contents: std.ArrayList(u8) = .empty;
+    var missing_paths: std.ArrayList(u8) = .empty;
+    var missing_forces: std.ArrayList(u8) = .empty;
+    var invalid_escapes: std.ArrayList(u8) = .empty;
+    contents.appendSlice(arena, "const bun = @import(\"bun\");\n\ncomptime {\n") catch @panic("OOM");
+    for (sources) |source| {
+        if (!bindingImplementationEnabled(source, target)) continue;
+        const text = arena.dupeSentinel(u8, readRootFile(b, source), 0) catch @panic("OOM");
+        const scan = scanBindingInstantiations(arena, text);
+        for (scan.invalid_escape_lines) |line| {
+            invalid_escapes.print(arena, "\n{s}:{d}", .{ source, line }) catch @panic("OOM");
+        }
+        if (!scan.any) continue;
+        if (scan.top_level and !scan.top_level_comptime) {
+            missing_forces.print(arena, "\n{s}: no top-level comptime block", .{source}) catch @panic("OOM");
+        }
+        for (scan.unforced) |name| {
+            missing_forces.print(arena, "\n{s}: {s}", .{ source, name }) catch @panic("OOM");
+        }
+        const public_path = public_paths.get(source) orelse {
+            missing_paths.print(arena, "\n{s}", .{source}) catch @panic("OOM");
+            continue;
+        };
+        contents.print(arena, "    _ = &bun{s};\n", .{public_path}) catch @panic("OOM");
+    }
+    if (missing_paths.items.len != 0) std.debug.panic("binding implementations are not publicly reachable from src/bun.zig:{s}", .{missing_paths.items});
+    if (missing_forces.items.len != 0) std.debug.panic("top-level binding implementations are not forced by a top-level comptime block:{s}", .{missing_forces.items});
+    if (invalid_escapes.items.len != 0) std.debug.panic("binding escapes must be requested by a private top-level `const … = bindgen.Escape(@This());`:{s}", .{invalid_escapes.items});
+    contents.appendSlice(arena, "}\n\npub const source_files = struct {\n") catch @panic("OOM");
+    for (public_paths.keys(), public_paths.values()) |source, public_path| {
+        if (!bindingImplementationEnabled(source, target)) continue;
+        contents.print(arena, "    pub const @\"{s}\" = bun{s};\n", .{ source, public_path }) catch @panic("OOM");
+    }
+    contents.appendSlice(arena, "};\n") catch @panic("OOM");
+    return b.addWriteFiles().add("binding_implementations.zig", contents.items);
+}
+
+fn bindingPublicImportPaths(b: *Build) std.array_hash_map.String([]const u8) {
+    const arena = b.graph.arena;
+    var paths: std.array_hash_map.String([]const u8) = .empty;
+    var namespace_paths: std.array_hash_map.String([]const u8) = .empty;
+    var pending: std.ArrayList([]const u8) = .empty;
+    paths.put(arena, "src/bun.zig", "") catch @panic("OOM");
+    namespace_paths.put(arena, "src/bun.zig", "") catch @panic("OOM");
+    pending.append(arena, "src/bun.zig") catch @panic("OOM");
+
+    var pending_index: usize = 0;
+    while (pending_index < pending.items.len) : (pending_index += 1) {
+        const source = pending.items[pending_index];
+        const parent_path = namespace_paths.get(source).?;
+        const text = arena.dupeSentinel(u8, readRootFile(b, source), 0) catch @panic("OOM");
+        var tokenizer = std.zig.Tokenizer.init(text);
+        var tokens: std.ArrayList(std.zig.Token) = .empty;
+        while (true) {
+            const token = tokenizer.next();
+            tokens.append(arena, token) catch @panic("OOM");
+            if (token.tag == .eof) break;
+        }
+
+        var brace_depth: usize = 0;
+        var i: usize = 0;
+        while (i + 4 < tokens.items.len) : (i += 1) {
+            const token = tokens.items[i];
+            if (token.tag == .l_brace) {
+                brace_depth += 1;
+                continue;
+            }
+            if (token.tag == .r_brace) {
+                brace_depth -= 1;
+                continue;
+            }
+            if (brace_depth != 0 or token.tag != .keyword_pub) continue;
+            if (tokens.items[i + 1].tag != .keyword_const or
+                tokens.items[i + 2].tag != .identifier or
+                tokens.items[i + 3].tag != .equal)
+            {
+                continue;
+            }
+            const name = text[tokens.items[i + 2].loc.start..tokens.items[i + 2].loc.end];
+            var paren_depth: usize = 0;
+            var bracket_depth: usize = 0;
+            var rhs_brace_depth: usize = 0;
+            var j = i + 4;
+            while (j + 4 < tokens.items.len) : (j += 1) {
+                const rhs_token = tokens.items[j];
+                if (rhs_token.tag == .semicolon and paren_depth == 0 and bracket_depth == 0 and rhs_brace_depth == 0) break;
+                switch (rhs_token.tag) {
+                    .l_paren => paren_depth += 1,
+                    .r_paren => paren_depth -= 1,
+                    .l_bracket => bracket_depth += 1,
+                    .r_bracket => bracket_depth -= 1,
+                    .l_brace => rhs_brace_depth += 1,
+                    .r_brace => rhs_brace_depth -= 1,
+                    else => {},
+                }
+                if (rhs_token.tag != .builtin or
+                    !std.mem.eql(u8, text[rhs_token.loc.start..rhs_token.loc.end], "@import") or
+                    tokens.items[j + 1].tag != .l_paren or
+                    tokens.items[j + 2].tag != .string_literal or
+                    tokens.items[j + 3].tag != .r_paren)
+                {
+                    continue;
+                }
+                const literal_token = tokens.items[j + 2];
+                const literal = text[literal_token.loc.start..literal_token.loc.end];
+                if (literal.len < 3 or literal[0] != '"' or literal[literal.len - 1] != '"') continue;
+                const import_path = literal[1 .. literal.len - 1];
+                if (!std.mem.startsWith(u8, import_path, ".") or std.mem.indexOfScalar(u8, import_path, '\\') != null) continue;
+                const absolute = std.fs.path.resolve(arena, &.{ rootJoin(b, std.fs.path.dirname(source).?), import_path }) catch @panic("OOM");
+                const root = rootJoin(b, "");
+                if (!std.mem.startsWith(u8, absolute, root) or absolute.len == root.len or absolute[root.len] != std.fs.path.sep) continue;
+                const child_source = arena.dupe(u8, absolute[root.len + 1 ..]) catch @panic("OOM");
+                if (std.fs.path.sep != '/') {
+                    for (child_source) |*byte| if (byte.* == std.fs.path.sep) {
+                        byte.* = '/';
+                    };
+                }
+                if (!std.mem.endsWith(u8, child_source, ".zig")) continue;
+                const child_path = b.fmt("{s}.{s}", .{ parent_path, name });
+                const exposes_module = tokens.items[j + 4].tag != .period;
+                if (exposes_module) {
+                    if (paths.getPtr(child_source)) |path| {
+                        path.* = child_path;
+                    } else {
+                        paths.put(arena, child_source, child_path) catch @panic("OOM");
+                    }
+                } else if (!paths.contains(child_source)) {
+                    paths.put(arena, child_source, child_path) catch @panic("OOM");
+                }
+                if (exposes_module) {
+                    if (!namespace_paths.contains(child_source)) {
+                        namespace_paths.put(arena, child_source, child_path) catch @panic("OOM");
+                        pending.append(arena, child_source) catch @panic("OOM");
+                    }
+                }
+            }
+            i = j;
+        }
+    }
+    return paths;
+}
+
+fn bindingImplementationEnabled(source: []const u8, target: Build.ResolvedTarget) bool {
+    if (std.mem.eql(u8, source, "src/bun.zig") or std.mem.startsWith(u8, source, "src/build/")) return false;
+    const windows_only = std.mem.indexOf(u8, source, "/windows/") != null or
+        std.mem.endsWith(u8, source, "_windows.zig");
+    return !windows_only or target.result.os.tag == .windows;
+}
+
+const BindingInstantiationScan = struct {
+    any: bool = false,
+    top_level: bool = false,
+    top_level_comptime: bool = false,
+    unforced: []const []const u8 = &.{},
+    invalid_escape_lines: []const usize = &.{},
+};
+
+/// Whether token `i` names `Escape` other than as `.Escape(@This());` ending a
+/// top-level statement that starts with `const`. Escape checks the argument's
+/// file identity, so the caller's own `@This()` is the only meaningful argument,
+/// and a private declaration keeps the escape inside the requesting file.
+fn invalidEscapeReference(text: [:0]const u8, tokens: []const std.zig.Token, i: usize, top_level: bool) bool {
+    const lexeme = text[tokens[i].loc.start..tokens[i].loc.end];
+    switch (tokens[i].tag) {
+        .string_literal => return std.mem.eql(u8, lexeme, "\"Escape\""),
+        .identifier => {
+            if (std.mem.eql(u8, lexeme, "@\"Escape\"")) return true;
+            if (!std.mem.eql(u8, lexeme, "Escape") or i == 0 or tokens[i - 1].tag != .period) return false;
+        },
+        else => return false,
+    }
+    const call = tokens[i + 1 ..];
+    const own_file = call.len >= 6 and
+        call[0].tag == .l_paren and
+        call[1].tag == .builtin and std.mem.eql(u8, text[call[1].loc.start..call[1].loc.end], "@This") and
+        call[2].tag == .l_paren and
+        call[3].tag == .r_paren and
+        call[4].tag == .r_paren and
+        call[5].tag == .semicolon;
+    if (!top_level or !own_file) return true;
+    var start = i;
+    while (start > 0) : (start -= 1) {
+        switch (tokens[start - 1].tag) {
+            .semicolon, .r_brace, .doc_comment, .container_doc_comment => break,
+            else => {},
+        }
+    }
+    return tokens[start].tag != .keyword_const;
+}
+
+fn scanBindingInstantiations(arena: std.mem.Allocator, text: [:0]const u8) BindingInstantiationScan {
+    var tokenizer = std.zig.Tokenizer.init(text);
+    var tokens: std.ArrayList(std.zig.Token) = .empty;
+    while (true) {
+        const token = tokenizer.next();
+        tokens.append(arena, token) catch @panic("OOM");
+        if (token.tag == .eof) break;
+    }
+
+    var brace_depth: usize = 0;
+    var scan: BindingInstantiationScan = .{};
+    var current_declaration: ?[]const u8 = null;
+    var pending_top_level_comptime = false;
+    var top_level_comptime_depth: ?usize = null;
+    var binding_names: std.ArrayList([]const u8) = .empty;
+    var comptime_identifiers: std.StringHashMapUnmanaged(void) = .empty;
+    var invalid_escape_lines: std.ArrayList(usize) = .empty;
+
+    for (tokens.items, 0..) |token, i| {
+        if (invalidEscapeReference(text, tokens.items, i, brace_depth == 0)) {
+            const line = 1 + std.mem.count(u8, text[0..token.loc.start], "\n");
+            invalid_escape_lines.append(arena, line) catch @panic("OOM");
+        }
+
+        if (top_level_comptime_depth != null and token.tag == .identifier) {
+            const name = text[token.loc.start..token.loc.end];
+            comptime_identifiers.put(arena, name, {}) catch @panic("OOM");
+        }
+
+        if (brace_depth == 0 and token.tag == .keyword_comptime) {
+            scan.top_level_comptime = true;
+            pending_top_level_comptime = true;
+        }
+        if (brace_depth == 0 and token.tag == .keyword_const and i + 1 < tokens.items.len and tokens.items[i + 1].tag == .identifier) {
+            const name_token = tokens.items[i + 1];
+            current_declaration = text[name_token.loc.start..name_token.loc.end];
+        }
+
+        if (token.tag == .identifier and
+            std.mem.eql(u8, text[token.loc.start..token.loc.end], "bindgen") and
+            i + 3 < tokens.items.len and
+            tokens.items[i + 1].tag == .period and
+            tokens.items[i + 2].tag == .identifier and
+            tokens.items[i + 3].tag == .l_paren)
+        {
+            const declaration = text[tokens.items[i + 2].loc.start..tokens.items[i + 2].loc.end];
+            if (std.mem.eql(u8, declaration, "Fn") or
+                std.mem.eql(u8, declaration, "Class") or
+                std.mem.eql(u8, declaration, "NativeExport"))
+            {
+                scan.any = true;
+                if (brace_depth == 0) {
+                    scan.top_level = true;
+                    if (current_declaration) |name| binding_names.append(arena, name) catch @panic("OOM");
+                }
+            }
+        }
+
+        switch (token.tag) {
+            .l_brace => {
+                brace_depth += 1;
+                if (pending_top_level_comptime) {
+                    top_level_comptime_depth = brace_depth;
+                    pending_top_level_comptime = false;
+                }
+            },
+            .r_brace => {
+                if (top_level_comptime_depth == brace_depth) top_level_comptime_depth = null;
+                brace_depth -= 1;
+            },
+            .semicolon => if (brace_depth == 0) {
+                current_declaration = null;
+            },
+            else => {},
+        }
+    }
+
+    var unforced: std.ArrayList([]const u8) = .empty;
+    for (binding_names.items) |name| {
+        if (!comptime_identifiers.contains(name)) unforced.append(arena, name) catch @panic("OOM");
+    }
+    scan.unforced = unforced.items;
+    scan.invalid_escape_lines = invalid_escape_lines.items;
+    return scan;
+}
+
+const SchemaGraph = struct {
+    sources: []const []const u8,
+    import_names: []const []const u8,
+    dependencies: []const []const usize,
+    order: []const usize,
+};
+
+const SchemaVisit = enum {
+    unseen,
+    visiting,
+    done,
+};
+
+fn resolveSchemaGraph(b: *Build, sources: []const []const u8) SchemaGraph {
+    const arena = b.graph.arena;
+    const suffix = ".schema.zig";
+    const import_prefix = "binding_schema_";
+    const import_names = arena.alloc([]const u8, sources.len) catch @panic("OOM");
+    for (sources, 0..) |source, index| {
+        const basename = std.fs.path.basename(source);
+        const stem = basename[0 .. basename.len - suffix.len];
+        if (stem.len == 0) std.debug.panic("binding schema has an empty file stem: {s}", .{source});
+        if (!schemaStemIsIdentifier(stem)) std.debug.panic("binding schema file stem must be an identifier: {s}", .{source});
+        import_names[index] = b.fmt("{s}{s}", .{ import_prefix, stem });
+        for (import_names[0..index], 0..) |previous, previous_index| {
+            if (std.mem.eql(u8, previous, import_names[index])) {
+                std.debug.panic(
+                    "binding schemas have the same import name: {s} and {s}",
+                    .{ sources[previous_index], source },
+                );
+            }
+        }
+    }
+
+    const dependencies = arena.alloc([]const usize, sources.len) catch @panic("OOM");
+    for (sources, 0..) |source, source_index| {
+        const text = arena.dupeSentinel(u8, readRootFile(b, source), 0) catch @panic("OOM");
+        var tokenizer = std.zig.Tokenizer.init(text);
+        var found: std.ArrayList(usize) = .empty;
+        while (true) {
+            const token = tokenizer.next();
+            if (token.tag == .eof) break;
+            if (token.tag != .builtin or !std.mem.eql(u8, text[token.loc.start..token.loc.end], "@import")) continue;
+            const left_paren = tokenizer.next();
+            const literal_token = tokenizer.next();
+            const right_paren = tokenizer.next();
+            if (left_paren.tag != .l_paren or literal_token.tag != .string_literal or right_paren.tag != .r_paren) {
+                std.debug.panic("binding schema imports must be direct string literals: {s}", .{source});
+            }
+            const literal = text[literal_token.loc.start..literal_token.loc.end];
+            if (literal.len < 2 or literal[0] != '"' or literal[literal.len - 1] != '"' or
+                std.mem.indexOfScalar(u8, literal, '\\') != null)
+            {
+                std.debug.panic("binding schema imports cannot use escapes: {s}", .{source});
+            }
+            const import_name = literal[1 .. literal.len - 1];
+            if (std.mem.eql(u8, import_name, "std") or std.mem.eql(u8, import_name, "bindgen_schema")) continue;
+            const dependency = schemaImportIndex(import_names, import_name) orelse
+                std.debug.panic(
+                    "binding schema {s} imports forbidden module {s}; only std, bindgen_schema, and discovered binding schemas are allowed",
+                    .{ source, import_name },
+                );
+            if (dependency == source_index) {
+                std.debug.panic("binding schema imports itself: {s}", .{source});
+            }
+            if (std.mem.indexOfScalar(usize, found.items, dependency) == null) {
+                found.append(arena, dependency) catch @panic("OOM");
+            }
+        }
+        dependencies[source_index] = found.items;
+    }
+
+    const states = arena.alloc(SchemaVisit, sources.len) catch @panic("OOM");
+    @memset(states, .unseen);
+    var order: std.ArrayList(usize) = .empty;
+    for (sources, 0..) |_, index| {
+        appendSchemaOrder(arena, sources, dependencies, states, &order, index);
+    }
+    return .{
+        .sources = sources,
+        .import_names = import_names,
+        .dependencies = dependencies,
+        .order = order.items,
+    };
+}
+
+/// The normalizer and emitter must render the same artifacts on every host,
+/// so their import closure may reach only `std`, bindgen sources, and the shared
+/// runtime-independent `rapidhash` module. Every non-std import is checked
+/// recursively; `builtin` and other modules are rejected.
+fn checkGeneratorHostIndependence(b: *Build) void {
+    const arena = b.graph.arena;
+    var pending: std.ArrayList([]const u8) = .empty;
+    var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
+    for ([_][]const u8{ "src/bindgen/normalize.zig", "src/bindgen/emitter.zig" }) |root| {
+        seen.put(arena, root, {}) catch @panic("OOM");
+        pending.append(arena, root) catch @panic("OOM");
+    }
+    while (pending.pop()) |source| {
+        const text = arena.dupeSentinel(u8, readRootFile(b, source), 0) catch @panic("OOM");
+        var tokenizer = std.zig.Tokenizer.init(text);
+        while (true) {
+            const token = tokenizer.next();
+            if (token.tag == .eof) break;
+            if (token.tag != .builtin or !std.mem.eql(u8, text[token.loc.start..token.loc.end], "@import")) continue;
+            const left_paren = tokenizer.next();
+            const literal_token = tokenizer.next();
+            const right_paren = tokenizer.next();
+            if (left_paren.tag != .l_paren or literal_token.tag != .string_literal or right_paren.tag != .r_paren) {
+                std.debug.panic("binding generator imports must be direct string literals: {s}", .{source});
+            }
+            const literal = text[literal_token.loc.start..literal_token.loc.end];
+            if (std.mem.indexOfScalar(u8, literal, '\\') != null) {
+                std.debug.panic("binding generator imports cannot use escapes: {s}", .{source});
+            }
+            const import_name = literal[1 .. literal.len - 1];
+            const dependency = if (std.mem.eql(u8, import_name, "std"))
+                continue
+            else if (std.mem.eql(u8, import_name, "bindgen_ir"))
+                "src/bindgen/ir.zig"
+            else if (std.mem.eql(u8, import_name, "bindgen_schema"))
+                "src/bindgen/schema.zig"
+            else if (std.mem.eql(u8, import_name, "rapidhash"))
+                binding_rapidhash_source
+            else if (std.mem.endsWith(u8, import_name, ".zig"))
+                std.fs.path.resolvePosix(arena, &.{ std.fs.path.dirnamePosix(source).?, import_name }) catch @panic("OOM")
+            else
+                std.debug.panic(
+                    "binding generator source {s} imports unsupported module {s}; only std, bindgen_ir, bindgen_schema, rapidhash, and generator sources are allowed",
+                    .{ source, import_name },
+                );
+            if (!std.mem.startsWith(u8, dependency, "src/bindgen/") and
+                !std.mem.eql(u8, dependency, binding_rapidhash_source))
+            {
+                std.debug.panic("binding generator source {s} imports unapproved source {s}", .{ source, dependency });
+            }
+            const entry = seen.getOrPut(arena, dependency) catch @panic("OOM");
+            if (!entry.found_existing) pending.append(arena, dependency) catch @panic("OOM");
+        }
+    }
+}
+
+fn schemaStemIsIdentifier(stem: []const u8) bool {
+    if (stem.len == 0 or !(std.ascii.isAlphabetic(stem[0]) or stem[0] == '_')) return false;
+    for (stem[1..]) |char| {
+        if (!(std.ascii.isAlphanumeric(char) or char == '_')) return false;
+    }
+    return true;
+}
+
+fn schemaImportIndex(import_names: []const []const u8, name: []const u8) ?usize {
+    for (import_names, 0..) |candidate, index| {
+        if (std.mem.eql(u8, candidate, name)) return index;
+    }
+    return null;
+}
+
+fn appendSchemaOrder(
+    arena: std.mem.Allocator,
+    sources: []const []const u8,
+    dependencies: []const []const usize,
+    states: []SchemaVisit,
+    order: *std.ArrayList(usize),
+    index: usize,
+) void {
+    switch (states[index]) {
+        .done => return,
+        .visiting => std.debug.panic("binding schema dependency cycle reaches {s}", .{sources[index]}),
+        .unseen => states[index] = .visiting,
+    }
+    for (dependencies[index]) |dependency| {
+        appendSchemaOrder(arena, sources, dependencies, states, order, dependency);
+    }
+    states[index] = .done;
+    order.append(arena, index) catch @panic("OOM");
+}
+
+fn createSchemaModules(
+    b: *Build,
+    graph: SchemaGraph,
+    bindgen_schema: *Build.Module,
+) []const *Build.Module {
+    const modules = b.graph.arena.alloc(*Build.Module, graph.sources.len) catch @panic("OOM");
+    for (graph.sources, 0..) |source, index| {
+        modules[index] = b.createModule(.{ .root_source_file = b.path(source) });
+        modules[index].addImport("bindgen_schema", bindgen_schema);
+    }
+    for (modules, 0..) |schema_module, index| {
+        for (graph.dependencies[index]) |dependency| {
+            schema_module.addImport(graph.import_names[dependency], modules[dependency]);
+        }
+    }
+    return modules;
+}
+
 fn listFilesAny(b: *Build, dir: []const u8, suffixes: []const []const u8, recursive: bool) []const []const u8 {
     const arena = b.graph.arena;
     const io = b.graph.io;
@@ -1617,14 +2264,12 @@ pub fn addLink(
     run.addArgs(&.{"-o"});
     const exe = run.addOutputFileArg(exe_name);
 
-    // Debug: mold splits DWARF and the symbol table into a sibling .dbg,
-    // written in the background by a detached child and found through the
-    // embedded .gnu_debuglink. The step must not capture stdio: the writer
-    // inherits the pipes, and a captured step would wait for their EOF. As
-    // a side-effect step the link also reuses one output directory rather
-    // than accreting a gigabyte-sized one per --watch cycle.
+    // Wait for the separate debug file before installing either artifact.
+    // Inherited stdio makes this a side-effect step, reusing one output
+    // directory instead of retaining a gigabyte-sized one per watch cycle.
     const dbg_name = b.fmt("{s}.dbg", .{exe_name});
     const debug_file: ?LazyPath = if (opts.mode == .debug) dbg: {
+        run.addArg("--no-detach");
         const dbg_file = run.addPrefixedOutputFileArg("--separate-debug-file=", dbg_name);
         run.stdio = .inherit;
         break :dbg dbg_file;

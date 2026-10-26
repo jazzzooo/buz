@@ -13,16 +13,13 @@ len: usize = 0,
 head: ?*Node = null,
 tail: ?*Node = null,
 
-/// Avoid an extra pass over the list when joining
-watcher: Watcher = .{},
-
 const Node = struct {
     allocator: NullableAllocator = .{},
     slice: []const u8 = "",
     next: ?*Node = null,
 
-    pub fn init(joiner_alloc: Allocator, slice: []const u8, slice_alloc: ?Allocator) *Node {
-        const node = bun.handleOom(joiner_alloc.create(Node));
+    pub fn init(joiner_alloc: Allocator, slice: []const u8, slice_alloc: ?Allocator) !*Node {
+        const node = try joiner_alloc.create(Node);
         node.* = .{
             .slice = slice,
             .allocator = NullableAllocator.init(slice_alloc),
@@ -36,39 +33,35 @@ const Node = struct {
     }
 };
 
-pub const Watcher = struct {
-    input: []const u8 = "",
-    estimated_count: u32 = 0,
-    needs_newline: bool = false,
-};
+pub fn take(this: *StringJoiner) StringJoiner {
+    const owned = this.*;
+    this.* = .{ .allocator = owned.allocator };
+    return owned;
+}
 
 /// `data` is expected to live until `.done` is called
-pub fn pushStatic(this: *StringJoiner, data: []const u8) void {
-    this.push(data, null);
+pub fn pushStatic(this: *StringJoiner, data: []const u8) !void {
+    try this.push(data, null);
 }
 
 /// `data` is cloned
-pub fn pushCloned(this: *StringJoiner, data: []const u8) void {
+pub fn pushCloned(this: *StringJoiner, data: []const u8) !void {
     if (data.len == 0) return;
-    this.push(
-        bun.handleOom(this.allocator.dupe(u8, data)),
+    try this.push(
+        try this.allocator.dupe(u8, data),
         this.allocator,
     );
 }
 
-pub fn push(this: *StringJoiner, data: []const u8, allocator: ?Allocator) void {
-    if (data.len == 0) return;
-    this.len += data.len;
-
-    const new_tail = Node.init(this.allocator, data, allocator);
-
-    if (data.len > 0) {
-        this.watcher.estimated_count += @intFromBool(
-            this.watcher.input.len > 0 and
-                bun.strings.contains(data, this.watcher.input),
-        );
-        this.watcher.needs_newline = data[data.len - 1] != '\n';
+/// When an allocator is supplied, consumes `data` on both success and failure.
+pub fn push(this: *StringJoiner, data: []const u8, allocator: ?Allocator) !void {
+    errdefer if (allocator) |owner| owner.free(data);
+    if (data.len == 0) {
+        if (allocator) |owner| owner.free(data);
+        return;
     }
+    const len = std.math.add(usize, this.len, data.len) catch return error.OutOfMemory;
+    const new_tail = try Node.init(this.allocator, data, allocator);
 
     if (this.tail) |current_tail| {
         current_tail.next = new_tail;
@@ -77,37 +70,19 @@ pub fn push(this: *StringJoiner, data: []const u8, allocator: ?Allocator) void {
         this.head = new_tail;
     }
     this.tail = new_tail;
+    this.len = len;
 }
 
 /// This deinits the string joiner on success, the new string is owned by `allocator`
 pub fn done(this: *StringJoiner, allocator: Allocator) ![]u8 {
-    var current: ?*Node = this.head orelse {
-        assert(this.tail == null);
-        assert(this.len == 0);
-        return &.{};
-    };
-
-    const slice = try allocator.alloc(u8, this.len);
-
-    var remaining = slice;
-    while (current) |node| {
-        @memcpy(remaining[0..node.slice.len], node.slice);
-        remaining = remaining[node.slice.len..];
-
-        const prev = node;
-        current = node.next;
-        prev.deinit(this.allocator);
-    }
-
-    bun.assert(remaining.len == 0);
-
-    return slice;
+    return try this.doneWithEnd(allocator, &.{});
 }
 
 pub fn deinit(this: *StringJoiner) void {
-    var current: ?*Node = this.head orelse {
-        assert(this.tail == null);
-        assert(this.len == 0);
+    const owned = this.take();
+    var current: ?*Node = owned.head orelse {
+        assert(owned.tail == null);
+        assert(owned.len == 0);
         return;
     };
 
@@ -131,20 +106,21 @@ pub fn doneWithEnd(this: *StringJoiner, allocator: Allocator, end: []const u8) !
         return &.{};
     };
 
-    const slice = try allocator.alloc(u8, this.len + end.len);
+    const total_len = std.math.add(usize, this.len, end.len) catch return error.OutOfMemory;
+    const slice = try allocator.alloc(u8, total_len);
 
     var remaining = slice;
     while (current) |node| {
         @memcpy(remaining[0..node.slice.len], node.slice);
         remaining = remaining[node.slice.len..];
 
-        const prev = node;
         current = node.next;
-        prev.deinit(this.allocator);
     }
 
     bun.assert(remaining.len == end.len);
     @memcpy(remaining, end);
+    // Borrowed nodes and the suffix may reference storage owned by another node.
+    this.deinit();
 
     return slice;
 }
@@ -155,10 +131,9 @@ pub fn lastByte(this: *const StringJoiner) u8 {
     return slice[slice.len - 1];
 }
 
-pub fn ensureNewlineAtEnd(this: *StringJoiner) void {
-    if (this.watcher.needs_newline) {
-        this.watcher.needs_newline = false;
-        this.pushStatic("\n");
+pub fn ensureNewlineAtEnd(this: *StringJoiner) !void {
+    if (this.tail != null and this.lastByte() != '\n') {
+        try this.pushStatic("\n");
     }
 }
 
@@ -170,6 +145,66 @@ pub fn contains(this: *const StringJoiner, slice: []const u8) bool {
     }
 
     return false;
+}
+
+test "joining and transferring strings leave an empty reusable owner" {
+    const allocator = std.testing.allocator;
+    var joiner = StringJoiner{ .allocator = allocator };
+    defer joiner.deinit();
+    try joiner.pushCloned("first");
+    try joiner.pushStatic(" second");
+
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, joiner.done(failing.allocator()));
+    try std.testing.expectEqual(@as(usize, 12), joiner.len);
+    const first = try joiner.done(allocator);
+    defer allocator.free(first);
+    try std.testing.expectEqualStrings("first second", first);
+    try std.testing.expectEqual(@as(usize, 0), joiner.len);
+    try std.testing.expect(joiner.head == null and joiner.tail == null);
+    joiner.deinit();
+
+    try joiner.pushCloned("third");
+    var transferred = joiner.take();
+    defer transferred.deinit();
+    joiner.deinit();
+    const third = try transferred.doneWithEnd(allocator, "!");
+    defer allocator.free(third);
+    try std.testing.expectEqualStrings("third!", third);
+    try std.testing.expectEqual(@as(usize, 0), transferred.len);
+    try std.testing.expect(transferred.head == null and transferred.tail == null);
+
+    const shared = try allocator.dupe(u8, "shared");
+    try joiner.push(shared, allocator);
+    try joiner.pushStatic(shared[1..]);
+    const aliased = try joiner.doneWithEnd(allocator, shared[0..2]);
+    defer allocator.free(aliased);
+    try std.testing.expectEqualStrings("sharedharedsh", aliased);
+}
+
+test "failed string appends release transferred storage without changing the joiner" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: Allocator) !void {
+            var joiner = StringJoiner{ .allocator = allocator };
+            defer joiner.deinit();
+            try joiner.pushStatic("first");
+            const len = joiner.len;
+            const head = joiner.head;
+            const tail = joiner.tail;
+            const second = try allocator.dupe(u8, " second");
+            joiner.push(second, allocator) catch |err| {
+                try std.testing.expectEqual(len, joiner.len);
+                try std.testing.expect(joiner.head == head and joiner.tail == tail);
+                try std.testing.expect(tail.?.next == null);
+                return err;
+            };
+            try joiner.pushCloned(" third");
+            try joiner.ensureNewlineAtEnd();
+            const joined = try joiner.done(allocator);
+            defer allocator.free(joined);
+            try std.testing.expectEqualStrings("first second third\n", joined);
+        }
+    }.run, .{});
 }
 
 const std = @import("std");

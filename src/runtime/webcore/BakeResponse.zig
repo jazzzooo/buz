@@ -1,139 +1,109 @@
-pub fn fixDeadCodeElimination() void {
-    std.mem.doNotOptimizeAway(&BakeResponseClass__constructForSSR);
-    std.mem.doNotOptimizeAway(&BakeResponseClass__constructRender);
-}
+const SSRKind = bun.bindgen.EngineArgumentType(BakeResponseBindings.engineShim("createForSSR"), "kind");
 
-extern "C" fn BakeResponse__createForSSR(globalObject: *JSGlobalObject, this: *Response, kind: u8) callconv(jsc.conv) jsc.JSValue;
-
-/// Corresponds to `JSBakeResponseKind` in
-/// `src/jsc/bindings/JSBakeResponse.h`
-const SSRKind = enum(u8) {
-    regular = 0,
-    redirect = 1,
-    render = 2,
-};
-
-pub fn toJSForSSR(this: *Response, globalObject: *JSGlobalObject, kind: SSRKind) JSValue {
+fn toResultForSSR(context: anytype, this: *Response, kind: SSRKind) bun.JSError!Response.Ref {
     this.calculateEstimatedByteSize();
-    return BakeResponse__createForSSR(globalObject, this, @backingInt(kind));
+    const operation = context.engineIn("BakeResponse", "createForSSR");
+    const EngineArgs = @TypeOf(operation).Args;
+    var args: EngineArgs = .{
+        .response = @FieldType(EngineArgs, "response").initNative(this),
+        .kind = kind,
+    };
+    return (try operation.call(&args)).toOwned();
 }
 
-pub export fn BakeResponseClass__constructForSSR(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame, bake_ssr_has_jsx: *c_int, js_this: jsc.JSValue) callconv(jsc.conv) ?*anyopaque {
-    return @as(*Response, constructor(globalObject, callFrame, bake_ssr_has_jsx, js_this) catch |err| switch (err) {
-        error.JSError => return null,
-        error.OutOfMemory => {
-            globalObject.throwOutOfMemory() catch {};
-            return null;
-        },
-        error.JSTerminated => return null,
-    });
+fn releaseNativeResponse(
+    args: bun.bindgen.Args(ReleaseNativeResponseSchema),
+) bun.bindgen.Return(ReleaseNativeResponseSchema) {
+    const response: *Response = @ptrCast(@alignCast(args.response));
+    response.unref();
 }
 
-pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, bake_ssr_has_jsx: *c_int, js_this: jsc.JSValue) bun.JSError!*Response {
-    var arguments = callframe.argumentsAsArray(2);
+fn constructError(
+    context: bun.bindgen.CallContext(ConstructErrorSchema),
+    _: bun.bindgen.Args(ConstructErrorSchema),
+) bun.JSError!bun.bindgen.Return(ConstructErrorSchema) {
+    return (try Response.constructError()).toResult(context);
+}
 
-    // Allow `return new Response(<jsx> ... </jsx>, { ... }`
-    // inside of a react component
-    if (!arguments[0].isUndefinedOrNull() and arguments[0].isObject()) {
-        bake_ssr_has_jsx.* = 0;
-        if (try arguments[0].isJSXElement(globalThis)) {
-            const vm = globalThis.bunVM();
-            if (try vm.getDevServerAsyncLocalStorage()) |async_local_storage| {
-                try assertStreamingDisabled(globalThis, async_local_storage, "new Response(<jsx />, { ... })");
-            }
-            bake_ssr_has_jsx.* = 1;
-        }
+fn constructorCall(
+    context: bun.bindgen.CallContext(ConstructorCallSchema),
+    args: bun.bindgen.Args(ConstructorCallSchema),
+) bun.bindgen.CallError(ConstructorCallSchema)!bun.bindgen.Return(ConstructorCallSchema) {
+    return (try context.engineIn("BakeResponse", "construct").call(.{
+        .body = if (args.body) |optional_value| optional_value.operand(context).asEngine() else null,
+        .init = if (args.init) |optional_value| optional_value.operand(context).asAny() else null,
+        .newTarget = null,
+    })).toOwned();
+}
+
+fn constructorConstruct(
+    context: bun.bindgen.CallContext(ConstructorConstructSchema),
+    args: bun.bindgen.Args(ConstructorConstructSchema),
+) bun.bindgen.CallError(ConstructorConstructSchema)!bun.bindgen.Return(ConstructorConstructSchema) {
+    return (try context.engineIn("BakeResponse", "construct").call(.{
+        .body = if (args.body) |optional_value| optional_value.operand(context).asEngine() else null,
+        .init = if (args.init) |optional_value| optional_value.operand(context).asAny() else null,
+        .newTarget = args.bindingNewTarget.operand(context),
+    })).toOwned();
+}
+
+fn constructJSON(
+    context: bun.bindgen.CallContext(ConstructJSONSchema),
+    args: bun.bindgen.Args(ConstructJSONSchema),
+) bun.bindgen.CallError(ConstructJSONSchema)!bun.bindgen.Return(ConstructJSONSchema) {
+    const response = try Response.constructJSONForContext(context, args);
+    return response.toResult(context);
+}
+
+fn constructRedirect(
+    context: bun.bindgen.CallContext(ConstructRedirectSchema),
+    args: bun.bindgen.Args(ConstructRedirectSchema),
+) bun.bindgen.CallError(ConstructRedirectSchema)!bun.bindgen.Return(ConstructRedirectSchema) {
+    const response = try Response.constructRedirectForContext(context, args);
+    var response_owned = true;
+    defer if (response_owned) response.unref();
+
+    if (try context.engineIn("BakeResponse", "validateStreamingMode").call(.{ .caller = .redirect })) {
+        response_owned = false;
+        return toResultForSSR(context, response, .redirect);
     }
 
-    return Response.constructor(globalThis, callframe, js_this);
-}
-
-pub export fn BakeResponseClass__constructRedirect(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
-    return jsc.toJSHostCall(globalObject, @src(), constructRedirect, .{ globalObject, callFrame });
-}
-
-pub fn constructRedirect(
-    globalThis: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!JSValue {
-    const response = try Response.constructRedirectImpl(globalThis, callframe);
-    const ptr = bun.new(Response, response);
-
-    const vm = globalThis.bunVM();
-    // Check if dev_server_async_local_storage is set (indicating we're in Bun dev server)
-    if (try vm.getDevServerAsyncLocalStorage()) |async_local_storage| {
-        try assertStreamingDisabled(globalThis, async_local_storage, "Response.redirect");
-        return toJSForSSR(ptr, globalThis, .redirect);
-    }
-
-    return ptr.toJS(globalThis);
-}
-
-pub export fn BakeResponseClass__constructRender(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
-    return @call(bun.callmod_inline, jsc.toJSHostFn(constructRender), .{ globalObject, callFrame });
+    response_owned = false;
+    return response.toResult(context);
 }
 
 /// This function is only available on JSBakeResponse
-pub fn constructRender(
-    globalThis: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!JSValue {
-    const arguments = callframe.argumentsAsArray(2);
-    const vm = globalThis.bunVM();
-
-    // Check if dev server async local_storage is set
-    const async_local_storage = (try vm.getDevServerAsyncLocalStorage()) orelse {
-        return globalThis.throwInvalidArguments("Response.render() is only available in the Bun dev server", .{});
-    };
-
-    try assertStreamingDisabled(globalThis, async_local_storage, "Response.render");
-
-    // Validate arguments
-    if (arguments.len < 1) {
-        return globalThis.throwInvalidArguments("Response.render() requires at least a path argument", .{});
+fn constructRender(
+    context: bun.bindgen.CallContext(ConstructRenderSchema),
+    args: bun.bindgen.Args(ConstructRenderSchema),
+) bun.bindgen.CallError(ConstructRenderSchema)!bun.bindgen.Return(ConstructRenderSchema) {
+    if (!try context.engineIn("BakeResponse", "validateStreamingMode").call(.{ .caller = .render })) {
+        return context.fail(.dev_server_only, {});
     }
 
-    const path_arg = arguments[0];
-    if (!path_arg.isString()) {
-        return globalThis.throwInvalidArguments("Response.render() path must be a string", .{});
-    }
-
-    // Get the path string
-    const path_str = try path_arg.toBunString(globalThis);
-    defer path_str.deref();
-
-    const path_utf8 = path_str.toUTF8(bun.default_allocator);
+    const path_utf8 = try args.path.toUTF8(bun.default_allocator);
     defer path_utf8.deinit();
 
-    // Create a Response with Render body
-    const response = bun.new(Response, Response.init(
+    const response = try Response.create(Response.init(
         .{
             .status_code = 200,
             .headers = headers: {
-                var headers = bun.webcore.FetchHeaders.createEmpty();
-                try headers.put(.Location, path_utf8.slice(), globalThis);
+                var headers = try bun.webcore.FetchHeaders.createEmpty();
+                errdefer headers.deinit();
+                try context.engineIn("fetch_headers", "fetchHeadersPut").call(.{
+                    .headers = headers.get(),
+                    .name = .Location,
+                    .value = bun.bindgen.BytesOperand.fromSlice(path_utf8.slice()),
+                });
                 break :headers headers;
             },
         },
         .{ .value = .Empty },
-        bun.String.empty,
+        .empty(),
         false,
     ));
 
-    const response_js = toJSForSSR(response, globalThis, .render);
-    response_js.ensureStillAlive();
-
-    return response_js;
-}
-
-fn assertStreamingDisabled(globalThis: *jsc.JSGlobalObject, async_local_storage: JSValue, display_function: []const u8) bun.JSError!void {
-    if (async_local_storage.isEmptyOrUndefinedOrNull() or !async_local_storage.isObject()) return globalThis.throwInvalidArguments("store value must be an object", .{});
-    const getStoreFn = (try async_local_storage.getPropertyValue(globalThis, "getStore")) orelse return globalThis.throwInvalidArguments("store value must have a \"getStore\" field", .{});
-    if (!getStoreFn.isCallable()) return globalThis.throwInvalidArguments("\"getStore\" must be a function", .{});
-    const store_value = try getStoreFn.call(globalThis, async_local_storage, &.{});
-    const streaming_val = (try store_value.getPropertyValue(globalThis, "streaming")) orelse return globalThis.throwInvalidArguments("store value must have a \"streaming\" field", .{});
-    if (!streaming_val.isBoolean()) return globalThis.throwInvalidArguments("\"streaming\" field must be a boolean", .{});
-    if (streaming_val.asBoolean()) return globalThis.throwInvalidArguments("\"{s}\" is not available when `export const streaming = true`", .{display_function});
+    return toResultForSSR(context, response, .render);
 }
 
 const std = @import("std");
@@ -141,6 +111,28 @@ const std = @import("std");
 const bun = @import("bun");
 const Response = bun.webcore.Response;
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+const BakeResponseBindings = bun.bindgen.Module("BakeResponse");
+const ConstructorCallSchema = BakeResponseBindings.function("constructorCall");
+const ConstructorConstructSchema = BakeResponseBindings.function("constructorConstruct");
+const ConstructErrorSchema = BakeResponseBindings.function("constructError");
+const ConstructJSONSchema = BakeResponseBindings.function("constructJSON");
+const ConstructRedirectSchema = BakeResponseBindings.function("constructRedirect");
+const ConstructRenderSchema = BakeResponseBindings.function("constructRender");
+const ReleaseNativeResponseSchema = BakeResponseBindings.nativeExport("releaseNativeResponse");
+const ConstructorCallBinding = bun.bindgen.Fn(ConstructorCallSchema, constructorCall);
+const ConstructorConstructBinding = bun.bindgen.Fn(ConstructorConstructSchema, constructorConstruct);
+const ConstructErrorBinding = bun.bindgen.Fn(ConstructErrorSchema, constructError);
+const ConstructJSONBinding = bun.bindgen.Fn(ConstructJSONSchema, constructJSON);
+const ConstructRedirectBinding = bun.bindgen.Fn(ConstructRedirectSchema, constructRedirect);
+const ConstructRenderBinding = bun.bindgen.Fn(ConstructRenderSchema, constructRender);
+const ReleaseNativeResponseBinding = bun.bindgen.Fn(ReleaseNativeResponseSchema, releaseNativeResponse);
+
+comptime {
+    _ = ConstructorCallBinding;
+    _ = ConstructorConstructBinding;
+    _ = ConstructErrorBinding;
+    _ = ConstructJSONBinding;
+    _ = ConstructRedirectBinding;
+    _ = ConstructRenderBinding;
+    _ = ReleaseNativeResponseBinding;
+}

@@ -113,6 +113,7 @@ public:
     JS_EXPORT_PRIVATE static void analyzeHeap(JSCell*, HeapAnalyzer&);
 
     JS_EXPORT_PRIVATE static String calculatedClassName(JSObject*);
+    JS_EXPORT_PRIVATE static String tryCalculatedClassName(JSObject*);
 
     // This is the fully virtual [[GetPrototypeOf]] internal function defined
     // in the ECMAScript 6 specification. Use this when doing a [[GetPrototypeOf]] 

@@ -1,4 +1,5 @@
 #include "InspectorLifecycleAgent.h"
+#include "SchemaBindings.h"
 #include "ZigGlobalObject.h"
 #include <JavaScriptCore/InspectorFrontendRouter.h>
 #include <JavaScriptCore/InspectorBackendDispatcher.h>
@@ -19,47 +20,23 @@
 #include <JavaScriptCore/JSMapIterator.h>
 #include <JavaScriptCore/IterationKind.h>
 #include "BunProcess.h"
-#include "headers.h"
 
 namespace Inspector {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(InspectorLifecycleAgent);
 
-// Zig bindings implementation
-extern "C" {
-
-void Bun__LifecycleAgentEnable(Inspector::InspectorLifecycleAgent* agent);
-void Bun__LifecycleAgentDisable(Inspector::InspectorLifecycleAgent* agent);
-
-void Bun__LifecycleAgentReportReload(Inspector::InspectorLifecycleAgent* agent)
-{
-    agent->reportReload();
-}
-
-void Bun__LifecycleAgentReportError(Inspector::InspectorLifecycleAgent* agent, ZigException* exception)
-{
-    ASSERT(exception);
-    ASSERT(agent);
-
-    agent->reportError(*exception);
-}
-
-void Bun__LifecycleAgentPreventExit(Inspector::InspectorLifecycleAgent* agent);
-void Bun__LifecycleAgentStopPreventingExit(Inspector::InspectorLifecycleAgent* agent);
-}
-
 InspectorLifecycleAgent::InspectorLifecycleAgent(JSC::JSGlobalObject& globalObject)
     : InspectorAgentBase("LifecycleReporter"_s)
     , m_globalObject(globalObject)
-    , m_backendDispatcher(LifecycleReporterBackendDispatcher::create(m_globalObject.inspectorController().backendDispatcher(), this))
-    , m_frontendDispatcher(makeUnique<LifecycleReporterFrontendDispatcher>(const_cast<FrontendRouter&>(m_globalObject.inspectorController().frontendRouter())))
+    , m_backendDispatcher(LifecycleReporterBackendDispatcher::create(globalObject.inspectorController().backendDispatcher(), this))
+    , m_frontendDispatcher(makeUnique<LifecycleReporterFrontendDispatcher>(const_cast<FrontendRouter&>(globalObject.inspectorController().frontendRouter())))
 {
 }
 
 InspectorLifecycleAgent::~InspectorLifecycleAgent()
 {
     if (m_enabled) {
-        Bun__LifecycleAgentDisable(this);
+        Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorLifecycleAgent(this, false);
     }
 }
 
@@ -78,7 +55,7 @@ Protocol::ErrorStringOr<void> InspectorLifecycleAgent::enable()
         return {};
 
     m_enabled = true;
-    Bun__LifecycleAgentEnable(this);
+    Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorLifecycleAgent(this, true);
     return {};
 }
 
@@ -88,7 +65,7 @@ Protocol::ErrorStringOr<void> InspectorLifecycleAgent::disable()
         return {};
 
     m_enabled = false;
-    Bun__LifecycleAgentDisable(this);
+    Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorLifecycleAgent(this, false);
     return {};
 }
 
@@ -100,31 +77,29 @@ void InspectorLifecycleAgent::reportReload()
     m_frontendDispatcher->reload();
 }
 
-void InspectorLifecycleAgent::reportError(ZigException& exception)
+void InspectorLifecycleAgent::reportError(
+    const WTF::String& message,
+    const WTF::String& name,
+    std::span<const Bun::Bindgen::ExceptionStackFrame> frames,
+    std::span<const Bun::Bindgen::ExceptionSourceLine> sourceLineValues)
 {
     if (!m_enabled)
         return;
-
-    String message = exception.message.toWTFString();
-    String name = exception.name.toWTFString();
 
     Ref<JSON::ArrayOf<String>> urls = JSON::ArrayOf<String>::create();
     Ref<JSON::ArrayOf<int>> lineColumns = JSON::ArrayOf<int>::create();
     Ref<JSON::ArrayOf<String>> sourceLines = JSON::ArrayOf<String>::create();
 
-    for (size_t i = 0; i < exception.stack.source_lines_len; i++) {
-        sourceLines->addItem(exception.stack.source_lines_ptr[i].toWTFString());
+    for (const auto& sourceLine : sourceLineValues)
+        sourceLines->addItem(sourceLine.text);
+
+    for (const auto& frame : frames) {
+        lineColumns->addItem(frame.line ? static_cast<int>(*frame.line) + 1 : 0);
+        lineColumns->addItem(frame.column ? static_cast<int>(*frame.column) + 1 : 0);
+        urls->addItem(frame.sourceURL);
     }
 
-    for (size_t i = 0; i < exception.stack.frames_len; i++) {
-        ZigStackFrame* frame = &exception.stack.frames_ptr[i];
-        lineColumns->addItem(frame->position.line_zero_based + 1);
-        lineColumns->addItem(frame->position.column_zero_based + 1);
-        urls->addItem(frame->source_url.toWTFString());
-    }
-
-    // error(const String& message, const String& name, Ref<JSON::ArrayOf<String>>&& urls, Ref<JSON::ArrayOf<int>>&& lineColumns, Ref<JSON::ArrayOf<String>>&& sourceLines);
-    m_frontendDispatcher->error(WTF::move(message), WTF::move(name), WTF::move(urls), WTF::move(lineColumns), WTF::move(sourceLines));
+    m_frontendDispatcher->error(message, name, WTF::move(urls), WTF::move(lineColumns), WTF::move(sourceLines));
 }
 
 Protocol::ErrorStringOr<void> InspectorLifecycleAgent::preventExit()
@@ -179,8 +154,11 @@ Protocol::ErrorStringOr<ModuleGraph> InspectorLifecycleAgent::getModuleGraph()
     Ref<JSON::ArrayOf<String>> argv = JSON::ArrayOf<String>::create();
     {
 
-        auto* array = uncheckedDowncast<JSC::JSArray>(process->getArgv(global));
+        auto value = process->get(global, JSC::Identifier::fromString(vm, "argv"_s));
         RETURN_IF_EXCEPTION(scope, makeUnexpected(ErrorString("Failed to get argv"_s)));
+        auto* array = dynamicDowncast<JSC::JSArray>(value);
+        if (!array)
+            return makeUnexpected(ErrorString("process.argv must be an array"_s));
         for (size_t i = 0, length = array->length(); i < length; i++) {
             auto value = array->getIndex(global, i);
             RETURN_IF_EXCEPTION(scope, makeUnexpected(ErrorString("Failed to get value at index"_s)));
@@ -201,13 +179,25 @@ Protocol::ErrorStringOr<ModuleGraph> InspectorLifecycleAgent::getModuleGraph()
 
     String cwd;
     {
-        auto cwdValue = JSC::JSValue::decode(Bun__Process__getCwd(&m_globalObject));
+        cwd = Bun::Bindgen::ZigExports::bunBindgenZig_Process_getCwd(&m_globalObject);
         RETURN_IF_EXCEPTION(scope, makeUnexpected(ErrorString("Failed to get cwd"_s)));
-        cwd = cwdValue.toWTFString(global);
-        RETURN_IF_EXCEPTION(scope, makeUnexpected(ErrorString("Failed to convert value to string"_s)));
     }
 
     return ModuleGraph { WTF::move(esm), WTF::move(cjs), WTF::move(cwd), WTF::move(main), WTF::move(argv) };
 }
 
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorLifecycleAgentReportReload(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorLifecycleAgentReportReload_Arguments& args)
+{
+    args.agent->reportReload();
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorLifecycleAgentReportError_Return Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorLifecycleAgentReportError(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorLifecycleAgentReportError_Arguments& args)
+{
+    ASSERT(args.agent);
+    args.agent->reportError(args.message, args.name, args.frames, args.sourceLines);
+    return {};
 }

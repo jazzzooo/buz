@@ -11,8 +11,8 @@ state: union(enum) {
     },
     done: ExitCode,
 } = .idle,
-event_loop: jsc.EventLoopHandle,
-concurrent_task: jsc.EventLoopTask,
+scheduler: Interpreter.Scheduler,
+main_task: Interpreter.Scheduler.Task = .{},
 
 pub const ParentPtr = StatePtrUnion(.{
     Binary,
@@ -44,8 +44,7 @@ pub fn init(
         .node = node,
         .parent = parent,
         .io = io,
-        .event_loop = interpreter.event_loop,
-        .concurrent_task = jsc.EventLoopTask.fromEventLoop(interpreter.event_loop),
+        .scheduler = interpreter.scheduler(),
     };
     return async_cmd;
 }
@@ -116,11 +115,7 @@ pub fn next(this: *Async) Yield {
 }
 
 pub fn enqueueSelf(this: *Async) void {
-    if (this.event_loop == .js) {
-        this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-    } else {
-        this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-    }
+    this.scheduler.enqueue(&this.main_task, this);
 }
 
 pub fn childDone(this: *Async, child_ptr: ChildPtr, exit_code: ExitCode) Yield {
@@ -159,7 +154,6 @@ pub fn runFromMainThreadMini(this: *Async, _: *void) void {
 const std = @import("std");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 
 const shell = bun.shell;
 const ExitCode = bun.shell.ExitCode;

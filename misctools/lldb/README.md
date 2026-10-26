@@ -4,7 +4,7 @@ This directory contains LLDB pretty printers for various Bun data structures to 
 
 ## Files
 
-- `bun_pretty_printer.py` - Pretty printers for Bun-specific types (bun.String, WTFStringImpl, ZigString, BabyList, etc.)
+- `bun_pretty_printer.py` - Pretty printers for Bun-specific types (bun.String, WTFStringImpl, BabyList)
 - `lldb_pretty_printers.py` - Pretty printers for Zig language types from the Zig project
 - `lldb_webkit.py` - Pretty printers for WebKit/JavaScriptCore types
 - `init.lldb` - LLDB initialization commands
@@ -12,29 +12,27 @@ This directory contains LLDB pretty printers for various Bun data structures to 
 ## Supported Types
 
 ### bun.String Types
-- `bun.String` (or just `String`) - The main Bun string type
-- `WTFStringImpl` - WebKit string implementation (Latin1/UTF16)
-- `ZigString` - Zig string type (UTF8/Latin1/UTF16 with pointer tagging)
+- `bun.String` (`string.string.String` in Zig debug information) - The main Zig string type
+- `WTFStringImpl` / `WTFStringImplStruct` - Opaque Zig handles to WebKit strings (Latin1/UTF16)
+
+The Bun category matches these types explicitly. WebKit's own string types use
+the separate formatters in `lldb_webkit.py`.
 
 ### Display Format
 
 The pretty printers show string content directly, with additional metadata:
 
 ```
-# bun.String examples:
-"Hello, World!" [latin1]          # Regular ZigString
-"UTF-8 String 🎉" [utf8]          # UTF-8 encoded
-"Static content" [latin1 static]  # Static string
-""                                # Empty string
-<dead>                            # Dead/invalid string
-
-# WTFStringImpl examples:
-"WebKit String"                   # Shows the actual string content
-
-# ZigString examples:
-"Some text" [utf16 global]        # UTF16 globally allocated
-"ASCII text" [latin1]             # Latin1 encoded
+[latin1] "Hello, World!"
+[utf16] "Unicode string 🎉"
+""                                # Empty bun.String
+<dead>                            # Dead/invalid string tag
+<null string>                     # Null implementation handle
 ```
+
+Long strings display at most 200 Unicode characters, followed by `<truncated>`.
+Their `length` metadata counts the original Latin1 or UTF16 code units. Memory
+reads are bounded by the display limit, and control characters are escaped.
 
 ## Usage
 
@@ -61,41 +59,37 @@ To test the pretty printers:
 
 1. Build a debug version of Bun:
 ```bash
-zig build
+./zig build
 ```
 
-2. Create a test file that uses bun.String types
-
-3. Debug with LLDB:
+2. Debug a JavaScript program with LLDB:
 ```bash
 lldb ./zig-out/bin/bun-debug
 (lldb) command script import misctools/lldb/bun_pretty_printer.py
-(lldb) breakpoint set --file your_test.zig --line <line_number>
-(lldb) run your_test.zig
+(lldb) breakpoint set --file <native_source_file> --line <line_number>
+(lldb) run your_script.js
 (lldb) frame variable
 ```
 
+Keep `bun-debug.dbg` beside the executable so LLDB can load the debug symbols.
+
 ## Implementation Details
 
-### ZigString Pointer Tagging
-ZigString uses pointer tagging in the upper bits:
-- Bit 63: 1 = UTF16, 0 = UTF8/Latin1
-- Bit 62: 1 = Globally allocated (mimalloc)
-- Bit 61: 1 = UTF8 encoding
+### Opaque String Handles
 
-The pretty printer automatically detects and handles these tags.
-
-### WTFStringImpl Encoding
-WTFStringImpl uses flags in `m_hashAndFlags`:
-- Bit 2 (s_hashFlag8BitBuffer): 1 = Latin1, 0 = UTF16
+The formatter reads the engine-exported `Bun__WTFStringImpl__lengthOffset`,
+`dataOffset`, `flagsOffset`, and `flagIs8Bit` constants from the stopped target.
+It does not require fields on the Zig opaque type or call into the debuggee.
+UTF16 decoding uses the target's byte order. Missing symbols and unreadable
+memory produce an explicit `<string unavailable: ...>` summary.
 
 ### bun.String Tag Union
 bun.String is a tagged union with these variants:
 - Dead (0): Invalid/freed string
 - WTFStringImpl (1): WebKit string
-- ZigString (2): Regular Zig string
-- StaticZigString (3): Static/immortal string
 - Empty (4): Empty string ""
+
+The Zig wrapper stores its handle in `value.WTFStringImpl`.
 
 ## Troubleshooting
 
@@ -116,6 +110,6 @@ If the pretty printers don't work:
 (lldb) type category enable bun
 ```
 
-4. For debugging the pretty printer itself, check for exceptions:
-- The pretty printers catch all exceptions and return `<error>`
-- Modify the code to print exceptions for debugging
+4. For `<string unavailable: ...>`, check the reported symbol or memory error.
+   The string formatters report failures rather than treating failed reads as
+   empty strings.

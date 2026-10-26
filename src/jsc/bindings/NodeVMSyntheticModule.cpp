@@ -23,64 +23,22 @@
 namespace Bun {
 using namespace NodeVM;
 
-NodeVMSyntheticModule* NodeVMSyntheticModule::create(VM& vm, JSGlobalObject* globalObject, ArgList args)
+NodeVMSyntheticModule* NodeVMSyntheticModule::create(
+    VM& vm,
+    JSGlobalObject* globalObject,
+    WTF::String identifier,
+    JSObject* context,
+    WTF::Vector<WTF::String> exportNameValues,
+    JSValue syntheticEvaluationSteps,
+    JSValue moduleWrapper)
 {
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    JSValue identifierValue = args.at(0);
-    if (!identifierValue.isString()) {
-        throwArgumentTypeError(*globalObject, scope, 0, "identifier"_s, "Module"_s, "Module"_s, "string"_s);
-        return nullptr;
-    }
-
-    JSValue contextValue = args.at(1);
-    if (contextValue.isUndefined()) {
-        contextValue = globalObject;
-    } else if (!contextValue.isObject()) {
-        throwArgumentTypeError(*globalObject, scope, 1, "context"_s, "Module"_s, "Module"_s, "object"_s);
-        return nullptr;
-    }
-
-    JSValue exportNamesValue = args.at(2);
-    auto* exportNamesArray = dynamicDowncast<JSArray>(exportNamesValue);
-    if (!exportNamesArray) {
-        throwArgumentTypeError(*globalObject, scope, 2, "exportNames"_s, "Module"_s, "Module"_s, "Array"_s);
-        return nullptr;
-    }
-
-    JSValue syntheticEvaluationStepsValue = args.at(3);
-    if (!syntheticEvaluationStepsValue.isUndefined()) {
-        if (!syntheticEvaluationStepsValue.isCallable()) {
-            throwArgumentTypeError(*globalObject, scope, 3, "syntheticEvaluationSteps"_s, "Module"_s, "Module"_s, "function"_s);
-            return nullptr;
-        }
-
-        syntheticEvaluationStepsValue = AsyncContextFrame::withAsyncContextIfNeeded(globalObject, syntheticEvaluationStepsValue);
-    }
-
-    JSValue moduleWrapperValue = args.at(4);
-    if (!moduleWrapperValue.isObject()) {
-        throwArgumentTypeError(*globalObject, scope, 4, "moduleWrapper"_s, "Module"_s, "Module"_s, "object"_s);
-        return nullptr;
-    }
-
     WTF::HashSet<String> exportNames;
-    for (unsigned i = 0; i < exportNamesArray->getArrayLength(); i++) {
-        JSValue exportNameValue = exportNamesArray->getIndex(globalObject, i);
-        RETURN_IF_EXCEPTION(scope, nullptr);
-        if (!exportNameValue.isString()) {
-            throwArgumentTypeError(*globalObject, scope, 2, "exportNames"_s, "Module"_s, "Module"_s, "string[]"_s);
-            return nullptr;
-        }
-        exportNames.addVoid(exportNameValue.toWTFString(globalObject));
-        RETURN_IF_EXCEPTION(scope, nullptr);
-    }
+    for (auto& exportName : exportNameValues)
+        exportNames.addVoid(WTF::move(exportName));
 
     auto* zigGlobalObject = defaultGlobalObject(globalObject);
     auto* structure = zigGlobalObject->NodeVMSyntheticModuleStructure();
-    WTF::String identifier = identifierValue.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, nullptr);
-    auto* ptr = new (NotNull, allocateCell<NodeVMSyntheticModule>(vm)) NodeVMSyntheticModule(vm, structure, WTF::move(identifier), contextValue, moduleWrapperValue, WTF::move(exportNames), syntheticEvaluationStepsValue);
+    auto* ptr = new (NotNull, allocateCell<NodeVMSyntheticModule>(vm)) NodeVMSyntheticModule(vm, structure, WTF::move(identifier), context, moduleWrapper, WTF::move(exportNames), syntheticEvaluationSteps);
     ptr->finishCreation(vm);
     return ptr;
 }
@@ -127,7 +85,7 @@ AbstractModuleRecord* NodeVMSyntheticModule::moduleRecord(JSGlobalObject* global
     return m_moduleRecord.get();
 }
 
-JSValue NodeVMSyntheticModule::link(JSGlobalObject* globalObject, JSArray* specifiers, JSArray* moduleNatives, JSValue scriptFetcher)
+JSValue NodeVMSyntheticModule::link(JSGlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -142,8 +100,8 @@ JSValue NodeVMSyntheticModule::link(JSGlobalObject* globalObject, JSArray* speci
     if (NodeVMGlobalObject* nodeVmGlobalObject = getGlobalObjectFromContext(globalObject, m_context.get(), false)) {
         globalObject = nodeVmGlobalObject;
     }
+    RETURN_IF_EXCEPTION(scope, {});
 
-    (void)scriptFetcher;
     Synchronousness sync = record->link(globalObject, nullptr);
 
     RETURN_IF_EXCEPTION(scope, {});

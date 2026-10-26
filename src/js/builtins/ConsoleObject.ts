@@ -125,11 +125,11 @@ export function write(this: Console, input) {
     $putByIdDirectPrivate(this, "writer", writer);
   }
 
-  var wrote = writer.write(input);
+  var wrote = writer.write(input) as number;
 
   const count = $argumentCount();
   for (var i = 1; i < count; i++) {
-    wrote += writer.write(arguments[i]);
+    wrote += writer.write(arguments[i]) as number;
   }
 
   writer.flush(true);
@@ -168,7 +168,7 @@ export function createConsoleConstructor(console: typeof globalThis.console) {
   const kMinute = 60 * kSecond;
   const kHour = 60 * kMinute;
 
-  const internalGetStringWidth = $newZigFunction("string.zig", "String.jsGetStringWidth", 1);
+  const internalGetStringWidth = $bindgenFn("StringWidth.schema.zig", "get");
 
   /**
    * Returns the number of columns required to display the given string.
@@ -269,7 +269,7 @@ export function createConsoleConstructor(console: typeof globalThis.console) {
     // We have to test new.target here to see if this function is called
     // with new, because we need to define a custom instanceof to accommodate
     // the global console.
-    if (new.target === undefined) return new Console(...arguments);
+    if (new.target === undefined) return new (Console as any)(...arguments);
 
     if (!options || typeof options.write === "function") {
       options = {
@@ -459,8 +459,8 @@ export function createConsoleConstructor(console: typeof globalThis.console) {
           if (
             e != null &&
             typeof e === "object" &&
-            e.name === "RangeError" &&
-            e.message === "Maximum call stack size exceeded."
+            (e as Error).name === "RangeError" &&
+            (e as Error).message === "Maximum call stack size exceeded."
           )
             throw e;
           // Sorry, there's no proper way to pass along the error here.

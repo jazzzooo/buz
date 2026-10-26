@@ -35,21 +35,20 @@ class CryptoKeyEC;
 
 class CryptoAlgorithmECDH final : public CryptoAlgorithm {
 public:
-    static constexpr ASCIILiteral s_name = "ECDH"_s;
     static constexpr CryptoAlgorithmIdentifier s_identifier = CryptoAlgorithmIdentifier::ECDH;
     static Ref<CryptoAlgorithm> create();
 
     // Operations can be performed directly.
-    WEBCORE_EXPORT static std::optional<Vector<uint8_t>> platformDeriveBits(const CryptoKeyEC&, const CryptoKeyEC&);
+    WEBCORE_EXPORT static ExceptionOr<Vector<uint8_t>> platformDeriveBits(const CryptoKeyEC&, const CryptoKeyEC&);
 
 private:
     CryptoAlgorithmECDH() = default;
     CryptoAlgorithmIdentifier identifier() const final;
 
-    void generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyOrKeyPairCallback&&, ExceptionCallback&&, ScriptExecutionContext&) final;
-    void deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, size_t length, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&) final;
-    void importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyCallback&&, ExceptionCallback&&) final;
-    void exportKey(CryptoKeyFormat, Ref<CryptoKey>&&, KeyDataCallback&&, ExceptionCallback&&) final;
+    ExceptionOr<KeyOrKeyPair> generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap) final;
+    ExceptionOr<Vector<uint8_t>> deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, size_t length) final;
+    ExceptionOr<Ref<CryptoKey>> importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap) final;
+    ExceptionOr<KeyData> exportKey(CryptoKeyFormat, Ref<CryptoKey>&&) final;
 };
 
 } // namespace WebCore

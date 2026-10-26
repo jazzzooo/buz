@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import { bunEnv, bunExe, isWindows } from "harness";
 
 // When a child process exits while its stdout/stderr pipe still has pending
-// activity, onProcessExit keeps the Subprocess JSRef Strong. The pipe later
+// activity, onProcessExit keeps the Subprocess wrapper reference strong. The pipe later
 // drains and PipeReader.onReaderDone → Subprocess.onCloseIO converts the
 // Readable from `.pipe` to `.buffer`, but previously did not call
-// updateHasPendingActivity(), so the JSRef stayed Strong forever and the
+// updateHasPendingActivity(), so the wrapper reference stayed strong forever and the
 // JSSubprocess (plus its buffered output) leaked.
 //
 // To reproduce deterministically we need the stdout drain to complete
@@ -84,7 +84,7 @@ test.skipIf(isWindows)(
     expect(stderrLines).toBe("");
     const { collected, iters } = JSON.parse(stdout.trim());
     // Without the fix, ZERO Subprocess wrappers are collected because their
-    // JSRef is never downgraded. With the fix they are all collectable. We
+    // wrapper reference is never downgraded. With the fix they are all collectable. We
     // accept any nonzero count as proof the mechanism works — under release-
     // ASAN each grandchild's LSan-exit can outlast the poll window, so an
     // exact-10 assertion is a wall-clock race, not a correctness check.

@@ -7,28 +7,20 @@
 namespace Bun {
 
 struct EcKeyPairJobCtx : KeyPairJobCtx {
-    WTF_MAKE_TZONE_ALLOCATED(EcKeyPairJobCtx);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(EcKeyPairJobCtx);
 
 public:
-    EcKeyPairJobCtx(int curveNid, int paramEncoding, const KeyEncodingConfig& config)
-        : KeyPairJobCtx(config.publicKeyEncoding, config.privateKeyEncoding)
+    EcKeyPairJobCtx(int curveNid, int paramEncoding, KeyEncodingConfig&& config)
+        : KeyPairJobCtx(WTF::move(config))
         , m_curveNid(curveNid)
         , m_paramEncoding(paramEncoding)
     {
     }
 
-    void deinit();
-    ncrypto::EVPKeyCtxPointer setup();
-    static std::optional<EcKeyPairJobCtx> fromJS(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, const JSC::GCOwnedDataScope<WTF::StringView>& typeView, JSC::JSValue optionsValue, const KeyEncodingConfig& config);
+    ncrypto::EVPKeyCtxPointer setup() override;
 
     int m_curveNid;
     int m_paramEncoding;
-};
-
-struct EcKeyPairJob {
-    static EcKeyPairJob* create(JSC::JSGlobalObject*, EcKeyPairJobCtx&&, JSC::JSValue callback);
-    static void createAndSchedule(JSC::JSGlobalObject*, EcKeyPairJobCtx&&, JSC::JSValue callback);
-    void schedule();
 };
 
 } // namespace Bun

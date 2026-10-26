@@ -3,7 +3,96 @@ pub fn cloneActiveStrong() ?BunTestPtr {
     return runner.bun_test_root.cloneActiveFile();
 }
 
-pub const DoneCallback = @import("./DoneCallback.zig");
+pub const DoneCallback = @import("./DoneCallback.zig").DoneCallback(BunTest.RefData);
+pub const DoneCallbackEngine = @import("./DoneCallbackEngine.zig");
+
+pub const TestCallbackSchema = bun.bindgen.CallbackSchema("BunTestCallback");
+pub const TestCallback = bun.bindgen.Callback(TestCallbackSchema);
+pub const TestCallbackResult = bun.bindgen.Return(TestCallbackSchema);
+
+pub const StoredTestCallback = struct {
+    callback: ?TestCallback,
+    receiver: ?bun.bindgen.Root = null,
+    arguments: bun.bindgen.RetainedArguments = .empty,
+
+    pub fn fromArgument(callback: bun.bindgen.CallbackView(TestCallbackSchema)) bun.JSError!StoredTestCallback {
+        return .{ .callback = try callback.toOwned() };
+    }
+
+    pub fn cloneWithBinding(
+        this: *const StoredTestCallback,
+        receiver: *const bun.bindgen.Root,
+        arguments: *bun.bindgen.RetainedArguments,
+    ) StoredTestCallback {
+        const callback = if (this.callback) |*value|
+            value.clone()
+        else
+            @panic("test callback was already consumed");
+        return .{
+            .callback = callback,
+            .receiver = receiver.clone(),
+            .arguments = arguments.take(),
+        };
+    }
+
+    pub fn take(this: *StoredTestCallback) StoredTestCallback {
+        const callback = if (this.callback) |*value|
+            value.take()
+        else
+            @panic("test callback was already consumed");
+        const receiver = if (this.receiver) |*value| value.take() else null;
+        const arguments = this.arguments.take();
+        this.callback = null;
+        this.receiver = null;
+        return .{
+            .callback = callback,
+            .receiver = receiver,
+            .arguments = arguments,
+        };
+    }
+
+    pub fn call(
+        this: *const StoredTestCallback,
+        invocation: *TestCallback.Invocation,
+        trailing_argument: ?*const bun.bindgen.Root,
+    ) bun.JSError!TestCallbackResult {
+        const roots = this.arguments.values();
+        const count = std.math.add(usize, roots.len, @intFromBool(trailing_argument != null)) catch return error.OutOfMemory;
+        var inline_arguments: [8]bun.bindgen.AnyOperand = undefined;
+        const arguments = if (count <= inline_arguments.len) inline_arguments[0..count] else try bun.default_allocator.alloc(bun.bindgen.AnyOperand, count);
+        defer if (arguments.ptr != inline_arguments[0..].ptr) bun.default_allocator.free(arguments);
+        for (roots, arguments[0..roots.len]) |*root, *argument| argument.* = root.operand(invocation);
+        if (trailing_argument) |root| arguments[roots.len] = root.operand(invocation);
+        return invocation.call(.{
+            .bindingThis = if (this.receiver) |*receiver| receiver.operand(invocation) else null,
+            .arguments = arguments,
+        });
+    }
+
+    pub fn beginInvocation(this: *const StoredTestCallback, invocation: *TestCallback.Invocation) void {
+        const callback = if (this.callback) |*value|
+            value
+        else
+            @panic("test callback was already consumed");
+        callback.beginInvocation(invocation);
+    }
+
+    pub fn deinit(this: *StoredTestCallback) void {
+        if (this.callback) |*callback| callback.deinit();
+        if (this.receiver) |*receiver| receiver.deinit();
+        this.arguments.deinit();
+        this.callback = null;
+        this.receiver = null;
+    }
+};
+
+pub fn callbackLength(context: anytype, callback: bun.bindgen.CallbackView(TestCallbackSchema)) bun.JSError!usize {
+    const length = (try context.engineIn("js_value_inspection", "jsValueLengthIfPropertyExists").call(.{
+        .value = callback.operand(context).asEngine(),
+    })) orelse return 0;
+    if (!std.math.isFinite(length) or length <= 0) return 0;
+    return @intFromFloat(@min(length, @as(f64, @floatFromInt(std.math.maxInt(i52)))));
+}
 
 pub const js_fns = struct {
     pub const Signature = union(enum) {
@@ -37,42 +126,70 @@ pub const js_fns = struct {
         return bunTest;
     }
 
+    fn failInvalidHook(context: anytype, comptime format: []const u8, args: anytype) bun.bindgen.CallError(@TypeOf(context)) {
+        const message = try std.fmt.allocPrint(bun.default_allocator, format, args);
+        defer bun.default_allocator.free(message);
+        return context.fail(.invalid_hook_context, try bun.bindgen.DOMString.fromUTF8(message));
+    }
+
     pub fn genericHook(comptime tag: @EnumLiteral()) type {
+        const HookSchema = bun.bindgen.Module("BunTest").function(@tagName(tag));
         return struct {
-            pub fn hookFn(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+            pub fn hookFn(
+                context: bun.bindgen.CallContext(HookSchema),
+                binding_args: bun.bindgen.Args(HookSchema),
+            ) bun.bindgen.CallError(HookSchema)!void {
+                return hookFromBinding(context, binding_args);
+            }
+
+            fn hookFromBinding(
+                context: anytype,
+                binding_args: bun.bindgen.Args(HookSchema),
+            ) bun.bindgen.CallError(@TypeOf(context))!void {
+                const globalThis = context.viewToken().globalObject();
                 group.begin(@src());
                 defer group.end();
                 errdefer group.log("ended in error", .{});
 
-                var args = try ScopeFunctions.parseArguments(globalThis, callFrame, .{ .str = @tagName(tag) ++ "()" }, bun.default_allocator, .{ .callback = .require, .kind = .hook });
-                defer args.deinit(bun.default_allocator);
+                const has_done_parameter = try callbackLength(context, binding_args.callback) > 0;
+                var callback = try StoredTestCallback.fromArgument(binding_args.callback);
+                defer callback.deinit();
+                const timeout_option: ?f64 = if (binding_args.options) |options| switch (options) {
+                    .milliseconds => |milliseconds| milliseconds,
+                    .options => |values| values.timeout,
+                } else null;
 
-                const has_done_parameter = if (args.callback) |callback| try callback.getLength(globalThis) > 0 else false;
-
-                const bunTestRoot = try getActiveTestRoot(globalThis, .{ .signature = .{ .str = @tagName(tag) ++ "()" }, .allow_in_preload = true });
+                const bunTestRoot = if (bun.jsc.Jest.Jest.runner) |runner|
+                    &runner.bun_test_root
+                else
+                    return failInvalidHook(
+                        context,
+                        "Cannot use {s}() outside of the test runner. Run \"bun test\" to run tests.",
+                        .{@tagName(tag)},
+                    );
 
                 const cfg: ExecutionEntryCfg = .{
                     .has_done_parameter = has_done_parameter,
-                    .timeout = args.options.timeout,
+                    .timeout = ScopeFunctionsEngine.resolveTimeout(timeout_option),
                 };
-                const bunTest = bunTestRoot.getActiveFileUnlessInPreload(globalThis.bunVM()) orelse {
+                const bunTest = bunTestRoot.getActiveFileUnlessInPreload(globalThis.bunVM().is_in_preload) orelse {
                     if (tag == .onTestFinished) {
-                        return globalThis.throw("Cannot call {s}() in preload. It can only be called inside a test.", .{@tagName(tag)});
+                        return failInvalidHook(context, "Cannot call {s}() in preload. It can only be called inside a test.", .{@tagName(tag)});
                     }
                     group.log("genericHook in preload", .{});
 
-                    _ = try bunTestRoot.hook_scope.appendHook(bunTestRoot.gpa, tag, args.callback, cfg, .{}, .preload);
-                    return .js_undefined;
+                    _ = try bunTestRoot.hook_scope.appendHook(bunTestRoot.gpa, tag, &callback, cfg, .{}, .preload);
+                    return;
                 };
 
                 switch (bunTest.phase) {
                     .collection => {
                         if (tag == .onTestFinished) {
-                            return globalThis.throw("Cannot call {s}() outside of a test. It can only be called inside a test.", .{@tagName(tag)});
+                            return failInvalidHook(context, "Cannot call {s}() outside of a test. It can only be called inside a test.", .{@tagName(tag)});
                         }
-                        _ = try bunTest.collection.active_scope.appendHook(bunTest.gpa, tag, args.callback, cfg, .{}, .collection);
+                        _ = try bunTest.collection.active_scope.appendHook(bunTest.gpa, tag, &callback, cfg, .{}, .collection);
 
-                        return .js_undefined;
+                        return;
                     },
                     .execution => {
                         const active = bunTest.getCurrentStateData();
@@ -81,7 +198,7 @@ pub const js_fns = struct {
                                 "Cannot call {s}() here. It cannot be called inside a concurrent test. Use test.serial or remove test.concurrent."
                             else
                                 "Cannot call {s}() here. It cannot be called inside a concurrent test. Call it inside describe() instead.";
-                            return globalThis.throw(message, .{@tagName(tag)});
+                            return failInvalidHook(context, message, .{@tagName(tag)});
                         };
 
                         const append_point = switch (tag) {
@@ -91,32 +208,52 @@ pub const js_fns = struct {
                                     if (entry == sequence.test_entry) break :blk sequence.test_entry.?;
                                 }
 
-                                break :blk sequence.active_entry orelse return globalThis.throw("Cannot call {s}() here. Call it inside describe() instead.", .{@tagName(tag)});
+                                break :blk sequence.active_entry orelse return failInvalidHook(context, "Cannot call {s}() here. Call it inside describe() instead.", .{@tagName(tag)});
                             },
                             .onTestFinished => blk: {
                                 // Find the last entry in the sequence
-                                var last_entry = sequence.active_entry orelse return globalThis.throw("Cannot call {s}() here. Call it inside a test instead.", .{@tagName(tag)});
+                                var last_entry = sequence.active_entry orelse return failInvalidHook(context, "Cannot call {s}() here. Call it inside a test instead.", .{@tagName(tag)});
                                 while (last_entry.next) |next_entry| {
                                     last_entry = next_entry;
                                 }
                                 break :blk last_entry;
                             },
-                            else => return globalThis.throw("Cannot call {s}() inside a test. Call it inside describe() instead.", .{@tagName(tag)}),
+                            else => return failInvalidHook(context, "Cannot call {s}() inside a test. Call it inside describe() instead.", .{@tagName(tag)}),
                         };
 
-                        const new_item = ExecutionEntry.create(bunTest.gpa, null, args.callback, cfg, null, .{}, .execution);
+                        const new_item = ExecutionEntry.create(bunTest.gpa, null, &callback, cfg, null, .{}, .execution);
                         new_item.next = append_point.next;
                         append_point.next = new_item;
                         bun.handleOom(bunTest.extra_execution_entries.append(new_item));
 
-                        return .js_undefined;
+                        return;
                     },
-                    .done => return globalThis.throw("Cannot call {s}() after the test run has completed", .{@tagName(tag)}),
+                    .done => return failInvalidHook(context, "Cannot call {s}() after the test run has completed", .{@tagName(tag)}),
                 }
             }
         };
     }
 };
+
+const BunTestBindingModule = bun.bindgen.Module("BunTest");
+pub const BeforeEachHook = js_fns.genericHook(.beforeEach);
+pub const BeforeAllHook = js_fns.genericHook(.beforeAll);
+pub const AfterAllHook = js_fns.genericHook(.afterAll);
+pub const AfterEachHook = js_fns.genericHook(.afterEach);
+pub const OnTestFinishedHook = js_fns.genericHook(.onTestFinished);
+pub const BeforeEachBinding = bun.bindgen.Fn(BunTestBindingModule.function("beforeEach"), BeforeEachHook.hookFn);
+pub const BeforeAllBinding = bun.bindgen.Fn(BunTestBindingModule.function("beforeAll"), BeforeAllHook.hookFn);
+pub const AfterAllBinding = bun.bindgen.Fn(BunTestBindingModule.function("afterAll"), AfterAllHook.hookFn);
+pub const AfterEachBinding = bun.bindgen.Fn(BunTestBindingModule.function("afterEach"), AfterEachHook.hookFn);
+pub const OnTestFinishedBinding = bun.bindgen.Fn(BunTestBindingModule.function("onTestFinished"), OnTestFinishedHook.hookFn);
+
+comptime {
+    _ = BeforeEachBinding;
+    _ = BeforeAllBinding;
+    _ = AfterAllBinding;
+    _ = AfterEachBinding;
+    _ = OnTestFinishedBinding;
+}
 
 pub const BunTestPtr = bun.ptr.shared.WithOptions(*BunTest, .{
     .allow_weak = true,
@@ -188,8 +325,8 @@ pub const BunTestRoot = struct {
         this.active_file.deinit();
         this.active_file = .initNull();
     }
-    pub fn getActiveFileUnlessInPreload(this: *BunTestRoot, vm: *jsc.VirtualMachine) ?*BunTest {
-        if (vm.is_in_preload) {
+    pub fn getActiveFileUnlessInPreload(this: *BunTestRoot, is_preloading: bool) ?*BunTest {
+        if (is_preloading) {
             return null;
         }
         return this.active_file.get();
@@ -221,6 +358,13 @@ pub const BunTestRoot = struct {
 };
 
 pub const BunTest = struct {
+    const BindingModule = bun.bindgen.Module("BunTest");
+    const OnPromiseResolveSchema = BindingModule.function("onPromiseResolve");
+    const OnPromiseRejectSchema = BindingModule.function("onPromiseReject");
+    const PromiseReaction = bun.bindgen.PromiseReaction(OnPromiseResolveSchema.args[1].ArgumentType, RefData);
+    const OnPromiseResolveBinding = bun.bindgen.Fn(OnPromiseResolveSchema, bindOnPromiseResolve);
+    const OnPromiseRejectBinding = bun.bindgen.Fn(OnPromiseRejectSchema, bindOnPromiseReject);
+
     bun_test_root: *BunTestRoot,
     in_run_loop: bool,
     allocation_scope: bun.AllocationScope,
@@ -264,7 +408,7 @@ pub const BunTest = struct {
             .arena = this.arena,
             .phase = .collection,
             .file_id = file_id,
-            .collection = .init(this.gpa, bunTest),
+            .collection = .init(this.gpa, bunTest, if (jsc.Jest.Jest.runner) |runner| runner.only else false),
             .execution = .init(this.gpa),
             .reporter = reporter,
             .result_queue = .init(this.gpa),
@@ -303,7 +447,7 @@ pub const BunTest = struct {
             group_index: usize,
             entry_data: ?struct {
                 sequence_index: usize,
-                entry: *const anyopaque,
+                entry: *const ExecutionEntry,
                 remaining_repeat_count: i64,
             },
         },
@@ -344,6 +488,9 @@ pub const BunTest = struct {
         const RefCount = bun.ptr.RefCount(RefData, "ref_count", destroy, .{});
 
         pub const deref = RefCount.deref;
+        pub fn releasePromiseReactionRef(this: *RefData) void {
+            this.deref();
+        }
         pub fn dupe(this: *RefData) *RefData {
             RefCount.ref(this);
             return this;
@@ -414,80 +561,58 @@ pub const BunTest = struct {
         });
     }
 
-    export const Bun__TestScope__Describe2__bunTestThen = jsc.toJSHostFn(bunTestThen);
-    export const Bun__TestScope__Describe2__bunTestCatch = jsc.toJSHostFn(bunTestCatch);
-    fn bunTestThenOrCatch(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, is_catch: bool) bun.JSError!void {
+    fn bunTestThenOrCatch(
+        globalThis: *jsc.JSGlobalObject,
+        context: anytype,
+        result: anytype,
+        refdata: *RefData,
+        comptime is_catch: bool,
+    ) bun.JSError!void {
         group.begin(@src());
         defer group.end();
         errdefer group.log("ended in error", .{});
 
-        const result, const this_ptr = callframe.argumentsAsArray(2);
-        if (this_ptr.isEmptyOrUndefinedOrNull()) return;
-
-        const refdata: *RefData = this_ptr.asPromisePtr(RefData);
         defer refdata.deref();
         const has_one_ref = refdata.ref_count.hasOneRef();
         var this_strong = refdata.buntest_weak.upgrade() orelse return group.log("bunTestThenOrCatch -> the BunTest is no longer active", .{});
         defer this_strong.deinit();
         const this = this_strong.get();
 
-        if (is_catch) {
-            this.onUncaughtException(globalThis, result, true, refdata.phase);
-        }
+        if (is_catch) this.reportCallbackRejection(context, result, refdata.phase);
         if (!has_one_ref and !is_catch) {
             return group.log("bunTestThenOrCatch -> refdata has multiple refs; don't add result until the last ref", .{});
         }
 
         this.addResult(refdata.phase);
-        runNextTick(refdata.buntest_weak, globalThis, refdata.phase);
+        try BunTest.runNextTick(refdata.buntest_weak, globalThis, refdata.phase);
     }
-    fn bunTestThen(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        try bunTestThenOrCatch(globalThis, callframe, false);
-        return .js_undefined;
+
+    fn bindOnPromiseResolve(
+        context: bun.bindgen.CallContext(OnPromiseResolveSchema),
+        args: bun.bindgen.Args(OnPromiseResolveSchema),
+    ) bun.JSError!bun.bindgen.Return(OnPromiseResolveSchema) {
+        const refdata = PromiseReaction.take(args.context) orelse return;
+        try bunTestThenOrCatch(context.viewToken().globalObject(), context, {}, refdata, false);
     }
-    fn bunTestCatch(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        try bunTestThenOrCatch(globalThis, callframe, true);
-        return .js_undefined;
-    }
-    pub fn bunTestDoneCallback(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        group.begin(@src());
-        defer group.end();
 
-        const this = DoneCallback.fromJS(callframe.this()) orelse return globalThis.throw("Expected callee to be DoneCallback", .{});
-
-        const value = callframe.argumentsAsArray(1)[0];
-
-        const was_error = !value.isEmptyOrUndefinedOrNull();
-        if (this.called) {
-            // in Bun 1.2.20, this is a no-op
-            // in Jest, this is "Expected done to be called once, but it was called multiple times."
-            // Vitest does not support done callbacks
-        } else {
-            // error is only reported for the first done() call
-            if (was_error) {
-                _ = globalThis.bunVM().uncaughtException(globalThis, value, false);
-            }
+    fn reportCallbackRejection(this: *BunTest, context: anytype, result: anytype, phase: RefDataValue) void {
+        if (this.prepareUncaughtException(true, true, phase)) |handle_status| {
+            context.runErrorHandler(result.operand(context).asAny());
+            finishUncaughtException(handle_status);
         }
-        this.called = true;
-        const ref_in = this.ref orelse return .js_undefined;
-        defer this.ref = null;
-        defer ref_in.deref();
+    }
 
-        // dupe the ref and enqueue a task to call the done callback.
-        // this makes it so if you do something else after calling done(), the next test doesn't start running until the next tick.
+    fn bindOnPromiseReject(
+        context: bun.bindgen.CallContext(OnPromiseRejectSchema),
+        args: bun.bindgen.Args(OnPromiseRejectSchema),
+    ) bun.JSError!bun.bindgen.Return(OnPromiseRejectSchema) {
+        const refdata = PromiseReaction.take(args.context) orelse return;
+        try bunTestThenOrCatch(context.viewToken().globalObject(), context, args.result, refdata, true);
+    }
 
-        const has_one_ref = ref_in.ref_count.hasOneRef();
-        const should_run = has_one_ref or was_error;
-
-        if (!should_run) return .js_undefined;
-
-        var strong = ref_in.buntest_weak.upgrade() orelse return .js_undefined;
-        defer strong.deinit();
-        const buntest = strong.get();
-        buntest.addResult(ref_in.phase);
-        runNextTick(ref_in.buntest_weak, globalThis, ref_in.phase);
-
-        return .js_undefined;
+    comptime {
+        _ = OnPromiseResolveBinding;
+        _ = OnPromiseRejectBinding;
     }
     pub fn bunTestTimeoutCallback(this_strong: BunTestPtr, _: *const bun.timespec, vm: *jsc.VirtualMachine) void {
         group.begin(@src());
@@ -499,40 +624,55 @@ pub const BunTest = struct {
         switch (this.phase) {
             .collection => {},
             .execution => this.execution.handleTimeout(vm.global) catch |e| {
-                this.onUncaughtException(vm.global, vm.global.takeException(e), false, .done);
+                this.reportActiveException(vm.global, e, false, .done);
             },
             .done => {},
         }
         run(this_strong, vm.global) catch |e| {
-            this.onUncaughtException(vm.global, vm.global.takeException(e), false, .done);
+            this.reportActiveException(vm.global, e, false, .done);
         };
     }
-    pub fn runNextTick(weak: BunTestPtr.Weak, globalThis: *jsc.JSGlobalObject, phase: RefDataValue) void {
-        const done_callback_test = bun.new(RunTestsTask, .{ .weak = weak.clone(), .globalThis = globalThis, .phase = phase });
-        errdefer bun.destroy(done_callback_test);
-        const task = jsc.ManagedTask.New(RunTestsTask, RunTestsTask.call).init(done_callback_test);
-        const vm = globalThis.bunVM();
-        var strong = weak.upgrade() orelse {
-            if (bun.Environment.ci_assert) bun.assert(false); // shouldn't be calling runNextTick after moving on to the next file
-            return; // but just in case
-        };
+    pub fn runNextTick(weak: BunTestPtr.Weak, globalThis: *jsc.JSGlobalObject, phase: RefDataValue) bun.OOM!void {
+        const loop = globalThis.bunVM().eventLoop();
+        if (!loop.accepts_cancellable_tasks) return;
+        var strong = weak.upgrade() orelse return;
         defer strong.deinit();
-        strong.get().wants_wakeup = true; // we need to wake up the event loop so autoTick() doesn't wait for 16-100ms because we just enqueued a task
-        vm.enqueueTask(task);
+        const task = try bun.default_allocator.create(RunTestsTask);
+        task.* = .{
+            .weak = weak.clone(),
+            .globalThis = globalThis,
+            .phase = phase,
+            .task = .{ .context = .init(task), .callback = RunTestsTask.run, .on_cancel = RunTestsTask.cancel },
+        };
+        _ = task.node.from(&task.task, .manual_deinit);
+        strong.get().wants_wakeup = true;
+        loop.tasks.appendBatch(.{ .front = &task.node.node, .last = &task.node.node, .count = 1 });
     }
     pub const RunTestsTask = struct {
         weak: BunTestPtr.Weak,
         globalThis: *jsc.JSGlobalObject,
         phase: RefDataValue,
+        node: jsc.ConcurrentTask = .{},
+        task: jsc.IntrusiveTask,
 
-        pub fn call(this: *RunTestsTask) void {
-            defer bun.destroy(this);
-            defer this.weak.deinit();
+        fn run(raw: jsc.IntrusiveTask.Context) void {
+            const this = raw.get(*RunTestsTask);
+            defer this.deinit();
             var strong = this.weak.upgrade() orelse return;
             defer strong.deinit();
             BunTest.run(strong, this.globalThis) catch |e| {
-                strong.get().onUncaughtException(this.globalThis, this.globalThis.takeException(e), false, this.phase);
+                strong.get().reportActiveException(this.globalThis, e, false, this.phase);
             };
+        }
+
+        fn cancel(raw: jsc.IntrusiveTask.Context) void {
+            const this = raw.get(*RunTestsTask);
+            this.deinit();
+        }
+
+        fn deinit(this: *RunTestsTask) void {
+            this.weak.deinit();
+            bun.destroy(this);
         }
     };
 
@@ -554,7 +694,7 @@ pub const BunTest = struct {
         while (this.result_queue.readItem()) |result| {
             globalThis.clearTerminationException();
             const step_result: StepResult = switch (this.phase) {
-                .collection => try Collection.step(this_strong, globalThis, result),
+                .collection => try CollectionEngine.step(this_strong, globalThis, result),
                 .execution => try Execution.step(this_strong, globalThis, result),
                 .done => .complete,
             };
@@ -605,7 +745,7 @@ pub const BunTest = struct {
         switch (this.phase) {
             .collection => {
                 this.phase = .execution;
-                try debug.dumpDescribe(this.collection.root_scope);
+                debug.dumpDescribe(this.collection.root_scope);
 
                 const has_filter = if (this.reporter) |reporter| if (reporter.jest.filter_regex) |_| true else false else false;
                 // Derive a per-file shuffle PRNG from (seed, file_path) so a
@@ -635,7 +775,7 @@ pub const BunTest = struct {
                 afterall_order.setFailureSkipTo(&order);
 
                 try this.execution.loadFromOrder(&order);
-                try debug.dumpOrder(&this.execution);
+                debug.dumpOrder(&this.execution);
                 return .cont;
             },
             .execution => {
@@ -649,43 +789,55 @@ pub const BunTest = struct {
     }
 
     /// if sync, the result is returned. if async, null is returned.
-    pub fn runTestCallback(this_strong: BunTestPtr, globalThis: *jsc.JSGlobalObject, cfg_callback: jsc.JSValue, cfg_done_parameter: bool, cfg_data: BunTest.RefDataValue, timeout: *const bun.timespec) ?RefDataValue {
+    pub fn runTestCallback(this_strong: BunTestPtr, globalThis: *jsc.JSGlobalObject, cfg_callback: *const StoredTestCallback, cfg_done_parameter: bool, cfg_data: BunTest.RefDataValue, timeout: *const bun.timespec) ?RefDataValue {
         group.begin(@src());
         defer group.end();
         const this = this_strong.get();
         const vm = globalThis.bunVM();
 
-        // Don't use ?jsc.JSValue to make it harder for the conservative stack
-        // scanner to miss it.
-        var done_arg: jsc.JSValue = .zero;
-        var done_callback: jsc.JSValue = .zero;
+        var done_callback: ?DoneCallbackEngine.Owned = null;
+        defer if (done_callback) |*callback| callback.deinit();
 
         if (cfg_done_parameter) {
             group.log("callTestCallback -> appending done callback param: data {f}", .{cfg_data});
-            done_callback = DoneCallback.createUnbound(globalThis);
-            done_arg = DoneCallback.bind(done_callback, globalThis) catch |e| blk: {
-                this.onUncaughtException(globalThis, globalThis.takeException(e), false, cfg_data);
-                break :blk .zero; // failed to bind done callback
+            done_callback = DoneCallbackEngine.create(globalThis) catch |e| {
+                this.reportActiveException(globalThis, e, false, cfg_data);
+                return cfg_data;
             };
         }
 
         this.updateMinTimeout(globalThis, timeout);
-        const result: jsc.JSValue = vm.eventLoop().runCallbackWithResultAndForcefullyDrainMicrotasks(cfg_callback, globalThis, .js_undefined, if (done_arg != .zero) &.{done_arg} else &.{}) catch blk: {
-            globalThis.clearTerminationException();
-            this.onUncaughtException(globalThis, globalThis.tryTakeException(), false, cfg_data);
-            group.log("callTestCallback -> error", .{});
-            break :blk .zero;
+        var callback_invocation: TestCallback.Invocation = undefined;
+        cfg_callback.beginInvocation(&callback_invocation);
+        defer callback_invocation.deinit();
+        const result: ?TestCallbackResult = result: {
+            const value = cfg_callback.call(&callback_invocation, if (done_callback) |*callback| &callback.callback else null) catch |err| {
+                this.reportActiveException(globalThis, err, false, cfg_data);
+                group.log("callTestCallback -> error", .{});
+                break :result null;
+            };
+            vm.eventLoop().drainMicrotasksWithGlobal(globalThis, vm.jsc_vm) catch |err| {
+                this.reportActiveException(globalThis, err, false, cfg_data);
+                group.log("callTestCallback -> error", .{});
+                break :result null;
+            };
+            break :result value;
         };
-
-        done_callback.ensureStillAlive();
 
         // Drain unhandled promise rejections.
         while (true) {
             // Prevent the user's Promise rejection from going into the uncaught promise rejection queue.
-            if (result != .zero)
-                if (result.asPromise()) |promise|
-                    if (promise.status() == .rejected)
-                        promise.setHandled();
+            if (result) |result_value| switch (result_value) {
+                .promise => |promise| {
+                    const status = callback_invocation.engineIn("promises", "promiseStatus").call(.{
+                        .promise = promise.operand(&callback_invocation),
+                    });
+                    if (status == .rejected) callback_invocation.engineIn("promises", "promiseSetHandled").call(.{
+                        .promise = promise.operand(&callback_invocation),
+                    });
+                },
+                .ignored => {},
+            };
 
             const prev_unhandled_count = vm.unhandled_error_counter;
             globalThis.handleRejectedPromises();
@@ -694,28 +846,36 @@ pub const BunTest = struct {
         }
 
         var dcb_ref: ?*RefData = null;
-        if (done_callback != .zero and result != .zero) {
-            if (DoneCallback.fromJS(done_callback)) |dcb_data| {
-                if (dcb_data.called) {
-                    // done callback already called or the callback errored; add result immediately
-                } else {
+        if (result != null) {
+            if (done_callback) |*callback| {
+                const dcb_data = callback.get();
+                if (!dcb_data.called) {
                     dcb_ref = ref(this_strong, cfg_data);
-                    dcb_data.ref = dcb_ref;
+                    dcb_data.ref = bun.bindgen.RefNative(RefData, .vm).adopt(dcb_ref.?);
                 }
-            } else bun.debugAssert(false); // this should be unreachable, we create DoneCallback above
+            }
         }
 
-        if (result != .zero) {
-            if (result.asPromise()) |promise| {
-                defer result.ensureStillAlive(); // because sometimes we use promise without result
-
+        if (result) |result_value| switch (result_value) {
+            .promise => |promise| {
                 group.log("callTestCallback -> promise: data {f}", .{cfg_data});
 
-                switch (promise.status()) {
+                const status = callback_invocation.engineIn("promises", "promiseStatus").call(.{
+                    .promise = promise.operand(&callback_invocation),
+                });
+                switch (status) {
                     .pending => {
                         // not immediately resolved; register 'then' to handle the result when it becomes available
                         const this_ref: *RefData = if (dcb_ref) |dcb_ref_value| dcb_ref_value.dupe() else ref(this_strong, cfg_data);
-                        result.then(globalThis, this_ref, bunTestThen, bunTestCatch) catch {}; // TODO: properly propagate exception upwards
+                        PromiseReaction.attach(
+                            &callback_invocation,
+                            promise.operand(&callback_invocation).asPromise(),
+                            this_ref,
+                            OnPromiseResolveBinding,
+                            OnPromiseRejectBinding,
+                        ) catch {
+                            return null;
+                        };
                         return null;
                     },
                     .fulfilled => {
@@ -723,16 +883,24 @@ pub const BunTest = struct {
                         return cfg_data;
                     },
                     .rejected => {
-                        const value = promise.result(globalThis.vm());
-                        this.onUncaughtException(globalThis, value, true, cfg_data);
+                        const rejection = callback_invocation.engineIn("promises", "promiseResult").call(.{
+                            .promise = promise.operand(&callback_invocation),
+                        }) catch |err| {
+                            this.reportActiveException(globalThis, err, true, cfg_data);
+                            return cfg_data;
+                        };
+                        if (rejection) |value| {
+                            this.reportCallbackRejection(&callback_invocation, value, cfg_data);
+                        }
 
                         // We previously marked it as handled above.
 
                         return cfg_data;
                     },
                 }
-            }
-        }
+            },
+            .ignored => {},
+        };
 
         if (dcb_ref) |_| {
             // completed asynchronously
@@ -745,7 +913,12 @@ pub const BunTest = struct {
     }
 
     /// called from the uncaught exception handler, or if a test callback rejects or throws an error
-    pub fn onUncaughtException(this: *BunTest, globalThis: *jsc.JSGlobalObject, exception: ?jsc.JSValue, is_rejection: bool, user_data: RefDataValue) void {
+    pub fn prepareUncaughtException(
+        this: *BunTest,
+        has_exception: bool,
+        is_rejection: bool,
+        user_data: RefDataValue,
+    ) ?HandleUncaughtExceptionResult {
         group.begin(@src());
         defer group.end();
 
@@ -759,8 +932,8 @@ pub const BunTest = struct {
 
         group.log("onUncaughtException -> {s}", .{@tagName(handle_status)});
 
-        if (handle_status == .hide_error) return; // do not print error, it was already consumed
-        if (exception == null) return; // the exception should not be visible (eg m_terminationException)
+        if (handle_status == .hide_error) return null; // do not print error, it was already consumed
+        if (!has_exception) return null; // the exception should not be visible (eg m_terminationException)
 
         this.bun_test_root.onBeforePrint();
         if (handle_status == .show_unhandled_error_between_tests or handle_status == .show_unhandled_error_in_describe) {
@@ -774,13 +947,19 @@ pub const BunTest = struct {
             bun.Output.flush();
         }
 
-        globalThis.bunVM().runErrorHandler(exception.?, null);
+        return handle_status;
+    }
 
+    pub fn finishUncaughtException(handle_status: HandleUncaughtExceptionResult) void {
         if (handle_status == .show_unhandled_error_between_tests or handle_status == .show_unhandled_error_in_describe) {
             bun.Output.prettyError("<r><d>-------------------------------<r>\n\n", .{});
         }
 
         bun.Output.flush();
+    }
+
+    pub fn reportActiveException(this: *BunTest, globalThis: *jsc.JSGlobalObject, failure: bun.JSError, is_rejection: bool, user_data: RefDataValue) void {
+        JestEngine.reportActiveTestException(this, globalThis, failure, is_rejection, user_data);
     }
 };
 
@@ -792,7 +971,16 @@ pub const StepResult = union(enum) {
     complete,
 };
 
-pub const Collection = @import("./Collection.zig");
+const CollectionTypes = struct {
+    pub const BunTest = BunTestModule.BunTest;
+    pub const BunTestRoot = BunTestModule.BunTestRoot;
+    pub const DescribeScope = BunTestModule.DescribeScope;
+    pub const HandleUncaughtExceptionResult = BunTestModule.HandleUncaughtExceptionResult;
+    pub const RefDataValue = BunTestModule.BunTest.RefDataValue;
+    pub const StoredTestCallback = BunTestModule.StoredTestCallback;
+};
+pub const Collection = @import("./Collection.zig").Collection(CollectionTypes);
+pub const CollectionEngine = @import("./CollectionEngine.zig");
 
 pub const ConcurrentMode = enum {
     inherit,
@@ -929,10 +1117,11 @@ pub const DescribeScope = struct {
         try this.entries.append(.{ .describe = child });
         return child;
     }
-    pub fn appendTest(this: *DescribeScope, gpa: std.mem.Allocator, name_not_owned: ?[]const u8, callback: ?jsc.JSValue, cfg: ExecutionEntryCfg, base: BaseScopeCfg, phase: ExecutionEntry.AddedInPhase) bun.JSError!*ExecutionEntry {
+    pub fn appendTest(this: *DescribeScope, gpa: std.mem.Allocator, name_not_owned: ?[]const u8, callback: ?*StoredTestCallback, cfg: ExecutionEntryCfg, base: BaseScopeCfg, phase: ExecutionEntry.AddedInPhase) bun.JSError!*ExecutionEntry {
+        try this.entries.ensureUnusedCapacity(1);
         const entry = ExecutionEntry.create(gpa, name_not_owned, callback, cfg, this, base, phase);
         entry.base.propagate(entry.callback != null);
-        try this.entries.append(.{ .test_callback = entry });
+        this.entries.appendAssumeCapacity(.{ .test_callback = entry });
         return entry;
     }
     pub const HookTag = enum { beforeAll, beforeEach, afterEach, afterAll };
@@ -944,9 +1133,11 @@ pub const DescribeScope = struct {
             .afterAll => return &this.afterAll,
         }
     }
-    pub fn appendHook(this: *DescribeScope, gpa: std.mem.Allocator, tag: HookTag, callback: ?jsc.JSValue, cfg: ExecutionEntryCfg, base: BaseScopeCfg, phase: ExecutionEntry.AddedInPhase) bun.JSError!*ExecutionEntry {
+    pub fn appendHook(this: *DescribeScope, gpa: std.mem.Allocator, tag: HookTag, callback: ?*StoredTestCallback, cfg: ExecutionEntryCfg, base: BaseScopeCfg, phase: ExecutionEntry.AddedInPhase) bun.JSError!*ExecutionEntry {
+        const entries = this.getHookEntries(tag);
+        try entries.ensureUnusedCapacity(1);
         const entry = ExecutionEntry.create(gpa, null, callback, cfg, this, base, phase);
-        try this.getHookEntries(tag).append(entry);
+        entries.appendAssumeCapacity(entry);
         return entry;
     }
 };
@@ -961,7 +1152,7 @@ pub const ExecutionEntryCfg = struct {
 };
 pub const ExecutionEntry = struct {
     base: BaseScope,
-    callback: ?Strong,
+    callback: ?StoredTestCallback,
     /// 0 = unlimited timeout
     timeout: u32,
     has_done_parameter: bool,
@@ -980,7 +1171,7 @@ pub const ExecutionEntry = struct {
 
     const AddedInPhase = enum { preload, collection, execution };
 
-    fn create(gpa: std.mem.Allocator, name_not_owned: ?[]const u8, cb: ?jsc.JSValue, cfg: ExecutionEntryCfg, parent: ?*DescribeScope, base: BaseScopeCfg, phase: AddedInPhase) *ExecutionEntry {
+    fn create(gpa: std.mem.Allocator, name_not_owned: ?[]const u8, cb: ?*StoredTestCallback, cfg: ExecutionEntryCfg, parent: ?*DescribeScope, base: BaseScopeCfg, phase: AddedInPhase) *ExecutionEntry {
         const entry = bun.create(gpa, ExecutionEntry, .{
             .base = .init(base, gpa, name_not_owned, parent, cb != null),
             .callback = null,
@@ -996,9 +1187,9 @@ pub const ExecutionEntry = struct {
                 .skip => null,
                 .todo => blk: {
                     const run_todo = if (bun.jsc.Jest.Jest.runner) |runner| runner.run_todo else false;
-                    break :blk if (run_todo) .init(gpa, c) else null;
+                    break :blk if (run_todo) c.take() else null;
                 },
-                else => .init(gpa, c),
+                else => c.take(),
             };
         }
         return entry;
@@ -1048,14 +1239,26 @@ pub const TestScheduleEntry = union(enum) {
         }
     }
 };
-pub const FakeTimers = @import("./timers/FakeTimers.zig");
+pub const FakeTimers = @import("./timers/FakeTimersEngine.zig");
 
 pub const Execution = @import("./Execution.zig");
 pub const debug = @import("./debug.zig");
 
-pub const ScopeFunctions = @import("./ScopeFunctions.zig");
+const ScopeFunctionsTypes = struct {
+    pub const BaseScopeCfg = BunTestModule.BaseScopeCfg;
+};
+pub const ScopeFunctions = @import("./ScopeFunctions.zig").ScopeFunctions(ScopeFunctionsTypes);
+pub const ScopeFunctionsEngine = @import("./ScopeFunctionsEngine.zig");
+const JestEngine = @import("./JestEngine.zig");
 
-pub const Order = @import("./Order.zig");
+const OrderTypes = struct {
+    pub const DescribeScope = BunTestModule.DescribeScope;
+    pub const ExecutionEntry = BunTestModule.ExecutionEntry;
+    pub const TestScheduleEntry = BunTestModule.TestScheduleEntry;
+    pub const ConcurrentGroup = BunTestModule.Execution.ConcurrentGroup;
+    pub const ExecutionSequence = BunTestModule.Execution.ExecutionSequence;
+};
+pub const Order = @import("./Order.zig").New(OrderTypes);
 
 const group = debug.group;
 
@@ -1064,4 +1267,4 @@ const test_command = @import("../cli/test_command.zig");
 
 const bun = @import("bun");
 const jsc = bun.jsc;
-const Strong = jsc.Strong.Deprecated;
+const BunTestModule = @This();

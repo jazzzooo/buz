@@ -66,7 +66,6 @@
 #include "VMTrapsInlines.h"
 #if USE(BUN_JSC_ADDITIONS)
 #include "AsyncContextSwapScope.h"
-extern "C" __attribute__((weak)) void Bun__reportUnhandledError(JSC::JSGlobalObject*, JSC::EncodedJSValue);
 #endif
 #if ENABLE(WEBASSEMBLY)
 #include "JSWebAssemblyStreamingContext.h"
@@ -1708,7 +1707,7 @@ static void asyncGeneratorDriverResume(VM& vm, JSValue context, JSValue resoluti
     asyncGeneratorBodyCall(generator->realm(), generator, resolution, static_cast<int32_t>(resumeMode), microtaskCallCache);
 }
 
-void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotask task, uint8_t payload, std::span<const JSValue, maxMicrotaskArguments> arguments, MicrotaskCallCache* microtaskCallCache)
+void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotask task, uint8_t payload, std::span<const JSValue, maxMicrotaskArguments> arguments, MicrotaskCallCache* microtaskCallCache, void* nativeContext)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
@@ -2076,8 +2075,8 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
             asyncContextScope.restoreEarly();
 
             if (auto* exception = catchScope.exception()) {
-                if (catchScope.clearExceptionExceptTermination() && Bun__reportUnhandledError)
-                    Bun__reportUnhandledError(globalObject, JSValue::encode(exception));
+                if (catchScope.clearExceptionExceptTermination())
+                    globalObject->globalObjectMethodTable()->reportUncaughtExceptionAtEventLoop(globalObject, exception);
             }
         }
         return;
@@ -2099,6 +2098,12 @@ void runInternalMicrotask(JSGlobalObject* globalObject, VM& vm, InternalMicrotas
         call(globalObject, job, jsUndefined(), args, "job is not a function"_s);
         return;
     }
+
+    case InternalMicrotask::BunRunNativeTask:
+        RELEASE_ASSERT(nativeContext);
+        scope.release();
+        globalObject->globalObjectMethodTable()->runNativeMicrotask(globalObject, nativeContext);
+        return;
 #endif
 
     case InternalMicrotask::AsyncModuleExecutionDone: {

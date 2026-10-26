@@ -1,4 +1,5 @@
 #include "root.h"
+#include "StringConversion.h"
 
 #if OS(WINDOWS)
 
@@ -6,7 +7,7 @@
 #include "ZigGlobalObject.h"
 #include "bun_dependency_versions.h"
 #include "FormatStackTraceForJS.h"
-#include "headers.h" // For Bun__Process__createExecArgv and other exports
+#include "SchemaBindings.h"
 #include "JavaScriptCore/JSCJSValue.h"
 #include "JavaScriptCore/JSObject.h"
 #include "JavaScriptCore/JSString.h"
@@ -39,26 +40,6 @@ namespace Bun {
 
 using namespace JSC;
 
-// External functions
-extern "C" EncodedJSValue Bun__Process__createExecArgv(JSGlobalObject*);
-
-// Helper function to convert time to ISO string
-static void toISOString(JSC::VM& vm, double time, char* buffer)
-{
-    time_t seconds = static_cast<time_t>(time / 1000);
-    int milliseconds = static_cast<int>(time) % 1000;
-    struct tm* timeinfo = gmtime(&seconds);
-
-    sprintf(buffer, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-        timeinfo->tm_year + 1900,
-        timeinfo->tm_mon + 1,
-        timeinfo->tm_mday,
-        timeinfo->tm_hour,
-        timeinfo->tm_min,
-        timeinfo->tm_sec,
-        milliseconds);
-}
-
 JSValue constructReportObjectWindows(VM& vm, Zig::GlobalObject* globalObject, Process* process)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -80,9 +61,7 @@ JSValue constructReportObjectWindows(VM& vm, Zig::GlobalObject* globalObject, Pr
         double time = WTF::jsCurrentTime();
         header->putDirect(vm, Identifier::fromString(vm, "dumpEventTime"_s), jsString(vm, String::number(static_cast<long long>(time * 1000))), 0);
 
-        char timeBuf[64] = { 0 };
-        Bun::toISOString(vm, time, timeBuf);
-        header->putDirect(vm, Identifier::fromString(vm, "dumpEventTimeStamp"_s), jsString(vm, String::fromLatin1(timeBuf)), 0);
+        header->putDirect(vm, Identifier::fromString(vm, "dumpEventTimeStamp"_s), jsString(vm, Bun::toISOString(vm, time)), 0);
 
         // Process info
         header->putDirect(vm, Identifier::fromString(vm, "processId"_s), jsNumber(GetCurrentProcessId()), 0);
@@ -95,7 +74,9 @@ JSValue constructReportObjectWindows(VM& vm, Zig::GlobalObject* globalObject, Pr
         }
 
         // Command line
-        header->putDirect(vm, Identifier::fromString(vm, "commandLine"_s), JSValue::decode(Bun__Process__createExecArgv(globalObject)), 0);
+        auto commandLine = Bun::Bindgen::ZigExports::bunBindgenZig_Process_createExecArgv(globalObject);
+        RETURN_IF_EXCEPTION(scope, {});
+        header->putDirect(vm, Identifier::fromString(vm, "commandLine"_s), Bun::toJSArray(globalObject, commandLine.span()), 0);
         RETURN_IF_EXCEPTION(scope, {});
 
         // Node version

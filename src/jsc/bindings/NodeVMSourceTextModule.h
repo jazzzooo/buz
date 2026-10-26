@@ -9,7 +9,18 @@ class NodeVMSourceTextModule final : public NodeVMModule {
 public:
     using Base = NodeVMModule;
 
-    static NodeVMSourceTextModule* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, ArgList args);
+    static NodeVMSourceTextModule* create(
+        JSC::VM& vm,
+        JSC::JSGlobalObject* globalObject,
+        WTF::String identifier,
+        JSC::JSObject* context,
+        WTF::String sourceText,
+        uint32_t lineOffset,
+        uint32_t columnOffset,
+        WTF::Vector<uint8_t> cachedData,
+        JSC::JSValue initializeImportMeta,
+        JSC::JSValue moduleWrapper,
+        JSC::JSValue dynamicImportCallback);
 
     template<typename, JSC::SubspaceAccess mode> static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm)
     {
@@ -34,11 +45,10 @@ public:
     void ensureModuleRecord(JSGlobalObject* globalObject);
     bool hasModuleRecord() const { return !!m_moduleRecord; }
     AbstractModuleRecord* moduleRecord(JSGlobalObject* globalObject);
-    JSValue link(JSGlobalObject* globalObject, JSArray* specifiers, JSArray* moduleNatives, JSValue scriptFetcher);
+    JSValue link(JSGlobalObject* globalObject, const WTF::Vector<WTF::String>& specifiers, const WTF::Vector<NodeVMModule*>& moduleNatives);
     JSValue instantiate(JSGlobalObject* globalObject);
     RefPtr<CachedBytecode> bytecode(JSGlobalObject* globalObject);
     JSUint8Array* cachedData(JSGlobalObject* globalObject);
-    JSC::Exception* evaluationException() const { return m_evaluationException.get(); }
     void initializeImportMeta(JSGlobalObject* globalObject);
 
     const SourceCode& sourceCode() const { return m_sourceCode; }
@@ -52,7 +62,6 @@ private:
     WriteBarrier<JSArray> m_moduleRequestsArray;
     WriteBarrier<ModuleProgramExecutable> m_cachedExecutable;
     WriteBarrier<JSUint8Array> m_cachedBytecodeBuffer;
-    WriteBarrier<JSC::Exception> m_evaluationException;
     WriteBarrier<Unknown> m_initializeImportMeta;
     RefPtr<CachedBytecode> m_bytecode;
     SourceCode m_sourceCode;

@@ -2,7 +2,6 @@
 #include "JSCipher.h"
 #include "ErrorCode.h"
 #include "JSBufferEncodingType.h"
-#include "NodeValidator.h"
 #include <JavaScriptCore/TypedArrayInlines.h>
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include "CryptoUtil.h"
@@ -10,7 +9,6 @@
 #include "openssl/bn.h"
 #include "openssl/err.h"
 #include "ncrypto.h"
-#include "KeyObject.h"
 
 using namespace JSC;
 using namespace WebCore;
@@ -20,19 +18,28 @@ namespace Bun {
 
 const JSC::ClassInfo JSCipherConstructor::s_info = { "Cipher"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSCipherConstructor) };
 
-JSC_DEFINE_HOST_FUNCTION(callCipher, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_cipherConstructorCall(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_cipherConstructorCall_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     JSC::VM& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
     auto* constructor = globalObject->m_JSCipherClassStructure.constructor(globalObject);
-
-    ArgList args = ArgList(callFrame);
-    auto callData = JSC::getConstructData(constructor);
-    JSC::JSValue result = JSC::construct(globalObject, constructor, callData, args);
     RETURN_IF_EXCEPTION(scope, {});
-    return JSValue::encode(result);
+
+    JSC::MarkedArgumentBuffer forwardedArguments;
+    if (args.isDecipher) args.isDecipher->appendTo(forwardedArguments);
+    if (args.cipher) args.cipher->appendTo(forwardedArguments);
+    if (args.key) args.key->appendTo(forwardedArguments);
+    if (args.iv) args.iv->appendTo(forwardedArguments);
+    if (args.options) args.options->appendTo(forwardedArguments);
+    auto callData = JSC::getConstructData(constructor);
+    JSC::JSValue result = JSC::construct(globalObject, constructor, callData, ArgList(forwardedArguments));
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
 }
 
 void initAuthenticated(JSGlobalObject* globalObject, ThrowScope& scope, CipherCtxPointer& ctx, const WTF::StringView& cipherString, CipherKind kind, int32_t ivLen, std::optional<uint32_t>& authTagLen, int32_t& maxMessageSize)
@@ -91,101 +98,88 @@ void initAuthenticated(JSGlobalObject* globalObject, ThrowScope& scope, CipherCt
     }
 }
 
-JSC_DEFINE_HOST_FUNCTION(constructCipher, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_cipherConstructorConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_cipherConstructorConstruct_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSValue isDecipherValue = callFrame->argument(0);
-    ASSERT(isDecipherValue.isBoolean());
-    CipherKind cipherKind = isDecipherValue.toBoolean(globalObject) ? CipherKind::Decipher : CipherKind::Cipher;
-    RETURN_IF_EXCEPTION(scope, {});
-
-    JSValue cipherValue = callFrame->argument(1);
-    JSValue keyValue = callFrame->argument(2);
-    JSValue ivValue = callFrame->argument(3);
-    JSValue optionsValue = callFrame->argument(4);
-
-    V::validateString(scope, globalObject, cipherValue, "cipher"_s);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    JSValue encodingValue = jsUndefined();
-    if (optionsValue.pureToBoolean() != TriState::False) {
-
-        encodingValue = optionsValue.get(globalObject, Identifier::fromString(vm, "encoding"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (encodingValue.isUndefinedOrNull()) {
-            encodingValue = jsUndefined();
-        } else {
-            V::validateString(scope, globalObject, encodingValue, "options.encoding"_s);
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-    }
-
-    KeyObject keyObject = KeyObject::prepareSecretKey(globalObject, scope, keyValue, encodingValue);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    auto keyData = keyObject.symmetricKey().span();
-
-    JSArrayBufferView* ivView = nullptr;
-    if (!ivValue.isNull()) {
-        ivView = getArrayBufferOrView(globalObject, scope, ivValue, "iv"_s, jsUndefined());
-        RETURN_IF_EXCEPTION(scope, {});
-    }
-
+    CipherKind cipherKind = args.isDecipher ? CipherKind::Decipher : CipherKind::Cipher;
+    BufferEncodingType encoding = BufferEncodingType::utf8;
     std::optional<uint32_t> authTagLength = std::nullopt;
-    if (optionsValue.pureToBoolean() != TriState::False) {
-        JSValue authTagLengthValue = optionsValue.get(globalObject, Identifier::fromString(vm, "authTagLength"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (!authTagLengthValue.isUndefinedOrNull()) {
-            std::optional<int32_t> maybeAuthTagLength = authTagLengthValue.tryGetAsInt32();
-            if (!maybeAuthTagLength || *maybeAuthTagLength < 0) {
-                return ERR::INVALID_ARG_VALUE(scope, globalObject, "options.authTagLength"_s, authTagLengthValue);
-            }
-
-            authTagLength = *maybeAuthTagLength;
-        }
+    if (args.options && args.options->is_options()) {
+        const auto& value = args.options->options();
+        if (value.encoding)
+            encoding = nodeEncodingToBufferEncoding(*value.encoding);
+        authTagLength = value.auth_tag_length;
     }
 
-    WTF::String cipherString = cipherValue.toWTFString(globalObject);
+    const auto* key = args.key.convert();
     RETURN_IF_EXCEPTION(scope, {});
+    if (!key)
+        return {};
+    WTF::Vector<uint8_t> exportedKey;
+    if (key->is_key_object()) {
+        exportedKey = exportSecretKeyBytes(globalObject, scope, key->key_object());
+        RETURN_IF_EXCEPTION(scope, {});
+    }
+    const auto* iv = Bindgen::convertLastAndLease(context, args.iv);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!iv)
+        return {};
 
-    if (keyData.size() > INT_MAX) [[unlikely]] {
-        return ERR::OUT_OF_RANGE(scope, globalObject, "key is too big"_s, 0, INT_MAX, jsNumber(keyData.size()));
+    auto keyData = getSecretKeyMaterial(globalObject, scope, *key, encoding, exportedKey.span());
+    RETURN_IF_EXCEPTION(scope, {});
+    std::span<const uint8_t> keyBytes { keyData->data(), keyData->size() };
+
+    const bool hasIv = iv->has_value();
+    auto ivData = [&]() -> GCOwnedDataScope<std::span<const uint8_t>> {
+        if (!hasIv)
+            return { nullptr, {} };
+        const auto& value = iv->value();
+        if (value.is_buffer())
+            return { nullptr, { value.buffer().unsafePtr("The entry frame holds the input lease through the synchronous crypto operation"_s), value.buffer().size() } };
+        auto* view = encodeCryptoString(globalObject, scope, value.string(), BufferEncodingType::utf8);
+        return { view, view ? view->span() : std::span<const uint8_t> {} };
+    }();
+    RETURN_IF_EXCEPTION(scope, {});
+    std::span<const uint8_t> ivBytes { ivData->data(), ivData->size() };
+
+    const WTF::String& cipherString = args.cipher;
+
+    if (keyBytes.size() > INT_MAX) [[unlikely]] {
+        return JSC::JSValue::decode(ERR::OUT_OF_RANGE(scope, globalObject, "key is too big"_s, 0, INT_MAX, jsNumber(keyBytes.size())));
     }
 
-    int32_t ivLen = 0;
-    if (ivView) {
-        if (ivView->byteLength() > INT_MAX) [[unlikely]] {
-            return ERR::OUT_OF_RANGE(scope, globalObject, "iv is too big"_s, 0, INT_MAX, jsNumber(ivView->byteLength()));
-        }
-        ivLen = ivView->byteLength();
+    if (ivBytes.size() > INT_MAX) [[unlikely]] {
+        return JSC::JSValue::decode(ERR::OUT_OF_RANGE(scope, globalObject, "iv is too big"_s, 0, INT_MAX, jsNumber(ivBytes.size())));
     }
+    const int32_t ivLen = static_cast<int32_t>(ivBytes.size());
 
     MarkPopErrorOnReturn popError;
 
     Cipher cipher = Cipher::FromName(cipherString);
     if (!cipher) {
-        return ERR::CRYPTO_UNKNOWN_CIPHER(scope, globalObject, cipherString);
+        return JSC::JSValue::decode(ERR::CRYPTO_UNKNOWN_CIPHER(scope, globalObject, cipherString));
     }
 
     const int32_t expectedIvLen = cipher.getIvLength();
 
-    if (!ivView && expectedIvLen != 0) {
-        return ERR::CRYPTO_INVALID_IV(scope, globalObject);
+    if (!hasIv && expectedIvLen != 0) {
+        return JSC::JSValue::decode(ERR::CRYPTO_INVALID_IV(scope, globalObject));
     }
 
-    if (!cipher.isSupportedAuthenticatedMode() && ivView && ivView->byteLength() != expectedIvLen) {
-        return ERR::CRYPTO_INVALID_IV(scope, globalObject);
+    if (!cipher.isSupportedAuthenticatedMode() && hasIv && ivLen != expectedIvLen) {
+        return JSC::JSValue::decode(ERR::CRYPTO_INVALID_IV(scope, globalObject));
     }
 
     if (cipher.isChaCha20Poly1305()) {
-        ASSERT(ivView);
+        ASSERT(hasIv);
 
-        if (ivView->byteLength() > 12) {
-            return ERR::CRYPTO_INVALID_IV(scope, globalObject);
+        if (ivLen > 12) {
+            return JSC::JSValue::decode(ERR::CRYPTO_INVALID_IV(scope, globalObject));
         }
     }
 
@@ -207,19 +201,19 @@ JSC_DEFINE_HOST_FUNCTION(constructCipher, (JSC::JSGlobalObject * globalObject, J
         RETURN_IF_EXCEPTION(scope, {});
     }
 
-    if (!ctx.setKeyLength(keyData.size())) {
+    if (!ctx.setKeyLength(keyBytes.size())) {
         ctx.reset();
-        return ERR::CRYPTO_INVALID_KEYLEN(scope, globalObject);
+        return JSC::JSValue::decode(ERR::CRYPTO_INVALID_KEYLEN(scope, globalObject));
     }
 
-    if (!ctx.init(Cipher(), encrypt, keyData.data(), ivView ? reinterpret_cast<uint8_t*>(ivView->vector()) : nullptr)) {
+    if (!ctx.init(Cipher(), encrypt, keyBytes.data(), hasIv ? ivBytes.data() : nullptr)) {
         throwCryptoError(globalObject, scope, ERR_get_error(), "Failed to initialize cipher"_s);
     }
 
     auto* zigGlobalObject = defaultGlobalObject(globalObject);
     JSC::Structure* structure = zigGlobalObject->m_JSCipherClassStructure.get(zigGlobalObject);
 
-    return JSC::JSValue::encode(JSCipher::create(vm, structure, globalObject, cipherKind, WTF::move(ctx), authTagLength, maxMessageSize));
+    return JSCipher::create(vm, structure, globalObject, cipherKind, WTF::move(ctx), authTagLength, maxMessageSize);
 }
 
 } // namespace Bun

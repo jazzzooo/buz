@@ -22,7 +22,7 @@
 //!          → encoder.CreateNewFrame → frame.Initialize/SetSize/SetPixelFormat
 //!          → frame.WritePixels(rgba)
 //!          → frame.Commit → encoder.Commit
-//!          → IStream::Seek(0,CUR) for the logical length
+//!          → IStream::Stat for the logical length
 //!          → GetHGlobalFromStream → GlobalLock → dupe to default_allocator
 //!
 //! Thread-safety: WIC requires COM to be initialised on the calling thread.
@@ -61,7 +61,7 @@ pub fn decode(bytes: []const u8, max_pixels: u64) BackendError!codecs.Decoded {
     var w: u32 = 0;
     var h: u32 = 0;
     if (frame.?.vt.GetSize(frame.?, &w, &h) < 0 or w == 0 or h == 0) return error.DecodeFailed;
-    if (@as(u64, w) * @as(u64, h) > max_pixels) return error.TooManyPixels;
+    try codecs.guard(w, h, max_pixels);
 
     // WIC frames come in whatever pixel format the codec emits; normalise to
     // straight-alpha RGBA8 in one hop.
@@ -75,10 +75,10 @@ pub fn decode(bytes: []const u8, max_pixels: u64) BackendError!codecs.Decoded {
     // `w * 4` can wrap u32 (0x4000_0001×4 → 4) and Windows ships ReleaseSafe
     // so the @intCast below is a process abort, not silent truncation.
     const stride: u64 = @as(u64, w) * 4;
-    const out_len: u64 = stride * h;
+    const out_len = try codecs.rgbaByteLength(w, h);
     // CopyPixels takes UINT byte-count + UINT stride — same DWORD ceiling.
-    if (out_len > std.math.maxInt(u32)) return error.TooManyPixels;
-    const out = try bun.default_allocator.alloc(u8, @intCast(out_len));
+    if (out_len > std.math.maxInt(u32)) return error.InvalidDimensions;
+    const out = try bun.default_allocator.alloc(u8, out_len);
     errdefer bun.default_allocator.free(out);
     if (conv.?.vt.CopyPixels(conv.?, null, @intCast(stride), @intCast(out_len), out.ptr) < 0)
         return error.DecodeFailed;
@@ -97,7 +97,8 @@ pub fn encode(rgba: []const u8, width: u32, height: u32, opts: codecs.EncodeOpti
     bun.debugAssert(opts.format == .heic or opts.format == .avif);
     // WritePixels/WriteSource take a UINT byte count — same DWORD ceiling
     // as CopyPixels (maxPixels-raised edge).
-    if (rgba.len > std.math.maxInt(u32)) return error.BackendUnavailable;
+    const input_size = try codecs.rgbaByteLength(width, height);
+    if (input_size > std.math.maxInt(u32) or rgba.len < input_size) return error.InvalidDimensions;
 
     const f = try factory();
 
@@ -130,10 +131,12 @@ pub fn encode(rgba: []const u8, width: u32, height: u32, opts: codecs.EncodeOpti
     // the option (pre-21H2 encoder, or AV1 extension missing) and we surface
     // BackendUnavailable → UnsupportedOnPlatform instead of risking the
     // wrong container.
-    _ = bun_wic_propbag_write_f32(props, bun.strings.literal(u16, "ImageQuality"), @as(f32, @floatFromInt(opts.quality)) / 100);
+    const quality_status = image.bun_wic_propbag_write_f32(@ptrCast(props), bun.strings.literal(u16, "ImageQuality"), @as(f32, @floatFromInt(opts.quality)) / 100);
+    if (quality_status == E_OUTOFMEMORY) return error.OutOfMemory;
     const method: u8 = if (opts.format == .avif) WICHeifCompressionAV1 else WICHeifCompressionHEVC;
-    if (bun_wic_propbag_write_u8(props, bun.strings.literal(u16, "HeifCompressionMethod"), method) == 0)
-        return error.BackendUnavailable;
+    const format_status = image.bun_wic_propbag_write_u8(@ptrCast(props), bun.strings.literal(u16, "HeifCompressionMethod"), method);
+    if (format_status == E_OUTOFMEMORY) return error.OutOfMemory;
+    if (format_status < 0) return error.BackendUnavailable;
     if (frame.?.vt.Initialize(frame.?, props) < 0) return error.EncodeFailed;
     if (frame.?.vt.SetSize(frame.?, width, height) < 0) return error.EncodeFailed;
     // SetPixelFormat is in/out — the codec rewrites `pf` to its native sink
@@ -146,11 +149,11 @@ pub fn encode(rgba: []const u8, width: u32, height: u32, opts: codecs.EncodeOpti
     if (frame.?.vt.SetPixelFormat(frame.?, &pf) < 0) return error.EncodeFailed;
     const stride: u32 = width * 4;
     if (std.meta.eql(pf, GUID_WICPixelFormat32bppRGBA)) {
-        if (frame.?.vt.WritePixels(frame.?, height, stride, @intCast(rgba.len), rgba.ptr) < 0)
+        if (frame.?.vt.WritePixels(frame.?, height, stride, @intCast(input_size), rgba.ptr) < 0)
             return error.EncodeFailed;
     } else {
         var src: ?*IWICBitmapSource = null;
-        if (f.vt.CreateBitmapFromMemory(f, width, height, &GUID_WICPixelFormat32bppRGBA, stride, @intCast(rgba.len), rgba.ptr, &src) < 0 or src == null)
+        if (f.vt.CreateBitmapFromMemory(f, width, height, &GUID_WICPixelFormat32bppRGBA, stride, @intCast(input_size), rgba.ptr, &src) < 0 or src == null)
             return error.EncodeFailed;
         defer release(src);
         const convertFn = wicConvertBitmapSource orelse return error.BackendUnavailable;
@@ -162,21 +165,17 @@ pub fn encode(rgba: []const u8, width: u32, height: u32, opts: codecs.EncodeOpti
     if (frame.?.vt.Commit(frame.?) < 0) return error.EncodeFailed;
     if (enc.?.vt.Commit(enc.?) < 0) return error.EncodeFailed;
 
-    // Logical length, not allocation size: GlobalSize() returns the HGLOBAL's
-    // rounded-up allocation, which is ≥ what the encoder actually wrote and
-    // would tack uninitialised heap bytes onto every output. The encoder writes
-    // sequentially from offset 0 and never seeks back, so the stream's current
-    // position IS the byte count. (MSDN GetHGlobalFromStream: "use IStream::Stat
-    // to obtain the actual size".)
-    const istream: *IStream = @ptrCast(@alignCast(stream.?));
-    var pos: u64 = 0;
-    if (istream.vt.Seek(istream, 0, STREAM_SEEK_CUR, &pos) < 0) return error.EncodeFailed;
+    var size: u64 = undefined;
+    const size_status = image.bun_wic_stream_size(@ptrCast(stream.?), &size);
+    if (size_status == E_OUTOFMEMORY) return error.OutOfMemory;
+    if (size_status < 0) return error.EncodeFailed;
 
     var hg: ?*anyopaque = null;
     if (GetHGlobalFromStream(stream.?, &hg) < 0 or hg == null) return error.EncodeFailed;
+    if (size == 0 or size > GlobalSize(hg.?)) return error.EncodeFailed;
     const ptr: [*]const u8 = @ptrCast(GlobalLock(hg.?) orelse return error.EncodeFailed);
     defer _ = GlobalUnlock(hg.?);
-    return try bun.default_allocator.dupe(u8, ptr[0..@intCast(pos)]);
+    return try bun.default_allocator.dupe(u8, ptr[0..@intCast(size)]);
 }
 
 // ───────────────────────────── COM scaffolding ──────────────────────────────
@@ -196,32 +195,14 @@ const IUnknownVTable = extern struct {
 };
 const IUnknown = extern struct { vt: *const IUnknownVTable };
 
-/// VARIANT/PROPBAG2 layout is fiddly enough (union padding, BRECORD/DECIMAL
-/// arms) that hand-rolling it as `extern struct` is asking for an ABI drift.
-/// The C++ shim uses the SDK's own headers; we just hand it the bag pointer.
-extern fn bun_wic_propbag_write_f32(props: ?*anyopaque, name: [*:0]const u16, value: f32) i32;
-extern fn bun_wic_propbag_write_u8(props: ?*anyopaque, name: [*:0]const u16, value: u8) i32;
+const image = @import("image-ffi");
+const E_OUTOFMEMORY: HRESULT = @bitCast(@as(u32, 0x8007000e));
 
 /// WICHeifCompressionOption — the encoder defaults to `DontCare` (= picks
 /// whichever codec extension is installed), so without this `.avif()` could
 /// silently emit HEIC on a machine with only the HEVC extension.
 const WICHeifCompressionHEVC: u8 = 2;
 const WICHeifCompressionAV1: u8 = 3;
-
-/// Only `Seek` is typed — used to read the encoder stream's logical write
-/// position (== bytes emitted) instead of the rounded-up `GlobalSize()`.
-const IStream = extern struct {
-    vt: *const VTable,
-    // IStream : ISequentialStream(Read,Write) : IUnknown.
-    const VTable = extern struct {
-        unk: IUnknownVTable,
-        Read: *const anyopaque,
-        Write: *const anyopaque,
-        Seek: *const fn (*IStream, dlibMove: i64, dwOrigin: u32, plibNewPosition: ?*u64) callconv(.winapi) HRESULT,
-        // SetSize..Clone unused.
-    };
-};
-const STREAM_SEEK_CUR: u32 = 1;
 
 /// Generic Release through the IUnknown slots — every COM pointer is
 /// layout-compatible with `*IUnknown`.
@@ -502,9 +483,10 @@ pub fn clipboard() error{ BackendUnavailable, OutOfMemory }!?[]u8 {
 fn dupGlobal(h: *anyopaque, comptime prefix: usize) error{OutOfMemory}!?[]u8 {
     const size = GlobalSize(h);
     if (size == 0) return null;
+    const out_size = std.math.add(usize, prefix, size) catch return null;
     const ptr: [*]const u8 = @ptrCast(GlobalLock(h) orelse return null);
     defer _ = GlobalUnlock(h);
-    const out = try bun.default_allocator.alloc(u8, prefix + size);
+    const out = try bun.default_allocator.alloc(u8, out_size);
     @memcpy(out[prefix..], ptr[0..size]);
     return out;
 }

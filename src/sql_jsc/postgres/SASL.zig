@@ -34,9 +34,9 @@ fn hmac(password: []const u8, data: []const u8) ?[32]u8 {
     return buf[0..32].*;
 }
 
-pub fn computeSaltedPassword(this: *SASL, salt_bytes: []const u8, iteration_count: u32, connection: *PostgresSQLConnection) !void {
+pub fn computeSaltedPassword(this: *SASL, salt_bytes: []const u8, iteration_count: u32, password: []const u8) !void {
     this.salted_password_created = true;
-    if (Crypto.EVP.pbkdf2(&this.salted_password_bytes, connection.password, salt_bytes, iteration_count, .sha256) == null) {
+    if (EVP.pbkdf2(&this.salted_password_bytes, password, salt_bytes, iteration_count, .sha256) == null) {
         return error.PBKDFD2;
     }
 }
@@ -65,7 +65,7 @@ pub fn clientKey(this: *const SASL) [32]u8 {
 
 pub fn clientKeySignature(_: *const SASL, client_key: []const u8, auth_string: []const u8) [32]u8 {
     var sha_digest = std.mem.zeroes(bun.sha.SHA256.Digest);
-    bun.sha.SHA256.hash(client_key, &sha_digest, jsc.VirtualMachine.get().rareData().boringEngine());
+    bun.sha.SHA256.hash(client_key, &sha_digest, null);
     return hmac(&sha_digest, auth_string).?;
 }
 
@@ -85,10 +85,8 @@ pub fn deinit(this: *SASL) void {
     this.status = .init;
 }
 
-const PostgresSQLConnection = @import("./PostgresSQLConnection.zig");
 const std = @import("std");
 
 const bun = @import("bun");
 const assert = bun.assert;
-const jsc = bun.jsc;
-const Crypto = jsc.API.Bun.Crypto;
+const EVP = @import("../../crypto/EVP.zig");

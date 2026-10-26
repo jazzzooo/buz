@@ -25,7 +25,7 @@ pub const LinkerContext = struct {
 
     options: LinkerOptions = .{},
 
-    loop: EventLoop,
+    bytecode_generator: BytecodeGenerator,
 
     /// string buffer containing pre-formatted unique keys
     unique_key_buf: []u8 = "",
@@ -44,7 +44,7 @@ pub const LinkerContext = struct {
 
     /// Used by Bake to extract []CompileResult before it is joined
     dev_server: ?*bun.bake.DevServer = null,
-    framework: ?*const bake.Framework = null,
+    framework: ?*const Framework = null,
 
     mangled_props: MangledProps = .{},
 
@@ -89,6 +89,7 @@ pub const LinkerContext = struct {
     };
 
     pub const SourceMapData = struct {
+        out_of_memory: std.atomic.Value(bool) = .init(false),
         line_offset_countdown: sync.OneShotCountdown = .init(0),
         line_offset_tasks: []Task = &.{},
 
@@ -109,7 +110,9 @@ pub const LinkerContext = struct {
 
                 const worker = Executor.Worker.get(@fieldParentPtr("linker", task.ctx));
                 defer worker.unget();
-                SourceMapData.computeLineOffsets(task.ctx, worker.allocator, task.source_index);
+                SourceMapData.computeLineOffsets(task.ctx, worker.allocator, task.source_index) catch {
+                    task.ctx.source_maps.out_of_memory.store(true, .release);
+                };
             }
 
             pub fn runQuotedSourceContents(thread_task: *ExecutorTypes.Task) void {
@@ -119,23 +122,13 @@ pub const LinkerContext = struct {
                     task.ctx.source_maps.quoted_contents_countdown.finish(task.ctx.resolver.io);
                 }
 
-                const worker = Executor.Worker.get(@fieldParentPtr("linker", task.ctx));
-                defer worker.unget();
-
-                // Use the default allocator when using DevServer and the file
-                // was generated. This will be preserved so that remapping
-                // stack traces can show the source code, even after incremental
-                // rebuilds occur.
-                const alloc = if (worker.ctx.transpiler.options.dev_server) |dev|
-                    dev.allocator()
-                else
-                    worker.allocator;
-
-                SourceMapData.computeQuotedSourceContents(task.ctx, alloc, task.source_index);
+                SourceMapData.computeQuotedSourceContents(task.ctx, task.source_index) catch {
+                    task.ctx.source_maps.out_of_memory.store(true, .release);
+                };
             }
         };
 
-        pub fn computeLineOffsets(this: *LinkerContext, alloc: std.mem.Allocator, source_index: Index.Int) void {
+        pub fn computeLineOffsets(this: *LinkerContext, alloc: std.mem.Allocator, source_index: Index.Int) bun.OOM!void {
             debug("Computing LineOffsetTable: {d}", .{source_index});
             const line_offset_table: *bun.SourceMap.LineOffsetTable.List = &this.graph.files.items(.line_offset_table)[source_index];
 
@@ -150,16 +143,15 @@ pub const LinkerContext = struct {
 
             const approximate_line_count = this.graph.ast.items(.approximate_newline_count)[source_index];
 
-            line_offset_table.* = bun.SourceMap.LineOffsetTable.generate(
+            line_offset_table.* = try bun.SourceMap.LineOffsetTable.generate(
                 alloc,
                 source.wtf8View(),
 
-                // We don't support sourcemaps for source files with more than 2^31 lines
-                @as(i32, @intCast(@as(u31, @truncate(approximate_line_count)))),
+                approximate_line_count,
             );
         }
 
-        pub fn computeQuotedSourceContents(this: *LinkerContext, _: std.mem.Allocator, source_index: Index.Int) void {
+        pub fn computeQuotedSourceContents(this: *LinkerContext, source_index: Index.Int) bun.OOM!void {
             debug("Computing Quoted Source Contents: {d}", .{source_index});
             const quoted_source_contents = &this.graph.files.items(.quoted_source_contents)[source_index];
             quoted_source_contents.reset();
@@ -171,8 +163,9 @@ pub const LinkerContext = struct {
 
             const source: *const Logger.Source = &this.parse_graph.input_files.items(.source)[source_index];
             var mutable = MutableString.initEmpty(bun.default_allocator);
-            bun.handleOom(js_printer.quoteForJSON(source.contents, &mutable, false));
-            var mutableOwned = mutable.toDefaultOwned();
+            defer mutable.deinit();
+            try js_printer.quoteForJSON(source.contents, &mutable, false);
+            var mutableOwned: bun.ptr.Owned([]u8) = .fromRaw(try mutable.list.toOwnedSlice(mutable.allocator));
             quoted_source_contents.* = mutableOwned.toOptional();
         }
     };
@@ -265,12 +258,16 @@ pub const LinkerContext = struct {
     pub fn computeDataForSourceMap(
         this: *LinkerContext,
         reachable: []const Index.Int,
-    ) void {
+    ) bun.OOM!void {
         bun.assert(this.options.source_maps != .none);
+        const line_offset_tasks = try this.allocator().alloc(SourceMapData.Task, reachable.len);
+        errdefer this.allocator().free(line_offset_tasks);
+        const quoted_contents_tasks = try this.allocator().alloc(SourceMapData.Task, reachable.len);
+        this.source_maps.out_of_memory.store(false, .monotonic);
         this.source_maps.line_offset_countdown = .init(reachable.len);
         this.source_maps.quoted_contents_countdown = .init(reachable.len);
-        this.source_maps.line_offset_tasks = this.allocator().alloc(SourceMapData.Task, reachable.len) catch unreachable;
-        this.source_maps.quoted_contents_tasks = this.allocator().alloc(SourceMapData.Task, reachable.len) catch unreachable;
+        this.source_maps.line_offset_tasks = line_offset_tasks;
+        this.source_maps.quoted_contents_tasks = quoted_contents_tasks;
 
         var batch = ExecutorTypes.Batch{};
         var second_batch = ExecutorTypes.Batch{};
@@ -369,7 +366,7 @@ pub const LinkerContext = struct {
         );
 
         if (this.options.source_maps != .none) {
-            this.computeDataForSourceMap(@as([]Index.Int, @ptrCast(reachable)));
+            try this.computeDataForSourceMap(@as([]Index.Int, @ptrCast(reachable)));
         }
 
         this.processHtmlImportFiles();
@@ -606,6 +603,8 @@ pub const LinkerContext = struct {
                 entry_points.len,
             );
             defer reachability_builder.deinit(c.allocator());
+            const visits = try c.allocator().alloc(ReachabilityVisit, c.graph.files.len);
+            defer c.allocator().free(visits);
 
             // Code splitting: Determine which entry points can reach which files. This
             // has to happen after tree shaking because there is an implicit dependency
@@ -616,7 +615,7 @@ pub const LinkerContext = struct {
                     entry_point,
                     i,
                     distances,
-                    0,
+                    visits,
                     parts,
                     import_records,
                     &reachability_builder,
@@ -650,13 +649,14 @@ pub const LinkerContext = struct {
     pub const postProcessJSChunk = @import("./linker_context/postProcessJSChunk.zig").postProcessJSChunk;
     pub const postProcessCSSChunk = @import("./linker_context/postProcessCSSChunk.zig").postProcessCSSChunk;
     pub const postProcessHTMLChunk = @import("./linker_context/postProcessHTMLChunk.zig").postProcessHTMLChunk;
-    pub fn generateChunk(ctx: GenerateChunkCtx, chunk: *Chunk, chunk_index: usize) void {
+    pub fn generateChunk(ctx: GenerateChunkCtx, chunk: *Chunk, chunk_index: usize) !void {
         const worker = Executor.Worker.get(@fieldParentPtr("linker", ctx.c));
         defer worker.unget();
+        defer for (chunk.compile_results_for_chunk) |*compiled| compiled.deinit(bun.default_allocator);
         switch (chunk.content) {
-            .javascript => postProcessJSChunk(ctx, worker, chunk, chunk_index) catch |err| Output.panic("TODO: handle error: {s}", .{@errorName(err)}),
-            .css => postProcessCSSChunk(ctx, worker, chunk) catch |err| Output.panic("TODO: handle error: {s}", .{@errorName(err)}),
-            .html => postProcessHTMLChunk(ctx, worker, chunk) catch |err| Output.panic("TODO: handle error: {s}", .{@errorName(err)}),
+            .javascript => try postProcessJSChunk(ctx, worker, chunk, chunk_index),
+            .css => try postProcessCSSChunk(ctx, worker, chunk),
+            .html => try postProcessHTMLChunk(ctx, worker, chunk),
         }
     }
 
@@ -701,6 +701,7 @@ pub const LinkerContext = struct {
         defer trace.end();
 
         var j = StringJoiner{ .allocator = worker.allocator };
+        defer j.deinit();
 
         const sources = c.parse_graph.input_files.items(.source);
         const quoted_source_map_contents = c.graph.files.items(.quoted_source_contents);
@@ -719,7 +720,7 @@ pub const LinkerContext = struct {
 
         const source_indices = results.items(.source_index);
 
-        j.pushStatic(
+        try j.pushStatic(
             \\{
             \\  "version": 3,
             \\  "sources": [
@@ -737,7 +738,7 @@ pub const LinkerContext = struct {
 
                 var quote_buf = try MutableString.init(worker.allocator, path.pretty.len + 2);
                 try js_printer.quoteForJSON(path.pretty, &quote_buf, false);
-                j.pushStatic(quote_buf.slice()); // freed by arena
+                try j.pushStatic(quote_buf.slice()); // freed by arena
             }
 
             var next_mapping_source_index: i32 = 1;
@@ -758,28 +759,28 @@ pub const LinkerContext = struct {
                 var quote_buf = try MutableString.init(worker.allocator, path.pretty.len + ", ".len + 2);
                 quote_buf.appendAssumeCapacity(", ");
                 try js_printer.quoteForJSON(path.pretty, &quote_buf, false);
-                j.pushStatic(quote_buf.slice()); // freed by arena
+                try j.pushStatic(quote_buf.slice()); // freed by arena
             }
         }
 
-        j.pushStatic(
+        try j.pushStatic(
             \\],
             \\  "sourcesContent": [
         );
 
         const source_indices_for_contents = source_id_map.keys();
         if (source_indices_for_contents.len > 0) {
-            j.pushStatic("\n    ");
-            j.pushStatic(
+            try j.pushStatic("\n    ");
+            try j.pushStatic(
                 quoted_source_map_contents[source_indices_for_contents[0]].get() orelse "",
             );
 
             for (source_indices_for_contents[1..]) |index| {
-                j.pushStatic(",\n    ");
-                j.pushStatic(quoted_source_map_contents[index].get() orelse "");
+                try j.pushStatic(",\n    ");
+                try j.pushStatic(quoted_source_map_contents[index].get() orelse "");
             }
         }
-        j.pushStatic(
+        try j.pushStatic(
             \\
             \\  ],
             \\  "mappings": "
@@ -818,20 +819,22 @@ pub const LinkerContext = struct {
         const mapping_end = j.len;
 
         if (comptime FeatureFlags.source_map_debug_id) {
-            j.pushStatic("\",\n  \"debugId\": \"");
-            j.push(
+            try j.pushStatic("\",\n  \"debugId\": \"");
+            try j.push(
                 try std.fmt.allocPrint(worker.allocator, "{f}", .{bun.SourceMap.DebugIDFormatter{ .id = isolated_hash }}),
                 worker.allocator,
             );
-            j.pushStatic("\",\n  \"names\": []\n}");
+            try j.pushStatic("\",\n  \"names\": []\n}");
         } else {
-            j.pushStatic("\",\n  \"names\": []\n}");
+            try j.pushStatic("\",\n  \"names\": []\n}");
         }
 
         const done = try j.done(worker.allocator);
+        defer worker.allocator.free(done);
         bun.assert(done[0] == '{');
 
         var pieces = SourceMap.SourceMapPieces.init(worker.allocator);
+        errdefer pieces.deinit();
         if (can_have_shifts) {
             try pieces.prefix.appendSlice(done[0..mapping_start]);
             try pieces.mappings.appendSlice(done[mapping_start..mapping_end]);
@@ -1519,7 +1522,7 @@ pub const LinkerContext = struct {
                     bun.assert(additional_files.len > 0);
                     switch (additional_files[0]) {
                         .output_file => |output_file_id| {
-                            const path = c.parse_graph.additional_output_files.items[output_file_id].dest_path;
+                            const path = c.parse_graph.additional_output_paths[output_file_id];
                             const relative_path = bun.handleOom(std.fs.path.relativePosix(bun.default_allocator, "/", from_chunk_dir, path));
                             defer bun.default_allocator.free(relative_path);
                             hash.write(relative_path);
@@ -1570,93 +1573,71 @@ pub const LinkerContext = struct {
         std.sort.pdq(StableRef, result.items, {}, StableRef.isLessThan);
     }
 
+    const ReachabilityVisit = struct {
+        source_index: Index.Int,
+        distance: u32,
+    };
+
     pub fn markFileReachableForCodeSplitting(
         c: *LinkerContext,
-        source_index: Index.Int,
-        entry_points_count: usize,
+        entry_point: Index.Int,
+        entry_point_id: usize,
         distances: []u32,
-        distance: u32,
-        parts: []bun.BabyList(Part),
-        import_records: []bun.BabyList(bun.ImportRecord),
+        visits: []ReachabilityVisit,
+        parts: []const bun.BabyList(Part),
+        import_records: []const bun.BabyList(bun.ImportRecord),
         reachability: *EntryPointReachability.Builder,
-        css_reprs: []?*bun.css.BundlerStyleSheet,
+        css_reprs: []const ?*bun.css.BundlerStyleSheet,
     ) void {
-        if (!c.graph.files_live.isSet(source_index))
-            return;
+        const Queue = struct {
+            linker: *LinkerContext,
+            reachability: *EntryPointReachability.Builder,
+            entry_point_id: usize,
+            visits: []ReachabilityVisit,
+            len: usize = 0,
 
-        const cur_dist = distances[source_index];
-        const traverse_again = distance < cur_dist;
-        if (traverse_again) {
-            distances[source_index] = distance;
-        }
-        const out_dist = distance + 1;
-
-        const bits = reachability.row(source_index);
-
-        // Don't mark this file more than once
-        if (bits.isSet(entry_points_count) and !traverse_again)
-            return;
-
-        bits.set(entry_points_count);
-
-        if (comptime bun.Environment.enable_logs)
-            debugTreeShake(
-                "markFileReachableForCodeSplitting(entry: {d}): {s} {s} ({d})",
-                .{
-                    entry_points_count,
-                    c.parse_graph.input_files.items(.source)[source_index].path.pretty,
-                    @tagName(c.parse_graph.ast.items(.target)[source_index].bakeGraph()),
-                    out_dist,
-                },
-            );
-
-        if (css_reprs[source_index] != null) {
-            for (import_records[source_index].slice()) |*record| {
-                if (record.source_index.isValid() and !c.isExternalDynamicImport(record, source_index)) {
-                    c.markFileReachableForCodeSplitting(
-                        record.source_index.get(),
-                        entry_points_count,
-                        distances,
-                        out_dist,
-                        parts,
-                        import_records,
-                        reachability,
-                        css_reprs,
-                    );
-                }
+            fn append(queue: *@This(), source_index: Index.Int, distance: u32) void {
+                if (!queue.linker.graph.files_live.isSet(source_index)) return;
+                const bits = queue.reachability.row(source_index);
+                if (bits.isSet(queue.entry_point_id)) return;
+                bits.set(queue.entry_point_id);
+                queue.visits[queue.len] = .{ .source_index = source_index, .distance = distance };
+                queue.len += 1;
             }
-            return;
-        }
+        };
+        var queue = Queue{ .linker = c, .reachability = reachability, .entry_point_id = entry_point_id, .visits = visits };
+        queue.append(entry_point, 0);
 
-        for (import_records[source_index].slice()) |*record| {
-            if (record.source_index.isValid() and !c.isExternalDynamicImport(record, source_index)) {
-                c.markFileReachableForCodeSplitting(
-                    record.source_index.get(),
-                    entry_points_count,
-                    distances,
-                    out_dist,
-                    parts,
-                    import_records,
-                    reachability,
-                    css_reprs,
+        // All edges have unit cost, so the first queued visit is the shortest
+        // route from this entry point, including cycles and part dependencies.
+        var head: usize = 0;
+        while (head < queue.len) : (head += 1) {
+            const visit = queue.visits[head];
+            const source_index = visit.source_index;
+            distances[source_index] = @min(distances[source_index], visit.distance);
+            const out_dist = visit.distance + 1;
+
+            if (comptime bun.Environment.enable_logs)
+                debugTreeShake(
+                    "markFileReachableForCodeSplitting(entry: {d}): {s} {s} ({d})",
+                    .{
+                        entry_point_id,
+                        c.parse_graph.input_files.items(.source)[source_index].path.pretty,
+                        @tagName(c.parse_graph.ast.items(.target)[source_index].bakeGraph()),
+                        out_dist,
+                    },
                 );
-            }
-        }
 
-        const parts_in_file = parts[source_index].slice();
-        for (parts_in_file) |part| {
-            for (part.dependencies.slice()) |dependency| {
-                if (dependency.source_index.get() != source_index) {
-                    c.markFileReachableForCodeSplitting(
-                        dependency.source_index.get(),
-                        entry_points_count,
-                        distances,
-                        out_dist,
-                        parts,
-                        import_records,
-                        reachability,
-                        css_reprs,
-                    );
+            for (import_records[source_index].slice()) |*record| {
+                if (record.source_index.isValid() and !c.isExternalDynamicImport(record, source_index))
+                    queue.append(record.source_index.get(), out_dist);
+            }
+
+            if (css_reprs[source_index] != null) continue;
+            for (parts[source_index].slice()) |part| {
+                for (part.dependencies.slice()) |dependency| {
+                    if (dependency.source_index.get() != source_index)
+                        queue.append(dependency.source_index.get(), out_dist);
                 }
             }
         }
@@ -2006,7 +1987,7 @@ pub const LinkerContext = struct {
                         // "undefined" instead of emitting an error.
                         symbol.import_item_status = .missing;
 
-                        if (c.resolver.opts.target == .browser and jsc.ModuleLoader.HardcodedModule.Alias.has(next_source.path.pretty, .bun, .{})) {
+                        if (c.resolver.opts.target == .browser and HardcodedModule.Alias.has(next_source.path.pretty, .bun, .{})) {
                             c.log.addRangeWarningFmtWithNote(
                                 source,
                                 r,
@@ -2615,14 +2596,12 @@ pub const LinkerContext = struct {
             // 2. require()
             // 3. require.resolve()
             // 4. externals
-            return .{ .joiner = j.* };
+            return .{ .joiner = j.take() };
 
-        var pieces = brk: {
-            errdefer j.deinit();
-            break :brk try std.array_list.Managed(OutputPiece).initCapacity(alloc, count);
-        };
+        var pieces = try std.array_list.Managed(OutputPiece).initCapacity(alloc, count);
         errdefer pieces.deinit();
         const complete_output = try j.done(alloc);
+        errdefer alloc.free(complete_output);
         var output = complete_output;
 
         const prefix = c.unique_key_prefix;
@@ -2692,7 +2671,7 @@ pub const LinkerContext = struct {
         try pieces.append(OutputPiece.init(output, OutputPiece.Query.none));
 
         return .{
-            .pieces = bun.BabyList(Chunk.OutputPiece).fromOwnedSlice(pieces.items),
+            .pieces = bun.BabyList(Chunk.OutputPiece).fromOwnedSlice(try pieces.toOwnedSlice()),
         };
     }
 };
@@ -2704,7 +2683,6 @@ pub const Fs = @import("../resolver/fs.zig");
 pub const Index = bun.ast.Index;
 const debugTreeShake = Output.scoped(.TreeShake, .hidden);
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
@@ -2735,7 +2713,6 @@ const OOM = bun.OOM;
 const Output = bun.Output;
 const SourceMap = bun.SourceMap;
 const StringJoiner = bun.StringJoiner;
-const bake = bun.bake;
 const base64 = bun.base64;
 const renamer = bun.renamer;
 const strings = bun.strings;
@@ -2777,5 +2754,6 @@ const WrapKind = bundler.WrapKind;
 const genericPathWithPrettyInitialized = bundler.genericPathWithPrettyInitialized;
 const logPartDependencyTree = bundler.logPartDependencyTree;
 
-const jsc = bun.jsc;
-const EventLoop = bun.jsc.AnyEventLoop;
+const BytecodeGenerator = @import("./BytecodeGenerator.zig");
+const HardcodedModule = @import("../resolve_builtins/HardcodedModule.zig").HardcodedModule;
+const Framework = @import("../bake/Framework.zig");

@@ -1,17 +1,19 @@
 const StartManifestTaskError = bun.OOM || error{InvalidURL};
 fn startManifestTask(manager: *PackageManager, pkg_name: []const u8, dep: *const Dependency, needs_extended_manifest: bool) StartManifestTaskError!void {
     const task_id = Task.Id.forManifest(pkg_name);
-    if (manager.hasCreatedNetworkTask(task_id, dep.behavior.optional)) {
+    if (try manager.hasCreatedNetworkTask(task_id, dep.behavior.isRequired())) {
         return;
     }
+    errdefer _ = manager.network_dedupe_map.remove(task_id);
     manager.startProgressBarIfNone();
-    var task = manager.getNetworkTask();
+    var task = try manager.getNetworkTask();
     task.* = .{
         .package_manager = manager,
         .callback = undefined,
         .task_id = task_id,
         .allocator = manager.allocator,
     };
+    errdefer task.recycle();
     try task.forManifest(pkg_name, manager.allocator, manager.scopeForPackageName(pkg_name), null, dep.behavior.optional, needs_extended_manifest);
     manager.enqueueNetworkTask(task);
 }

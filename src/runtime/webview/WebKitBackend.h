@@ -4,7 +4,7 @@
 // (thread-0 CFRunLoopRun + AppKit); this side speaks binary IPC over a
 // socketpair. See ipc_protocol.h for the wire format.
 //
-// HostClient is the usockets wire singleton — one socket to the host,
+// HostClient is the VM-owned usockets connection — one socket to the host,
 // viewsById routes replies. Promises live in WriteBarrier slots on JSWebView;
 // the frame header's viewId + the reply type pick the slot. No Strong<>.
 
@@ -12,9 +12,13 @@
 
 #if OS(DARWIN)
 
+#include "JSWebView.h"
+#include "libusockets.h"
 #include <JavaScriptCore/Weak.h>
+#include <JavaScriptCore/Strong.h>
 #include <JavaScriptCore/JSPromise.h>
 #include <wtf/Vector.h>
+#include <wtf/unix/UnixFileDescriptor.h>
 #include <unordered_map>
 
 struct us_socket_t;
@@ -25,43 +29,55 @@ class GlobalObject;
 
 namespace Bun {
 
-class JSWebView;
-enum class ScreenshotFormat : uint8_t;
-
 namespace WebViewProto {
 struct Frame;
 struct Reader;
 enum class Op : uint8_t;
 enum class VirtualKey : uint8_t;
+enum class PayloadError : uint8_t;
 }
 
 namespace WK {
 
-// One per process. Lazy-spawned on first WebView construction via
-// Bun__WebViewHost__ensure (Zig side, reuses bun.spawn.Process).
+// One per VM, spawned on first WebView construction.
 struct HostClient {
+    WTF_MAKE_NONCOPYABLE(HostClient);
+    WTF_MAKE_NONMOVABLE(HostClient);
+    explicit HostClient(VirtualMachine* vm) : bunVM(vm) { }
+    ~HostClient();
+    void shutdown();
+    void reset();
+    VirtualMachine* const bunVM;
+    us_socket_group_t socketGroup { };
     us_socket_t* sock = nullptr;
     Zig::GlobalObject* global = nullptr;
+    JSC::Strong<JSC::JSGlobalObject> globalRoot;
     bool dead = false;
+    bool isShutdown = false;
+    uint64_t connectionGeneration = 0;
 
     uint32_t nextViewId = 1;
     std::unordered_map<uint32_t, JSC::Weak<JSWebView>> viewsById;
 
     WTF::Vector<uint8_t> rx;
+    size_t rxConsumed = 0;
+    WTF::Vector<WTF::UnixFileDescriptor> receivedDescriptors;
     WTF::Vector<uint8_t> txQueue;
     bool sockRefd = false;
 
     bool ensureSpawned(Zig::GlobalObject*, bool stdoutInherit, bool stderrInherit);
-    void writeFrame(WebViewProto::Op, uint32_t viewId, const uint8_t* payload, uint32_t len);
+    bool writeFrame(WebViewProto::Op, uint32_t viewId, const uint8_t* payload, size_t len);
     void handleReply(const WebViewProto::Frame&, WebViewProto::Reader);
     void rejectAllAndMarkDead(const WTF::String& reason);
     void updateKeepAlive();
     void onData(const char* data, int length);
+    void onDescriptor(WTF::UnixFileDescriptor);
     void onWritable();
     void onClose();
 };
 
-HostClient& client();
+HostClient& client(JSC::VM&);
+void throwPayloadError(JSC::JSGlobalObject*, WebViewProto::PayloadError);
 
 // Per-view ops. Each encodes the typed payload (ipc_protocol.h), stores a
 // promise in the right WriteBarrier slot, and writes the frame. Caller has

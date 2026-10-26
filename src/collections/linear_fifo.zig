@@ -1,6 +1,3 @@
-// clone of zig stdlib
-// except, this one vectorizes
-
 // FIFO of fixed size items
 // Usually used for e.g. byte buffers
 
@@ -84,24 +81,12 @@ pub fn LinearFifo(
             if (self.buf.len - self.head >= self.count) {
                 // this copy overlaps
                 bun.copy(T, self.buf[0..self.count], self.buf[self.head..][0..self.count]);
-                self.head = 0;
             } else {
-                var tmp: [std.heap.page_size_min / 2 / @sizeOf(T)]T = undefined;
-
-                while (self.head != 0) {
-                    const n = @min(self.head, tmp.len);
-                    const m = self.buf.len - n;
-                    bun.copy(T, tmp[0..n], self.buf[0..n]);
-                    // this middle copy overlaps; the others here don't
-                    bun.copy(T, self.buf[0..m], self.buf[n..][0..m]);
-                    bun.copy(T, self.buf[m..], tmp[0..n]);
-                    self.head -= n;
-                }
+                // Unused slots may contain undefined values of T.
+                mem.rotate(u8, mem.sliceAsBytes(self.buf[0..]), self.head * @sizeOf(T));
             }
-            { // set unused area to undefined
-                const unused = mem.sliceAsBytes(self.buf[self.count..]);
-                @memset(unused, undefined);
-            }
+            self.head = 0;
+            @memset(mem.sliceAsBytes(self.buf[self.count..]), undefined);
         }
 
         /// Reduce allocated capacity to `size`.

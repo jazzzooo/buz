@@ -56,6 +56,7 @@ const StringPrototypeSplit = String.prototype.split;
 const SymbolIterator = Symbol.iterator;
 
 type nodeAssert = typeof import("node:assert");
+type AssertPredicate = import("node:assert").AssertPredicate;
 
 function isDeepEqual(a, b) {
   return Bun.deepEquals(a, b, false);
@@ -113,8 +114,8 @@ function fail(
   stackStartFn?: Function,
 ): never;
 function fail(
-  actual: unknown,
-  expected: unknown,
+  actual?: unknown,
+  expected?: unknown,
   message?: string | Error,
   operator?: string,
   stackStartFn?: Function,
@@ -126,7 +127,7 @@ function fail(
     internalMessage = true;
     message = "Failed";
   } else if (argsLen === 1) {
-    message = actual;
+    message = actual as string | Error;
     actual = undefined;
   } else {
     if (warned === false) {
@@ -557,7 +558,7 @@ assert.partialDeepStrictEqual = function partialDeepStrictEqual(actual, expected
 };
 
 class Comparison {
-  constructor(obj, keys, actual) {
+  constructor(obj, keys, actual?) {
     for (const key of keys) {
       if (key in obj) {
         if (
@@ -753,7 +754,7 @@ async function waitForActual(promiseFn) {
   return NO_EXCEPTION_SENTINEL;
 }
 
-function expectsError(stackStartFn: Function, actual: unknown, error: unknown, message?: string | Error) {
+function expectsError(stackStartFn: Function, actual: unknown, error?: unknown, message?: string | Error) {
   if (typeof error === "string") {
     if (arguments.length === 4) {
       throw $ERR_INVALID_ARG_TYPE("error", ["Object", "Error", "Function", "RegExp"], error);
@@ -813,7 +814,7 @@ function hasMatchingError(actual, expected) {
   return expected.$apply({}, [actual]) === true;
 }
 
-function expectsNoError(stackStartFn, actual, error, message) {
+function expectsNoError(stackStartFn, actual, error?, message?) {
   if (actual === NO_EXCEPTION_SENTINEL) return;
 
   if (typeof error === "string") {
@@ -841,7 +842,7 @@ function expectsNoError(stackStartFn, actual, error, message) {
  * @param {...any} [args]
  * @returns {void}
  */
-assert.throws = function throws(promiseFn: () => Promise<unknown> | Promise<unknown>, ...args: unknown[]): void {
+assert.throws = function throws(promiseFn: () => unknown, ...args: [unknown?, (string | Error)?]): void {
   expectsError(throws, getActual(promiseFn), ...args);
 };
 
@@ -854,10 +855,10 @@ assert.throws = function throws(promiseFn: () => Promise<unknown> | Promise<unkn
 function rejects(block: (() => Promise<unknown>) | Promise<unknown>, message?: string | Error): Promise<void>;
 function rejects(
   block: (() => Promise<unknown>) | Promise<unknown>,
-  error: nodeAssert.AssertPredicate,
+  error: AssertPredicate,
   message?: string | Error,
 ): Promise<void>;
-async function rejects(block: (() => Promise<unknown>) | Promise<unknown>, ...args: any[]): Promise<void> {
+async function rejects(block: (() => Promise<unknown>) | Promise<unknown>, ...args: [any?, (string | Error)?]): Promise<void> {
   expectsError(rejects, await waitForActual(block), ...args);
 }
 assert.rejects = rejects;
@@ -868,7 +869,7 @@ assert.rejects = rejects;
  * @param {...any} [args]
  * @returns {void}
  */
-assert.doesNotThrow = function doesNotThrow(fn: () => Promise<unknown>, ...args: unknown[]): void {
+assert.doesNotThrow = function doesNotThrow(fn: () => unknown, ...args: [unknown?, (string | Error)?]): void {
   expectsNoError(doesNotThrow, getActual(fn), ...args);
 };
 
@@ -878,7 +879,10 @@ assert.doesNotThrow = function doesNotThrow(fn: () => Promise<unknown>, ...args:
  * @param {...any} [args]
  * @returns {Promise<void>}
  */
-assert.doesNotReject = async function doesNotReject(fn: () => Promise<unknown>, ...args: unknown[]): Promise<void> {
+assert.doesNotReject = async function doesNotReject(
+  fn: (() => Promise<unknown>) | Promise<unknown>,
+  ...args: [any?, (string | Error)?]
+): Promise<void> {
   expectsNoError(doesNotReject, await waitForActual(fn), ...args);
 };
 
@@ -887,7 +891,7 @@ assert.doesNotReject = async function doesNotReject(fn: () => Promise<unknown>, 
  * @param {any} err
  * @returns {void}
  */
-assert.ifError = function ifError(err: unknown): void {
+assert.ifError = function ifError(err: any): void {
   if (err !== null && err !== undefined) {
     let message = "ifError got unwanted exception: ";
     if (typeof err === "object" && typeof err.message === "string") {

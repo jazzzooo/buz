@@ -1,25 +1,23 @@
 #include "Cookie.h"
 #include "EncodeURIComponent.h"
-#include "JSCookie.h"
-#include "helpers.h"
-#include <JavaScriptCore/ObjectConstructor.h>
+#include "StringConversion.h"
+#include <cmath>
+#include <wtf/ASCIICType.h>
 #include <wtf/WallTime.h>
+#include <wtf/DateMath.h>
+#include <wtf/GregorianDateTime.h>
+#include <wtf/dtoa.h>
 #include <wtf/text/StringToIntegerConversion.h>
-#include <JavaScriptCore/DateInstance.h>
+#include <wtf/text/MakeString.h>
 #include "HTTPParsers.h"
 namespace WebCore {
-
-extern "C" WebCore::Cookie* Cookie__fromJS(JSC::EncodedJSValue value)
-{
-    return WebCoreCast<WebCore::JSCookie, WebCore::Cookie>(value);
-}
 
 Cookie::~Cookie() = default;
 
 Cookie::Cookie(const String& name, const String& value,
     const String& domain, const String& path,
-    int64_t expires, bool secure, CookieSameSite sameSite,
-    bool httpOnly, double maxAge, bool partitioned)
+    std::optional<int64_t> expires, bool secure, CookieSameSite sameSite,
+    bool httpOnly, std::optional<double> maxAge, bool partitioned)
     : m_name(name)
     , m_value(value)
     , m_domain(domain)
@@ -35,8 +33,8 @@ Cookie::Cookie(const String& name, const String& value,
 
 ExceptionOr<Ref<Cookie>> Cookie::create(const String& name, const String& value,
     const String& domain, const String& path,
-    int64_t expires, bool secure, CookieSameSite sameSite,
-    bool httpOnly, double maxAge, bool partitioned)
+    std::optional<int64_t> expires, bool secure, CookieSameSite sameSite,
+    bool httpOnly, std::optional<double> maxAge, bool partitioned)
 {
     if (!isValidCookieName(name)) {
         return Exception { TypeError, "Invalid cookie name: contains invalid characters"_s };
@@ -47,26 +45,17 @@ ExceptionOr<Ref<Cookie>> Cookie::create(const String& name, const String& value,
     if (!isValidCookieDomain(domain)) {
         return Exception { TypeError, "Invalid cookie domain: contains invalid characters"_s };
     }
-    return adoptRef(*new Cookie(name, value, domain, path, expires, secure, sameSite, httpOnly, maxAge, partitioned));
+    if (expires && !isValidExpiration(*expires))
+        return Exception { RangeError, "Invalid cookie expiration date"_s };
+    auto* memory = WTF::FastMalloc::tryMalloc(sizeof(Cookie));
+    if (!memory)
+        return Exception { OutOfMemoryError };
+    return adoptRef(*new (memory) Cookie(name, value, domain, path, expires, secure, sameSite, httpOnly, maxAge, partitioned));
 }
 
-String Cookie::serialize(JSC::VM& vm, const std::span<const Ref<Cookie>> cookies)
+ExceptionOr<Ref<Cookie>> Cookie::clone() const
 {
-    if (cookies.empty())
-        return emptyString();
-
-    StringBuilder builder;
-    bool first = true;
-
-    for (const auto& cookie : cookies) {
-        if (!first)
-            builder.append("; "_s);
-
-        cookie->appendTo(vm, builder);
-        first = false;
-    }
-
-    return builder.toString();
+    return create(m_name, m_value, m_domain, m_path, m_expires, m_secure, m_sameSite, m_httpOnly, m_maxAge, m_partitioned);
 }
 
 ExceptionOr<Ref<Cookie>> Cookie::parse(StringView cookieString)
@@ -85,23 +74,26 @@ ExceptionOr<Ref<Cookie>> Cookie::parse(StringView cookieString)
         return Exception { TypeError, "Invalid cookie string: no '=' found"_s };
     }
 
-    String name = cookiePair.substring(0, firstEqualsPos).trim(isASCIIWhitespace<char16_t>).toString();
+    String name = tryMakeString(cookiePair.substring(0, firstEqualsPos).trim(isASCIIWhitespace<char16_t>));
+    if (name.isNull())
+        return Exception { OutOfMemoryError };
     if (name.isEmpty())
         return Exception { TypeError, "Invalid cookie string: name cannot be empty"_s };
 
     ASSERT(isValidHTTPHeaderValue(name));
-    String value = cookiePair.substring(firstEqualsPos + 1).trim(isASCIIWhitespace<char16_t>).toString();
+    String value = tryMakeString(cookiePair.substring(firstEqualsPos + 1).trim(isASCIIWhitespace<char16_t>));
+    if (value.isNull())
+        return Exception { OutOfMemoryError };
 
     // Default values
     String domain;
     String path = "/"_s;
-    int64_t expires = Cookie::emptyExpiresAtValue;
+    std::optional<int64_t> expires;
     bool secure = false;
-    CookieSameSite sameSite = CookieSameSite::Lax;
+    CookieSameSite sameSite = CookieSameSite::lax;
     bool httpOnly = false;
-    double maxAge = std::numeric_limits<double>::quiet_NaN();
+    std::optional<double> maxAge;
     bool partitioned = false;
-    bool hasMaxAge = false;
     ASSERT(value.isEmpty() || isValidHTTPHeaderValue(value));
     // Parse attributes if there are any
     if (firstSemicolonPos != notFound) {
@@ -111,56 +103,52 @@ ExceptionOr<Ref<Cookie>> Cookie::parse(StringView cookieString)
             auto trimmedAttribute = attribute.trim(isASCIIWhitespace<char16_t>);
             size_t assignmentPos = trimmedAttribute.find('=');
 
-            String attributeName;
-            String attributeValue;
+            StringView attributeName;
+            StringView attributeValue;
 
             if (assignmentPos != notFound) {
-                attributeName = trimmedAttribute.substring(0, assignmentPos).trim(isASCIIWhitespace<char16_t>).convertToASCIILowercase();
-                attributeValue = trimmedAttribute.substring(assignmentPos + 1).trim(isASCIIWhitespace<char16_t>).toString();
+                attributeName = trimmedAttribute.substring(0, assignmentPos).trim(isASCIIWhitespace<char16_t>);
+                attributeValue = trimmedAttribute.substring(assignmentPos + 1).trim(isASCIIWhitespace<char16_t>);
             } else {
-                attributeName = trimmedAttribute.convertToASCIILowercase();
-                attributeValue = emptyString();
+                attributeName = trimmedAttribute;
             }
 
-            if (attributeName == "domain"_s) {
+            if (equalIgnoringASCIICase(attributeName, "domain"_s)) {
                 if (!attributeValue.isEmpty()) {
-                    domain = attributeValue.convertToASCIILowercase();
+                    domain = tryMakeString(asASCIILowercase(attributeValue));
+                    if (domain.isNull())
+                        return Exception { OutOfMemoryError };
                 }
-            } else if (attributeName == "path"_s) {
-                if (!attributeValue.isEmpty() && attributeValue.startsWith('/'))
-                    path = attributeValue;
-            } else if (attributeName == "expires"_s && !hasMaxAge && !attributeValue.isEmpty()) {
-                if (!attributeValue.is8Bit()) [[unlikely]] {
-                    auto asLatin1 = attributeValue.latin1();
-                    double parsed = WTF::parseDate({ reinterpret_cast<const Latin1Character*>(asLatin1.data()), asLatin1.length() });
-                    if (std::isfinite(parsed)) {
-                        expires = static_cast<int64_t>(parsed);
-                    }
-                } else {
-                    auto nullTerminated = attributeValue.utf8();
-                    double parsed = WTF::parseDate(std::span<const Latin1Character>(reinterpret_cast<const Latin1Character*>(nullTerminated.data()), nullTerminated.length()));
-                    if (std::isfinite(parsed)) {
-                        expires = static_cast<int64_t>(parsed);
-                    }
+            } else if (equalIgnoringASCIICase(attributeName, "path"_s)) {
+                if (!attributeValue.isEmpty() && attributeValue.startsWith('/')) {
+                    path = tryMakeString(attributeValue);
+                    if (path.isNull())
+                        return Exception { OutOfMemoryError };
                 }
-            } else if (attributeName == "max-age"_s) {
+            } else if (equalIgnoringASCIICase(attributeName, "expires"_s) && !maxAge && !attributeValue.isEmpty()) {
+                auto utf8 = Bun::encodeUTF8ReplacingInvalidSequences(attributeValue);
+                if (!utf8)
+                    return Exception { OutOfMemoryError };
+                const double parsed = WTF::parseDate(std::span<const Latin1Character>(reinterpret_cast<const Latin1Character*>(utf8->span().data()), utf8->size()));
+                if (isValidExpiration(parsed))
+                    expires = static_cast<int64_t>(parsed);
+            } else if (equalIgnoringASCIICase(attributeName, "max-age"_s)) {
                 if (auto parsed = WTF::parseIntegerAllowingTrailingJunk<int64_t>(attributeValue); parsed.has_value()) {
                     maxAge = static_cast<double>(parsed.value());
-                    hasMaxAge = true;
                 }
-            } else if (attributeName == "secure"_s) {
+            } else if (equalIgnoringASCIICase(attributeName, "secure"_s)) {
                 secure = true;
-            } else if (attributeName == "httponly"_s) {
+            } else if (equalIgnoringASCIICase(attributeName, "httponly"_s)) {
                 httpOnly = true;
-            } else if (attributeName == "partitioned"_s) {
+            } else if (equalIgnoringASCIICase(attributeName, "partitioned"_s)) {
                 partitioned = true;
-            } else if (attributeName == "samesite"_s) {
+            } else if (equalIgnoringASCIICase(attributeName, "samesite"_s)) {
                 if (WTF::equalIgnoringASCIICase(attributeValue, "strict"_s))
-                    sameSite = CookieSameSite::Strict;
+                    sameSite = CookieSameSite::strict;
                 else if (WTF::equalIgnoringASCIICase(attributeValue, "lax"_s))
-                    sameSite = CookieSameSite::Lax;
+                    sameSite = CookieSameSite::lax;
                 else if (WTF::equalIgnoringASCIICase(attributeValue, "none"_s))
-                    sameSite = CookieSameSite::None;
+                    sameSite = CookieSameSite::none;
             }
         }
     }
@@ -170,18 +158,11 @@ ExceptionOr<Ref<Cookie>> Cookie::parse(StringView cookieString)
 
 bool Cookie::isExpired() const
 {
-    if (m_expires == Cookie::emptyExpiresAtValue)
+    if (!m_expires)
         return false; // Session cookie
 
     auto currentTime = WTF::WallTime::now().secondsSinceEpoch().seconds() * 1000.0;
-    return currentTime > m_expires;
-}
-
-String Cookie::toString(JSC::VM& vm) const
-{
-    StringBuilder builder;
-    appendTo(vm, builder);
-    return builder.toString();
+    return currentTime > *m_expires;
 }
 
 static inline bool isValidCharacterInCookieName(char16_t c)
@@ -242,18 +223,20 @@ bool Cookie::isValidCookieDomain(const String& domain)
     return true;
 }
 
-void Cookie::appendTo(JSC::VM& vm, StringBuilder& builder) const
+bool Cookie::isValidExpiration(double milliseconds)
 {
-    // Name=Value is the basic format
+    return std::isfinite(milliseconds) && std::abs(milliseconds) <= WTF::maxECMAScriptTime;
+}
+
+ExceptionOr<String> Cookie::toString() const
+{
+    StringBuilder builder(OverflowPolicy::RecordOverflow);
     builder.append(m_name);
     builder.append('=');
-    auto result = encodeURIComponent(vm, m_value, builder);
-    if (result.hasException()) {
-        // m_value contained unpaired surrogate. oops!
-        // fortunately, this never happens because the string has already had invalid surrogate pairs converted to the replacement character
-    }
+    auto result = encodeURIComponent(m_value, builder);
+    if (result.hasException())
+        return result.releaseException();
 
-    // Add domain if present
     if (!m_domain.isEmpty()) {
         builder.append("; Domain="_s);
         builder.append(m_domain);
@@ -264,80 +247,76 @@ void Cookie::appendTo(JSC::VM& vm, StringBuilder& builder) const
         builder.append(m_path);
     }
 
-    // Add expires if present
-    if (hasExpiry()) {
+    if (m_expires) {
         builder.append("; Expires="_s);
-        // In a real implementation, this would convert the timestamp to a proper date string
-        // For now, just use a numeric timestamp
-        WTF::GregorianDateTime dateTime;
-        vm.dateCache.msToGregorianDateTime(m_expires, WTF::TimeType::UTCTime, dateTime);
-        builder.append(WTF::makeRFC2822DateString(dateTime.weekDay(), dateTime.monthDay(), dateTime.month(), dateTime.year(), dateTime.hour(), dateTime.minute(), dateTime.second(), dateTime.utcOffsetInMinute()));
+        WTF::GregorianDateTime dateTime(*m_expires, WTF::LocalTimeOffset { false, 0 });
+        RELEASE_ASSERT(dateTime.utcOffsetInMinute() == 0);
+        const auto appendTwoDigits = [&](unsigned value) {
+            RELEASE_ASSERT(value < 100);
+            builder.append(static_cast<Latin1Character>('0' + value / 10));
+            builder.append(static_cast<Latin1Character>('0' + value % 10));
+        };
+        // GregorianDateTime numbers Sunday as zero; weekdayName starts with Monday.
+        builder.append(WTF::weekdayName[(dateTime.weekDay() + 6) % 7], ", "_s);
+        appendTwoDigits(dateTime.monthDay());
+        builder.append(' ', WTF::monthName[dateTime.month()], ' ');
+        auto year = dateTime.year();
+        if (year < 0) {
+            builder.append('-');
+            year = -year;
+        }
+        if (year < 10)
+            builder.append("000"_s);
+        else if (year < 100)
+            builder.append("00"_s);
+        else if (year < 1000)
+            builder.append('0');
+        builder.append(year, ' ');
+        appendTwoDigits(dateTime.hour());
+        builder.append(':');
+        appendTwoDigits(dateTime.minute());
+        builder.append(':');
+        appendTwoDigits(dateTime.second());
+        builder.append(" GMT"_s);
     }
 
-    // Add Max-Age if present
-    if (!std::isnan(m_maxAge)) {
+    if (m_maxAge) {
         builder.append("; Max-Age="_s);
-        builder.append(String::number(m_maxAge));
+        WTF::NumberToStringBuffer buffer;
+        builder.append(WTF::numberToStringAndSize(*m_maxAge, buffer));
     }
 
-    // Add secure flag if true
     if (m_secure)
         builder.append("; Secure"_s);
 
-    // Add HttpOnly flag if true
     if (m_httpOnly)
         builder.append("; HttpOnly"_s);
 
-    // Add Partitioned flag if true
     if (m_partitioned)
         builder.append("; Partitioned"_s);
 
-    // Add SameSite directive
-
     switch (m_sameSite) {
-    case CookieSameSite::Strict:
+    case CookieSameSite::strict:
         builder.append("; SameSite=Strict"_s);
         break;
-    case CookieSameSite::Lax:
-        // lax is the default. but we still need to set it explicitly.
-        // https://groups.google.com/a/chromium.org/g/blink-dev/c/AknSSyQTGYs/m/YKBxPCScCwAJ
+    case CookieSameSite::lax:
         builder.append("; SameSite=Lax"_s);
         break;
-    case CookieSameSite::None:
+    case CookieSameSite::none:
         builder.append("; SameSite=None"_s);
         break;
     }
-}
-
-JSC::JSValue Cookie::toJSON(JSC::VM& vm, JSC::JSGlobalObject* globalObject) const
-{
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* object = JSC::constructEmptyObject(vm, globalObject->nullPrototypeObjectStructure());
-    RETURN_IF_EXCEPTION(scope, JSC::jsNull());
-
-    auto& builtinNames = Bun::builtinNames(vm);
-
-    object->putDirect(vm, vm.propertyNames->name, JSC::jsString(vm, m_name));
-    object->putDirect(vm, vm.propertyNames->value, JSC::jsString(vm, m_value));
-
-    if (!m_domain.isEmpty())
-        object->putDirect(vm, builtinNames.domainPublicName(), JSC::jsString(vm, m_domain));
-
-    object->putDirect(vm, builtinNames.pathPublicName(), JSC::jsString(vm, m_path));
-
-    if (hasExpiry())
-        object->putDirect(vm, builtinNames.expiresPublicName(), JSC::DateInstance::create(vm, globalObject->dateStructure(), m_expires));
-
-    if (!std::isnan(m_maxAge))
-        object->putDirect(vm, builtinNames.maxAgePublicName(), JSC::jsNumber(m_maxAge));
-
-    object->putDirect(vm, builtinNames.securePublicName(), JSC::jsBoolean(m_secure));
-    object->putDirect(vm, builtinNames.sameSitePublicName(), toJS(globalObject, m_sameSite));
-    object->putDirect(vm, builtinNames.httpOnlyPublicName(), JSC::jsBoolean(m_httpOnly));
-    object->putDirect(vm, builtinNames.partitionedPublicName(), JSC::jsBoolean(m_partitioned));
-
-    return object;
+    if (builder.hasOverflowed())
+        return Exception { OutOfMemoryError };
+    std::span<Latin1Character> bytes;
+    auto impl = StringImpl::tryCreateUninitialized(builder.length(), bytes);
+    if (!impl)
+        return Exception { OutOfMemoryError };
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        RELEASE_ASSERT(isASCII(builder[i]));
+        bytes[i] = static_cast<Latin1Character>(builder[i]);
+    }
+    return String(WTF::move(impl));
 }
 
 size_t Cookie::memoryCost() const

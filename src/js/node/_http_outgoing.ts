@@ -170,9 +170,9 @@ function write_(msg, chunk, encoding, callback, fromEnd) {
   return ret;
 }
 
-function OutgoingMessage(options) {
+function OutgoingMessage(this: any, options?) {
   if (!new.target) {
-    return new OutgoingMessage(options);
+    return new (OutgoingMessage as unknown as new (options?: any) => any)(options);
   }
 
   Stream.$call(this, options);
@@ -250,7 +250,7 @@ const OutgoingMessagePrototype = {
   getRawHeaderNames() {
     var headers = this[headersSymbol];
     if (!headers) return [];
-    return getRawKeys.$call(headers);
+    return getRawKeys(headers);
   },
 
   getHeaders() {
@@ -288,7 +288,7 @@ const OutgoingMessagePrototype = {
     // We also cannot safely split by comma.
     // To avoid setHeader overwriting the previous value we push
     // set-cookie values in array and set them all at once.
-    const cookies = [];
+    const cookies: any[] = [];
 
     for (const { 0: key, 1: value } of headers) {
       if (key === "set-cookie") {

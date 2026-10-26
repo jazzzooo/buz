@@ -208,6 +208,8 @@ unsigned calculateBase64EncodedSize(size_t inputLength, OptionSet<Base64EncodeOp
 template<typename T, typename Malloc = VectorBufferMalloc>
 static std::optional<Vector<uint8_t, 0, CrashOnOverflow, 16, Malloc>> base64DecodeInternal(std::span<const T> inputDataBuffer, OptionSet<Base64DecodeOption> options)
 {
+    if (inputDataBuffer.size() > std::numeric_limits<unsigned>::max())
+        return std::nullopt;
     if (!inputDataBuffer.size())
         return Vector<uint8_t, 0, CrashOnOverflow, 16, Malloc> { };
 
@@ -259,7 +261,7 @@ static std::optional<Vector<uint8_t, 0, CrashOnOverflow, 16, Malloc>> base64Deco
         return std::nullopt;
     
     // 4-byte to 3-byte conversion
-    destinationLength -= (destinationLength + 3) / 4;
+    destinationLength -= destinationLength / 4 + (destinationLength % 4 != 0);
     if (!destinationLength)
         return std::nullopt;
 
@@ -288,8 +290,6 @@ static std::optional<Vector<uint8_t, 0, CrashOnOverflow, 16, Malloc>> base64Deco
 
 std::optional<Vector<uint8_t>> base64Decode(std::span<const std::byte> input, OptionSet<Base64DecodeOption> options)
 {
-    if (input.size() > std::numeric_limits<unsigned>::max())
-        return std::nullopt;
     return base64DecodeInternal(asBytes(input), options);
 }
 

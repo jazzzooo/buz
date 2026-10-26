@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { argParse, writeIfNotChanged } from "./helpers";
 
@@ -15,7 +15,7 @@ const base_dir = join(import.meta.dirname, "../bake");
 process.chdir(base_dir); // to make bun build predictable in development
 
 function convertZigEnum(zig: string, names: string[]) {
-  let output = "/** Generated from DevServer.zig */\n";
+  let output = "/** Generated from DevServerProtocol.zig */\n";
   for (const name of names) {
     const startTrigger = `\npub const ${name} = enum(u8) {`;
     const start = zig.indexOf(startTrigger) + startTrigger.length;
@@ -25,7 +25,7 @@ function convertZigEnum(zig: string, names: string[]) {
     const values = enumText.replaceAll("\n    ", "\n  ").replace(/\n\s*(\w+)\s*=\s*'(.+?)',/g, (_, name, value) => {
       return `\n  ${name} = ${value.charCodeAt(0)},`;
     });
-    output += `export const enum ${name} {${values}}\n`;
+    output += `export const enum ${name} {${values}\n}\n`;
   }
   return output;
 }
@@ -41,8 +41,8 @@ function css(file: string, is_development: boolean): string {
 }
 
 async function run() {
-  const devServerZig = readFileSync(join(base_dir, "DevServer.zig"), "utf-8");
-  writeIfNotChanged(join(base_dir, "generated.ts"), convertZigEnum(devServerZig, ["IncomingMessageId", "MessageId"]));
+  const devServerProtocolZig = readFileSync(join(base_dir, "DevServerProtocol.zig"), "utf-8");
+  writeIfNotChanged(join(base_dir, "generated.ts"), convertZigEnum(devServerProtocolZig, ["IncomingMessageId", "MessageId"]));
 
   const results = await Promise.allSettled(
     ["client", "server", "error"].map(async file => {
@@ -201,9 +201,6 @@ async function run() {
     process.exit(1);
   } else {
     console.log("-> bake.client.js, bake.server.js, bake.error.js");
-
-    const empty_file = join(codegenRoot, "bake_empty_file");
-    if (!existsSync(empty_file)) writeIfNotChanged(empty_file, "this is used to fulfill a build dependency");
   }
 }
 

@@ -1,115 +1,60 @@
-const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
-pub const ref = RefCount.ref;
-pub const deref = RefCount.deref;
-
-pub const js = jsc.Codegen.JSNativeZlib;
-pub const toJS = js.toJS;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
-
-const impl = CompressionStream(@This());
-pub const write = impl.write;
-pub const runFromJSThread = impl.runFromJSThread;
-pub const writeSync = impl.writeSync;
-pub const reset = impl.reset;
-pub const close = impl.close;
-pub const setOnError = impl.setOnError;
-pub const getOnError = impl.getOnError;
-pub const finalize = impl.finalize;
-
-ref_count: RefCount,
-globalThis: *jsc.JSGlobalObject,
 stream: Context = .{},
-write_result: ?[*]u32 = null,
-poll_ref: CountedKeepAlive = .{},
-this_value: jsc.Strong.Optional = .empty,
-write_in_progress: bool = false,
-pending_close: bool = false,
-pending_reset: bool = false,
-closed: bool = false,
-task: jsc.BackgroundTask = .{ .callback = undefined },
+dictionary: bun.bindgen.OwnedBytes = .empty(),
 
-pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*@This() {
-    const arguments = callframe.argumentsUndef(4).ptr;
-
-    var mode = arguments[0];
-    if (!mode.isNumber()) {
-        return globalThis.throwInvalidArgumentTypeValue("mode", "number", mode);
-    }
-    const mode_double = mode.asNumber();
-    if (@mod(mode_double, 1.0) != 0.0) {
-        return globalThis.throwInvalidArgumentTypeValue("mode", "integer", mode);
-    }
-    const mode_int: i64 = @intFromFloat(mode_double);
-    if (mode_int < 1 or mode_int > 7) {
-        return globalThis.throwRangeError(mode_int, .{ .field_name = "mode", .min = 1, .max = 7 });
-    }
-
-    const ptr = bun.new(@This(), .{
-        .ref_count = .init(),
-        .globalThis = globalThis,
-    });
-    ptr.stream.mode = @fromBackingInt(@intCast(mode_int));
-    return ptr;
+pub fn create(mode: i32) @This() {
+    var backend: @This() = .{};
+    backend.stream.mode = @fromBackingInt(@intCast(mode));
+    return backend;
 }
 
-//// adding this didnt help much but leaving it here to compare the number with later
 pub fn estimatedSize(_: *const @This()) usize {
-    const internal_state_size = 3309; // @sizeOf(@cImport(@cInclude("deflate.h")).internal_state) @ cloudflare/zlib @ 92530568d2c128b4432467b76a3b54d93d6350bd
-    return @sizeOf(@This()) + internal_state_size;
+    return 3309;
 }
 
-pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const arguments = callframe.argumentsUndef(7).slice();
-    const this_value = callframe.this();
-
-    if (arguments.len != 7) {
-        return globalThis.ERR(.MISSING_ARGS, "init(windowBits, level, memLevel, strategy, writeResult, writeCallback, dictionary)", .{}).throw();
+pub fn initFromBindgen(this: *@This(), args: anytype) bun.OOM!?Error {
+    if (args.dictionary) |view| {
+        if (view.length() > std.math.maxInt(u32))
+            return Error.init("Dictionary exceeds the maximum supported length of 4294967295 bytes", -2, "Z_STREAM_ERROR");
     }
+    var dictionary = if (args.dictionary) |view|
+        try view.copy()
+    else
+        bun.bindgen.OwnedBytes.empty();
+    errdefer dictionary.deinit();
 
-    const windowBits = try validators.validateInt32(globalThis, arguments[0], "windowBits", .{}, null, null);
-    const level = try validators.validateInt32(globalThis, arguments[1], "level", .{}, null, null);
-    const memLevel = try validators.validateInt32(globalThis, arguments[2], "memLevel", .{}, null, null);
-    const strategy = try validators.validateInt32(globalThis, arguments[3], "strategy", .{}, null, null);
-    // this does not get gc'd because it is stored in the JS object's `this._writeState`. and the JS object is tied to the native handle as `_handle[owner_symbol]`.
-    const writeResult = arguments[4].asArrayBuffer(globalThis).?.asU32().ptr;
-    const writeCallback = try validators.validateFunction(globalThis, "writeCallback", arguments[5]);
-    const dictionary = if (arguments[6].isUndefined()) null else arguments[6].asArrayBuffer(globalThis).?.byteSlice();
-
-    this.write_result = writeResult;
-    js.writeCallbackSetCached(this_value, globalThis, writeCallback.withAsyncContextIfNeeded(globalThis));
-
-    // Keep the dictionary alive by keeping a reference to it in the JS object.
-    if (dictionary != null) {
-        js.dictionarySetCached(this_value, globalThis, arguments[6]);
-    }
-
-    this.stream.init(level, windowBits, memLevel, strategy, dictionary);
-
-    return .js_undefined;
+    this.stream.deinitState();
+    this.dictionary.deinit();
+    this.dictionary = dictionary.take();
+    const err = this.stream.init(
+        args.level,
+        args.windowBits,
+        args.memLevel,
+        args.strategy,
+        if (args.dictionary != null) this.dictionary.slice() else null,
+    );
+    return if (err.isError()) err else null;
 }
 
-pub fn params(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const arguments = callframe.argumentsUndef(2).slice();
-
-    if (arguments.len != 2) {
-        return globalThis.ERR(.MISSING_ARGS, "params(level, strategy)", .{}).throw();
-    }
-
-    const level = try validators.validateInt32(globalThis, arguments[0], "level", .{}, null, null);
-    const strategy = try validators.validateInt32(globalThis, arguments[1], "strategy", .{}, null, null);
-
-    const err = this.stream.setParams(level, strategy);
-    if (err.isError()) {
-        impl.emitError(this, globalThis, callframe.this(), err);
-    }
-    return .js_undefined;
+pub fn paramsFromBindgen(this: *@This(), args: anytype) ?Error {
+    const err = this.stream.setParams(args.level, args.strategy);
+    return if (err.isError()) err else null;
 }
 
-fn deinit(this: *@This()) void {
-    this.this_value.deinit();
-    this.poll_ref.deinit();
+pub fn reset(this: *@This()) Error {
+    return this.stream.reset();
+}
+
+pub fn close(this: *@This()) void {
     this.stream.close();
+}
+
+pub fn deinit(this: *@This()) void {
+    this.close();
+    this.dictionary.deinit();
+}
+
+pub fn destroy(this: *@This()) void {
+    this.deinit();
     bun.destroy(this);
 }
 
@@ -124,8 +69,10 @@ const Context = struct {
     flush: c.FlushValue = .NoFlush,
     dictionary: []const u8 = "",
     gzip_id_bytes_read: u8 = 0,
+    pending_params: ?struct { level: c_int, strategy: c_int } = null,
+    allocated: bool = false,
 
-    pub fn init(this: *Context, level: c_int, windowBits: c_int, memLevel: c_int, strategy: c_int, dictionary: ?[]const u8) void {
+    pub fn init(this: *Context, level: c_int, windowBits: c_int, memLevel: c_int, strategy: c_int, dictionary: ?[]const u8) Error {
         this.flush = .NoFlush;
         this.err = .Ok;
 
@@ -149,11 +96,11 @@ const Context = struct {
             .ZSTD_COMPRESS, .ZSTD_DECOMPRESS => unreachable,
         }
         if (this.err != .Ok) {
-            this.mode = .NONE;
-            return;
+            return this.error_for_message("Failed to initialize compression stream");
         }
+        this.allocated = true;
 
-        _ = this.setDictionary();
+        return this.setDictionary();
     }
 
     pub fn setDictionary(this: *Context) Error {
@@ -176,15 +123,11 @@ const Context = struct {
     }
 
     pub fn setParams(this: *Context, level: c_int, strategy: c_int) Error {
-        this.err = .Ok;
         switch (this.mode) {
-            .DEFLATE, .DEFLATERAW => {
-                this.err = c.deflateParams(&this.state, level, strategy);
+            .DEFLATE, .DEFLATERAW, .GZIP => {
+                this.pending_params = .{ .level = level, .strategy = strategy };
             },
             else => {},
-        }
-        if (this.err != .Ok and this.err != .BufError) {
-            return this.error_for_message("Failed to set parameters");
         }
         return Error.ok;
     }
@@ -195,6 +138,7 @@ const Context = struct {
         return .{
             .msg = message,
             .err = @backingInt(this.err),
+            .allocation_failed = this.err == .MemError,
             .code = switch (this.err) {
                 .Ok => "Z_OK",
                 .StreamEnd => "Z_STREAM_END",
@@ -226,18 +170,20 @@ const Context = struct {
         return this.setDictionary();
     }
 
-    pub fn setBuffers(this: *Context, in: ?[]const u8, out: ?[]u8) void {
+    pub fn process(this: *Context, in: ?[]const u8, out: ?[]u8, flush: c_int) void {
         this.state.avail_in = if (in) |p| @intCast(p.len) else 0;
         this.state.next_in = if (in) |p| p.ptr else null;
         this.state.avail_out = if (out) |p| @intCast(p.len) else 0;
         this.state.next_out = if (out) |p| p.ptr else null;
-    }
-
-    pub fn setFlush(this: *Context, flush: c_int) void {
+        defer {
+            this.state.next_in = null;
+            this.state.next_out = null;
+        }
         this.flush = @fromBackingInt(@intCast(flush));
+        this.doWork();
     }
 
-    pub fn doWork(this: *Context) void {
+    fn doWork(this: *Context) void {
         var next_expected_header_byte: ?[*]const u8 = null;
 
         // If the avail_out is left at 0, then it means that it ran out
@@ -290,6 +236,16 @@ const Context = struct {
     }
 
     fn doWorkDeflate(this: *Context) void {
+        if (this.pending_params) |params| {
+            // Parameter changes may flush a block and must use the current write's
+            // output buffer without consuming input under the old parameters.
+            const available_input = this.state.avail_in;
+            this.state.avail_in = 0;
+            this.err = c.deflateParams(&this.state, params.level, params.strategy);
+            this.state.avail_in = available_input;
+            if (this.err != .Ok) return;
+            this.pending_params = null;
+        }
         this.err = c.deflate(&this.state, this.flush);
     }
 
@@ -308,7 +264,7 @@ const Context = struct {
         while (this.state.avail_in > 0 and this.mode == .GUNZIP and this.err == .StreamEnd and @as(?[*]const u8, this.state.next_in).?[0] != 0) {
             // Bytes remain in input buffer. Perhaps this is another compressed member in the same archive, or just trailing garbage.
             // Trailing zero bytes are okay, though, since they are frequently used for padding.
-            _ = this.reset();
+            if (this.reset().isError()) return;
             this.err = c.inflate(&this.state, this.flush);
         }
     }
@@ -340,7 +296,8 @@ const Context = struct {
         return Error.ok;
     }
 
-    pub fn close(this: *Context) void {
+    fn deinitState(this: *Context) void {
+        if (!this.allocated) return;
         var status = c.ReturnCode.Ok;
         switch (this.mode) {
             .DEFLATE, .DEFLATERAW, .GZIP => {
@@ -354,16 +311,29 @@ const Context = struct {
             .ZSTD_COMPRESS, .ZSTD_DECOMPRESS => {},
         }
         bun.assert(status == .Ok or status == .DataError);
+        this.allocated = false;
+        this.state = std.mem.zeroes(c.z_stream);
+    }
+
+    pub fn close(this: *Context) void {
+        this.deinitState();
+        this.pending_params = null;
         this.mode = .NONE;
     }
 };
 
 const std = @import("std");
-const validators = @import("../util/validators.zig");
-
-const CompressionStream = @import("../node_zlib_binding.zig").CompressionStream;
-const CountedKeepAlive = @import("../node_zlib_binding.zig").CountedKeepAlive;
+const CompressionJSBinding = @import("../node_zlib_binding.zig").CompressionJSBinding;
 const Error = @import("../node_zlib_binding.zig").Error;
 
 const bun = @import("bun");
-const jsc = bun.jsc;
+const bindgen = bun.bindgen;
+
+const NativeCompressionModule = bindgen.Module("NativeCompression");
+const ClassSchema = NativeCompressionModule.class("NativeZlib");
+pub const JSBinding = CompressionJSBinding(@This(), ClassSchema);
+pub const JSClass = bindgen.Class(ClassSchema, JSBinding);
+
+comptime {
+    _ = JSClass;
+}

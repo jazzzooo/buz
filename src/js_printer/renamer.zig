@@ -312,7 +312,7 @@ pub const MinifyRenamer = struct {
     }
 };
 
-pub fn assignNestedScopeSlots(allocator: std.mem.Allocator, module_scope: *js_ast.Scope, symbols: []js_ast.Symbol) js_ast.SlotCounts {
+pub fn assignNestedScopeSlots(allocator: std.mem.Allocator, module_scope: *js_ast.Scope, symbols: []js_ast.Symbol) bun.OOM!js_ast.SlotCounts {
     var slot_counts = js_ast.SlotCounts{};
     var sorted_members = std.array_list.Managed(u32).init(allocator);
     defer sorted_members.deinit();
@@ -330,32 +330,30 @@ pub fn assignNestedScopeSlots(allocator: std.mem.Allocator, module_scope: *js_as
     for (module_scope.generated.slice()) |ref| {
         symbols[ref.innerIndex()].nested_scope_slot = valid_slot;
     }
+    defer {
+        var top_level_members = module_scope.members.valueIterator();
+        while (top_level_members.next()) |member| {
+            symbols[member.ref.innerIndex()].nested_scope_slot = js_ast.Symbol.invalid_nested_scope_slot;
+        }
+        for (module_scope.generated.slice()) |ref| {
+            symbols[ref.innerIndex()].nested_scope_slot = js_ast.Symbol.invalid_nested_scope_slot;
+        }
+    }
 
     for (module_scope.children.slice()) |child| {
-        slot_counts.unionMax(assignNestedScopeSlotsHelper(&sorted_members, child, symbols, js_ast.SlotCounts{}));
-    }
-
-    // Then set the nested scope slots of top-level symbols back to zero. Top-
-    // level symbols are not supposed to have nested scope slots.
-    members = module_scope.members.valueIterator();
-
-    while (members.next()) |member| {
-        symbols[member.ref.innerIndex()].nested_scope_slot = js_ast.Symbol.invalid_nested_scope_slot;
-    }
-    for (module_scope.generated.slice()) |ref| {
-        symbols[ref.innerIndex()].nested_scope_slot = js_ast.Symbol.invalid_nested_scope_slot;
+        slot_counts.unionMax(try assignNestedScopeSlotsHelper(&sorted_members, child, symbols, js_ast.SlotCounts{}));
     }
 
     return slot_counts;
 }
 
-pub fn assignNestedScopeSlotsHelper(sorted_members: *std.array_list.Managed(u32), scope: *js_ast.Scope, symbols: []js_ast.Symbol, slot_to_copy: js_ast.SlotCounts) js_ast.SlotCounts {
+fn assignNestedScopeSlotsHelper(sorted_members: *std.array_list.Managed(u32), scope: *js_ast.Scope, symbols: []js_ast.Symbol, slot_to_copy: js_ast.SlotCounts) bun.OOM!js_ast.SlotCounts {
     var slot = slot_to_copy;
 
     // Sort member map keys for determinism
     {
         sorted_members.clearRetainingCapacity();
-        sorted_members.ensureUnusedCapacity(scope.members.count()) catch unreachable;
+        try sorted_members.ensureUnusedCapacity(scope.members.count());
         sorted_members.items.len = scope.members.count();
         var sorted_members_buf = sorted_members.items;
         var members = scope.members.valueIterator();
@@ -373,8 +371,9 @@ pub fn assignNestedScopeSlotsHelper(sorted_members: *std.array_list.Managed(u32)
             var symbol = &symbols[inner_index];
             const ns = symbol.slotNamespace();
             if (ns != .must_not_be_renamed and symbol.nestedScopeSlot() == null) {
+                const next_slot = std.math.add(u32, slot.slots.get(ns), 1) catch return error.OutOfMemory;
                 symbol.nested_scope_slot = slot.slots.get(ns);
-                slot.slots.getPtr(ns).* += 1;
+                slot.slots.getPtr(ns).* = next_slot;
             }
         }
     }
@@ -383,8 +382,9 @@ pub fn assignNestedScopeSlotsHelper(sorted_members: *std.array_list.Managed(u32)
         var symbol = &symbols[ref.innerIndex()];
         const ns = symbol.slotNamespace();
         if (ns != .must_not_be_renamed and symbol.nestedScopeSlot() == null) {
+            const next_slot = std.math.add(u32, slot.slots.get(ns), 1) catch return error.OutOfMemory;
             symbol.nested_scope_slot = slot.slots.get(ns);
-            slot.slots.getPtr(ns).* += 1;
+            slot.slots.getPtr(ns).* = next_slot;
         }
     }
 
@@ -392,14 +392,15 @@ pub fn assignNestedScopeSlotsHelper(sorted_members: *std.array_list.Managed(u32)
     if (scope.label_ref) |ref| {
         var symbol = &symbols[ref.innerIndex()];
         const ns = js_ast.Symbol.SlotNamespace.label;
+        const next_slot = std.math.add(u32, slot.slots.get(ns), 1) catch return error.OutOfMemory;
         symbol.nested_scope_slot = slot.slots.get(ns);
-        slot.slots.getPtr(ns).* += 1;
+        slot.slots.getPtr(ns).* = next_slot;
     }
 
     // Assign slots for the symbols of child scopes
     var slot_counts = slot;
     for (scope.children.slice()) |child| {
-        slot_counts.unionMax(assignNestedScopeSlotsHelper(sorted_members, child, symbols, slot));
+        slot_counts.unionMax(try assignNestedScopeSlotsHelper(sorted_members, child, symbols, slot));
     }
 
     return slot_counts;

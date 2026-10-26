@@ -1,5 +1,6 @@
 #include "V8String.h"
 #include "V8HandleScope.h"
+#include "SchemaBindings.h"
 #include "wtf/SIMDUTF.h"
 #include "v8_compatibility_assertions.h"
 
@@ -141,9 +142,6 @@ bool String::IsExternalOneByte() const
     return !impl->isNull() && impl->impl()->isExternal() && impl->is8Bit();
 }
 
-extern "C" size_t TextEncoder__encodeInto8(const Latin1Character* stringPtr, size_t stringLen, void* ptr, size_t len);
-extern "C" size_t TextEncoder__encodeInto16(const char16_t* stringPtr, size_t stringLen, void* ptr, size_t len);
-
 int String::WriteUtf8(Isolate* isolate, char* buffer, int length, int* nchars_ref, int options) const
 {
     RELEASE_ASSERT(options == 0);
@@ -152,8 +150,11 @@ int String::WriteUtf8(Isolate* isolate, char* buffer, int length, int* nchars_re
 
     size_t unsigned_length = length < 0 ? static_cast<size_t>(std::numeric_limits<int>::max()) : static_cast<size_t>(length);
 
-    uint64_t result = string.is8Bit() ? TextEncoder__encodeInto8(string.span8().data(), string.span8().size(), buffer, unsigned_length)
-                                      : TextEncoder__encodeInto16(string.span16().data(), string.span16().size(), buffer, unsigned_length);
+    const std::span<uint8_t> output { reinterpret_cast<uint8_t*>(buffer), unsigned_length };
+    uint64_t result = string.is8Bit()
+        ? Bun::Bindgen::ZigExports::bunBindgenZig_text_codecs_textEncoderEncodeIntoLatin1(string.span8(), output)
+        : Bun::Bindgen::ZigExports::bunBindgenZig_text_codecs_textEncoderEncodeIntoUTF16(
+              { reinterpret_cast<const uint16_t*>(string.span16().data()), string.span16().size() }, output);
     uint32_t read = static_cast<uint32_t>(result);
     uint32_t written = static_cast<uint32_t>(result >> 32);
 
@@ -226,7 +227,7 @@ size_t String::WriteUtf8V2(Isolate* isolate, char* buffer, size_t capacity, int 
     size_t read = 0;
     size_t written = 0;
     if (!str->isEmpty()) {
-        // TextEncoder__encodeInto never writes partial UTF-8 sequences, and replaces
+        // The encoder never writes partial UTF-8 sequences, and replaces
         // unpaired surrogates with U+FFFD (same byte length as the WTF-8 encoding V8
         // uses when kReplaceInvalidUtf8 is not set, so the result size matches either
         // way).
@@ -234,12 +235,13 @@ size_t String::WriteUtf8V2(Isolate* isolate, char* buffer, size_t capacity, int 
             // Latin-1 expands at most 2x: 2 * (2^31 - 1) < 2^32, so the packed
             // 32-bit counts cannot wrap.
             const auto span = str->span8();
-            uint64_t result = TextEncoder__encodeInto8(span.data(), span.size(), buffer, writableCapacity);
+            uint64_t result = Bun::Bindgen::ZigExports::bunBindgenZig_text_codecs_textEncoderEncodeIntoLatin1(
+                span, { reinterpret_cast<uint8_t*>(buffer), writableCapacity });
             read = static_cast<uint32_t>(result);
             written = static_cast<uint32_t>(result >> 32);
         } else {
             // UTF-16 expands up to 3x, which can exceed the 32-bit counts
-            // TextEncoder__encodeInto packs its result into (3 * (2^31 - 1) >
+            // The encoder packs its result into (3 * (2^31 - 1) >
             // 2^32). Encode in chunks small enough that each chunk's counts
             // fit, accumulating in size_t.
             const auto span = str->span16();
@@ -252,7 +254,9 @@ size_t String::WriteUtf8V2(Isolate* isolate, char* buffer, size_t capacity, int 
                 if (read + chunkLength < total && U16_IS_LEAD(span[read + chunkLength - 1])) {
                     chunkLength--;
                 }
-                uint64_t result = TextEncoder__encodeInto16(span.data() + read, chunkLength, buffer + written, writableCapacity - written);
+                uint64_t result = Bun::Bindgen::ZigExports::bunBindgenZig_text_codecs_textEncoderEncodeIntoUTF16(
+                    { reinterpret_cast<const uint16_t*>(span.data() + read), chunkLength },
+                    { reinterpret_cast<uint8_t*>(buffer + written), writableCapacity - written });
                 const uint32_t chunkRead = static_cast<uint32_t>(result);
                 const uint32_t chunkWritten = static_cast<uint32_t>(result >> 32);
                 read += chunkRead;

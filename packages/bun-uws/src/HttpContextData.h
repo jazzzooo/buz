@@ -18,7 +18,7 @@
 #ifndef UWS_HTTPCONTEXTDATA_H
 #define UWS_HTTPCONTEXTDATA_H
 
-#include "HttpRouter.h"
+#include "HttpCallback.h"
 
 #include <vector>
 #include "MoveOnlyFunction.h"
@@ -51,16 +51,7 @@ private:
 
     MoveOnlyFunction<void(const char *hostname)> missingServerNameHandler;
 
-    struct RouterData {
-        HttpResponse<SSL> *httpResponse;
-        HttpRequest *httpRequest;
-    };
-
-    /* This is the currently browsed-to router when using SNI */
-    HttpRouter<RouterData> *currentRouter = &router;
-
-    /* This is the default router for default SNI or non-SSL */
-    HttpRouter<RouterData> router;
+    HttpCallback<void (*)(void *, void *, void *)> requestHandler;
     void *upgradedWebSocket = nullptr;
     /* Used to simulate Node.js socket events. */
     OnSocketClosedCallback onSocketClosed = nullptr;
@@ -71,12 +62,6 @@ private:
 
     uint64_t maxHeaderSize = 0; // 0 means no limit
 
-    // TODO: SNI
-    void clearRoutes() {
-        this->router = HttpRouter<RouterData>{};
-        this->currentRouter = &router;
-        filterHandlers.clear();
-    }
 
 public:
     

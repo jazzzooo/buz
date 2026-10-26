@@ -10,37 +10,20 @@
 /// [*]const [N]u8, []const u16, []const i8,
 /// *const u8, ?[]const u8, ?*const [N]u8.
 /// ```
-pub inline fn isZigString(comptime T: type) bool {
-    return comptime blk: {
-        // Only pointer types can be strings, no optionals
-        const info = @typeInfo(T);
-        if (info != .pointer) break :blk false;
-
-        const ptr = &info.pointer;
-        // Check for CV qualifiers that would prevent coerction to []const u8
-        if (ptr.attrs.@"volatile" or ptr.attrs.@"allowzero") break :blk false;
-
-        // If it's already a slice, simple check.
-        if (ptr.size == .slice) {
-            break :blk ptr.child == u8;
-        }
-
-        // Otherwise check if it's an array type that coerces to slice.
-        if (ptr.size == .one) {
-            const child = @typeInfo(ptr.child);
-            if (child == .array) {
-                const arr = &child.array;
-                break :blk arr.child == u8;
-            }
-        }
-
-        break :blk false;
+pub inline fn isByteSliceLike(comptime T: type) bool {
+    const pointer = switch (@typeInfo(T)) {
+        .pointer => |info| info,
+        else => return false,
     };
-}
-
-pub inline fn isSlice(comptime T: type) bool {
-    const info = @typeInfo(T);
-    return info == .pointer and info.pointer.size == .slice;
+    if (pointer.attrs.@"volatile" or pointer.attrs.@"allowzero") return false;
+    return switch (pointer.size) {
+        .slice => pointer.child == u8,
+        .one => switch (@typeInfo(pointer.child)) {
+            .array => |array| array.child == u8,
+            else => false,
+        },
+        .many, .c => false,
+    };
 }
 
 pub inline fn isNumber(comptime T: type) bool {
@@ -61,19 +44,6 @@ pub fn isExternContainer(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .@"struct" => |s| s.layout == .@"extern",
         .@"union" => |u| u.layout == .@"extern",
-        else => false,
-    };
-}
-
-pub fn isIndexable(comptime T: type) bool {
-    const info = @typeInfo(T);
-    return switch (info) {
-        .pointer => |ptr| switch (ptr.size) {
-            .one => @typeInfo(ptr.child) == .array,
-            else => true,
-        },
-        .array, .vector => true,
-        .@"struct" => |s| s.is_tuple,
         else => false,
     };
 }

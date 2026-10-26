@@ -1,6 +1,6 @@
 #include "root.h"
-#include "stripANSI.h"
 #include "ANSIHelpers.h"
+#include "SchemaBindings.h"
 
 #include <wtf/Vector.h>
 #include <wtf/text/WTFString.h>
@@ -85,18 +85,16 @@ static std::optional<WTF::String> stripANSI(const std::span<const Char> input)
     return String::adopt(std::move(buffer));
 }
 
-struct BunANSIIterator {
-    const unsigned char* input;
-    size_t input_len;
-    size_t cursor;
-    const unsigned char* slice_ptr;
-    size_t slice_len;
-};
-
-extern "C" bool Bun__ANSI__next(BunANSIIterator* it)
+Bindgen::Engine::BunBindgenEngine_StringWidth_ansiIteratorNext_Return Bindgen::Engine::bunBindgenEngine_StringWidth_ansiIteratorNext(
+    const BunBindgenEngine_StringWidth_ansiIteratorNext_Arguments& args)
 {
-    auto start = it->input + it->cursor;
-    const auto end = it->input + it->input_len;
+    using Return = BunBindgenEngine_StringWidth_ansiIteratorNext_Return;
+    using Slice = Return::value_type;
+    RELEASE_ASSERT(args.cursor <= args.input.size());
+    if (args.cursor == args.input.size())
+        return std::nullopt;
+    auto start = args.input.data() + args.cursor;
+    const auto end = args.input.data() + args.input.size();
 
     // Skip past any ANSI sequences at current position
     while (start < end) {
@@ -111,50 +109,32 @@ extern "C" bool Bun__ANSI__next(BunANSIIterator* it)
     }
 
     if (start >= end) {
-        it->cursor = it->input_len;
-        it->slice_ptr = nullptr;
-        it->slice_len = 0;
-        return false;
+        return std::nullopt;
     }
 
     const auto escPos = ANSI::findEscapeCharacter(start, end);
     const auto slice_end = escPos ? escPos : end;
-
-    it->slice_ptr = start;
-    it->slice_len = slice_end - start;
-    it->cursor = slice_end - it->input;
-    return true;
+    return Slice {
+        .start = static_cast<size_t>(start - args.input.data()),
+        .length = static_cast<size_t>(slice_end - start),
+        .cursor = static_cast<size_t>(slice_end - args.input.data()),
+    };
 }
-JSC_DEFINE_HOST_FUNCTION(jsFunctionBunStripANSI, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+
+WTF::String Bindgen::Cpp::bunBindgenCpp_BunObject_stripANSI(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_BunObject_stripANSI_Arguments& args)
 {
-    auto& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    const JSC::JSValue input = callFrame->argument(0);
-
-    // Convert to JSString to get the view
-    JSC::JSString* const jsString = input.toString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    // Get StringView to avoid joining sliced strings
-    const auto view = jsString->view(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (view->isEmpty()) {
-        return JSC::JSValue::encode(JSC::jsEmptyString(vm));
-    }
+    const auto& input = args.input;
+    if (input.isEmpty())
+        return input;
 
     std::optional<WTF::String> result;
-    if (view->is8Bit()) {
-        result = stripANSI<Latin1Character>(view->span8());
-    } else {
-        result = stripANSI<UChar>(view->span16());
-    }
+    if (input.is8Bit())
+        result = stripANSI<Latin1Character>(input.span8());
+    else
+        result = stripANSI<UChar>(input.span16());
 
-    if (!result) {
-        // If no ANSI sequences were found, return the original string
-        return JSC::JSValue::encode(jsString);
-    }
-    return JSC::JSValue::encode(JSC::jsString(vm, *result));
+    return result.value_or(input);
 }
 }

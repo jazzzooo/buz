@@ -1,7 +1,7 @@
 const Graph = @This();
 
 pool: *Executor,
-heap: ThreadLocalArena,
+heap: ThreadLocalArena.Borrowed,
 
 /// Mapping user-specified entry points to their Source Index
 entry_points: std.ArrayListUnmanaged(Index) = .empty,
@@ -15,7 +15,7 @@ ast: std.MultiArrayList(JSAst) = .empty,
 
 /// During the scan + parse phase, this value keeps a count of the remaining
 /// tasks. Once it hits zero, the scan phase ends and linking begins. Note
-/// that if `deferred_pending > 0`, it means there are plugin callbacks
+/// that if `deferred_head != null`, it means there are plugin callbacks
 /// to invoke before linking, which can initiate another scan phase.
 ///
 /// Increment and decrement this via `incrementScanCounter` and
@@ -26,12 +26,10 @@ ast: std.MultiArrayList(JSAst) = .empty,
 /// - onResolve and onLoad functions
 /// - Resolving an onDefer promise
 pending_items: u32 = 0,
-/// When an `onLoad` plugin calls `.defer()`, the count from `pending_items`
-/// is "moved" into this counter (pending_items -= 1; deferred_pending += 1)
-///
-/// When `pending_items` hits zero and there are deferred pending tasks, those
-/// tasks will be run, and the count is "moved" back to `pending_items`
-deferred_pending: u32 = 0,
+/// Deferred load callbacks leave `pending_items` until their promise resumes
+/// or their result arrives. Nodes retain the completion after an early result.
+deferred_head: ?*bun.bundle_v2.PluginLoad.Deferred = null,
+deferred_tail: ?*bun.bundle_v2.PluginLoad.Deferred = null,
 
 /// A map of build targets to their corresponding module graphs.
 build_graphs: std.EnumArray(options.Target, PathToSourceIndexMap),
@@ -58,6 +56,9 @@ estimated_file_loader_count: usize = 0,
 css_file_count: usize = 0,
 
 additional_output_files: std.ArrayListUnmanaged(options.OutputFile) = .empty,
+/// Paths remain borrowed from output files after those files move to the build result.
+additional_output_paths: []const []const u8 = &.{},
+metafile_fragments: std.ArrayListUnmanaged([]const u8) = .empty,
 
 kit_referenced_server_data: bool,
 kit_referenced_client_data: bool,
@@ -72,7 +73,6 @@ pub const InputFile = struct {
     secondary_path: []const u8 = "",
     loader: options.Loader = options.Loader.file,
     side_effects: _resolver.SideEffects,
-    allocator: std.mem.Allocator = bun.default_allocator,
     additional_files: BabyList(AdditionalFile) = .{},
     unique_key_for_additional_file: string = "",
     content_hash_for_additional_file: u64 = 0,
@@ -89,24 +89,19 @@ pub inline fn pathToSourceIndexMap(this: *Graph, target: options.Target) *PathTo
     return this.build_graphs.getPtr(target);
 }
 
-/// Schedule a task to be run on the JS thread which resolves the promise of
-/// each `.defer()` called in an onLoad plugin.
-///
-/// Returns true if there were more tasks queued.
+/// Resume this build's deferrals and report whether any callbacks still owe a result.
 pub fn drainDeferredTasks(this: *Graph, transpiler: *BundleV2) bool {
     transpiler.thread_lock.assertLocked();
-
-    if (this.deferred_pending > 0) {
-        this.pending_items += this.deferred_pending;
-        this.deferred_pending = 0;
-
-        transpiler.drain_defer_task.init();
-        transpiler.drain_defer_task.schedule();
-
-        return true;
+    bun.assert(this.pending_items == 0);
+    var current = this.deferred_head;
+    this.deferred_head = null;
+    this.deferred_tail = null;
+    const failed = transpiler.didCompletionFail();
+    while (current) |deferred| {
+        current = deferred.next;
+        deferred.complete(failed);
     }
-
-    return false;
+    return this.pending_items != 0;
 }
 
 pub const Ref = bun.ast.Ref;

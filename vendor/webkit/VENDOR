@@ -2,6 +2,26 @@ Vendored subtree of https://github.com/oven-sh/WebKit
 commit: 549170099226f816a4b204ea1d8fa102fb79eefa (tag autobuild-549170099226f816a4b204ea1d8fa102fb79eefa)
 paths: Source/JavaScriptCore Source/WTF Source/bmalloc Source/cmake
 
+Bun engine obligations:
+- BigInt exposes its maximum word count for embedder validation.
+- ArrayBuffer adoption from external bytes has a fallible factory that consumes the destructor on both success and allocation failure.
+- ArrayBuffer byte leases keep backing storage alive and address-stable, reject direct detachment, and defer shrinking-tail decommit until release. Transfer defaults to rejection; explicitly copy-permitting leases preserve source attachment and copy resizability and maximum length. Any overlapping strict lease still rejects transfer.
+- ArrayBuffer transfer to a fixed-length wrapper prepares allocation and wrapper registration before detaching the source; fallible unshared buffer factories also handle native wrapper allocation failure.
+- GlobalObjectMethodTable carries Bun's transpiled-module analysis hook instead of a weak embedder symbol.
+- The ordinary microtask queue accepts native tasks and invokes GlobalObjectMethodTable hooks to execute or release their owned contexts, including termination and realm teardown.
+- StringImpl exposes layout accessors from which Bun exports the refcount, length, data, and flags constants.
+- ExternalStringImpl static factories mark the wrapper immortal as well as preserving its external buffer.
+- RunLoopBun consumes the generated strong timer export declarations.
+- RegExp exposes a read-only classification of construction-time memory exhaustion so URLPattern preserves OOM instead of reporting invalid syntax.
+- ErrorInstance's embedder stack formatter commits materialization only after success and preserves captured frames when formatting throws or terminates.
+- Timezone overrides expose an allocation-free commit for identifiers validated by Bun's fallible preparation.
+- Class-name inspection exposes an exception-preserving entry point for stack formatting.
+
+Upstreamable fixes:
+- Base64 decoding checks the shared decoder's input bound and avoids overflow when computing the output length.
+- Profiling caches distinguish program and function ranges, preserving independent execution state for overlapping ranges and allowing coverage to exclude program entries from function totals.
+- Inspector controller agent ownership outlives checked observer references and the console client during destruction.
+
 compile_commands.json is copied from the matching
 bun-webkit-linux-amd64-debug autobuild release tarball. The generated
 cmakeconfig.h is copied from both the debug and release tarballs into

@@ -28,8 +28,6 @@
 #include "JavaScriptCore/JSCJSValue.h"
 #include "JavaScriptCore/JSCast.h"
 #include "ZigGlobalObject.h"
-#include "webcrypto/JSCryptoKey.h"
-#include "webcrypto/JSSubtleCrypto.h"
 #include "webcrypto/CryptoKeyOKP.h"
 #include "webcrypto/CryptoKeyEC.h"
 #include "webcrypto/CryptoKeyRSA.h"
@@ -37,11 +35,8 @@
 #include "webcrypto/CryptoKeyHMAC.h"
 #include "webcrypto/CryptoKeyRaw.h"
 #include "webcrypto/CryptoKeyUsage.h"
-#include "webcrypto/JsonWebKey.h"
-#include "webcrypto/JSJsonWebKey.h"
 #include "JavaScriptCore/JSObject.h"
 #include "JavaScriptCore/ObjectConstructor.h"
-#include "headers-handwritten.h"
 #include <openssl/evp.h>
 #include <openssl/mem.h>
 #include <openssl/x509.h>
@@ -63,7 +58,6 @@
 #include "ncrypto.h"
 #include "AsymmetricKeyValue.h"
 using namespace JSC;
-using namespace Bun;
 using JSGlobalObject = JSC::JSGlobalObject;
 using Exception = JSC::Exception;
 using JSValue = JSC::JSValue;

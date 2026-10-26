@@ -36,7 +36,6 @@
 // #include "Document.h"
 // #include "DocumentLoadTiming.h"
 // #include "DocumentLoader.h"
-#include "PerformanceServerTiming.h"
 // #include "ResourceResponse.h"
 #include "ResourceTiming.h"
 #include <wtf/URL.h>
@@ -65,7 +64,7 @@ static double fetchStart(MonotonicTime timeOrigin, const ResourceTiming& resourc
 size_t PerformanceResourceTiming::memoryCost() const
 {
     size_t size = sizeof(PerformanceResourceTiming);
-    size += m_serverTiming.size() * sizeof(PerformanceServerTiming);
+    size += serverTiming().size_bytes();
     return size;
 }
 
@@ -89,16 +88,18 @@ static double entryEndTime(MonotonicTime timeOrigin, const ResourceTiming& resou
     return networkLoadTimeToDOMHighResTimeStamp(timeOrigin, resourceTiming.resourceLoadTiming().endTime());
 }
 
-Ref<PerformanceResourceTiming> PerformanceResourceTiming::create(MonotonicTime timeOrigin, ResourceTiming&& resourceTiming)
+RefPtr<PerformanceResourceTiming> PerformanceResourceTiming::tryCreate(MonotonicTime timeOrigin, ResourceTiming&& resourceTiming)
 {
-    return adoptRef(*new PerformanceResourceTiming(timeOrigin, WTF::move(resourceTiming)));
+    void* allocation = PerformanceEntryMalloc::tryMalloc(sizeof(PerformanceResourceTiming));
+    if (!allocation)
+        return nullptr;
+    return adoptRef(*new (NotNull, allocation) PerformanceResourceTiming(timeOrigin, WTF::move(resourceTiming)));
 }
 
 PerformanceResourceTiming::PerformanceResourceTiming(MonotonicTime timeOrigin, ResourceTiming&& resourceTiming)
     : PerformanceEntry(resourceTiming.url().string(), entryStartTime(timeOrigin, resourceTiming), entryEndTime(timeOrigin, resourceTiming))
     , m_timeOrigin(timeOrigin)
     , m_resourceTiming(WTF::move(resourceTiming))
-    , m_serverTiming(m_resourceTiming.populateServerTiming())
 {
 }
 

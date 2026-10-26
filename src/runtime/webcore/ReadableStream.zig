@@ -1,173 +1,283 @@
 const ReadableStream = @This();
 
-value: JSValue,
-ptr: Source,
+const LockedGetter = bindgen.Module("WebCoreStreams").class("ReadableStream").memberKind("locked", .getter);
+
+fn getLocked(context: bindgen.CallContext(LockedGetter), args: bindgen.Args(LockedGetter)) bindgen.CallError(LockedGetter)!bool {
+    return context.engineIn("readable_streams", "readableStreamIsLocked").call(.{ .stream = args.bindingThis.operand(context) });
+}
+
+comptime {
+    _ = bindgen.Fn(LockedGetter, getLocked);
+}
 
 pub const Strong = struct {
-    held: jsc.Strong.Optional = .empty,
+    owned: ?Owned = null,
+    ptr: Source = .{ .Invalid = {} },
 
-    pub fn has(this: *Strong) bool {
-        return this.held.has();
+    pub fn has(this: *const Strong) bool {
+        return this.owned != null;
+    }
+
+    pub fn isEmpty(this: *const Strong) bool {
+        return this.owned == null;
     }
 
     pub fn isDisturbed(this: *const Strong, global: *jsc.JSGlobalObject) bool {
-        if (this.get(global)) |stream| {
-            return stream.isDisturbed(global);
-        }
-
-        return false;
+        const owned = if (this.owned) |*value| value else return false;
+        var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+        engine_scope.init(global);
+        defer engine_scope.deinit();
+        return engine_scope.engine(ReadableStreamIsDisturbedSchema).call(.{ .stream = owned.operand(&engine_scope) });
     }
 
-    pub fn init(this: ReadableStream, global: *JSGlobalObject) Strong {
-        return .{
-            .held = .create(this.value, global),
+    pub fn isLocked(this: *const Strong, global: *jsc.JSGlobalObject) bool {
+        const owned = if (this.owned) |*value| value else return false;
+        var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+        engine_scope.init(global);
+        defer engine_scope.deinit();
+        return engine_scope.engine(ReadableStreamIsLockedSchema).call(.{ .stream = owned.operand(&engine_scope) });
+    }
+
+    pub fn sizeHint(this: *const Strong) ?Blob.SizeType {
+        return switch (this.ptr) {
+            .Bytes => |bytes| bytes.get().context.size_hint,
+            else => null,
         };
     }
 
-    pub fn get(this: *const Strong, global: *jsc.JSGlobalObject) ?ReadableStream {
-        if (this.held.get()) |value| {
-            return ReadableStream.fromJS(value, global) catch null; // TODO: properly propagate exception upwards
-        }
+    pub fn sourceTag(this: *const Strong) Tag {
+        return std.meta.activeTag(this.ptr);
+    }
+
+    pub fn refreshSource(this: *Strong) bun.JSError!void {
+        const owned = if (this.owned) |*value| value else {
+            this.ptr.deinit();
+            return;
+        };
+        const source = try describeOwned(owned);
+        var previous = this.ptr;
+        this.ptr = source;
+        previous.deinit();
+    }
+
+    pub fn byteStream(this: *const Strong) ?*webcore.ByteStream {
+        return switch (this.ptr) {
+            .Bytes => |bytes| &bytes.get().context,
+            else => null,
+        };
+    }
+
+    pub fn blobLoader(this: *const Strong) ?*webcore.ByteBlobLoader.Loader {
+        return switch (this.ptr) {
+            .Blob => |blob| &blob.get().context,
+            else => null,
+        };
+    }
+
+    pub fn fileReader(this: *const Strong) ?*webcore.FileReader {
+        return switch (this.ptr) {
+            .File => |file| &file.get().context.core,
+            else => null,
+        };
+    }
+
+    pub fn toAnyBlob(this: *Strong, global: *jsc.JSGlobalObject) bun.OOM!?Blob.Any {
+        const owned = if (this.owned) |*value| value else return null;
+        var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+        engine_scope.init(global);
+        defer engine_scope.deinit();
+        if (!engine_scope.engine(ReadableStreamCanConsumeNativeSchema).call(.{ .stream = owned.operand(&engine_scope) })) return null;
+
+        const blob: Blob.Any = switch (this.ptr) {
+            .Blob => |source| (try webcore.ByteBlobLoader.toAnyBlob(&source.get().context)) orelse return null,
+            .File => |source| file: {
+                const reader = &source.get().context.core;
+                if (reader.lazy != .blob) return null;
+                const store = reader.lazy.blob.get();
+                store.ref();
+                var file_blob = try Blob.initWithStore(store);
+                file_blob.offset = @intCast(reader.start_offset orelse 0);
+                file_blob.size = @intCast(reader.max_size orelse Blob.max_size);
+                bun.assert(!reader.started);
+                break :file .{ .Blob = file_blob };
+            },
+            .Bytes => |source| source.get().context.toAnyBlob() orelse return null,
+            else => return null,
+        };
+
+        this.forceDetach(global);
+        this.done(global);
+        return blob;
+    }
+
+    pub fn initOwned(owned: Owned) bun.JSError!Strong {
+        var result: Strong = .{ .owned = owned };
+        errdefer result.owned.?.deinit();
+        result.ptr = try describeOwned(&result.owned.?);
+        return result;
+    }
+
+    pub fn take(this: *Strong) Strong {
+        const result = this.*;
+        this.* = .{};
+        return result;
+    }
+
+    pub fn cloneOwned(this: *const Strong) ?Owned {
+        if (this.owned) |*owned| return owned.clone();
         return null;
+    }
+
+    pub fn clone(this: *const Strong) Strong {
+        return .{
+            .owned = this.cloneOwned(),
+            .ptr = this.ptr.clone(),
+        };
+    }
+
+    pub fn toResult(this: *const Strong, context: anytype) ?Result {
+        const owned = if (this.owned) |*value| value else return null;
+        return owned.toResult(context);
+    }
+
+    pub fn format(
+        this: *const Strong,
+        global: *jsc.JSGlobalObject,
+        options: jsc.ConsoleObject.FormatOptions,
+    ) bun.JSError!bindgen.DOMString {
+        const owned = if (this.owned) |*value| value else return bindgen.DOMString.fromUTF8("undefined");
+        return jsc.ConsoleObject.formatOwnedBranded(global, owned, options);
+    }
+
+    pub fn consumePromise(
+        this: *const Strong,
+        comptime operation_name: []const u8,
+        content_type: ?*const bindgen.DOMString,
+    ) bun.JSError!bindgen.OwnedBrandedValue(ReadableStreamBindings.engineShim(operation_name).ReturnType) {
+        const owned = if (this.owned) |*value| value else @panic("cannot consume an empty readable stream");
+        var scope: bindgen.FocusedEngineScope = undefined;
+        owned.initScope(&scope);
+        defer scope.deinit();
+        const operation = scope.engineIn("readable_streams", operation_name);
+        var result = if (comptime std.mem.eql(u8, operation_name, "readableStreamConsumeFormData"))
+            try operation.call(.{
+                .stream = owned.operand(&scope),
+                .content_type = if (content_type) |value| value.operand() else null,
+            })
+        else result: {
+            if (content_type != null) @panic("content type is only valid for form-data consumption");
+            break :result try operation.call(.{ .stream = owned.operand(&scope) });
+        };
+        defer result.deinit();
+        return result.toOwned();
     }
 
     pub fn deinit(this: *Strong) void {
-        // if (this.held.get()) |val| {
-        //     ReadableStream__detach(val, this.held.globalThis.?);
-        // }
-        this.held.deinit();
+        var value = this.take();
+        value.ptr.deinit();
+        if (value.owned) |*owned| owned.deinit();
     }
 
-    pub fn tee(this: *Strong, global: *JSGlobalObject) bun.JSError!?ReadableStream {
-        if (this.get(global)) |stream| {
-            const first, const second = (try stream.tee(global)) orelse return null;
-            this.held.set(global, first.value);
-            return second;
+    pub fn cancelInStoredRealm(this: *const Strong) void {
+        const global = this.storedGlobal() orelse return;
+        this.cancel(global);
+    }
+
+    pub fn abortInStoredRealm(this: *const Strong) void {
+        const global = this.storedGlobal() orelse return;
+        this.abort(global);
+    }
+
+    pub fn doneInStoredRealm(this: *const Strong) void {
+        _ = this.storedGlobal() orelse return;
+        var source = this.ptr.clone();
+        defer source.deinit();
+        doneSource(source);
+    }
+
+    pub fn done(this: *const Strong, global: *JSGlobalObject) void {
+        if (this.owned == null) return;
+        if (this.storedGlobal().? != global) @panic("readable stream used in a different realm");
+        var source = this.ptr.clone();
+        defer source.deinit();
+        doneSource(source);
+    }
+
+    pub fn cancel(this: *const Strong, global: *JSGlobalObject) void {
+        var snapshot = this.clone();
+        defer snapshot.deinit();
+        const owned = if (snapshot.owned) |*value| value else return;
+        var scope: bindgen.FocusedEngineScope = undefined;
+        scope.init(global);
+        defer scope.deinit();
+        if (scope.engine(ReadableStreamCancelSchema).call(.{ .stream = owned.operand(&scope) })) |promise| {
+            scope.engine(PromiseSetHandledSchema).call(.{ .promise = promise.operand(&scope).asPromise() });
+        } else |err| {
+            global.reportActiveExceptionAsUnhandled(err);
         }
+        doneSource(snapshot.ptr);
+    }
+
+    pub fn cancelWithReasonRoot(this: *const Strong, global: *JSGlobalObject, reason: *const bindgen.Root) void {
+        var snapshot = this.clone();
+        defer snapshot.deinit();
+        const owned = if (snapshot.owned) |*value| value else return;
+        var scope: bindgen.FocusedEngineScope = undefined;
+        scope.init(global);
+        defer scope.deinit();
+        if (scope.engine(ReadableStreamCancelWithReasonSchema).call(.{
+            .stream = owned.operand(&scope),
+            .reason = reason.operand(&scope).asAny(),
+        })) |promise| {
+            scope.engine(PromiseSetHandledSchema).call(.{ .promise = promise.operand(&scope).asPromise() });
+        } else |err| global.reportActiveExceptionAsUnhandled(err);
+        doneSource(snapshot.ptr);
+    }
+
+    pub fn abort(this: *const Strong, global: *JSGlobalObject) void {
+        this.cancel(global);
+    }
+
+    pub fn forceDetach(this: *const Strong, global: *JSGlobalObject) void {
+        const owned = if (this.owned) |*value| value else return;
+        var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+        engine_scope.init(global);
+        defer engine_scope.deinit();
+        engine_scope.engine(ReadableStreamDetachSchema).call(.{ .stream = owned.operand(&engine_scope) });
+    }
+
+    pub fn retainStreamError(this: *const Strong, err: *const streams.Result.StreamError) bun.JSError!bindgen.Root {
+        const global = this.storedGlobal() orelse @panic("empty stream handle has no realm");
+        return err.toRoot(global);
+    }
+
+    pub fn storedGlobal(this: *const Strong) ?*JSGlobalObject {
+        if (this.owned) |*owned| return @ptrCast(@alignCast(owned.storedRealm()));
         return null;
+    }
+
+    pub fn tee(this: *Strong, global: *JSGlobalObject) bun.JSError!?Strong {
+        const owned = if (this.owned) |*value| value else return null;
+        var scope: bindgen.FocusedEngineScope = undefined;
+        scope.init(global);
+        defer scope.deinit();
+        var pair = try scope.engine(ReadableStreamTeeSchema).call(.{ .stream = owned.operand(&scope) });
+        defer bindgen.deinitReturn(ReadableStreamTeeSchema, &pair);
+        var first = try Strong.initOwned(try pair.first.toOwned());
+        errdefer first.deinit();
+        const second = try Strong.initOwned(try pair.second.toOwned());
+        var previous = this.take();
+        this.* = first.take();
+        previous.deinit();
+        return second;
     }
 };
 
-extern fn ReadableStream__tee(stream: JSValue, globalThis: *JSGlobalObject, out1: *jsc.JSValue, out2: *jsc.JSValue) bool;
-pub fn tee(this: *const ReadableStream, globalThis: *JSGlobalObject) bun.JSError!?struct { ReadableStream, ReadableStream } {
-    var out1: jsc.JSValue = .zero;
-    var out2: jsc.JSValue = .zero;
-    if (!try bun.jsc.fromJSHostCallGeneric(globalThis, @src(), ReadableStream__tee, .{ this.value, globalThis, &out1, &out2 })) {
-        return null;
-    }
-    const out_stream2 = try ReadableStream.fromJS(out2, globalThis) orelse return null;
-    const out_stream1 = try ReadableStream.fromJS(out1, globalThis) orelse return null;
-    return .{ out_stream1, out_stream2 };
-}
-
-pub fn toJS(this: *const ReadableStream) JSValue {
-    return this.value;
-}
-
-pub fn reloadTag(this: *ReadableStream, globalThis: *jsc.JSGlobalObject) bun.JSError!void {
-    if (try ReadableStream.fromJS(this.value, globalThis)) |stream| {
-        this.* = stream;
-    } else {
-        this.* = .{ .ptr = .{ .Invalid = {} }, .value = .zero };
-    }
-}
-
-pub fn toAnyBlob(
-    stream: *ReadableStream,
-    globalThis: *jsc.JSGlobalObject,
-) ?Blob.Any {
-    if (stream.isDisturbed(globalThis)) {
-        return null;
-    }
-
-    stream.reloadTag(globalThis) catch {}; // TODO: properly propagate exception upwards
-
-    switch (stream.ptr) {
-        .Blob => |blobby| {
-            if (blobby.toAnyBlob(globalThis)) |blob| {
-                stream.done(globalThis);
-                return blob;
-            }
-        },
-        .File => |blobby| {
-            if (blobby.lazy == .blob) {
-                var blob = Blob.initWithStore(blobby.lazy.blob, globalThis);
-                blob.store.?.ref();
-                // it should be lazy, file shouldn't have opened yet.
-                bun.assert(!blobby.started);
-                stream.done(globalThis);
-                return .{ .Blob = blob };
-            }
-        },
-        .Bytes => |bytes| {
-            // If we've received the complete body by the time this function is called
-            // we can avoid streaming it and convert it to a Blob
-            if (bytes.toAnyBlob()) |blob| {
-                stream.done(globalThis);
-                return blob;
-            }
-
-            return null;
-        },
+fn doneSource(source_value: Source) void {
+    switch (source_value) {
+        inline .Blob, .File, .Bytes => |source| source.get().cancel(),
         else => {},
     }
-
-    return null;
-}
-
-pub fn done(this: *const ReadableStream, globalThis: *JSGlobalObject) void {
-    jsc.markBinding(@src());
-    // done is called when we are done consuming the stream
-    // cancel actually mark the stream source as done
-    // this will resolve any pending promises to done: true
-    switch (this.ptr) {
-        .Blob => |source| {
-            source.parent().cancel();
-        },
-        .File => |source| {
-            source.parent().cancel();
-        },
-        .Bytes => |source| {
-            source.parent().cancel();
-        },
-        else => {},
-    }
-    this.detachIfPossible(globalThis);
-}
-
-pub fn cancel(this: *const ReadableStream, globalThis: *JSGlobalObject) void {
-    jsc.markBinding(@src());
-    // cancel the stream
-    ReadableStream__cancel(this.value, globalThis);
-    // mark the stream source as done
-    this.done(globalThis);
-}
-
-/// Cancel the stream and forward `reason` verbatim to the underlying source's
-/// cancel algorithm (the spec's ReadableStreamCancel). Unlike `cancel()`,
-/// this does not synthesize a DOMException — fetch() uses it to surface
-/// `AbortSignal.reason` to the request body's cancel callback.
-pub fn cancelWithReason(this: *const ReadableStream, globalThis: *JSGlobalObject, reason: jsc.JSValue) void {
-    jsc.markBinding(@src());
-    ReadableStream__cancelWithReason(this.value, globalThis, reason);
-    this.done(globalThis);
-}
-
-pub fn abort(this: *const ReadableStream, globalThis: *JSGlobalObject) void {
-    jsc.markBinding(@src());
-    // for now we are just calling cancel should be fine
-    this.cancel(globalThis);
-}
-
-pub fn forceDetach(this: *const ReadableStream, globalObject: *JSGlobalObject) void {
-    ReadableStream__detach(this.value, globalObject);
-}
-
-/// Decrement Source ref count and detach the underlying stream if ref count is zero
-/// be careful, this can invalidate the stream do not call this multiple times
-/// this is meant to be called only once when we are done consuming the stream or from the ReadableStream.Strong.deinit
-pub fn detachIfPossible(_: *const ReadableStream, _: *JSGlobalObject) void {
-    jsc.markBinding(@src());
 }
 
 pub const Tag = enum(i32) {
@@ -200,145 +310,133 @@ pub const Source = union(Tag) {
     /// ReadableByteStreamController
     /// but with a BlobLoader
     /// we can skip the BlobLoader and just use the underlying Blob
-    Blob: *webcore.ByteBlobLoader,
+    Blob: bindgen.RefNative(webcore.ByteBlobLoader.Source, .vm),
 
     /// ReadableByteStreamController
     /// but with a FileLoader
     /// we can skip the FileLoader and just use the underlying File
-    File: *webcore.FileReader,
+    File: bindgen.RefNative(webcore.FileReaderEngine.Source, .vm),
 
     /// This is a direct readable stream
     /// That means we can turn it into whatever we want
     Direct: void,
 
-    Bytes: *webcore.ByteStream,
+    Bytes: bindgen.RefNative(webcore.ByteStream.Source, .vm),
+
+    fn clone(this: Source) Source {
+        return switch (this) {
+            inline .Blob, .File, .Bytes => |source, tag| @unionInit(Source, @tagName(tag), source.clone()),
+            .Invalid, .JavaScript, .Direct => this,
+        };
+    }
+
+    fn deinit(this: *Source) void {
+        var value = this.*;
+        this.* = .{ .Invalid = {} };
+        switch (value) {
+            inline .Blob, .File, .Bytes => |*source| source.deinit(),
+            .Invalid, .JavaScript, .Direct => {},
+        }
+    }
 };
 
-extern fn ReadableStreamTag__tagged(globalObject: *JSGlobalObject, possibleReadableStream: *JSValue, ptr: *?*anyopaque) Tag;
-extern fn ReadableStream__isDisturbed(possibleReadableStream: JSValue, globalObject: *JSGlobalObject) bool;
-extern fn ReadableStream__isLocked(possibleReadableStream: JSValue, globalObject: *JSGlobalObject) bool;
-extern fn ReadableStream__empty(*JSGlobalObject) jsc.JSValue;
-extern fn ReadableStream__used(*JSGlobalObject) jsc.JSValue;
-extern fn ReadableStream__cancel(stream: JSValue, *JSGlobalObject) void;
-extern fn ReadableStream__cancelWithReason(stream: JSValue, *JSGlobalObject, reason: JSValue) void;
-extern fn ReadableStream__abort(stream: JSValue, *JSGlobalObject) void;
-extern fn ReadableStream__detach(stream: JSValue, *JSGlobalObject) void;
-extern fn ReadableStream__fromBlob(
-    *JSGlobalObject,
-    store: *anyopaque,
-    offset: usize,
-    length: usize,
-) jsc.JSValue;
+pub const Owned = bindgen.OwnedBrandedValue(ReadableStreamEmptyShim.ReturnType);
+pub const Result = Owned.Result;
 
-pub fn isDisturbed(this: *const ReadableStream, globalObject: *JSGlobalObject) bool {
-    jsc.markBinding(@src());
-    return isDisturbedValue(this.value, globalObject);
+fn describeOwned(owned: *const Owned) bun.JSError!Source {
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    owned.initScope(&engine_scope);
+    defer engine_scope.deinit();
+    var description = try engine_scope.engine(ReadableStreamDescribeSchema).call(.{ .stream = owned.operand(&engine_scope) });
+    return takeDescriptionSource(&description);
 }
 
-pub fn isDisturbedValue(value: jsc.JSValue, globalObject: *JSGlobalObject) bool {
-    jsc.markBinding(@src());
-    return ReadableStream__isDisturbed(value, globalObject);
-}
-
-pub fn isLocked(this: *const ReadableStream, globalObject: *JSGlobalObject) bool {
-    jsc.markBinding(@src());
-    return ReadableStream__isLocked(this.value, globalObject);
-}
-
-pub fn fromJS(value: JSValue, globalThis: *JSGlobalObject) bun.JSError!?ReadableStream {
-    jsc.markBinding(@src());
-    value.ensureStillAlive();
-    var out = value;
-
-    var ptr: ?*anyopaque = null;
-    return switch (try bun.jsc.fromJSHostCallGeneric(globalThis, @src(), ReadableStreamTag__tagged, .{ globalThis, &out, &ptr })) {
-        .JavaScript => ReadableStream{
-            .value = out,
-            .ptr = .{
-                .JavaScript = {},
+fn takeDescriptionSource(description: anytype) Source {
+    if (description.source) |*source| {
+        const result: Source = switch (source.*) {
+            .blob => |*ref| .{
+                .Blob = ref.get(webcore.ByteBlobLoader.Source.JSBinding).source.clone(),
             },
-        },
-        .Blob => ReadableStream{
-            .value = out,
-            .ptr = .{
-                .Blob = @ptrCast(@alignCast(ptr.?)),
+            .file => |*ref| .{
+                .File = ref.get(webcore.FileReaderEngine.Source.JSBinding).source.clone(),
             },
-        },
-        .File => ReadableStream{
-            .value = out,
-            .ptr = .{
-                .File = @ptrCast(@alignCast(ptr.?)),
+            .bytes => |*ref| .{
+                .Bytes = ref.get(webcore.ByteStream.Source.JSBinding).source.clone(),
             },
-        },
+        };
+        description.source = null;
+        return result;
+    }
 
-        .Bytes => ReadableStream{
-            .value = out,
-            .ptr = .{
-                .Bytes = @ptrCast(@alignCast(ptr.?)),
-            },
-        },
-
-        // .HTTPRequest => ReadableStream{
-        //     .value = out,
-        //     .ptr = .{
-        //         .HTTPRequest = ptr.asPtr(HTTPRequest),
-        //     },
-        // },
-        // .HTTPSRequest => ReadableStream{
-        //     .value = out,
-        //     .ptr = .{
-        //         .HTTPSRequest = ptr.asPtr(HTTPSRequest),
-        //     },
-        // },
-        else => null,
+    return switch (description.tag) {
+        .JavaScript => .{ .JavaScript = {} },
+        .Direct => .{ .Direct = {} },
+        .Blob, .File, .Bytes => @panic("native readable stream description omitted its source"),
     };
 }
 
-extern fn ZigGlobalObject__createNativeReadableStream(*JSGlobalObject, nativePtr: JSValue) JSValue;
-
-pub fn fromNative(globalThis: *JSGlobalObject, native: jsc.JSValue) bun.JSError!jsc.JSValue {
-    jsc.markBinding(@src());
-    return bun.jsc.fromJSHostCall(globalThis, @src(), ZigGlobalObject__createNativeReadableStream, .{ globalThis, native });
+fn fromNative(
+    comptime ClassSchema: type,
+    globalThis: *JSGlobalObject,
+    native: *const bindgen.ClassRef(ClassSchema),
+) bun.JSError!Owned {
+    var scope: bindgen.FocusedEngineScope = undefined;
+    scope.init(globalThis);
+    defer scope.deinit();
+    const NativeSource = bindgen.EngineArgumentType(ReadableStreamCreateNativeSchema, "native");
+    const source: NativeSource = if (ClassSchema == BlobSourceSchema)
+        .{ .blob = native.operand(&scope) }
+    else if (ClassSchema == BytesSourceSchema)
+        .{ .bytes = native.operand(&scope) }
+    else if (ClassSchema == FileSourceSchema)
+        .{ .file = native.operand(&scope) }
+    else
+        @compileError("unsupported native readable stream source class");
+    const result = try scope.engine(ReadableStreamCreateNativeSchema).call(.{ .native = source });
+    return result.toOwned();
 }
 
-pub fn fromOwnedSlice(globalThis: *JSGlobalObject, bytes: []u8, recommended_chunk_size: Blob.SizeType) bun.JSError!jsc.JSValue {
-    var blob = Blob.init(bytes, bun.default_allocator, globalThis);
+pub fn fromOwnedSliceResultFromBinding(
+    context: anytype,
+    bytes: []u8,
+    recommended_chunk_size: Blob.SizeType,
+) bun.bindgen.CallError(@TypeOf(context))!Result {
+    const global = context.viewToken().globalObject();
+    comptime requireSubprocessReadableContext(@TypeOf(context));
+    var owned = try fromOwnedSliceOwned(global, bytes, recommended_chunk_size);
+    defer owned.deinit();
+    return owned.toResult(context);
+}
+
+pub fn fromOwnedSliceOwned(globalThis: *JSGlobalObject, bytes: []u8, recommended_chunk_size: Blob.SizeType) bun.JSError!Owned {
+    var blob = try Blob.init(bytes, bun.default_allocator);
     defer blob.deinit();
-    return fromBlobCopyRef(globalThis, &blob, recommended_chunk_size);
+    return fromBlobCopyRefOwned(globalThis, &blob, recommended_chunk_size);
 }
 
-pub fn fromBlobCopyRef(globalThis: *JSGlobalObject, blob: *const Blob, recommended_chunk_size: Blob.SizeType) bun.JSError!jsc.JSValue {
-    jsc.markBinding(@src());
-    var store = blob.store orelse {
-        return ReadableStream.empty(globalThis);
+pub fn fromBlobCopyRefOwned(globalThis: *JSGlobalObject, blob: *const Blob, recommended_chunk_size: Blob.SizeType) bun.JSError!Owned {
+    const store = blob.storePtr() orelse {
+        return emptyOwned(globalThis);
     };
     switch (store.data) {
         .bytes => {
-            var reader = webcore.ByteBlobLoader.Source.new(
-                .{
-                    .globalThis = globalThis,
-                    .context = undefined,
-                },
-            );
-            reader.context.setup(blob, recommended_chunk_size);
-            return reader.toReadableStream(globalThis);
+            const reader = try webcore.ByteBlobLoader.Source.create(globalThis, .{});
+            defer reader.deref();
+            try reader.context.setup(blob, recommended_chunk_size);
+            return reader.toReadableStreamOwned(globalThis);
         },
         .file => {
-            var reader = webcore.FileReader.Source.new(.{
-                .globalThis = globalThis,
-                .context = .{
-                    .event_loop = jsc.EventLoopHandle.init(globalThis.bunVM().eventLoop()),
-                    .start_offset = blob.offset,
-                    .max_size = if (blob.size != Blob.max_size) blob.size else null,
+            const reader = try webcore.FileReaderEngine.create(globalThis, .{
+                .event_loop = globalThis.bunVM().runtimeLoopHandle(),
+                .start_offset = blob.offset,
+                .max_size = if (blob.size != Blob.max_size) blob.size else null,
 
-                    .lazy = .{
-                        .blob = store,
-                    },
+                .lazy = .{
+                    .blob = .init(store),
                 },
             });
-            store.ref();
-
-            return reader.toReadableStream(globalThis);
+            defer reader.deref();
+            return reader.toReadableStreamOwned(globalThis);
         },
         .s3 => |*s3| {
             const credentials = s3.getCredentials();
@@ -346,38 +444,217 @@ pub fn fromBlobCopyRef(globalThis: *JSGlobalObject, blob: *const Blob, recommend
             const proxy = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
             const proxy_url = if (proxy) |p| p.href else null;
 
-            return bun.S3.readableStream(credentials, path, blob.offset, if (blob.size != Blob.max_size) blob.size else null, proxy_url, s3.request_payer, globalThis);
+            return S3StreamEngine.readableStream(credentials, path, blob.offset, if (blob.size != Blob.max_size) blob.size else null, proxy_url, s3.request_payer, globalThis);
         },
     }
 }
 
-pub fn fromPipe(
+pub fn fromPipeOwned(
     globalThis: *JSGlobalObject,
+    _: anytype,
+    buffered_reader: anytype,
+) bun.JSError!Owned {
+    const source = try webcore.FileReaderEngine.create(globalThis, .{
+        .event_loop = globalThis.bunVM().runtimeLoopHandle(),
+    });
+    defer source.deref();
+    const readable = try source.toReadableStreamOwned(globalThis);
+    source.context.core.reader.from(buffered_reader, &source.context.core);
+    return readable;
+}
+
+pub fn fromPipeResultFromBinding(
+    context: anytype,
     parent: anytype,
     buffered_reader: anytype,
-) bun.JSError!jsc.JSValue {
-    _ = parent; // autofix
-    jsc.markBinding(@src());
-    var source = webcore.FileReader.Source.new(.{
-        .globalThis = globalThis,
-        .context = .{
-            .event_loop = jsc.EventLoopHandle.init(globalThis.bunVM().eventLoop()),
-        },
-    });
-    source.context.reader.from(buffered_reader, &source.context);
-
-    return source.toReadableStream(globalThis);
+) bun.bindgen.CallError(@TypeOf(context))!Result {
+    const global = context.viewToken().globalObject();
+    comptime requireSubprocessReadableContext(@TypeOf(context));
+    var owned = try fromPipeOwned(global, parent, buffered_reader);
+    defer owned.deinit();
+    return owned.toResult(context);
 }
 
-pub fn empty(globalThis: *JSGlobalObject) bun.JSError!jsc.JSValue {
-    jsc.markBinding(@src());
-    return bun.cpp.ReadableStream__empty(globalThis);
+pub fn emptyOwned(globalThis: *JSGlobalObject) bun.JSError!Owned {
+    var scope: bindgen.FocusedEngineScope = undefined;
+    scope.init(globalThis);
+    defer scope.deinit();
+    const result = try scope.engine(ReadableStreamEmptyShim).call(.{});
+    return result.toOwned();
 }
 
-pub fn used(globalThis: *JSGlobalObject) bun.JSError!jsc.JSValue {
-    jsc.markBinding(@src());
-    return bun.cpp.ReadableStream__used(globalThis);
+pub fn emptyResultFromBinding(
+    context: anytype,
+    canceled: bool,
+) bun.bindgen.CallError(@TypeOf(context))!Result {
+    const global = context.viewToken().globalObject();
+    comptime requireSubprocessReadableContext(@TypeOf(context));
+    var owned = try emptyOwned(global);
+    defer owned.deinit();
+    if (canceled) {
+        var stream = try Strong.initOwned(owned.clone());
+        defer stream.deinit();
+        stream.cancel(global);
+    }
+    return owned.toResult(context);
 }
+
+fn requireSubprocessReadableContext(comptime Context: type) void {
+    const implementation = bindgen.ContextImplementationName(Context);
+    const Schema = if (std.mem.eql(u8, implementation, "bindGetReadable"))
+        SubprocessClassSchema.memberKind("readable", .getter)
+    else if (std.mem.eql(u8, implementation, "bindGetStderr"))
+        SubprocessClassSchema.memberKind("stderr", .getter)
+    else if (std.mem.eql(u8, implementation, "bindGetStdout"))
+        SubprocessClassSchema.memberKind("stdout", .getter)
+    else
+        @compileError("subprocess readable-stream construction requires an exact subprocess output getter context");
+    bindgen.requireFunctionContext(Context, Schema);
+    if (bindgen.Args(Context) != bindgen.Args(Schema) or
+        bindgen.Return(Context) != bindgen.Return(Schema))
+    {
+        @compileError("subprocess readable-stream construction requires its exact getter arguments and result");
+    }
+}
+
+pub fn usedOwned(globalThis: *JSGlobalObject) bun.JSError!Owned {
+    var scope: bindgen.FocusedEngineScope = undefined;
+    scope.init(globalThis);
+    defer scope.deinit();
+    const result = try scope.engine(ReadableStreamUsedShim).call(.{});
+    return result.toOwned();
+}
+
+const BufferedSourceCompletions = bindgen.MaterializedCompletionSet(.{
+    BlobSourceSchema.memberKind("arrayBuffer", .method),
+    BlobSourceSchema.memberKind("blob", .method),
+    BlobSourceSchema.memberKind("bytes", .method),
+    BlobSourceSchema.memberKind("json", .method),
+    BlobSourceSchema.memberKind("text", .method),
+    BytesSourceSchema.memberKind("arrayBuffer", .method),
+    BytesSourceSchema.memberKind("blob", .method),
+    BytesSourceSchema.memberKind("bytes", .method),
+    BytesSourceSchema.memberKind("json", .method),
+    BytesSourceSchema.memberKind("text", .method),
+}, Blob.BlobReadPayload, Blob.BlobReadCompletionOps);
+
+pub const BufferAction = union(enum) {
+    text: PendingBufferAction,
+    array_buffer: PendingBufferAction,
+    blob: PendingBufferAction,
+    bytes: PendingBufferAction,
+    json: PendingBufferAction,
+    consumed: void,
+
+    const PendingBufferAction = struct {
+        completion: BufferedSourceCompletions.Owned,
+        global: *JSGlobalObject,
+    };
+
+    pub const Kind = enum {
+        text,
+        array_buffer,
+        blob,
+        bytes,
+        json,
+    };
+
+    fn init(comptime kind: Kind, global: *JSGlobalObject, context: anytype, view: anytype) BufferAction {
+        const completion = BufferedSourceCompletions.takeForContext(context, view);
+        return switch (kind) {
+            .text => .{ .text = .{ .completion = completion, .global = global } },
+            .array_buffer => .{ .array_buffer = .{ .completion = completion, .global = global } },
+            .blob => .{ .blob = .{ .completion = completion, .global = global } },
+            .bytes => .{ .bytes = .{ .completion = completion, .global = global } },
+            .json => .{ .json = .{ .completion = completion, .global = global } },
+        };
+    }
+
+    pub fn take(this: *BufferAction) BufferAction {
+        if (this.* == .consumed) @panic("buffer completion was consumed twice");
+        const result = this.*;
+        this.* = .{ .consumed = {} };
+        return result;
+    }
+
+    fn takeCompletion(this: *BufferAction) BufferedSourceCompletions.Owned {
+        return switch (this.take()) {
+            inline .text, .array_buffer, .blob, .bytes, .json => |pending| pending.completion,
+            .consumed => unreachable,
+        };
+    }
+
+    pub fn outOfMemory(this: *BufferAction) void {
+        var completion = this.takeCompletion();
+        completion.outOfMemory();
+    }
+
+    pub fn fulfill(this: *BufferAction, value: *Blob.Any) void {
+        switch (this.take()) {
+            .blob => |pending| {
+                var completion = pending.completion;
+                var blob = value.intoBlob() catch {
+                    value.detach();
+                    completion.outOfMemory();
+                    return;
+                };
+                defer blob.deinit();
+                const payload = bun.default_allocator.create(Blob.BlobReadPayload) catch {
+                    completion.outOfMemory();
+                    return;
+                };
+                const owned = Blob.new(&blob) catch {
+                    bun.destroy(payload);
+                    completion.outOfMemory();
+                    return;
+                };
+                payload.* = .{ .blob = .adopt(owned) };
+                completion.complete(payload);
+            },
+            inline .text, .array_buffer, .bytes, .json => |pending| {
+                value.startRead(pending.global, pending.completion, .{});
+            },
+            .consumed => unreachable,
+        }
+    }
+
+    pub fn reject(this: *BufferAction, stream_error: *streams.Result.StreamError) void {
+        var completion = this.takeCompletion();
+        switch (stream_error.*) {
+            .OutOfMemory => completion.outOfMemory(),
+            .Error => completion.fail(.system, stream_error.takeSystem()),
+            .AbortReason => |reason| {
+                const payload = bun.default_allocator.create(Blob.BlobReadPayload) catch {
+                    completion.outOfMemory();
+                    return;
+                };
+                payload.* = .{ .abort_reason = reason };
+                completion.complete(payload);
+            },
+            .JSValue => |*value| {
+                var root = value.takeRoot() orelse @panic("stored stream error has no JS value");
+                completion.reject(&root, .{ .attach_async_stack = true });
+            },
+            .consumed => @panic("consumed stream error cannot reject a read"),
+        }
+    }
+
+    pub fn failBodyAlreadyUsed(this: *BufferAction) void {
+        var completion = this.takeCompletion();
+        completion.fail(.body_already_used, {});
+    }
+
+    pub fn failAlreadyBuffering(this: *BufferAction) void {
+        var completion = this.takeCompletion();
+        completion.fail(.already_buffering, {});
+    }
+
+    pub fn deinit(this: *BufferAction) void {
+        if (this.* == .consumed) return;
+        var completion = this.takeCompletion();
+        completion.release();
+    }
+};
 
 pub fn NewSource(
     comptime Context: type,
@@ -387,44 +664,41 @@ pub fn NewSource(
     comptime onCancel: fn (this: *Context) void,
     comptime deinit_fn: fn (this: *Context) void,
     comptime setRefUnrefFn: ?fn (this: *Context, enable: bool) void,
-    comptime drainInternalBuffer: ?fn (this: *Context) bun.ByteList,
+    comptime drainInternalBuffer: fn (this: *Context) bun.OOM!bindgen.OwnedBytes,
     comptime memoryCostFn: ?fn (this: *const Context) usize,
-    comptime toBufferedValue: ?fn (this: *Context, globalThis: *jsc.JSGlobalObject, action: streams.BufferAction.Tag) bun.JSError!jsc.JSValue,
+    comptime toBufferedValue: ?fn (this: *Context, action: *BufferAction) void,
 ) type {
     return struct {
         context: Context,
         cancelled: bool = false,
         ref_count: u32 = 1,
         pending_err: ?Syscall.Error = null,
-        close_handler: ?*const fn (?*anyopaque) void = null,
-        close_ctx: ?*anyopaque = null,
-        close_jsvalue: jsc.Strong.Optional = .empty,
-        cancel_handler: ?*const fn (?*anyopaque) void = null,
-        cancel_ctx: ?*anyopaque = null,
+        cancel_handler: ?*const fn (bindgen.NativeCallbackContext(.vm)) void = null,
+        cancel_ctx: ?bindgen.NativeCallbackContext(.vm) = null,
         globalThis: *JSGlobalObject = undefined,
-        this_jsvalue: jsc.JSValue = .zero,
+        wrapper: bindgen.ClassWrapperHandle(ClassSchema, .weak) = .empty,
         is_closed: bool = false,
 
         const This = @This();
         const ReadableStreamSourceType = @This();
 
-        pub const new = bun.TrivialNew(@This());
-        pub const deinit = bun.TrivialDeinit(@This());
-
-        pub fn pull(this: *This, buf: []u8) streams.Result {
-            return onPull(&this.context, buf, JSValue.zero);
+        /// Consumes the initialized context, including on allocation failure.
+        pub fn create(globalThis: *JSGlobalObject, context: Context) bun.OOM!*This {
+            const source = bun.default_allocator.create(This) catch |err| {
+                var owned_context = context;
+                deinit_fn(&owned_context);
+                return err;
+            };
+            source.* = .{ .context = context, .globalThis = globalThis };
+            return source;
         }
 
         pub fn ref(this: *This) void {
-            if (setRefUnrefFn) |setRefUnref| {
-                setRefUnref(&this.context, true);
-            }
+            this.incrementCount();
         }
 
-        pub fn unref(this: *This) void {
-            if (setRefUnrefFn) |setRefUnref| {
-                setRefUnref(&this.context, false);
-            }
+        pub fn deref(this: *This) void {
+            _ = this.decrementCount();
         }
 
         pub fn setRef(this: *This, value: bool) void {
@@ -433,15 +707,15 @@ pub fn NewSource(
             }
         }
 
-        pub fn start(this: *This) streams.Start {
+        pub fn start(this: *This) streams.ReadableStart {
             return onStart(&this.context);
         }
 
-        pub fn onPullFromJS(this: *This, buf: []u8, view: JSValue) streams.Result {
-            return onPull(&this.context, buf, view);
+        pub fn onPullFromJS(this: *This, buf: []u8) streams.Result {
+            return onPull(&this.context, buf);
         }
 
-        pub fn onStartFromJS(this: *This) streams.Start {
+        pub fn onStartFromJS(this: *This) streams.ReadableStart {
             return onStart(&this.context);
         }
 
@@ -450,27 +724,26 @@ pub fn NewSource(
                 return;
             }
 
+            this.ref();
+            defer this.deref();
             this.cancelled = true;
+            this.is_closed = true;
             onCancel(&this.context);
             if (this.cancel_handler) |handler| {
                 this.cancel_handler = null;
-                handler(this.cancel_ctx);
+                handler(bun.take(&this.cancel_ctx).?);
             }
         }
 
         pub fn onClose(this: *This) void {
-            if (this.cancelled) {
+            if (this.cancelled or this.is_closed) {
                 return;
             }
 
-            if (this.close_handler) |close| {
-                this.close_handler = null;
-                if (close == &JSReadableStreamSource.onClose) {
-                    JSReadableStreamSource.onClose(this);
-                } else {
-                    close(this.close_ctx);
-                }
-            }
+            this.ref();
+            defer this.deref();
+            this.is_closed = true;
+            JSBinding.onClose(this);
         }
 
         pub fn incrementCount(this: *This) void {
@@ -486,8 +759,11 @@ pub fn NewSource(
 
             this.ref_count -= 1;
             if (this.ref_count == 0) {
-                this.close_jsvalue.deinit();
+                this.cancelled = true;
+                this.cancel_handler = null;
+                this.wrapper.deinit();
                 deinit_fn(&this.context);
+                bun.destroy(this);
                 return 0;
             }
 
@@ -503,79 +779,21 @@ pub fn NewSource(
             return null;
         }
 
-        pub fn drain(this: *This) bun.ByteList {
-            if (drainInternalBuffer) |drain_fn| {
-                return drain_fn(&this.context);
+        pub fn toReadableStreamOwned(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject) bun.JSError!Owned {
+            if (try this.wrapper.toOwned()) |native| {
+                var native_ref = native;
+                defer native_ref.deinit();
+                return ReadableStream.fromNative(ClassSchema, globalThis, &native_ref);
             }
 
-            return .{};
+            this.wrapper.deinit();
+            const binding = try bun.default_allocator.create(JSBinding);
+            binding.* = .{ .source = .init(this) };
+            var native_ref = try Binding.adoptNativeRef(binding, globalThis);
+            defer native_ref.deinit();
+            this.wrapper = try Binding.WeakWrapper.initRef(&native_ref);
+            return ReadableStream.fromNative(ClassSchema, globalThis, &native_ref);
         }
-
-        pub fn toReadableStream(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject) bun.JSError!jsc.JSValue {
-            const out_value = brk: {
-                if (this.this_jsvalue != .zero) {
-                    break :brk this.this_jsvalue;
-                }
-
-                break :brk this.toJS(globalThis);
-            };
-            out_value.ensureStillAlive();
-            this.this_jsvalue = out_value;
-            return ReadableStream.fromNative(globalThis, out_value);
-        }
-
-        pub fn setRawModeFromJS(this: *ReadableStreamSourceType, global: *jsc.JSGlobalObject, call_frame: *jsc.CallFrame) bun.JSError!JSValue {
-            if (@hasDecl(Context, "setRawMode")) {
-                const flag = call_frame.argument(0);
-                if (Environment.allow_assert) {
-                    bun.assert(flag.isBoolean());
-                }
-                return switch (this.context.setRawMode(flag == .true)) {
-                    .result => .js_undefined,
-                    .err => |e| e.toJS(global),
-                };
-            }
-
-            @compileError("setRawMode is not implemented on " ++ @typeName(Context));
-        }
-
-        pub fn setFlowingFromJS(this: *ReadableStreamSourceType, _: *jsc.JSGlobalObject, call_frame: *jsc.CallFrame) bun.JSError!JSValue {
-            if (@hasDecl(Context, "setFlowing")) {
-                const flag = call_frame.argument(0);
-                if (Environment.allow_assert) {
-                    bun.assert(flag.isBoolean());
-                }
-                this.context.setFlowing(flag == .true);
-                return .js_undefined;
-            }
-
-            return .js_undefined;
-        }
-
-        const supports_ref = setRefUnrefFn != null;
-
-        pub const js = @field(jsc.Codegen, "JS" ++ name_ ++ "InternalReadableStreamSource");
-        pub const toJS = js.toJS;
-        pub const fromJS = js.fromJS;
-        pub const fromJSDirect = js.fromJSDirect;
-
-        pub const drainFromJS = JSReadableStreamSource.drain;
-        pub const startFromJS = JSReadableStreamSource.start;
-        pub const pullFromJS = JSReadableStreamSource.pull;
-        pub const cancelFromJS = JSReadableStreamSource.cancel;
-        pub const updateRefFromJS = JSReadableStreamSource.updateRef;
-        pub const setOnCloseFromJS = JSReadableStreamSource.setOnCloseFromJS;
-        pub const getOnCloseFromJS = JSReadableStreamSource.getOnCloseFromJS;
-        pub const setOnDrainFromJS = JSReadableStreamSource.setOnDrainFromJS;
-        pub const getOnDrainFromJS = JSReadableStreamSource.getOnDrainFromJS;
-        pub const finalize = JSReadableStreamSource.finalize;
-        pub const construct = JSReadableStreamSource.construct;
-        pub const getIsClosedFromJS = JSReadableStreamSource.isClosed;
-        pub const textFromJS = JSReadableStreamSource.text;
-        pub const jsonFromJS = JSReadableStreamSource.json;
-        pub const arrayBufferFromJS = JSReadableStreamSource.arrayBuffer;
-        pub const blobFromJS = JSReadableStreamSource.blob;
-        pub const bytesFromJS = JSReadableStreamSource.bytes;
 
         pub fn memoryCost(this: *const ReadableStreamSourceType) usize {
             if (memoryCostFn) |function| {
@@ -584,238 +802,373 @@ pub fn NewSource(
             return @sizeOf(@This());
         }
 
-        pub const JSReadableStreamSource = struct {
-            pub fn pull(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                jsc.markBinding(@src());
-                const this_jsvalue = callFrame.this();
-                const arguments = callFrame.arguments_old(2);
-                const view = arguments.ptr[0];
-                view.ensureStillAlive();
-                this.this_jsvalue = this_jsvalue;
-                var buffer = view.asArrayBuffer(globalThis) orelse return .js_undefined;
+        pub const JSBinding = struct {
+            bindgen_state: bindgen.ClassState = .{},
+            source: bindgen.RefNative(This, .vm),
+
+            const ResultAction = enum { pull_native, start };
+
+            pub const destroy = deinit;
+
+            fn deinit(this: *JSBinding) void {
+                this.source.deinit();
+                bun.destroy(this);
+            }
+
+            fn resultFromBinding(
+                this: *JSBinding,
+                comptime operation: ResultAction,
+                context: anytype,
+                args: anytype,
+            ) bun.bindgen.CallError(@TypeOf(context))!bun.bindgen.Return(@TypeOf(context)) {
+                return switch (operation) {
+                    .pull_native => this.pullFromBinding(context, args),
+                    .start => this.startFromBinding(context),
+                };
+            }
+
+            fn completionFromBinding(
+                this: *JSBinding,
+                comptime operation: BufferAction.Kind,
+                context: anytype,
+                _: anytype,
+            ) bun.bindgen.CallError(@TypeOf(context))!void {
+                const globalThis = context.viewToken().globalObject();
+                var view = context.completion();
+                var action = BufferAction.init(operation, globalThis, context, &view);
+                defer action.deinit();
+                if (comptime toBufferedValue) |to_buffered_value| {
+                    to_buffered_value(&this.source.get().context, &action);
+                    return;
+                }
+                @compileError("buffered readable-stream methods require a buffering implementation");
+            }
+
+            fn pullFromBinding(
+                this: *JSBinding,
+                context: anytype,
+                args: anytype,
+            ) bun.bindgen.CallError(@TypeOf(context))!bun.bindgen.Return(@TypeOf(context)) {
+                const view = args.view orelse return .{
+                    .value = .{ .undefined = false },
+                    .done = false,
+                };
+                var owned_view = try view.toOwned();
+                const result = this.source.get().onPullFromJS(
+                    owned_view.unsafeMutPtr("the pending readable result owns the mutable lease until pull settlement"),
+                );
+                if (result == .pending) {
+                    result.pending.retainPullView(owned_view.take());
+                } else {
+                    owned_view.release();
+                }
                 return processResult(
-                    this_jsvalue,
-                    globalThis,
-                    arguments.ptr[1],
-                    this.onPullFromJS(buffer.slice(), view),
+                    context,
+                    result,
                 );
             }
 
-            pub fn start(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                jsc.markBinding(@src());
-                this.globalThis = globalThis;
-                this.this_jsvalue = callFrame.this();
-                switch (this.onStartFromJS()) {
-                    .empty => return JSValue.jsNumber(0),
-                    .ready => return JSValue.jsNumber(16384),
-                    .chunk_size => |size| return JSValue.jsNumber(size),
-                    .err => |err| {
-                        return globalThis.throwValue(try err.toJS(globalThis));
+            fn startFromBinding(
+                this: *JSBinding,
+                context: anytype,
+            ) bun.bindgen.CallError(@TypeOf(context))!bun.bindgen.Return(@TypeOf(context)) {
+                const globalThis = context.viewToken().globalObject();
+                const source = this.source.get();
+                source.globalThis = globalThis;
+                var start_result = source.onStartFromJS();
+                defer start_result.deinit();
+                return switch (start_result) {
+                    .empty => .{ .chunk_size = 0 },
+                    .ready => .{ .chunk_size = 16384 },
+                    .chunk_size => |size| .{ .chunk_size = size },
+                    .err => |err| failure: {
+                        start_result = .empty;
+                        break :failure context.fail(.system, err);
                     },
-                    else => |rc| {
-                        return rc.toJS(globalThis);
+                    .out_of_memory => error.OutOfMemory,
+                    .owned_and_done => |*list| .{
+                        .bytes = .fromDefaultAllocatedSlice(try list.toOwnedSlice(bun.default_allocator)),
                     },
+                };
+            }
+
+            pub fn memoryUsage(this: *const JSBinding, _: bindgen.MemoryUsageContext(.vm)) usize {
+                return @sizeOf(JSBinding) + this.source.get().memoryCost();
+            }
+
+            pub fn bindPullNative(
+                this: *JSBinding,
+                context: bindgen.CallContext(PullNativeSchema),
+                args: bindgen.Args(PullNativeSchema),
+            ) bun.JSError!bindgen.Return(PullNativeSchema) {
+                return this.resultFromBinding(.pull_native, context, args);
+            }
+
+            pub fn bindStart(
+                this: *JSBinding,
+                context: bindgen.CallContext(StartSchema),
+                args: bindgen.Args(StartSchema),
+            ) bindgen.CallError(StartSchema)!bindgen.Return(StartSchema) {
+                return this.resultFromBinding(.start, context, args);
+            }
+
+            pub fn bindIsClosed(
+                this: *JSBinding,
+                _: bindgen.CallContext(IsClosedSchema),
+                _: bindgen.Args(IsClosedSchema),
+            ) bun.JSError!bool {
+                return this.source.get().is_closed;
+            }
+
+            fn processResult(
+                context: anytype,
+                result: streams.Result,
+            ) bun.bindgen.CallError(@TypeOf(context))!bun.bindgen.Return(@TypeOf(context)) {
+                var result_ = result;
+                defer result_.deinit();
+                return switch (result_) {
+                    .err => .{
+                        .value = .{ .pending = try result_.rejectedPullPromiseResult(context) },
+                        .done = false,
+                    },
+                    .pending => |pending| .{
+                        .value = .{ .pending = try pending.promiseResult(context) },
+                        .done = false,
+                    },
+                    else => try result_.toDirectPullResult(),
+                };
+            }
+
+            pub fn bindCancel(
+                this: *JSBinding,
+                _: bindgen.CallContext(CancelSchema),
+                _: bindgen.Args(CancelSchema),
+            ) bun.JSError!void {
+                this.source.get().cancel();
+            }
+
+            pub fn bindSetOnClose(
+                _: *JSBinding,
+                _: bindgen.CallContext(OnCloseSetterSchema),
+                args: bindgen.Args(OnCloseSetterSchema),
+            ) bun.JSError!void {
+                if (args.value) |callback| {
+                    OnCloseCallbackSlot.setView(args.bindingThis, callback);
+                } else {
+                    OnCloseCallbackSlot.clearView(args.bindingThis);
                 }
             }
 
-            pub fn isClosed(this: *ReadableStreamSourceType, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-                _ = globalObject; // autofix
-                return jsc.JSValue.jsBoolean(this.is_closed);
-            }
-
-            fn processResult(this_jsvalue: jsc.JSValue, globalThis: *JSGlobalObject, flags: JSValue, result: streams.Result) bun.JSError!jsc.JSValue {
-                switch (result) {
-                    .err => |err| {
-                        if (err == .Error) {
-                            return globalThis.throwValue(try err.Error.toJS(globalThis));
-                        } else {
-                            const js_err = err.JSValue;
-                            js_err.ensureStillAlive();
-                            js_err.unprotect();
-                            return globalThis.throwValue(js_err);
-                        }
-                    },
-                    .pending => {
-                        const out = try result.toJS(globalThis);
-                        js.pendingPromiseSetCached(this_jsvalue, globalThis, out);
-                        return out;
-                    },
-                    .temporary_and_done, .owned_and_done, .into_array_and_done => {
-                        const value: JSValue = .true;
-                        jsc.C.JSObjectSetPropertyAtIndex(globalThis, flags.asObjectRef(), 0, value.asObjectRef(), null);
-                        return result.toJS(globalThis);
-                    },
-                    else => return result.toJS(globalThis),
-                }
-            }
-
-            pub fn cancel(this: *ReadableStreamSourceType, globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                _ = globalObject; // autofix
-                jsc.markBinding(@src());
-                this.this_jsvalue = callFrame.this();
-                this.cancel();
-                return .js_undefined;
-            }
-
-            pub fn setOnCloseFromJS(this: *ReadableStreamSourceType, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError!void {
-                jsc.markBinding(@src());
-                this.close_handler = JSReadableStreamSource.onClose;
-                this.globalThis = globalObject;
-
-                if (value.isUndefined()) {
-                    this.close_jsvalue.deinit();
+            pub fn bindSetOnDrain(
+                _: *JSBinding,
+                context: bindgen.CallContext(OnDrainSetterSchema),
+                args: bindgen.Args(OnDrainSetterSchema),
+            ) bun.JSError!void {
+                const callback = args.value orelse {
+                    OnDrainCallbackSlot.clearView(args.bindingThis);
                     return;
-                }
-
-                if (!value.isCallable()) {
-                    return globalObject.throwInvalidArgumentType("ReadableStreamSource", "onclose", "function");
-                }
-                const cb = value.withAsyncContextIfNeeded(globalObject);
-                this.close_jsvalue.set(globalObject, cb);
+                };
+                _ = context;
+                OnDrainCallbackSlot.setView(args.bindingThis, callback);
             }
 
-            pub fn setOnDrainFromJS(this: *ReadableStreamSourceType, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) bun.JSError!void {
-                jsc.markBinding(@src());
-                this.globalThis = globalObject;
+            pub fn bindGetOnClose(
+                _: *JSBinding,
+                _: bindgen.CallContext(OnCloseGetterSchema),
+                args: bindgen.Args(OnCloseGetterSchema),
+            ) bun.JSError!bindgen.Return(OnCloseGetterSchema) {
+                return OnCloseCallbackSlot.ownedCallbackFromView(args.bindingThis);
+            }
 
-                if (value.isUndefined()) {
-                    js.onDrainCallbackSetCached(this.this_jsvalue, globalObject, .js_undefined);
-                    return;
+            pub fn bindGetOnDrain(
+                _: *JSBinding,
+                _: bindgen.CallContext(OnDrainGetterSchema),
+                _: bindgen.Args(OnDrainGetterSchema),
+            ) bun.JSError!bindgen.Return(OnDrainGetterSchema) {
+                return null;
+            }
+
+            pub fn bindUpdateRef(
+                this: *JSBinding,
+                _: bindgen.CallContext(UpdateRefSchema),
+                args: bindgen.Args(UpdateRefSchema),
+            ) bun.JSError!void {
+                this.source.get().setRef(args.enabled orelse false);
+            }
+
+            const CloseNotification = struct {
+                task: jsc.NativeMicrotask = undefined,
+                callback: bindgen.Callback(CloseCallbackType),
+
+                pub fn run(notification: *@This()) bun.JSError!void {
+                    var invocation: @TypeOf(notification.callback).Invocation = undefined;
+                    notification.callback.beginInvocation(&invocation);
+                    defer invocation.deinit();
+                    try invocation.call(.{});
                 }
 
-                if (!value.isCallable()) {
-                    return globalObject.throwInvalidArgumentType("ReadableStreamSource", "onDrain", "function");
-                }
-                const cb = value.withAsyncContextIfNeeded(globalObject);
-                js.onDrainCallbackSetCached(this.this_jsvalue, globalObject, cb);
-            }
-
-            pub fn getOnCloseFromJS(this: *ReadableStreamSourceType, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-                _ = globalObject; // autofix
-
-                jsc.markBinding(@src());
-
-                return this.close_jsvalue.get() orelse .js_undefined;
-            }
-
-            pub fn getOnDrainFromJS(this: *ReadableStreamSourceType, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-                _ = globalObject; // autofix
-
-                jsc.markBinding(@src());
-
-                if (js.onDrainCallbackGetCached(this.this_jsvalue)) |val| {
-                    return val;
+                pub fn deinit(notification: *@This()) void {
+                    notification.callback.deinit();
                 }
 
-                return .js_undefined;
+                pub fn destroy(notification: *@This()) void {
+                    notification.task.destroy();
+                }
+            };
+
+            fn onClose(source: *ReadableStreamSourceType) void {
+                const global = source.globalThis;
+                var wrapper = (source.wrapper.toOwned() catch |err| return global.reportActiveExceptionAsUnhandled(err)) orelse return;
+                defer wrapper.deinit();
+                var callback = (OnCloseCallbackSlot.takeOwnedCallback(&wrapper) catch |err| return global.reportActiveExceptionAsUnhandled(err)) orelse return;
+                defer callback.deinit();
+                var notification: bindgen.OwnedNative(CloseNotification, .vm) = .init(jsc.NativeMicrotask.create(CloseNotification, .{
+                    .callback = callback.take(),
+                }) catch |err| return global.reportActiveExceptionAsUnhandled(err));
+                global.queueMicrotaskTask(&notification.take().task) catch |err|
+                    global.reportActiveExceptionAsUnhandled(err);
             }
 
-            pub fn updateRef(this: *ReadableStreamSourceType, globalObject: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                _ = globalObject; // autofix
-                jsc.markBinding(@src());
-                this.this_jsvalue = callFrame.this();
-                const ref_or_unref = callFrame.argument(0).toBoolean();
-                this.setRef(ref_or_unref);
-
-                return .js_undefined;
+            pub fn bindDrain(
+                this: *JSBinding,
+                _: bindgen.CallContext(DrainSchema),
+                _: bindgen.Args(DrainSchema),
+            ) bun.JSError!?bindgen.OwnedBytes {
+                var bytes = try drainInternalBuffer(&this.source.get().context);
+                if (bytes.slice().len == 0) {
+                    bytes.deinit();
+                    return null;
+                }
+                return bytes;
             }
 
-            fn onClose(ptr: ?*anyopaque) void {
-                jsc.markBinding(@src());
-                var this = bun.cast(*ReadableStreamSourceType, ptr.?);
-                if (this.close_jsvalue.trySwap()) |cb| {
-                    this.globalThis.queueMicrotask(cb, &.{});
+            pub fn bindText(
+                this: *JSBinding,
+                context: bindgen.CallContext(TextSchema),
+                args: bindgen.Args(TextSchema),
+            ) bindgen.CallError(TextSchema)!void {
+                return this.completionFromBinding(.text, context, args);
+            }
+
+            pub fn bindArrayBuffer(
+                this: *JSBinding,
+                context: bindgen.CallContext(ArrayBufferSchema),
+                args: bindgen.Args(ArrayBufferSchema),
+            ) bindgen.CallError(ArrayBufferSchema)!void {
+                return this.completionFromBinding(.array_buffer, context, args);
+            }
+
+            pub fn bindBlob(
+                this: *JSBinding,
+                context: bindgen.CallContext(BlobSchema),
+                args: bindgen.Args(BlobSchema),
+            ) bindgen.CallError(BlobSchema)!void {
+                return this.completionFromBinding(.blob, context, args);
+            }
+
+            pub fn bindBytes(
+                this: *JSBinding,
+                context: bindgen.CallContext(BytesSchema),
+                args: bindgen.Args(BytesSchema),
+            ) bindgen.CallError(BytesSchema)!void {
+                return this.completionFromBinding(.bytes, context, args);
+            }
+
+            pub fn bindJSON(
+                this: *JSBinding,
+                context: bindgen.CallContext(JSONSchema),
+                args: bindgen.Args(JSONSchema),
+            ) bindgen.CallError(JSONSchema)!void {
+                return this.completionFromBinding(.json, context, args);
+            }
+
+            pub fn bindSetRawMode(
+                this: *JSBinding,
+                context: bindgen.CallContext(SetRawModeSchema),
+                args: bindgen.Args(SetRawModeSchema),
+            ) bun.JSError!bindgen.Return(SetRawModeSchema) {
+                if (@hasDecl(Context, "setRawMode")) {
+                    return switch (this.source.get().context.setRawMode(args.enabled)) {
+                        .result => null,
+                        .err => |err| error_value: {
+                            if (err.getErrno() == .NOMEM) return error.OutOfMemory;
+                            var system_error = try bindgen.SystemError.fromSysError(err);
+                            defer system_error.deinit();
+                            break :error_value try system_error.toErrorInstance(context);
+                        },
+                    };
                 }
 
-                this.close_jsvalue.deinit();
+                @compileError("setRawMode is not implemented on " ++ @typeName(Context));
             }
 
-            pub fn finalize(this: *ReadableStreamSourceType) void {
-                this.this_jsvalue = .zero;
-
-                _ = this.decrementCount();
-            }
-
-            pub fn drain(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                jsc.markBinding(@src());
-                this.this_jsvalue = callFrame.this();
-                var list = this.drain();
-                if (list.len > 0) {
-                    return jsc.ArrayBuffer.fromBytes(list.slice(), .Uint8Array).toJS(globalThis);
+            pub fn bindSetFlowing(
+                this: *JSBinding,
+                _: bindgen.CallContext(SetFlowingSchema),
+                args: bindgen.Args(SetFlowingSchema),
+            ) bun.JSError!void {
+                if (@hasDecl(Context, "setFlowing")) {
+                    this.source.get().context.setFlowing(args.enabled);
                 }
-                return .js_undefined;
-            }
-
-            pub fn text(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                jsc.markBinding(@src());
-                this.this_jsvalue = callFrame.this();
-
-                if (toBufferedValue) |to_buffered_value| {
-                    return to_buffered_value(&this.context, globalThis, .text);
-                }
-
-                globalThis.throwTODO("This is not implemented yet");
-                return .zero;
-            }
-
-            pub fn arrayBuffer(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                jsc.markBinding(@src());
-                this.this_jsvalue = callFrame.this();
-
-                if (toBufferedValue) |to_buffered_value| {
-                    return to_buffered_value(&this.context, globalThis, .arrayBuffer);
-                }
-
-                globalThis.throwTODO("This is not implemented yet");
-                return .zero;
-            }
-
-            pub fn blob(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                jsc.markBinding(@src());
-                this.this_jsvalue = callFrame.this();
-
-                if (toBufferedValue) |to_buffered_value| {
-                    return to_buffered_value(&this.context, globalThis, .blob);
-                }
-
-                globalThis.throwTODO("This is not implemented yet");
-                return .zero;
-            }
-
-            pub fn bytes(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                jsc.markBinding(@src());
-                this.this_jsvalue = callFrame.this();
-
-                if (toBufferedValue) |to_buffered_value| {
-                    return to_buffered_value(&this.context, globalThis, .bytes);
-                }
-
-                globalThis.throwTODO("This is not implemented yet");
-                return .zero;
-            }
-
-            pub fn json(this: *ReadableStreamSourceType, globalThis: *JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-                jsc.markBinding(@src());
-                this.this_jsvalue = callFrame.this();
-
-                if (toBufferedValue) |to_buffered_value| {
-                    return to_buffered_value(&this.context, globalThis, .json);
-                }
-
-                globalThis.throwTODO("This is not implemented yet");
-                return .zero;
             }
         };
+
+        const ClassSchema = ReadableStreamSourceBindings.class(name_ ++ "InternalReadableStreamSource");
+        pub const Binding = bindgen.Class(ClassSchema, JSBinding);
+        const OnCloseCallbackSlot = Binding.CachedSlot("onCloseCallback");
+        const OnDrainCallbackSlot = Binding.CachedSlot("onDrainCallback");
+        const PullNativeSchema = ClassSchema.memberKind("pullNative", .method);
+        const StartSchema = ClassSchema.memberKind("start", .method);
+        const IsClosedSchema = ClassSchema.memberKind("isClosed", .getter);
+        const CancelSchema = ClassSchema.memberKind("cancel", .method);
+        const OnCloseGetterSchema = ClassSchema.memberKind("onClose", .getter);
+        const OnCloseSetterSchema = ClassSchema.memberKind("onClose", .setter);
+        const OnDrainGetterSchema = ClassSchema.memberKind("onDrain", .getter);
+        const OnDrainSetterSchema = ClassSchema.memberKind("onDrain", .setter);
+        const CloseCallbackType = OnCloseSetterSchema.args[0].ArgumentType.child;
+        const UpdateRefSchema = ClassSchema.memberKind("updateRef", .method);
+        const DrainSchema = ClassSchema.memberKind("drain", .method);
+        const TextSchema = ClassSchema.memberKind("text", .method);
+        const ArrayBufferSchema = ClassSchema.memberKind("arrayBuffer", .method);
+        const BlobSchema = ClassSchema.memberKind("blob", .method);
+        const BytesSchema = ClassSchema.memberKind("bytes", .method);
+        const JSONSchema = ClassSchema.memberKind("json", .method);
+        const SetRawModeSchema = ClassSchema.memberKind("setRawMode", .method);
+        const SetFlowingSchema = ClassSchema.memberKind("setFlowing", .method);
+
+        comptime {
+            _ = Binding;
+        }
     };
 }
 
 const bun = @import("bun");
+const std = @import("std");
+const bindgen = bun.bindgen;
+const ReadableStreamBindings = bun.bindgen.Module("readable_streams");
+const ReadableStreamSourceBindings = bun.bindgen.Module("ReadableStreamSource");
+const ReadableStreamTeeSchema = ReadableStreamBindings.engineShim("readableStreamTee");
+const ReadableStreamCancelSchema = ReadableStreamBindings.engineShim("readableStreamCancel");
+const ReadableStreamCancelWithReasonSchema = ReadableStreamBindings.engineShim("readableStreamCancelWithReason");
+const PromiseSetHandledSchema = bindgen.Module("promises").engineShim("promiseSetHandled");
+const ReadableStreamDetachSchema = ReadableStreamBindings.engineShim("readableStreamDetach");
+const ReadableStreamCanConsumeNativeSchema = ReadableStreamBindings.engineShim("readableStreamCanConsumeNative");
+const ReadableStreamIsDisturbedSchema = ReadableStreamBindings.engineShim("readableStreamIsDisturbed");
+const ReadableStreamIsLockedSchema = ReadableStreamBindings.engineShim("readableStreamIsLocked");
+const ReadableStreamDescribeSchema = ReadableStreamBindings.engineShim("readableStreamDescribe");
+const ReadableStreamCreateNativeSchema = ReadableStreamBindings.engineShim("readableStreamCreateNative");
+const BlobSourceSchema = ReadableStreamSourceBindings.class("BlobInternalReadableStreamSource");
+const BytesSourceSchema = ReadableStreamSourceBindings.class("BytesInternalReadableStreamSource");
+const FileSourceSchema = ReadableStreamSourceBindings.class("FileInternalReadableStreamSource");
+const SubprocessClassSchema = bindgen.Module("Subprocess").class("Subprocess");
+const ReadableStreamEmptyShim = ReadableStreamBindings.engineShim("readableStreamEmpty");
+const ReadableStreamUsedShim = ReadableStreamBindings.engineShim("readableStreamUsed");
 const Environment = bun.Environment;
 const Syscall = bun.sys;
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+const S3StreamEngine = @import("./s3/ClientStreamEngine.zig");
 
 const webcore = bun.webcore;
 const Blob = webcore.Blob;

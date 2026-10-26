@@ -1,3 +1,3 @@
-const isX509Certificate = $newCppFunction("JSX509Certificate.cpp", "jsIsX509Certificate", 1);
+const isX509Certificate = $bindgenFn("X509.schema.zig", "isX509Certificate");
 
 export { isX509Certificate };

@@ -1,38 +1,48 @@
 const MaxBuf = @This();
 
-// null after subprocess finalize
-owned_by_subprocess: ?*Subprocess,
+owner: ?*Owner,
+on_exceeded: *const fn (*Owner, Kind) void,
+kind: Kind,
 // null after pipereader finalize
 owned_by_reader: bool,
-// if this goes negative, onMaxBuffer is called on the subprocess
 remaining_bytes: i64,
 // (once both are null, it is freed)
 
-pub fn createForSubprocess(owner: *Subprocess, ptr: *?*MaxBuf, initial: ?i64) void {
+pub const Owner = opaque {};
+
+pub fn createForOwner(
+    owner: *Owner,
+    on_exceeded: *const fn (*Owner, Kind) void,
+    kind: Kind,
+    ptr: *?*MaxBuf,
+    initial: ?i64,
+) bun.OOM!void {
     if (initial == null) {
         ptr.* = null;
         return;
     }
-    const maxbuf = bun.handleOom(bun.default_allocator.create(MaxBuf));
+    const maxbuf = try bun.default_allocator.create(MaxBuf);
     maxbuf.* = .{
-        .owned_by_subprocess = owner,
+        .owner = owner,
+        .on_exceeded = on_exceeded,
+        .kind = kind,
         .owned_by_reader = false,
         .remaining_bytes = initial.?,
     };
     ptr.* = maxbuf;
 }
 fn disowned(this: *MaxBuf) bool {
-    return this.owned_by_subprocess == null and this.owned_by_reader == false;
+    return this.owner == null and this.owned_by_reader == false;
 }
 fn destroy(this: *MaxBuf) void {
     bun.assert(this.disowned());
     bun.default_allocator.destroy(this);
 }
-pub fn removeFromSubprocess(ptr: *?*MaxBuf) void {
+pub fn removeFromOwner(ptr: *?*MaxBuf) void {
     if (ptr.* == null) return;
     const this = ptr.*.?;
-    bun.assert(this.owned_by_subprocess != null);
-    this.owned_by_subprocess = null;
+    bun.assert(this.owner != null);
+    this.owner = null;
     ptr.* = null;
     if (this.disowned()) {
         this.destroy();
@@ -62,17 +72,8 @@ pub fn transferToPipereader(prev: *?*MaxBuf, next: *?*MaxBuf) void {
 }
 pub fn onReadBytes(this: *MaxBuf, bytes: u64) void {
     this.remaining_bytes = std.math.sub(i64, this.remaining_bytes, std.math.cast(i64, bytes) orelse 0) catch -1;
-    if (this.remaining_bytes < 0 and this.owned_by_subprocess != null) {
-        const owned_by = this.owned_by_subprocess.?;
-        if (owned_by.stderr_maxbuf == this) {
-            MaxBuf.removeFromSubprocess(&owned_by.stderr_maxbuf);
-            owned_by.onMaxBuffer(.stderr);
-        } else if (owned_by.stdout_maxbuf == this) {
-            MaxBuf.removeFromSubprocess(&owned_by.stdout_maxbuf);
-            owned_by.onMaxBuffer(.stdout);
-        } else {
-            bun.assert(false);
-        }
+    if (this.remaining_bytes < 0) {
+        if (this.owner) |owner| this.on_exceeded(owner, this.kind);
     }
 }
 
@@ -83,4 +84,3 @@ pub const Kind = enum {
 
 const bun = @import("bun");
 const std = @import("std");
-const Subprocess = bun.jsc.Subprocess;

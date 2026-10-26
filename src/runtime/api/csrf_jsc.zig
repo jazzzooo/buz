@@ -1,176 +1,111 @@
 //! `Bun.CSRF.generate` / `Bun.CSRF.verify` host fns. The pure
 //! `generate()`/`verify()` halves stay in `src/csrf/`.
 
-/// JS binding function for generating CSRF tokens
-/// First argument is secret (required), second is options (optional)
-pub fn csrf__generate(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn csrf__generate(
+    context: bun.bindgen.CallContext(GenerateSchema),
+    args: bun.bindgen.Args(GenerateSchema),
+) bun.bindgen.CallError(GenerateSchema)!bun.bindgen.DOMString {
     if (bun.analytics.Features.csrf_generate < std.math.maxInt(usize))
         bun.analytics.Features.csrf_generate += 1;
 
-    // We should have at least one argument (secret)
-    const args = callframe.arguments();
-    var secret: ?jsc.ZigString.Slice = null;
-    if (args.len >= 1) {
-        const jsSecret = args[0];
-        // Extract the secret (required)
-        if (jsSecret.isEmptyOrUndefinedOrNull()) {
-            return globalObject.throwInvalidArguments("Secret is required", .{});
-        }
-        if (!jsSecret.isString() or try jsSecret.getLength(globalObject) == 0) {
-            return globalObject.throwInvalidArguments("Secret must be a non-empty string", .{});
-        }
-        secret = try jsSecret.toSlice(globalObject, bun.default_allocator);
-    }
-    defer if (secret) |s| s.deinit();
+    const secret = if (args.secret) |value| try value.toUTF8(bun.default_allocator) else null;
+    defer if (secret) |value| value.deinit();
+    const secret_bytes = if (secret) |value| value.slice() else try bun.current_runtime.defaultCSRFSecret();
 
-    // Default values
-    var expires_in: u64 = csrf.DEFAULT_EXPIRATION_MS;
-    var encoding: csrf.TokenFormat = .base64url;
-    var algorithm: jsc.API.Bun.Crypto.EVP.Algorithm = csrf.DEFAULT_ALGORITHM;
+    const expires_in = if (args.options) |options| options.expires_in else csrf.DEFAULT_EXPIRATION_MS;
+    const encoding = if (args.options) |options| tokenFormat(options.encoding) else csrf.TokenFormat.base64url;
+    const algorithm = if (args.options) |options| digestAlgorithm(options.algorithm) else csrf.DEFAULT_ALGORITHM;
 
-    // Check if we have options object
-    if (args.len > 1 and args[1].isObject()) {
-        const options_value = args[1];
-
-        // Extract expiresIn (optional)
-        if (try options_value.getOptionalInt(globalObject, "expiresIn", u64)) |expires_in_js| {
-            expires_in = expires_in_js;
-        }
-
-        // Extract encoding (optional)
-        if (try options_value.get(globalObject, "encoding")) |encoding_js| {
-            const encoding_enum = try jsc.Node.Encoding.fromJSWithDefaultOnEmpty(encoding_js, globalObject, .base64url) orelse {
-                return globalObject.throwInvalidArguments("Invalid format: must be 'base64', 'base64url', or 'hex'", .{});
-            };
-            encoding = switch (encoding_enum) {
-                .base64 => .base64,
-                .base64url => .base64url,
-                .hex => .hex,
-                else => return globalObject.throwInvalidArguments("Invalid format: must be 'base64', 'base64url', or 'hex'", .{}),
-            };
-        }
-
-        if (try options_value.get(globalObject, "algorithm")) |algorithm_js| {
-            if (!algorithm_js.isString()) {
-                return globalObject.throwInvalidArgumentTypeValue("algorithm", "string", algorithm_js);
-            }
-            algorithm = try jsc.API.Bun.Crypto.EVP.Algorithm.map.fromJSCaseInsensitive(globalObject, algorithm_js) orelse {
-                return globalObject.throwInvalidArguments("Algorithm not supported", .{});
-            };
-            switch (algorithm) {
-                .blake2b256, .blake2b512, .sha256, .sha384, .sha512, .@"sha512-256" => {},
-                else => return globalObject.throwInvalidArguments("Algorithm not supported", .{}),
-            }
-        }
-    }
-
-    // Buffer for token generation
-    var token_buffer: [512]u8 = @splat(0);
-
-    // Generate the token
+    var nonce: [16]u8 = undefined;
+    bun.current_runtime.fillEntropy(&nonce);
+    var token_buffer: [boring.EVP_MAX_MD_SIZE + 32]u8 = undefined;
     const token_bytes = csrf.generate(.{
-        .secret = if (secret) |s| s.slice() else globalObject.bunVM().rareData().defaultCSRFSecret(),
+        .secret = secret_bytes,
         .expires_in_ms = expires_in,
         .encoding = encoding,
         .algorithm = algorithm,
-    }, &token_buffer) catch |err| {
-        return switch (err) {
-            csrf.Error.TokenCreationFailed => globalObject.throw("Failed to create CSRF token", .{}),
-            else => globalObject.throwError(err, "Failed to generate CSRF token"),
-        };
-    };
+    }, nonce, &token_buffer) catch return context.fail(.token_creation_failed, {});
 
-    // Encode the token
-    return encoding.toNodeEncoding().encodeWithMaxSize(globalObject, boring.EVP_MAX_MD_SIZE + 32, token_bytes);
+    var encoded_buffer: [(boring.EVP_MAX_MD_SIZE + 32) * 2]u8 = undefined;
+    return bun.bindgen.DOMString.fromUTF8(encodeToken(encoding, token_bytes, &encoded_buffer));
 }
 
-/// JS binding function for verifying CSRF tokens
-/// First argument is token (required), second is options (optional)
-pub fn csrf__verify(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn csrf__verify(
+    context: bun.bindgen.CallContext(VerifySchema),
+    args: bun.bindgen.Args(VerifySchema),
+) bun.bindgen.CallError(VerifySchema)!bool {
     if (bun.analytics.Features.csrf_verify < std.math.maxInt(usize)) {
         bun.analytics.Features.csrf_verify += 1;
     }
-    // We should have at least one argument (token)
-    const args = call_frame.arguments();
-    if (args.len < 1) {
-        return globalObject.throwInvalidArguments("Missing required token parameter", .{});
-    }
-    const jsToken: jsc.JSValue = args[0];
-    // Extract the token (required)
-    if (jsToken.isUndefinedOrNull()) {
-        return globalObject.throwInvalidArguments("Token is required", .{});
-    }
-    if (!jsToken.isString() or try jsToken.getLength(globalObject) == 0) {
-        return globalObject.throwInvalidArguments("Token must be a non-empty string", .{});
-    }
-    const token = try jsToken.toSlice(globalObject, bun.default_allocator);
+
+    const token = try args.token.toUTF8(bun.default_allocator);
     defer token.deinit();
+    if (token.slice().len == 0) return context.fail(.empty_token, {});
 
-    // Default values
-    var secret: ?jsc.ZigString.Slice = null;
-    defer if (secret) |s| s.deinit();
-    var max_age: u64 = csrf.DEFAULT_EXPIRATION_MS;
-    var encoding: csrf.TokenFormat = .base64url;
+    const secret = if (args.options) |options|
+        if (options.secret) |value| try value.toUTF8(bun.default_allocator) else null
+    else
+        null;
+    defer if (secret) |value| value.deinit();
 
-    var algorithm: jsc.API.Bun.Crypto.EVP.Algorithm = csrf.DEFAULT_ALGORITHM;
-
-    // Check if we have options object
-    if (args.len > 1 and args[1].isObject()) {
-        const options_value = args[1];
-
-        // Extract the secret (required)
-        if (try options_value.getOptional(globalObject, "secret", jsc.ZigString.Slice)) |secretSlice| {
-            if (secretSlice.len == 0) {
-                return globalObject.throwInvalidArguments("Secret must be a non-empty string", .{});
-            }
-            secret = secretSlice;
-        }
-
-        // Extract maxAge (optional)
-        if (try options_value.getOptionalInt(globalObject, "maxAge", u64)) |max_age_js| {
-            max_age = max_age_js;
-        }
-
-        // Extract encoding (optional)
-        if (try options_value.get(globalObject, "encoding")) |encoding_js| {
-            const encoding_enum = try jsc.Node.Encoding.fromJSWithDefaultOnEmpty(encoding_js, globalObject, .base64url) orelse {
-                return globalObject.throwInvalidArguments("Invalid format: must be 'base64', 'base64url', or 'hex'", .{});
-            };
-            encoding = switch (encoding_enum) {
-                .base64 => .base64,
-                .base64url => .base64url,
-                .hex => .hex,
-                else => return globalObject.throwInvalidArguments("Invalid format: must be 'base64', 'base64url', or 'hex'", .{}),
-            };
-        }
-        if (try options_value.get(globalObject, "algorithm")) |algorithm_js| {
-            if (!algorithm_js.isString()) {
-                return globalObject.throwInvalidArgumentTypeValue("algorithm", "string", algorithm_js);
-            }
-            algorithm = try jsc.API.Bun.Crypto.EVP.Algorithm.map.fromJSCaseInsensitive(globalObject, algorithm_js) orelse {
-                return globalObject.throwInvalidArguments("Algorithm not supported", .{});
-            };
-            switch (algorithm) {
-                .blake2b256, .blake2b512, .sha256, .sha384, .sha512, .@"sha512-256" => {},
-                else => return globalObject.throwInvalidArguments("Algorithm not supported", .{}),
-            }
-        }
-    }
-    // Verify the token
-    const is_valid = csrf.verify(.{
+    return csrf.verify(.{
         .token = token.slice(),
-        .secret = if (secret) |s| s.slice() else globalObject.bunVM().rareData().defaultCSRFSecret(),
-        .max_age_ms = max_age,
-        .encoding = encoding,
-        .algorithm = algorithm,
+        .secret = if (secret) |value| value.slice() else try bun.current_runtime.defaultCSRFSecret(),
+        .max_age_ms = if (args.options) |options| options.max_age else csrf.DEFAULT_EXPIRATION_MS,
+        .encoding = if (args.options) |options| tokenFormat(options.encoding) else .base64url,
+        .algorithm = if (args.options) |options| digestAlgorithm(options.algorithm) else csrf.DEFAULT_ALGORITHM,
     });
+}
 
-    return jsc.JSValue.jsBoolean(is_valid);
+fn tokenFormat(encoding: anytype) csrf.TokenFormat {
+    return switch (encoding) {
+        .base64 => .base64,
+        .base64url => .base64url,
+        .hex => .hex,
+    };
+}
+
+fn digestAlgorithm(algorithm: anytype) EVP.Algorithm {
+    return switch (algorithm) {
+        .blake2b256 => .blake2b256,
+        .blake2b512 => .blake2b512,
+        .sha256 => .sha256,
+        .sha384 => .sha384,
+        .sha512 => .sha512,
+        .sha512_256 => .@"sha512-256",
+    };
+}
+
+fn encodeToken(format: csrf.TokenFormat, token: []const u8, output: []u8) []const u8 {
+    return switch (format) {
+        .base64 => output[0..bun.base64.encode(output, token)],
+        .base64url => output[0..bun.base64.encodeURLSafe(output, token)],
+        .hex => encodeHex(token, output),
+    };
+}
+
+fn encodeHex(input: []const u8, output: []u8) []const u8 {
+    const digits = "0123456789abcdef";
+    for (input, 0..) |byte, index| {
+        output[index * 2] = digits[byte >> 4];
+        output[index * 2 + 1] = digits[byte & 0xf];
+    }
+    return output[0 .. input.len * 2];
 }
 
 const csrf = @import("../../csrf/csrf.zig");
 const std = @import("std");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 const boring = bun.BoringSSL.c;
+const EVP = @import("../../crypto/EVP.zig");
+const CSRFObjectBindings = bun.bindgen.Module("CSRFObject");
+const GenerateSchema = CSRFObjectBindings.function("generate");
+const VerifySchema = CSRFObjectBindings.function("verify");
+pub const GenerateBinding = bun.bindgen.Fn(GenerateSchema, csrf__generate);
+pub const VerifyBinding = bun.bindgen.Fn(VerifySchema, csrf__verify);
+
+comptime {
+    _ = GenerateBinding;
+    _ = VerifyBinding;
+}

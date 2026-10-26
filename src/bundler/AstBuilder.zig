@@ -17,7 +17,7 @@ pub const AstBuilder = struct {
     import_records_for_current_part: std.ArrayListUnmanaged(u32),
     export_star_import_records: std.ArrayListUnmanaged(u32),
     current_scope: *Scope,
-    log: Logger.Log,
+    log: *Logger.Log,
     module_ref: Ref,
     declared_symbols: js_ast.DeclaredSymbol.List,
     /// When set, codegen is altered
@@ -38,8 +38,10 @@ pub const AstBuilder = struct {
         pub const typescript = false;
     };
 
-    pub fn init(allocator: std.mem.Allocator, source: *const Logger.Source, hot_reloading: bool) !AstBuilder {
+    pub fn init(allocator: std.mem.Allocator, source: *const Logger.Source, log: *Logger.Log, hot_reloading: bool) !AstBuilder {
+        const source_index = std.math.cast(Ref.Int, source.index.get()) orelse return error.OutOfMemory;
         const scope = try allocator.create(Scope);
+        errdefer allocator.destroy(scope);
         scope.* = .{
             .kind = .entry,
             .label_ref = null,
@@ -50,7 +52,7 @@ pub const AstBuilder = struct {
             .allocator = allocator,
             .current_scope = scope,
             .source = source,
-            .source_index = @intCast(source.index.get()),
+            .source_index = source_index,
             .stmts = .empty,
             .scopes = .empty,
             .symbols = .empty,
@@ -58,13 +60,18 @@ pub const AstBuilder = struct {
             .import_records_for_current_part = .empty,
             .named_imports = .{},
             .named_exports = .{},
-            .log = Logger.Log.init(allocator),
+            .log = log,
             .export_star_import_records = .empty,
             .declared_symbols = .{},
             .hot_reloading = hot_reloading,
             .module_ref = undefined,
             .hmr_api_ref = undefined,
         };
+        errdefer {
+            ab.symbols.deinit(allocator);
+            ab.declared_symbols.deinit(allocator);
+            scope.generated.deinit(allocator);
+        }
         ab.module_ref = try ab.newSymbol(.other, "module");
         ab.hmr_api_ref = try ab.newSymbol(.other, "hmr");
         return ab;
@@ -75,18 +82,18 @@ pub const AstBuilder = struct {
     }
 
     pub fn newSymbol(p: *AstBuilder, kind: Symbol.Kind, identifier: []const u8) !Ref {
-        const inner_index: Ref.Int = @intCast(p.symbols.items.len);
-        try p.symbols.append(p.allocator, .{
-            .kind = kind,
-            .original_name = identifier,
-        });
+        const inner_index = std.math.cast(Ref.Int, p.symbols.items.len) orelse return error.OutOfMemory;
+        try p.symbols.ensureUnusedCapacity(p.allocator, 1);
+        try p.current_scope.generated.ensureUnusedCapacity(p.allocator, 1);
+        try p.declared_symbols.ensureUnusedCapacity(p.allocator, 1);
         const ref: Ref = .{
             .inner_index = inner_index,
             .source_index = p.source_index,
             .tag = .symbol,
         };
-        try p.current_scope.generated.append(p.allocator, ref);
-        try p.declared_symbols.append(p.allocator, .{
+        p.symbols.appendAssumeCapacity(.{ .kind = kind, .original_name = identifier });
+        p.current_scope.generated.appendAssumeCapacity(ref);
+        p.declared_symbols.appendAssumeCapacity(.{
             .ref = ref,
             .is_top_level = p.scopes.items.len == 0 or p.current_scope == p.scopes.items[0],
         });
@@ -99,13 +106,13 @@ pub const AstBuilder = struct {
     }
 
     pub fn addImportRecord(p: *AstBuilder, path: []const u8, kind: ImportKind) !u32 {
-        const index = p.import_records.items.len;
+        const index = std.math.cast(u32, p.import_records.items.len) orelse return error.OutOfMemory;
         try p.import_records.append(p.allocator, .{
             .path = bun.fs.Path.init(path),
             .kind = kind,
             .range = .{},
         });
-        return @intCast(index);
+        return index;
     }
 
     pub fn addImportStmt(
@@ -117,14 +124,20 @@ pub const AstBuilder = struct {
 
         const record = try p.addImportRecord(path, .stmt);
 
-        const name = try strings.append(p.allocator, "import_", try bun.fs.nonUniqueNameString(path, p.allocator));
+        const name = try std.fmt.allocPrint(p.allocator, "import_{f}", .{bun.fs.fmtIdentifier(path)});
+        errdefer p.allocator.free(name);
         const namespace_ref = try p.newSymbol(.other, name);
 
         const clauses = try p.allocator.alloc(js_ast.ClauseItem, identifiers_to_import.len);
+        errdefer p.allocator.free(clauses);
 
         inline for (identifiers_to_import, &out, clauses) |import_id_untyped, *out_ref, *clause| {
             const import_id: []const u8 = import_id_untyped; // must be given '[N][]const u8'
-            const ref = try p.newSymbol(.import, import_id);
+            const local_name = try std.fmt.allocPrint(p.allocator, "{f}", .{bun.fmt.fmtIdentifier(import_id)});
+            const ref = p.newSymbol(.import, local_name) catch |err| {
+                p.allocator.free(local_name);
+                return err;
+            };
             if (p.hot_reloading) {
                 p.getSymbol(ref).namespace_alias = .{
                     .namespace_ref = namespace_ref,
@@ -135,7 +148,7 @@ pub const AstBuilder = struct {
             out_ref.* = p.newExpr(E.ImportIdentifier{ .ref = ref });
             clause.* = .{
                 .name = .{ .loc = Logger.Loc.Empty, .ref = ref },
-                .original_name = import_id,
+                .original_name = local_name,
                 .alias = import_id,
             };
         }
@@ -173,7 +186,6 @@ pub const AstBuilder = struct {
     }
 
     pub fn toBundledAst(p: *AstBuilder, target: options.Target) !js_ast.BundledAst {
-        // TODO: missing import scanner
         bun.assert(p.scopes.items.len == 0);
         const module_scope = p.current_scope;
 
@@ -199,22 +211,6 @@ pub const AstBuilder = struct {
             },
         };
 
-        const single_u32 = try BabyList(u32).fromSlice(p.allocator, &.{1});
-
-        var top_level_symbols_to_parts = js_ast.Ast.TopLevelSymbolToParts{};
-        try top_level_symbols_to_parts.entries.setCapacity(p.allocator, module_scope.generated.len);
-        top_level_symbols_to_parts.entries.len = module_scope.generated.len;
-        const slice = top_level_symbols_to_parts.entries.slice();
-        for (
-            slice.items(.key),
-            slice.items(.value),
-            module_scope.generated.slice(),
-        ) |*k, *v, ref| {
-            k.* = ref;
-            v.* = single_u32;
-        }
-        try top_level_symbols_to_parts.reIndex(p.allocator);
-
         // For more details on this section, look at js_parser.toAST
         // This is mimicking how it calls ImportScanner
         if (p.hot_reloading) {
@@ -223,10 +219,11 @@ pub const AstBuilder = struct {
                     unreachable, // was definitely allocated
                 .is_in_node_modules = p.source.path.isNodeModule(),
             };
+            defer hmr_transform_ctx.deinit(p.allocator);
             try hmr_transform_ctx.stmts.ensureTotalCapacity(p.allocator, prealloc_count: {
                 // get a estimate on how many statements there are going to be
                 const count = p.stmts.items.len;
-                break :prealloc_count count + 2;
+                break :prealloc_count std.math.add(usize, count, 2) catch return error.OutOfMemory;
             });
 
             _ = try js_parser.ImportScanner.scan(AstBuilder, p, p.stmts.items, false, true, &hmr_transform_ctx);
@@ -239,11 +236,25 @@ pub const AstBuilder = struct {
         } else {
             const result = try js_parser.ImportScanner.scan(AstBuilder, p, p.stmts.items, false, false, {});
             parts.mut(1).stmts = result.stmts;
+            parts.mut(1).declared_symbols = p.declared_symbols;
+            parts.mut(1).import_record_indices = BabyList(u32).moveFromList(&p.import_records_for_current_part);
         }
 
-        parts.mut(1).declared_symbols = p.declared_symbols;
         parts.mut(1).scopes = p.scopes.items;
-        parts.mut(1).import_record_indices = BabyList(u32).moveFromList(&p.import_records_for_current_part);
+
+        var top_level_symbols_to_parts = js_ast.Ast.TopLevelSymbolToParts{};
+        errdefer {
+            for (top_level_symbols_to_parts.values()) |*indices| indices.deinit(p.allocator);
+            top_level_symbols_to_parts.deinit(p.allocator);
+        }
+        try top_level_symbols_to_parts.ensureTotalCapacity(p.allocator, module_scope.generated.len);
+        for (module_scope.generated.slice()) |ref| {
+            const entry = top_level_symbols_to_parts.getOrPutAssumeCapacity(ref);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = .{};
+                try entry.value_ptr.append(p.allocator, 1);
+            }
+        }
 
         return .{
             .parts = parts,
@@ -263,10 +274,6 @@ pub const AstBuilder = struct {
             .flags = .{},
             .target = target,
             .top_level_await_keyword = Logger.Range.None,
-            // .nested_scope_slot_counts = if (p.options.features.minify_identifiers)
-            //     renamer.assignNestedScopeSlots(p.allocator, p.scopes.items[0], p.symbols.items)
-            // else
-            //     js_ast.SlotCounts{},
         };
     }
 
@@ -288,28 +295,23 @@ pub const AstBuilder = struct {
         }
     }
 
-    pub fn recordExportedBinding(p: *AstBuilder, binding: Binding) void {
+    pub fn recordExportedBinding(p: *AstBuilder, binding: Binding) bun.OOM!void {
         switch (binding.data) {
             .b_missing => {},
             .b_identifier => |ident| {
-                p.recordExport(binding.loc, p.symbols.items[ident.ref.innerIndex()].original_name, ident.ref) catch unreachable;
+                try p.recordExport(binding.loc, p.symbols.items[ident.ref.innerIndex()].original_name, ident.ref);
             },
             .b_array => |array| {
                 for (array.items) |prop| {
-                    p.recordExportedBinding(prop.binding);
+                    try p.recordExportedBinding(prop.binding);
                 }
             },
             .b_object => |obj| {
                 for (obj.properties) |prop| {
-                    p.recordExportedBinding(prop.value);
+                    try p.recordExportedBinding(prop.value);
                 }
             },
         }
-    }
-
-    pub fn ignoreUsage(p: *AstBuilder, ref: Ref) void {
-        _ = p;
-        _ = ref;
     }
 
     pub fn panic(p: *AstBuilder, comptime fmt: []const u8, args: anytype) noreturn {
@@ -322,11 +324,40 @@ pub const AstBuilder = struct {
     }
 };
 
+test "generated symbol insertion preserves parallel tables on allocation failure" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var log = Logger.Log.init(allocator);
+            defer log.deinit();
+            const source = Logger.Source.initPathString("generated.js", "");
+            var builder = try AstBuilder.init(allocator, &source, &log, false);
+            defer {
+                builder.symbols.deinit(allocator);
+                builder.declared_symbols.deinit(allocator);
+                builder.current_scope.generated.deinit(allocator);
+                allocator.destroy(builder.current_scope);
+            }
+            for (0..32) |_| {
+                const count = builder.symbols.items.len;
+                const ref = builder.newSymbol(.other, "value") catch |err| {
+                    try std.testing.expectEqual(count, builder.symbols.items.len);
+                    try std.testing.expectEqual(count, builder.declared_symbols.len());
+                    try std.testing.expectEqual(count, builder.current_scope.generated.len);
+                    return err;
+                };
+                try std.testing.expectEqual(count, ref.innerIndex());
+                try std.testing.expectEqual(count + 1, builder.declared_symbols.len());
+                try std.testing.expectEqual(count + 1, builder.current_scope.generated.len);
+            }
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
 pub const Ref = bun.ast.Ref;
 
 pub const Index = bun.ast.Index;
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
@@ -343,8 +374,6 @@ const ImportKind = bun.ImportKind;
 const ImportRecord = bun.ImportRecord;
 const Output = bun.Output;
 const js_parser = bun.js_parser;
-const renamer = bun.renamer;
-const strings = bun.strings;
 const BabyList = bun.collections.BabyList;
 
 const js_ast = bun.ast;

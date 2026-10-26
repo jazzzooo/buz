@@ -13,19 +13,19 @@ enum class RsaKeyVariant {
 };
 
 struct RsaKeyPairJobCtx : KeyPairJobCtx {
-    WTF_MAKE_TZONE_ALLOCATED(RsaKeyPairJobCtx);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(RsaKeyPairJobCtx);
 
 public:
-    RsaKeyPairJobCtx(RsaKeyVariant variant, uint32_t modulusLength, uint32_t exponent, const KeyEncodingConfig& encodingConfig)
-        : KeyPairJobCtx(encodingConfig.publicKeyEncoding, encodingConfig.privateKeyEncoding)
+    RsaKeyPairJobCtx(RsaKeyVariant variant, uint32_t modulusLength, uint32_t exponent, KeyEncodingConfig&& encodingConfig)
+        : KeyPairJobCtx(WTF::move(encodingConfig))
         , m_variant(variant)
         , m_modulusLength(modulusLength)
         , m_exponent(exponent)
     {
     }
 
-    RsaKeyPairJobCtx(RsaKeyVariant variant, uint32_t modulusLength, uint32_t exponent, std::optional<int32_t> saltLength, ncrypto::Digest md, ncrypto::Digest mgfMd, const KeyEncodingConfig& encodingConfig)
-        : KeyPairJobCtx(encodingConfig.publicKeyEncoding, encodingConfig.privateKeyEncoding)
+    RsaKeyPairJobCtx(RsaKeyVariant variant, uint32_t modulusLength, uint32_t exponent, std::optional<int32_t> saltLength, ncrypto::Digest md, ncrypto::Digest mgfMd, KeyEncodingConfig&& encodingConfig)
+        : KeyPairJobCtx(WTF::move(encodingConfig))
         , m_variant(variant)
         , m_modulusLength(modulusLength)
         , m_exponent(exponent)
@@ -35,34 +35,15 @@ public:
     {
     }
 
-    RsaKeyPairJobCtx(RsaKeyPairJobCtx&& other)
-        : KeyPairJobCtx(other.m_publicKeyEncoding, other.m_privateKeyEncoding)
-        , m_variant(other.m_variant)
-        , m_modulusLength(other.m_modulusLength)
-        , m_exponent(other.m_exponent)
-        , m_saltLength(other.m_saltLength)
-        , m_md(other.m_md)
-        , m_mgfMd(other.m_mgfMd)
-    {
-    }
-
-    void deinit();
-    ncrypto::EVPKeyCtxPointer setup();
-    static std::optional<RsaKeyPairJobCtx> fromJS(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, const JSC::GCOwnedDataScope<WTF::StringView>& typeView, JSC::JSValue optionsValue, const KeyEncodingConfig& config);
+    ncrypto::EVPKeyCtxPointer setup() override;
 
     RsaKeyVariant m_variant;
     uint32_t m_modulusLength;
     uint32_t m_exponent;
 
-    int32_t m_saltLength;
+    int32_t m_saltLength { -1 };
     ncrypto::Digest m_md = nullptr;
     ncrypto::Digest m_mgfMd = nullptr;
-};
-
-struct RsaKeyPairJob {
-    static RsaKeyPairJob* create(JSC::JSGlobalObject*, RsaKeyPairJobCtx&&, JSC::JSValue callback);
-    static void createAndSchedule(JSC::JSGlobalObject*, RsaKeyPairJobCtx&&, JSC::JSValue callback);
-    void schedule();
 };
 
 } // namespace Bun

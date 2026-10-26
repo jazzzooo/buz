@@ -37,16 +37,6 @@ public:
     size_t padding = 0; // 0 = default
 
     Class parametersClass() const final { return Class::RsaPssParams; }
-
-    CryptoAlgorithmRsaPssParams isolatedCopy() const
-    {
-        CryptoAlgorithmRsaPssParams result;
-        result.identifier = identifier;
-        result.saltLength = saltLength;
-        result.padding = padding;
-
-        return result;
-    }
 };
 
 } // namespace WebCore

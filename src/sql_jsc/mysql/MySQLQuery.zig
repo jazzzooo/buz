@@ -12,190 +12,104 @@ flags: packed struct(u8) {
     _padding: u3 = 0,
 },
 
-fn bind(this: *MySQLQuery, execute: *PreparedStatement.Execute, globalObject: *JSGlobalObject, binding_value: JSValue, columns_value: JSValue, roots: *bun.jsc.MarkedArgumentBuffer) AnyMySQLError.Error!void {
-    var iter = try QueryBindingIterator.init(binding_value, columns_value, globalObject);
+fn bindAndExecute(this: *MySQLQuery, writer: anytype, statement: *MySQLStatement, binding_value: *const SQLTypes.BindingValues, columns_value: ?*const SQLTypes.BindingColumns) AnyMySQLError.Error!void {
+    statement.ref();
+    defer statement.deref();
+    bun.assert(statement.params.len == statement.params_received and statement.statement_id > 0);
+    if (statement.signature.fields.len != statement.params.len) return error.WrongNumberOfParametersProvided;
 
-    var i: u32 = 0;
-    var params = try bun.default_allocator.alloc(Value, execute.param_types.len);
-    errdefer {
-        for (params[0..i]) |*param| {
-            param.deinit(bun.default_allocator);
-        }
-        bun.default_allocator.free(params);
+    const fields = statement.signature.fields;
+    const plan = try bun.default_allocator.alloc(SQLParameters.Kind, fields.len);
+    defer bun.default_allocator.free(plan);
+    for (fields, plan) |field, *kind| {
+        kind.* = switch (field.type) {
+            .MYSQL_TYPE_TINY => .boolean,
+            .MYSQL_TYPE_SHORT => if (field.flags.UNSIGNED) .uint16 else .int16,
+            .MYSQL_TYPE_LONG => if (field.flags.UNSIGNED) .uint32 else .int32,
+            .MYSQL_TYPE_LONGLONG => if (field.flags.UNSIGNED) .uint64 else .int64,
+            .MYSQL_TYPE_FLOAT => .float32,
+            .MYSQL_TYPE_DOUBLE => .float64,
+            .MYSQL_TYPE_TIME, .MYSQL_TYPE_TIME2 => .time,
+            .MYSQL_TYPE_DATE, .MYSQL_TYPE_TIMESTAMP, .MYSQL_TYPE_DATETIME => .date,
+            .MYSQL_TYPE_TINY_BLOB, .MYSQL_TYPE_MEDIUM_BLOB, .MYSQL_TYPE_LONG_BLOB, .MYSQL_TYPE_BLOB => .bytes,
+            .MYSQL_TYPE_JSON => .json,
+            else => .text,
+        };
     }
-    while (try iter.next()) |js_value| {
-        if (i >= params.len) {
-            // The binding array yielded more values than the prepared statement
-            // expects. This can happen when the user-supplied array is mutated (e.g.
-            // from an index getter) between signature generation and binding. Fail
-            // loudly instead of writing past the end of `params`/`param_types`.
-            return error.WrongNumberOfParametersProvided;
-        }
-        const param = execute.param_types[i];
-        params[i] = try Value.fromJS(
-            js_value,
-            globalObject,
-            param.type,
-            param.flags.UNSIGNED,
-            roots,
-        );
-        i += 1;
-    }
-
-    if (iter.anyFailed()) {
-        return error.InvalidQueryBinding;
-    }
-
-    if (i != params.len) {
-        // Fewer values than the prepared statement expects; the remaining slots
-        // would be uninitialized.
-        return error.WrongNumberOfParametersProvided;
-    }
-
-    this.status = .binding;
-    execute.params = params;
-}
-
-fn bindAndExecute(this: *MySQLQuery, writer: anytype, statement: *MySQLStatement, globalObject: *JSGlobalObject, binding_value: JSValue, columns_value: JSValue) AnyMySQLError.Error!void {
-    bun.assertf(statement.params.len == statement.params_received and statement.statement_id > 0, "statement is not prepared", .{});
-    if (statement.signature.fields.len != statement.params.len) {
-        return error.WrongNumberOfParametersProvided;
-    }
-
-    // BLOB parameters borrow ArrayBuffer/Blob bytes rather than copying.
-    // Converting later parameters can run user JS (index getters, toJSON,
-    // toString coercion) which could drop the last reference to an earlier
-    // buffer and force GC. Root every borrowed JSValue in a stack-scoped
-    // MarkedArgumentBuffer so the wrapper (and its RefPtr<ArrayBuffer>)
-    // survives until execute.deinit() has unpinned and released the borrow.
-    const Ctx = struct {
-        this: *MySQLQuery,
-        writer: @TypeOf(writer),
-        statement: *MySQLStatement,
-        globalObject: *JSGlobalObject,
-        binding_value: JSValue,
-        columns_value: JSValue,
-        result: AnyMySQLError.Error!void,
-
-        pub fn run(ctx: *@This(), roots: *bun.jsc.MarkedArgumentBuffer) callconv(.c) void {
-            ctx.result = bindAndExecuteImpl(ctx.this, ctx.writer, ctx.statement, ctx.globalObject, ctx.binding_value, ctx.columns_value, roots);
-        }
-    };
-    var ctx: Ctx = .{
-        .this = this,
-        .writer = writer,
-        .statement = statement,
-        .globalObject = globalObject,
-        .binding_value = binding_value,
-        .columns_value = columns_value,
-        .result = {},
-    };
-    bun.jsc.MarkedArgumentBuffer.run(Ctx, &ctx, &Ctx.run);
-    return ctx.result;
-}
-
-fn bindAndExecuteImpl(this: *MySQLQuery, writer: anytype, statement: *MySQLStatement, globalObject: *JSGlobalObject, binding_value: JSValue, columns_value: JSValue, roots: *bun.jsc.MarkedArgumentBuffer) AnyMySQLError.Error!void {
-    var execute = PreparedStatement.Execute{
+    if (SQLParameters.count(binding_value, columns_value) != plan.len) return error.WrongNumberOfParametersProvided;
+    var parameters = try SQLParameters.materializeMySQL(binding_value, columns_value, plan);
+    defer parameters.deinit();
+    if (this.isCompleted() or !writer.wrapped.isConnected()) return error.ConnectionClosed;
+    var execute = PreparedStatement.Execute(SQLParameters.Batch){
         .statement_id = statement.statement_id,
-        .param_types = statement.signature.fields,
+        .param_types = fields,
         .new_params_bind_flag = statement.execution_flags.need_to_send_params,
-        .iteration_count = 1,
+        .params = &parameters,
     };
-    defer execute.deinit();
-    // Bind before touching the writer so a bind failure (user-triggerable via JS
-    // getters / param-count mismatch) doesn't leave a partial packet header in
-    // the connection's write buffer.
-    try this.bind(&execute, globalObject, binding_value, columns_value, roots);
     var packet = try writer.start(0);
+    defer packet.deinit();
     try execute.write(writer);
     try packet.end();
     statement.execution_flags.need_to_send_params = false;
     this.status = .running;
 }
 
-fn runSimpleQuery(this: *@This(), connection: *MySQLConnection) !void {
+fn runSimpleQuery(this: *@This(), connection: anytype) AnyMySQLError.Error!void {
     if (this.status != .pending or !connection.canExecuteQuery()) {
         debug("cannot execute query", .{});
         // cannot execute query
         return;
     }
-    var query_str = this.query.toUTF8(bun.default_allocator);
+    var query_str = try this.query.toUTF8(bun.default_allocator);
     defer query_str.deinit();
     const writer = connection.getWriter();
     if (this.statement == null) {
-        const stmt = bun.new(MySQLStatement, .{
+        const stmt = try bun.default_allocator.create(MySQLStatement);
+        stmt.* = .{
             .signature = Signature.empty(),
             .status = .parsing,
             .ref_count = .initExactRefs(1),
-        });
+        };
         this.statement = stmt;
     }
-    try MySQLRequest.executeQuery(query_str.slice(), MySQLConnection.Writer, writer);
+    try MySQLRequest.executeQuery(query_str.slice(), @TypeOf(connection.*).Writer, writer);
 
     this.status = .running;
 }
 
 fn runPreparedQuery(
     this: *@This(),
-    connection: *MySQLConnection,
-    globalObject: *JSGlobalObject,
-    columns_value: JSValue,
-    binding_value: JSValue,
-) !void {
-    var query_str: ?bun.ZigString.Slice = null;
+    connection: anytype,
+    columns_value: ?*const SQLTypes.BindingColumns,
+    binding_value: *const SQLTypes.BindingValues,
+) RunError!RunOutcome {
+    var query_str: ?bun.String.Slice = null;
     defer if (query_str) |str| str.deinit();
 
     if (this.statement == null) {
-        const query = this.query.toUTF8(bun.default_allocator);
+        const query = try this.query.toUTF8(bun.default_allocator);
         query_str = query;
-        var signature = Signature.generate(globalObject, query.slice(), binding_value, columns_value) catch |err| {
-            if (!globalObject.hasException())
-                return globalObject.throwValue(AnyMySQLError.mysqlErrorToJS(globalObject, "failed to generate signature", err));
-            return error.JSError;
+        var signature = Signature.generate(query.slice(), binding_value, columns_value) catch |err| {
+            return runFailure("failed to generate signature", err);
         };
-        errdefer signature.deinit();
-        const entry = connection.getStatementFromSignatureHash(bun.hash(signature.name)) catch |err| {
-            return globalObject.throwError(err, "failed to allocate statement");
+        defer signature.deinit();
+        if (this.isCompleted() or connection.isClosed()) return runFailure("connection closed during parameter conversion", error.ConnectionClosed);
+        this.statement = connection.acquireStatement(&signature) catch |err| {
+            return runFailure("failed to allocate statement", err);
         };
-
-        if (entry.found_existing) {
-            const stmt = entry.value_ptr.*;
-            if (stmt.status == .failed) {
-                const error_response = stmt.error_response.toJS(globalObject);
-                // If the statement failed, we need to throw the error
-                return globalObject.throwValue(error_response);
-            }
-            this.statement = stmt;
-            stmt.ref();
-            signature.deinit();
-            signature = Signature{};
-        } else {
-            const stmt = bun.new(MySQLStatement, .{
-                .signature = signature,
-                .ref_count = .initExactRefs(2),
-                .status = .pending,
-                .statement_id = 0,
-            });
-            this.statement = stmt;
-            entry.value_ptr.* = stmt;
-        }
     }
     const stmt = this.statement.?;
     switch (stmt.status) {
         .failed => {
             debug("failed", .{});
-            const error_response = stmt.error_response.toJS(globalObject);
-            // If the statement failed, we need to throw the error
-            return globalObject.throwValue(error_response);
+            return .cached_statement_failed;
         },
         .prepared => {
             if (connection.canPipeline()) {
                 debug("bindAndExecute", .{});
                 const writer = connection.getWriter();
-                this.bindAndExecute(writer, stmt, globalObject, binding_value, columns_value) catch |err| {
-                    if (!globalObject.hasException())
-                        return globalObject.throwValue(AnyMySQLError.mysqlErrorToJS(globalObject, "failed to bind and execute query", err));
-                    return error.JSError;
+                this.bindAndExecute(writer, stmt, binding_value, columns_value) catch |err| {
+                    return runFailure("failed to bind and execute query", err);
                 };
                 this.flags.pipelined = true;
             }
@@ -207,14 +121,16 @@ fn runPreparedQuery(
             if (connection.canPrepareQuery()) {
                 debug("prepareRequest", .{});
                 const writer = connection.getWriter();
-                const query = query_str orelse this.query.toUTF8(bun.default_allocator);
-                MySQLRequest.prepareRequest(query.slice(), MySQLConnection.Writer, writer) catch |err| {
-                    return globalObject.throwError(err, "failed to prepare query");
+                if (query_str == null) query_str = try this.query.toUTF8(bun.default_allocator);
+                const query = query_str.?;
+                MySQLRequest.prepareRequest(query.slice(), @TypeOf(connection.*).Writer, writer) catch |err| {
+                    return runFailure("failed to prepare query", err);
                 };
                 stmt.status = .parsing;
             }
         },
     }
+    return .started;
 }
 
 /// Takes ownership of `query` (caller must have already ref'd it, e.g. via
@@ -230,18 +146,26 @@ pub fn init(query: bun.String, bigint: bool, simple: bool) @This() {
     };
 }
 
-pub fn runQuery(this: *@This(), connection: *MySQLConnection, globalObject: *JSGlobalObject, columns_value: JSValue, binding_value: JSValue) !void {
+pub fn runQuery(this: *@This(), connection: anytype, columns_value: ?*const SQLTypes.BindingColumns, binding_value: *const SQLTypes.BindingValues) RunError!RunOutcome {
     if (this.flags.simple) {
         debug("runSimpleQuery", .{});
-        return try this.runSimpleQuery(connection);
+        this.runSimpleQuery(connection) catch |err| {
+            return runFailure("failed to execute query", err);
+        };
+        return .started;
     }
     debug("runPreparedQuery", .{});
-    return try this.runPreparedQuery(
-        connection,
-        globalObject,
-        if (columns_value == .zero) .js_undefined else columns_value,
-        if (binding_value == .zero) .js_undefined else binding_value,
-    );
+    return this.runPreparedQuery(connection, columns_value, binding_value);
+}
+
+fn runFailure(message: []const u8, err: AnyMySQLError.Error) RunError!RunOutcome {
+    return switch (err) {
+        error.JSError => error.JSError,
+        error.JSTerminated => error.JSTerminated,
+        error.OutOfMemory => error.OutOfMemory,
+        error.ShortRead => bun.unreachablePanic("Assertion failed: ShortRead should be handled by the caller in mysql", .{}),
+        else => .{ .failed = .{ .message = message, .err = err } },
+    };
 }
 
 pub inline fn setResultMode(this: *@This(), result_mode: SQLQueryResultMode) void {
@@ -319,16 +243,24 @@ pub inline fn getStatement(this: *const @This()) ?*MySQLStatement {
 const debug = bun.Output.scoped(.MySQLQuery, .visible);
 
 const AnyMySQLError = @import("../../sql/mysql/protocol/AnyMySQLError.zig");
-const MySQLConnection = @import("./JSMySQLConnection.zig");
 const MySQLRequest = @import("../../sql/mysql/MySQLRequest.zig");
 const MySQLStatement = @import("./MySQLStatement.zig");
 const PreparedStatement = @import("../../sql/mysql/protocol/PreparedStatement.zig");
 const Signature = @import("../../sql_jsc/mysql/protocol/Signature.zig");
 const bun = @import("bun");
-const QueryBindingIterator = @import("../../sql_jsc/shared/QueryBindingIterator.zig").QueryBindingIterator;
+const SQLParameters = @import("../shared/SQLParameters.zig");
 const SQLQueryResultMode = @import("../../sql/shared/SQLQueryResultMode.zig").SQLQueryResultMode;
-const Status = @import("../../sql/mysql/QueryStatus.zig").Status;
-const Value = @import("../../sql/mysql/MySQLTypes.zig").Value;
+const SQLTypes = @import("../shared/SQLTypes.zig");
+const mysql_domain = @import("mysql_domain");
+const Status = mysql_domain.QueryStatus;
 
-const JSGlobalObject = bun.jsc.JSGlobalObject;
-const JSValue = bun.jsc.JSValue;
+pub const RunError = error{ JSError, JSTerminated, OutOfMemory };
+
+pub const RunOutcome = union(enum) {
+    started,
+    cached_statement_failed,
+    failed: struct {
+        message: []const u8,
+        err: AnyMySQLError.Error,
+    },
+};

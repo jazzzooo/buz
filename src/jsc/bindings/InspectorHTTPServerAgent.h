@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SchemaBindings.h"
 #include "root.h"
 #include <JavaScriptCore/AlternateDispatchableAgent.h>
 #include <JavaScriptCore/InspectorAgentBase.h>
@@ -8,7 +9,6 @@
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <wtf/Forward.h>
 #include <wtf/Noncopyable.h>
-#include "headers-handwritten.h"
 
 namespace Inspector {
 
@@ -17,7 +17,7 @@ class BackendDispatcher;
 class HTTPServerFrontendDispatcher;
 enum class DisconnectReason;
 
-using AnyServerPtr = void*;
+using AnyServerPtr = Bun::NodeHTTPResponseAnyServer*;
 
 class InspectorHTTPServerAgent final : public InspectorAgentBase, public Inspector::HTTPServerBackendDispatcherHandler {
     WTF_MAKE_NONCOPYABLE(InspectorHTTPServerAgent);

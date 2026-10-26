@@ -1,7 +1,6 @@
 pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
-const Maybe = css.Maybe;
 const PrintErr = css.PrintErr;
 const fontprops = css.css_properties.font;
 const Location = css.css_rules.Location;
@@ -269,7 +268,7 @@ pub const FontPaletteValuesDeclarationParser = struct {
             return .{ .err = input.newError(css.BasicParseErrorKind.at_rule_body_invalid) };
         }
 
-        pub fn ruleWithoutBlock(_: *This, _: AtRuleParser.Prelude, _: *const css.ParserState) css.Maybe(AtRuleParser.AtRule, void) {
+        pub fn ruleWithoutBlock(_: *This, _: AtRuleParser.Prelude, _: *const css.ParserState) css.Outcome(AtRuleParser.AtRule, void) {
             return .{ .err = {} };
         }
     };

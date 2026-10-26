@@ -26,45 +26,63 @@
 
 #pragma once
 
-#include "UnencodableHandling.h"
-#include <array>
 #include <memory>
 #include <span>
-#include <unicode/umachine.h>
 #include <wtf/Forward.h>
 #include <wtf/Noncopyable.h>
-#include <wtf/TZoneMalloc.h>
+#include <wtf/FastMalloc.h>
+#include <wtf/Vector.h>
+#include <wtf/text/WTFString.h>
+#include <utility>
 
 namespace PAL {
 
-class TextEncoding;
-
-using UnencodableReplacementArray = std::array<char, 32>;
-
 class TextCodec {
-    WTF_MAKE_TZONE_ALLOCATED(TextCodec);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(TextCodec);
     WTF_MAKE_NONCOPYABLE(TextCodec);
 
 public:
     TextCodec() = default;
     virtual ~TextCodec() = default;
 
-    virtual void stripByteOrderMark() {}
+    template<typename Codec, typename... Arguments>
+    static std::unique_ptr<TextCodec> create(Arguments&&... arguments)
+    {
+        void* storage;
+        if (!tryFastMalloc(sizeof(Codec)).getValue(storage))
+            return nullptr;
+        return std::unique_ptr<TextCodec>(new (NotNull, storage) Codec(std::forward<Arguments>(arguments)...));
+    }
+
+    virtual void reset() { m_pendingInput.clear(); }
     virtual String decode(std::span<const uint8_t> data, bool flush, bool stopOnError, bool& sawError) = 0;
 
-    virtual Vector<uint8_t> encode(StringView, UnencodableHandling) const = 0;
+protected:
+    template<typename Decoder>
+    String decodeWithQueue(std::span<const uint8_t> bytes, const Decoder& decoder)
+    {
+        if (bytes.size() > String::MaxLength - m_pendingInput.size())
+            return {};
+        Vector<uint8_t> joined;
+        if (!m_pendingInput.isEmpty()) {
+            if (!joined.tryAppend(m_pendingInput.span()) || !joined.tryAppend(bytes))
+                return {};
+            bytes = joined.span();
+        }
+        auto result = decoder(bytes);
+        if (result.isNull())
+            return {};
+        Vector<uint8_t> pending;
+        if (!pending.tryAppend(bytes))
+            return {};
+        m_pendingInput = WTF::move(pending);
+        return result;
+    }
 
-    // Fills a null-terminated string representation of the given
-    // unencodable character into the given replacement buffer.
-    // The length of the string (not including the null) will be returned.
-    static std::span<char> getUnencodableReplacement(char32_t, UnencodableHandling, UnencodableReplacementArray& replacement LIFETIME_BOUND);
+private:
+    Vector<uint8_t> m_pendingInput;
 };
 
-Function<void(char32_t, Vector<uint8_t>&)> unencodableHandler(UnencodableHandling);
-
-using EncodingNameRegistrar = void (*)(ASCIILiteral alias, ASCIILiteral name);
-
-using NewTextCodecFunction = Function<std::unique_ptr<TextCodec>()>;
-using TextCodecRegistrar = void (*)(ASCIILiteral name, NewTextCodecFunction&&);
+String finishTextDecode(StringBuilder&);
 
 } // namespace PAL

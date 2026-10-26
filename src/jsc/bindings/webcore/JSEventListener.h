@@ -23,10 +23,15 @@
 #include "DOMWrapperWorld.h"
 #include "EventListener.h"
 #include "EventNames.h"
+#include "EventTarget.h"
 // #include "HTMLElement.h"
 #include <JavaScriptCore/StrongInlines.h>
+#include <JavaScriptCore/ExceptionHelpers.h>
+#include <JavaScriptCore/JSGlobalObject.h>
+#include <JavaScriptCore/ThrowScope.h>
 #include <JavaScriptCore/Weak.h>
 #include <JavaScriptCore/WeakInlines.h>
+#include <optional>
 #include <wtf/Ref.h>
 #include <wtf/TypeCasts.h>
 #include <wtf/text/TextPosition.h>
@@ -92,12 +97,15 @@ private:
 };
 
 // For "onxxx" attributes that automatically set up JavaScript event listeners.
-JSC::JSValue eventHandlerAttribute(EventTarget&, const AtomString& eventType, DOMWrapperWorld&);
+std::optional<JSC::JSValue> eventHandlerAttribute(EventTarget&, const AtomString& eventType, DOMWrapperWorld&);
 
 template<typename JSMaybeErrorEventListener>
-inline void setEventHandlerAttribute(EventTarget& eventTarget, const AtomString& eventType, JSC::JSValue listener, JSC::JSObject& jsEventTarget)
+inline void setEventHandlerAttribute(JSC::JSGlobalObject& globalObject, EventTarget& eventTarget, const AtomString& eventType, const std::optional<JSC::JSValue>& listener, JSC::JSObject& jsEventTarget)
 {
-    eventTarget.setAttributeEventListener<JSMaybeErrorEventListener>(eventType, listener, jsEventTarget);
+    if (!eventTarget.setAttributeEventListener<JSMaybeErrorEventListener>(eventType, listener ? listener->getObject() : nullptr, jsEventTarget)) {
+        auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
+        JSC::throwOutOfMemoryError(&globalObject, scope);
+    }
 }
 
 // // Like the functions above, but for attributes that forward event handlers to the window object rather than setting them on the target.

@@ -1,24 +1,29 @@
 
 #include "ProcessBindingBuffer.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/ObjectConstructor.h>
 #include "JSBuffer.h"
 
 namespace Bun {
 using namespace JSC;
 
-#define PROCESS_BINDING_NOT_IMPLEMENTED(str)                                                                                                      \
-    JSC_DEFINE_HOST_FUNCTION(ProcessBinding_Buffer_##str, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame * callFrame))                \
-    {                                                                                                                                             \
-        {                                                                                                                                         \
-            auto& vm = JSC::getVM(lexicalGlobalObject);                                                                                           \
-            auto throwScope = DECLARE_THROW_SCOPE(vm);                                                                                            \
-            auto prelude = "process.binding('buffer')."_s;                                                                                        \
-            auto name = #str##_s;                                                                                                                 \
-            auto finale = " is not implemented in Bun. If that breaks something, please file an issue and include a reproducible code sample."_s; \
-            auto message = makeString(prelude, name, finale);                                                                                     \
-            throwScope.throwException(lexicalGlobalObject, createError(lexicalGlobalObject, message));                                            \
-            return {};                                                                                                                            \
-        }                                                                                                                                         \
+namespace Bindgen::Cpp {
+
+static void throwBufferBindingNotImplemented(CppCallContext& context, ASCIILiteral name)
+{
+    auto* globalObject = &context.globalObject;
+    auto throwScope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto message = makeString(
+        "process.binding('buffer')."_s,
+        name,
+        " is not implemented in Bun. If that breaks something, please file an issue and include a reproducible code sample."_s);
+    throwScope.throwException(globalObject, createError(globalObject, message));
+}
+
+#define PROCESS_BINDING_NOT_IMPLEMENTED(str)                                                                                                                             \
+    void bunBindgenCpp_ProcessBindingStubs_buffer_##str(CppCallContext& context, const BunBindgenCpp_ProcessBindingStubs_buffer_##str##_Arguments&)                       \
+    {                                                                                                                                                                    \
+        throwBufferBindingNotImplemented(context, #str##_s);                                                                                                             \
     }
 
 PROCESS_BINDING_NOT_IMPLEMENTED(asciiSlice)
@@ -85,45 +90,15 @@ PROCESS_BINDING_NOT_IMPLEMENTED(utf8Slice)
 
 PROCESS_BINDING_NOT_IMPLEMENTED(utf8WriteStatic)
 
-/* Source for ProcessBindingBuffer.lut.h
-@begin processBindingBufferTable
-    asciiSlice                    ProcessBinding_Buffer_asciiSlice               Function 1
-    asciiWriteStatic              ProcessBinding_Buffer_asciiWriteStatic         Function 1
-    atob                          ProcessBinding_Buffer_atob                     Function 1
-    base64Slice                   ProcessBinding_Buffer_base64Slice              Function 1
-    base64Write                   ProcessBinding_Buffer_base64Write              Function 1
-    base64urlSlice                ProcessBinding_Buffer_base64urlSlice           Function 1
-    base64urlWrite                ProcessBinding_Buffer_base64urlWrite           Function 1
-    btoa                          ProcessBinding_Buffer_btoa                     Function 1
-    byteLengthUtf8                ProcessBinding_Buffer_byteLengthUtf8           Function 1
-    compare                       ProcessBinding_Buffer_compare                  Function 1
-    compareOffset                 ProcessBinding_Buffer_compareOffset            Function 1
-    copy                          ProcessBinding_Buffer_copy                     Function 1
-    copyArrayBuffer               ProcessBinding_Buffer_copyArrayBuffer          Function 1
-    detachArrayBuffer             ProcessBinding_Buffer_detachArrayBuffer        Function 1
-    fill                          ProcessBinding_Buffer_fill                     Function 1
-    getZeroFillToggle             ProcessBinding_Buffer_getZeroFillToggle        Function 1
-    hexSlice                      ProcessBinding_Buffer_hexSlice                 Function 1
-    hexWrite                      ProcessBinding_Buffer_hexWrite                 Function 1
-    indexOfBuffer                 ProcessBinding_Buffer_indexOfBuffer            Function 1
-    indexOfNumber                 ProcessBinding_Buffer_indexOfNumber            Function 1
-    indexOfString                 ProcessBinding_Buffer_indexOfString            Function 1
-    isAscii                       ProcessBinding_Buffer_isAscii                  Function 1
-    isUtf8                        ProcessBinding_Buffer_isUtf8                   Function 1
-    latin1Slice                   ProcessBinding_Buffer_latin1Slice              Function 1
-    latin1WriteStatic             ProcessBinding_Buffer_latin1WriteStatic        Function 1
-    swap16                        ProcessBinding_Buffer_swap16                   Function 1
-    swap32                        ProcessBinding_Buffer_swap32                   Function 1
-    swap64                        ProcessBinding_Buffer_swap64                   Function 1
-    ucs2Slice                     ProcessBinding_Buffer_ucs2Slice                Function 1
-    ucs2Write                     ProcessBinding_Buffer_ucs2Write                Function 1
-    utf8Slice                     ProcessBinding_Buffer_utf8Slice                Function 1
-    utf8WriteStatic               ProcessBinding_Buffer_utf8WriteStatic          Function 1
-@end
-*/
-#include "ProcessBindingBuffer.lut.h"
+#undef PROCESS_BINDING_NOT_IMPLEMENTED
 
-const ClassInfo ProcessBindingBuffer::s_info = { "ProcessBindingBuffer"_s, &Base::s_info, &processBindingBufferTable, nullptr, CREATE_METHOD_TABLE(ProcessBindingBuffer) };
+}
+
+#define BUN_BINDGEN_OBJECT_SURFACE_ProcessBindingBuffer
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_ProcessBindingBuffer
+
+const ClassInfo ProcessBindingBuffer::s_info = { "ProcessBindingBuffer"_s, &Base::s_info, &bunBindgenObjectSurface_ProcessBindingBufferTable, nullptr, CREATE_METHOD_TABLE(ProcessBindingBuffer) };
 
 ProcessBindingBuffer* ProcessBindingBuffer::create(VM& vm, Structure* structure)
 {
@@ -141,9 +116,6 @@ void ProcessBindingBuffer::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
-
-    putDirect(vm, Identifier::fromString(vm, "kMaxLength"_s), jsNumber(Bun::Buffer::kMaxLength), 0);
-    putDirect(vm, Identifier::fromString(vm, "kStringMaxLength"_s), jsNumber(Bun::Buffer::kStringMaxLength), 0);
 }
 
 template<typename Visitor>
@@ -157,5 +129,3 @@ void ProcessBindingBuffer::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 DEFINE_VISIT_CHILDREN(ProcessBindingBuffer);
 
 } // namespace Bun
-
-#undef PROCESS_BINDING_NOT_IMPLEMENTED

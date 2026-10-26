@@ -1,6 +1,39 @@
 stmts: []Stmt = &.{},
-kept_import_equals: bool = false,
-removed_import_equals: bool = false,
+
+pub fn removeUnusedImportEquals(comptime P: type, p: *P, parts: []js_ast.Part) void {
+    if (!P.parser_features.typescript) return;
+    while (true) {
+        var removed = false;
+        for (parts) |*part| {
+            var end: usize = 0;
+            for (part.stmts) |stmt| {
+                if (stmt.data == .s_local) {
+                    const local = stmt.data.s_local;
+                    if (local.was_ts_import_equals and !local.is_export and local.decls.len > 0) {
+                        const decl = local.decls.ptr[0];
+                        if (decl.binding.data == .b_identifier and
+                            p.symbols.items[decl.binding.data.b_identifier.ref.innerIndex()].use_count_estimate == 0)
+                        {
+                            if (decl.value) |value| {
+                                var target = value;
+                                while (target.data == .e_dot) target = target.data.e_dot.target;
+                                if (target.data == .e_identifier) {
+                                    p.ignoreUsage(target.data.e_identifier.ref);
+                                    removed = true;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                part.stmts[end] = stmt;
+                end += 1;
+            }
+            part.stmts = part.stmts[0..end];
+        }
+        if (!removed) return;
+    }
+}
 
 pub fn scan(
     comptime P: type,
@@ -215,7 +248,7 @@ pub fn scan(
                             result.* = alias;
                         }
                         strings.sortDesc(sorted);
-                        bun.handleOom(p.named_imports.ensureUnusedCapacity(p.allocator, sorted.len));
+                        try p.named_imports.ensureUnusedCapacity(p.allocator, sorted.len);
 
                         // Create named imports for these property accesses. This will
                         // cause missing imports to generate useful warnings.
@@ -225,7 +258,7 @@ pub fn scan(
                         // bare identifiers even if the namespace is still needed.
                         for (sorted) |alias| {
                             const item = existing_items.get(alias).?;
-                            p.named_imports.put(
+                            try p.named_imports.put(
                                 p.allocator,
                                 item.ref.?,
                                 js_ast.NamedImport{
@@ -234,7 +267,7 @@ pub fn scan(
                                     .namespace_ref = namespace_ref,
                                     .import_record_index = st.import_record_index,
                                 },
-                            ) catch |err| bun.handleOom(err);
+                            );
 
                             const name: LocRef = item;
                             const name_ref = name.ref.?;
@@ -250,17 +283,18 @@ pub fn scan(
                             };
 
                             // Also record these automatically-generated top-level namespace alias symbols
-                            p.declared_symbols.append(p.allocator, .{
+                            try p.declared_symbols.append(p.allocator, .{
                                 .ref = name_ref,
                                 .is_top_level = true,
-                            }) catch unreachable;
+                            });
                         }
                     }
 
-                    p.named_imports.ensureUnusedCapacity(
+                    const import_count = std.math.add(usize, st.items.len, @as(usize, @intFromBool(st.default_name != null)) + @as(usize, @intFromBool(st.star_name_loc != null))) catch return error.OutOfMemory;
+                    try p.named_imports.ensureUnusedCapacity(
                         p.allocator,
-                        st.items.len + @as(usize, @intFromBool(st.default_name != null)) + @as(usize, @intFromBool(st.star_name_loc != null)),
-                    ) catch |err| bun.handleOom(err);
+                        import_count,
+                    );
 
                     if (st.star_name_loc) |loc| {
                         record.flags.contains_import_star = true;
@@ -368,51 +402,11 @@ pub fn scan(
             .s_local => |st| {
                 if (st.is_export) {
                     for (st.decls.slice()) |decl| {
-                        p.recordExportedBinding(decl.binding);
-                    }
-                }
-
-                // Remove unused import-equals statements, since those likely
-                // correspond to types instead of values
-                if (st.was_ts_import_equals and !st.is_export and st.decls.len > 0) {
-                    var decl = st.decls.ptr[0];
-
-                    // Skip to the underlying reference
-                    var value = decl.value;
-                    if (decl.value != null) {
-                        while (true) {
-                            if (@as(Expr.Tag, value.?.data) == .e_dot) {
-                                value = value.?.data.e_dot.target;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-
-                    // Is this an identifier reference and not a require() call?
-                    if (value) |val| {
-                        if (@as(Expr.Tag, val.data) == .e_identifier) {
-                            // Is this import statement unused?
-                            if (@as(Binding.Tag, decl.binding.data) == .b_identifier and p.symbols.items[decl.binding.data.b_identifier.ref.innerIndex()].use_count_estimate == 0) {
-                                p.ignoreUsage(val.data.e_identifier.ref);
-
-                                scanner.removed_import_equals = true;
-                                continue;
-                            } else {
-                                scanner.kept_import_equals = true;
-                            }
-                        }
+                        try p.recordExportedBinding(decl.binding);
                     }
                 }
             },
             .s_export_default => |st| {
-                // This is defer'd so that we still record export default for identifiers
-                defer {
-                    if (st.default_name.ref) |ref| {
-                        p.recordExport(st.default_name.loc, "default", ref) catch {};
-                    }
-                }
-
                 // Rewrite this export to be:
                 // exports.default =
                 // But only if it's anonymous
@@ -422,6 +416,9 @@ pub fn scan(
                     export_default_args[0] = p.@"module.exports"(expr.loc);
                     export_default_args[1] = expr;
                     stmt = p.s(S.SExpr{ .value = p.callRuntime(expr.loc, "__exportDefault", export_default_args) }, expr.loc);
+                }
+                if (st.default_name.ref) |ref| {
+                    try p.recordExport(st.default_name.loc, "default", ref);
                 }
             },
             .s_export_clause => |st| {
@@ -452,7 +449,7 @@ pub fn scan(
             },
             .s_export_from => |st| {
                 try p.import_records_for_current_part.append(allocator, st.import_record_index);
-                p.named_imports.ensureUnusedCapacity(p.allocator, st.items.len) catch unreachable;
+                try p.named_imports.ensureUnusedCapacity(p.allocator, st.items.len);
                 for (st.items) |item| {
                     const ref = item.name.ref orelse p.panic("Expected export from item to have a name", .{});
                     // Note that the imported alias is not item.Alias, which is the
@@ -496,12 +493,12 @@ pub fn scan(
 const string = []const u8;
 
 const bun = @import("bun");
+const std = @import("std");
 const ImportRecord = bun.ImportRecord;
 const logger = bun.logger;
 const strings = bun.strings;
 
 const js_ast = bun.ast;
-const Binding = js_ast.Binding;
 const Expr = js_ast.Expr;
 const G = js_ast.G;
 const LocRef = js_ast.LocRef;

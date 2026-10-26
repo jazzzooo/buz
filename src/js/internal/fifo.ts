@@ -72,7 +72,7 @@ class Dequeue<T> {
   clear(): void {
     this._head = 0;
     this._tail = 0;
-    this._list.fill(undefined);
+    for (var i = 0; i < this._list.length; i++) $putByValDirect(this._list, i, undefined);
   }
 
   private _growArray(): void {

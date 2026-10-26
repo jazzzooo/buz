@@ -16,13 +16,14 @@ pub fn installWithManager(
             const allocator = hostname_stack.allocator();
             const hostname = try allocator.dupeSentinel(u8, manager.options.scope.url.hostname, 0);
             defer allocator.free(hostname);
-            bun.dns.internal.prefetch(manager.event_loop.loop(), hostname, manager.options.scope.url.getPortAuto());
+            try bun.dns.internal.prefetch(manager.event_loop.loop(), hostname, manager.options.scope.url.getPortAuto());
         }
     }
 
     var load_result: Lockfile.LoadResult = if (manager.options.do.load_lockfile)
         manager.lockfile.loadFromCwd(
             manager,
+            Dependency.ParseContext.fromPackageManager(manager),
             manager.allocator,
             manager.log,
             true,

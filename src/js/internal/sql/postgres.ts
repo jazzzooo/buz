@@ -1,18 +1,23 @@
 import type { PostgresErrorOptions } from "internal/sql/errors";
-import type { Query } from "./query";
-import type { ArrayType, DatabaseAdapter, SQLArrayParameter, SQLHelper, SQLResultArray, SSLMode } from "./shared";
+import type { ArrayType, DatabaseAdapter } from "./shared";
 const {
   SQLHelper,
   SSLMode,
   SQLResultArray,
   SQLArrayParameter,
   buildDefinedColumnsAndQuery,
-} = require("internal/sql/shared");
+} = require("internal/sql/shared") as (typeof import("./shared"))["default"];
 const {
   Query,
   SQLQueryFlags,
   symbols: { _strings, _values, _flags, _results, _handle },
-} = require("internal/sql/query");
+} = require("internal/sql/query") as (typeof import("./query"))["default"];
+
+type Query<T, Handle extends import("./query").BaseQueryHandle<any>> = import("./query").Query<T, Handle>;
+type SQLHelper<T = any> = import("./shared").SQLHelper<T>;
+type SQLResultArray<T = any> = import("./shared").SQLResultArray<T>;
+type SQLArrayParameter = import("./shared").SQLArrayParameter;
+type SSLMode = import("./shared").SSLMode;
 function isTypedArray(value: any) {
   // Buffer should be treated as a normal object
   // Typed arrays should be treated like an array
@@ -25,7 +30,11 @@ const {
   createConnection: createPostgresConnection,
   createQuery: createPostgresQuery,
   init: initPostgres,
-} = $zig("postgres.zig", "createBinding") as PostgresDotZig;
+} = {
+  createConnection: $bindgenFn("SQLBinding.schema.zig", "postgresCreateConnection"),
+  createQuery: $bindgenFn("SQLBinding.schema.zig", "postgresCreateQuery"),
+  init: $bindgenFn("SQLBinding.schema.zig", "postgresInit"),
+} as PostgresDotZig;
 
 const cmds = ["", "INSERT", "DELETE", "UPDATE", "MERGE", "SELECT", "MOVE", "FETCH", "COPY"];
 
@@ -181,16 +190,17 @@ function arrayValueSerializer(type: ArrayType, is_numeric: boolean, is_json: boo
           // fallback to string
           return value === true ? '"true"' : '"false"';
       }
-    default:
-      if (value instanceof Date) {
-        const isoValue = value.toISOString();
+    default: {
+      const object_value: unknown = value;
+      if (object_value instanceof Date) {
+        const isoValue = object_value.toISOString();
         if (is_json) {
           return `"${arrayEscape(JSON.stringify(isoValue))}"`;
         }
         return `"${arrayEscape(isoValue)}"`;
       }
-      if (Buffer.isBuffer(value)) {
-        const hexValue = value.toString("hex");
+      if (Buffer.isBuffer(object_value)) {
+        const hexValue = object_value.toString("hex");
         // bytea array
         if (type === "BYTEA") {
           return `"\\x${arrayEscape(hexValue)}"`;
@@ -202,6 +212,7 @@ function arrayValueSerializer(type: ArrayType, is_numeric: boolean, is_json: boo
       }
       // fallback to JSON.stringify
       return `"${arrayEscape(JSON.stringify(value))}"`;
+    }
   }
 }
 function getArrayType(typeNameOrID: number | ArrayType | undefined = undefined): ArrayType {
@@ -226,22 +237,24 @@ function serializeArray(values: any[], type: ArrayType) {
   return `{${values.map(arrayValueSerializer.bind(this, type, isPostgresNumericType(type), isPostgresJsonType(type))).join(delimiter)}}`;
 }
 
-function wrapPostgresError(error: Error | PostgresErrorOptions) {
+function wrapPostgresError(error: Error | (PostgresErrorOptions & { message: string })) {
   if (Error.isError(error)) {
     return error;
   }
   return new PostgresError(error.message, error);
 }
 
+type NativePostgresErrorPayload = PostgresErrorOptions & { message: string };
+
+function wrapNativePostgresError(original: unknown, payload: NativePostgresErrorPayload | undefined) {
+  return payload === undefined
+    ? wrapPostgresError(original as Error | NativePostgresErrorPayload)
+    : new PostgresError(payload.message, payload);
+}
+
 initPostgres(
-  function onResolvePostgresQuery(query, result, commandTag, count, queries, is_last) {
+  function onResolvePostgresQuery(query, result, commandTag, count, is_last) {
     if (is_last) {
-      if (queries) {
-        const queriesIndex = queries.indexOf(query);
-        if (queriesIndex !== -1) {
-          queries.splice(queriesIndex, 1);
-        }
-      }
       try {
         query.resolve(query[_results]);
       } catch {}
@@ -277,16 +290,10 @@ initPostgres(
 
   function onRejectPostgresQuery(
     query: Query<any, any>,
-    reject: Error | PostgresErrorOptions,
-    queries: Query<any, any>[],
+    original: unknown,
+    payload: NativePostgresErrorPayload | undefined,
   ) {
-    reject = wrapPostgresError(reject);
-    if (queries) {
-      const queriesIndex = queries.indexOf(query);
-      if (queriesIndex !== -1) {
-        queries.splice(queriesIndex, 1);
-      }
-    }
+    const reject = wrapNativePostgresError(original, payload);
 
     try {
       query.reject(reject as Error);
@@ -301,10 +308,13 @@ export interface PostgresDotZig {
       result: SQLResultArray,
       commandTag: string,
       count: number,
-      queries: any,
       is_last: boolean,
     ) => void,
-    onRejectQuery: (query: Query<any, any>, err: Error, queries) => void,
+    onRejectQuery: (
+      query: Query<any, any>,
+      original: unknown,
+      payload: NativePostgresErrorPayload | undefined,
+    ) => void,
   ) => void;
   createConnection: (
     hostname: string | undefined,
@@ -316,13 +326,13 @@ export interface PostgresDotZig {
     tls: Bun.TLSOptions | boolean | null | Bun.BunFile, // boolean true => empty TLSOptions object `{}`, boolean false or null => nothing
     query: string,
     path: string,
-    onConnected: (err: Error | null, connection: $ZigGeneratedClasses.PostgresSQLConnection) => void,
-    onDisconnected: (err: Error | null, connection: $ZigGeneratedClasses.PostgresSQLConnection) => void,
+    onConnected: (err: Error | null, connection: BunNativeBindings.PostgresSQLConnection.PostgresSQLConnection) => void,
+    onDisconnected: (original: unknown, payload: NativePostgresErrorPayload | undefined) => void,
     idleTimeout: number,
     connectionTimeout: number,
     maxLifetime: number,
     useUnnamedPreparedStatements: boolean,
-  ) => $ZigGeneratedClasses.PostgresSQLConnection;
+  ) => BunNativeBindings.PostgresSQLConnection.PostgresSQLConnection;
   createQuery: (
     sql: string,
     values: unknown[],
@@ -330,7 +340,7 @@ export interface PostgresDotZig {
     columns: string[] | undefined,
     bigint: boolean,
     simple: boolean,
-  ) => $ZigGeneratedClasses.PostgresSQLQuery;
+  ) => BunNativeBindings.PostgresSQLQuery.PostgresSQLQuery;
 }
 
 const enum SQLCommand {
@@ -342,6 +352,7 @@ const enum SQLCommand {
   none = -1,
 }
 export type { SQLCommand };
+export type { PostgresAdapter };
 
 function commandToString(command: SQLCommand): string {
   switch (command) {
@@ -451,9 +462,9 @@ function onQueryFinish(this: PooledPostgresConnection, onClose: (err: Error) => 
 class PooledPostgresConnection {
   private static async createConnection(
     options: Bun.SQL.__internal.DefinedPostgresOrMySQLOptions,
-    onConnected: (err: Error | null, connection: $ZigGeneratedClasses.PostgresSQLConnection) => void,
+    onConnected: (err: Error | null, connection: BunNativeBindings.PostgresSQLConnection.PostgresSQLConnection) => void,
     onClose: (err: Error | null) => void,
-  ): Promise<$ZigGeneratedClasses.PostgresSQLConnection | null> {
+  ): Promise<BunNativeBindings.PostgresSQLConnection.PostgresSQLConnection | null> {
     const {
       hostname,
       port,
@@ -508,7 +519,7 @@ class PooledPostgresConnection {
   }
 
   adapter: PostgresAdapter;
-  connection: $ZigGeneratedClasses.PostgresSQLConnection | null = null;
+  connection: BunNativeBindings.PostgresSQLConnection.PostgresSQLConnection | null = null;
   state: PooledConnectionState = PooledConnectionState.pending;
   storedError: Error | null = null;
   queries: Set<(err: Error) => void> = new Set();
@@ -549,10 +560,8 @@ class PooledPostgresConnection {
     this.adapter.release(this, true);
   }
 
-  #onClose(err) {
-    if (err) {
-      err = wrapPostgresError(err);
-    }
+  #onClose(original, payload) {
+    const err = original || payload ? wrapNativePostgresError(original, payload) : original;
     const connectionInfo = this.connectionInfo;
     if (connectionInfo?.onclose) {
       connectionInfo.onclose(err);
@@ -660,8 +669,8 @@ class PostgresAdapter
   implements
     DatabaseAdapter<
       PooledPostgresConnection,
-      $ZigGeneratedClasses.PostgresSQLConnection,
-      $ZigGeneratedClasses.PostgresSQLQuery
+      BunNativeBindings.PostgresSQLConnection.PostgresSQLConnection,
+      BunNativeBindings.PostgresSQLQuery.PostgresSQLQuery
     >
 {
   public readonly connectionInfo: Bun.SQL.__internal.DefinedPostgresOrMySQLOptions;
@@ -1343,7 +1352,7 @@ class PostgresAdapter
                   continue;
                 }
                 hasValues = true;
-                query += `${this.escapeIdentifier(column)} = $${binding_idx++}${i < lastColumnIndex ? ", " : ""}`;
+                query += `${this.escapeIdentifier(String(column))} = $${binding_idx++}${i < lastColumnIndex ? ", " : ""}`;
                 binding_values.push(columnValue);
               }
               if (query.endsWith(", ")) {
@@ -1379,6 +1388,8 @@ class PostgresAdapter
 
 export default {
   PostgresAdapter,
+  // @ts-expect-error we're exporting a const enum which works in our builtins
+  // generator but not in typescript officially
   SQLCommand,
   commandToString,
   detectCommand,

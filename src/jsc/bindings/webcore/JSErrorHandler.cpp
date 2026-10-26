@@ -35,9 +35,6 @@
 // #include "Document.h"
 #include "ErrorEvent.h"
 #include "Event.h"
-#include "JSDOMConvertNumbers.h"
-#include "JSDOMConvertStrings.h"
-// #include "JSDOMWindow.h"
 #include "JSEvent.h"
 // #include "JSExecState.h"
 // #include "JSExecStateInstrumentation.h"
@@ -87,11 +84,11 @@ void JSErrorHandler::handleEvent(ScriptExecutionContext& scriptExecutionContext,
     auto& errorEvent = downcast<ErrorEvent>(event);
 
     MarkedArgumentBuffer args;
-    args.append(toJS<IDLDOMString>(*globalObject, errorEvent.message()));
-    args.append(toJS<IDLUSVString>(*globalObject, errorEvent.filename()));
-    args.append(toJS<IDLUnsignedLong>(errorEvent.lineno()));
-    args.append(toJS<IDLUnsignedLong>(errorEvent.colno()));
-    args.append(errorEvent.error(*globalObject));
+    args.append(JSC::jsStringWithCache(vm, errorEvent.message()));
+    args.append(JSC::jsStringWithCache(vm, errorEvent.filename()));
+    args.append(JSC::jsNumber(errorEvent.lineno()));
+    args.append(JSC::jsNumber(errorEvent.colno()));
+    args.append(errorEvent.error());
     ASSERT(!args.hasOverflowed());
 
     if (auto* exception = scope.exception()) {

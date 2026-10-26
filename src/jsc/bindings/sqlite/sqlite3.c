@@ -44110,7 +44110,10 @@ static int unixTruncate(sqlite3_file *id, i64 nByte){
   ** size).
   */
   if( pFile->szChunk>0 ){
-    nByte = ((nByte + pFile->szChunk - 1)/pFile->szChunk) * pFile->szChunk;
+    i64 nRemainder = nByte%pFile->szChunk;
+    if( nRemainder>0
+     && sqlite3AddInt64(&nByte, pFile->szChunk-nRemainder)
+    ) return SQLITE_FULL;
   }
 
   rc = robust_ftruncate(pFile->h, nByte);
@@ -44187,6 +44190,7 @@ static int proxyFileControl(sqlite3_file*,int,void*);
 ** nBytes or larger, this routine is a no-op.
 */
 static int fcntlSizeHint(unixFile *pFile, i64 nByte){
+  if( nByte<=0 ) return SQLITE_OK;
   if( pFile->szChunk>0 ){
     i64 nSize;                    /* Required file size */
     struct stat buf;              /* Used to hold return values of fstat() */
@@ -44195,7 +44199,10 @@ static int fcntlSizeHint(unixFile *pFile, i64 nByte){
       return SQLITE_IOERR_FSTAT;
     }
 
-    nSize = ((nByte+pFile->szChunk-1) / pFile->szChunk) * pFile->szChunk;
+    nSize = nByte;
+    if( nByte%pFile->szChunk
+     && sqlite3AddInt64(&nSize, pFile->szChunk-nByte%pFile->szChunk)
+    ) return SQLITE_FULL;
     if( nSize>(i64)buf.st_size ){
 
 #if defined(HAVE_POSIX_FALLOCATE) && HAVE_POSIX_FALLOCATE
@@ -44215,16 +44222,17 @@ static int fcntlSizeHint(unixFile *pFile, i64 nByte){
       ** This is a similar technique to that used by glibc on systems
       ** that do not have a real fallocate() call.
       */
-      int nBlk = buf.st_blksize;  /* File-system block size */
+      i64 nBlk = buf.st_blksize;  /* File-system block size */
       int nWrite = 0;             /* Number of bytes written by seekAndWrite */
       i64 iWrite;                 /* Next offset to write to */
 
-      iWrite = (buf.st_size/nBlk)*nBlk + nBlk - 1;
-      assert( iWrite>=buf.st_size );
-      assert( ((iWrite+1)%nBlk)==0 );
-      for(/*no-op*/; iWrite<nSize+nBlk-1; iWrite+=nBlk ){
-        if( iWrite>=nSize ) iWrite = nSize - 1;
-        nWrite = seekAndWrite(pFile, iWrite, "", 1);
+      if( nBlk<=0 || buf.st_size<0 ) return SQLITE_IOERR_FSTAT;
+      iWrite = buf.st_size;
+      while( iWrite<nSize ){
+        i64 nAdvance = nBlk - iWrite%nBlk;
+        if( nAdvance>nSize-iWrite ) nAdvance = nSize-iWrite;
+        iWrite += nAdvance;
+        nWrite = seekAndWrite(pFile, iWrite-1, "", 1);
         if( nWrite!=1 ) return SQLITE_IOERR_WRITE;
       }
 #endif
@@ -44330,15 +44338,19 @@ static int unixFileControl(sqlite3_file *id, int op, void *pArg){
     }
     case SQLITE_FCNTL_VFSNAME: {
       *(char**)pArg = sqlite3_mprintf("%s", pFile->pVfs->zName);
-      return SQLITE_OK;
+      return *(char**)pArg ? SQLITE_OK : SQLITE_NOMEM_BKPT;
     }
     case SQLITE_FCNTL_TEMPFILENAME: {
       char *zTFile = sqlite3_malloc64( pFile->pVfs->mxPathname );
-      if( zTFile ){
-        unixGetTempname(pFile->pVfs->mxPathname, zTFile);
+      int rc;
+      if( !zTFile ) return SQLITE_NOMEM_BKPT;
+      rc = unixGetTempname(pFile->pVfs->mxPathname, zTFile);
+      if( rc==SQLITE_OK ){
         *(char**)pArg = zTFile;
+      }else{
+        sqlite3_free(zTFile);
       }
-      return SQLITE_OK;
+      return rc;
     }
     case SQLITE_FCNTL_HAS_MOVED: {
       *(int*)pArg = fileHasMoved(pFile);
@@ -51769,7 +51781,10 @@ static int winTruncate(sqlite3_file *id, sqlite3_int64 nByte){
   ** size).
   */
   if( pFile->szChunk>0 ){
-    nByte = ((nByte + pFile->szChunk - 1)/pFile->szChunk) * pFile->szChunk;
+    i64 nRemainder = nByte%pFile->szChunk;
+    if( nRemainder>0
+     && sqlite3AddInt64(&nByte, pFile->szChunk-nRemainder)
+    ) return SQLITE_FULL;
   }
 
 #if SQLITE_MAX_MMAP_SIZE>0
@@ -52389,9 +52404,11 @@ static int winFileControl(sqlite3_file *id, int op, void *pArg){
       return SQLITE_OK;
     }
     case SQLITE_FCNTL_VFSNAME: {
+      int rc;
       *(char**)pArg = sqlite3_mprintf("%s", pFile->pVfs->zName);
-      OSTRACE(("FCNTL file=%p, rc=SQLITE_OK\n", pFile->h));
-      return SQLITE_OK;
+      rc = *(char**)pArg ? SQLITE_OK : SQLITE_NOMEM_BKPT;
+      OSTRACE(("FCNTL file=%p, rc=%s\n", pFile->h, sqlite3ErrName(rc)));
+      return rc;
     }
     case SQLITE_FCNTL_WIN32_AV_RETRY: {
       int *a = (int*)pArg;

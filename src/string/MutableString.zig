@@ -100,80 +100,8 @@ pub fn initCopy(allocator: Allocator, str: anytype) Allocator.Error!MutableStrin
 /// identifier, you're going to potentially cause trouble with non-BMP code
 /// points in target environments that don't support bracketed Unicode escapes.
 pub fn ensureValidIdentifier(str: string, allocator: Allocator) Allocator.Error!string {
-    if (str.len == 0) {
-        return "_";
-    }
-
-    var iterator = strings.CodepointIterator.init(str);
-    var cursor = strings.CodepointIterator.Cursor{};
-
-    var has_needed_gap = false;
-    var needs_gap = false;
-    var start_i: usize = 0;
-
-    if (!iterator.next(&cursor)) return "_";
-
-    const JSLexerTables = @import("../js_parser/lexer_tables.zig");
-
-    // Common case: no gap necessary. No allocation necessary.
-    needs_gap = !js_lexer.isIdentifierStart(cursor.c);
-    if (!needs_gap) {
-        // Are there any non-alphanumeric chars at all?
-        while (iterator.next(&cursor)) {
-            if (!js_lexer.isIdentifierContinue(cursor.c) or cursor.width > 1) {
-                needs_gap = true;
-                start_i = cursor.i;
-                break;
-            }
-        }
-    }
-
-    if (!needs_gap) {
-        return JSLexerTables.StrictModeReservedWordsRemap.get(str) orelse str;
-    }
-
-    if (needs_gap) {
-        var mutable = try MutableString.initCopy(allocator, if (start_i == 0)
-            // the first letter can be a non-identifier start
-            // https://github.com/oven-sh/bun/issues/2946
-            "_"
-        else
-            str[0..start_i]);
-        needs_gap = false;
-
-        var items = str[start_i..];
-        iterator = strings.CodepointIterator.init(items);
-        cursor = strings.CodepointIterator.Cursor{};
-
-        while (iterator.next(&cursor)) {
-            if (js_lexer.isIdentifierContinue(cursor.c) and cursor.width == 1) {
-                if (needs_gap) {
-                    try mutable.appendChar('_');
-                    needs_gap = false;
-                    has_needed_gap = true;
-                }
-                try mutable.append(items[cursor.i .. cursor.i + @as(u32, cursor.width)]);
-            } else if (!needs_gap) {
-                needs_gap = true;
-                // skip the code point, replace it with a single _
-            }
-        }
-
-        // If it ends with an emoji
-        if (needs_gap) {
-            try mutable.appendChar('_');
-            needs_gap = false;
-            has_needed_gap = true;
-        }
-
-        if (comptime bun.Environment.allow_assert) {
-            bun.assert(js_lexer.isIdentifier(mutable.list.items));
-        }
-
-        return try mutable.list.toOwnedSlice(allocator);
-    }
-
-    return str;
+    const identifier = bun.fmt.fmtIdentifier(str);
+    return identifier.borrowed() orelse try std.fmt.allocPrint(allocator, "{f}", .{identifier});
 }
 
 pub fn len(self: *const MutableString) usize {
@@ -421,7 +349,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const bun = @import("bun");
-const js_lexer = bun.js_lexer;
 const strings = bun.strings;
 
 const Owned = bun.ptr.Owned;

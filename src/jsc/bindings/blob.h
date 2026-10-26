@@ -1,103 +1,68 @@
 #pragma once
 
 #include "root.h"
-#include "JSDOMGlobalObject.h"
 #include "BunClientData.h"
+#include "BunIDLExternalRefs.h"
+#include "ExceptionOr.h"
+
+struct BunBindgen_Blob_Blob_Native;
+
+namespace Zig {
+class GlobalObject;
+}
 
 namespace WebCore {
-
-extern "C" void* Blob__dupeFromJS(JSC::EncodedJSValue impl);
-extern "C" void* Blob__dupe(void* impl);
-extern "C" void* Blob__getDataPtr(JSC::EncodedJSValue blob);
-extern "C" size_t Blob__getSize(JSC::EncodedJSValue blob);
-extern "C" void* Blob__fromBytes(JSC::JSGlobalObject* globalThis, const void* ptr, size_t len);
-extern "C" void* Blob__ref(void* impl);
-extern "C" void* Blob__deref(void* impl);
 
 // Opaque type corresponding to `bun.webcore.Blob`.
 class BlobImpl;
 
-struct BlobImplRefDerefTraits {
-    static ALWAYS_INLINE BlobImpl* refIfNotNull(BlobImpl* ptr)
-    {
-        if (ptr) [[likely]]
-            Blob__ref(ptr);
-        return ptr;
-    }
-
-    static ALWAYS_INLINE BlobImpl& ref(BlobImpl& ref)
-    {
-        Blob__ref(&ref);
-        return ref;
-    }
-
-    static ALWAYS_INLINE void derefIfNotNull(BlobImpl* ptr)
-    {
-        if (ptr) [[likely]]
-            Blob__deref(ptr);
-    }
-};
-
 using BlobRef = Ref<BlobImpl, RawPtrTraits<BlobImpl>, BlobImplRefDerefTraits>;
 using BlobRefPtr = RefPtr<BlobImpl, RawPtrTraits<BlobImpl>, BlobImplRefDerefTraits>;
 
-// TODO: Now that `bun.webcore.Blob` is ref-counted, can `RefPtr<Blob>` be replaced with `Blob`?
 class Blob : public RefCounted<Blob> {
+    WTF_MAKE_NONCOPYABLE(Blob);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(Blob);
+
 public:
     BlobImpl* impl() const
     {
-        return m_impl.get();
+        return m_impl.ptr();
     }
 
-    static RefPtr<Blob> create(JSC::JSValue impl)
-    {
-        return createAdopted(Blob__dupeFromJS(JSValue::encode(impl)));
-    }
+    static ExceptionOr<Ref<Blob>> create(BunBindgen_Blob_Blob_Native*);
+    static bool isInstance(JSC::JSValue) noexcept;
+    static BlobRefPtr retain(JSC::JSValue);
 
-    static RefPtr<Blob> create(std::span<const uint8_t> bytes, JSC::JSGlobalObject* globalThis)
-    {
-        return createAdopted(Blob__fromBytes(globalThis, bytes.data(), bytes.size()));
-    }
-
-    static RefPtr<Blob> create(void* ptr)
-    {
-        return createAdopted(Blob__dupe(ptr));
-    }
+    static RefPtr<Blob> create(std::span<const uint8_t> bytes, JSC::JSGlobalObject*);
+    static RefPtr<Blob> create(std::span<const uint8_t> bytes, JSC::JSGlobalObject*, const String& contentType);
 
     String fileName()
     {
         return m_fileName;
     }
 
-    void setFileName(String fileName)
-    {
-        m_fileName = fileName;
-    }
+    ExceptionOr<Ref<Blob>> withFileName(const String&) const;
 
     size_t memoryCost() const;
 
 private:
-    Blob(void* impl, String fileName = String())
-        : m_impl(adoptRef<BlobImpl, RawPtrTraits<BlobImpl>, BlobImplRefDerefTraits>(
-              static_cast<BlobImpl*>(impl)))
-        , m_fileName(std::move(fileName))
+    static BlobImpl* retainImpl(JSC::JSValue);
+
+    explicit Blob(BlobRef&& impl)
+        : m_impl(WTF::move(impl))
     {
     }
 
-    static RefPtr<Blob> createAdopted(void* ptr)
-    {
-        if (!ptr)
-            return nullptr;
-        return adoptRef(new Blob(ptr));
-    }
+    static ExceptionOr<Ref<Blob>> createAdopted(BlobRef&&);
 
-    BlobRefPtr m_impl;
+    BlobRef m_impl;
     String m_fileName;
 };
 
-JSC::JSValue toJS(JSC::JSGlobalObject*, JSDOMGlobalObject*, Blob&);
-inline JSC::JSValue toJS(JSC::JSGlobalObject* lexicalGlobalObject, JSDOMGlobalObject* globalObject, Blob* impl) { return impl ? toJS(lexicalGlobalObject, globalObject, *impl) : JSC::jsNull(); }
-JSC::JSValue toJSNewlyCreated(JSC::JSGlobalObject*, JSDOMGlobalObject*, Ref<Blob>&&);
-inline JSC::JSValue toJSNewlyCreated(JSC::JSGlobalObject* lexicalGlobalObject, JSDOMGlobalObject* globalObject, RefPtr<Blob>&& impl) { return impl ? toJSNewlyCreated(lexicalGlobalObject, globalObject, impl.releaseNonNull()) : JSC::jsNull(); }
+JSC::JSValue toJS(JSC::JSGlobalObject*, Zig::GlobalObject*, Blob&);
+inline JSC::JSValue toJS(JSC::JSGlobalObject* lexicalGlobalObject, Zig::GlobalObject* globalObject, Blob* impl) { return impl ? toJS(lexicalGlobalObject, globalObject, *impl) : JSC::jsNull(); }
+JSC::JSValue toJSNewlyCreated(JSC::JSGlobalObject*, Zig::GlobalObject*, Ref<Blob>&&);
+inline JSC::JSValue toJSNewlyCreated(JSC::JSGlobalObject* lexicalGlobalObject, Zig::GlobalObject* globalObject, RefPtr<Blob>&& impl) { return impl ? toJSNewlyCreated(lexicalGlobalObject, globalObject, impl.releaseNonNull()) : JSC::jsNull(); }
+JSC::JSValue adoptBlobImpl(JSC::JSGlobalObject*, BlobImpl*);
 
 }

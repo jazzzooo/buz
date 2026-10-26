@@ -59,7 +59,7 @@ pub const PollOrFd = union(enum) {
             } else if (close_async and close_fd) {
                 bun.Async.Closer.close(fd, {});
             } else {
-                if (close_fd) _ = fd.closeAllowingBadFileDescriptor(null);
+                if (close_fd) _ = fd.closeAllowingStandardIo(null);
             }
             if (comptime @TypeOf(onCloseFn) != void)
                 onCloseFn(@ptrCast(@alignCast(ctx.?)));

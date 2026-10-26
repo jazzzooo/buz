@@ -23,10 +23,9 @@
 
 #include "LoopData.h"
 #include <libusockets.h>
+#include <atomic>
 #include <iostream>
 #include "AsyncSocket.h"
-
-extern "C" int bun_is_exiting();
 
 namespace uWS {
 struct Loop {
@@ -50,29 +49,17 @@ private:
     static void preCb(us_loop_t *loop) {
         LoopData *loopData = (LoopData *) us_loop_ext(loop);
 
-        for (auto &p : loopData->preHandlers) {
-            p.second((Loop *) loop);
-        }
+        loopData->runHooks();
 
-        /* Drain any leftover corks. Two slots max. */
-        for (int i = 0; i < 2; i++) {
-            bool ssl;
-            void *corkedSocket = loopData->getAnyCorkedSocket(&ssl);
-            if (!corkedSocket) break;
-            if (ssl) {
-                ((uWS::AsyncSocket<true> *) corkedSocket)->uncork();
-            } else {
-                ((uWS::AsyncSocket<false> *) corkedSocket)->uncork();
-            }
-        }
+
+        drainCorkedSockets(loop);
     }
 
     static void postCb(us_loop_t *loop) {
         LoopData *loopData = (LoopData *) us_loop_ext(loop);
 
-        for (auto &p : loopData->postHandlers) {
-            p.second((Loop *) loop);
-        }
+        loopData->runHooks();
+
     }
 
     Loop() = delete;
@@ -83,9 +70,9 @@ private:
         return this;
     }
 
-    static Loop *create(void *hint) {
-        Loop *loop = ((Loop *) us_create_loop(hint, wakeupCb, preCb, postCb, sizeof(LoopData)))->init();
-        return loop;
+    static Loop *create(void *hint, us_poll_error_t *failure) {
+        Loop *loop = (Loop *) us_create_loop(hint, wakeupCb, preCb, postCb, sizeof(LoopData), failure);
+        return loop ? loop->init() : nullptr;
     }
 
     /* What to do with loops created with existingNativeLoop? */
@@ -94,7 +81,7 @@ private:
             // There's no need to call this destructor if Bun is in the process of exiting.
             // This is both a performance thing, and also to prevent freeing some things which are not meant to be freed
             // such as uv_tty_t
-            if(loop && cleanMe && !bun_is_exiting()) {
+            if(loop && cleanMe && !processIsExiting.load(std::memory_order_relaxed)) {
                 cleanMe = false;
                 loop->free();
             }
@@ -103,32 +90,53 @@ private:
         bool cleanMe = false;
     };
 
+    static inline std::atomic_bool processIsExiting = false;
+
     static LoopCleaner &getLazyLoop() {
         static thread_local LoopCleaner lazyLoop;
         return lazyLoop;
     }
 
 public:
-    /* Lazily initializes a per-thread loop and returns it.
-     * Will automatically free all initialized loops at exit. */
-    static Loop *get(void *existingNativeLoop = nullptr) {
-        if (!getLazyLoop().loop) {
-            /* If we are given a native loop pointer we pass that to uSockets and let it deal with it */
-            if (existingNativeLoop) {
-                /* Todo: here we want to pass the pointer, not a boolean */
-                getLazyLoop().loop = create(existingNativeLoop);
-                /* We cannot register automatic free here, must be manually done */
-            } else {
-                getLazyLoop().loop = create(nullptr);
-                getLazyLoop().cleanMe = true;
+    static void drainCorkedSockets(us_loop_t *loop) {
+        auto *loopData = static_cast<LoopData *>(us_loop_ext(loop));
+        for (int i = 0; i < 2; i++) {
+            bool ssl;
+            void *socket = loopData->getAnyCorkedSocket(&ssl);
+            if (!socket) break;
+            const auto result = ssl ? static_cast<AsyncSocket<true> *>(socket)->uncork()
+                                    : static_cast<AsyncSocket<false> *>(socket)->uncork();
+            if (result.status == WriteStatus::OutOfMemory) {
+                if (ssl) static_cast<AsyncSocket<true> *>(socket)->closeOnOutOfMemory();
+                else static_cast<AsyncSocket<false> *>(socket)->closeOnOutOfMemory();
             }
         }
+    }
 
-        return getLazyLoop().loop;
+    static void markProcessExiting() {
+        processIsExiting.store(true, std::memory_order_relaxed);
+    }
+
+    static Loop *ensure(void *existingNativeLoop, us_poll_error_t *failure) {
+        *failure = {};
+        auto &owner = getLazyLoop();
+        if (!owner.loop) {
+            Loop *loop = create(existingNativeLoop, failure);
+            if (!loop) return nullptr;
+            owner.loop = loop;
+            owner.cleanMe = existingNativeLoop == nullptr;
+        }
+        return owner.loop;
+    }
+
+    static Loop *get() {
+        Loop *loop = getLazyLoop().loop;
+        RELEASE_ASSERT(loop);
+        return loop;
     }
 
     static void clearLoopAtThreadExit() {
-        if (getLazyLoop().cleanMe) {
+        if (getLazyLoop().loop && getLazyLoop().cleanMe) {
             getLazyLoop().loop->free();
         }
     }
@@ -143,36 +151,32 @@ public:
 
         /* Reset lazyLoop */
         getLazyLoop().loop = nullptr;
+        getLazyLoop().cleanMe = false;
     }
 
     static LoopData* data(struct us_loop_t *loop) {
         return (LoopData *) us_loop_ext(loop);
     }
 
-    void addPostHandler(void *key, MoveOnlyFunction<void(Loop *)> &&handler) {
-        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
-
-        loopData->postHandlers.emplace(key, std::move(handler));
+    void addHook(LoopData::Hook &hook) {
+        auto *data = Loop::data(reinterpret_cast<us_loop_t *>(this));
+        assert(!hook.previous);
+        hook.next = data->hooks;
+        hook.previous = &data->hooks;
+        if (hook.next) hook.next->previous = &hook.next;
+        data->hooks = &hook;
     }
 
-    /* Bug: what if you remove a handler while iterating them? */
-    void removePostHandler(void *key) {
-        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
-
-        loopData->postHandlers.erase(key);
-    }
-
-    void addPreHandler(void *key, MoveOnlyFunction<void(Loop *)> &&handler) {
-        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
-
-        loopData->preHandlers.emplace(key, std::move(handler));
-    }
-
-    /* Bug: what if you remove a handler while iterating them? */
-    void removePreHandler(void *key) {
-        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
-
-        loopData->preHandlers.erase(key);
+    void removeHook(LoopData::Hook &hook) {
+        if (!hook.previous) return;
+        auto *data = Loop::data(reinterpret_cast<us_loop_t *>(this));
+        for (auto *iteration = data->hookIteration; iteration; iteration = iteration->parent) {
+            if (iteration->cursor == &hook) iteration->cursor = hook.next;
+        }
+        *hook.previous = hook.next;
+        if (hook.next) hook.next->previous = hook.previous;
+        hook.next = nullptr;
+        hook.previous = nullptr;
     }
 
     /* Defer this callback on Loop's thread of execution */
@@ -190,12 +194,6 @@ public:
     /* Actively block and run this loop */
     void run() {
         us_loop_run((us_loop_t *) this);
-    }
-
-    /* Passively integrate with the underlying default loop */
-    /* Used to seamlessly integrate with third parties such as Node.js */
-    void integrate() {
-        us_loop_integrate((us_loop_t *) this);
     }
 
     /* Dynamically change this */

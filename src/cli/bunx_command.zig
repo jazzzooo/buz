@@ -117,9 +117,9 @@ pub const BunxCommand = struct {
                 if (maybe_package_name == null or maybe_package_name.?.len == 0) {
                     // no need to free memory b/c we're exiting
                     if (has_revision) {
-                        cli.printRevisionAndExit();
+                        bun.cli.printRevisionAndExit();
                     } else if (has_version) {
-                        cli.printVersionAndExit();
+                        bun.cli.printVersionAndExit();
                     } else {
                         exitWithUsage();
                     }
@@ -317,7 +317,7 @@ pub const BunxCommand = struct {
     }
 
     fn exitWithUsage() noreturn {
-        Command.Tag.printHelp(.BunxCommand, false);
+        Command.tagPrintHelp(.BunxCommand, false);
         Global.exit(1);
     }
 
@@ -332,7 +332,7 @@ pub const BunxCommand = struct {
         defer requests_buf.deinit(ctx.allocator);
         const update_requests = UpdateRequest.parse(
             ctx.allocator,
-            null,
+            .{ .javascript_semantics = ctx.transpiler_capabilities.javascript_semantics },
             ctx.log,
             &.{opts.package_name},
             &requests_buf,
@@ -399,6 +399,7 @@ pub const BunxCommand = struct {
             true,
             true,
         );
+        defer this_transpiler.feature_flags.deinit();
 
         try Run.configurePathForRun(
             ctx,
@@ -785,7 +786,7 @@ pub const BunxCommand = struct {
             .stdin = .inherit,
 
             .windows = if (Environment.isWindows) .{
-                .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(ctx.io, this_transpiler.env, null)),
+                .loop = (try bun.MiniEventLoop.initGlobal(ctx.io, this_transpiler.env, null)).parentEventLoop(),
             },
         }) catch |err| {
             Output.prettyErrorln("<r><red>error<r>: bunx failed to install <b>{s}<r> due to error <b>{s}<r>", .{ install_param, @errorName(err) });
@@ -898,8 +899,7 @@ const std = @import("std");
 const Run = @import("./run_command.zig").RunCommand;
 const Allocator = std.mem.Allocator;
 
-const cli = @import("./cli.zig");
-const Command = cli.Command;
+const Command = bun.cli.Command;
 
 const bun = @import("bun");
 const Environment = bun.Environment;

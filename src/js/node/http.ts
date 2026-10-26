@@ -21,8 +21,8 @@ function createServer(options, callback) {
  * @param {Function} [cb]
  * @returns {ClientRequest}
  */
-function request(url, options, cb) {
-  return new ClientRequest(url, options, cb);
+function request(url, options?, cb?) {
+  return new (ClientRequest as any)(url, options, cb);
 }
 
 /**

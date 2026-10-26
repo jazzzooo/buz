@@ -23,25 +23,40 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-export function initializeReadableByteStreamController(this, stream, underlyingByteSource, highWaterMark) {
-  if (arguments.length !== 4 && arguments[3] !== $isReadableStream)
-    throw new TypeError("ReadableByteStreamController constructor should not be called directly");
-
-  return $privateInitializeReadableByteStreamController.$call(this, stream, underlyingByteSource, highWaterMark);
+export function initializeReadableByteStreamController(
+  this,
+  stream,
+  underlyingByteSource,
+  highWaterMark,
+  autoAllocateChunkSize,
+  startMethod,
+  pullMethod,
+  cancelMethod,
+) {
+  return $privateInitializeReadableByteStreamController.$call(
+    this,
+    stream,
+    underlyingByteSource,
+    highWaterMark,
+    autoAllocateChunkSize,
+    startMethod,
+    pullMethod,
+    cancelMethod,
+  );
 }
 
 export function enqueue(this: ReadableByteStreamController, chunk: ArrayBufferView) {
   if (!$isReadableByteStreamController(this)) throw $ERR_INVALID_THIS("ReadableByteStreamController");
+
+  const info = $bindgenFn("WebCoreStreams.schema.zig", "byteStreamViewInfo")(chunk);
+  if (info.byteLength === 0) throw new TypeError("Cannot enqueue an empty view into a byte stream");
 
   if ($getByIdDirectPrivate(this, "closeRequested")) throw $ERR_INVALID_STATE_TypeError("Controller is already closed");
 
   if ($getByIdDirectPrivate($getByIdDirectPrivate(this, "controlledReadableStream"), "state") !== $streamReadable)
     throw $ERR_INVALID_STATE_TypeError("Controller is already closed");
 
-  if (!$isObject(chunk) || !ArrayBuffer.$isView(chunk))
-    throw $ERR_INVALID_ARG_TYPE("buffer", "Buffer, TypedArray, or DataView", chunk);
-
-  return $readableByteStreamControllerEnqueue(this, chunk);
+  return $readableByteStreamControllerEnqueue(this, info);
 }
 
 export function error(this: ReadableByteStreamController, error: any) {
@@ -78,11 +93,15 @@ export function byobRequest(this) {
         firstDescriptor.byteOffset + firstDescriptor.bytesFilled,
         firstDescriptor.byteLength - firstDescriptor.bytesFilled,
       );
-      $putByIdDirectPrivate(this, "byobRequest", new ReadableStreamBYOBRequest(this, view, $isReadableStream));
+      $putByIdDirectPrivate(
+        this,
+        "byobRequest",
+        $bindgenFn("WebCoreStreams.schema.zig", "createReadableStreamBYOBRequest")(this, view),
+      );
     }
   }
 
-  return $getByIdDirectPrivate(this, "byobRequest");
+  return $getByIdDirectPrivate(this, "byobRequest") ?? null;
 }
 
 $getter;

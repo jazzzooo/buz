@@ -28,18 +28,22 @@
 #include "ExceptionOr.h"
 #include "JSDOMGuardedObject.h"
 #include <JavaScriptCore/JSObject.h>
+#include <JavaScriptCore/MarkedVector.h>
+
+namespace Bun::Bindgen {
+class CppAny;
+}
 
 namespace WebCore {
 class InternalWritableStream final : public DOMGuarded<JSC::JSObject> {
 public:
-    static ExceptionOr<Ref<InternalWritableStream>> createFromUnderlyingSink(JSDOMGlobalObject&, JSC::JSValue underlyingSink, JSC::JSValue strategy);
+    static ExceptionOr<JSC::JSObject*> createFromUnderlyingSink(JSDOMGlobalObject&, JSC::MarkedArgumentBuffer&);
     static Ref<InternalWritableStream> fromObject(JSDOMGlobalObject&, JSC::JSObject&);
 
     operator JSC::JSValue() const { return guarded(); }
 
     bool locked() const;
-    void lock();
-    JSC::JSValue abort(JSC::JSGlobalObject&, JSC::JSValue);
+    JSC::JSValue abort(JSC::JSGlobalObject&, const Bun::Bindgen::CppAny*);
     JSC::JSValue close(JSC::JSGlobalObject&);
     JSC::JSValue getWriter(JSC::JSGlobalObject&);
 

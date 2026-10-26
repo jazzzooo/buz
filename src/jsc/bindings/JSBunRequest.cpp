@@ -12,13 +12,34 @@
 #include "Cookie.h"
 #include "CookieMap.h"
 #include "ErrorCode.h"
+#include "Bindgen/IDLConvertBase.h"
+#include "SchemaBindings.h"
 #include "JSDOMExceptionHandling.h"
 #include <bun-uws/src/App.h>
+#include <wtf/Scope.h>
 
 namespace Bun {
 
-extern "C" SYSV_ABI JSC::EncodedJSValue Bun__JSRequest__createForBake(Zig::GlobalObject* globalObject, void* requestPtr)
+static JSBunRequest* bunRequest(JSC::JSValue value)
 {
+    auto* request = dynamicDowncast<JSBunRequest>(value);
+    RELEASE_ASSERT(request);
+    return request;
+}
+
+void Bindgen::Engine::releaseNativeRequest(BunBindgen_Request_Request_Native* request)
+{
+    Bindgen::ZigExports::bunBindgenZig_Request_requestReleaseNative(request);
+}
+
+JSC::JSValue Bindgen::Engine::bunBindgenEngine_Request_requestCreateForBake(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_Request_requestCreateForBake_Arguments& args)
+{
+    auto releaseRequestOnFailure = WTF::makeScopeExit([&] {
+        Bindgen::Engine::releaseNativeRequest(args.request);
+    });
+    auto* globalObject = defaultGlobalObject(&context.globalObject);
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
     auto* structure = globalObject->m_JSBunRequestStructure.get(globalObject);
@@ -32,34 +53,25 @@ extern "C" SYSV_ABI JSC::EncodedJSValue Bun__JSRequest__createForBake(Zig::Globa
     auto* emptyParams = JSC::constructEmptyObject(globalObject, paramsPrototype);
     RETURN_IF_EXCEPTION(scope, {});
 
+    releaseRequestOnFailure.release();
     JSBunRequest* request
-        = JSBunRequest::create(vm, structure, requestPtr, emptyParams);
+        = JSBunRequest::create(vm, globalObject, structure, args.request, emptyParams);
     RETURN_IF_EXCEPTION(scope, {});
 
-    return JSValue::encode(request);
+    return request;
 }
 
-static JSC_DECLARE_CUSTOM_GETTER(jsJSBunRequestGetParams);
-static JSC_DECLARE_CUSTOM_GETTER(jsJSBunRequestGetCookies);
+#define BUN_BINDGEN_OBJECT_SURFACE_JSBunRequestPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSBunRequestPrototype
 
-static JSC_DECLARE_HOST_FUNCTION(jsJSBunRequestClone);
-
-extern "C" void Bun__JSRequest__calculateEstimatedByteSize(void* requestPtr);
-
-static const HashTableValue JSBunRequestPrototypeValues[] = {
-    { "params"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::ReadOnly | JSC::PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::GetterSetterType, jsJSBunRequestGetParams, nullptr } },
-    { "cookies"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::ReadOnly | JSC::PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::GetterSetterType, jsJSBunRequestGetCookies, nullptr } },
-    { "clone"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsJSBunRequestClone, 1 } }
-};
-
-JSBunRequest* JSBunRequest::create(JSC::VM& vm, JSC::Structure* structure, void* sinkPtr, JSObject* params)
+JSBunRequest* JSBunRequest::create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::Structure* structure, void* sinkPtr, JSObject* params)
 {
-    // Do this **extremely** early, before we create the JSValue.
-    // We do not want to risk the GC running before this function is called.
-    Bun__JSRequest__calculateEstimatedByteSize(sinkPtr);
-
-    JSBunRequest* ptr = new (NotNull, JSC::allocateCell<JSBunRequest>(vm)) JSBunRequest(vm, structure, sinkPtr, params);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    JSBunRequest* ptr = new (NotNull, JSC::allocateCell<JSBunRequest>(vm)) JSBunRequest(vm, structure, params);
     ptr->finishCreation(vm);
+    ptr->adoptExternalNative(globalObject, sinkPtr);
+    RETURN_IF_EXCEPTION(scope, nullptr);
     return ptr;
 }
 
@@ -96,24 +108,25 @@ JSObject* JSBunRequest::cookies() const
     return m_cookies.get();
 }
 
-extern "C" void* Request__clone(void* internalZigRequestPointer, JSGlobalObject* globalObject);
-
 JSBunRequest* JSBunRequest::clone(JSC::VM& vm, JSGlobalObject* globalObject)
 {
     auto throwScope = DECLARE_THROW_SCOPE(vm);
 
     auto* structure = defaultGlobalObject(globalObject)->m_JSBunRequestStructure.getInitializedOnMainThread(globalObject);
-    auto* raw = Request__clone(this->wrapped(), globalObject);
+    auto raw = Bindgen::ZigExports::bunBindgenZig_Request_requestClone(globalObject, this->native());
     EXCEPTION_ASSERT(!!raw == !throwScope.exception());
     RETURN_IF_EXCEPTION(throwScope, nullptr);
-    auto* clone = this->create(vm, structure, raw, nullptr);
+    auto* clone = this->create(vm, globalObject, structure, raw.value(), nullptr);
+    RETURN_IF_EXCEPTION(throwScope, nullptr);
 
     // Cookies and params are deep copied as they can be changed between the clone and original
     if (auto* params = this->params()) {
         // TODO: Use JSC's internal `cloneObject()` if/when it's exposed
         // https://github.com/oven-sh/WebKit/blob/c5e9b9e327194f520af2c28679adb0ea1fa902ad/Source/JavaScriptCore/runtime/JSGlobalObjectFunctions.cpp#L1018-L1099
         auto* prototype = defaultGlobalObject(globalObject)->m_JSBunRequestParamsPrototype.get(globalObject);
+        RETURN_IF_EXCEPTION(throwScope, nullptr);
         auto* paramsClone = JSC::constructEmptyObject(globalObject, prototype);
+        RETURN_IF_EXCEPTION(throwScope, nullptr);
 
         auto propertyNames = PropertyNameArrayBuilder(vm, JSC::PropertyNameMode::Strings, JSC::PrivateSymbolMode::Exclude);
         JSObject::getOwnPropertyNames(params, globalObject, propertyNames, JSC::DontEnumPropertiesMode::Exclude);
@@ -123,6 +136,7 @@ JSBunRequest* JSBunRequest::clone(JSC::VM& vm, JSGlobalObject* globalObject)
             auto value = params->get(globalObject, property);
             RETURN_IF_EXCEPTION(throwScope, nullptr);
             paramsClone->putDirect(vm, property, value);
+            RETURN_IF_EXCEPTION(throwScope, nullptr);
         }
 
         clone->setParams(paramsClone);
@@ -130,38 +144,41 @@ JSBunRequest* JSBunRequest::clone(JSC::VM& vm, JSGlobalObject* globalObject)
 
     if (auto* cookiesObject = cookies()) {
         if (auto* wrapper = dynamicDowncast<JSCookieMap>(cookiesObject)) {
-            auto cookieMap = wrapper->protectedWrapped();
-            auto cookieMapClone = cookieMap->clone();
-            auto cookies = WebCore::toJSNewlyCreated(globalObject, uncheckedDowncast<JSDOMGlobalObject>(globalObject), WTF::move(cookieMapClone));
-            clone->setCookies(cookies.getObject());
+            auto cookies = Bindgen::ZigExports::bunBindgenZig_cookie_map_cookieMapCloneWrapper(globalObject, wrapper);
+            RETURN_IF_EXCEPTION(throwScope, nullptr);
+            clone->setCookies(globalObject, cookies.getObject());
+            RETURN_IF_EXCEPTION(throwScope, nullptr);
         }
     }
 
     RELEASE_AND_RETURN(throwScope, clone);
 }
 
-extern "C" void Request__setCookiesOnRequestContext(void* internalZigRequestPointer, CookieMap* cookieMap);
-
-void JSBunRequest::setCookies(JSObject* cookies)
+void JSBunRequest::setCookies(JSGlobalObject* global, JSObject* cookies)
 {
+    auto scope = DECLARE_THROW_SCOPE(Base::vm());
+    RefPtr<WebCore::CookieMap> map;
+    if (dynamicDowncast<JSCookieMap>(cookies)) {
+        map = WebCore::protectedCookieMap(global, cookies);
+        RETURN_IF_EXCEPTION(scope, void());
+        RELEASE_ASSERT(map);
+    }
     m_cookies.set(Base::vm(), this, cookies);
-    Request__setCookiesOnRequestContext(this->wrapped(), WebCoreCast<WebCore::JSCookieMap, WebCore::CookieMap>(JSValue::encode(cookies)));
+    if (map)
+        Bindgen::ZigExports::bunBindgenZig_Request_requestSetCookies(this->native(), map.get());
+    else
+        Bindgen::ZigExports::bunBindgenZig_Request_requestSetCookies(this->native(), std::nullopt);
 }
 
-JSBunRequest::JSBunRequest(JSC::VM& vm, JSC::Structure* structure, void* sinkPtr, JSC::JSObject* params)
-    : Base(vm, structure, sinkPtr)
+JSBunRequest::JSBunRequest(JSC::VM& vm, JSC::Structure* structure, JSC::JSObject* params)
+    : Base(vm, structure, nullptr, nullptr, nullptr, WebCore::clientData(vm), {})
     , m_params(params, JSC::WriteBarrierEarlyInit)
     , m_cookies(nullptr, JSC::WriteBarrierEarlyInit)
 {
 }
-extern SYSV_ABI "C" size_t Request__estimatedSize(void* requestPtr);
-extern "C" void Bun__JSRequest__calculateEstimatedByteSize(void* requestPtr);
 void JSBunRequest::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
-
-    auto size = Request__estimatedSize(this->wrapped());
-    vm.heap.reportExtraMemoryAllocated(this, size);
 }
 
 template<typename Visitor>
@@ -174,6 +191,11 @@ void JSBunRequest::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 }
 
 DEFINE_VISIT_CHILDREN(JSBunRequest);
+
+void JSBunRequest::destroy(JSC::JSCell* cell)
+{
+    destroyCell<JSBunRequest>(cell);
+}
 
 class JSBunRequestPrototype final : public JSNonFinalObject {
 public:
@@ -211,19 +233,19 @@ private:
     void finishCreation(JSC::VM& vm, JSC::JSGlobalObject* globalObject)
     {
         Base::finishCreation(vm);
-        reifyStaticProperties(vm, JSBunRequest::info(), JSBunRequestPrototypeValues, *this);
-        JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+        bunBindgenObjectSurface_JSBunRequestPrototype_install(vm, JSBunRequest::info(), *this);
     }
 };
 
 const JSC::ClassInfo JSBunRequestPrototype::s_info = { "BunRequest"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSBunRequestPrototype) };
 const JSC::ClassInfo JSBunRequest::s_info = { "BunRequest"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSBunRequest) };
 
-JSC_DEFINE_CUSTOM_GETTER(jsJSBunRequestGetParams, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_Request_bunRequestParams(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_Request_bunRequestParams_Arguments& args)
 {
-    JSBunRequest* request = dynamicDowncast<JSBunRequest>(JSValue::decode(thisValue));
-    if (!request)
-        return JSValue::encode(jsUndefined());
+    auto* globalObject = &context.globalObject;
+    JSBunRequest* request = bunRequest(args.bindingThis);
 
     auto* params = request->params();
     if (!params) {
@@ -232,14 +254,15 @@ JSC_DEFINE_CUSTOM_GETTER(jsJSBunRequestGetParams, (JSC::JSGlobalObject * globalO
         request->setParams(params);
     }
 
-    return JSValue::encode(params);
+    return params;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsJSBunRequestGetCookies, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_Request_bunRequestCookies(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_Request_bunRequestCookies_Arguments& args)
 {
-    JSBunRequest* request = dynamicDowncast<JSBunRequest>(JSValue::decode(thisValue));
-    if (!request)
-        return JSValue::encode(jsUndefined());
+    auto* globalObject = &context.globalObject;
+    JSBunRequest* request = bunRequest(args.bindingThis);
 
     auto* cookies = request->cookies();
     if (!cookies) {
@@ -247,69 +270,71 @@ JSC_DEFINE_CUSTOM_GETTER(jsJSBunRequestGetCookies, (JSC::JSGlobalObject * global
         auto throwScope = DECLARE_THROW_SCOPE(vm);
         auto& names = builtinNames(vm);
         JSC::JSValue headersValue = request->get(globalObject, names.headersPublicName());
-        RETURN_IF_EXCEPTION(throwScope, encodedJSValue());
+        RETURN_IF_EXCEPTION(throwScope, std::nullopt);
         auto* headers = dynamicDowncast<WebCore::JSFetchHeaders>(headersValue);
-        if (!headers) return JSValue::encode(jsUndefined());
+        if (!headers)
+            return std::nullopt;
 
-        auto& fetchHeaders = headers->wrapped();
-
-        auto cookieHeader = fetchHeaders.internalHeaders().get(HTTPHeaderName::Cookie);
+        auto fetchHeaders = WebCore::protectedFetchHeaders(globalObject, headers);
+        RETURN_IF_EXCEPTION(throwScope, std::nullopt);
+        RELEASE_ASSERT(fetchHeaders);
+        auto cookieHeader = fetchHeaders->internalHeaders().get(HTTPHeaderName::Cookie);
 
         // Create a CookieMap from the cookie header
         auto cookieMapResult = WebCore::CookieMap::create(cookieHeader);
-        RETURN_IF_EXCEPTION(throwScope, encodedJSValue());
+        RETURN_IF_EXCEPTION(throwScope, std::nullopt);
         if (cookieMapResult.hasException()) {
             WebCore::propagateException(*globalObject, throwScope, cookieMapResult.releaseException());
-            RELEASE_AND_RETURN(throwScope, {});
+            RELEASE_AND_RETURN(throwScope, std::nullopt);
         }
 
         auto cookieMap = cookieMapResult.releaseReturnValue();
 
-        // Convert to JS
-        auto cookies = WebCore::toJSNewlyCreated(globalObject, uncheckedDowncast<JSDOMGlobalObject>(globalObject), WTF::move(cookieMap));
-        RETURN_IF_EXCEPTION(throwScope, encodedJSValue());
-        request->setCookies(cookies.getObject());
-        return JSValue::encode(cookies);
+        auto cookies = Bindgen::ZigExports::bunBindgenZig_cookie_map_cookieMapWrap(globalObject, cookieMap.ptr());
+        RETURN_IF_EXCEPTION(throwScope, std::nullopt);
+        request->setCookies(globalObject, cookies.getObject());
+        RETURN_IF_EXCEPTION(throwScope, std::nullopt);
+        return cookies;
     }
 
-    return JSValue::encode(cookies);
+    return cookies;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsJSBunRequestClone, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_Request_bunRequestClone(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_Request_bunRequestClone_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = globalObject->vm();
     auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    auto* request = dynamicDowncast<JSBunRequest>(callFrame->thisValue());
-    if (!request) {
-        throwScope.throwException(globalObject, Bun::createInvalidThisError(globalObject, request, "BunRequest"));
-        RETURN_IF_EXCEPTION(throwScope, {});
-    }
-
-    auto clone = request->clone(vm, globalObject);
+    auto clone = bunRequest(args.bindingThis)->clone(vm, globalObject);
     RETURN_IF_EXCEPTION(throwScope, {});
-    return JSValue::encode(clone);
+    return clone;
 }
 
 Structure* createJSBunRequestStructure(JSC::VM& vm, Zig::GlobalObject* globalObject)
 {
-    auto prototypeStructure = JSBunRequestPrototype::createStructure(vm, globalObject, globalObject->JSRequestPrototype());
+    auto prototypeStructure = JSBunRequestPrototype::createStructure(vm, globalObject, globalObject->BunBindgen_Request_RequestPrototype());
     auto* prototype = JSBunRequestPrototype::create(vm, globalObject, prototypeStructure);
     return JSBunRequest::createStructure(vm, globalObject, prototype);
 }
 
-extern "C" EncodedJSValue Bun__getParamsIfBunRequest(JSC::EncodedJSValue thisValue)
+bool Bindgen::Engine::bunBindgenEngine_Request_jsValueIsBunRequest(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_Request_jsValueIsBunRequest_Arguments& args)
 {
-    if (auto* request = dynamicDowncast<JSBunRequest>(JSValue::decode(thisValue))) {
-        auto* params = request->params();
-        if (!params) {
-            return JSValue::encode(jsUndefined());
-        }
+    return !!dynamicDowncast<JSBunRequest>(context.classValue(args.value));
+}
 
-        return JSValue::encode(params);
+std::optional<JSC::JSValue> Bindgen::Engine::bunBindgenEngine_Request_bunRequestParams(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_Request_bunRequestParams_Arguments& args)
+{
+    if (auto* request = dynamicDowncast<JSBunRequest>(context.classValue(args.value))) {
+        if (auto* params = request->params())
+            return params;
     }
-
-    return {};
+    return std::nullopt;
 }
 
 } // namespace Bun

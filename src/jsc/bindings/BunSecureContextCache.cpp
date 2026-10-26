@@ -1,26 +1,34 @@
 #include "root.h"
 #include "BunSecureContextCache.h"
+#include "SchemaBindings.h"
 #include "ZigGlobalObject.h"
 #include <JavaScriptCore/WeakGCMapInlines.h>
 
 using namespace JSC;
 
-// Called from Zig (`SecureContext.intern`). Returns the cached JSSecureContext
-// for `key` (low 64 bits of the config digest) or jsEmpty() if none / GC'd.
-// The full 32-byte digest lives on the Zig SecureContext, so the caller does
-// a content-equality check on hit to handle the (~2⁻⁶⁴) key-collision case.
-extern "C" JSC::EncodedJSValue Bun__SecureContextCache__get(Zig::GlobalObject* global, uint64_t key)
+std::optional<JSC::JSValue> Bun::Bindgen::Engine::bunBindgenEngine_SecureContext_secureContextCacheGet(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_SecureContext_secureContextCacheGet_Arguments& args)
 {
+    auto* global = defaultGlobalObject(&context.globalObject);
     auto& slot = global->m_secureContextCache;
-    if (!slot) return JSValue::encode(JSValue());
-    JSObject* obj = slot->get(key);
-    return JSValue::encode(obj ? JSValue(obj) : JSValue());
+    if (!slot)
+        return std::nullopt;
+    if (auto* object = slot->get(args.key))
+        return JSC::JSValue(object);
+    return std::nullopt;
 }
 
-extern "C" void Bun__SecureContextCache__set(Zig::GlobalObject* global, uint64_t key, JSC::EncodedJSValue value)
+void Bun::Bindgen::Engine::bunBindgenEngine_SecureContext_secureContextCacheSet(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_SecureContext_secureContextCacheSet_Arguments& args)
 {
+    auto* global = defaultGlobalObject(&context.globalObject);
     auto& slot = global->m_secureContextCache;
-    if (!slot) slot = makeUnique<Bun::SecureContextCache>(global->vm());
-    JSObject* obj = JSValue::decode(value).getObject();
-    if (obj) slot->set(key, obj);
+    if (!slot)
+        slot = makeUnique<Bun::SecureContextCache>(global->vm());
+    auto value = context.classValue(args.value);
+    auto* object = value.getObject();
+    RELEASE_ASSERT(object);
+    slot->set(args.key, object);
 }

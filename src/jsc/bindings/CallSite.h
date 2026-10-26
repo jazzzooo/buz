@@ -102,5 +102,4 @@ private:
     DECLARE_VISIT_CHILDREN;
 };
 
-JSValue createNativeFrameForTesting(Zig::GlobalObject* globalObject);
 }

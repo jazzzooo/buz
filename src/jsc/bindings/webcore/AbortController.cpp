@@ -45,9 +45,13 @@ Ref<AbortController> AbortController::create(ScriptExecutionContext& context)
 AbortController::AbortController(ScriptExecutionContext& context)
     : m_signal(AbortSignal::create(&context))
 {
+    m_signal->m_controller = this;
 }
 
-AbortController::~AbortController() = default;
+AbortController::~AbortController()
+{
+    m_signal->m_controller = nullptr;
+}
 
 AbortSignal& AbortController::signal()
 {

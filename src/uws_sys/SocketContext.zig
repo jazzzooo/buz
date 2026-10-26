@@ -1,7 +1,32 @@
-//! Legacy home of the `us_socket_context_t` opaque, which is gone — sockets
-//! now belong to embedded `SocketGroup`s and dispatch by `kind`. What remains
-//! here is the `us_bun_socket_context_options_t` extern mirror, kept under its
-//! old name so `SSLConfig.asUSockets()` callers don't churn.
+//! Native TLS context construction and the uSockets C-library options ABI.
+
+pub const TLSContextFailure = struct {
+    kind: uws.create_bun_socket_error_t = .none,
+    boring_ssl_code: u32 = 0,
+
+    fn capture(kind: uws.create_bun_socket_error_t) TLSContextFailure {
+        var result: TLSContextFailure = .{ .kind = kind };
+        while (true) {
+            const code = BoringSSL.ERR_get_error();
+            if (code == 0) break;
+            if (result.boring_ssl_code == 0) result.boring_ssl_code = code;
+            const library = BoringSSL.ERR_GET_LIB(code);
+            const reason = BoringSSL.ERR_GET_REASON(code);
+            const out_of_memory = if (library == BoringSSL.ERR_LIB_SYS)
+                reason == @backingInt(bun.sys.E.NOMEM)
+            else
+                reason == BoringSSL.ERR_R_MALLOC_FAILURE;
+            if (out_of_memory) {
+                result.kind = .out_of_memory;
+            }
+        }
+        return result;
+    }
+
+    pub fn message(this: TLSContextFailure) ?[]const u8 {
+        return this.kind.message();
+    }
+};
 
 pub const BunSocketContextOptions = extern struct {
     key_file_name: [*c]const u8 = null,
@@ -34,8 +59,15 @@ pub const BunSocketContextOptions = extern struct {
     /// chain validation, populate verify_error) is applied in
     /// `us_internal_ssl_attach`, so a server reusing this ctx never sends
     /// CertificateRequest unless these options asked it to.
-    pub fn createSSLContext(options: BunSocketContextOptions, err: *uws.create_bun_socket_error_t) ?*BoringSSL.SSL_CTX {
-        return c.us_ssl_ctx_from_options(options, err);
+    pub fn createSSLContext(options: BunSocketContextOptions, failure: *TLSContextFailure) ?*BoringSSL.SSL_CTX {
+        var kind: uws.create_bun_socket_error_t = .none;
+        const context = c.us_ssl_ctx_from_options(options, &kind) orelse {
+            failure.* = TLSContextFailure.capture(kind);
+            return null;
+        };
+        BoringSSL.ERR_clear_error();
+        failure.* = .{};
+        return context;
     }
 
     /// SHA-256 over every field this struct carries, dereferencing string
@@ -131,6 +163,24 @@ pub const c = struct {
     pub extern fn us_ssl_ctx_from_options(BunSocketContextOptions, *uws.create_bun_socket_error_t) ?*BoringSSL.SSL_CTX;
     pub extern fn us_ssl_ctx_live_count() c_long;
 };
+
+test "TLS failures capture nested allocation errors and consume the library queue" {
+    BoringSSL.ERR_clear_error();
+    defer BoringSSL.ERR_clear_error();
+    BoringSSL.ERR_put_error(BoringSSL.ERR_LIB_SSL, 0, BoringSSL.SSL_R_NO_CIPHER_MATCH, @src().file, @src().line);
+    const first_code = BoringSSL.ERR_peek_error();
+    BoringSSL.ERR_put_error(BoringSSL.ERR_LIB_SSL, 0, BoringSSL.ERR_R_MALLOC_FAILURE, @src().file, @src().line);
+    BoringSSL.ERR_put_error(BoringSSL.ERR_LIB_SSL, 0, BoringSSL.SSL_R_NO_CIPHER_MATCH, @src().file, @src().line);
+    const failure = TLSContextFailure.capture(.invalid_ciphers);
+    try std.testing.expectEqual(uws.create_bun_socket_error_t.out_of_memory, failure.kind);
+    try std.testing.expectEqual(first_code, failure.boring_ssl_code);
+    try std.testing.expectEqual(@as(u32, 0), BoringSSL.ERR_peek_error());
+
+    BoringSSL.ERR_put_error(BoringSSL.ERR_LIB_SYS, 0, BoringSSL.ERR_R_MALLOC_FAILURE, @src().file, @src().line);
+    try std.testing.expectEqual(uws.create_bun_socket_error_t.load_ca_file, TLSContextFailure.capture(.load_ca_file).kind);
+    BoringSSL.ERR_put_error(BoringSSL.ERR_LIB_SYS, 0, @backingInt(bun.sys.E.NOMEM), @src().file, @src().line);
+    try std.testing.expectEqual(uws.create_bun_socket_error_t.out_of_memory, TLSContextFailure.capture(.load_ca_file).kind);
+}
 
 const std = @import("std");
 

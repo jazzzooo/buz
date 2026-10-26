@@ -1,35 +1,53 @@
 #pragma once
 
-#include "ZigGlobalObject.h"
 #include "root.h"
+#include <memory>
+#include <utility>
+#include <wtf/FastMalloc.h>
+
+namespace JSC {
+class JSGlobalObject;
+}
 
 namespace Bun {
 
-// Just like WebCore::EventLoopTask but does not take a ScriptExecutionContext
 class EventLoopTaskNoContext {
-    WTF_MAKE_TZONE_ALLOCATED(EventLoopTaskNoContext);
-
 public:
-    EventLoopTaskNoContext(JSC::JSGlobalObject* globalObject, Function<void()>&& task)
-        : m_createdInBunVm(defaultGlobalObject(globalObject)->bunVM())
-        , m_task(WTF::move(task))
-    {
-    }
-
-    void performTask()
-    {
-        m_task();
-        delete this;
-    }
+    explicit EventLoopTaskNoContext(JSC::JSGlobalObject*);
+    virtual ~EventLoopTaskNoContext() = default;
+    virtual void performTask() = 0;
 
     void* createdInBunVm() const { return m_createdInBunVm; }
 
 private:
     void* m_createdInBunVm;
-    Function<void()> m_task;
 };
 
-extern "C" void Bun__EventLoopTaskNoContext__performTask(EventLoopTaskNoContext* task);
-extern "C" void* Bun__EventLoopTaskNoContext__createdInBunVm(const EventLoopTaskNoContext* task);
+template<typename Callable>
+class EventLoopFunctionTask final : public EventLoopTaskNoContext {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(EventLoopFunctionTask);
+
+public:
+    template<typename Function>
+    static std::unique_ptr<EventLoopFunctionTask> tryCreate(JSC::JSGlobalObject* global, Function&& function)
+    {
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(EventLoopFunctionTask)).getValue(allocation))
+            return nullptr;
+        return std::unique_ptr<EventLoopFunctionTask>(new (NotNull, allocation) EventLoopFunctionTask(global, std::forward<Function>(function)));
+    }
+
+    void performTask() final { m_function(); }
+
+private:
+    template<typename Function>
+    EventLoopFunctionTask(JSC::JSGlobalObject* global, Function&& function)
+        : EventLoopTaskNoContext(global)
+        , m_function(std::forward<Function>(function))
+    {
+    }
+
+    Callable m_function;
+};
 
 } // namespace Bun

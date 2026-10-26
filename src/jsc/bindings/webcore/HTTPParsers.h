@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "HTTPHeaderNames.h"
+
 #include <wtf/text/StringImpl.h>
 #include <wtf/HashSet.h>
 #include <wtf/WallTime.h>
@@ -39,7 +41,6 @@ namespace WebCore {
 
 typedef HashSet<String, ASCIICaseInsensitiveHash> HTTPHeaderSet;
 
-enum class HTTPHeaderName : uint8_t;
 
 enum class XSSProtectionDisposition {
     Invalid,

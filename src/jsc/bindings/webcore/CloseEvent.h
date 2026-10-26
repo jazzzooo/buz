@@ -37,12 +37,15 @@
 namespace WebCore {
 
 class CloseEvent final : public Event {
-    WTF_MAKE_TZONE_ALLOCATED(CloseEvent);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(CloseEvent);
 
 public:
-    static Ref<CloseEvent> create(bool wasClean, unsigned short code, const String& reason)
+    static RefPtr<CloseEvent> tryCreate(bool wasClean, unsigned short code, const String& reason)
     {
-        return adoptRef(*new CloseEvent(wasClean, code, reason));
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(CloseEvent)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) CloseEvent(wasClean, code, reason));
     }
 
     struct Init : EventInit {
@@ -51,9 +54,12 @@ public:
         String reason;
     };
 
-    static Ref<CloseEvent> create(const AtomString& type, const Init& initializer, IsTrusted isTrusted = IsTrusted::No)
+    static RefPtr<CloseEvent> tryCreate(const AtomString& type, const Init& initializer, IsTrusted isTrusted = IsTrusted::No)
     {
-        return adoptRef(*new CloseEvent(type, initializer, isTrusted));
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(CloseEvent)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) CloseEvent(type, initializer, isTrusted));
     }
 
     bool wasClean() const { return m_wasClean; }

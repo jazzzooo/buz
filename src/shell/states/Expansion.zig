@@ -64,8 +64,7 @@ pub const Result = union(enum) {
         /// We just copied the buf into the result, caller can just do
         /// `.clearRetainingCapacity()`
         copied,
-        /// We took ownershipo of the result and placed the pointer in the buf,
-        /// caller should remove any references to the underlying data.
+        /// The result owns the allocation.
         moved,
     };
 
@@ -99,11 +98,11 @@ pub const Result = union(enum) {
 
         switch (this.*) {
             .array_of_slice => {
-                bun.handleOom(this.array_of_slice.append(buf.items[0 .. buf.items.len - 1 :0]));
+                bun.handleOom(this.array_of_slice.append(takeWord(buf)));
                 return .moved;
             },
             .array_of_ptr => {
-                bun.handleOom(this.array_of_ptr.append(@as([*:0]const u8, @ptrCast(buf.items.ptr))));
+                bun.handleOom(this.array_of_ptr.append(takeWord(buf).ptr));
                 return .moved;
             },
             .single => {
@@ -112,6 +111,11 @@ pub const Result = union(enum) {
                 return .copied;
             },
         }
+    }
+
+    fn takeWord(buf: *std.array_list.Managed(u8)) [:0]u8 {
+        const owned = bun.handleOom(buf.toOwnedSlice());
+        return owned[0 .. owned.len - 1 :0];
     }
 };
 
@@ -272,9 +276,7 @@ pub fn next(this: *Expansion) Yield {
                         .copied => {
                             expanded_strings[i].deinit();
                         },
-                        .moved => {
-                            expanded_strings[i].clearRetainingCapacity();
-                        },
+                        .moved => {},
                     }
                 }
 
@@ -656,9 +658,7 @@ pub fn pushCurrentOut(this: *Expansion) void {
         .copied => {
             this.current_out.clearRetainingCapacity();
         },
-        .moved => {
-            this.current_out = std.array_list.Managed(u8).init(this.base.allocator());
-        },
+        .moved => {},
     }
 }
 
@@ -671,33 +671,13 @@ fn expandVar(this: *const Expansion, label: []const u8) []const u8 {
 }
 
 fn expandVarArgv(this: *const Expansion, original_int: u8) []const u8 {
-    var int = original_int;
-    switch (this.base.interpreter.event_loop) {
-        .js => |event_loop| {
-            if (int == 0) return bun.selfExePath() catch "";
-            int -= 1;
+    const scheduler = this.base.eventLoop();
+    if (scheduler.isJavaScript()) return scheduler.positionalArg(original_int);
 
-            const vm = event_loop.virtual_machine;
-            if (vm.main.len > 0) {
-                if (int == 0) return vm.main;
-                int -= 1;
-            }
-
-            if (vm.worker) |worker| {
-                if (int >= worker.argv.len) return "";
-                return this.base.interpreter.getVmArgsUtf8(worker.argv, int);
-            }
-            const argv = vm.argv;
-            if (int >= argv.len) return "";
-            return argv[int];
-        },
-        .mini => {
-            const ctx = this.base.interpreter.command_ctx.?;
-            if (int >= 1 + ctx.passthrough.len) return "";
-            if (int == 0) return ctx.positionals[ctx.positionals.len - 1 - int];
-            return ctx.passthrough[int - 1];
-        },
-    }
+    const ctx = this.base.interpreter.command_ctx.?;
+    if (original_int >= 1 + ctx.passthrough.len) return "";
+    if (original_int == 0) return ctx.positionals[ctx.positionals.len - 1];
+    return ctx.passthrough[original_int - 1];
 }
 
 /// Returns the size of the atom when expanded.
@@ -767,8 +747,8 @@ pub const ShellGlobTask = struct {
     walker: *GlobWalker,
 
     result: std.array_list.Managed([:0]const u8),
-    event_loop: jsc.EventLoopHandle,
-    concurrent_task: jsc.EventLoopTask,
+    scheduler: Interpreter.Scheduler,
+    main_task: Interpreter.Scheduler.Task = .{},
     // This is a poll because we want it to enter the uSockets loop
     ref: bun.Async.KeepAlive = .{},
     err: ?Err = null,
@@ -779,29 +759,21 @@ pub const ShellGlobTask = struct {
     pub const Err = union(enum) {
         syscall: Syscall.Error,
         unknown: anyerror,
-
-        pub fn toJS(this: Err, globalThis: *JSGlobalObject) JSValue {
-            return switch (this) {
-                .syscall => |err| err.toJS(globalThis),
-                .unknown => |err| jsc.ZigString.fromBytes(@errorName(err)).toJS(globalThis),
-            };
-        }
     };
 
     pub fn createOnMainThread(walker: *GlobWalker, expansion: *Expansion) *This {
         debug("createOnMainThread", .{});
-        var alloc_scope = bun.AllocationScope.init(expansion.base.interpreter.event_loop.io(), bun.default_allocator);
+        var alloc_scope = bun.AllocationScope.init(expansion.base.eventLoop().io(), bun.default_allocator);
         var this = bun.handleOom(alloc_scope.allocator().create(This));
         this.* = .{
             .alloc_scope = alloc_scope,
-            .event_loop = expansion.base.eventLoop(),
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(expansion.base.eventLoop()),
+            .scheduler = expansion.base.eventLoop(),
             .walker = walker,
             .expansion = expansion,
-            .result = std.array_list.Managed([:0]const u8).init(this.alloc_scope.allocator()),
+            .result = std.array_list.Managed([:0]const u8).init(alloc_scope.allocator()),
         };
 
-        this.ref.ref(this.event_loop);
+        this.scheduler.ref(&this.ref);
 
         return this;
     }
@@ -840,8 +812,9 @@ pub const ShellGlobTask = struct {
 
     pub fn runFromMainThread(this: *This) void {
         debug("runFromJS", .{});
+        defer this.deinit();
         this.expansion.onGlobWalkDone(this).run();
-        this.ref.unref(this.event_loop);
+        this.scheduler.unref(&this.ref);
     }
 
     pub fn runFromMainThreadMini(this: *This, _: *void) void {
@@ -850,7 +823,7 @@ pub const ShellGlobTask = struct {
 
     pub fn schedule(this: *This) void {
         debug("schedule", .{});
-        BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch |err| {
+        BackgroundWork.schedule(this.scheduler.backgroundTasks(), &this.task) catch |err| {
             this.err = .{ .unknown = err };
             this.onFinish();
         };
@@ -858,11 +831,7 @@ pub const ShellGlobTask = struct {
 
     pub fn onFinish(this: *This) void {
         debug("onFinish", .{});
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
+        this.scheduler.enqueue(&this.main_task, this);
     }
 
     pub fn deinit(this: *This) void {
@@ -880,10 +849,6 @@ const Allocator = std.mem.Allocator;
 const bun = @import("bun");
 const assert = bun.assert;
 const Maybe = bun.sys.Maybe;
-
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
 
 const ExitCode = bun.shell.ExitCode;
 const Yield = bun.shell.Yield;
@@ -906,6 +871,6 @@ const GlobWalker = bun.shell.interpret.GlobWalker;
 const OOM = bun.shell.interpret.OOM;
 const StatePtrUnion = bun.shell.interpret.StatePtrUnion;
 const Syscall = bun.shell.interpret.Syscall;
-const BackgroundWork = bun.shell.interpret.BackgroundWork;
-const BackgroundTask = bun.shell.interpret.BackgroundTask;
+const BackgroundWork = bun.BackgroundWork;
+const BackgroundTask = bun.BackgroundTaskGroup.Task;
 const log = bun.shell.interpret.log;

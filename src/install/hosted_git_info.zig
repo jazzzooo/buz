@@ -87,10 +87,10 @@ pub const HostedGitInfo = struct {
     ///
     /// The reason we need to do this is because we get URLs like github:user%20name/repo and we
     /// need to decode them to 'user name/repo'. It would be nice if we could get all the
-    /// functionality of jsc.URL WITHOUT the percent-encoding, but alas, we cannot. And we need the
-    /// jsc.URL functionality for parsing, validating and punycode-decoding the URL.
+    /// functionality of the semantic URL parser WITHOUT the percent-encoding, but alas, we cannot.
+    /// And we need its functionality for parsing, validating and punycode-decoding the URL.
     ///
-    /// Therefore, we use this function to first take a URL string, encode it into a *jsc.URL and
+    /// Therefore, we first parse a URL into normalized components and
     /// then decode it back to a normal string. Kind of a lot of work, but it works.
     fn decodeAndAppend(
         sb: *bun.StringBuilder,
@@ -166,12 +166,10 @@ pub const HostedGitInfo = struct {
         self._allocator.free(self._memory_buffer);
     }
 
-    /// Convert this HostedGitInfo to a JavaScript object
-    pub const toJS = @import("../install_jsc/hosted_git_info_jsc.zig").hostedGitInfoToJS;
-
     /// Given a URL-like (including shortcuts) string, parses it into a HostedGitInfo structure.
     /// The HostedGitInfo is valid only for as long as `git_url` is valid.
     pub fn fromUrl(
+        javascript_semantics: JavaScriptSemantics,
         allocator: std.mem.Allocator,
         git_url: []const u8,
     ) error{ OutOfMemory, InvalidURL }!?Self {
@@ -188,23 +186,24 @@ pub const HostedGitInfo = struct {
             //
             // TODO(markovejnovic): Perhaps we can avoid this allocation...
             // This one seems quite easy to get rid of.
-            git_url_mut = bun.handleOom(bun.strings.concat(allocator, &.{ "github:", git_url }));
+            git_url_mut = try bun.strings.concat(allocator, &.{ "github:", git_url });
         }
 
-        const parsed = parseUrl(allocator, git_url_mut) catch {
-            return null;
+        const parsed = parseUrl(javascript_semantics, allocator, git_url_mut) catch |err| switch (err) {
+            error.InvalidGitUrl => return null,
+            error.OutOfMemory => return error.OutOfMemory,
         };
         defer parsed.url.deinit();
 
         const host_provider = switch (parsed.proto) {
-            .well_formed => |p| p.hostProvider() orelse HostProvider.fromUrlDomain(parsed.url),
-            .unknown => HostProvider.fromUrlDomain(parsed.url),
-            .custom => HostProvider.fromUrl(parsed.url),
+            .well_formed => |p| p.hostProvider() orelse HostProvider.fromUrlDomain(&parsed.url),
+            .unknown => HostProvider.fromUrlDomain(&parsed.url),
+            .custom => HostProvider.fromUrl(&parsed.url),
         } orelse return null;
 
         const is_shortcut = parsed.proto == .well_formed and parsed.proto.well_formed.isShortcut();
         if (!is_shortcut) {
-            var extracted = try host_provider.extract(allocator, parsed.url) orelse return null;
+            var extracted = try host_provider.extract(allocator, &parsed.url) orelse return null;
             return HostedGitInfo.moveFromExtracted(
                 &extracted,
                 host_provider,
@@ -213,7 +212,7 @@ pub const HostedGitInfo = struct {
         }
 
         // Shortcut path: github:user/repo, gitlab:user/repo, etc. (from-url.js line 68-96)
-        const pathname_owned = try parsed.url.pathname().toOwnedSlice(allocator);
+        const pathname_owned = try parsed.url.pathname.toOwnedSlice(allocator);
         defer allocator.free(pathname_owned);
 
         // Strip leading / (from-url.js line 69)
@@ -243,7 +242,7 @@ pub const HostedGitInfo = struct {
         const project_trimmed = bun.strings.trimSuffixComptime(project_part, ".git");
 
         // Get committish from URL fragment (from-url.js line 92-94)
-        const fragment = try parsed.url.fragmentIdentifier().toOwnedSlice(allocator);
+        const fragment = try parsed.url.fragment.toOwnedSlice(allocator);
         defer allocator.free(fragment);
         const committish: ?[]const u8 = if (fragment.len > 0) fragment else null;
 
@@ -264,8 +263,8 @@ pub const HostedGitInfo = struct {
 /// May error with `error.InvalidGitUrl` if the URL is not valid.
 ///
 /// Note that this may or may not allocate but it manages its own memory.
-pub fn parseUrl(allocator: std.mem.Allocator, npa_str: []const u8) error{ InvalidGitUrl, OutOfMemory }!struct {
-    url: *jsc.URL,
+pub fn parseUrl(javascript_semantics: JavaScriptSemantics, allocator: std.mem.Allocator, npa_str: []const u8) error{ InvalidGitUrl, OutOfMemory }!struct {
+    url: JavaScriptSemantics.ParsedURL,
     proto: UrlProtocol,
 } {
     // Certain users can provide values like user:password@github.com:foo/bar and we want to
@@ -273,16 +272,16 @@ pub fn parseUrl(allocator: std.mem.Allocator, npa_str: []const u8) error{ Invali
     var proto_pair = normalizeProtocol(npa_str);
     defer proto_pair.deinit();
 
-    // TODO(markovejnovic): We might be able to avoid this allocation if we rework how jsc.URL
-    //                      accepts strings.
-    const maybe_url = proto_pair.toUrl(allocator);
+    // TODO(markovejnovic): We might be able to avoid this allocation if the semantic URL parser
+    //                      accepts fragmented input.
+    const maybe_url = try proto_pair.toUrl(javascript_semantics, allocator);
     if (maybe_url) |url| return .{ .url = url, .proto = proto_pair.protocol };
 
     // Now that may fail, if the URL is not nicely formatted. In that case, we try to correct the
     // URL and parse it.
     var corrected = try correctUrl(&proto_pair, allocator);
     defer corrected.deinit();
-    const corrected_url = corrected.toUrl(allocator);
+    const corrected_url = try corrected.toUrl(javascript_semantics, allocator);
     if (corrected_url) |url| return .{ .url = url, .proto = corrected.protocol };
 
     // Otherwise, we complain.
@@ -530,8 +529,8 @@ pub const UrlProtocolPair = struct {
         }
     }
 
-    /// Given a protocol pair, create a jsc.URL if possible. May allocate, but owns its memory.
-    fn toUrl(self: *const UrlProtocolPair, allocator: std.mem.Allocator) ?*jsc.URL {
+    /// Given a protocol pair, create a parsed URL if possible. May allocate, but owns its memory.
+    fn toUrl(self: *const UrlProtocolPair, javascript_semantics: JavaScriptSemantics, allocator: std.mem.Allocator) bun.OOM!?JavaScriptSemantics.ParsedURL {
         // Ehhh.. Old IE's max path length was 2K so let's just use that. I searched for a
         // statistical distribution of URL lengths and found nothing.
         const long_url_thresh = 2048;
@@ -542,6 +541,7 @@ pub const UrlProtocolPair = struct {
         var protocol_buf: WellDefinedProtocol.StringWithColonBuffer = undefined;
 
         return concatPartsToUrl(
+            javascript_semantics,
             alloc.allocator(),
             switch (self.protocol) {
                 // If we have no protocol, we can assume it is git+ssh.
@@ -560,12 +560,10 @@ pub const UrlProtocolPair = struct {
         );
     }
 
-    fn concatPartsToUrl(allocator: std.mem.Allocator, parts: []const []const u8) ?*jsc.URL {
-        // TODO(markovejnovic): There is a sad unnecessary allocation here that I don't know how to
-        // get rid of -- in theory, URL.zig could allocate once.
-        const new_str = bun.handleOom(bun.strings.concat(allocator, parts));
+    fn concatPartsToUrl(javascript_semantics: JavaScriptSemantics, allocator: std.mem.Allocator, parts: []const []const u8) bun.OOM!?JavaScriptSemantics.ParsedURL {
+        const new_str = try bun.strings.concat(allocator, parts);
         defer allocator.free(new_str);
-        return jsc.URL.fromString(bun.String.init(new_str));
+        return javascript_semantics.parseURL(new_str);
     }
 };
 
@@ -681,7 +679,7 @@ fn normalizeProtocol(npa_str: []const u8) UrlProtocolPair {
     return .{ .url = .{ .unmanaged = npa_str }, .protocol = .unknown };
 }
 
-/// Attempt to correct an scp-style URL into a proper URL, parsable with jsc.URL.
+/// Attempt to correct an scp-style URL into a proper URL.
 ///
 /// This function assumes that the input is an scp-style URL.
 pub fn correctUrl(
@@ -753,7 +751,7 @@ const HostProvider = enum {
     fn extract(
         self: Self,
         allocator: std.mem.Allocator,
-        url: *jsc.URL,
+        url: *const JavaScriptSemantics.ParsedURL,
     ) error{ OutOfMemory, InvalidURL }!?Config.formatters.extract.Result {
         return configs.get(self).format_extract(allocator, url);
     }
@@ -1046,14 +1044,14 @@ const HostProvider = enum {
 
                 const Type = *const fn (
                     allocator: std.mem.Allocator,
-                    url: *jsc.URL,
+                    url: *const JavaScriptSemantics.ParsedURL,
                 ) error{ OutOfMemory, InvalidURL }!?Result;
 
                 fn github(
                     allocator: std.mem.Allocator,
-                    url: *jsc.URL,
+                    url: *const JavaScriptSemantics.ParsedURL,
                 ) error{ OutOfMemory, InvalidURL }!?Result {
-                    const pathname_owned = try url.pathname().toOwnedSlice(allocator);
+                    const pathname_owned = try url.pathname.toOwnedSlice(allocator);
                     defer allocator.free(pathname_owned);
                     const pathname = bun.strings.trimPrefixComptime(u8, pathname_owned, "/");
 
@@ -1077,12 +1075,12 @@ const HostProvider = enum {
                         }
                     }
 
+                    var fragment_utf8 = bun.String.Slice.empty;
+                    defer fragment_utf8.deinit();
                     var committish: ?[]const u8 = null;
                     if (type_part == null) {
-                        const fragment_str = url.fragmentIdentifier();
-                        defer fragment_str.deref();
-                        const fragment_utf8 = fragment_str.toUTF8(allocator);
-                        defer fragment_utf8.deinit();
+                        const fragment_str = url.fragment;
+                        fragment_utf8 = try fragment_str.toUTF8(allocator);
                         const fragment = fragment_utf8.slice();
                         if (fragment.len > 0) {
                             committish = fragment;
@@ -1117,9 +1115,9 @@ const HostProvider = enum {
 
                 fn bitbucket(
                     allocator: std.mem.Allocator,
-                    url: *jsc.URL,
+                    url: *const JavaScriptSemantics.ParsedURL,
                 ) error{ InvalidURL, OutOfMemory }!?Result {
-                    const pathname_owned = try url.pathname().toOwnedSlice(allocator);
+                    const pathname_owned = try url.pathname.toOwnedSlice(allocator);
                     defer allocator.free(pathname_owned);
                     const pathname = bun.strings.trimPrefixComptime(u8, pathname_owned, "/");
 
@@ -1140,9 +1138,8 @@ const HostProvider = enum {
                         return null;
                     }
 
-                    const fragment_str = url.fragmentIdentifier();
-                    defer fragment_str.deref();
-                    const fragment_utf8 = fragment_str.toUTF8(allocator);
+                    const fragment_str = url.fragment;
+                    const fragment_utf8 = try fragment_str.toUTF8(allocator);
                     defer fragment_utf8.deinit();
                     const fragment = fragment_utf8.slice();
                     const committish = if (fragment.len > 0) fragment else null;
@@ -1173,9 +1170,9 @@ const HostProvider = enum {
 
                 fn gitlab(
                     allocator: std.mem.Allocator,
-                    url: *jsc.URL,
+                    url: *const JavaScriptSemantics.ParsedURL,
                 ) error{ OutOfMemory, InvalidURL }!?Result {
-                    const pathname_owned = try url.pathname().toOwnedSlice(allocator);
+                    const pathname_owned = try url.pathname.toOwnedSlice(allocator);
                     defer allocator.free(pathname_owned);
                     const pathname = bun.strings.trimPrefixComptime(u8, pathname_owned, "/");
 
@@ -1195,9 +1192,8 @@ const HostProvider = enum {
                         return null;
                     }
 
-                    const fragment_str = url.fragmentIdentifier();
-                    defer fragment_str.deref();
-                    const fragment_utf8 = fragment_str.toUTF8(allocator);
+                    const fragment_str = url.fragment;
+                    const fragment_utf8 = try fragment_str.toUTF8(allocator);
                     defer fragment_utf8.deinit();
                     const committish = fragment_utf8.slice();
 
@@ -1227,9 +1223,9 @@ const HostProvider = enum {
 
                 fn gist(
                     allocator: std.mem.Allocator,
-                    url: *jsc.URL,
+                    url: *const JavaScriptSemantics.ParsedURL,
                 ) error{ OutOfMemory, InvalidURL }!?Result {
-                    const pathname_owned = try url.pathname().toOwnedSlice(allocator);
+                    const pathname_owned = try url.pathname.toOwnedSlice(allocator);
                     defer allocator.free(pathname_owned);
                     const pathname = bun.strings.trimPrefixComptime(u8, pathname_owned, "/");
 
@@ -1256,9 +1252,8 @@ const HostProvider = enum {
                         return null;
                     }
 
-                    const fragment_str = url.fragmentIdentifier();
-                    defer fragment_str.deref();
-                    const fragment_utf8 = fragment_str.toUTF8(allocator);
+                    const fragment_str = url.fragment;
+                    const fragment_utf8 = try fragment_str.toUTF8(allocator);
                     defer fragment_utf8.deinit();
                     const fragment = fragment_utf8.slice();
                     const committish = if (fragment.len > 0) fragment else null;
@@ -1294,9 +1289,9 @@ const HostProvider = enum {
 
                 fn sourcehut(
                     allocator: std.mem.Allocator,
-                    url: *jsc.URL,
+                    url: *const JavaScriptSemantics.ParsedURL,
                 ) error{ InvalidURL, OutOfMemory }!?Result {
-                    const pathname_owned = try url.pathname().toOwnedSlice(allocator);
+                    const pathname_owned = try url.pathname.toOwnedSlice(allocator);
                     defer allocator.free(pathname_owned);
                     const pathname = bun.strings.trimPrefixComptime(u8, pathname_owned, "/");
 
@@ -1317,9 +1312,8 @@ const HostProvider = enum {
                         return null;
                     }
 
-                    const fragment_str = url.fragmentIdentifier();
-                    defer fragment_str.deref();
-                    const fragment_utf8 = fragment_str.toUTF8(allocator);
+                    const fragment_str = url.fragment;
+                    const fragment_utf8 = try fragment_str.toUTF8(allocator);
                     defer fragment_utf8.deinit();
                     const fragment = fragment_utf8.slice();
                     const committish = if (fragment.len > 0) fragment else null;
@@ -1550,9 +1544,8 @@ const HostProvider = enum {
     }
 
     /// Parse a URL and return the appropriate host provider, if any.
-    fn fromUrl(url: *jsc.URL) ?HostProvider {
-        const proto_str = url.protocol();
-        defer proto_str.deref();
+    fn fromUrl(url: *const JavaScriptSemantics.ParsedURL) ?HostProvider {
+        const proto_str = url.protocol;
 
         // Try shortcut first (github:, gitlab:, etc.)
         if (HostProvider.fromShortcut(proto_str.byteSlice(), .without_colon)) |provider| {
@@ -1563,29 +1556,19 @@ const HostProvider = enum {
     }
 
     // Given a URL, use the domain in the URL to find the appropriate host provider.
-    fn fromUrlDomain(url: *jsc.URL) ?HostProvider {
-        const max_hostname_len: comptime_int = 253;
-
-        const hostname_str = url.hostname();
-        defer hostname_str.deref();
-
-        var fba_mem: [max_hostname_len]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&fba_mem);
-        const hostname_utf8 = hostname_str.toUTF8(fba.allocator());
-        defer hostname_utf8.deinit();
-        const hostname = bun.strings.withoutPrefixComptime(hostname_utf8.slice(), "www.");
-
-        return HostProvider.fromDomain(hostname);
+    fn fromUrlDomain(url: *const JavaScriptSemantics.ParsedURL) ?HostProvider {
+        const hostname_str = url.hostname;
+        inline for (@typeInfo(Self).@"enum".field_values) |field_value| {
+            const provider: HostProvider = @fromBackingInt(@intCast(field_value));
+            const provider_domain = comptime provider.domain();
+            if (hostname_str.eqlUTF8(provider_domain) or hostname_str.eqlUTF8("www." ++ provider_domain)) return provider;
+        }
+        return null;
     }
-};
-
-pub const TestingAPIs = struct {
-    pub const jsParseUrl = @import("../install_jsc/hosted_git_info_jsc.zig").jsParseUrl;
-    pub const jsFromUrl = @import("../install_jsc/hosted_git_info_jsc.zig").jsFromUrl;
 };
 
 const std = @import("std");
 const PercentEncoding = @import("../url/url.zig").PercentEncoding;
 
 const bun = @import("bun");
-const jsc = bun.jsc;
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");

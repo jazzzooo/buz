@@ -24,45 +24,39 @@ let asyncLocalStorageWasSet = false;
 interface Exports {
   handleRequest: (
     req: Request,
-    routerTypeMain: Id,
-    routeModules: Id[],
-    clientEntryUrl: string,
-    styles: string[],
-    params: Record<string, string> | null,
-    setAsyncLocalStorage: Function,
-    bundleNewRoute: (req: Request, path: string) => [number, Promise<void> | undefined],
-    newRouteParams: (
-      req: Request,
-      routeBundleIndex: number,
-      url: string,
-    ) => {
-      routerTypeMain: Id;
-      routeModules: Id[];
-      clientEntryUrl: string;
-      styles: string[];
-      params: Record<string, string> | null;
+    metadata: FrameworkRequestMetadata,
+    setAsyncLocalStorage: (storage: import("node:async_hooks").AsyncLocalStorage<RequestContext>) => void,
+    bundleNewRoute: (req: Request, path: string) => {
+      routeBundleIndex: number;
+      promise: Promise<void> | undefined;
     },
+    newRouteParams: (req: Request, routeBundleIndex: number, url: string) => FrameworkRequestMetadata,
   ) => any;
   registerUpdate: (
-    modules: any,
+    modules: Record<Id, UnloadedModule>,
     componentManifestAdd: null | string[],
     componentManifestDelete: null | string[],
-  ) => void;
+  ) => Promise<void>;
+}
+
+interface FrameworkRequestMetadata {
+  routerTypeMain: Id;
+  routeModules: Id[];
+  clientEntryUrl: string;
+  styles: string[];
+  params: Bake.RouteMetadata["params"];
 }
 
 declare let server_exports: Exports;
 server_exports = {
   async handleRequest(
     req,
-    routerTypeMain,
-    routeModules,
-    clientEntryUrl,
-    styles,
-    params,
+    metadata,
     setAsyncLocalStorage,
     bundleNewRoute,
     newRouteParams,
   ) {
+    let { routerTypeMain, routeModules, clientEntryUrl, styles, params } = metadata;
     if (!asyncLocalStorageWasSet) {
       asyncLocalStorageWasSet = true;
       setAsyncLocalStorage(responseOptionsALS);
@@ -136,7 +130,7 @@ server_exports = {
               throw new Error("Response.render(...) was expected to have a Location header");
             }
 
-            const [routeBundleIndex, promise] = bundleNewRoute(req, newUrl);
+            const { routeBundleIndex, promise } = bundleNewRoute(req, newUrl);
             if (promise) await promise;
             if (req.signal.aborted) return new Response("");
 
@@ -159,30 +153,35 @@ server_exports = {
     }
   },
   async registerUpdate(modules, componentManifestAdd, componentManifestDelete) {
-    replaceModules(modules);
+    await replaceModules(modules);
 
+    const additions = new Map<string, Record<string, { specifier: string; name: string }>>();
     if (componentManifestAdd) {
       for (const uid of componentManifestAdd) {
-        try {
-          const exports = await loadExports<{}>(uid);
-
-          const client = {};
-          for (const exportName of Object.keys(exports)) {
-            serverManifest[uid + "#" + exportName] = {
-              id: uid,
-              name: exportName,
-              chunks: [],
-            };
-            client[exportName] = {
-              specifier: "ssr:" + uid,
-              name: exportName,
-            };
-          }
-          ssrManifest[uid] = client;
-        } catch (err) {
-          console.log(err);
+        const exports = await loadExports<{}>(uid);
+        const client = Object.create(null);
+        for (const exportName of Object.keys(exports)) {
+          client[exportName] = {
+            specifier: "ssr:" + uid,
+            name: exportName,
+          };
         }
+        additions.set(uid, client);
       }
+    }
+
+    for (const [uid, client] of additions) {
+      for (const exportName in ssrManifest[uid]) {
+        delete serverManifest[`${uid}#${exportName}`];
+      }
+      for (const exportName of Object.keys(client)) {
+        serverManifest[`${uid}#${exportName}`] = {
+          id: uid,
+          name: exportName,
+          chunks: [],
+        };
+      }
+      ssrManifest[uid] = client;
     }
 
     if (componentManifestDelete) {

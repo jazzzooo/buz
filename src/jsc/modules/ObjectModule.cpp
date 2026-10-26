@@ -1,109 +1,105 @@
 #include "ObjectModule.h"
+#include <JavaScriptCore/ExceptionHelpers.h>
+#include <JavaScriptCore/JSArray.h>
+#include <JavaScriptCore/JSObjectInlines.h>
+#include <JavaScriptCore/PropertyNameArray.h>
+#include <JavaScriptCore/Strong.h>
+#include <wtf/FastMalloc.h>
 
 namespace Zig {
-JSC::SyntheticSourceProvider::SyntheticSourceGenerator
-generateObjectModuleSourceCode(JSC::JSGlobalObject* globalObject,
-    JSC::JSObject* object)
-{
-    gcProtectNullTolerant(object);
-    return [object](JSC::JSGlobalObject* lexicalGlobalObject,
-               JSC::Identifier moduleKey,
-               Vector<JSC::Identifier, 4>& exportNames,
-               JSC::MarkedArgumentBuffer& exportValues) -> void {
-        auto& vm = JSC::getVM(lexicalGlobalObject);
-        auto throwScope = DECLARE_THROW_SCOPE(vm);
-        GlobalObject* globalObject = defaultGlobalObject(lexicalGlobalObject);
-        JSC::EnsureStillAliveScope stillAlive(object);
 
-        PropertyNameArrayBuilder properties(vm, PropertyNameMode::Strings,
-            PrivateSymbolMode::Exclude);
-        object->methodTable()->getOwnPropertyNames(object, globalObject, properties, DontEnumPropertiesMode::Exclude);
-        RETURN_IF_EXCEPTION(throwScope, void());
-        gcUnprotectNullTolerant(object);
+using Generator = JSC::SyntheticSourceProvider::SyntheticSourceGenerator;
 
-        for (auto& entry : properties.releaseData()->propertyNameVector()) {
-            exportNames.append(entry);
+class ObjectModuleGenerator final : public Generator::Impl {
+public:
+    enum class Kind { ownProperties, json, defaultValue };
 
-            auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-            JSValue value = object->get(globalObject, entry);
-            if (scope.exception()) [[unlikely]] {
-                (void)scope.tryClearException();
-                value = jsUndefined();
-            }
-            exportValues.append(value);
-        }
-    };
-}
-
-JSC::SyntheticSourceProvider::SyntheticSourceGenerator
-generateObjectModuleSourceCodeForJSON(JSC::JSGlobalObject* globalObject,
-    JSC::JSObject* object)
-{
-    gcProtectNullTolerant(object);
-    return [object](JSC::JSGlobalObject* lexicalGlobalObject,
-               JSC::Identifier moduleKey,
-               Vector<JSC::Identifier, 4>& exportNames,
-               JSC::MarkedArgumentBuffer& exportValues) -> void {
-        auto& vm = JSC::getVM(lexicalGlobalObject);
-        auto scope = DECLARE_THROW_SCOPE(vm);
-        GlobalObject* globalObject = reinterpret_cast<GlobalObject*>(lexicalGlobalObject);
-        JSC::EnsureStillAliveScope stillAlive(object);
-
-        PropertyNameArrayBuilder properties(vm, PropertyNameMode::Strings,
-            PrivateSymbolMode::Exclude);
-        object->getPropertyNames(globalObject, properties, DontEnumPropertiesMode::Exclude);
-        RETURN_IF_EXCEPTION(scope, {});
-        gcUnprotectNullTolerant(object);
-
-        exportNames.append(vm.propertyNames->defaultKeyword);
-        exportValues.append(object);
-
-        for (auto& entry : properties.releaseData()->propertyNameVector()) {
-            if (entry == vm.propertyNames->defaultKeyword) {
-                continue;
-            }
-
-            exportNames.append(entry);
-
-            JSValue value = object->get(globalObject, entry);
-            RETURN_IF_EXCEPTION(scope, {});
-            exportValues.append(value);
-        }
-    };
-}
-
-JSC::SyntheticSourceProvider::SyntheticSourceGenerator
-generateJSValueModuleSourceCode(JSC::JSGlobalObject* globalObject,
-    JSC::JSValue value)
-{
-
-    if (value.isObject() && !JSC::isJSArray(value)) {
-        return generateObjectModuleSourceCodeForJSON(globalObject,
-            value.getObject());
+    ObjectModuleGenerator(JSC::VM& vm, JSC::JSValue value, Kind kind)
+        : m_value(vm, value)
+        , m_kind(kind)
+    {
     }
 
-    return generateJSValueExportDefaultObjectSourceCode(globalObject, value);
-}
+    void call(JSC::JSGlobalObject* lexicalGlobalObject, JSC::Identifier,
+        Vector<JSC::Identifier, 4>& exportNames, JSC::MarkedArgumentBuffer& exportValues) final
+    {
+        auto& vm = lexicalGlobalObject->vm();
+        auto scope = DECLARE_THROW_SCOPE(vm);
+        auto append = [&](const JSC::Identifier& name, JSC::JSValue value) {
+            if (!exportNames.tryAppend(name)) {
+                JSC::throwOutOfMemoryError(lexicalGlobalObject, scope);
+                return false;
+            }
+            exportValues.append(value);
+            if (exportValues.hasOverflowed()) {
+                JSC::throwOutOfMemoryError(lexicalGlobalObject, scope);
+                return false;
+            }
+            return true;
+        };
 
-JSC::SyntheticSourceProvider::SyntheticSourceGenerator
-generateJSValueExportDefaultObjectSourceCode(JSC::JSGlobalObject* globalObject,
-    JSC::JSValue value)
+        if (m_kind == Kind::defaultValue) {
+            if (!append(vm.propertyNames->defaultKeyword, m_value.get()))
+                return;
+            append(vm.propertyNames->__esModule, JSC::jsBoolean(true));
+            return;
+        }
+
+        auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
+        auto* object = m_value.get().getObject();
+        RELEASE_ASSERT(object);
+        JSC::PropertyNameArrayBuilder properties(vm, JSC::PropertyNameMode::Strings, JSC::PrivateSymbolMode::Exclude);
+        if (m_kind == Kind::ownProperties)
+            object->methodTable()->getOwnPropertyNames(object, globalObject, properties, JSC::DontEnumPropertiesMode::Exclude);
+        else
+            object->getPropertyNames(globalObject, properties, JSC::DontEnumPropertiesMode::Exclude);
+        RETURN_IF_EXCEPTION(scope, void());
+
+        if (m_kind == Kind::json && !append(vm.propertyNames->defaultKeyword, object))
+            return;
+        auto propertyData = properties.releaseData();
+        for (const auto& name : propertyData->propertyNameVector()) {
+            if (m_kind == Kind::json && name == vm.propertyNames->defaultKeyword)
+                continue;
+            auto value = object->get(globalObject, name);
+            RETURN_IF_EXCEPTION(scope, void());
+            if (!append(name, value))
+                return;
+        }
+    }
+
+private:
+    JSC::Strong<JSC::Unknown> m_value;
+    Kind m_kind;
+};
+
+static Generator createGenerator(JSC::JSGlobalObject* globalObject, JSC::JSValue value, ObjectModuleGenerator::Kind kind)
 {
-    if (value.isCell())
-        gcProtectNullTolerant(value.asCell());
-    return [value](JSC::JSGlobalObject* lexicalGlobalObject,
-               JSC::Identifier moduleKey,
-               Vector<JSC::Identifier, 4>& exportNames,
-               JSC::MarkedArgumentBuffer& exportValues) -> void {
-        auto& vm = JSC::getVM(lexicalGlobalObject);
-        exportNames.append(vm.propertyNames->defaultKeyword);
-        exportValues.append(value);
-        const Identifier& esModuleMarker = vm.propertyNames->__esModule;
-        exportNames.append(esModuleMarker);
-        exportValues.append(jsBoolean(true));
-
-        if (value.isCell())
-            gcUnprotectNullTolerant(value.asCell());
-    };
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    void* allocation = nullptr;
+    if (!WTF::tryFastMalloc(sizeof(ObjectModuleGenerator)).getValue(allocation)) {
+        JSC::throwOutOfMemoryError(globalObject, scope);
+        return {};
+    }
+    auto* generator = new (NotNull, allocation) ObjectModuleGenerator(globalObject->vm(), value, kind);
+    return WTF::adopt(static_cast<Generator::Impl*>(generator));
 }
+
+Generator generateObjectModuleSourceCode(JSC::JSGlobalObject* globalObject, JSC::JSObject* object)
+{
+    return createGenerator(globalObject, object, ObjectModuleGenerator::Kind::ownProperties);
+}
+
+Generator generateJSValueModuleSourceCode(JSC::JSGlobalObject* globalObject, JSC::JSValue value)
+{
+    auto kind = value.isObject() && !JSC::isJSArray(value)
+        ? ObjectModuleGenerator::Kind::json : ObjectModuleGenerator::Kind::defaultValue;
+    return createGenerator(globalObject, value, kind);
+}
+
+Generator generateJSValueExportDefaultObjectSourceCode(JSC::JSGlobalObject* globalObject, JSC::JSValue value)
+{
+    return createGenerator(globalObject, value, ObjectModuleGenerator::Kind::defaultValue);
+}
+
 } // namespace Zig

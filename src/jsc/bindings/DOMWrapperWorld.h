@@ -23,37 +23,23 @@
 
 #include "root.h"
 #include "DOMWrapperWorld-class.h"
-#include "ZigGlobalObject.h"
+#include "BunGlobalScope.h"
+#include <JavaScriptCore/JSCast.h>
 
 namespace WebCore {
-
-DOMWrapperWorld& normalWorld(JSC::VM&);
-// WEBCORE_EXPORT DOMWrapperWorld& mainThreadNormalWorld();
-
-// inline DOMWrapperWorld& debuggerWorld() { return mainThreadNormalWorld(); }
-// inline DOMWrapperWorld& pluginWorld() { return mainThreadNormalWorld(); }
 
 DOMWrapperWorld& currentWorld(JSC::JSGlobalObject&);
 DOMWrapperWorld& worldForDOMObject(JSC::JSObject&);
 
-// Helper function for code paths that must not share objects across isolated DOM worlds.
-bool isWorldCompatible(JSC::JSGlobalObject&, JSC::JSValue);
-
 inline DOMWrapperWorld& currentWorld(JSC::JSGlobalObject& lexicalGlobalObject);
 inline DOMWrapperWorld& worldForDOMObject(JSC::JSObject& object);
 
-inline bool isWorldCompatible(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    return true;
-    // return !value.isObject() || &worldForDOMObject(*value.getObject()) == &currentWorld(lexicalGlobalObject);
-}
-
 inline DOMWrapperWorld& currentWorld(JSC::JSGlobalObject& lexicalGlobalObject)
 {
-    return uncheckedDowncast<Zig::GlobalObject>(&lexicalGlobalObject)->world();
+    return WTF::uncheckedDowncast<Bun::GlobalScope>(&lexicalGlobalObject)->world();
 }
 inline DOMWrapperWorld& worldForDOMObject(JSC::JSObject& object)
 {
-    return uncheckedDowncast<Zig::GlobalObject>(object.globalObject())->world();
+    return currentWorld(*object.globalObject());
 };
 }

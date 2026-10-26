@@ -1,24 +1,17 @@
 #include "JSNodeHTTPServerSocket.h"
 #include "JSNodeHTTPServerSocketPrototype.h"
 #include "ZigGlobalObject.h"
-#include "ZigGeneratedClasses.h"
+#include "SchemaBindings.h"
 #include "DOMIsoSubspaces.h"
 #include "ScriptExecutionContext.h"
 #include "helpers.h"
 #include "JSSocketAddressDTO.h"
+#include "JSBuffer.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/VMTrapsInlines.h>
 #include <wtf/text/WTFString.h>
 #include <bun-uws/src/App.h>
-
-extern "C" void Bun__NodeHTTPResponse_setClosed(void* zigResponse);
-extern "C" void Bun__NodeHTTPResponse_onClose(void* zigResponse, JSC::EncodedJSValue jsValue);
-extern "C" void us_socket_free_stream_buffer(us_socket_stream_buffer_t* streamBuffer);
-extern "C" uint64_t uws_res_get_remote_address_info(void* res, const char** dest, int* port, bool* is_ipv6);
-extern "C" uint64_t uws_res_get_local_address_info(void* res, const char** dest, int* port, bool* is_ipv6);
-extern "C" EncodedJSValue us_socket_buffered_js_write(void* socket, bool is_ssl, bool ended, us_socket_stream_buffer_t* streamBuffer, JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue data, JSC::EncodedJSValue encoding);
-extern "C" int us_socket_is_ssl_handshake_finished(struct us_socket_t* s);
-extern "C" int us_socket_ssl_handshake_callback_has_fired(struct us_socket_t* s);
+#include "libusockets.h"
 
 namespace Bun {
 
@@ -28,18 +21,26 @@ using namespace WebCore;
 const JSC::ClassInfo JSNodeHTTPServerSocket::s_info = { "NodeHTTPServerSocket"_s, &Base::s_info, nullptr, nullptr,
     CREATE_METHOD_TABLE(JSNodeHTTPServerSocket) };
 
-JSNodeHTTPServerSocket* JSNodeHTTPServerSocket::create(JSC::VM& vm, JSC::Structure* structure, us_socket_t* socket, bool is_ssl, WebCore::JSNodeHTTPResponse* response)
+JSNodeHTTPServerSocket* JSNodeHTTPServerSocket::create(JSC::VM& vm, JSC::Structure* structure, us_socket_t* socket, bool is_ssl, JSC::JSObject* response)
 {
+    auto scope = DECLARE_THROW_SCOPE(vm);
     if (socket && us_socket_is_closed(socket)) {
         // dont attach closed socket because the callback will never be called
         socket = nullptr;
     }
     auto* object = new (JSC::allocateCell<JSNodeHTTPServerSocket>(vm)) JSNodeHTTPServerSocket(vm, structure, socket, is_ssl, response);
     object->finishCreation(vm);
+    object->streamBuffer.reset(Bindgen::ZigExports::bunBindgenZig_Socket_socketStreamBufferCreate(object->globalObject()));
+    if (!scope.exception() && socket)
+        object->strongThis.reset(createStrongRef(object->globalObject(), object));
+    if (scope.exception()) {
+        object->socket = nullptr;
+        return nullptr;
+    }
     return object;
 }
 
-JSNodeHTTPServerSocket* JSNodeHTTPServerSocket::create(JSC::VM& vm, Zig::GlobalObject* globalObject, us_socket_t* socket, bool is_ssl, WebCore::JSNodeHTTPResponse* response)
+JSNodeHTTPServerSocket* JSNodeHTTPServerSocket::create(JSC::VM& vm, Zig::GlobalObject* globalObject, us_socket_t* socket, bool is_ssl, JSC::JSObject* response)
 {
     auto* structure = globalObject->m_JSNodeHTTPServerSocketStructure.getInitializedOnMainThread(globalObject);
     return create(vm, structure, socket, is_ssl, response);
@@ -108,10 +109,29 @@ JSNodeHTTPServerSocket::~JSNodeHTTPServerSocket()
             clearSocketData<false>(this->upgraded, socket);
         }
     }
-    us_socket_free_stream_buffer(&streamBuffer);
 }
 
-JSNodeHTTPServerSocket::JSNodeHTTPServerSocket(JSC::VM& vm, JSC::Structure* structure, us_socket_t* socket, bool is_ssl, WebCore::JSNodeHTTPResponse* response)
+void Bindgen::Engine::releaseSocketStreamBuffer(us_socket_stream_buffer_t* buffer)
+{
+    Bindgen::ZigExports::bunBindgenZig_Socket_socketStreamBufferDeinit(buffer);
+}
+
+void JSNodeHTTPServerSocket::StreamBufferDeleter::operator()(us_socket_stream_buffer_t* buffer) const
+{
+    Bindgen::Engine::releaseSocketStreamBuffer(buffer);
+}
+
+size_t JSNodeHTTPServerSocket::bufferedSize() const
+{
+    return Bindgen::ZigExports::bunBindgenZig_Socket_socketStreamBufferSize(streamBuffer.get());
+}
+
+size_t JSNodeHTTPServerSocket::totalBytesWritten() const
+{
+    return Bindgen::ZigExports::bunBindgenZig_Socket_socketStreamBufferTotalWritten(streamBuffer.get());
+}
+
+JSNodeHTTPServerSocket::JSNodeHTTPServerSocket(JSC::VM& vm, JSC::Structure* structure, us_socket_t* socket, bool is_ssl, JSC::JSObject* response)
     : JSC::JSDestructibleObject(vm, structure)
     , socket(socket)
     , is_ssl(is_ssl)
@@ -123,100 +143,163 @@ void JSNodeHTTPServerSocket::detach()
 {
     this->m_duplex.clear();
     this->currentResponseObject.clear();
-    this->strongThis.clear();
+    this->functionToCallOnClose.clear();
+    this->functionToCallOnDrain.clear();
+    this->functionToCallOnData.clear();
+    this->strongThis.reset();
 }
+
+StrongRef JSNodeHTTPServerSocket::retainForTask() const
+{
+    if (!strongThis)
+        return nullptr;
+    strongThis->ref();
+    return StrongRef(strongThis.get());
+}
+
+static BunBindgen_NodeHTTPResponse_NodeHTTPResponse_Native* nodeHTTPResponseBinding(JSObject* response)
+{
+    if (!response)
+        return nullptr;
+    return bun_bindgen_class_NodeHTTPResponse_NodeHTTPResponse_try_cast_value(response);
+}
+
+void Bindgen::Engine::releaseNodeHTTPResponseCloseState(NodeHTTPResponseCloseState* response)
+{
+    Bindgen::ZigExports::bunBindgenZig_NodeHTTPResponse_nodeHTTPResponseReleaseCloseState(response);
+}
+
+struct CloseStateDeleter {
+    void operator()(NodeHTTPResponseCloseState* response) const
+    {
+        Bindgen::Engine::releaseNodeHTTPResponseCloseState(response);
+    }
+};
+
+class SocketCloseDelivery {
+public:
+    SocketCloseDelivery(StrongRef&& socket, NodeHTTPResponseCloseState* response)
+        : m_socket(WTF::move(socket))
+        , m_response(response)
+    {
+    }
+
+    SocketCloseDelivery(SocketCloseDelivery&&) = default;
+    SocketCloseDelivery(const SocketCloseDelivery&) = delete;
+    SocketCloseDelivery& operator=(const SocketCloseDelivery&) = delete;
+    ~SocketCloseDelivery() { finish(); }
+
+    void operator()(ScriptExecutionContext& context)
+    {
+        auto* globalObject = defaultGlobalObject(context.globalObject());
+        auto* socket = uncheckedDowncast<JSNodeHTTPServerSocket>(m_socket->value());
+        auto* callback = socket->functionToCallOnClose.get();
+        if (m_response) {
+            Bindgen::ZigExports::bunBindgenZig_NodeHTTPResponse_nodeHTTPResponseOnClose(globalObject, m_response.get());
+        }
+        if (callback && globalObject->scriptExecutionStatus(globalObject, socket) == ScriptExecutionStatus::Running) {
+            auto callData = JSC::getCallData(callback);
+            MarkedArgumentBuffer args;
+            auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
+            profiledCall(globalObject, JSC::ProfilingReason::API, callback, callData, socket, args);
+
+            if (auto* exception = scope.exception()) {
+                if (scope.clearExceptionExceptTermination())
+                    globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
+            }
+        }
+        finish();
+    }
+
+private:
+    void finish()
+    {
+        auto root = WTF::move(m_socket);
+        auto responseState = WTF::move(m_response);
+        if (!root)
+            return;
+        auto* socket = uncheckedDowncast<JSNodeHTTPServerSocket>(root->value());
+        if (auto* response = dynamicDowncast<BunBindgen_NodeHTTPResponse_NodeHTTPResponse>(socket->currentResponseObject.get())) {
+            response->clear_slot_onAborted();
+            response->clear_slot_onWritable();
+            response->clear_slot_onData();
+        }
+        responseState.reset();
+        socket->detach();
+    }
+
+    StrongRef m_socket;
+    std::unique_ptr<NodeHTTPResponseCloseState, CloseStateDeleter> m_response;
+};
 
 void JSNodeHTTPServerSocket::onClose()
 {
+    auto self = WTF::move(strongThis);
+    if (socket) {
+        if (is_ssl)
+            clearSocketData<true>(upgraded, socket);
+        else
+            clearSocketData<false>(upgraded, socket);
+    }
     this->socket = nullptr;
-    if (auto* res = this->currentResponseObject.get(); res != nullptr && res->m_ctx != nullptr) {
-        Bun__NodeHTTPResponse_setClosed(res->m_ctx);
-    }
-
-    // This function can be called during GC!
-    Zig::GlobalObject* globalObject = static_cast<Zig::GlobalObject*>(this->globalObject());
-    if (!functionToCallOnClose) {
-        if (auto* res = this->currentResponseObject.get(); res != nullptr && res->m_ctx != nullptr) {
-            Bun__NodeHTTPResponse_onClose(res->m_ctx, JSValue::encode(res));
-        }
-        this->detach();
+    if (!self)
         return;
+
+    NodeHTTPResponseCloseState* response = nullptr;
+    if (auto* binding = nodeHTTPResponseBinding(this->currentResponseObject.get())) {
+        response = Bindgen::ZigExports::bunBindgenZig_NodeHTTPResponse_nodeHTTPResponseRetainCloseState(binding);
+        Bindgen::ZigExports::bunBindgenZig_NodeHTTPResponse_nodeHTTPResponseSetClosed(binding);
     }
 
-    WebCore::ScriptExecutionContext* scriptExecutionContext = globalObject->scriptExecutionContext();
-
-    if (scriptExecutionContext) {
-        scriptExecutionContext->postTask([self = this](ScriptExecutionContext& context) {
-            auto* globalObject = defaultGlobalObject(context.globalObject());
-            auto* thisObject = self;
-            auto* callbackObject = thisObject->functionToCallOnClose.get();
-            if (!callbackObject) {
-                if (auto* res = thisObject->currentResponseObject.get(); res != nullptr && res->m_ctx != nullptr) {
-                    Bun__NodeHTTPResponse_onClose(res->m_ctx, JSValue::encode(res));
-                }
-                thisObject->detach();
-                return;
-            }
-            auto callData = JSC::getCallData(callbackObject);
-            MarkedArgumentBuffer args;
-            EnsureStillAliveScope ensureStillAlive(self);
-
-            if (globalObject->scriptExecutionStatus(globalObject, thisObject) == ScriptExecutionStatus::Running) {
-                if (auto* res = thisObject->currentResponseObject.get(); res != nullptr && res->m_ctx != nullptr) {
-                    Bun__NodeHTTPResponse_onClose(res->m_ctx, JSValue::encode(res));
-                }
-
-                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
-                profiledCall(globalObject, JSC::ProfilingReason::API, callbackObject, callData, thisObject, args);
-
-                if (auto* exception = scope.exception()) {
-                    if (scope.clearExceptionExceptTermination())
-                        globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
-                }
-            }
-            thisObject->detach();
-        });
-    }
+    auto* globalObject = static_cast<Zig::GlobalObject*>(this->globalObject());
+    SocketCloseDelivery delivery(WTF::move(self), response);
+    if (auto* context = globalObject->scriptExecutionContext())
+        context->postTask(WTF::move(delivery));
 }
 
 void JSNodeHTTPServerSocket::onDrain()
 {
     // This function can be called during GC!
     Zig::GlobalObject* globalObject = static_cast<Zig::GlobalObject*>(this->globalObject());
-    if (!functionToCallOnDrain) {
+    if (isClosed()) {
         return;
     }
 
-    auto bufferedSize = this->streamBuffer.bufferedSize();
+    auto bufferedSize = this->bufferedSize();
     if (bufferedSize > 0) {
         auto* globalObject = defaultGlobalObject(this->globalObject());
         auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
-        us_socket_buffered_js_write(this->socket, this->is_ssl, this->ended, &this->streamBuffer, globalObject, JSValue::encode(JSC::jsUndefined()), JSValue::encode(JSC::jsUndefined()));
+        Bun::Bindgen::ZigExports::bunBindgenZig_Socket_socketBufferedWrite(
+            globalObject, this->socket, this->ended, this->streamBuffer.get(), {});
         if (auto* exception = scope.exception()) {
-            (void)scope.tryClearException();
-            globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
+            if (scope.clearExceptionExceptTermination())
+                globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
             return;
         }
-        bufferedSize = this->streamBuffer.bufferedSize();
+        bufferedSize = this->bufferedSize();
 
         if (bufferedSize > 0) {
             // need to drain more
             return;
         }
     }
+    if (!functionToCallOnDrain)
+        return;
     WebCore::ScriptExecutionContext* scriptExecutionContext = globalObject->scriptExecutionContext();
 
     if (scriptExecutionContext) {
-        scriptExecutionContext->postTask([self = this](ScriptExecutionContext& context) {
+        auto self = retainForTask();
+        if (!self)
+            return;
+        scriptExecutionContext->postTask([self = WTF::move(self)](ScriptExecutionContext& context) {
             auto* globalObject = defaultGlobalObject(context.globalObject());
-            auto* thisObject = self;
+            auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(self->value());
             auto* callbackObject = thisObject->functionToCallOnDrain.get();
             if (!callbackObject) {
                 return;
             }
             auto callData = JSC::getCallData(callbackObject);
             MarkedArgumentBuffer args;
-            EnsureStillAliveScope ensureStillAlive(self);
 
             if (globalObject->scriptExecutionStatus(globalObject, thisObject) == ScriptExecutionStatus::Running) {
                 auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
@@ -242,30 +325,35 @@ void JSNodeHTTPServerSocket::onData(const char* data, int length, bool last)
     WebCore::ScriptExecutionContext* scriptExecutionContext = globalObject->scriptExecutionContext();
 
     if (scriptExecutionContext) {
-        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
-        JSC::JSUint8Array* buffer = WebCore::createBuffer(globalObject, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(data), length));
-        auto chunk = JSC::JSValue(buffer);
-        if (auto* exception = scope.exception()) {
-            (void)scope.tryClearException();
-            globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
+        auto self = retainForTask();
+        if (!self)
             return;
-        }
-        gcProtect(chunk);
-        scriptExecutionContext->postTask([self = this, chunk = chunk, last = last](ScriptExecutionContext& context) {
+        RELEASE_ASSERT(length >= 0);
+        WTF::Vector<uint8_t> bytes;
+        bytes.append(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(data), static_cast<size_t>(length)));
+        scriptExecutionContext->postTask([self = WTF::move(self), bytes = WTF::move(bytes), last = last](ScriptExecutionContext& context) {
             auto* globalObject = defaultGlobalObject(context.globalObject());
-            auto* thisObject = self;
+            auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(self->value());
             auto* callbackObject = thisObject->functionToCallOnData.get();
-            EnsureStillAliveScope ensureChunkStillAlive(chunk);
-            gcUnprotect(chunk);
             if (!callbackObject) {
                 return;
+            }
+
+            JSC::JSValue chunk;
+            {
+                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
+                chunk = JSC::JSValue(WebCore::createBuffer(globalObject, bytes.span()));
+                if (auto* exception = scope.exception()) {
+                    if (scope.clearExceptionExceptTermination())
+                        globalObject->reportUncaughtExceptionAtEventLoop(globalObject, exception);
+                    return;
+                }
             }
 
             auto callData = JSC::getCallData(callbackObject);
             MarkedArgumentBuffer args;
             args.append(chunk);
             args.append(JSC::jsBoolean(last));
-            EnsureStillAliveScope ensureStillAlive(self);
 
             if (globalObject->scriptExecutionStatus(globalObject, thisObject) == ScriptExecutionStatus::Running) {
                 auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
@@ -317,72 +405,54 @@ static JSNodeHTTPServerSocket* getNodeHTTPServerSocket(us_socket_t* socket)
     return reinterpret_cast<JSNodeHTTPServerSocket*>(httpResponseData->socketData);
 }
 
-template<bool SSL>
-static WebCore::JSNodeHTTPResponse* getNodeHTTPResponse(us_socket_t* socket)
+bool Bindgen::Engine::bunBindgenEngine_NodeHTTP_nodeHTTPServerSocketExistsForSocket(
+    Bindgen::EngineCallContext&,
+    const Bindgen::Engine::BunBindgenEngine_NodeHTTP_nodeHTTPServerSocketExistsForSocket_Arguments& args)
 {
-    auto* serverSocket = getNodeHTTPServerSocket<SSL>(socket);
-    if (!serverSocket) {
-        return nullptr;
-    }
-    return serverSocket->currentResponseObject.get();
+    auto* socket = args.isSSL ? getNodeHTTPServerSocket<true>(args.socket) : getNodeHTTPServerSocket<false>(args.socket);
+    return socket != nullptr;
 }
 
-extern "C" JSC::EncodedJSValue Bun__getNodeHTTPResponseThisValue(bool is_ssl, us_socket_t* socket)
+JSValue Bindgen::Engine::bunBindgenEngine_NodeHTTP_nodeHTTPServerSocketCreateForClientError(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_NodeHTTP_nodeHTTPServerSocketCreateForClientError_Arguments& args)
 {
-    if (is_ssl) {
-        return JSValue::encode(getNodeHTTPResponse<true>(socket));
-    }
-    return JSValue::encode(getNodeHTTPResponse<false>(socket));
-}
-
-extern "C" JSC::EncodedJSValue Bun__getNodeHTTPServerSocketThisValue(bool is_ssl, us_socket_t* socket)
-{
-    if (is_ssl) {
-        return JSValue::encode(getNodeHTTPServerSocket<true>(socket));
-    }
-    return JSValue::encode(getNodeHTTPServerSocket<false>(socket));
-}
-
-extern "C" JSC::EncodedJSValue Bun__createNodeHTTPServerSocketForClientError(bool isSSL, us_socket_t* us_socket, Zig::GlobalObject* globalObject)
-{
+    auto* globalObject = defaultGlobalObject(&context.globalObject);
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     RETURN_IF_EXCEPTION(scope, {});
 
-    if (isSSL) {
-        uWS::HttpResponse<true>* response = reinterpret_cast<uWS::HttpResponse<true>*>(us_socket);
+    if (args.isSSL) {
+        uWS::HttpResponse<true>* response = reinterpret_cast<uWS::HttpResponse<true>*>(args.socket);
         auto* currentSocketDataPtr = reinterpret_cast<JSC::JSCell*>(response->getHttpResponseData()->socketData);
         if (currentSocketDataPtr) {
-            return JSValue::encode(currentSocketDataPtr);
+            return currentSocketDataPtr;
         }
     } else {
-        uWS::HttpResponse<false>* response = reinterpret_cast<uWS::HttpResponse<false>*>(us_socket);
+        uWS::HttpResponse<false>* response = reinterpret_cast<uWS::HttpResponse<false>*>(args.socket);
         auto* currentSocketDataPtr = reinterpret_cast<JSC::JSCell*>(response->getHttpResponseData()->socketData);
         if (currentSocketDataPtr) {
-            return JSValue::encode(currentSocketDataPtr);
+            return currentSocketDataPtr;
         }
     }
     // socket without response because is not valid http
     JSNodeHTTPServerSocket* socket = JSNodeHTTPServerSocket::create(
         vm,
         globalObject->m_JSNodeHTTPServerSocketStructure.getInitializedOnMainThread(globalObject),
-        us_socket,
-        isSSL, nullptr);
-    if (isSSL) {
-        uWS::HttpResponse<true>* response = reinterpret_cast<uWS::HttpResponse<true>*>(us_socket);
+        args.socket,
+        args.isSSL, nullptr);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!socket->socket)
+        return socket;
+    if (args.isSSL) {
+        uWS::HttpResponse<true>* response = reinterpret_cast<uWS::HttpResponse<true>*>(args.socket);
         response->getHttpResponseData()->socketData = socket;
     } else {
-        uWS::HttpResponse<false>* response = reinterpret_cast<uWS::HttpResponse<false>*>(us_socket);
+        uWS::HttpResponse<false>* response = reinterpret_cast<uWS::HttpResponse<false>*>(args.socket);
         response->getHttpResponseData()->socketData = socket;
     }
-    RETURN_IF_EXCEPTION(scope, {});
-    if (socket) {
-        socket->strongThis.set(vm, socket);
-        return JSValue::encode(socket);
-    }
-
-    return JSValue::encode(JSC::jsNull());
+    return socket;
 }
 
 JSC::Structure* createNodeHTTPServerSocketStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject)

@@ -64,22 +64,23 @@ pub const ProcessHandle = struct {
 
             break :brk try (try bun.spawn.spawnProcess(&this.options, argv[0..], envp)).unwrap();
         };
-        var process = spawned.toProcess(this.state.event_loop, false);
+        defer spawned.close();
+        var process = spawned.toProcess(this.state.event_loop.runtimeLoopHandle(), false);
 
         handle.stdout.setParent(handle);
         handle.stderr.setParent(handle);
 
         if (Environment.isWindows) {
-            handle.stdout.source = .{ .pipe = this.options.stdout.buffer };
-            handle.stderr.source = .{ .pipe = this.options.stderr.buffer };
+            handle.stdout.source = .{ .pipe = spawned.stdout.take().buffer };
+            handle.stderr.source = .{ .pipe = spawned.stderr.take().buffer };
         }
 
         if (Environment.isPosix) {
-            if (spawned.stdout) |stdout| {
+            if (spawned.stdout.takeOwnedFd()) |stdout| {
                 _ = bun.sys.setNonblocking(stdout);
                 try handle.stdout.start(stdout, true).unwrap();
             }
-            if (spawned.stderr) |stderr| {
+            if (spawned.stderr.takeOwnedFd()) |stderr| {
                 _ = bun.sys.setNonblocking(stderr);
                 try handle.stderr.start(stderr, true).unwrap();
             }
@@ -123,7 +124,7 @@ pub const ProcessHandle = struct {
         this.state.processExit(this) catch {};
     }
 
-    pub fn eventLoop(this: *This) *bun.jsc.MiniEventLoop {
+    pub fn eventLoop(this: *This) *bun.MiniEventLoop {
         return this.state.event_loop;
     }
 
@@ -144,7 +145,7 @@ const State = struct {
     const This = @This();
 
     handles: []ProcessHandle,
-    event_loop: *bun.jsc.MiniEventLoop,
+    event_loop: *bun.MiniEventLoop,
     remaining_scripts: usize = 0,
     // buffer for batched output
     draw_buf: std.Io.Writer.Allocating = .init(bun.default_allocator),
@@ -455,6 +456,7 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
 
     var this_transpiler: transpiler.Transpiler = undefined;
     _ = try RunCommand.configureEnvForRun(ctx, &this_transpiler, null, true, false);
+    defer this_transpiler.feature_flags.deinit();
 
     var package_json_iter = try FilterArg.PackageFilterIterator.init(ctx.allocator, patterns.items, resolve_root);
     defer package_json_iter.deinit();
@@ -471,7 +473,7 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
             continue;
         }
 
-        const pkgjson = bun.PackageJSON.parse(&this_transpiler.resolver, dirpath, .invalid, null, .include_scripts, .main) orelse {
+        const pkgjson = (try bun.PackageJSON.parse(&this_transpiler.resolver, dirpath, .invalid, null, .include_scripts, .main)) orelse {
             Output.warn("Failed to read package.json\n", .{});
             continue;
         };
@@ -537,11 +539,11 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
         Global.exit(1);
     }
 
-    const event_loop = bun.jsc.MiniEventLoop.initGlobal(ctx.io, this_transpiler.env, null);
+    const event_loop = try bun.MiniEventLoop.initGlobal(ctx.io, this_transpiler.env, null);
     // --no-orphans: register the macOS kqueue parent watch on this MiniEventLoop
     // (the VirtualMachine.init path is never reached for --filter). Linux is
     // already covered by prctl in enable() + linux_pdeathsig on each spawn.
-    bun.ParentDeathWatchdog.installOnEventLoop(bun.jsc.EventLoopHandle.init(event_loop));
+    bun.ParentDeathWatchdog.installOnEventLoop(event_loop.runtimeLoopHandle());
     const shell_bin: [:0]const u8 = if (Environment.isPosix)
         RunCommand.findShell(ctx.io, this_transpiler.env.get("PATH") orelse "", fsinstance.top_level_dir) orelse return error.MissingShell
     else
@@ -566,7 +568,7 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
                 .stdout = if (Environment.isPosix) .buffer else .{ .buffer = bun.new(bun.windows.libuv.Pipe, std.mem.zeroes(bun.windows.libuv.Pipe)) },
                 .stderr = if (Environment.isPosix) .buffer else .{ .buffer = bun.new(bun.windows.libuv.Pipe, std.mem.zeroes(bun.windows.libuv.Pipe)) },
                 .cwd = std.fs.path.dirname(script.package_json_path) orelse "",
-                .windows = if (Environment.isWindows) .{ .loop = bun.jsc.EventLoopHandle.init(event_loop) },
+                .windows = if (Environment.isWindows) .{ .loop = event_loop.parentEventLoop() },
                 .stream = true,
             },
         };

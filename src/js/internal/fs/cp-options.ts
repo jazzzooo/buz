@@ -31,7 +31,7 @@ function validateCpOptions(options) {
   if (options === undefined) return defaults;
   validateObject(options, "options");
 
-  const validated = { __proto__: null, ...defaults, ...options };
+  const validated: any = { ...defaults, ...options, __proto__: null };
   validateBoolean(validated.dereference, "options.dereference");
   validateBoolean(validated.errorOnExist, "options.errorOnExist");
   validateBoolean(validated.force, "options.force");
@@ -44,7 +44,9 @@ function validateCpOptions(options) {
   else validateInteger(validated.mode, "mode", 0, maximumCopyMode);
 
   if (validated.dereference && validated.verbatimSymlinks) {
-    throw $ERR_INCOMPATIBLE_OPTION_PAIR("dereference", "verbatimSymlinks");
+    throw $ERR_INCOMPATIBLE_OPTION_PAIR(
+      'Option "dereference" cannot be used in combination with option "verbatimSymlinks"',
+    );
   }
 
   return validated;

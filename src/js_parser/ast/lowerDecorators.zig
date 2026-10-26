@@ -110,20 +110,12 @@ pub fn LowerDecorators(
             return .{ .kind = .class_static_block, .class_static_block = sb };
         }
 
-        /// Build property access: target.name or target[key].
-        fn memberTarget(p: *P, target_expr: Expr, prop: Property) Expr {
-            const key_expr = prop.key.?;
-            if (prop.flags.contains(.is_computed) or key_expr.data == .e_number) {
-                return p.newExpr(E.Index{ .target = target_expr, .index = key_expr }, key_expr.loc);
-            } else if (key_expr.data == .e_string) {
-                return p.newExpr(E.Dot{
-                    .target = target_expr,
-                    .name = key_expr.data.e_string.data,
-                    .name_loc = key_expr.loc,
-                }, key_expr.loc);
-            } else {
-                return p.newExpr(E.Index{ .target = target_expr, .index = key_expr }, key_expr.loc);
-            }
+        fn accessorStorage(p: *P, key: Expr) Ref {
+            const name = if (key.data == .e_string and key.data.e_string.isIdentifier(p.allocator))
+                bun.handleOom(std.fmt.allocPrint(p.allocator, "_{s}", .{key.data.e_string.slice(p.allocator)}))
+            else
+                "_accessor_storage";
+            return p.generateTempSymbol(name, p.current_scope);
         }
 
         fn initFlag(idx: usize) f64 {
@@ -567,9 +559,6 @@ pub fn LowerDecorators(
                     class_name_ref = expr_class_ref.?;
                     class_name_loc = loc;
                     expr_class_is_anonymous = true;
-                    if (name_from_context) |name| {
-                        class.class_name = .{ .ref = newSym(p, .other, name), .loc = loc };
-                    }
                 }
             } else {
                 class_name_ref = class.class_name.?.ref.?;
@@ -718,7 +707,6 @@ pub fn LowerDecorators(
             var extracted_static_blocks = ListManaged(*G.ClassStaticBlock).init(p.allocator);
             var prefix_stmts = ListManaged(Stmt).init(p.allocator);
             var private_lowered_map = PrivateLoweredMap{};
-            var accessor_storage_counter: usize = 0;
             var emitted_private_adds = std.AutoHashMapUnmanaged(u32, void){};
             var static_private_add_blocks = ListManaged(Property).init(p.allocator);
 
@@ -818,14 +806,7 @@ pub fn LowerDecorators(
                     }
                     // Undecorated auto-accessor → WeakMap + getter/setter
                     if (prop.kind == .auto_accessor) {
-                        const accessor_name = brk: {
-                            if (prop.key.?.data == .e_string)
-                                break :brk std.fmt.allocPrint(p.allocator, "_{s}", .{prop.key.?.data.e_string.data}) catch unreachable;
-                            const name = std.fmt.allocPrint(p.allocator, "_accessor_storage{d}", .{accessor_storage_counter}) catch unreachable;
-                            accessor_storage_counter += 1;
-                            break :brk name;
-                        };
-                        const wm_ref = newSym(p, .other, accessor_name);
+                        const wm_ref = accessorStorage(p, prop.key.?);
                         prefix_stmts.append(varDecl(p, wm_ref, newWeakMapExpr(p, loc), loc)) catch unreachable;
 
                         // Getter: get foo() { return __privateGet(this, _foo); }
@@ -970,14 +951,7 @@ pub fn LowerDecorators(
                     }
                 } else if (k == 4) {
                     // Decorated public auto-accessor → WeakMap
-                    const accessor_name = brk: {
-                        if (key_expr.data == .e_string)
-                            break :brk std.fmt.allocPrint(p.allocator, "_{s}", .{key_expr.data.e_string.data}) catch unreachable;
-                        const name = std.fmt.allocPrint(p.allocator, "_accessor_storage{d}", .{accessor_storage_counter}) catch unreachable;
-                        accessor_storage_counter += 1;
-                        break :brk name;
-                    };
-                    const wm_ref = newSym(p, .other, accessor_name);
+                    const wm_ref = accessorStorage(p, key_expr);
                     private_extra_ref = wm_ref;
                     prefix_stmts.append(varDecl(p, wm_ref, newWeakMapExpr(p, loc), loc)) catch unreachable;
                     dec_arg_count = 6;
@@ -1217,7 +1191,7 @@ pub fn LowerDecorators(
                                     run_init_call,
                                 })) catch unreachable;
                             } else {
-                                const assign_target = memberTarget(p, useRef(p, class_name_ref, class_name_loc), entry.prop);
+                                const assign_target = p.classPropertyTarget(useRef(p, class_name_ref, class_name_loc), entry.prop);
                                 suffix_exprs.append(Expr.assign(assign_target, run_init_call)) catch unreachable;
                             }
 
@@ -1295,7 +1269,7 @@ pub fn LowerDecorators(
                         }, loc)) catch unreachable;
                     } else {
                         constructor_inject_stmts.append(
-                            Stmt.assign(memberTarget(p, p.newExpr(E.This{}, loc), entry.prop), run_init_call),
+                            Stmt.assign(p.classPropertyTarget(p.newExpr(E.This{}, loc), entry.prop), run_init_call),
                         ) catch unreachable;
                     }
 
@@ -1366,6 +1340,14 @@ pub fn LowerDecorators(
                 new_properties.insertSlice(0, static_private_add_blocks.items) catch unreachable;
             }
 
+            if (expr_class_is_anonymous) {
+                new_properties.insert(0, makeStaticBlock(p, callRt(p, loc, "__name", &.{
+                    p.newExpr(E.This{}, loc),
+                    p.newExpr(E.String{ .data = name_from_context orelse "" }, loc),
+                    p.newExpr(E.Boolean{ .value = true }, loc),
+                }), loc)) catch unreachable;
+            }
+
             class.properties = new_properties.items;
             class.has_decorators = false;
             class.should_lower_standard_decorators = false;
@@ -1404,7 +1386,6 @@ pub fn LowerDecorators(
                 // _init = __decoratorStart(...)
                 comma_parts.append(assignTo(p, init_ref, init_start_expr, loc)) catch unreachable;
 
-                // _class = class { ... }
                 comma_parts.append(assignTo(p, expr_class_ref.?, p.newExpr(class.*, loc), loc)) catch unreachable;
 
                 comma_parts.appendSlice(suffix_exprs.items) catch unreachable;

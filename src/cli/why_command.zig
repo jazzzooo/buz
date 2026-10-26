@@ -210,7 +210,7 @@ pub const WhyCommand = struct {
         Output.flush();
     }
 
-    pub fn exec(ctx: Command.Context) !void {
+    pub fn exec(ctx: Context) !void {
         const cli = try PackageManager.CommandLineArguments.parse(ctx.allocator, .why);
         const pm, _ = try PackageManager.init(ctx, cli, PackageManager.Subcommand.why);
 
@@ -230,7 +230,7 @@ pub const WhyCommand = struct {
         return try execWithManager(ctx, pm, cli.positionals[0], cli.top_only);
     }
 
-    pub fn execFromPm(ctx: Command.Context, pm: *PackageManager, positionals: []const string) !void {
+    pub fn execFromPm(ctx: Context, pm: *PackageManager, positionals: []const string) !void {
         if (positionals.len < 2) {
             printUsage();
             Global.exit(1);
@@ -239,9 +239,9 @@ pub const WhyCommand = struct {
         try execWithManager(ctx, pm, positionals[1], pm.options.top_only);
     }
 
-    pub fn execWithManager(ctx: Command.Context, pm: *PackageManager, package_pattern: string, top_only: bool) !void {
-        const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
-        PackageManagerCommand.handleLoadLockfileErrors(load_lockfile, pm);
+    pub fn execWithManager(ctx: Context, pm: *PackageManager, package_pattern: string, top_only: bool) !void {
+        const load_lockfile = pm.lockfile.loadFromCwd(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), ctx.allocator, ctx.log, true);
+        handleLockfileLoadErrors(load_lockfile, pm);
 
         if (top_only) {
             max_depth = 1;
@@ -475,12 +475,12 @@ const string = []const u8;
 
 const std = @import("std");
 const PackageID = @import("../install/install.zig").PackageID;
-const PackageManagerCommand = @import("./package_manager_command.zig").PackageManagerCommand;
+const Context = @import("../options_types/Context.zig").Context;
+const handleLockfileLoadErrors = @import("./lockfile_load_result.zig").handleErrors;
 
 const bun = @import("bun");
 const Global = bun.Global;
 const Output = bun.Output;
 const Semver = bun.Semver;
 const strings = bun.strings;
-const Command = bun.cli.Command;
 const PackageManager = bun.install.PackageManager;

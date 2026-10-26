@@ -5,10 +5,7 @@ matchers: []const Matcher,
 behavior: Behavior,
 
 const Matcher = struct {
-    pattern: union(enum) {
-        match_all,
-        regex: *jsc.RegularExpression,
-    },
+    pattern: []const u8,
     is_exclude: bool,
 };
 
@@ -18,17 +15,9 @@ const Behavior = enum {
     has_exclude_and_include_matchers,
 };
 
-const FromExprError = OOM || error{
-    InvalidRegExp,
-    UnexpectedExpr,
-};
+const FromExprError = OOM || error{UnexpectedExpr};
 
 pub fn fromExpr(allocator: std.mem.Allocator, expr: ast.Expr, log: *logger.Log, source: *const logger.Source) FromExprError!PnpmMatcher {
-    var buf = std.Io.Writer.Allocating.init(allocator);
-    defer buf.deinit();
-
-    bun.jsc.initialize(false);
-
     var matchers: collections.ArrayListDefault(Matcher) = .init();
 
     var has_include = false;
@@ -36,18 +25,8 @@ pub fn fromExpr(allocator: std.mem.Allocator, expr: ast.Expr, log: *logger.Log, 
 
     switch (expr.data) {
         .e_string => {
-            const pattern = expr.data.e_string.slice(allocator);
-            const matcher = createMatcher(pattern, &buf) catch |err| switch (err) {
-                error.OutOfMemory => return err,
-                error.InvalidRegExp => {
-                    try log.addErrorFmtOpts(allocator, "Invalid regex: {s}", .{pattern}, .{
-                        .loc = expr.loc,
-                        .redact_sensitive_information = true,
-                        .source = source,
-                    });
-                    return err;
-                },
-            };
+            const pattern = (try expr.asStringCloned(allocator)).?;
+            const matcher = createMatcher(pattern);
             has_include = has_include or !matcher.is_exclude;
             has_exclude = has_exclude or matcher.is_exclude;
             try matchers.append(matcher);
@@ -55,17 +34,7 @@ pub fn fromExpr(allocator: std.mem.Allocator, expr: ast.Expr, log: *logger.Log, 
         .e_array => |patterns| {
             for (patterns.slice()) |pattern_expr| {
                 if (try pattern_expr.asStringCloned(allocator)) |pattern| {
-                    const matcher = createMatcher(pattern, &buf) catch |err| switch (err) {
-                        error.OutOfMemory => return err,
-                        error.InvalidRegExp => {
-                            try log.addErrorFmtOpts(allocator, "Invalid regex: {s}", .{pattern}, .{
-                                .loc = pattern_expr.loc,
-                                .redact_sensitive_information = true,
-                                .source = source,
-                            });
-                            return err;
-                        },
-                    };
+                    const matcher = createMatcher(pattern);
                     has_include = has_include or !matcher.is_exclude;
                     has_exclude = has_exclude or matcher.is_exclude;
                     try matchers.append(matcher);
@@ -102,12 +71,7 @@ pub fn fromExpr(allocator: std.mem.Allocator, expr: ast.Expr, log: *logger.Log, 
     };
 }
 
-const CreateMatcherError = OOM || error{InvalidRegExp};
-
-fn createMatcher(raw: []const u8, buf: *std.Io.Writer.Allocating) CreateMatcherError!Matcher {
-    buf.clearRetainingCapacity();
-    const writer = &buf.writer;
-
+fn createMatcher(raw: []const u8) Matcher {
     var trimmed = strings.trim(raw, &strings.whitespace_chars);
 
     var is_exclude = false;
@@ -116,23 +80,37 @@ fn createMatcher(raw: []const u8, buf: *std.Io.Writer.Allocating) CreateMatcherE
         trimmed = trimmed[1..];
     }
 
-    if (strings.eqlComptime(trimmed, "*")) {
-        return .{ .pattern = .match_all, .is_exclude = is_exclude };
+    return .{ .pattern = trimmed, .is_exclude = is_exclude };
+}
+
+fn matchesPattern(pattern: []const u8, name: []const u8) bool {
+    var pattern_index: usize = 0;
+    var name_index: usize = 0;
+    var last_star: ?usize = null;
+    var retry_name_index: usize = 0;
+
+    while (name_index < name.len) {
+        if (pattern_index < pattern.len and pattern[pattern_index] != '*' and pattern[pattern_index] == name[name_index]) {
+            pattern_index += 1;
+            name_index += 1;
+        } else if (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+            last_star = pattern_index;
+            pattern_index += 1;
+            retry_name_index = name_index;
+        } else if (last_star) |star_index| {
+            retry_name_index += 1;
+            name_index = retry_name_index;
+            pattern_index = star_index + 1;
+        } else {
+            return false;
+        }
     }
 
-    writer.writeByte('^') catch |e| switch (e) {
-        error.WriteFailed => return error.OutOfMemory, // Writer.Allocating can only fail with OutOfMemory
-    };
-    strings.escapeRegExpForPackageNameMatching(trimmed, writer) catch |e| switch (e) {
-        error.WriteFailed => return error.OutOfMemory, // Writer.Allocating can only fail with OutOfMemory
-    };
-    writer.writeByte('$') catch |e| switch (e) {
-        error.WriteFailed => return error.OutOfMemory, // Writer.Allocating can only fail with OutOfMemory
-    };
+    while (pattern_index < pattern.len and pattern[pattern_index] == '*') {
+        pattern_index += 1;
+    }
 
-    const regex = try jsc.RegularExpression.init(.cloneUTF8(buf.written()), .none);
-
-    return .{ .pattern = .{ .regex = regex }, .is_exclude = is_exclude };
+    return pattern_index == pattern.len;
 }
 
 pub fn isMatch(this: *const PnpmMatcher, name: []const u8) bool {
@@ -140,35 +118,19 @@ pub fn isMatch(this: *const PnpmMatcher, name: []const u8) bool {
         return false;
     }
 
-    const name_str: String = .fromBytes(name);
-
     switch (this.behavior) {
         .all_matchers_include => {
             for (this.matchers) |matcher| {
-                switch (matcher.pattern) {
-                    .match_all => {
-                        return true;
-                    },
-                    .regex => |regex| {
-                        if (regex.matches(name_str)) {
-                            return true;
-                        }
-                    },
+                if (matchesPattern(matcher.pattern, name)) {
+                    return true;
                 }
             }
             return false;
         },
         .all_matchers_exclude => {
             for (this.matchers) |matcher| {
-                switch (matcher.pattern) {
-                    .match_all => {
-                        return false;
-                    },
-                    .regex => |regex| {
-                        if (regex.matches(name_str)) {
-                            return false;
-                        }
-                    },
+                if (matchesPattern(matcher.pattern, name)) {
+                    return false;
                 }
             }
             return true;
@@ -176,15 +138,8 @@ pub fn isMatch(this: *const PnpmMatcher, name: []const u8) bool {
         .has_exclude_and_include_matchers => {
             var matches = false;
             for (this.matchers) |matcher| {
-                switch (matcher.pattern) {
-                    .match_all => {
-                        matches = !matcher.is_exclude;
-                    },
-                    .regex => |regex| {
-                        if (regex.matches(name_str)) {
-                            matches = !matcher.is_exclude;
-                        }
-                    },
+                if (matchesPattern(matcher.pattern, name)) {
+                    matches = !matcher.is_exclude;
                 }
             }
             return matches;
@@ -196,9 +151,7 @@ const std = @import("std");
 
 const bun = @import("bun");
 const OOM = bun.OOM;
-const String = bun.String;
 const ast = bun.ast;
 const collections = bun.collections;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;

@@ -36,7 +36,13 @@ pub fn hash(this: *const Signature) u64 {
     return hasher.final();
 }
 
-pub fn generate(globalObject: *jsc.JSGlobalObject, query: []const u8, array_value: JSValue, columns: JSValue, prepared_statement_id: u64, unnamed: bool) !Signature {
+pub fn generate(
+    query: []const u8,
+    values: *const SQLTypes.BindingValues,
+    columns: ?*const SQLTypes.BindingColumns,
+    prepared_statement_id: u64,
+    unnamed: bool,
+) AnyPostgresError!Signature {
     var fields = std.array_list.Managed(int4).init(bun.default_allocator);
     var name = try std.array_list.Managed(u8).initCapacity(bun.default_allocator, query.len);
 
@@ -47,17 +53,21 @@ pub fn generate(globalObject: *jsc.JSGlobalObject, query: []const u8, array_valu
         name.deinit();
     }
 
-    var iter = try QueryBindingIterator.init(array_value, columns, globalObject);
-
-    while (try iter.next()) |value| {
-        if (value.isEmptyOrUndefinedOrNull()) {
-            // Allow postgres to decide the type
+    if (SQLParameters.count(values, columns) > std.math.maxInt(u16)) return error.TooManyParameters;
+    var hints = try SQLParameters.inferPostgres(values, columns);
+    defer hints.deinit();
+    var iterator = hints.iterator();
+    while (iterator.next()) |hint| {
+        if (hint.value == .null_value) {
             try fields.append(0);
             try name.appendSlice(".null");
             continue;
         }
-
-        const tag = try types.Tag.fromJS(globalObject, value);
+        const tag: types.Tag = switch (hint.value) {
+            .null_value => unreachable,
+            .boolean => .bool,
+            inline else => |kind| @field(types.Tag, @tagName(kind)),
+        };
 
         switch (tag) {
             .int8 => try name.appendSlice(".int8"),
@@ -87,9 +97,6 @@ pub fn generate(globalObject: *jsc.JSGlobalObject, query: []const u8, array_valu
         }
     }
 
-    if (iter.anyFailed()) {
-        return error.InvalidQueryBinding;
-    }
     // max u64 length is 20, max prepared_statement_name length is 63
     const prepared_statement_name = if (unnamed) "" else try std.fmt.allocPrint(bun.default_allocator, "P{s}${d}", .{ name.items[0..@min(40, name.items.len)], prepared_statement_id });
 
@@ -103,10 +110,9 @@ pub fn generate(globalObject: *jsc.JSGlobalObject, query: []const u8, array_valu
 
 const bun = @import("bun");
 const std = @import("std");
-const QueryBindingIterator = @import("../shared/QueryBindingIterator.zig").QueryBindingIterator;
+const SQLParameters = @import("../shared/SQLParameters.zig");
+const SQLTypes = @import("../shared/SQLTypes.zig");
 
 const types = @import("../../sql/postgres/PostgresTypes.zig");
+const AnyPostgresError = @import("../../sql/postgres/AnyPostgresError.zig").AnyPostgresError;
 const int4 = types.int4;
-
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;

@@ -28,13 +28,10 @@
 #pragma once
 
 #include "Event.h"
-#include "JSValueInWrappedObject.h"
+#include "Bindgen/TracedAny.h"
 #include "MessagePort.h"
 #include "SerializedScriptValue.h"
-#include "MessagePort.h"
-// #include "JSMessageEvent.h"
-// #include "ServiceWorker.h"
-// #include "WindowProxy.h"
+#include <optional>
 #include <variant>
 
 namespace WebCore {
@@ -47,14 +44,20 @@ class MessageEvent final : public Event {
 public:
     struct JSValueTag {
     };
-    using DataType = std::variant<JSValueTag, Ref<SerializedScriptValue>, String, Ref<Blob>, Ref<ArrayBuffer>>;
+    struct NodeBufferData {
+        Ref<ArrayBuffer> buffer;
+    };
+    struct JSONData {
+        String text;
+    };
+    using DataType = std::variant<JSValueTag, Ref<SerializedScriptValue>, String, Ref<Blob>, Ref<ArrayBuffer>, NodeBufferData, JSONData>;
     static Ref<MessageEvent> create(const AtomString& type, DataType&&, const String& origin = {}, const String& lastEventId = {}, RefPtr<MessagePort>&& = nullptr, Vector<RefPtr<MessagePort>>&& = {});
     static Ref<MessageEvent> create(DataType&&, const String& origin = {}, const String& lastEventId = {}, RefPtr<MessagePort>&& = nullptr, Vector<RefPtr<MessagePort>>&& = {});
 
     static Ref<MessageEvent> createForBindings();
 
     struct Init : EventInit {
-        JSC::JSValue data;
+        std::optional<Bun::Bindgen::CppAny> data;
         String origin;
         String lastEventId;
         RefPtr<MessagePort> source;
@@ -63,17 +66,31 @@ public:
     static Ref<MessageEvent> create(const AtomString& type, Init&&, IsTrusted = IsTrusted::No);
 
     struct MessageEventWithStrongData {
+        MessageEventWithStrongData(Ref<MessageEvent>&& value, JSC::VM& vm, JSC::JSObject* wrapper)
+            : event(WTF::move(value))
+            , strongWrapper(vm, wrapper)
+        {
+        }
+
+        MessageEventWithStrongData(const MessageEventWithStrongData&) = delete;
+        MessageEventWithStrongData& operator=(const MessageEventWithStrongData&) = delete;
+        MessageEventWithStrongData(MessageEventWithStrongData&& other) noexcept
+            : event(WTF::move(other.event))
+        {
+            strongWrapper.swap(other.strongWrapper);
+        }
+
         Ref<MessageEvent> event;
         JSC::Strong<JSC::JSObject> strongWrapper; // Keep the wrapper alive until the event is fired, since it is what keeps `data` alive.
     };
 
-    static MessageEventWithStrongData create(JSC::JSGlobalObject&, Ref<SerializedScriptValue>&&, const String& origin = {}, const String& lastEventId = {}, RefPtr<MessagePort>&& = nullptr, Vector<RefPtr<MessagePort>>&& = {});
+    static std::optional<MessageEventWithStrongData> create(JSC::JSGlobalObject&, Ref<SerializedScriptValue>&&, const String& origin = {}, const String& lastEventId = {}, RefPtr<MessagePort>&& = nullptr, Vector<RefPtr<MessagePort>>&& = {});
 
-    static MessageEventWithStrongData create(JSC::JSGlobalObject&, Ref<SerializedScriptValue>&&, RefPtr<MessagePort>&& = nullptr, Vector<RefPtr<MessagePort>>&& = {});
+    static std::optional<MessageEventWithStrongData> create(JSC::JSGlobalObject&, Ref<SerializedScriptValue>&&, RefPtr<MessagePort>&& = nullptr, Vector<RefPtr<MessagePort>>&& = {});
 
     virtual ~MessageEvent();
 
-    void initMessageEvent(const AtomString& type, bool canBubble, bool cancelable, JSC::JSValue data, const String& origin, const String& lastEventId, RefPtr<MessagePort>&&, Vector<RefPtr<MessagePort>>&&);
+    void initMessageEvent(JSC::VM&, const AtomString& type, bool canBubble, bool cancelable, Bun::Bindgen::CppAny data, const String& origin, const String& lastEventId, RefPtr<MessagePort>&&, Vector<RefPtr<MessagePort>>&&);
 
     const String& origin() const { return m_origin; }
     const String& lastEventId() const { return m_lastEventId; }
@@ -82,9 +99,8 @@ public:
 
     const DataType& data() const { return m_data; }
 
-    JSValueInWrappedObject& jsData() { return m_jsData; }
-    JSValueInWrappedObject& cachedData() { return m_cachedData; }
-    JSValueInWrappedObject& cachedPorts() { return m_cachedPorts; }
+    const Bun::Bindgen::CppTracedAny& jsData() const { return m_jsData; }
+    template<typename Visitor> void visitPorts(Visitor&) const;
 
     size_t memoryCost() const;
 
@@ -99,9 +115,7 @@ private:
     RefPtr<MessagePort> m_source;
     Vector<RefPtr<MessagePort>> m_ports;
 
-    JSValueInWrappedObject m_jsData;
-    JSValueInWrappedObject m_cachedData;
-    JSValueInWrappedObject m_cachedPorts;
+    Bun::Bindgen::CppTracedAny m_jsData;
 
     mutable Lock m_concurrentDataAccessLock;
 };

@@ -17,7 +17,8 @@ pub fn main(init: std.process.Init) !void {
     const compressed = try allocator.alloc(u8, ZSTD_compressBound(input.len));
     const compressed_len = ZSTD_compress(compressed.ptr, compressed.len, input.ptr, input.len, compression_level);
     if (ZSTD_isError(compressed_len) != 0) {
-        std.log.err("zstd compression failed: {s}", .{ZSTD_getErrorName(compressed_len)});
+        var stderr = std.Io.File.stderr().writer(init.io, &.{});
+        stderr.interface.print("error: zstd compression failed: {s}\n", .{ZSTD_getErrorName(compressed_len)}) catch {};
         return error.CompressionFailed;
     }
 

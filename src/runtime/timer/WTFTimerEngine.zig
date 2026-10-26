@@ -1,0 +1,182 @@
+/// This is WTF::RunLoop::TimerBase from WebKit
+pub const RunLoopTimer = opaque {
+    pub fn fire(this: *RunLoopTimer) void {
+        bun.bindgen.Engine(WTFTimerFireSchema).call(.{ .timer = @ptrCast(this) });
+    }
+};
+
+/// A timer created by WTF code and invoked by Bun's event loop
+const WTFTimer = @This();
+
+vm: *VirtualMachine,
+run_loop_timer: *RunLoopTimer,
+event_loop_timer: EventLoopTimer,
+imminent: *std.atomic.Value(?*WTFTimer),
+repeat: bool,
+lock: std.Io.Mutex = .init,
+script_execution_context_id: ScriptExecutionContext.Identifier,
+
+const new = bun.TrivialNew(WTFTimer);
+
+pub fn run(this: *WTFTimer, vm: *VirtualMachine) void {
+    if (this.event_loop_timer.state == .ACTIVE) {
+        vm.timer.remove(&this.event_loop_timer);
+    }
+    this.runWithoutRemoving();
+}
+
+inline fn runWithoutRemoving(this: *const WTFTimer) void {
+    this.run_loop_timer.fire();
+}
+
+pub fn update(this: *WTFTimer, seconds: f64, repeat: bool) void {
+    // There's only one of these per VM, and each VM has its own imminent_gc_timer
+    // Only set imminent if it's not already set to avoid overwriting another timer
+    if (!(seconds > 0)) {
+        _ = this.imminent.cmpxchgStrong(null, this, .seq_cst, .seq_cst);
+        return;
+    }
+    // Clear imminent if this timer was the one that set it
+    _ = this.imminent.cmpxchgStrong(this, null, .seq_cst, .seq_cst);
+
+    // seconds can be +inf: JSC's GC scheduler divides by gcTimeSlice, which is 0 whenever
+    // bytes*deathRate truncates to 0. Other WTF::RunLoop backends saturate Seconds→int;
+    // do the same so @intFromFloat below can't panic.
+    const clamped = @min(seconds, @as(f64, std.math.maxInt(i32)));
+
+    const modf = std.math.modf(clamped);
+    var interval = bun.timespec.now(.force_real_time);
+    interval.sec += @intFromFloat(modf.ipart);
+    interval.nsec += @intFromFloat(modf.fpart * std.time.ns_per_s);
+    if (interval.nsec >= std.time.ns_per_s) {
+        interval.sec += 1;
+        interval.nsec -= std.time.ns_per_s;
+    }
+
+    this.vm.timer.update(&this.event_loop_timer, &interval);
+    this.repeat = repeat;
+}
+
+pub fn cancel(this: *WTFTimer) void {
+    this.lock.lockUncancelable(this.vm.io);
+    defer this.lock.unlock(this.vm.io);
+
+    if (bun.bindgen.Engine(ScriptExecutionContextExistsSchema).call(.{
+        .identifier = @backingInt(this.script_execution_context_id),
+    })) {
+        // Only clear imminent if this timer was the one that set it
+        _ = this.imminent.cmpxchgStrong(this, null, .seq_cst, .seq_cst);
+
+        if (this.event_loop_timer.state == .ACTIVE) {
+            this.vm.timer.remove(&this.event_loop_timer);
+        }
+    }
+}
+
+pub fn fire(this: *WTFTimer, _: *const bun.timespec, _: *VirtualMachine) void {
+    this.event_loop_timer.state = .FIRED;
+    // Only clear imminent if this timer was the one that set it
+    _ = this.imminent.cmpxchgStrong(this, null, .seq_cst, .seq_cst);
+    this.runWithoutRemoving();
+}
+
+pub fn deinit(this: *WTFTimer) void {
+    this.cancel();
+    bun.destroy(this);
+}
+
+fn bindCreate(args: bun.bindgen.Args(WTFTimerCreateSchema)) bun.bindgen.Return(WTFTimerCreateSchema) {
+    if (VirtualMachine.is_bundler_thread_for_bytecode_cache) {
+        return null;
+    }
+
+    const vm = VirtualMachine.get();
+
+    const this = WTFTimer.new(.{
+        .vm = vm,
+        .imminent = &vm.eventLoop().imminent_gc_timer,
+        .event_loop_timer = .{
+            .next = .{
+                .sec = std.math.maxInt(i64),
+                .nsec = 0,
+            },
+            .tag = .WTFTimer,
+            .state = .CANCELLED,
+        },
+        .run_loop_timer = args.timer,
+        .repeat = false,
+        .script_execution_context_id = @fromBackingInt(@intCast(vm.initial_script_execution_context_identifier)),
+    });
+
+    return this;
+}
+
+fn bindUpdate(args: bun.bindgen.Args(WTFTimerUpdateSchema)) bun.bindgen.Return(WTFTimerUpdateSchema) {
+    args.timer.update(args.seconds, args.repeat);
+}
+
+fn bindDestroy(args: bun.bindgen.Args(WTFTimerDestroySchema)) bun.bindgen.Return(WTFTimerDestroySchema) {
+    args.timer.deinit();
+}
+
+fn bindIsActive(args: bun.bindgen.Args(WTFTimerIsActiveSchema)) bun.bindgen.Return(WTFTimerIsActiveSchema) {
+    const this = args.timer;
+    return this.event_loop_timer.state == .ACTIVE or (this.imminent.load(.seq_cst) orelse return false) == this;
+}
+
+fn bindCancel(args: bun.bindgen.Args(WTFTimerCancelSchema)) bun.bindgen.Return(WTFTimerCancelSchema) {
+    args.timer.cancel();
+}
+
+fn bindSecondsUntilFire(args: bun.bindgen.Args(WTFTimerSecondsUntilFireSchema)) bun.bindgen.Return(WTFTimerSecondsUntilFireSchema) {
+    const this = args.timer;
+    this.lock.lockUncancelable(this.vm.io);
+    defer this.lock.unlock(this.vm.io);
+    if (this.event_loop_timer.state == .ACTIVE) {
+        const until = this.event_loop_timer.next.duration(&bun.timespec.now(.force_real_time));
+        const sec: f64, const nsec: f64 = .{ @floatFromInt(until.sec), @floatFromInt(until.nsec) };
+        return sec + nsec / std.time.ns_per_s;
+    }
+    return std.math.inf(f64);
+}
+
+fn bindThisThreadHasVM(args: bun.bindgen.Args(WTFTimerThisThreadHasVMSchema)) bun.bindgen.Return(WTFTimerThisThreadHasVMSchema) {
+    _ = args;
+    return VirtualMachine.VMHolder.vm != null;
+}
+
+comptime {
+    _ = WTFTimerCreateBinding;
+    _ = WTFTimerUpdateBinding;
+    _ = WTFTimerDestroyBinding;
+    _ = WTFTimerIsActiveBinding;
+    _ = WTFTimerCancelBinding;
+    _ = WTFTimerSecondsUntilFireBinding;
+    _ = WTFTimerThisThreadHasVMBinding;
+}
+
+const std = @import("std");
+
+const bun = @import("bun");
+const ScriptExecutionContext = @import("../webcore/ScriptExecutionContext.zig");
+const jsc = bun.jsc;
+const EventLoopTimer = bun.api.Timer.EventLoopTimer;
+
+const VirtualMachine = jsc.VirtualMachine;
+const WTFTimerBindings = bun.bindgen.Module("WTFTimer");
+const ScriptExecutionContextExistsSchema = bun.bindgen.Module("global_objects").engineShim("scriptExecutionContextExists");
+const WTFTimerFireSchema = WTFTimerBindings.engineShim("wtfTimerFire");
+const WTFTimerCreateSchema = WTFTimerBindings.nativeExport("wtfTimerCreate");
+const WTFTimerUpdateSchema = WTFTimerBindings.nativeExport("wtfTimerUpdate");
+const WTFTimerDestroySchema = WTFTimerBindings.nativeExport("wtfTimerDestroy");
+const WTFTimerIsActiveSchema = WTFTimerBindings.nativeExport("wtfTimerIsActive");
+const WTFTimerCancelSchema = WTFTimerBindings.nativeExport("wtfTimerCancel");
+const WTFTimerSecondsUntilFireSchema = WTFTimerBindings.nativeExport("wtfTimerSecondsUntilFire");
+const WTFTimerThisThreadHasVMSchema = WTFTimerBindings.nativeExport("wtfTimerThisThreadHasVM");
+const WTFTimerCreateBinding = bun.bindgen.Fn(WTFTimerCreateSchema, bindCreate);
+const WTFTimerUpdateBinding = bun.bindgen.Fn(WTFTimerUpdateSchema, bindUpdate);
+const WTFTimerDestroyBinding = bun.bindgen.Fn(WTFTimerDestroySchema, bindDestroy);
+const WTFTimerIsActiveBinding = bun.bindgen.Fn(WTFTimerIsActiveSchema, bindIsActive);
+const WTFTimerCancelBinding = bun.bindgen.Fn(WTFTimerCancelSchema, bindCancel);
+const WTFTimerSecondsUntilFireBinding = bun.bindgen.Fn(WTFTimerSecondsUntilFireSchema, bindSecondsUntilFire);
+const WTFTimerThisThreadHasVMBinding = bun.bindgen.Fn(WTFTimerThisThreadHasVMSchema, bindThisThreadHasVM);

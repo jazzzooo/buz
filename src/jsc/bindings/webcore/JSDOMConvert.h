@@ -25,26 +25,7 @@
 
 #pragma once
 
-#include "JSDOMConvertAny.h"
 #include "JSDOMConvertBoolean.h"
-#include "JSDOMConvertBufferSource.h"
-#include "JSDOMConvertCallbacks.h"
-#include "JSDOMConvertDate.h"
-#include "JSDOMConvertDictionary.h"
-#include "JSDOMConvertEnumeration.h"
-#include "JSDOMConvertEventListener.h"
-#include "JSDOMConvertInterface.h"
-#include "JSDOMConvertJSON.h"
-#include "JSDOMConvertNull.h"
-#include "JSDOMConvertNullable.h"
 #include "JSDOMConvertNumbers.h"
-#include "JSDOMConvertObject.h"
-#include "JSDOMConvertOptional.h"
-#include "JSDOMConvertRecord.h"
-#include "JSDOMConvertSequences.h"
-#include "JSDOMConvertSerializedScriptValue.h"
 #include "JSDOMConvertStrings.h"
-#include "JSDOMConvertUnion.h"
-#include "JSDOMConvertWebGL.h"
 
-#include "JSDOMConvertBufferSource+JSBuffer.h"

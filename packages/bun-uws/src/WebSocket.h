@@ -34,8 +34,8 @@ struct WebSocket : AsyncSocket<SSL> {
 private:
     typedef AsyncSocket<SSL> Super;
 
-    void *init(bool perMessageDeflate, CompressOptions compressOptions, BackPressure &&backpressure, void *socketData, WebSocketData::OnSocketClosedCallback onSocketClosed) {
-        new (us_socket_ext((us_socket_t *) this)) WebSocketData(perMessageDeflate, compressOptions, std::move(backpressure), socketData, onSocketClosed);
+    void *init(PreparedWebSocketUpgrade &&prepared, BackPressure &&backpressure, void *socketData, WebSocketData::OnSocketClosedCallback onSocketClosed) {
+        new (us_socket_ext((us_socket_t *) this)) WebSocketData(std::move(prepared), std::move(backpressure), socketData, onSocketClosed);
         return this;
     }
 
@@ -79,7 +79,8 @@ public:
     enum SendStatus : int {
         BACKPRESSURE,
         SUCCESS,
-        DROPPED
+        DROPPED,
+        OUT_OF_MEMORY
     };
 
     size_t memoryCost() {
@@ -103,6 +104,7 @@ public:
     /* Send or buffer a WebSocket frame, compressed or not. Returns BACKPRESSURE on increased user space backpressure,
      * DROPPED on dropped message (due to backpressure) or SUCCCESS if you are free to send even more now. */
     SendStatus send(std::string_view message, OpCode opCode = OpCode::BINARY, bool compress = false, bool fin = true) {
+        if (us_socket_is_closed(reinterpret_cast<us_socket_t *>(this))) return DROPPED;
         WebSocketContextData<SSL, USERDATA> *webSocketContextData = getContextData();
 
         /* Skip sending and report success if we are over the limit of maxBackpressure */
@@ -120,18 +122,20 @@ public:
         /* Special path for long sends of non-compressed, non-SSL messages */
         int ourCorkSlot = Super::getLoopData()->findCorkSlot(this);
         bool corkBufferEmpty = ourCorkSlot == LoopData::INVALID_CORK_SLOT || Super::getLoopData()->getCorkSlot(ourCorkSlot)->offset == 0;
-        if (message.length() >= 16 * 1024 && !compress && !SSL && !webSocketData->subscriber && getBufferedAmount() == 0 && corkBufferEmpty) {
+        if (message.length() >= 16 * 1024 && message.length() <= static_cast<size_t>(INT_MAX - 10) &&
+            !compress && !SSL && !webSocketData->subscriber && getBufferedAmount() == 0 && corkBufferEmpty) {
             char header[10];
             int header_length = (int) protocol::formatMessage<isServer>(header, "", 0, opCode, message.length(), compress, fin);
+            if (!webSocketData->buffer.tryReserve(message.length() + static_cast<size_t>(header_length))) return OUT_OF_MEMORY;
             int written = us_socket_write2((struct us_socket_t *)this, header, header_length, message.data(), (int) message.length());
 
             if (written != header_length + (int) message.length()) {
                 /* Buffer up backpressure */
                 if (written > header_length) {
-                    webSocketData->buffer.append(message.data() + written - header_length, message.length() - (size_t) (written - header_length));
+                    webSocketData->buffer.appendAssumeCapacity(message.data() + written - header_length, message.length() - (size_t) (written - header_length));
                 } else {
-                    webSocketData->buffer.append(header + written, (size_t) header_length - (size_t) written);
-                    webSocketData->buffer.append(message.data(), message.length());
+                    webSocketData->buffer.appendAssumeCapacity(header + written, (size_t) header_length - (size_t) written);
+                    webSocketData->buffer.appendAssumeCapacity(message.data(), message.length());
                 }
                 /* We cannot still be corked if we have backpressure.
                  * We also cannot uncork normally since it will re-write the already buffered
@@ -139,6 +143,7 @@ public:
                 Super::uncorkWithoutSending();
                 return BACKPRESSURE;
             }
+            webSocketData->buffer.clear();
         } else {
 
             if (webSocketData->subscriber) {
@@ -165,23 +170,20 @@ public:
             }
 
             /* Get size, allocate size, write if needed */
+            if (message.length() > static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()) - 10) return OUT_OF_MEMORY;
             size_t messageFrameSize = protocol::messageFrameSize(message.length());
-            auto [sendBuffer, sendBufferAttribute] = Super::getSendBuffer(messageFrameSize);
+            auto preparedBuffer = Super::getSendBuffer(messageFrameSize);
+            if (!preparedBuffer) return OUT_OF_MEMORY;
+            auto [sendBuffer, sendBufferAttribute] = *preparedBuffer;
             protocol::formatMessage<isServer>(sendBuffer, message.data(), message.length(), opCode, message.length(), compress, fin);
 
             /* Depending on size of message we have different paths */
             if (sendBufferAttribute == SendBufferAttribute::NEEDS_DRAIN) {
-                /* This is a drain */
-                auto[written, failed] = Super::write(nullptr, 0);
-                if (failed) {
-                    /* Return false for failure, skipping to reset the timeout below */
-                    return BACKPRESSURE;
-                }
-            } else if (sendBufferAttribute == SendBufferAttribute::NEEDS_UNCORK) {
-                /* Uncork if we came here uncorked */
-                auto [written, failed] = Super::uncork();
-                if (failed) {
-                    return BACKPRESSURE;
+                switch (Super::write(nullptr, 0).status) {
+                case WriteStatus::Complete: break;
+                case WriteStatus::Backpressure: return BACKPRESSURE;
+                case WriteStatus::OutOfMemory: return OUT_OF_MEMORY;
+                case WriteStatus::Closed: return DROPPED;
                 }
             }
 
@@ -198,13 +200,14 @@ public:
         return SUCCESS;
     }
 
-    /* Send websocket close frame, emit close event, send FIN if successful.
-     * Will not append a close reason if code is 0 or 1005. */
-    void end(int code = 0, std::string_view message = {}) {
+    /* Allocation failure terminates the connection and returns false.
+     * Codes 0 and 1005 omit the close reason. */
+    [[nodiscard]] bool end(int code = 0, std::string_view message = {}) {
+        if (us_socket_is_closed(reinterpret_cast<us_socket_t *>(this))) return true;
         /* Check if we already called this one */
         WebSocketData *webSocketData = (WebSocketData *) us_socket_ext((us_socket_t *) this);
         if (webSocketData->isShuttingDown) {
-            return;
+            return true;
         }
 
         /* We postpone any FIN sending to either drainage or uncorking */
@@ -213,13 +216,21 @@ public:
         /* Format and send the close frame */
         static const int MAX_CLOSE_PAYLOAD = 123;
         size_t length = std::min<size_t>(MAX_CLOSE_PAYLOAD, message.length());
+        while (length && length < message.length() && (static_cast<unsigned char>(message[length]) & 0xc0) == 0x80) length--;
         char closePayload[MAX_CLOSE_PAYLOAD + 2];
         size_t closePayloadLength = protocol::formatClosePayload(closePayload, (uint16_t) code, message.data(), length);
-        bool ok = send(std::string_view(closePayload, closePayloadLength), OpCode::CLOSE);
+        const auto status = send(std::string_view(closePayload, closePayloadLength), OpCode::CLOSE);
+        if (us_socket_is_closed(reinterpret_cast<us_socket_t *>(this))) return status != OUT_OF_MEMORY;
+        if (status == OUT_OF_MEMORY || status == DROPPED) {
+            webSocketData->isShuttingDown = false;
+            if (status == OUT_OF_MEMORY) Super::closeOnOutOfMemory();
+            else Super::close();
+            return status != OUT_OF_MEMORY;
+        }
 
         /* FIN if we are ok and not corked */
         if (!this->isCorked()) {
-            if (ok) {
+            if (status == SUCCESS) {
                 /* If we are not corked, and we just sent off everything, we need to FIN right here.
                  * In all other cases, we need to fin either if uncork was successful, or when drainage is complete. */
                 this->shutdown();
@@ -246,22 +257,24 @@ public:
         if (webSocketContextData->closeHandler) {
             webSocketContextData->closeHandler(this, code, message);
         }
+        return true;
     }
 
     /* Corks the response if possible. Leaves already corked socket be. */
-    void cork(MoveOnlyFunction<void()> &&handler) {
+    [[nodiscard]] WriteStatus cork(MoveOnlyFunction<void()> &&handler) {
+        if (us_socket_is_closed(reinterpret_cast<us_socket_t *>(this))) {
+            handler();
+            return WriteStatus::Closed;
+        }
         if (!Super::isCorked()) {
             Super::cork();
             handler();
 
-            /* There is no timeout when failing to uncork for WebSockets,
-             * as that is handled by idleTimeout */
-            auto [written, failed] = Super::uncork();
-            (void)written;
-            (void)failed;
+            return Super::uncork().status;
         } else {
             /* We are already corked, or can't cork so let's just call the handler */
             handler();
+            return us_socket_is_closed(reinterpret_cast<us_socket_t *>(this)) ? WriteStatus::Closed : WriteStatus::Complete;
         }
     }
 

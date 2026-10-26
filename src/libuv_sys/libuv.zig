@@ -774,9 +774,14 @@ pub const Loop = extern struct {
     threadlocal var threadlocal_loop: ?*Loop = null;
 
     pub fn get() *Loop {
+        return ensure() catch |err| std.debug.panic("Failed to initialize libuv loop: {s}", .{@errorName(err)});
+    }
+
+    pub fn ensure() anyerror!*Loop {
         if (threadlocal_loop) |loop| return loop;
         if (bun.windows.libuv.Loop.init(&threadlocal_loop_data)) |e| {
-            std.debug.panic("Failed to initialize libuv loop: {s}", .{@tagName(e)});
+            if (e == .NOMEM) return error.OutOfMemory;
+            return bun.sys.Error.fromCode(e, .poll).toZigErr();
         }
         threadlocal_loop = &threadlocal_loop_data;
         return &threadlocal_loop_data;

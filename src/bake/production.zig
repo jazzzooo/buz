@@ -37,7 +37,23 @@ pub fn buildCommand(ctx: bun.cli.Command.Context) !void {
         .args = ctx.args,
         .smol = ctx.runtime_options.smol,
     });
-    defer vm.deinit();
+    vm.arena = &arena;
+    const build_result = configureAndBuild(ctx, cwd, vm);
+    {
+        const api_lock = vm.jsc_vm.getAPILock();
+        defer api_lock.release();
+        if (build_result) |_| {} else |_| {
+            if (vm.exit_handler.exit_code == 0) vm.exit_handler.exit_code = 1;
+        }
+        vm.onExit();
+    }
+    const exit_code = vm.exit_handler.exit_code;
+    if (!vm.destructOnExit()) bun.Global.exitWithoutCleanup(exit_code);
+    try build_result;
+    if (exit_code != 0) bun.Global.exit(exit_code);
+}
+
+fn configureAndBuild(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMachine) !void {
     // A special global object is used to allow registering virtual modules
     // that bypass Bun's normal module resolver and plugin system.
     vm.regular_event_loop.global = vm.global;
@@ -45,8 +61,6 @@ pub fn buildCommand(ctx: bun.cli.Command.Context) !void {
     const b = &vm.transpiler;
     vm.preload = ctx.preloads;
     vm.argv = ctx.passthrough;
-    vm.arena = &arena;
-    vm.allocator = arena.allocator();
     b.options.install = ctx.install;
     b.resolver.opts.install = ctx.install;
     b.resolver.opts.global_cache = ctx.debug.global_cache;
@@ -93,20 +107,21 @@ pub fn buildCommand(ctx: bun.cli.Command.Context) !void {
 
         .vm = vm,
         .loaded_files = .{},
-        .all_server_files = null,
     };
     defer pt.deinit();
 
     buildWithVm(ctx, cwd, vm, &pt) catch |err| switch (err) {
-        error.JSError => |e| {
+        error.JSError => {
             bun.handleErrorReturnTrace(err, @errorReturnTrace());
-            const err_value = vm.global.takeException(e);
-            vm.printErrorLikeObjectToConsole(err_value.toError() orelse err_value);
+            {
+                var scope: bun.bindgen.FocusedEngineScope = undefined;
+                scope.init(vm.global);
+                defer scope.deinit();
+                if (!scope.runPendingErrorHandler()) @panic("build failed without a pending exception");
+            }
             if (vm.exit_handler.exit_code == 0) {
                 vm.exit_handler.exit_code = 1;
             }
-            vm.onExit();
-            vm.globalExit();
         },
         else => |e| return e,
     };
@@ -171,57 +186,20 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         bun.Global.crash();
     };
 
-    const config_entry_point_string = bun.String.cloneUTF8(config_entry_point.pathConst().?.text);
+    var config_entry_point_name = try bun.bindgen.DOMString.fromUTF8(config_entry_point.pathConst().?.text);
+    const config_entry_point_string = config_entry_point_name.takeBunString();
     defer config_entry_point_string.deref();
 
-    const config_promise = bun.jsc.JSModuleLoader.loadAndEvaluateModule(global, &config_entry_point_string) orelse {
-        bun.assert(global.hasException());
-        return error.JSError;
-    };
-
-    config_promise.setHandled();
-    vm.waitForPromise(.{ .internal = config_promise });
-    var options = switch (config_promise.unwrap(vm.jsc_vm, .mark_handled)) {
-        .pending => unreachable,
-        .fulfilled => config: {
-            const default = BakeGetDefaultExportFromModule(vm.global, try config_entry_point_string.toJS(vm.global));
-
-            if (!default.isObject()) {
-                return global.throwInvalidArguments(
-                    \\Your config file's default export must be an object.
-                    \\
-                    \\Example:
-                    \\  export default {
-                    \\    app: {
-                    \\      framework: "react",
-                    \\    }
-                    \\  }
-                    \\
-                    \\Learn more at https://bun.com/docs/ssg
-                , .{});
-            }
-
-            const app = try default.get(vm.global, "app") orelse {
-                return global.throwInvalidArguments(
-                    \\Your config file's default export must contain an "app" property.
-                    \\
-                    \\Example:
-                    \\  export default {
-                    \\    app: {
-                    \\      framework: "react",
-                    \\    }
-                    \\  }
-                    \\
-                    \\Learn more at https://bun.com/docs/ssg
-                , .{});
-            };
-
-            break :config try bake.UserOptions.fromJS(app, vm.global);
-        },
-        .rejected => |err| {
-            return global.throwValue(err.toError() orelse err);
-        },
-    };
+    try loadModule(global, &config_entry_point_string);
+    var default = try bakeGetDefaultExportFromModule(vm.global, &config_entry_point_string);
+    defer default.deinit();
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(global);
+    defer engine_scope.deinit();
+    const options_ref = try engine_scope.engine(BakeAppOptionsCreateFromModuleDefaultSchema).call(.{
+        .moduleDefault = default.operand(&engine_scope).asEngine(),
+    });
+    const options = options_ref.get(bake.BakeAppOptions).options.get();
 
     const framework = &options.framework;
 
@@ -238,10 +216,10 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     var client_transpiler: bun.transpiler.Transpiler = undefined;
     var server_transpiler: bun.transpiler.Transpiler = undefined;
     var ssr_transpiler: bun.transpiler.Transpiler = undefined;
-    try framework.initTranspilerWithOptions(allocator, vm.io, vm.log, .production_static, .server, &server_transpiler, &options.bundler_options.server, bun.options.SourceMapOption.fromApi(options.bundler_options.server.source_map), options.bundler_options.server.minify_whitespace, options.bundler_options.server.minify_syntax, options.bundler_options.server.minify_identifiers);
-    try framework.initTranspilerWithOptions(allocator, vm.io, vm.log, .production_static, .client, &client_transpiler, &options.bundler_options.client, bun.options.SourceMapOption.fromApi(options.bundler_options.client.source_map), options.bundler_options.client.minify_whitespace, options.bundler_options.client.minify_syntax, options.bundler_options.client.minify_identifiers);
+    try bake.FrameworkTranspilerEngine.initWithOptions(framework, allocator, vm.io, vm.log, .production_static, .server, &server_transpiler, &options.bundler_options.server, bun.options.SourceMapOption.fromApi(options.bundler_options.server.source_map), options.bundler_options.server.minify_whitespace, options.bundler_options.server.minify_syntax, options.bundler_options.server.minify_identifiers);
+    try bake.FrameworkTranspilerEngine.initWithOptions(framework, allocator, vm.io, vm.log, .production_static, .client, &client_transpiler, &options.bundler_options.client, bun.options.SourceMapOption.fromApi(options.bundler_options.client.source_map), options.bundler_options.client.minify_whitespace, options.bundler_options.client.minify_syntax, options.bundler_options.client.minify_identifiers);
     if (separate_ssr_graph) {
-        try framework.initTranspilerWithOptions(allocator, vm.io, vm.log, .production_static, .ssr, &ssr_transpiler, &options.bundler_options.ssr, bun.options.SourceMapOption.fromApi(options.bundler_options.ssr.source_map), options.bundler_options.ssr.minify_whitespace, options.bundler_options.ssr.minify_syntax, options.bundler_options.ssr.minify_identifiers);
+        try bake.FrameworkTranspilerEngine.initWithOptions(framework, allocator, vm.io, vm.log, .production_static, .ssr, &ssr_transpiler, &options.bundler_options.ssr, bun.options.SourceMapOption.fromApi(options.bundler_options.ssr.source_map), options.bundler_options.ssr.minify_whitespace, options.bundler_options.ssr.minify_syntax, options.bundler_options.ssr.minify_identifiers);
     }
 
     if (ctx.bundler_options.bake_debug_disable_minify) {
@@ -302,15 +280,19 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
                 (try entry_points.getOrPutEntryPoint(client, .client)).toOptional()
             else
                 .none,
-            .server_file_string = .empty,
+            .server_file_string = null,
         });
     }
 
     var router = try FrameworkRouter.initEmpty(cwd, router_types.items, allocator);
+    var router_context: ProductionRouterContext = .{
+        .entry_points = &entry_points,
+        .route_styles = options.route_styles,
+    };
     try router.scanAll(
         allocator,
         &server_transpiler.resolver,
-        FrameworkRouter.InsertionContext.wrap(EntryPointMap, &entry_points),
+        FrameworkRouter.InsertionContext.wrap(ProductionRouterContext, &router_context),
     );
 
     const bundled_outputs_list = try bun.BundleV2.generateFromBakeProductionCLI(
@@ -320,10 +302,11 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
             .framework = framework.*,
             .client_transpiler = &client_transpiler,
             .ssr_transpiler = if (separate_ssr_graph) &ssr_transpiler else &server_transpiler,
-            .plugins = options.bundler_options.plugin,
+            .plugin_host = if (options.bundler_options.plugin) |plugin| plugin.host() else null,
         },
         allocator,
-        .{ .js = vm.event_loop },
+        BundlerEngine.forEventLoop(vm.event_loop),
+        BundlerEngine.bytecode_generator,
     );
     const bundled_outputs = bundled_outputs_list.items;
     if (bundled_outputs.len == 0) {
@@ -420,7 +403,8 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
                         if (file.entry_point_index) |entry_point_index| {
                             if (entry_point_index < module_keys.len) {
                                 var str = try bun.String.createFormat("bake:/{s}", .{without_prefix});
-                                str.toThreadSafe();
+                                errdefer str.deref();
+                                try str.toThreadSafe();
                                 module_keys[entry_point_index] = str;
                             }
                         }
@@ -483,31 +467,25 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     pt.* = try PerThread.init(vm, per_thread_options);
     pt.attach();
 
-    // Static site generator
-    const server_render_funcs = try jsc.JSArray.createEmpty(global, router.types.len);
-    const server_param_funcs = try jsc.JSArray.createEmpty(global, router.types.len);
-    const client_entry_urls = try jsc.JSArray.createEmpty(global, router.types.len);
-
+    const router_type_data = try allocator.alloc(BakeProductionRouterTypeData, router.types.len);
+    var initialized_router_types: usize = 0;
+    defer {
+        for (router_type_data[0..initialized_router_types]) |*data| data.deinit();
+        allocator.free(router_type_data);
+    }
+    const needs_get_params = router.dynamic_routes.count() > 0;
     for (router.types, 0..) |router_type, i| {
-        if (router_type.client_file.unwrap()) |client_file| {
-            const str = try (try bun.String.createFormat("{s}{s}", .{
+        var client_entry_url: ?bun.bindgen.DOMString = if (router_type.client_file.unwrap()) |client_file|
+            try bun.bindgen.DOMString.fromBunString(try bun.String.createFormat("{s}{s}", .{
                 public_path,
                 pt.outputFile(client_file).dest_path,
-            })).toJS(global);
-            try client_entry_urls.putDirectIndex(global, @intCast(i), str);
-        } else {
-            try client_entry_urls.putDirectIndex(global, @intCast(i), .null);
-        }
+            }))
+        else
+            null;
+        errdefer if (client_entry_url) |*url| url.deinit();
 
         const server_entry_point = try pt.loadBundledModule(router_type.server_file);
-        const server_render_func = brk: {
-            const raw = BakeGetOnModuleNamespace(global, server_entry_point, "prerender") orelse
-                break :brk null;
-            if (!raw.isCallable()) {
-                break :brk null;
-            }
-            break :brk raw;
-        } orelse {
+        var prerender = (try bakeGetCallableExport(global, server_entry_point, .prerender)) orelse {
             Output.errGeneric("Framework does not support static site generation", .{});
             const relative_path = bun.handleOom(std.fs.path.relative(
                 bun.default_allocator,
@@ -522,16 +500,10 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
             });
             bun.Global.crash();
         };
+        errdefer prerender.deinit();
 
-        const server_param_func = if (router.dynamic_routes.count() > 0)
-            brk: {
-                const raw = BakeGetOnModuleNamespace(global, server_entry_point, "getParams") orelse
-                    break :brk null;
-                if (!raw.isCallable()) {
-                    break :brk null;
-                }
-                break :brk raw;
-            } orelse {
+        var get_params: ?BakeProductionCallable = if (needs_get_params)
+            (try bakeGetCallableExport(global, server_entry_point, .get_params)) orelse {
                 Output.errGeneric("Framework does not support static site generation", .{});
                 const relative_path = bun.handleOom(std.fs.path.relative(
                     bun.default_allocator,
@@ -547,50 +519,45 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
                 bun.Global.crash();
             }
         else
-            JSValue.null;
-        try server_render_funcs.putDirectIndex(global, @intCast(i), server_render_func);
-        try server_param_funcs.putDirectIndex(global, @intCast(i), server_param_func);
+            null;
+        errdefer if (get_params) |*callback| callback.deinit();
+
+        router_type_data[i] = .{
+            .prerender = prerender.take(),
+            .get_params = if (get_params) |*callback| callback.take() else null,
+            .client_entry_url = if (client_entry_url) |*url| url.take() else null,
+        };
+        initialized_router_types += 1;
     }
 
     var navigatable_routes = std.array_list.Managed(FrameworkRouter.Route.Index).init(allocator);
+    defer navigatable_routes.deinit();
     for (router.routes.items, 0..) |route, i| {
         _ = route.file_page.unwrap() orelse continue;
         try navigatable_routes.append(FrameworkRouter.Route.Index.init(@intCast(i)));
     }
 
-    const css_chunk_js_strings = try allocator.alloc(JSValue, css_chunks_count);
-    for (bundled_outputs[css_chunks_first..][0..css_chunks_count], css_chunk_js_strings) |output_file, *str| {
+    const style_urls = try allocator.alloc(bun.bindgen.DOMString, css_chunks_count);
+    var initialized_style_urls: usize = 0;
+    defer {
+        for (style_urls[0..initialized_style_urls]) |*url| url.deinit();
+        allocator.free(style_urls);
+    }
+    for (bundled_outputs[css_chunks_first..][0..css_chunks_count], style_urls) |output_file, *url| {
         bun.assert(output_file.dest_path[0] != '.');
-        // CSS chunks must be in contiguous order!!
         bun.assert(output_file.loader.isCSS());
-        str.* = try (try bun.String.createFormat("{s}{s}", .{ public_path, output_file.dest_path })).toJS(global);
+        url.* = try bun.bindgen.DOMString.fromBunString(try bun.String.createFormat("{s}{s}", .{ public_path, output_file.dest_path }));
+        initialized_style_urls += 1;
     }
 
-    // Route URL patterns with parameter placeholders.
-    // Examples: "/", "/about", "/blog/:slug", "/products/:category/:id"
-    const route_patterns = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
-
-    // File indices for each route's components (page, layouts).
-    // Example: [2, 5, 0] = page at index 2, layout at 5, root layout at 0
-    const route_nested_files = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
-
-    // Router type index (lower 8 bits) and flags (upper 24 bits).
-    // Example: 0x00000001 = router type 1, no flags
-    const route_type_and_flags = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
-
-    // Source file paths relative to project root.
-    // Examples: "pages/index.tsx", "pages/blog/[slug].tsx"
-    const route_source_files = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
-
-    // Parameter names for dynamic routes (reversed order), null for static routes.
-    // Examples: ["slug"] for /blog/[slug], ["id", "category"] for /products/[category]/[id]
-    const route_param_info = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
-
-    // CSS chunk URLs for each route.
-    // Example: ["/assets/main.css", "/assets/blog.css"]
-    const route_style_references = try jsc.JSArray.createEmpty(global, navigatable_routes.items.len);
-
+    const route_data = try allocator.alloc(BakeProductionRouteData, navigatable_routes.items.len);
+    var initialized_routes: usize = 0;
+    defer {
+        for (route_data[0..initialized_routes]) |*data| data.deinit(allocator);
+        allocator.free(route_data);
+    }
     var params_buf: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer params_buf.deinit(ctx.allocator);
     for (navigatable_routes.items, 0..) |route_index, nav_index| {
         defer params_buf.clearRetainingCapacity();
 
@@ -614,10 +581,10 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
             },
             else => {},
         }
-        var file_count: u32 = 1;
-        var css_file_count: u32 = @intCast(main_file.referenced_css_chunks.len);
+        var file_count: usize = 1;
+        var style_count: usize = main_file.referenced_css_chunks.len;
         if (route.file_layout.unwrap()) |file| {
-            css_file_count += @intCast(pt.outputFile(file).referenced_css_chunks.len);
+            style_count += pt.outputFile(file).referenced_css_chunks.len;
             file_count += 1;
         }
         var next: ?FrameworkRouter.Route.Index = route.parent.unwrap();
@@ -637,29 +604,30 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
                 else => {},
             }
             if (parent.file_layout.unwrap()) |file| {
-                css_file_count += @intCast(pt.outputFile(file).referenced_css_chunks.len);
+                style_count += pt.outputFile(file).referenced_css_chunks.len;
                 file_count += 1;
             }
             next = parent.parent.unwrap();
         }
 
-        // Fill styles and file_list
-        const styles = try jsc.JSArray.createEmpty(global, css_chunks_count);
-        const file_list = try jsc.JSArray.createEmpty(global, file_count);
+        const files = try allocator.alloc(u32, file_count);
+        errdefer allocator.free(files);
+        const style_indexes = try allocator.alloc(u32, style_count);
+        errdefer allocator.free(style_indexes);
 
         next = route.parent.unwrap();
         file_count = 1;
-        css_file_count = 0;
-        try file_list.putDirectIndex(global, 0, try pt.preloadBundledModule(main_file_route_index));
+        style_count = 0;
+        files[0] = pt.preloadBundledModule(main_file_route_index);
         for (main_file.referenced_css_chunks) |ref| {
-            try styles.putDirectIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
-            css_file_count += 1;
+            style_indexes[style_count] = @intCast(ref.get() - css_chunks_first);
+            style_count += 1;
         }
         if (route.file_layout.unwrap()) |file| {
-            try file_list.putDirectIndex(global, file_count, try pt.preloadBundledModule(file));
+            files[file_count] = pt.preloadBundledModule(file);
             for (pt.outputFile(file).referenced_css_chunks) |ref| {
-                try styles.putDirectIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
-                css_file_count += 1;
+                style_indexes[style_count] = @intCast(ref.get() - css_chunks_first);
+                style_count += 1;
             }
             file_count += 1;
         }
@@ -667,20 +635,18 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         while (next) |parent_index| {
             const parent = router.routePtr(parent_index);
             if (parent.file_layout.unwrap()) |file| {
-                try file_list.putDirectIndex(global, file_count, try pt.preloadBundledModule(file));
+                files[file_count] = pt.preloadBundledModule(file);
                 for (pt.outputFile(file).referenced_css_chunks) |ref| {
-                    try styles.putDirectIndex(global, css_file_count, css_chunk_js_strings[ref.get() - css_chunks_first]);
-                    css_file_count += 1;
+                    style_indexes[style_count] = @intCast(ref.get() - css_chunks_first);
+                    style_count += 1;
                 }
                 file_count += 1;
             }
             next = parent.parent.unwrap();
         }
 
-        // Init the items
-        var pattern_string = bun.String.cloneUTF8(pattern.slice());
-        defer pattern_string.deref();
-        try route_patterns.putDirectIndex(global, @intCast(nav_index), try pattern_string.toJS(global));
+        var pattern_string = try bun.bindgen.DOMString.fromUTF8(pattern.slice());
+        errdefer pattern_string.deinit();
 
         const relative_src_path = bun.handleOom(std.fs.path.relative(
             bun.default_allocator,
@@ -690,161 +656,201 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
             pt.inputFile(main_file_route_index).absPath(),
         ));
         defer bun.default_allocator.free(relative_src_path);
-        var src_path = bun.String.cloneUTF8(relative_src_path);
-        try route_source_files.putDirectIndex(global, @intCast(nav_index), try src_path.transferToJS(global));
+        var source_file = try bun.bindgen.DOMString.fromUTF8(relative_src_path);
+        errdefer source_file.deinit();
 
-        try route_nested_files.putDirectIndex(global, @intCast(nav_index), file_list.toJS());
-        try route_type_and_flags.putDirectIndex(global, @intCast(nav_index), JSValue.jsNumberFromInt32(@bitCast(TypeAndFlags{
-            .type = route.type.get(),
-            .no_client = main_file.bake_extra.fully_static,
-        })));
-
-        if (params_buf.items.len > 0) {
-            const param_info_array = try jsc.JSArray.createEmpty(global, params_buf.items.len);
-            for (params_buf.items, 0..) |param, i| {
-                try param_info_array.putDirectIndex(global, @intCast(params_buf.items.len - i - 1), try bun.String.createUTF8ForJS(global, param));
+        var parameters: ?[]bun.bindgen.DOMString = null;
+        if (params_buf.items.len != 0) {
+            const values = try allocator.alloc(bun.bindgen.DOMString, params_buf.items.len);
+            var initialized_parameters: usize = 0;
+            errdefer {
+                for (values[0..initialized_parameters]) |*value| value.deinit();
+                allocator.free(values);
             }
-            try route_param_info.putDirectIndex(global, @intCast(nav_index), param_info_array.toJS());
-        } else {
-            try route_param_info.putDirectIndex(global, @intCast(nav_index), .null);
+            for (0..params_buf.items.len) |i| {
+                values[i] = try bun.bindgen.DOMString.fromUTF8(params_buf.items[params_buf.items.len - i - 1]);
+                initialized_parameters += 1;
+            }
+            parameters = values;
         }
-        try route_style_references.putDirectIndex(global, @intCast(nav_index), styles.toJS());
+
+        route_data[nav_index] = .{
+            .pattern = pattern_string.take(),
+            .files = files,
+            .router_type = route.type.get(),
+            .no_client = main_file.bake_extra.fully_static,
+            .source_file = source_file.take(),
+            .parameters = parameters,
+            .style_indexes = style_indexes,
+        };
+        initialized_routes += 1;
     }
 
-    const render_promise = BakeRenderRoutesForProdStatic(
-        global,
-        bun.String.init(root_dir_path),
-        pt.all_server_files.?.toJS(),
-        server_render_funcs.toJS(),
-        server_param_funcs.toJS(),
-        client_entry_urls.toJS(),
-
-        route_patterns.toJS(),
-        route_nested_files.toJS(),
-        route_type_and_flags.toJS(),
-        route_source_files.toJS(),
-        route_param_info.toJS(),
-        route_style_references.toJS(),
-    );
-    render_promise.setHandled();
-    vm.waitForPromise(.{ .normal = render_promise });
-    switch (render_promise.unwrap(vm.jsc_vm, .mark_handled)) {
-        .pending => unreachable,
-        .fulfilled => {
-            Output.prettyln("done", .{});
-            Output.flush();
-        },
-        .rejected => |err| {
-            return vm.global.throwValue(err);
-        },
+    const server_files = try allocator.alloc(BakeProductionServerFileData, pt.loaded_files.count());
+    var initialized_server_files: usize = 0;
+    defer {
+        for (server_files[0..initialized_server_files]) |*file| file.specifier.deinit();
+        allocator.free(server_files);
     }
+    var loaded_file_iterator = pt.loaded_files.iterator(.{ .kind = .set });
+    while (loaded_file_iterator.next()) |index| {
+        server_files[initialized_server_files] = .{
+            .index = @intCast(index),
+            .specifier = try bun.bindgen.DOMString.fromBunString(pt.module_keys[index].clone()),
+        };
+        initialized_server_files += 1;
+    }
+
+    var bound_out_base = try bun.bindgen.DOMString.fromUTF8(root_dir_path);
+    defer bound_out_base.deinit();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    const operation = scope.engine(BakeRenderRoutesForProdStaticSchema);
+    const RenderArgs = @TypeOf(operation).Args;
+    var input_arena = std.heap.ArenaAllocator.init(allocator);
+    defer input_arena.deinit();
+    const inputs = input_arena.allocator();
+    const ServerFile = std.meta.Elem(@FieldType(RenderArgs, "serverFiles"));
+    const server_file_inputs = try inputs.alloc(ServerFile, server_files.len);
+    for (server_files, server_file_inputs) |*file, *input| {
+        input.* = .{ .index = file.index, .specifier = file.specifier.operand() };
+    }
+    const StyleURL = std.meta.Elem(@FieldType(RenderArgs, "styleURLs"));
+    const style_url_inputs = try inputs.alloc(StyleURL, style_urls.len);
+    for (style_urls, style_url_inputs) |*url, *input| input.* = url.operand();
+    const router_type_inputs = try inputs.alloc(BakeProductionRouterTypeInput, router_type_data.len);
+    for (router_type_data, router_type_inputs) |*data, *input| {
+        input.* = .{
+            .prerender = data.prerender.operand(&scope),
+            .getParams = if (data.get_params) |*callback| callback.operand(&scope) else null,
+            .clientEntryURL = if (data.client_entry_url) |*url| url.operand() else null,
+        };
+    }
+    const route_inputs = try inputs.alloc(BakeProductionRouteInput, route_data.len);
+    for (route_data, route_inputs) |*data, *input| {
+        input.* = .{
+            .pattern = data.pattern.operand(),
+            .files = data.files,
+            .routerType = data.router_type,
+            .noClient = data.no_client,
+            .sourceFile = data.source_file.operand(),
+            .parameters = if (data.parameters) |parameters| parameters_input: {
+                const Parameter = std.meta.Elem(@typeInfo(@FieldType(BakeProductionRouteInput, "parameters")).optional.child);
+                const names = try inputs.alloc(Parameter, parameters.len);
+                for (parameters, names) |*parameter, *name| name.* = parameter.operand();
+                break :parameters_input names;
+            } else null,
+            .styleIndexes = data.style_indexes,
+        };
+    }
+    const result = try operation.call(.{
+        .outBase = bound_out_base.operand(),
+        .serverFileCount = @intCast(pt.module_keys.len),
+        .serverFiles = server_file_inputs,
+        .routerTypes = router_type_inputs,
+        .styleURLs = style_url_inputs,
+        .routes = route_inputs,
+    });
+    var render_promise_value = try result.toOwned();
+    defer render_promise_value.deinit();
+    try awaitBuildPromise(global, &render_promise_value);
+    Output.prettyln("done", .{});
+    Output.flush();
     vm.waitForTasks();
 }
 
-/// unsafe function, must be run outside of the event loop
-/// quits the process on exception
-fn loadModule(vm: *VirtualMachine, global: *jsc.JSGlobalObject, key: JSValue) !JSValue {
-    const promise = BakeLoadModuleByKey(global, key).asAnyPromise().?.internal;
-    promise.setHandled();
-    vm.waitForPromise(.{ .internal = promise });
-    // TODO: Specially draining microtasks here because `waitForPromise` has a
-    //       bug which forgets to do it, but I don't want to fix it right now as it
-    //       could affect a lot of the codebase. This should be removed.
-    vm.eventLoop().drainMicrotasks() catch {
-        bun.Global.crash();
-    };
-    switch (promise.unwrap(vm.jsc_vm, .mark_handled)) {
-        .pending => unreachable,
-        .fulfilled => {
-            return BakeGetModuleNamespace(global, key);
-        },
-        .rejected => |err| {
-            return vm.global.throwValue(err);
-        },
-    }
+fn loadModule(global: *jsc.JSGlobalObject, key: *const bun.String) bun.JSError!void {
+    var module_name = try bun.bindgen.DOMString.fromBunString(key.dupeRef());
+    defer module_name.deinit();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    const result = try scope.engineIn("ModuleLoader", "loadAndEvaluateModule").call(.{ .moduleName = module_name.operand() });
+    var promise = try result.toOwned();
+    defer promise.deinit();
+    try awaitBuildPromise(global, &promise);
 }
 
-// extern apis:
-
-// TODO: Dedupe
-extern fn BakeGetDefaultExportFromModule(global: *jsc.JSGlobalObject, key: JSValue) JSValue;
-extern fn BakeGetModuleNamespace(global: *jsc.JSGlobalObject, key: JSValue) JSValue;
-extern fn BakeLoadModuleByKey(global: *jsc.JSGlobalObject, key: JSValue) JSValue;
-
-fn BakeGetOnModuleNamespace(global: *jsc.JSGlobalObject, module: JSValue, property: []const u8) ?JSValue {
-    const f = @extern(*const fn (*jsc.JSGlobalObject, JSValue, [*]const u8, usize) callconv(.c) JSValue, .{
-        .name = "BakeGetOnModuleNamespace",
-    });
-    const result: JSValue = f(global, module, property.ptr, property.len);
-    bun.assert(result != .zero);
-    return result;
+fn awaitBuildPromise(global: *jsc.JSGlobalObject, promise: anytype) bun.JSError!void {
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    var rejection = try scope.waitForPromiseRejection(promise.operand(&scope).asPromise());
+    defer if (rejection) |*value| value.deinit();
+    try global.bunVM().drainMicrotasks();
+    if (rejection) |*value| return value.throwException(&scope);
 }
 
-/// Renders all routes for static site generation by calling the JavaScript implementation.
-extern fn BakeRenderRoutesForProdStatic(
-    *jsc.JSGlobalObject,
-    /// Output directory path (e.g., "./dist")
-    out_base: bun.String,
-    /// Server module paths (e.g., ["bake://page.js", "bake://layout.js"])
-    all_server_files: JSValue,
-    /// Framework prerender functions by router type
-    render_static: JSValue,
-    /// Framework getParams functions by router type
-    get_params: JSValue,
-    /// Client entry URLs by router type (e.g., ["/client.js", null])
-    client_entry_urls: JSValue,
-    /// Route patterns (e.g., ["/", "/about", "/blog/:slug"])
-    patterns: JSValue,
-    /// File indices per route (e.g., [[0], [1], [2, 0]])
-    files: JSValue,
-    /// Packed router type and flags (e.g., [0x00000000, 0x00000001])
-    type_and_flags: JSValue,
-    /// Source paths (e.g., ["pages/index.tsx", "pages/blog/[slug].tsx"])
-    src_route_files: JSValue,
-    /// Dynamic route params (e.g., [null, null, ["slug"]])
-    param_information: JSValue,
-    /// CSS URLs per route (e.g., [["/main.css"], ["/main.css", "/blog.css"]])
-    styles: JSValue,
-) *jsc.JSPromise;
+fn bakeGetDefaultExportFromModule(global: *jsc.JSGlobalObject, module_name: *const bun.String) bun.JSError!bun.bindgen.EngineRoot {
+    var bound_module_name = try bun.bindgen.DOMString.fromBunString(module_name.dupeRef());
+    defer bound_module_name.deinit();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    const result = try scope.engine(BakeGetDefaultExportFromModuleSchema).call(.{ .moduleName = bound_module_name.operand() });
+    return result.toRoot();
+}
 
-/// The result of this function is a JSValue that wont be garbage collected, as
-/// it will always have at least one reference by the module loader.
-pub export fn BakeToWindowsPath(input: bun.String) callconv(.c) bun.String {
+fn bakeGetCallableExport(
+    global: *jsc.JSGlobalObject,
+    module_name: *const bun.String,
+    kind: BakeProductionCallableExport,
+) bun.JSError!?BakeProductionCallable {
+    var bound_module_name = try bun.bindgen.DOMString.fromBunString(module_name.dupeRef());
+    defer bound_module_name.deinit();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    const result = (try scope.engine(BakeGetCallableExportSchema).call(.{
+        .moduleName = bound_module_name.operand(),
+        .kind = kind,
+    })) orelse return null;
+    return try result.toOwned();
+}
+
+fn bindToWindowsPath(
+    args: bun.bindgen.Args(BakeToWindowsPathSchema),
+) bun.OOM!bun.bindgen.Return(BakeToWindowsPathSchema) {
     if (comptime bun.Environment.isPosix) {
         @panic("This code should not be called on POSIX systems.");
     }
     var sfa_buffer: [1024]u8 = undefined;
     var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
     const alloc = sfa.allocator();
-    const input_utf8 = input.toUTF8(alloc);
+    const input_utf8 = try args.input.toUTF8(alloc);
     defer input_utf8.deinit();
     const input_slice = input_utf8.slice();
     const output = bun.w_path_buffer_pool.get();
     defer bun.w_path_buffer_pool.put(output);
     const output_slice = bun.strings.toWPathNormalizeAutoExtend(output.*[0..], input_slice);
-    return bun.String.cloneUTF16(output_slice);
+    return bun.bindgen.DOMString.fromUTF16(output_slice);
 }
 
-pub export fn BakeProdResolve(global: *jsc.JSGlobalObject, a_str: bun.String, specifier_str: bun.String) callconv(.c) bun.String {
+fn bindProdResolve(
+    context: bun.bindgen.CallContext(BakeProdResolveSchema),
+    args: bun.bindgen.Args(BakeProdResolveSchema),
+) bun.bindgen.CallError(BakeProdResolveSchema)!bun.bindgen.Return(BakeProdResolveSchema) {
     var sfa_buffer: [2]bun.PathBuffer = undefined;
     var sfa: std.heap.BufferFirstAllocator = .init(@ptrCast(&sfa_buffer), bun.default_allocator);
     const alloc = sfa.allocator();
 
-    const specifier = specifier_str.toUTF8(alloc);
+    const specifier = try args.specifier.toUTF8(alloc);
     defer specifier.deinit();
 
     if (jsc.ModuleLoader.HardcodedModule.Alias.get(specifier.slice(), .bun, .{})) |alias| {
-        return bun.String.static(alias.path);
+        return try bun.bindgen.DOMString.fromBunString(bun.String.cloneLatin1(alias.path));
     }
 
-    const referrer = a_str.toUTF8(alloc);
+    const referrer = try args.referrer.toUTF8(alloc);
     defer referrer.deinit();
 
     if (bun.resolver.isPackagePath(specifier.slice())) {
-        return global.throw("Non-relative import {f} from {f} are not allowed in production assets. This is a bug in Bun's bundler", .{
+        const message = try bun.String.createFormat("Non-relative import {f} from {f} are not allowed in production assets. This is a bug in Bun's bundler", .{
             bun.fmt.quote(specifier.slice()),
             bun.fmt.quote(referrer.slice()),
-        }) catch bun.String.dead;
+        });
+        return context.fail(.package_import_not_allowed, try bun.bindgen.DOMString.fromBunString(message));
     }
 
     if (Environment.allow_assert)
@@ -853,92 +859,80 @@ pub export fn BakeProdResolve(global: *jsc.JSGlobalObject, a_str: bun.String, sp
     const resolved = std.fs.path.resolvePosix(alloc, &.{
         std.fs.path.dirnamePosix(referrer.slice()[5..]) orelse "/",
         specifier.slice(),
-    }) catch return bun.String.dead;
+    }) catch return error.OutOfMemory;
     defer alloc.free(resolved);
-    return bun.String.createFormat("bake:{s}", .{resolved}) catch return bun.String.dead;
+    return try bun.bindgen.DOMString.fromBunString(try bun.String.createFormat("bake:{s}", .{resolved}));
 }
 
-/// After a production bundle is generated, prerendering needs to be able to
-/// look up the generated chunks associated with each route's `OpaqueFileId`
-/// This data structure contains that mapping, and is also used by bundle_v2
-/// to enqueue the entry points.
-pub const EntryPointMap = struct {
-    root: []const u8,
+const ProductionRouterContext = struct {
+    entry_points: *EntryPointMap,
+    route_styles: []const bake.FrameworkRouterEngine.Style,
 
-    allocator: std.mem.Allocator,
-    /// OpaqueFileId refers to the index in this map.
-    /// Values are left uninitialized until after the bundle is done and indexed.
-    files: HashMap,
-
-    const HashMap = std.array_hash_map.Custom(InputFile, OutputFile.Index, InputFile.ArrayHashContext, true);
-
-    /// This approach is used instead of what DevServer does so that each
-    /// distinct file gets its own index.
-    const InputFile = struct {
-        abs_path_ptr: [*]const u8,
-        abs_path_len: u32,
-        side: bake.Side,
-
-        pub fn init(abs_path: []const u8, side: bake.Side) InputFile {
-            return .{
-                .abs_path_ptr = abs_path.ptr,
-                .abs_path_len = @intCast(abs_path.len),
-                .side = side,
-            };
-        }
-
-        pub fn absPath(key: InputFile) []const u8 {
-            return key.abs_path_ptr[0..key.abs_path_len];
-        }
-
-        const ArrayHashContext = struct {
-            pub fn hash(_: @This(), key: InputFile) u32 {
-                return bun.hash32(key.absPath()) +% @backingInt(key.side);
-            }
-
-            pub fn eql(_: @This(), a: InputFile, b: InputFile, _: usize) bool {
-                return a.side == b.side and bun.strings.eql(a.absPath(), b.absPath());
-            }
-        };
-    };
-
-    pub fn getOrPutEntryPoint(map: *EntryPointMap, abs_path: []const u8, side: bake.Side) !OpaqueFileId {
-        const k = InputFile.init(abs_path, side);
-        const gop = try map.files.getOrPut(map.allocator, k);
-        if (!gop.found_existing) {
-            errdefer map.files.swapRemoveAt(gop.index);
-            gop.key_ptr.* = InputFile.init(try map.allocator.dupe(u8, abs_path), side);
-        }
-        return OpaqueFileId.init(@intCast(gop.index));
+    pub fn getFileIdForRouter(context: *ProductionRouterContext, absolute_path: []const u8, route: FrameworkRouter.Route.Index, kind: FrameworkRouter.Route.FileKind) !OpaqueFileId {
+        return context.entry_points.getFileIdForRouter(absolute_path, route, kind);
     }
 
-    pub fn getFileIdForRouter(map: *EntryPointMap, abs_path: []const u8, _: FrameworkRouter.Route.Index, _: FrameworkRouter.Route.FileKind) !FrameworkRouter.OpaqueFileId {
-        return map.getOrPutEntryPoint(abs_path, .server);
+    pub fn onRouterCollisionError(context: *ProductionRouterContext, relative_path: []const u8, other_id: OpaqueFileId, kind: FrameworkRouter.Route.FileKind) bun.OOM!void {
+        return context.entry_points.onRouterCollisionError(relative_path, other_id, kind);
     }
 
-    pub fn onRouterCollisionError(dev: *EntryPointMap, rel_path: []const u8, other_id: OpaqueFileId, ty: FrameworkRouter.Route.FileKind) bun.OOM!void {
-        Output.errGeneric("Multiple {s} matching the same route pattern is ambiguous", .{
-            switch (ty) {
-                .page => "pages",
-                .layout => "layout",
-            },
-        });
-        Output.prettyErrorln("  - <blue>{s}<r>", .{rel_path});
-        const other_path = try std.fs.path.relative(
-            dev.allocator,
-            dev.root,
-            null,
-            dev.root,
-            dev.files.keys()[other_id.get()].absPath(),
-        );
-        defer dev.allocator.free(other_path);
-        Output.prettyErrorln("  - <blue>{s}<r>", .{other_path});
-        Output.flush();
+    pub fn onRouterSyntaxError(context: *ProductionRouterContext, relative_path: []const u8, route_log: FrameworkRouter.TinyLog) bun.OOM!void {
+        return context.entry_points.onRouterSyntaxError(relative_path, route_log);
+    }
+
+    pub fn parseCustomRoute(
+        context: *ProductionRouterContext,
+        style_index: u8,
+        file_path: []const u8,
+        route_log: *FrameworkRouter.TinyLog,
+        allocator: std.mem.Allocator,
+    ) bake.FrameworkRouterEngine.ParseError!?FrameworkRouter.ParsedPattern {
+        return context.route_styles[style_index].parseCustom(file_path, route_log, allocator);
     }
 };
 
-/// Data used on each rendering thread. Contains all information in the bundle needed to render.
-/// This is referred to as `pt` in variable/field naming, and Bake::ProductionPerThread in C++
+const BakeProductionRouterTypeData = struct {
+    prerender: BakeProductionCallable,
+    get_params: ?BakeProductionCallable,
+    client_entry_url: ?bun.bindgen.DOMString,
+
+    fn deinit(data: *@This()) void {
+        data.prerender.deinit();
+        if (data.get_params) |*callback| callback.deinit();
+        if (data.client_entry_url) |*url| url.deinit();
+    }
+};
+
+const BakeProductionRouteData = struct {
+    pattern: bun.bindgen.DOMString,
+    files: []u32,
+    router_type: u8,
+    no_client: bool,
+    source_file: bun.bindgen.DOMString,
+    parameters: ?[]bun.bindgen.DOMString,
+    style_indexes: []u32,
+
+    fn deinit(data: *@This(), allocator: std.mem.Allocator) void {
+        data.pattern.deinit();
+        allocator.free(data.files);
+        data.source_file.deinit();
+        if (data.parameters) |parameters| {
+            for (parameters) |*parameter| parameter.deinit();
+            allocator.free(parameters);
+        }
+        allocator.free(data.style_indexes);
+    }
+};
+
+const BakeProductionServerFileData = struct {
+    index: u32,
+    specifier: bun.bindgen.DOMString,
+};
+
+const BakeProductionRenderArgs = bun.bindgen.Args(BakeRenderRoutesForProdStaticSchema);
+const BakeProductionRouterTypeInput = std.meta.Elem(@FieldType(BakeProductionRenderArgs, "routerTypes"));
+const BakeProductionRouteInput = std.meta.Elem(@FieldType(BakeProductionRenderArgs, "routes"));
+
 pub const PerThread = struct {
     // Shared Data
     input_files: []const EntryPointMap.InputFile,
@@ -955,8 +949,6 @@ pub const PerThread = struct {
     vm: *jsc.VirtualMachine,
     /// Indexed by entry point index (OpaqueFileId)
     loaded_files: std.bit_set.Dynamic,
-    /// JSArray of JSString, indexed by entry point index (OpaqueFileId)
-    all_server_files: ?*jsc.JSArray,
 
     /// Sent to other threads for rendering
     pub const Options = struct {
@@ -971,15 +963,10 @@ pub const PerThread = struct {
         source_maps: bun.StringArrayHashMap(OutputFile.Index),
     };
 
-    extern fn BakeGlobalObject__attachPerThreadData(global: *jsc.JSGlobalObject, pt: ?*PerThread) void;
-
     /// After initializing, call `attach`
     pub fn init(vm: *VirtualMachine, opts: Options) !PerThread {
         var loaded_files = try std.bit_set.Dynamic.initEmpty(vm.allocator, opts.output_indexes.len);
         errdefer loaded_files.deinit(vm.allocator);
-
-        const all_server_files = try jsc.JSArray.createEmpty(vm.global, opts.output_indexes.len);
-        all_server_files.protect();
 
         return .{
             .input_files = opts.input_files,
@@ -989,18 +976,16 @@ pub const PerThread = struct {
             .module_map = opts.module_map,
             .vm = vm,
             .loaded_files = loaded_files,
-            .all_server_files = all_server_files,
             .source_maps = opts.source_maps,
         };
     }
 
     pub fn attach(pt: *PerThread) void {
-        BakeGlobalObject__attachPerThreadData(pt.vm.global, pt);
+        bun.bindgen.Engine(BakeGlobalObjectSetPerThreadDataShim).call(pt.vm.global, .{ .perThreadData = pt });
     }
 
     pub fn deinit(pt: *PerThread) void {
-        BakeGlobalObject__attachPerThreadData(pt.vm.global, null);
-        if (pt.all_server_files) |all_server_files| all_server_files.unprotect();
+        bun.bindgen.Engine(BakeGlobalObjectSetPerThreadDataShim).call(pt.vm.global, .{ .perThreadData = null });
         pt.loaded_files.deinit(pt.vm.allocator);
     }
 
@@ -1017,88 +1002,70 @@ pub const PerThread = struct {
     }
 
     // Must be run at the top of the event loop
-    pub fn loadBundledModule(pt: *PerThread, id: OpaqueFileId) !JSValue {
-        return try loadModule(
-            pt.vm,
-            pt.vm.global,
-            try pt.module_keys[id.get()].toJS(pt.vm.global),
-        );
+    pub fn loadBundledModule(pt: *PerThread, id: OpaqueFileId) !*const bun.String {
+        const module_key = &pt.module_keys[id.get()];
+        try loadModule(pt.vm.global, module_key);
+        return module_key;
     }
 
-    /// The JSString entries in `all_server_files` is generated lazily. When
-    /// multiple rendering threads are used, unreferenced files will contain
-    /// holes in the array used. Returns a JSValue of the "FileIndex" type
-    //
-    // What could be done here is generating a new index type, which is
-    // specifically for referenced files. This would remove the holes, but make
-    // it harder to pre-allocate. It's probably worth it.
-    pub fn preloadBundledModule(pt: *PerThread, id: OpaqueFileId) bun.JSError!JSValue {
-        if (!pt.loaded_files.isSet(id.get())) {
-            pt.loaded_files.set(id.get());
-            try pt.all_server_files.?.putDirectIndex(
-                pt.vm.global,
-                @intCast(id.get()),
-                try pt.module_keys[id.get()].toJS(pt.vm.global),
-            );
-        }
-
-        return JSValue.jsNumberFromInt32(@intCast(id.get()));
+    pub fn preloadBundledModule(pt: *PerThread, id: OpaqueFileId) u32 {
+        pt.loaded_files.set(id.get());
+        return @intCast(id.get());
     }
 };
 
 /// Given a key, returns the source code to load.
-pub export fn BakeProdLoad(pt: *PerThread, key: bun.String) bun.String {
+fn bindProdLoad(
+    args: bun.bindgen.Args(BakeProdLoadSchema),
+) bun.OOM!bun.bindgen.Return(BakeProdLoadSchema) {
+    const pt = args.perThreadData;
     var sfa_buffer: [4096]u8 = undefined;
     var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
     const allocator = sfa.allocator();
-    const utf8 = key.toUTF8(allocator);
+    const utf8 = try args.key.toUTF8(allocator);
     defer utf8.deinit();
     log("BakeProdLoad: {s}\n", .{utf8.slice()});
     if (pt.module_map.get(utf8.slice())) |value| {
         log("  found in module_map: {s}\n", .{utf8.slice()});
-        return pt.bundled_outputs[value.get()].value.toBunString();
+        return try bun.bindgen.DOMString.fromBunString(pt.bundled_outputs[value.get()].value.toBunString());
     }
-    return bun.String.dead;
-}
-
-pub export fn BakeProdSourceMap(pt: *PerThread, key: bun.String) bun.String {
-    var sfa_buffer: [4096]u8 = undefined;
-    var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
-    const allocator = sfa.allocator();
-    const utf8 = key.toUTF8(allocator);
-    defer utf8.deinit();
-    if (pt.source_maps.get(utf8.slice())) |value| {
-        return pt.bundled_outputs[value.get()].value.toBunString();
-    }
-    return bun.String.dead;
-}
-
-const TypeAndFlags = packed struct(i32) {
-    type: u8,
-    /// Don't inclue the runtime client code (e.g.
-    /// bun-framework-react/client.tsx). This is used if we know a server
-    /// component does not include any downstream usages of "use client" and so
-    /// we can omit the client code entirely.
-    no_client: bool = false,
-    unused: u23 = 0,
-};
-
-fn @"export"() void {
-    _ = BakeProdResolve;
-    _ = BakeProdLoad;
+    return null;
 }
 
 const std = @import("std");
 
 const bun = @import("bun");
+const BakeAppOptionsBindings = bun.bindgen.Module("BakeAppOptions");
+const BakeProductionBindings = bun.bindgen.Module("BakeProduction");
+const BakeAppOptionsCreateFromModuleDefaultSchema = BakeAppOptionsBindings.engineShim("createFromModuleDefault");
+const BakeToWindowsPathSchema = BakeProductionBindings.nativeExport("bakeToWindowsPath");
+const BakeProdResolveSchema = BakeProductionBindings.nativeExport("bakeProdResolve");
+const BakeProdLoadSchema = BakeProductionBindings.nativeExport("bakeProdLoad");
+const BakeGetDefaultExportFromModuleSchema = BakeProductionBindings.engineShim("bakeGetDefaultExportFromModule");
+const BakeGetCallableExportSchema = BakeProductionBindings.engineShim("getCallableExport");
+const BakeRenderRoutesForProdStaticSchema = BakeProductionBindings.engineShim("renderRoutesForProdStatic");
+const BakeProductionCallableExport = @FieldType(bun.bindgen.Args(BakeGetCallableExportSchema), "kind");
+const BakeProductionCallable = bun.bindgen.OwnedBrandedValue(BakeGetCallableExportSchema.ReturnType.child);
+const BakeToWindowsPathBinding = bun.bindgen.Fn(BakeToWindowsPathSchema, bindToWindowsPath);
+const BakeProdResolveBinding = bun.bindgen.Fn(BakeProdResolveSchema, bindProdResolve);
+const BakeProdLoadBinding = bun.bindgen.Fn(BakeProdLoadSchema, bindProdLoad);
+
+comptime {
+    _ = BakeToWindowsPathBinding;
+    _ = BakeProdResolveBinding;
+    _ = BakeProdLoadBinding;
+}
+
 const Environment = bun.Environment;
 const Output = bun.Output;
 const bake = bun.bake;
 const OutputFile = bun.options.OutputFile;
+const BundlerEngine = @import("../bundler/BundlerEngine.zig");
 
-const FrameworkRouter = bake.FrameworkRouter;
+const EntryPointMap = @import("./ProductionEntryPoints.zig");
+const FrameworkRouter = @import("./FrameworkRouter.zig");
 const OpaqueFileId = FrameworkRouter.OpaqueFileId;
 
 const jsc = bun.jsc;
-const JSValue = jsc.JSValue;
 const VirtualMachine = jsc.VirtualMachine;
+const BakeGlobalObjectSetPerThreadDataShim = BakeProductionBindings.engineShim("bakeGlobalObjectSetPerThreadData");

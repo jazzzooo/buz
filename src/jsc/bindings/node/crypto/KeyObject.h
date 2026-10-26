@@ -10,10 +10,28 @@ namespace WebCore {
 class CryptoKey;
 }
 
+namespace Bun::Bindgen {
+class NodeCryptoAsymmetricKeyInput;
+enum class NodeCryptoAsymmetricKeyKind : uint8_t;
+class NodeCryptoPublicKeyExportResult;
+class NodeCryptoPrivateKeyExportResult;
+class CppDeferredLeaseProof;
+}
+
 namespace Bun {
 
+struct AsymmetricKeyDetails {
+    std::optional<double> modulus_length;
+    std::optional<WTF::String> public_exponent_hex;
+    std::optional<WTF::String> hash_algorithm;
+    std::optional<WTF::String> mgf1_hash_algorithm;
+    std::optional<double> salt_length;
+    std::optional<double> divisor_length;
+    std::optional<WTF::String> named_curve;
+};
+
 class KeyObject {
-    WTF_MAKE_TZONE_ALLOCATED(KeyObject);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(KeyObject);
 
     KeyObject(WebCore::CryptoKeyType type, RefPtr<KeyObjectData>&& data)
         : m_data(WTF::move(data))
@@ -26,10 +44,11 @@ public:
     ~KeyObject() = default;
 
     static WebCore::ExceptionOr<KeyObject> create(WebCore::CryptoKey&);
-    static KeyObject create(WTF::Vector<uint8_t>&& symmetricKey);
-    static KeyObject create(WebCore::CryptoKeyType type, ncrypto::EVPKeyPointer&& asymmetricKey);
+    static WebCore::ExceptionOr<KeyObject> create(WTF::Vector<uint8_t>&& symmetricKey);
+    static WebCore::ExceptionOr<KeyObject> create(WebCore::CryptoKeyType type, ncrypto::EVPKeyPointer&& asymmetricKey);
+    static KeyObject create(JSC::JSGlobalObject*, JSC::ThrowScope&, WTF::Vector<uint8_t>&& symmetricKey);
+    static KeyObject create(JSC::JSGlobalObject*, JSC::ThrowScope&, WebCore::CryptoKeyType type, ncrypto::EVPKeyPointer&& asymmetricKey);
     static KeyObject create(WebCore::CryptoKeyType type, RefPtr<KeyObjectData>&& data);
-    // static KeyObject createJwk(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSValue keyValue, WebCore::CryptoKeyType type);
 
     enum class KeyEncodingContext {
         Input,
@@ -44,12 +63,6 @@ public:
         CreatePrivate,
     };
 
-private:
-    // Helpers for `prepareAsymmetricKey`
-    static KeyObject getKeyObjectHandleFromJwk(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSObject* jwk, PrepareAsymmetricKeyMode mode);
-    static void getKeyObjectFromHandle(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSValue keyValue, const KeyObject& handle, PrepareAsymmetricKeyMode mode);
-
-public:
     static ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig getPrivateKeyEncoding(
         JSC::JSGlobalObject*,
         JSC::ThrowScope&,
@@ -75,38 +88,21 @@ public:
         const EVP_CIPHER* cipher,
         std::optional<ncrypto::DataPointer> passphrase);
 
-    struct PrepareAsymmetricKeyResult {
-        std::optional<RefPtr<KeyObjectData>> keyData { std::nullopt };
-        JSC::GCOwnedDataScope<std::span<const uint8_t>> keyDataView { nullptr, {} };
-        ncrypto::EVPKeyPointer::PKFormatType formatType;
-        std::optional<ncrypto::EVPKeyPointer::PKEncodingType> encodingType { std::nullopt };
-        const EVP_CIPHER* cipher { nullptr };
-        std::optional<ncrypto::DataPointer> passphrase = { std::nullopt };
-    };
+    static RefPtr<KeyObjectData> prepareAsymmetricKey(JSC::JSGlobalObject*, JSC::ThrowScope&, const Bindgen::NodeCryptoAsymmetricKeyInput&, PrepareAsymmetricKeyMode mode);
+    static void discardAsymmetricKeyDeferred(const Bindgen::NodeCryptoAsymmetricKeyInput&);
+    static void discardAsymmetricKeyDeferredAndMaybeYieldProof(const Bindgen::NodeCryptoAsymmetricKeyInput&, Bindgen::CppDeferredLeaseProof&);
 
-    static PrepareAsymmetricKeyResult prepareAsymmetricKey(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSValue keyValue, PrepareAsymmetricKeyMode mode);
-    static PrepareAsymmetricKeyResult preparePrivateKey(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, JSC::JSValue keyValue);
-    static PrepareAsymmetricKeyResult preparePublicOrPrivateKey(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, JSC::JSValue keyValue);
-    static KeyObject prepareSecretKey(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSValue keyValue, JSC::JSValue encodingValue, bool bufferOnly = false);
-
-    JSC::JSValue exportJwkEdKey(JSC::JSGlobalObject*, JSC::ThrowScope&, WebCore::CryptoKeyType exportType);
-    JSC::JSValue exportJwkEcKey(JSC::JSGlobalObject*, JSC::ThrowScope&, WebCore::CryptoKeyType exportType);
-    JSC::JSValue exportJwkRsaKey(JSC::JSGlobalObject*, JSC::ThrowScope&, WebCore::CryptoKeyType exportType);
-    JSC::JSValue exportJwkSecretKey(JSC::JSGlobalObject*, JSC::ThrowScope&);
-    JSC::JSValue exportJwkAsymmetricKey(JSC::JSGlobalObject*, JSC::ThrowScope&, WebCore::CryptoKeyType exportType, bool handleRsaPss);
-    JSC::JSValue exportJwk(JSC::JSGlobalObject*, JSC::ThrowScope&, WebCore::CryptoKeyType type, bool handleRsaPss);
+    Bindgen::NodeCryptoPublicKeyExportResult exportPublicResult(JSC::JSGlobalObject*, JSC::ThrowScope&, const ncrypto::EVPKeyPointer::PublicKeyEncodingConfig&);
+    Bindgen::NodeCryptoPrivateKeyExportResult exportPrivateResult(JSC::JSGlobalObject*, JSC::ThrowScope&, const ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig&);
     JSC::JSValue exportPublic(JSC::JSGlobalObject*, JSC::ThrowScope&, const ncrypto::EVPKeyPointer::PublicKeyEncodingConfig&);
     JSC::JSValue exportPrivate(JSC::JSGlobalObject*, JSC::ThrowScope&, const ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig&);
-    JSC::JSValue exportAsymmetric(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSValue optionsValue, WebCore::CryptoKeyType exportType);
-    JSC::JSValue exportSecret(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSValue optionsValue);
 
-    void getRsaKeyDetails(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSObject* result);
-    void getDsaKeyDetails(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSObject* result);
-    void getEcKeyDetails(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSObject* result);
-    // void getDhKeyDetails(JSC::JSGlobalObject* , JSC::ThrowScope& , JSC::JSObject* result);
+    void getRsaKeyDetails(JSC::JSGlobalObject*, JSC::ThrowScope&, AsymmetricKeyDetails& result);
+    void getDsaKeyDetails(AsymmetricKeyDetails& result);
+    void getEcKeyDetails(AsymmetricKeyDetails& result);
 
-    JSC::JSValue asymmetricKeyType(JSC::JSGlobalObject*);
-    JSC::JSObject* asymmetricKeyDetails(JSC::JSGlobalObject*, JSC::ThrowScope&);
+    std::optional<Bindgen::NodeCryptoAsymmetricKeyKind> asymmetricKeyType() const;
+    AsymmetricKeyDetails asymmetricKeyDetails(JSC::JSGlobalObject*, JSC::ThrowScope&);
 
     std::optional<bool> equals(const KeyObject& other) const;
     JSC::JSValue toCryptoKey(JSC::JSGlobalObject*, JSC::ThrowScope&,

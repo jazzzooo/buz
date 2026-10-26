@@ -32,6 +32,7 @@
 
 #pragma once
 
+#include "Bindgen/NativeResult.h"
 #include "ContextDestructionObserver.h"
 // #include "DOMHighResTimeStamp.h"
 #include "EventTarget.h"
@@ -41,14 +42,17 @@
 // #include "Timer.h"
 #include <variant>
 
-#include <wtf/ListHashSet.h>
+#include <wtf/FastMalloc.h>
+#include <wtf/MonotonicTime.h>
 #include <wtf/Seconds.h>
-
-extern "C" uint64_t Bun__readOriginTimer(void*);
-extern "C" double Bun__readOriginTimerStart(void*);
+#include <wtf/WallTime.h>
 
 namespace JSC {
 class JSGlobalObject;
+}
+
+namespace Bun {
+struct NativeEventLoopSignal;
 }
 
 namespace WebCore {
@@ -69,7 +73,6 @@ class PerformanceNavigation;
 class PerformanceNavigationTiming;
 class PerformanceObserver;
 class PerformancePaintTiming;
-class PerformanceTiming;
 class ResourceResponse;
 class ResourceTiming;
 class ScriptExecutionContext;
@@ -77,10 +80,10 @@ struct PerformanceMarkOptions;
 struct PerformanceMeasureOptions;
 
 class Performance final : public RefCounted<Performance>, public ContextDestructionObserver, public EventTarget {
-    WTF_MAKE_TZONE_ALLOCATED(Performance);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(Performance);
 
 public:
-    static Ref<Performance> create(ScriptExecutionContext* context, MonotonicTime timeOrigin) { return adoptRef(*new Performance(context, timeOrigin)); }
+    static RefPtr<Performance> tryCreate(ScriptExecutionContext*, MonotonicTime monotonicTimeOrigin, WallTime wallTimeOrigin);
     ~Performance();
 
     DOMHighResTimeStamp now() const;
@@ -88,12 +91,11 @@ public:
     // ReducedResolutionSeconds nowInReducedResolutionSeconds() const;
 
     // PerformanceNavigation* navigation();
-    PerformanceTiming* timing();
 
-    Vector<RefPtr<PerformanceEntry>> getEntries() const;
-    Vector<RefPtr<PerformanceEntry>> getEntriesByType(const String& entryType) const;
-    Vector<RefPtr<PerformanceEntry>> getEntriesByName(const String& name, const String& entryType) const;
-    void appendBufferedEntriesByType(const String& entryType, Vector<RefPtr<PerformanceEntry>>&, PerformanceObserver&) const;
+    Bun::Bindgen::NativeAllocationResult<Vector<RefPtr<PerformanceEntry>>> getEntries() const;
+    Bun::Bindgen::NativeAllocationResult<Vector<RefPtr<PerformanceEntry>>> getEntriesByType(const String& entryType) const;
+    Bun::Bindgen::NativeAllocationResult<Vector<RefPtr<PerformanceEntry>>> getEntriesByName(const String& name, const String& entryType) const;
+    bool tryAppendBufferedEntriesByType(const String& entryType, Vector<RefPtr<PerformanceEntry>>&) const;
 
     void clearResourceTimings();
     void setResourceTimingBufferSize(unsigned);
@@ -107,29 +109,22 @@ public:
 
     // void addNavigationTiming(DocumentLoader&, Document&, CachedResource&, const DocumentLoadTiming&, const NetworkLoadMetrics&);
     // void navigationFinished(const NetworkLoadMetrics&);
-    void addResourceTiming(ResourceTiming&&);
+    Bun::Bindgen::NativeAllocationResult<void> addResourceTiming(ResourceTiming&&);
 
     // void reportFirstContentfulPaint();
 
     size_t memoryCost() const;
 
     void removeAllObservers();
-    void registerPerformanceObserver(PerformanceObserver&);
-    void unregisterPerformanceObserver(PerformanceObserver&);
 
     static void allowHighPrecisionTime();
     static Seconds timeResolution();
     static Seconds reduceTimeResolution(Seconds);
 
-    DOMHighResTimeStamp relativeTimeFromTimeOriginInReducedResolution(MonotonicTime) const;
-    MonotonicTime monotonicTimeFromRelativeTime(DOMHighResTimeStamp) const;
-
     ScriptExecutionContext* scriptExecutionContext() const final { return ContextDestructionObserver::scriptExecutionContext(); }
 
     using RefCounted::deref;
     using RefCounted::ref;
-
-    // void scheduleNavigationObservationTaskIfNeeded();
 
     // PerformanceNavigationTiming* navigationTiming() { return m_navigationTiming.get(); }
 
@@ -138,9 +133,9 @@ public:
     // EventTargetData& ensureEventTargetData() override;
 
 private:
-    Performance(ScriptExecutionContext*, MonotonicTime timeOrigin);
+    Performance(ScriptExecutionContext*, MonotonicTime, WallTime);
 
-    void contextDestroyed() override;
+    void contextDestroyed(ScriptExecutionContext&) override;
 
     EventTargetInterface eventTargetInterface() const final { return PerformanceEventTargetInterfaceType; }
 
@@ -151,10 +146,15 @@ private:
     // void resourceTimingBufferFullTimerFired();
 
     void queueEntry(PerformanceEntry&);
+    void registerPerformanceObserver(PerformanceObserver&);
+    void unregisterPerformanceObserver(PerformanceObserver&);
+    bool prepareObserverEntry(const PerformanceEntry&);
+    ExceptionOr<void> prepareObserverDelivery();
+    void closeObserverDelivery();
     void scheduleTaskIfNeeded();
+    Bun::Bindgen::NativeAllocationResult<void> deliverObservers();
 
     // mutable RefPtr<PerformanceNavigation> m_navigation;
-    mutable RefPtr<PerformanceTiming> m_timing;
 
     // https://w3c.github.io/resource-timing/#extensions-performance-interface recommends size of 150.
     Vector<RefPtr<PerformanceEntry>> m_resourceTimingBuffer;
@@ -166,15 +166,20 @@ private:
     // https://w3c.github.io/resource-timing/#dfn-resource-timing-buffer-full-flag
     bool m_resourceTimingBufferFullFlag { false };
     bool m_waitingForBackupBufferToBeProcessed { false };
-    bool m_hasScheduledTimingBufferDeliveryTask { false };
+    class ObserverDeliveryTarget;
+    RefPtr<ObserverDeliveryTarget> m_observerDeliveryTarget;
+    Bun::NativeEventLoopSignal* m_observerDeliverySignal { nullptr };
 
-    MonotonicTime m_timeOrigin;
+    MonotonicTime m_monotonicTimeOrigin;
+    WallTime m_wallTimeOrigin;
 
     // RefPtr<PerformanceNavigationTiming> m_navigationTiming;
     // RefPtr<PerformancePaintTiming> m_firstContentfulPaint;
     std::unique_ptr<PerformanceUserTiming> m_userTiming;
 
-    ListHashSet<RefPtr<PerformanceObserver>> m_observers;
+    PerformanceObserver* m_firstObserver { nullptr };
+    PerformanceObserver* m_lastObserver { nullptr };
+    friend class PerformanceObserver;
 };
 
 }

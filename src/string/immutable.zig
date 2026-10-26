@@ -112,7 +112,17 @@ pub fn containsComptime(self: string, comptime str: string) callconv(bun.callcon
 pub const includes = contains;
 
 pub fn inMapCaseInsensitive(self: []const u8, comptime ComptimeStringMap: anytype) ?ComptimeStringMap.Value {
-    return bun.String.ascii(self).inMapCaseInsensitive(ComptimeStringMap);
+    return ComptimeStringMap.getWithEqlList(self, indexOfCaseInsensitiveSameLength);
+}
+
+fn indexOfCaseInsensitiveSameLength(self: []const u8, comptime values: []const []const u8) ?usize {
+    inline for (0..values.len) |i| {
+        bun.assert(self.len == values[i].len);
+        if (eqlCaseInsensitiveASCIIIgnoreLength(self, values[i])) {
+            return i;
+        }
+    }
+    return null;
 }
 
 pub fn containsAny(in: anytype, target: anytype) callconv(bun.callconv_inline) bool {
@@ -1024,7 +1034,7 @@ pub fn containsNewlineOrNonASCIIOrQuote(text: []const u8) bool {
 /// - `"`
 /// - `'`
 /// - "`"
-pub fn indexOfNeedsEscapeForJavaScriptString(slice: []const u8, quote_char: u8) ?u32 {
+pub fn indexOfNeedsEscapeForJavaScriptString(slice: []const u8, quote_char: u8) ?usize {
     if (slice.len == 0)
         return null;
 
@@ -1655,69 +1665,6 @@ pub fn concat(
     return concatWithLength(allocator, args, length);
 }
 
-pub fn concatIfNeeded(
-    allocator: std.mem.Allocator,
-    dest: *[]const u8,
-    args: []const string,
-    interned_strings_to_check: []const string,
-) !void {
-    const total_length: usize = brk: {
-        var length: usize = 0;
-        for (args) |arg| {
-            length += arg.len;
-        }
-        break :brk length;
-    };
-
-    if (total_length == 0) {
-        dest.* = "";
-        return;
-    }
-
-    if (total_length < 1024) {
-        var stack_buffer: [1024]u8 = undefined;
-        var stack: std.heap.BufferFirstAllocator = .init(&stack_buffer, allocator);
-        const stack_copy = concatWithLength(stack.allocator(), args, total_length) catch unreachable;
-        for (interned_strings_to_check) |interned| {
-            if (eqlLong(stack_copy, interned, true)) {
-                dest.* = interned;
-                return;
-            }
-        }
-    }
-
-    const is_needed = brk: {
-        const out = dest.*;
-        var remain = out;
-
-        for (args) |arg| {
-            if (args.len > remain.len) {
-                break :brk true;
-            }
-
-            if (eqlLong(remain[0..args.len], arg, true)) {
-                remain = remain[args.len..];
-            } else {
-                break :brk true;
-            }
-        }
-
-        break :brk false;
-    };
-
-    if (!is_needed) return;
-
-    var buf = try allocator.alloc(u8, total_length);
-    dest.* = buf;
-    var remain = buf[0..];
-    for (args) |arg| {
-        @memcpy(remain[0..arg.len], arg);
-
-        remain = remain[arg.len..];
-    }
-    bun.unsafeAssert(remain.len == 0);
-}
-
 pub fn mustEscapeYAMLString(contents: []const u8) bool {
     if (contents.len == 0) return true;
 
@@ -1841,9 +1788,7 @@ pub const appendUTF8MachineWordToUTF16MachineWord = unicode.appendUTF8MachineWor
 pub const codepointSize = unicode.codepointSize;
 pub const containsNonBmpCodePoint = unicode.containsNonBmpCodePoint;
 pub const containsNonBmpCodePointOrIsInvalidIdentifier = unicode.containsNonBmpCodePointOrIsInvalidIdentifier;
-pub const convertUTF16ToUTF8 = unicode.convertUTF16ToUTF8;
 pub const convertUTF16ToUTF8Append = unicode.convertUTF16ToUTF8Append;
-pub const convertUTF16ToUTF8WithoutInvalidSurrogatePairs = unicode.convertUTF16ToUTF8WithoutInvalidSurrogatePairs;
 pub const convertUTF16toUTF8InBuffer = unicode.convertUTF16toUTF8InBuffer;
 pub const convertUTF8BytesIntoUTF16 = unicode.convertUTF8BytesIntoUTF16;
 pub const convertUTF8BytesIntoUTF16WithLength = unicode.convertUTF8BytesIntoUTF16WithLength;
@@ -1865,6 +1810,7 @@ pub const decodeWTF8RuneTMultibyte = unicode.decodeWTF8RuneTMultibyte;
 pub const elementLengthCP1252IntoUTF16 = unicode.elementLengthCP1252IntoUTF16;
 pub const elementLengthLatin1IntoUTF8 = unicode.elementLengthLatin1IntoUTF8;
 pub const elementLengthUTF16IntoUTF8 = unicode.elementLengthUTF16IntoUTF8;
+pub const elementLengthUTF16IntoUTF8WithReplacement = unicode.elementLengthUTF16IntoUTF8WithReplacement;
 pub const elementLengthUTF8IntoUTF16 = unicode.elementLengthUTF8IntoUTF16;
 pub const encodeUTF8Comptime = unicode.encodeUTF8Comptime;
 pub const encodeWTF8Rune = unicode.encodeWTF8Rune;
@@ -1884,13 +1830,10 @@ pub const toUTF16AllocForReal = unicode.toUTF16AllocForReal;
 pub const toUTF16AllocMaybeBuffered = unicode.toUTF16AllocMaybeBuffered;
 pub const toUTF16Literal = unicode.toUTF16Literal;
 pub const toUTF8Alloc = unicode.toUTF8Alloc;
-pub const toUTF8AllocWithType = unicode.toUTF8AllocWithType;
-pub const toUTF8AllocWithTypeWithoutInvalidSurrogatePairs = unicode.toUTF8AllocWithTypeWithoutInvalidSurrogatePairs;
 pub const toUTF8AllocZ = unicode.toUTF8AllocZ;
 pub const toUTF8AppendToList = unicode.toUTF8AppendToList;
 pub const toUTF8FromLatin1 = unicode.toUTF8FromLatin1;
 pub const toUTF8FromLatin1Z = unicode.toUTF8FromLatin1Z;
-pub const toUTF8ListWithType = unicode.toUTF8ListWithType;
 pub const toUTF8ListWithTypeBun = unicode.toUTF8ListWithTypeBun;
 pub const u16GetSupplementary = unicode.u16GetSupplementary;
 pub const u16IsLead = unicode.u16IsLead;
@@ -1955,43 +1898,13 @@ pub const CodePoint = i32;
 
 const string = []const u8;
 
-/// SIMD-accelerated iterator that yields slices of text between ANSI escape sequences.
-/// The C++ side uses ANSI::findEscapeCharacter (SIMD) and ANSI::consumeANSI.
-pub const ANSIIterator = extern struct {
-    input: [*]const u8,
-    input_len: usize,
-    cursor: usize,
-    slice_ptr: ?[*]const u8,
-    slice_len: usize,
-
-    pub fn init(input: []const u8) ANSIIterator {
-        return .{
-            .input = input.ptr,
-            .input_len = input.len,
-            .cursor = 0,
-            .slice_ptr = null,
-            .slice_len = 0,
-        };
-    }
-
-    /// Returns the next slice of non-ANSI text, or null when done.
-    pub fn next(self: *ANSIIterator) ?[]const u8 {
-        if (Bun__ANSI__next(self)) {
-            return (self.slice_ptr orelse return null)[0..self.slice_len];
-        }
-        return null;
-    }
-
-    extern fn Bun__ANSI__next(it: *ANSIIterator) bool;
-};
-
 const escapeHTML_ = @import("./immutable/escapeHTML.zig");
 const escapeRegExp_ = @import("./escapeRegExp.zig");
 const lines_ = @import("./immutable/lines.zig");
 const paths_ = @import("./immutable/paths.zig");
 const std = @import("std");
 const unicode = @import("./immutable/unicode.zig");
-const visible_ = @import("./immutable/visible.zig");
+pub const visible_ = @import("./immutable/visible.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;

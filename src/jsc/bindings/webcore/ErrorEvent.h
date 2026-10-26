@@ -33,38 +33,31 @@
 
 #include "Event.h"
 #include "JSValueInWrappedObject.h"
-// #include "SerializedScriptValue.h"
-#include <JavaScriptCore/Strong.h>
 #include <wtf/text/WTFString.h>
 
 namespace WebCore {
 
 class ErrorEvent final : public Event {
-    WTF_MAKE_TZONE_ALLOCATED(ErrorEvent);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(ErrorEvent);
 
 public:
-    static Ref<ErrorEvent> create(const String& message, const String& fileName, unsigned lineNumber, unsigned columnNumber, JSC::Strong<JSC::Unknown> error)
-    {
-        return adoptRef(*new ErrorEvent(message, fileName, lineNumber, columnNumber, error));
-    }
-
-    static Ref<ErrorEvent> create(const AtomString& type, const String& message, const String& fileName, unsigned lineNumber, unsigned columnNumber, JSC::Strong<JSC::Unknown> error)
-    {
-        return adoptRef(*new ErrorEvent(type, message, fileName, lineNumber, columnNumber, error));
-    }
-
     struct Init : EventInit {
         String message;
         String filename;
         unsigned lineno { 0 };
         unsigned colno { 0 };
-        JSC::JSValue error;
+        JSC::JSValue error { JSC::jsNull() };
     };
 
-    static Ref<ErrorEvent> create(const AtomString& type, const Init& initializer, IsTrusted isTrusted = IsTrusted::No)
+    static RefPtr<ErrorEvent> tryCreate(const AtomString& type, const Init& initializer, IsTrusted isTrusted = IsTrusted::No)
     {
-        return adoptRef(*new ErrorEvent(type, initializer, isTrusted));
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(ErrorEvent)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) ErrorEvent(type, initializer, isTrusted));
     }
+
+    static void dispatch(EventTarget&, const Init&, IsTrusted = IsTrusted::No);
 
     virtual ~ErrorEvent();
 
@@ -72,16 +65,11 @@ public:
     const String& filename() const { return m_fileName; }
     unsigned lineno() const { return m_lineNumber; }
     unsigned colno() const { return m_columnNumber; }
-    JSC::JSValue error(JSC::JSGlobalObject&);
+    JSC::JSValue error() const { return m_error.getValue(JSC::jsNull()); }
 
     const JSValueInWrappedObject& originalError() const { return m_error; }
-    // SerializedScriptValue* serializedError() const { return m_serializedError.get(); }
-
-    // RefPtr<SerializedScriptValue> trySerializeError(JSC::JSGlobalObject&);
 
 private:
-    ErrorEvent(const AtomString& type, const String& message, const String& fileName, unsigned lineNumber, unsigned columnNumber, JSC::Strong<JSC::Unknown> error);
-    ErrorEvent(const String& message, const String& fileName, unsigned lineNumber, unsigned columnNumber, JSC::Strong<JSC::Unknown> error);
     ErrorEvent(const AtomString&, const Init&, IsTrusted);
 
     String m_message;

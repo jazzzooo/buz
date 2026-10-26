@@ -420,7 +420,7 @@ pub fn printHelp(subcommand: Subcommand) void {
             Output.flush();
         },
         Subcommand.pm => {
-            PackageManagerCommand.printHelp();
+            printPackageManagerHelp();
         },
         Subcommand.add => {
             const intro_text =
@@ -747,6 +747,60 @@ pub fn printHelp(subcommand: Subcommand) void {
             Output.flush();
         },
     }
+}
+
+fn printPackageManagerHelp() void {
+    const intro_text =
+        \\
+        \\<b>Usage<r>: <b><green>bun pm<r> <cyan>[flags]<r> <blue>[\<command\>]<r>
+        \\
+        \\  Run package manager utilities.
+    ;
+    const outro_text =
+        \\
+        \\
+        \\<b>Commands:<r>
+        \\
+        \\  <b><green>bun pm<r> <blue>scan<r>                 scan all packages in lockfile for security vulnerabilities
+        \\  <b><green>bun pm<r> <blue>pack<r>                 create a tarball of the current workspace
+        \\  <d>├<r> <cyan>--dry-run<r>                 do everything except for writing the tarball to disk
+        \\  <d>├<r> <cyan>--destination<r>             the directory the tarball will be saved in
+        \\  <d>├<r> <cyan>--filename<r>                the name of the tarball
+        \\  <d>├<r> <cyan>--ignore-scripts<r>          don't run pre/postpack and prepare scripts
+        \\  <d>├<r> <cyan>--gzip-level<r>              specify a custom compression level for gzip (0-9, default is 9)
+        \\  <d>└<r> <cyan>--quiet<r>                   only output the tarball filename
+        \\  <b><green>bun pm<r> <blue>bin<r>                  print the path to bin folder
+        \\  <d>└<r> <cyan>-g<r>                        print the <b>global<r> path to bin folder
+        \\  <b><green>bun<r> <blue>list<r>                  list the dependency tree according to the current lockfile
+        \\  <d>└<r> <cyan>--all<r>                     list the entire dependency tree according to the current lockfile
+        \\  <b><green>bun pm<r> <blue>why<r> <d>\<pkg\><r>            show dependency tree explaining why a package is installed
+        \\  <b><green>bun pm<r> <blue>whoami<r>               print the current npm username
+        \\  <b><green>bun pm<r> <blue>view<r> <d>name[@version]<r>  view package metadata from the registry <d>(use `bun info` instead)<r>
+        \\  <b><green>bun pm<r> <blue>version<r> <d>[increment]<r>  bump the version in package.json and create a git tag
+        \\  <d>└<r> <cyan>increment<r>                 patch, minor, major, prepatch, preminor, premajor, prerelease, from-git, or a specific version
+        \\  <b><green>bun pm<r> <blue>pkg<r>                  manage data in package.json
+        \\  <d>├<r> <cyan>get<r> <d>[key ...]<r>
+        \\  <d>├<r> <cyan>set<r> <d>key=value ...<r>
+        \\  <d>├<r> <cyan>delete<r> <d>key ...<r>
+        \\  <d>└<r> <cyan>fix<r>                       auto-correct common package.json errors
+        \\  <b><green>bun pm<r> <blue>hash<r>                 generate & print the hash of the current lockfile
+        \\  <b><green>bun pm<r> <blue>hash-string<r>          print the string used to hash the lockfile
+        \\  <b><green>bun pm<r> <blue>hash-print<r>           print the hash stored in the current lockfile
+        \\  <b><green>bun pm<r> <blue>cache<r>                print the path to the cache folder
+        \\  <b><green>bun pm<r> <blue>cache rm<r>             clear the cache
+        \\  <b><green>bun pm<r> <blue>migrate<r>              migrate another package manager's lockfile without installing anything
+        \\  <b><green>bun pm<r> <blue>untrusted<r>            print current untrusted dependencies with scripts
+        \\  <b><green>bun pm<r> <blue>trust<r> <d>names ...<r>      run scripts for untrusted dependencies and add to `trustedDependencies`
+        \\  <d>└<r>  <cyan>--all<r>                    trust all untrusted dependencies
+        \\  <b><green>bun pm<r> <blue>default-trusted<r>      print the default trusted dependencies list
+        \\
+        \\Learn more about these at <magenta>https://bun.com/docs/cli/pm<r>.
+        \\
+    ;
+
+    Output.pretty(intro_text, .{});
+    Output.pretty(outro_text, .{});
+    Output.flush();
 }
 
 pub fn parse(allocator: std.mem.Allocator, comptime subcommand: Subcommand) !CommandLineArguments {
@@ -1144,7 +1198,6 @@ const string = []const u8;
 const Npm = @import("../npm.zig");
 const Options = @import("./PackageManagerOptions.zig");
 const std = @import("std");
-const PackageManagerCommand = @import("../../cli/package_manager_command.zig").PackageManagerCommand;
 
 const bun = @import("bun");
 const Environment = bun.Environment;

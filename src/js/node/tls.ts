@@ -2,20 +2,20 @@
 const { isArrayBufferView, isTypedArray } = require("node:util/types");
 const net = require("node:net");
 const Duplex = require("internal/streams/duplex");
-const addServerName = $newZigFunction("Listener.zig", "jsAddServerName", 3);
+const addServerName = $bindgenFn("NodeSocket.schema.zig", "addServerName");
 const { throwNotImplemented } = require("internal/shared");
 const { throwOnInvalidTLSArray } = require("internal/tls");
 const { validateString } = require("internal/validators");
 
 const { Server: NetServer, Socket: NetSocket } = net;
 
-const getBundledRootCertificates = $newCppFunction("NodeTLS.cpp", "getBundledRootCertificates", 1);
-const getExtraCACertificates = $newCppFunction("NodeTLS.cpp", "getExtraCACertificates", 1);
-const getSystemCACertificates = $newCppFunction("NodeTLS.cpp", "getSystemCACertificates", 1);
-const canonicalizeIP = $newCppFunction("NodeTLS.cpp", "Bun__canonicalizeIP", 1);
+const getBundledRootCertificates = $bindgenFn("TLSCertificates.schema.zig", "getBundled");
+const getExtraCACertificates = $bindgenFn("TLSCertificates.schema.zig", "getExtra");
+const getSystemCACertificates = $bindgenFn("TLSCertificates.schema.zig", "getSystem");
+const canonicalizeIP = $bindgenFn("CanonicalizeIP.schema.zig", "canonicalizeIP");
 
-const getTLSDefaultCiphers = $newCppFunction("NodeTLS.cpp", "getDefaultCiphers", 0);
-const setTLSDefaultCiphers = $newCppFunction("NodeTLS.cpp", "setDefaultCiphers", 1);
+const getTLSDefaultCiphers = $bindgenFn("TLSDefaults.schema.zig", "get");
+const setTLSDefaultCiphers = $bindgenFn("TLSDefaults.schema.zig", "set");
 let _VALID_CIPHERS_SET: Set<string> | undefined;
 function getValidCiphersSet() {
   if (!_VALID_CIPHERS_SET) {
@@ -395,19 +395,15 @@ function checkServerIdentity(hostname, cert) {
   }
 }
 
-// Native SSL_CTX wrapper. `intern()` is WeakGCMap-memoised by config digest
-// (the native `SSLContextCache` underneath is shared with every Zig consumer
-// — Postgres, Valkey, `Bun.connect`, …), so identical options return the same
-// native handle and the same `SSL_CTX*`. Replaces the SHA-256/WeakRef cache
-// that used to live in this file.
-const NativeSecureContext = $zig("SecureContext.zig", "js.getConstructor");
+const NativeSecureContext = $bindgenClass("SecureContext.schema.zig", "SecureContext");
+const internSecureContext = $bindgenFn("SecureContext.schema.zig", "internSecureContext");
 
 // Node treats any falsy key/cert/ca as "not provided" (test-tls-options-
 // boolean-check.js exercises false/0/""). The bindgen SSLConfigFile union only
 // accepts null|string|ArrayBuffer|Blob|array, so coerce falsy → null before
 // crossing into native so `{ key: false }` etc. doesn't throw
 // ERR_INVALID_ARG_TYPE from the bindgen layer.
-function newNativeSecureContext(options) {
+function newNativeSecureContext(options, cached) {
   if (options && (!options.key || !options.cert || !options.ca)) {
     options = {
       ...options,
@@ -416,14 +412,14 @@ function newNativeSecureContext(options) {
       ca: options.ca || null,
     };
   }
-  return NativeSecureContext.intern(options);
+  return cached ? internSecureContext(options) : new NativeSecureContext(options);
 }
 
 var InternalSecureContext = class SecureContext {
   context;
   servername;
 
-  constructor(options) {
+  constructor(options, cached = false) {
     if (options) {
       if (options.cert) throwOnInvalidTLSArray("options.cert", options.cert);
       if (options.key) throwOnInvalidTLSArray("options.key", options.key);
@@ -451,10 +447,7 @@ var InternalSecureContext = class SecureContext {
           );
       }
     }
-    // The native handle (SSL_CTX wrapper) is what's memoised — not this JS
-    // object — so per-call fields like `servername` come from THIS call's
-    // options while the expensive SSL_CTX is shared.
-    this.context = newNativeSecureContext(options);
+    this.context = newNativeSecureContext(options, cached);
     this.servername = options?.servername;
   }
 };
@@ -465,9 +458,6 @@ function SecureContext(options): void {
 
 function createSecureContext(options) {
   if (options instanceof InternalSecureContext) return options;
-  // The native handle (SSL_CTX) is memoised inside `NativeSecureContext.intern`
-  // by the per-VM `SSLContextCache`, so no JS-side hashing here. The JS wrapper
-  // is built fresh because it carries the per-call `servername`.
   return new InternalSecureContext(options);
 }
 
@@ -527,7 +517,7 @@ function TLSSocket(socket?, options?) {
       this._handle._parentWrap = this;
     }
   }
-  this[ksecureContext] = options.secureContext || createSecureContext(options);
+  this[ksecureContext] = options.secureContext || new InternalSecureContext(options, true);
   this.authorized = false;
   this.secureConnecting = true;
   this._secureEstablished = false;
@@ -719,8 +709,8 @@ function Server(options, secureConnectionListener): void {
   this.ca = undefined;
   this.passphrase = undefined;
   this.secureOptions = undefined;
-  this._rejectUnauthorized = rejectUnauthorizedDefault;
-  this._requestCert = undefined;
+  this._rejectUnauthorized = options?.rejectUnauthorized !== false;
+  this._requestCert = options?.requestCert === true ? true : undefined;
   this.servername = undefined;
   this.ALPNProtocols = undefined;
 
@@ -789,17 +779,6 @@ function Server(options, secureConnectionListener): void {
         throw $ERR_INVALID_ARG_TYPE("options.secureOptions", "number", secureOptions);
       }
       this.secureOptions = secureOptions;
-
-      const requestCert = options.requestCert || false;
-
-      if (requestCert) this._requestCert = requestCert;
-      else this._requestCert = undefined;
-
-      const rejectUnauthorized = options.rejectUnauthorized;
-
-      if (typeof rejectUnauthorized !== "undefined") {
-        this._rejectUnauthorized = rejectUnauthorized;
-      } else this._rejectUnauthorized = rejectUnauthorizedDefault;
 
       if (typeof options.ciphers !== "undefined") {
         if (typeof options.ciphers !== "string") {
@@ -880,7 +859,7 @@ function connect(...args) {
   const options = normal[0];
   const { ALPNProtocols, servername } = options as { ALPNProtocols?: unknown; servername?: unknown };
 
-  if (servername && net.isIP(servername)) {
+  if (servername && net.isIP(servername as string)) {
     throw $ERR_INVALID_ARG_VALUE(
       "options.servername",
       servername,
@@ -946,12 +925,11 @@ function convertALPNProtocols(protocols, out) {
   }
 }
 
-let bundledRootCertificates: string[] | undefined;
-function cacheBundledRootCertificates(): string[] {
-  bundledRootCertificates ||= getBundledRootCertificates() as string[];
-  return bundledRootCertificates;
+let bundledRootCertificates: readonly string[] | undefined;
+function cacheBundledRootCertificates(): readonly string[] {
+  return (bundledRootCertificates ||= ObjectFreeze(getBundledRootCertificates() as string[]));
 }
-const getUseSystemCA = $newZigFunction("bun.zig", "getUseSystemCA", 0);
+const getUseSystemCA = $bindgenFn("NodeSocket.schema.zig", "getUseSystemCA");
 
 let defaultCACertificates: string[] | undefined;
 function cacheDefaultCACertificates() {
@@ -982,16 +960,14 @@ function cacheDefaultCACertificates() {
   return defaultCACertificates;
 }
 
-let systemCACertificates: string[] | undefined;
-function cacheSystemCACertificates(): string[] {
-  systemCACertificates ||= getSystemCACertificates() as string[];
-  return systemCACertificates;
+let systemCACertificates: readonly string[] | undefined;
+function cacheSystemCACertificates(): readonly string[] {
+  return (systemCACertificates ||= ObjectFreeze(getSystemCACertificates() as string[]));
 }
 
-let extraCACertificates: string[] | undefined;
-function cacheExtraCACertificates(): string[] {
-  extraCACertificates ||= getExtraCACertificates() as string[];
-  return extraCACertificates;
+let extraCACertificates: readonly string[] | undefined;
+function cacheExtraCACertificates(): readonly string[] {
+  return (extraCACertificates ||= ObjectFreeze(getExtraCACertificates() as string[]));
 }
 
 function getCACertificates(type = "default") {

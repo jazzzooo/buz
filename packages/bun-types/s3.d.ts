@@ -17,9 +17,10 @@ declare module "bun" {
     /**
      * Flush the internal buffer, committing the data to disk or the pipe.
      *
+     * @param wait When `true`, block until the data is flushed to the underlying file descriptor
      * @returns Number of bytes flushed or a Promise resolving to the number of bytes
      */
-    flush(): number | Promise<number>;
+    flush(wait?: boolean): number | Promise<number>;
     /**
      * Close the file descriptor. This also flushes the internal buffer.
      *

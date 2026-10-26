@@ -623,6 +623,7 @@ pub const PmPkgCommand = struct {
 
             const temp_source = logger.Source.initPathString("package.json", value);
             var temp_log = logger.Log.init(allocator);
+            defer temp_log.deinit();
             if (JSON.parsePackageJSONUTF8(&temp_source, &temp_log, allocator)) |json_expr| {
                 return json_expr;
             } else |_| {

@@ -110,6 +110,7 @@ void us_socket_timeout(struct us_socket_t *s, unsigned int seconds) {
 }
 
 void us_connecting_socket_timeout(struct us_connecting_socket_t *c, unsigned int seconds) {
+    if (c->closed) return;
     if (seconds) {
         c->timeout = ((unsigned int)c->group->timestamp + ((seconds + 3) >> 2)) % 240;
     } else {
@@ -126,6 +127,7 @@ void us_socket_long_timeout(struct us_socket_t *s, unsigned int minutes) {
 }
 
 void us_connecting_socket_long_timeout(struct us_connecting_socket_t *c, unsigned int minutes) {
+    if (c->closed) return;
     if (minutes) {
         c->long_timeout = ((unsigned int)c->group->long_timestamp + minutes) % 240;
     } else {
@@ -173,83 +175,69 @@ static void us_internal_connecting_socket_detach(struct us_connecting_socket_t *
     if (c->group) {
         us_internal_socket_group_unlink_connecting_socket(c->group, c);
         c->group = NULL;
+        us_internal_release_sweep_timer(loop);
     }
     if (c->ssl_ctx) {
         us_internal_ssl_ctx_unref(c->ssl_ctx);
         c->ssl_ctx = NULL;
     }
-    (void)loop;
 }
 
 void us_connecting_socket_free(struct us_connecting_socket_t *c) {
-    // we can't just free c immediately, as it may be enqueued in the dns_ready_head list
-    // instead, we move it to a close list and free it after the iteration
+    if (c->free_state == US_CONNECTING_FREE_QUEUED) return;
+    c->closed = 1;
     us_internal_connecting_socket_detach(c, c->loop);
+    if (c->callback_depth) {
+        c->free_state = US_CONNECTING_FREE_DEFERRED;
+        return;
+    }
+    c->free_state = US_CONNECTING_FREE_QUEUED;
     c->next = c->loop->data.closed_connecting_head;
     c->loop->data.closed_connecting_head = c;
+}
+
+void us_internal_connecting_socket_begin_callback(struct us_connecting_socket_t *c) {
+    c->callback_depth++;
+}
+
+void us_internal_connecting_socket_end_callback(struct us_connecting_socket_t *c) {
+    if (!c->callback_depth) BUN_PANIC("pending connection callback imbalance");
+    c->callback_depth--;
+    if (!c->callback_depth && c->free_state == US_CONNECTING_FREE_DEFERRED) us_connecting_socket_free(c);
 }
 
 void us_connecting_socket_close(struct us_connecting_socket_t *c) {
     if (c->closed) return;
     c->closed = 1;
+    struct us_loop_t *loop = c->loop;
+    struct us_connecting_socket_t *(*on_error)(struct us_connecting_socket_t *, const struct us_connect_error_t *) = c->group->vtable->on_connecting_error;
+    us_internal_connecting_socket_begin_callback(c);
     for (struct us_socket_t *s = c->connecting_head; s; s = s->connect_next) {
-        us_internal_socket_group_unlink_socket(s->group, s);
-
-        us_poll_stop((struct us_poll_t *) s, s->group->loop);
-        bsd_close_socket(us_poll_fd((struct us_poll_t *) s));
-
-        /* Link this socket to the close-list and let it be deleted after this iteration */
-        s->next = s->group->loop->data.closed_head;
-        s->group->loop->data.closed_head = s;
-
-        /* Mark the socket as closed */
-        s->flags.is_closed = 1;
+        us_internal_socket_close_raw(s, LIBUS_SOCKET_CLOSE_CODE_FAST_SHUTDOWN, NULL);
     }
-    if (!c->error) {
-        // if we have no error, we have to set that we were aborted aka we called close
-        c->error = ECONNABORTED;
+    c->connecting_head = NULL;
+    if (!c->failure.system_error && !c->failure.dns_error && c->failure.poll_error.domain == US_POLL_ERROR_NONE) {
+        c->failure.system_error = LIBUS_ERR_CONNECTION_ABORTED;
     }
-    struct us_socket_group_t *group = c->group;
-
     if (c->pending_resolve_callback) {
-        // The DNS callback has not been drained. Try to remove c from the
-        // request's notify list so it never fires. Returns 0 if the result is
-        // already set (the callback has fired or is about to), in which case
-        // after_resolve will see c->closed and finish teardown.
-        if (c->addrinfo_req && Bun__addrinfo_cancel(c->addrinfo_req, c)) {
 #ifdef _WIN32
-            group->loop->uv_loop->active_handles--;
+        loop->uv_loop->active_handles--;
 #else
-            group->loop->num_polls--;
+        loop->num_polls--;
 #endif
+        if (c->addrinfo_req && bun_dns_cancel(c->addrinfo_req, c)) {
             c->pending_resolve_callback = 0;
-            Bun__addrinfo_freeRequest(c->addrinfo_req, 0);
+            bun_dns_release(c->addrinfo_req, 0);
             c->addrinfo_req = 0;
-            us_dispatch_connecting_error(c, c->error);
-            us_connecting_socket_free(c);
-        } else {
-            /* Can't cancel — the resolve callback is already queued. Detach
-             * from the group NOW so the owner can deinit; after_resolve will
-             * see c->closed and only push c to the loop's closed list without
-             * touching the (possibly freed) group. Balance the keep-alive here
-             * for the same reason. */
-#ifdef _WIN32
-            group->loop->uv_loop->active_handles--;
-#else
-            group->loop->num_polls--;
-#endif
-            us_dispatch_connecting_error(c, c->error);
-            us_internal_connecting_socket_detach(c, group->loop);
         }
-        return;
-    }
-
-    if (c->addrinfo_req) {
-        Bun__addrinfo_freeRequest(c->addrinfo_req, c->error == ECONNREFUSED);
+    } else if (c->addrinfo_req) {
+        bun_dns_release(c->addrinfo_req, c->failure.system_error == LIBUS_ERR_CONNECTION_REFUSED);
         c->addrinfo_req = 0;
     }
-    us_dispatch_connecting_error(c, c->error);
-    us_connecting_socket_free(c);
+    us_internal_connecting_socket_detach(c, loop);
+    if (on_error) on_error(c, &c->failure);
+    if (!c->pending_resolve_callback) us_connecting_socket_free(c);
+    us_internal_connecting_socket_end_callback(c);
 }
 
 /* Tear the fd down + dispatch on_close. Bypasses the SSL layer entirely —
@@ -261,25 +249,10 @@ void us_connecting_socket_close(struct us_connecting_socket_t *c) {
 struct us_socket_t *us_internal_socket_close_raw(struct us_socket_t *s, int code, void *reason) {
     if (!us_socket_is_closed(s)) {
         struct us_loop_t *loop = s->group->loop;
+        us_internal_release_sweep_timer(loop);
 
-        if (s->flags.low_prio_state == 1) {
-            /* Unlink this socket from the low-priority queue */
-            if (!s->prev) loop->data.low_prio_head = s->next;
-            else s->prev->next = s->next;
-
-            if (s->next) s->next->prev = s->prev;
-
-            s->prev = 0;
-            s->next = 0;
-            s->flags.low_prio_state = 0;
-            s->group->low_prio_count--;
-            /* Mirror the else branch: if this was the last thing keeping the
-             * group linked, drop it from the loop now rather than waiting for
-             * the next link/unlink to notice. */
-            us_internal_group_maybe_unlink(s->group);
-        } else {
-            us_internal_socket_group_unlink_socket(s->group, s);
-        }
+        us_internal_low_prio_unlink(s);
+        us_internal_socket_group_unlink_socket(s->group, s);
         #ifdef LIBUS_USE_KQUEUE
             // kqueue automatically removes the fd from the set on close
             // we can skip the system call for that case
@@ -337,25 +310,10 @@ struct us_socket_t *us_socket_close(struct us_socket_t *s, int code, void *reaso
 struct us_socket_t *us_socket_detach(struct us_socket_t *s) {
     if (!us_socket_is_closed(s)) {
         struct us_loop_t *loop = s->group->loop;
+        us_internal_release_sweep_timer(loop);
 
-        if (s->flags.low_prio_state == 1) {
-            /* Unlink this socket from the low-priority queue */
-            if (!s->prev) loop->data.low_prio_head = s->next;
-            else s->prev->next = s->next;
-
-            if (s->next) s->next->prev = s->prev;
-
-            s->prev = 0;
-            s->next = 0;
-            s->flags.low_prio_state = 0;
-            s->group->low_prio_count--;
-            /* Mirror the else branch: if this was the last thing keeping the
-             * group linked, drop it from the loop now rather than waiting for
-             * the next link/unlink to notice. */
-            us_internal_group_maybe_unlink(s->group);
-        } else {
-            us_internal_socket_group_unlink_socket(s->group, s);
-        }
+        us_internal_low_prio_unlink(s);
+        us_internal_socket_group_unlink_socket(s->group, s);
         us_poll_stop((struct us_poll_t *) s, loop);
 
         us_internal_ssl_detach(s);
@@ -372,18 +330,6 @@ struct us_socket_t *us_socket_detach(struct us_socket_t *s) {
     return s;
 }
 
-struct us_socket_t *us_socket_pair(struct us_socket_group_t *group, unsigned char kind, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR *fds) {
-#if defined(LIBUS_USE_LIBUV) || defined(WIN32)
-    return 0;
-#else
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-        return 0;
-    }
-
-    return us_socket_from_fd(group, kind, NULL, socket_ext_size, fds[0], 0);
-#endif
-}
-
 int us_socket_write2(struct us_socket_t *s, const char *header, int header_length, const char *payload, int payload_length) {
     if (us_socket_is_closed(s) || us_socket_is_shut_down(s)) {
         return 0;
@@ -397,13 +343,27 @@ int us_socket_write2(struct us_socket_t *s, const char *header, int header_lengt
     return written < 0 ? 0 : written;
 }
 
-struct us_socket_t *us_socket_from_fd(struct us_socket_group_t *group, unsigned char kind, struct ssl_ctx_st *ssl_ctx, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR fd, int ipc) {
-#if defined(LIBUS_USE_LIBUV) || defined(WIN32)
+struct us_socket_t *us_socket_from_fd(struct us_socket_group_t *group, unsigned char kind, struct ssl_ctx_st *ssl_ctx, int socket_ext_size, LIBUS_SOCKET_DESCRIPTOR fd, int ipc, struct us_connect_error_t *failure) {
+    *failure = (struct us_connect_error_t){0};
+#if defined(WIN32)
+    failure->system_error = WSAEOPNOTSUPP;
+    return 0;
+#elif defined(LIBUS_USE_LIBUV)
+    failure->poll_error = (struct us_poll_error_t){.domain = US_POLL_ERROR_LIBUV, .code = UV_ENOSYS};
     return 0;
 #else
-    struct us_poll_t *p1 = us_create_poll(group->loop, 0, sizeof(struct us_socket_t) + socket_ext_size);
+    struct us_poll_t *p1 = us_internal_create_socket_poll(group->loop, socket_ext_size);
+    if (!p1) {
+        failure->system_error = LIBUS_ERR;
+        return NULL;
+    }
+    if (bsd_set_nonblocking(apple_no_sigpipe(fd)) == LIBUS_SOCKET_ERROR) {
+        failure->system_error = LIBUS_ERR;
+        us_internal_poll_discard(p1, group->loop, 0);
+        return NULL;
+    }
     us_poll_init(p1, fd, POLL_TYPE_SOCKET);
-    int rc = us_poll_start_rc(p1, group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
+    int rc = us_internal_socket_poll_start(p1, group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE, &failure->poll_error);
     if (rc != 0) {
         us_poll_free(p1, group->loop);
         return 0;
@@ -415,18 +375,14 @@ struct us_socket_t *us_socket_from_fd(struct us_socket_group_t *group, unsigned 
     s->ssl = NULL;
     s->timeout = 255;
     s->long_timeout = 255;
-    s->flags.low_prio_state = 0;
-    s->flags.allow_half_open = 0;
-    s->flags.is_paused = 0;
-    s->flags.is_ipc = ipc;
-    s->flags.is_closed = 0;
-    s->flags.adopted = 0;
+    s->flags = (struct us_socket_flags){.is_ipc = ipc};
     s->connect_state = NULL;
+    s->connect_next = NULL;
+    s->low_prio_prev = NULL;
+    s->low_prio_next = NULL;
 
     /* We always use nodelay */
     bsd_socket_nodelay(fd, 1);
-    apple_no_sigpipe(fd);
-    bsd_set_nonblocking(fd);
     us_internal_socket_group_link_socket(group, s);
 
     /* Bun.connect({fd, tls}) hands us an already-connected fd that should
@@ -452,68 +408,88 @@ void *us_connecting_socket_get_native_handle(struct us_connecting_socket_t *c) {
     return (void *) (uintptr_t) -1;
 }
 
-int us_socket_write(struct us_socket_t *s, const char *data, int length) {
-    if (s->ssl) {
-        return us_internal_ssl_write(s, data, length);
+struct us_socket_write_result us_socket_raw_write_checked(struct us_socket_t *s, const char *data, int length) {
+    if (us_socket_is_closed(s)) {
+        return (struct us_socket_write_result){0, US_SOCKET_WRITE_CLOSED};
     }
-    if (us_socket_is_closed(s) || us_socket_is_shut_down(s)) {
-        return 0;
+    /* TLS close_notify is flushed after SSL shutdown, but before TCP FIN. */
+    if (us_internal_poll_type(&s->p) == POLL_TYPE_SOCKET_SHUT_DOWN) {
+        return (struct us_socket_write_result){0, US_SOCKET_WRITE_FAILED};
     }
 
     int written = bsd_send(us_poll_fd(&s->p), data, length);
+    const int failed = written < 0 && !bsd_would_block();
     if (written != length) {
         s->flags.last_write_failed = 1;
         us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
     }
+    return (struct us_socket_write_result){written < 0 ? 0 : written,
+        failed ? US_SOCKET_WRITE_FAILED : written == length ? US_SOCKET_WRITE_COMPLETE : US_SOCKET_WRITE_BACKPRESSURE};
+}
 
-    return written < 0 ? 0 : written;
+struct us_socket_write_result us_socket_write_checked(struct us_socket_t *s, const char *data, int length) {
+    if (s->ssl) return us_internal_ssl_write_checked(s, data, length);
+    return us_socket_raw_write_checked(s, data, length);
+}
+
+int us_socket_write(struct us_socket_t *s, const char *data, int length) {
+    return us_socket_write_checked(s, data, length).written;
 }
 
 int us_socket_raw_write(struct us_socket_t *s, const char *data, int length) {
-    /* Bypass-TLS path: openssl.c uses this to flush close_notify *after*
-     * SSL_shutdown() has marked the SSL layer shut down, so checking
-     * us_socket_is_shut_down() here would deadlock the alert in userspace.
-     * Gate only on fd close and TCP-level FIN. */
-    if (us_socket_is_closed(s) ||
-        us_internal_poll_type(&s->p) == POLL_TYPE_SOCKET_SHUT_DOWN) {
-        return 0;
-    }
+    return us_socket_raw_write_checked(s, data, length).written;
+}
 
+#if !defined(_WIN32)
+int us_socket_ipc_write(struct us_socket_t *s, const char *data, int length) {
+    if (s->ssl) {
+        return -EINVAL;
+    }
+    if (us_socket_is_closed(s) || us_socket_is_shut_down(s)) {
+        return -EPIPE;
+    }
     int written = bsd_send(us_poll_fd(&s->p), data, length);
+    if (written < 0) {
+        int error = errno;
+        if (error != EAGAIN && error != EWOULDBLOCK) {
+            return -error;
+        }
+        written = 0;
+    }
     if (written != length) {
         s->flags.last_write_failed = 1;
         us_poll_change(&s->p, s->group->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
     }
-
-    return written < 0 ? 0 : written;
+    return written;
 }
 
-#if !defined(_WIN32)
-/* Send a message with data and an attached file descriptor, for use in IPC. Returns the number of bytes written. If that
-    number is less than the length, the file descriptor was not sent. */
+/* A positive result transfers the descriptor, including a partial data write. */
 int us_socket_ipc_write_fd(struct us_socket_t *s, const char *data, int length, int fd) {
-    if (us_socket_is_closed(s) || us_socket_is_shut_down(s)) {
+    if (length <= 0 || us_socket_is_closed(s) || us_socket_is_shut_down(s)) {
         return 0;
     }
 
     struct msghdr msg = {0};
     struct iovec iov = {0};
-    char cmsgbuf[CMSG_SPACE(sizeof(int))];
+    union {
+        struct cmsghdr alignment;
+        char bytes[CMSG_SPACE(sizeof(int))];
+    } control = {0};
 
     iov.iov_base = (void *) data;
     iov.iov_len = length;
 
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
-    msg.msg_control = cmsgbuf;
-    msg.msg_controllen = CMSG_SPACE(sizeof(int));
+    msg.msg_control = control.bytes;
+    msg.msg_controllen = sizeof(control.bytes);
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
     cmsg->cmsg_len = CMSG_LEN(sizeof(int));
 
-    *(int *) CMSG_DATA(cmsg) = fd;
+    memcpy(CMSG_DATA(cmsg), &fd, sizeof(fd));
 
     int sent = bsd_sendmsg(us_poll_fd(&s->p), &msg, 0);
 
@@ -568,8 +544,8 @@ void us_connecting_socket_shutdown(struct us_connecting_socket_t *c) {
     c->shutdown = 1;
 }
 
-int us_connecting_socket_get_error(struct us_connecting_socket_t *c) {
-    return c->error;
+void us_connecting_socket_get_failure(struct us_connecting_socket_t *c, struct us_connect_error_t *error) {
+    *error = c->failure;
 }
 
 struct us_socket_t *us_socket_open(struct us_socket_t *s, int is_client, char *ip, int ip_length) {
@@ -579,12 +555,8 @@ struct us_socket_t *us_socket_open(struct us_socket_t *s, int is_client, char *i
     return us_dispatch_open(s, is_client, ip, ip_length);
 }
 
-unsigned int us_get_remote_address_info(char *buf, struct us_socket_t *s, const char **dest, int *port, int *is_ipv6)
+unsigned int us_get_remote_address_info(char *buf, struct us_socket_t *s, int *port)
 {
-    // This function is manual inlining + modification of
-    //      us_socket_remote_address
-    //      AsyncSocket::getRemoteAddress
-    // To get { ip, port, is_ipv6 } for Bun.serve().requestIP()
     struct bsd_addr_t addr;
     if (bsd_remote_addr(us_poll_fd(&s->p), &addr)) {
         return 0;
@@ -601,7 +573,7 @@ unsigned int us_get_remote_address_info(char *buf, struct us_socket_t *s, const 
     return length;
 }
 
-unsigned int us_get_local_address_info(char *buf, struct us_socket_t *s, const char **dest, int *port, int *is_ipv6)
+unsigned int us_get_local_address_info(char *buf, struct us_socket_t *s, int *port)
 {
     struct bsd_addr_t addr;
     if (bsd_local_addr(us_poll_fd(&s->p), &addr)) {

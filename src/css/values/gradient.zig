@@ -65,7 +65,7 @@ pub const Gradient = union(enum) {
                     @"-o-repeating-radial-gradient",
                     @"-webkit-gradient",
                 });
-                if (Map.getAnyCase(closure.func)) |matched|
+                if (Map.getCaseInsensitiveASCII(closure.func)) |matched|
                     switch (matched) {
                         .@"linear-gradient" => {
                             return .{ .result = .{ .linear = switch (LinearGradient.parse(input_, css.VendorPrefix{ .none = true })) {

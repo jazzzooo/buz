@@ -27,64 +27,38 @@
 #include "config.h"
 #include "StructuredClone.h"
 
+#include "SchemaBindings.h"
 #include "JSDOMBinding.h"
 #include "JSDOMExceptionHandling.h"
 #include <JavaScriptCore/JSTypedArrays.h>
 #include "SerializedScriptValue.h"
+#include "StructuredSerializeBinding.h"
 #include "MessagePort.h"
 
 namespace WebCore {
 using namespace JSC;
 
-enum class CloneMode {
-    Full,
-    Partial,
-};
-
-static JSC::EncodedJSValue cloneArrayBufferImpl(JSGlobalObject* lexicalGlobalObject, CallFrame* callFrame, CloneMode mode)
+static JSC::JSValue cloneArrayBuffer(JSGlobalObject* globalObject, JSC::ArrayBuffer* buffer, int32_t srcByteOffset, int32_t srcLength)
 {
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-
-    ASSERT(lexicalGlobalObject);
-    ASSERT(callFrame->argumentCount());
-    ASSERT(callFrame->lexicalGlobalObject(vm) == lexicalGlobalObject);
-
-    auto* buffer = toUnsharedArrayBuffer(vm, callFrame->uncheckedArgument(0));
-    if (!buffer) {
-        auto scope = DECLARE_THROW_SCOPE(vm);
-        throwDataCloneError(*lexicalGlobalObject, scope);
-        return {};
-    }
-    if (mode == CloneMode::Partial) {
-        ASSERT(callFrame->argumentCount() == 3);
-        int srcByteOffset = static_cast<int>(callFrame->uncheckedArgument(1).toNumber(lexicalGlobalObject));
-        int srcLength = static_cast<int>(callFrame->uncheckedArgument(2).toNumber(lexicalGlobalObject));
-        return JSValue::encode(JSArrayBuffer::create(lexicalGlobalObject->vm(), lexicalGlobalObject->arrayBufferStructure(ArrayBufferSharingMode::Default), buffer->slice(srcByteOffset, srcByteOffset + srcLength)));
-    }
-    return JSValue::encode(JSArrayBuffer::create(lexicalGlobalObject->vm(), lexicalGlobalObject->arrayBufferStructure(ArrayBufferSharingMode::Default), buffer->slice(0)));
+    return JSArrayBuffer::create(globalObject->vm(), globalObject->arrayBufferStructure(ArrayBufferSharingMode::Default), buffer->slice(srcByteOffset, srcByteOffset + srcLength));
 }
 
-JSC_DEFINE_HOST_FUNCTION(cloneArrayBuffer, (JSGlobalObject * globalObject, CallFrame* callFrame))
+static JSC::JSValue structuredCloneForStream(JSGlobalObject* globalObject, JSC::JSValue value)
 {
-    return cloneArrayBufferImpl(globalObject, callFrame, CloneMode::Partial);
-}
-
-JSC_DEFINE_HOST_FUNCTION(structuredCloneForStream, (JSGlobalObject * globalObject, CallFrame* callFrame))
-{
-    ASSERT(callFrame);
-    ASSERT(callFrame->argumentCount());
-
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSValue value = callFrame->uncheckedArgument(0);
+    if (value.isPrimitive())
+        return value;
 
-    if (value.isPrimitive()) {
-        return JSValue::encode(value);
+    if (value.inherits<JSArrayBuffer>()) {
+        auto* buffer = toUnsharedArrayBuffer(vm, value);
+        if (!buffer) {
+            throwDataCloneError(*globalObject, scope);
+            return {};
+        }
+        return JSArrayBuffer::create(globalObject->vm(), globalObject->arrayBufferStructure(ArrayBufferSharingMode::Default), buffer->slice(0));
     }
-
-    if (value.inherits<JSArrayBuffer>())
-        RELEASE_AND_RETURN(scope, cloneArrayBufferImpl(globalObject, callFrame, CloneMode::Full));
 
     if (value.inherits<JSArrayBufferView>()) {
         auto* bufferView = uncheckedDowncast<JSArrayBufferView>(value);
@@ -101,7 +75,7 @@ JSC_DEFINE_HOST_FUNCTION(structuredCloneForStream, (JSGlobalObject * globalObjec
 #define CLONE_TYPED_ARRAY(name)                                                                                                                                                   \
     do {                                                                                                                                                                          \
         if (bufferView->inherits<JS##name##Array>())                                                                                                                              \
-            RELEASE_AND_RETURN(scope, JSValue::encode(JS##name##Array::create(globalObject, structure, WTF::move(bufferClone), bufferView->byteOffset(), bufferView->length()))); \
+            RELEASE_AND_RETURN(scope, JS##name##Array::create(globalObject, structure, WTF::move(bufferClone), bufferView->byteOffset(), bufferView->length()));                  \
     } while (0);
 
         FOR_EACH_TYPED_ARRAY_TYPE_EXCLUDING_DATA_VIEW(CLONE_TYPED_ARRAY)
@@ -109,122 +83,105 @@ JSC_DEFINE_HOST_FUNCTION(structuredCloneForStream, (JSGlobalObject * globalObjec
 #undef CLONE_TYPED_ARRAY
 
         if (value.inherits<JSDataView>())
-            RELEASE_AND_RETURN(scope, JSValue::encode(JSDataView::create(globalObject, structure, WTF::move(bufferClone), bufferView->byteOffset(), bufferView->length())));
+            RELEASE_AND_RETURN(scope, JSDataView::create(globalObject, structure, WTF::move(bufferClone), bufferView->byteOffset(), bufferView->length()));
     }
 
     throwTypeError(globalObject, scope, "structuredClone not implemented for non-ArrayBuffer / non-ArrayBufferView"_s);
     return {};
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionStructuredClone, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+static JSC::JSValue structuredClone(
+    JSC::JSGlobalObject* globalObject,
+    JSC::JSValue value,
+    Vector<JSC::Strong<JSC::JSObject>> transferList)
 {
     auto& vm = JSC::getVM(globalObject);
     auto throwScope = DECLARE_THROW_SCOPE(vm);
 
-    if (callFrame->argumentCount() == 0) {
-        throwTypeError(globalObject, throwScope, "structuredClone requires 1 argument"_s);
-        return {};
-    }
-
-    JSC::JSValue value = callFrame->argument(0);
-    JSC::JSValue options = callFrame->argument(1);
-
-    Vector<JSC::Strong<JSC::JSObject>> transferList;
-
-    if (options.isObject()) {
-        JSC::JSObject* optionsObject = options.getObject();
-        JSC::JSValue transferListValue = optionsObject->get(globalObject, vm.propertyNames->transfer);
-        RETURN_IF_EXCEPTION(throwScope, {});
-        if (transferListValue.isObject()) {
-            JSC::JSObject* transferListObject = transferListValue.getObject();
-            if (auto* transferListArray = dynamicDowncast<JSC::JSArray>(transferListObject)) {
-                for (unsigned i = 0; i < transferListArray->length(); i++) {
-                    JSC::JSValue transferListValue = transferListArray->get(globalObject, i);
-                    RETURN_IF_EXCEPTION(throwScope, {});
-                    if (transferListValue.isObject()) {
-                        JSC::JSObject* transferListObject = transferListValue.getObject();
-                        transferList.append(JSC::Strong<JSC::JSObject>(vm, transferListObject));
-                    }
-                }
-            }
-        }
-    }
-
     Vector<RefPtr<MessagePort>> ports;
-    ExceptionOr<Ref<SerializedScriptValue>> serialized = SerializedScriptValue::create(*globalObject, value, WTF::move(transferList), ports);
+    auto serialized = SerializedScriptValue::create(*globalObject, value, WTF::move(transferList), ports);
+    RETURN_IF_EXCEPTION(throwScope, {});
     if (serialized.hasException()) {
-        WebCore::propagateException(*globalObject, throwScope, serialized.releaseException());
+        propagateException(*globalObject, throwScope, serialized.releaseException());
         RELEASE_AND_RETURN(throwScope, {});
     }
-    throwScope.assertNoException();
-
     JSValue deserialized = serialized.releaseReturnValue()->deserialize(*globalObject, globalObject, ports);
     RETURN_IF_EXCEPTION(throwScope, {});
-
-    return JSValue::encode(deserialized);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionStructuredCloneAdvanced, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    if (callFrame->argumentCount() < 4) {
-        throwTypeError(globalObject, throwScope, "structuredCloneAdvanced requires 3 arguments"_s);
-        return {};
-    }
-
-    JSC::JSValue value = callFrame->argument(0);
-    JSC::JSValue transferListValue = callFrame->argument(1);
-    bool isForTransfer = callFrame->argument(2).toBoolean(globalObject);
-    bool isForStorage = callFrame->argument(3).toBoolean(globalObject);
-    JSC::JSValue serializationContextValue = callFrame->argument(4);
-
-    SerializationContext serializationContext = SerializationContext::Default;
-    if (serializationContextValue.isString()) {
-        if (serializationContextValue.getString(globalObject) == "worker"_s) {
-            serializationContext = SerializationContext::WorkerPostMessage;
-        } else if (serializationContextValue.getString(globalObject) == "window"_s) {
-            serializationContext = SerializationContext::WindowPostMessage;
-        } else if (serializationContextValue.getString(globalObject) == "postMessage"_s) {
-            serializationContext = SerializationContext::WindowPostMessage;
-        } else if (serializationContextValue.getString(globalObject) == "default"_s) {
-            serializationContext = SerializationContext::Default;
-        } else {
-            throwTypeError(globalObject, throwScope, "invalid serialization context"_s);
-        }
-    }
-
-    SerializationForCrossProcessTransfer forTransfer = isForTransfer ? SerializationForCrossProcessTransfer::Yes : SerializationForCrossProcessTransfer::No;
-    SerializationForStorage forStorage = isForStorage ? SerializationForStorage::Yes : SerializationForStorage::No;
-
-    Vector<JSC::Strong<JSC::JSObject>> transferList;
-
-    if (transferListValue.isObject()) {
-        JSC::JSObject* transferListObject = transferListValue.getObject();
-        if (auto* transferListArray = dynamicDowncast<JSC::JSArray>(transferListObject)) {
-            for (unsigned i = 0; i < transferListArray->length(); i++) {
-                JSC::JSValue transferListValue = transferListArray->get(globalObject, i);
-                RETURN_IF_EXCEPTION(throwScope, {});
-                if (transferListValue.isObject()) {
-                    transferList.append(JSC::Strong<JSC::JSObject>(vm, transferListValue.getObject()));
-                }
-            }
-        }
-    }
-
-    Vector<RefPtr<MessagePort>> ports;
-    ExceptionOr<Ref<SerializedScriptValue>> serialized = SerializedScriptValue::create(*globalObject, value, WTF::move(transferList), ports, forStorage, serializationContext, forTransfer);
-    if (serialized.hasException()) {
-        WebCore::propagateException(*globalObject, throwScope, serialized.releaseException());
-        RELEASE_AND_RETURN(throwScope, {});
-    }
-    throwScope.assertNoException();
-
-    JSValue deserialized = serialized.releaseReturnValue()->deserialize(*globalObject, globalObject, ports);
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    return JSValue::encode(deserialized);
+    return deserialized;
 }
 
 } // namespace WebCore
+
+JSC::JSValue Bun::Bindgen::Cpp::bunBindgenCpp_WebCoreFunctions_cloneArrayBuffer(
+    Bun::Bindgen::CppCallContext& context,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_WebCoreFunctions_cloneArrayBuffer_Arguments& args)
+{
+    auto* buffer = JSC::toUnsharedArrayBuffer(context.globalObject.vm(), args.buffer);
+    RELEASE_ASSERT(buffer);
+    return WebCore::cloneArrayBuffer(&context.globalObject, buffer, args.srcByteOffset, args.srcLength);
+}
+
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_WebCoreFunctions_structuredCloneForStream(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebCoreFunctions_structuredCloneForStream_Arguments& args)
+{
+    return WebCore::structuredCloneForStream(&context.globalObject, args.value);
+}
+
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_WebCoreFunctions_structuredClone(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_WebCoreFunctions_structuredClone_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+
+    auto options = Bun::Bindgen::structuredSerializeOptionsFromTransfer(
+        *globalObject, args.options && args.options->transfer ? &*args.options->transfer : nullptr);
+    RETURN_IF_EXCEPTION(scope, {});
+    RELEASE_ASSERT(options);
+    RELEASE_AND_RETURN(scope, WebCore::structuredClone(globalObject, args.value, WTF::move(options->transfer)));
+}
+
+JSC::JSValue Bun::Bindgen::Cpp::bunBindgenCpp_bindgen_test_structuredCloneAdvanced(
+    Bun::Bindgen::CppCallContext& context,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_bindgen_test_structuredCloneAdvanced_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
+    auto& vm = JSC::getVM(globalObject);
+    auto throwScope = DECLARE_THROW_SCOPE(vm);
+
+    auto serializationContext = [&] {
+        auto context = args.serialization_context.value_or(Bun::Bindgen::StructuredCloneSerializationContext::default_context);
+        switch (context) {
+        case Bun::Bindgen::StructuredCloneSerializationContext::worker:
+            return WebCore::SerializationContext::WorkerPostMessage;
+        case Bun::Bindgen::StructuredCloneSerializationContext::window:
+            return WebCore::SerializationContext::WindowPostMessage;
+        case Bun::Bindgen::StructuredCloneSerializationContext::default_context:
+            return WebCore::SerializationContext::Default;
+        }
+    }();
+
+    auto forTransfer = args.for_transfer ? WebCore::SerializationForCrossProcessTransfer::Yes : WebCore::SerializationForCrossProcessTransfer::No;
+    auto forStorage = args.for_storage ? WebCore::SerializationForStorage::Yes : WebCore::SerializationForStorage::No;
+    auto options = Bun::Bindgen::structuredSerializeOptionsFromTransfer(*globalObject, &args.transfer_list);
+    RETURN_IF_EXCEPTION(throwScope, {});
+    RELEASE_ASSERT(options);
+
+    WTF::Vector<RefPtr<WebCore::MessagePort>> ports;
+    auto serialized = WebCore::SerializedScriptValue::create(
+        *globalObject,
+        args.value,
+        WTF::move(options->transfer),
+        ports,
+        forStorage,
+        serializationContext,
+        forTransfer);
+    RETURN_IF_EXCEPTION(throwScope, {});
+    if (serialized.hasException()) {
+        WebCore::propagateException(*globalObject, throwScope, serialized.releaseException());
+        return {};
+    }
+
+    RELEASE_AND_RETURN(throwScope, serialized.releaseReturnValue()->deserialize(*globalObject, globalObject, ports));
+}

@@ -67,22 +67,24 @@ void Tokenizer::seekNextCodePoint(size_t index)
 }
 
 // https://urlpattern.spec.whatwg.org/#add-a-token
-void Tokenizer::addToken(TokenType currentType, size_t nextPosition, size_t valuePosition, size_t valueLength)
+ExceptionOr<void> Tokenizer::addToken(TokenType currentType, size_t nextPosition, size_t valuePosition, size_t valueLength)
 {
-    m_tokenList.append(Token { currentType, m_index, m_input.substring(valuePosition, valueLength) });
+    if (!m_tokenList.tryAppend(Token { currentType, m_index, m_input.substring(valuePosition, valueLength) }))
+        return Exception { OutOfMemoryError };
     m_index = nextPosition;
+    return {};
 }
 
 // https://urlpattern.spec.whatwg.org/#add-a-token-with-default-length
-void Tokenizer::addToken(TokenType currentType, size_t nextPosition, size_t valuePosition)
+ExceptionOr<void> Tokenizer::addToken(TokenType currentType, size_t nextPosition, size_t valuePosition)
 {
-    addToken(currentType, nextPosition, valuePosition, nextPosition - valuePosition);
+    return addToken(currentType, nextPosition, valuePosition, nextPosition - valuePosition);
 }
 
 // https://urlpattern.spec.whatwg.org/#add-a-token-with-default-position-and-length
-void Tokenizer::addToken(TokenType currentType)
+ExceptionOr<void> Tokenizer::addToken(TokenType currentType)
 {
-    addToken(currentType, m_nextIndex, m_index);
+    return addToken(currentType, m_nextIndex, m_index);
 }
 
 // https://urlpattern.spec.whatwg.org/#process-a-tokenizing-error
@@ -93,9 +95,7 @@ ExceptionOr<void> Tokenizer::processTokenizingError(size_t nextPosition, size_t 
 
     ASSERT(m_policy == TokenizePolicy::Lenient);
 
-    addToken(TokenType::InvalidChar, nextPosition, valuePosition);
-
-    return {};
+    return addToken(TokenType::InvalidChar, nextPosition, valuePosition);
 }
 
 Tokenizer::Tokenizer(StringView input, TokenizePolicy tokenizerPolicy)
@@ -110,18 +110,18 @@ ExceptionOr<Vector<Token>> Tokenizer::tokenize()
     ExceptionOr<void> maybeException;
 
     while (m_index < m_input.length()) {
-        if (m_policy == TokenizePolicy::Strict && maybeException.hasException())
+        if (maybeException.hasException())
             return maybeException.releaseException();
 
         seekNextCodePoint(m_index);
 
         if (m_codepoint == '*') {
-            addToken(TokenType::Asterisk);
+            maybeException = addToken(TokenType::Asterisk);
             continue;
         }
 
         if (m_codepoint == '+' || m_codepoint == '?') {
-            addToken(TokenType::OtherModifier);
+            maybeException = addToken(TokenType::OtherModifier);
             continue;
         }
 
@@ -134,17 +134,17 @@ ExceptionOr<Vector<Token>> Tokenizer::tokenize()
             auto escapedIndex = m_nextIndex;
             getNextCodePoint();
 
-            addToken(TokenType::EscapedChar, m_nextIndex, escapedIndex);
+            maybeException = addToken(TokenType::EscapedChar, m_nextIndex, escapedIndex);
             continue;
         }
 
         if (m_codepoint == '{') {
-            addToken(TokenType::Open);
+            maybeException = addToken(TokenType::Open);
             continue;
         }
 
         if (m_codepoint == '}') {
-            addToken(TokenType::Close);
+            maybeException = addToken(TokenType::Close);
             continue;
         }
 
@@ -164,11 +164,16 @@ ExceptionOr<Vector<Token>> Tokenizer::tokenize()
             }
 
             if (namePosition <= nameStart) {
-                maybeException = processTokenizingError(nameStart, m_index, makeString("Name position "_s, String::number(namePosition), " is less than name start "_s, String::number(nameStart)));
+                auto message = m_policy == TokenizePolicy::Strict
+                    ? tryMakeString("Name position "_s, namePosition, " is less than name start "_s, nameStart)
+                    : emptyString();
+                if (message.isNull())
+                    return Exception { OutOfMemoryError };
+                maybeException = processTokenizingError(nameStart, m_index, message);
                 continue;
             }
 
-            addToken(TokenType::Name, namePosition, nameStart);
+            maybeException = addToken(TokenType::Name, namePosition, nameStart);
             continue;
         }
 
@@ -230,7 +235,7 @@ ExceptionOr<Vector<Token>> Tokenizer::tokenize()
                         break;
                     }
 
-                    int temporaryPosition = m_nextIndex;
+                    auto temporaryPosition = m_nextIndex;
                     getNextCodePoint();
 
                     if (m_codepoint != '?') {
@@ -255,17 +260,23 @@ ExceptionOr<Vector<Token>> Tokenizer::tokenize()
 
             auto regexLength = regexPosition - regexStart - 1;
 
-            if (!regexLength)
+            if (!regexLength) {
                 maybeException = processTokenizingError(regexStart, m_index, "Regex length is zero."_s);
+                continue;
+            }
 
-            addToken(TokenType::Regexp, regexPosition, regexStart, regexLength);
+            maybeException = addToken(TokenType::Regexp, regexPosition, regexStart, regexLength);
             continue;
         }
 
-        addToken(TokenType::Char);
+        maybeException = addToken(TokenType::Char);
     }
 
-    addToken(TokenType::End, m_index, m_index);
+    if (maybeException.hasException())
+        return maybeException.releaseException();
+    auto end = addToken(TokenType::End, m_index, m_index);
+    if (end.hasException())
+        return end.releaseException();
     return WTF::move(m_tokenList);
 }
 

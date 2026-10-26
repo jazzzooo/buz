@@ -16,10 +16,10 @@ is_executable: bool = false,
 source_map_index: u32 = std.math.maxInt(u32),
 bytecode_index: u32 = std.math.maxInt(u32),
 module_info_index: u32 = std.math.maxInt(u32),
-output_kind: jsc.API.BuildArtifact.OutputKind,
+output_kind: OutputKind,
 /// Relative
 dest_path: []const u8 = "",
-side: ?bun.bake.Side,
+side: ?BakeCore.Side,
 /// This is only set for the JS bundle, and not files associated with an
 /// entrypoint like sourcemaps and bytecode
 entry_point_index: ?u32,
@@ -45,11 +45,18 @@ pub const BakeExtra = struct {
 pub const Index = bun.GenericIndex(u32, OutputFile);
 
 pub fn deinit(this: *OutputFile) void {
-    this.value.deinit();
+    var owned = this.take();
+    owned.value.deinit();
 
-    bun.default_allocator.free(this.src_path.text);
-    bun.default_allocator.free(this.dest_path);
-    bun.default_allocator.free(this.referenced_css_chunks);
+    bun.default_allocator.free(owned.src_path.text);
+    bun.default_allocator.free(owned.dest_path);
+    bun.default_allocator.free(owned.referenced_css_chunks);
+}
+
+pub fn take(this: *OutputFile) OutputFile {
+    const owned = this.*;
+    this.* = zero_value;
+    return owned;
 }
 
 // Depending on:
@@ -126,15 +133,15 @@ pub const Value = union(Kind) {
                 const FreeContext = struct {
                     allocator: std.mem.Allocator,
 
-                    fn onFree(ctx: *@This(), buffer: *anyopaque, len: u32) callconv(.c) void {
+                    fn onFree(ctx: *@This(), buffer: *u8, len: usize) void {
                         ctx.allocator.free(@as([*]u8, @ptrCast(buffer))[0..len]);
                         bun.destroy(ctx);
                     }
                 };
                 return bun.String.createExternal(
+                    .latin1,
                     *FreeContext,
                     buf.bytes,
-                    true,
                     bun.new(FreeContext, .{ .allocator = buf.allocator }),
                     FreeContext.onFree,
                 );
@@ -145,7 +152,7 @@ pub const Value = union(Kind) {
     }
 };
 
-pub const SavedFile = @import("../bundler_jsc/output_file_jsc.zig").SavedFile;
+pub const SavedFile = struct {};
 
 pub fn initFile(file: std.Io.File, pathname: string, size: usize) OutputFile {
     return .{
@@ -168,7 +175,7 @@ pub const Options = struct {
     size: ?usize = null,
     input_path: []const u8 = "",
     display_size: u32 = 0,
-    output_kind: jsc.API.BuildArtifact.OutputKind,
+    output_kind: OutputKind,
     is_executable: bool,
     data: union(enum) {
         buffer: struct {
@@ -182,7 +189,7 @@ pub const Options = struct {
         },
         saved: usize,
     },
-    side: ?bun.bake.Side,
+    side: ?BakeCore.Side,
     entry_point_index: ?u32,
     referenced_css_chunks: []const Index = &.{},
     bake_extra: BakeExtra = .{},
@@ -247,14 +254,8 @@ pub fn writeToDisk(f: OutputFile, io: std.Io, root_dir: std.Io.Dir, root_dir_pat
             }
 
             var path_buf: bun.PathBuffer = undefined;
-            _ = try jsc.Node.fs.NodeFS.writeFileWithPathBuffer(&path_buf, .{
-                .data = .{ .buffer = .{
-                    .buffer = .{
-                        .ptr = @constCast(value.bytes.ptr),
-                        .len = value.bytes.len,
-                        .byte_len = value.bytes.len,
-                    },
-                } },
+            _ = try NodeFSCore.writeFileWithPathBuffer(&path_buf, .{
+                .data = .{ .buffer = NodeTypes.NodeBuffer.borrow(value.bytes) },
                 .encoding = .buffer,
                 .mode = if (f.is_executable) 0o755 else 0o644,
                 .dirfd = .fromStdDir(root_dir),
@@ -299,18 +300,17 @@ pub fn copyTo(file: *const OutputFile, io: std.Io, _: string, rel_path: []const 
     try bun.copyFile(fd_in, fd_out).unwrap();
 }
 
-pub const toJS = @import("../bundler_jsc/output_file_jsc.zig").toJS;
-
-pub const toBlob = @import("../bundler_jsc/output_file_jsc.zig").toBlob;
-
 const string = []const u8;
 
 const resolver = @import("../resolver/resolver.zig");
+const BakeCore = @import("../bake/BakeCore.zig");
 const std = @import("std");
 const Loader = @import("./options.zig").Loader;
+const NodeFSCore = @import("../runtime/node/NodeFSCore.zig");
+const NodeTypes = @import("../runtime/node/types.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
 const FileDescriptorType = bun.FD;
 const Fs = bun.fs;
-const jsc = bun.jsc;
+const OutputKind = @import("./OutputKind.zig").OutputKind;

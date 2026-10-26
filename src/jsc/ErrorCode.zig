@@ -11,13 +11,5 @@ pub const ErrorCode = enum(ErrorCodeInt) {
         return @errorFromInt(@backingInt(self));
     }
 
-    pub const ParserError = @backingInt(ErrorCode.from(error.ParserError));
-    pub const JSErrorObject = @backingInt(ErrorCode.from(error.JSErrorObject));
-
     pub const Type = ErrorCodeInt;
 };
-
-comptime {
-    @export(&ErrorCode.ParserError, .{ .name = "Zig_ErrorCodeParserError" });
-    @export(&ErrorCode.JSErrorObject, .{ .name = "Zig_ErrorCodeJSErrorObject" });
-}

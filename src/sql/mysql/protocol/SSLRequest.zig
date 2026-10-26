@@ -10,6 +10,7 @@ pub fn deinit(_: *SSLRequest) void {}
 
 pub fn writeInternal(this: *SSLRequest, comptime Context: type, writer: NewWriter(Context)) !void {
     var packet = try writer.start(1);
+    defer packet.deinit();
 
     this.capability_flags.CLIENT_CONNECT_ATTRS = this.has_connection_attributes;
 
@@ -34,9 +35,9 @@ pub const write = writeWrap(SSLRequest, writeInternal).write;
 
 const debug = bun.Output.scoped(.MySQLConnection, .hidden);
 
-const Capabilities = @import("../Capabilities.zig");
+const Capabilities = @import("mysql_domain").Capabilities;
 const bun = @import("bun");
-const CharacterSet = @import("./CharacterSet.zig").CharacterSet;
+const CharacterSet = @import("mysql_domain").CharacterSet;
 
 const NewWriter = @import("./NewWriter.zig").NewWriter;
 const writeWrap = @import("./NewWriter.zig").writeWrap;

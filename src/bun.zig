@@ -8,6 +8,8 @@ const bun = @This();
 
 pub const Environment = @import("./bun_core/env.zig");
 pub const env_var = @import("./bun_core/env_var.zig");
+pub const JavaScriptLimits = @import("./bun_core/JavaScriptLimits.zig");
+pub const Outcome = @import("./bun_core/outcome.zig").Outcome;
 pub const feature_flag = env_var.feature_flag;
 
 pub const use_mimalloc = @import("build_options").use_mimalloc;
@@ -151,7 +153,7 @@ pub const JSError = error{
     /// There is an active exception on the global object.
     /// You should almost never have to construct this manually.
     JSError,
-    // XXX: This is temporary! meghan will remove this soon
+    /// An allocation failed without raising an engine exception.
     OutOfMemory,
     /// Similar to error.JSError but always represents a termination exception.
     JSTerminated,
@@ -183,34 +185,33 @@ pub const windows = @import("./sys/windows/windows.zig");
 pub const darwin = @import("./platform/darwin.zig");
 pub const linux = @import("./platform/linux.zig");
 
+pub const Platform = @import("./platform/Platform.zig");
+
 /// Translated from `c-headers-for-zig.h` for the current platform.
 pub const c = @import("translated-c-headers");
 pub const tty = @import("./bun_core/tty.zig");
 
 pub const sha = @import("./sha_hmac/sha.zig");
 pub const FeatureFlags = @import("./bun_core/feature_flags.zig");
+pub const RuntimeConfig = @import("./bun_core/RuntimeConfig.zig");
 pub const meta = @import("./meta/meta.zig");
 pub const base64 = @import("./base64/base64.zig");
 pub const path = @import("./paths/resolve_path.zig");
 pub const resolver = @import("./resolver/resolver.zig");
+pub const RuntimeLoop = @import("./event_loop/RuntimeLoop.zig").RuntimeLoop;
+pub const RuntimeLoopHandle = @import("./event_loop/RuntimeLoopHandle.zig");
+pub const ParentEventLoop = @import("./event_loop/ParentEventLoop.zig");
+pub const MiniEventLoop = @import("./event_loop/MiniEventLoop.zig");
+pub const WorkTaskContext = @import("./event_loop/WorkTaskContext.zig");
+pub const PinnedThreadDomain = @import("./bun_core/PinnedThreadDomain.zig");
 pub const DirIterator = @import("./runtime/node/dir_iterator.zig");
 pub const PackageJSON = @import("./resolver/package_json.zig").PackageJSON;
 pub const fmt = @import("./bun_core/fmt.zig");
-
-// Generated, but lives in the source tree (not the codegen dir) because it
-// imports src files by relative path.
-/// All functions and interfaces provided from Bun's `bindgen` utility.
-pub const gen = @import("./jsc/bindings/GeneratedBindings.zig");
+pub const bindgen = @import("./bindgen/runtime.zig");
 
 comptime {
     if (Environment.isNative) {
-        // Generated, but lives in the source tree (not the codegen dir)
-        // because it imports src files by relative path.
-        _ = &@import("./jsc/bindings/GeneratedJS2Native.zig");
-        _ = &gen; // reference bindings
-        // Exports `us_dispatch_*` for loop.c — nothing in Zig calls them, but the
-        // C event loop link-depends on them.
-        _ = &uws.dispatch;
+        _ = &@import("binding_implementations");
     }
 }
 
@@ -221,8 +222,6 @@ pub const Progress = @import("./bun_core/Progress.zig");
 /// Modified version of Zig's ComptimeStringMap
 pub const comptime_string_map = @import("./collections/comptime_string_map.zig");
 pub const ComptimeStringMap = comptime_string_map.ComptimeStringMap;
-pub const ComptimeStringMap16 = comptime_string_map.ComptimeStringMap16;
-pub const ComptimeStringMapWithKeyType = comptime_string_map.ComptimeStringMapWithKeyType;
 
 pub const glob = @import("./glob/glob.zig");
 pub const patch = @import("./patch/patch.zig");
@@ -231,7 +230,6 @@ pub const bits = @import("./meta/bits.zig");
 pub const css = @import("./css/css_parser.zig");
 pub const SmallList = css.SmallList;
 pub const csrf = @import("./csrf/csrf.zig");
-pub const validators = @import("./runtime/node/util/validators.zig");
 
 pub const shell = @import("./shell/shell.zig");
 pub const md = @import("./md/root.zig");
@@ -239,6 +237,7 @@ pub const md = @import("./md/root.zig");
 pub const Output = @import("./bun_core/output.zig");
 pub const Global = @import("./bun_core/Global.zig");
 pub const ParentDeathWatchdog = @import("./aio/ParentDeathWatchdog.zig");
+pub const ParentDeathWatchdogEngine = @import("./aio/ParentDeathWatchdogEngine.zig");
 
 pub const FD = @import("./sys/fd.zig").FD;
 pub const MovableIfWindowsFd = @import("./sys/fd.zig").MovableIfWindowsFd;
@@ -327,7 +326,7 @@ pub fn ThreadlocalBuffers(comptime T: type) type {
             // Apply field default values. For the common case of
             // `field: PathBuffer = undefined` this is a no-op in release
             // builds; for wrappers around structs with real defaults (e.g.
-            // `NodeFS{ .vm = null }`) it's required for correctness.
+            // `NodeFS{ .runtime_io = null }`) it's required for correctness.
             s.* = .{
                 .node = .{ .next = threadlocal_buffers_head, .free = free },
                 .data = .{},
@@ -766,6 +765,7 @@ pub const bun_js = if (Environment.isWasm) struct {
 /// Bindings to JavaScriptCore and other JavaScript primatives.
 /// Web and runtime-specific APIs should go in `webcore` and `api`.
 pub const jsc = bun_js.jsc;
+pub const current_runtime = @import("./runtime/CurrentRuntimeEngine.zig");
 /// JavaScript Web APIs
 pub const webcore = bun_js.webcore;
 /// "api" in this context means "the Bun APIs", as in "the exposed JS APIs"
@@ -794,10 +794,15 @@ pub var start_time: i128 = 0;
 pub var environ: []const [*:0]u8 = &.{};
 var owned_environ_block: ?std.process.Environ.PosixBlock = null;
 
-pub fn initEnviron(init_environ: std.process.Environ, environ_map: *const std.process.Environ.Map) OOM!void {
+pub fn initEnviron(init_environ: std.process.Environ) OOM!void {
     if (comptime Environment.isPosix) {
         environ = @ptrCast(init_environ.block.view().slice);
     } else {
+        var environ_map = init_environ.createMap(default_allocator) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Unexpected => unreachable,
+        };
+        defer environ_map.deinit();
         const block = try environ_map.createPosixBlock(default_allocator, .{});
         owned_environ_block = block;
         environ = @ptrCast(block.view().slice);
@@ -1123,15 +1128,14 @@ pub const copyFileWithState = CopyFile.copyFileWithState;
 pub const CopyFileState = CopyFile.CopyFileState;
 
 pub fn parseDouble(input: []const u8) !f64 {
-    if (comptime Environment.isWasm) {
-        return try std.fmt.parseFloat(f64, input);
-    }
-    return jsc.wtf.parseDouble(input);
+    return std.fmt.parseFloat(f64, input);
 }
 
 pub const SignalCode = @import("./sys/SignalCode.zig").SignalCode;
 
 pub const cli = @import("./cli/cli.zig");
+pub const CliEngine = @import("./cli/Engine.zig");
+pub const BundlerEngine = @import("./bundler/BundlerEngine.zig");
 
 pub const install = @import("./install/install.zig");
 pub const PackageManager = install.PackageManager;
@@ -1179,7 +1183,8 @@ pub fn ComptimeEnumMap(comptime T: type) type {
 
 pub const c_ares = @import("./cares_sys/c_ares.zig");
 pub const URL = @import("./url/url.zig").URL;
-pub const FormData = @import("./runtime/webcore/FormData.zig").FormData;
+pub const FormDataModule = @import("./runtime/webcore/FormData.zig");
+pub const FormData = FormDataModule.FormData;
 
 pub fn getcwd(buf: []u8) ![]u8 {
     return sys.getcwd(buf).unwrap();
@@ -1242,10 +1247,7 @@ pub fn asByteSlice(buffer: anytype) []const u8 {
 
 comptime {
     if (Environment.isNative) {
-        _ = @import("./runtime/node/buffer.zig").BufferVectorized.fill;
         _ = @import("./cli/upgrade_command.zig").Version;
-        _ = @import("./jsc/resolve_path_jsc.zig");
-        _ = @import("./jsc/resolver_jsc.zig");
     }
 }
 
@@ -1300,8 +1302,6 @@ pub noinline fn maybeHandlePanicDuringProcessReload() void {
         }
     }
 }
-
-extern "c" fn on_before_reload_process_linux() void;
 
 /// Reload Bun's process. This clones envp, argv, and gets the current
 /// executable path.
@@ -1414,7 +1414,15 @@ pub fn reloadProcess(
             },
         }
     } else if (comptime Environment.isPosix) {
-        if (comptime Environment.isLinux or Environment.isFreeBSD) on_before_reload_process_linux();
+        if (comptime Environment.isLinux or Environment.isFreeBSD) {
+            if (@import("./bun_core/ProcessStdio.zig").prepareForReload()) |failure| {
+                if (may_return) {
+                    Output.errGeneric("Failed to prepare process reload: {s}", .{@tagName(failure)});
+                    return;
+                }
+                Output.panic("Failed to prepare process reload: {s}", .{@tagName(failure)});
+            }
+        }
         const err = sys.execve(
             exec_path,
             newargv,
@@ -1642,6 +1650,10 @@ pub fn HiveRef(comptime T: type, comptime capacity: u16) type {
             }
             return this;
         }
+
+        pub fn deref(this: *@This()) void {
+            _ = this.unref();
+        }
     };
 }
 
@@ -1667,12 +1679,14 @@ pub const StandaloneModuleGraph = @import("./standalone_graph/StandaloneModuleGr
 
 pub const string = @import("./string/string.zig");
 pub const String = string.String;
-pub const ZigString = jsc.ZigString;
+pub const TextViewModule = @import("./string/TextView.zig");
+pub const TextView = TextViewModule.TextView;
 pub const StringJoiner = string.StringJoiner;
 pub const SliceWithUnderlyingString = string.SliceWithUnderlyingString;
 pub const PathString = string.PathString;
 pub const MutableString = string.MutableString;
 pub const StringBuilder = string.StringBuilder;
+pub const UTF16Builder = string.UTF16Builder;
 
 /// Utilities for immutable strings
 pub const strings = string.immutable;
@@ -1919,21 +1933,14 @@ pub fn initArgv(args: std.process.Args) !void {
 
         const argvu16 = argvu16_ptr[0..@intCast(length)];
         const out_argv = try bun.default_allocator.alloc([:0]const u8, @intCast(length));
-        var string_builder = StringBuilder{};
-
-        for (argvu16) |argraw| {
-            const arg = std.mem.span(argraw);
-            string_builder.count16Z(arg);
+        var converted: usize = 0;
+        errdefer {
+            for (out_argv[0..converted]) |arg| bun.default_allocator.free(arg);
+            bun.default_allocator.free(out_argv);
         }
-
-        try string_builder.allocate(bun.default_allocator);
-
         for (argvu16, out_argv) |argraw, *out| {
-            const arg = std.mem.span(argraw);
-
-            // Command line is expected to be valid UTF-16le
-            // ...but sometimes, it's not valid. https://github.com/oven-sh/bun/issues/11610
-            out.* = string_builder.append16(arg, default_allocator) orelse @panic("Failed to allocate memory for argv");
+            out.* = try bun.strings.toUTF8AllocZ(bun.default_allocator, std.mem.span(argraw));
+            converted += 1;
         }
 
         argv = out_argv;
@@ -2560,11 +2567,6 @@ pub inline fn markPosixOnly() if (Environment.isPosix) void else noreturn {
     @panic("Assertion failure: this function should only be accessible on POSIX.");
 }
 
-pub fn linuxKernelVersion() Semver.Version {
-    if (comptime !Environment.isLinux) @compileError("linuxKernelVersion() is only available on Linux");
-    return analytics.GenerateHeader.GeneratePlatform.kernelVersion();
-}
-
 const SelfExePath = struct {
     var set = std.atomic.Value(bool).init(false);
     // This deliberately stays small; the previous implementation used the same
@@ -2765,6 +2767,7 @@ pub fn unsafeAssert(condition: bool) callconv(callconv_inline) void {
 }
 
 pub const dns = @import("./dns/dns.zig");
+pub const CanonicalizeIP = @import("./runtime/dns_jsc/CanonicalizeIP.zig");
 
 pub const hw_timer = @import("./perf/hw_timer.zig");
 pub const SystemTimer = @import("./perf/system_timer.zig").Timer;
@@ -2783,7 +2786,7 @@ pub inline fn realSeconds(io_: std.Io) i64 {
 
 pub fn getRoughTickCount(comptime mock_mode: timespec.MockMode) timespec {
     if (mock_mode == .allow_mocked_time) {
-        if (bun.jsc.Jest.bun_test.FakeTimers.current_time.getTimespecNow()) |fake_time| {
+        if (bun.jsc.Jest.bun_test.FakeTimers.current_time.get()) |fake_time| {
             return fake_time;
         }
     }
@@ -2798,7 +2801,7 @@ pub fn getRoughTickCount(comptime mock_mode: timespec.MockMode) timespec {
 /// Monotonic milliseconds. Values are only meaningful relative to other calls.
 pub fn getRoughTickCountMs(comptime mock_mode: timespec.MockMode) u64 {
     if (mock_mode == .allow_mocked_time) {
-        if (bun.jsc.Jest.bun_test.FakeTimers.current_time.getTimespecNow()) |fake_time| {
+        if (bun.jsc.Jest.bun_test.FakeTimers.current_time.get()) |fake_time| {
             return fake_time.ns() / std.time.ns_per_ms;
         }
     }
@@ -2993,7 +2996,7 @@ pub const timespec = extern struct {
     }
 };
 
-pub const UUID = @import("./jsc/uuid.zig");
+pub const UUID = @import("./bun_core/UUID.zig");
 
 /// An abstract number of element in a sequence. The sequence has a first element.
 /// This type should be used instead of integer because 2 contradicting traditions can
@@ -3066,11 +3069,13 @@ pub fn memmove(output: []u8, input: []const u8) void {
 pub const hmac = @import("./sha_hmac/hmac.zig");
 pub const libdeflate = @import("./libdeflate_sys/libdeflate.zig");
 
-pub const bake = @import("./bake/bake.zig");
+pub const bake = @import("./bake/BakeEngine.zig");
 
 pub fn getTotalMemorySize() usize {
-    return cpp.Bun__ramSize();
+    return bindgen.Engine(RamSizeShim).call(.{});
 }
+
+const RamSizeShim = bindgen.Module("system_resources").engineShim("ramSize");
 
 pub const bytecode_extension = ".jsc";
 
@@ -3329,20 +3334,21 @@ pub inline fn isComptimeKnown(x: anytype) bool {
     return comptime @typeInfo(@TypeOf(.{x})).@"struct".field_attrs[0].@"comptime";
 }
 
-pub const Maybe = jsc.Node.Maybe;
-
 /// To handle stack overflows:
 /// 1. StackCheck.init()
 /// 2. .isSafeToRecurse()
+const StackCheckInitializeShim = bindgen.Module("wtf_threading").engineShim("stackCheckInitialize");
+const StackCheckGetEndShim = bindgen.Module("wtf_threading").engineShim("stackCheckGetEnd");
+
 pub const StackCheck = struct {
     cached_stack_end: usize = 0,
 
     pub fn configureThread() void {
-        cpp.Bun__StackCheck__initialize();
+        bindgen.Engine(StackCheckInitializeShim).call(.{});
     }
 
     fn getStackEnd() usize {
-        return @intFromPtr(cpp.Bun__StackCheck__getMaxStack());
+        return bindgen.Engine(StackCheckGetEndShim).call(.{}) orelse 0;
     }
 
     pub fn init() StackCheck {
@@ -3382,13 +3388,10 @@ pub fn freeSensitive(allocator: std.mem.Allocator, slice: anytype) void {
 pub const macho = @import("./exe_format/macho.zig");
 pub const pe = @import("./exe_format/pe.zig");
 pub const elf = @import("./exe_format/elf.zig");
-pub const valkey = @import("./runtime/valkey_jsc/index.zig");
+pub const valkey = @import("./runtime/valkey_jsc/ValkeyIntegrationEngine.zig");
 pub const highway = @import("./highway/highway.zig");
 
 pub const mach_port = if (Environment.isMac) std.c.mach_port_t else u32;
-
-/// Automatically generated C++ bindings for functions marked with `[[ZIG_EXPORT(...)]]`
-pub const cpp = @import("cpp");
 
 pub const asan = @import("./safety/asan.zig");
 
@@ -3402,12 +3405,19 @@ pub fn contains(item: anytype, list: *const std.ArrayListUnmanaged(@TypeOf(item)
 
 pub const safety = @import("./safety/safety.zig");
 
-// Export function to check if --use-system-ca flag is set
-pub fn getUseSystemCA(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) error{ JSError, OutOfMemory }!jsc.JSValue {
-    _ = globalObject;
-    _ = callFrame;
+pub fn getUseSystemCA(
+    _: bindgen.CallContext(GetUseSystemCASchema),
+    _: bindgen.Args(GetUseSystemCASchema),
+) JSError!bool {
     const Arguments = @import("./cli/Arguments.zig");
-    return jsc.JSValue.jsBoolean(Arguments.Bun__Node__UseSystemCA);
+    return Arguments.useSystemCA();
+}
+
+const GetUseSystemCASchema = bindgen.Module("NodeSocket").function("getUseSystemCA");
+const GetUseSystemCABinding = bindgen.Fn(GetUseSystemCASchema, getUseSystemCA);
+
+comptime {
+    _ = GetUseSystemCABinding;
 }
 
 // Claude thinks its bun.JSC when we renamed it to bun.jsc months ago.

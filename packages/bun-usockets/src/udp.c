@@ -19,6 +19,7 @@
 #include "internal/internal.h"
 
 #include <string.h>
+#include <limits.h>
 
 // int us_udp_packet_buffer_ecn(struct us_udp_packet_buffer_t *buf, int index) {
 //     return bsd_udp_packet_buffer_ecn((struct udp_recvbuf *)buf, index);
@@ -155,19 +156,25 @@ struct us_udp_socket_t *us_create_udp_socket(
     const char *host,
     unsigned short port,
     int flags,
-    int *err,
+    struct us_udp_error_t *err,
     void *user
 ) {
-
+    *err = (struct us_udp_error_t){0};
+    _Static_assert(sizeof(struct us_udp_socket_t) - sizeof(struct us_poll_t) <= UINT_MAX, "UDP storage exceeds poll allocator size limit");
+    struct us_poll_t *p = us_create_poll(loop, 0, sizeof(struct us_udp_socket_t) - sizeof(struct us_poll_t));
+    if (!p) {
+#ifdef _WIN32
+        err->system_error = WSA_NOT_ENOUGH_MEMORY;
+#else
+        err->system_error = ENOMEM;
+#endif
+        return NULL;
+    }
     LIBUS_SOCKET_DESCRIPTOR fd = bsd_create_udp_socket(host, port, flags, err);
     if (fd == LIBUS_SOCKET_ERROR) {
-        return 0;
+        us_internal_poll_discard(p, loop, 0);
+        return NULL;
     }
-
-    int ext_size = 0;
-    int fallthrough = 0;
-
-    struct us_poll_t *p = us_create_poll(loop, fallthrough, sizeof(struct us_udp_socket_t) + ext_size);
     us_poll_init(p, fd, POLL_TYPE_UDP);
 
     struct us_udp_socket_t *udp = (struct us_udp_socket_t *)p;
@@ -190,7 +197,11 @@ struct us_udp_socket_t *us_create_udp_socket(
     udp->on_recv_error = recv_error_cb;
     udp->next = NULL;
 
-    us_poll_start((struct us_poll_t *) udp, udp->loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE);
+    if (us_poll_start(p, loop, LIBUS_SOCKET_READABLE | LIBUS_SOCKET_WRITABLE, &err->poll_error) != 0) {
+        bsd_close_socket(fd);
+        us_poll_free(p, loop);
+        return NULL;
+    }
 
     return (struct us_udp_socket_t *) udp;
 }

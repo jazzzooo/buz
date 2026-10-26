@@ -11,7 +11,6 @@ pub const FetchRequestMode = enum(u2) {
         .{ "cors", .cors },
         .{ "navigate", .navigate },
     });
-    pub const toJS = @import("../http_jsc/fetch_enums_jsc.zig").fetchRequestModeToJS;
 };
 
 const bun = @import("bun");

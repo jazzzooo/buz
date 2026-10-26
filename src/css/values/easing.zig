@@ -75,7 +75,7 @@ pub const EasingFunction = union(enum) {
                 return i.expectIdent();
             }
         }.parse, .{}).asValue()) |ident| {
-            const keyword = if (Map.getASCIIICaseInsensitive(ident)) |e| switch (e) {
+            const keyword = if (Map.getCaseInsensitiveASCII(ident)) |e| switch (e) {
                 .linear => EasingFunction.linear,
                 .ease => EasingFunction.ease,
                 .@"ease-in" => EasingFunction.ease_in,
@@ -207,7 +207,7 @@ pub const EasingFunction = union(enum) {
 
     /// Returns whether the given string is a valid easing function name.
     pub fn isIdent(s: []const u8) bool {
-        return Map.getASCIIICaseInsensitive(s) != null;
+        return Map.getCaseInsensitiveASCII(s) != null;
     }
 
     /// Returns whether the easing function is equivalent to the `ease` keyword.
@@ -250,7 +250,7 @@ pub const StepPosition = enum {
             .result => |vv| vv,
             .err => |e| return .{ .err = e },
         };
-        const keyword = if (Map.getASCIIICaseInsensitive(ident)) |e| switch (e) {
+        const keyword = if (Map.getCaseInsensitiveASCII(ident)) |e| switch (e) {
             .start => StepPosition.start,
             .end => StepPosition.end,
             .@"jump-start" => StepPosition.start,

@@ -32,6 +32,7 @@ pub fn runTasks(
 
     var patch_tasks_batch = manager.patch_task_queue.popBatch();
     var patch_tasks_iter = patch_tasks_batch.iterator();
+    defer patch_tasks_iter.requeueRemaining(&manager.patch_task_queue);
     while (patch_tasks_iter.next()) |ptask| {
         if (comptime Environment.allow_assert) bun.assert(manager.pendingTaskCount() > 0);
         manager.decrementPendingTasks();
@@ -127,11 +128,12 @@ pub fn runTasks(
 
     var network_tasks_batch = manager.async_network_task_queue.popBatch();
     var network_tasks_iter = network_tasks_batch.iterator();
+    defer network_tasks_iter.requeueRemaining(&manager.async_network_task_queue);
     while (network_tasks_iter.next()) |task| {
         if (comptime Environment.allow_assert) bun.assert(manager.pendingTaskCount() > 0);
         manager.decrementPendingTasks();
-        // We cannot free the network task at the end of this scope.
-        // It may continue to be referenced in a future task.
+        var task_transferred = false;
+        defer if (!task_transferred) task.recycle();
 
         switch (task.callback) {
             .package_manifest => |*manifest_req| {
@@ -158,6 +160,7 @@ pub fn runTasks(
 
                     if (task.retried < manager.options.max_retry_count) {
                         task.retried += 1;
+                        task_transferred = true;
                         manager.enqueueNetworkTask(task);
 
                         if (manager.options.log_level.isVerbose()) {
@@ -174,6 +177,7 @@ pub fn runTasks(
                     }
                 }
 
+                task.releaseRequestHeaders();
                 const metadata = task.response.metadata orelse {
                     // Handle non-retry-able errors.
                     const err = task.response.fail orelse error.HTTPError;
@@ -328,6 +332,7 @@ pub fn runTasks(
                 }
 
                 manager.task_batch.push(BackgroundTaskGroup.Batch.from(manager.enqueueParseNPMPackage(task.task_id, name, task)));
+                task_transferred = true;
             },
             .extract => |*extract| {
                 // Streaming extraction never pushes its NetworkTask to
@@ -355,6 +360,7 @@ pub fn runTasks(
                         // the pre-allocated stream is safe to reuse for
                         // the retry attempt.
                         task.resetStreamingForRetry();
+                        task_transferred = true;
                         manager.enqueueNetworkTask(task);
 
                         if (manager.options.log_level.isVerbose()) {
@@ -382,6 +388,7 @@ pub fn runTasks(
                 // pre-created Task goes back to the pool and the stream
                 // buffers are freed. The buffered `enqueueExtractNPMPackage`
                 // path below allocates its own Task.
+                task.releaseRequestHeaders();
                 task.discardUnusedStreamingState(manager);
 
                 const metadata = task.response.metadata orelse {
@@ -575,6 +582,7 @@ pub fn runTasks(
                 }
 
                 manager.task_batch.push(BackgroundTaskGroup.Batch.from(manager.enqueueExtractNPMPackage(extract, task)));
+                task_transferred = true;
             },
             else => unreachable,
         }
@@ -582,9 +590,16 @@ pub fn runTasks(
 
     var resolve_tasks_batch = manager.resolve_tasks.popBatch();
     var resolve_tasks_iter = resolve_tasks_batch.iterator();
+    defer resolve_tasks_iter.requeueRemaining(&manager.resolve_tasks);
     while (resolve_tasks_iter.next()) |task| {
         if (comptime Environment.allow_assert) bun.assert(manager.pendingTaskCount() > 0);
         defer manager.preallocated_resolve_tasks.put(task);
+        defer task.log.deinit();
+        defer switch (task.tag) {
+            .package_manifest => task.request.package_manifest.network.recycle(),
+            .extract => task.request.extract.network.recycle(),
+            else => {},
+        };
         manager.decrementPendingTasks();
 
         if (task.log.msgs.items.len > 0) {
@@ -592,12 +607,10 @@ pub fn runTasks(
             if (task.log.errors > 0) {
                 manager.any_failed_to_install = true;
             }
-            task.log.deinit();
         }
 
         switch (task.tag) {
             .package_manifest => {
-                defer manager.preallocated_network_tasks.put(task.request.package_manifest.network);
                 if (task.status == .fail) {
                     const name = task.request.package_manifest.name;
                     const err = task.err orelse error.Failed;
@@ -646,13 +659,6 @@ pub fn runTasks(
                 }
             },
             .extract, .local_tarball => {
-                defer {
-                    switch (task.tag) {
-                        .extract => manager.preallocated_network_tasks.put(task.request.extract.network),
-                        else => {},
-                    }
-                }
-
                 const tarball = switch (task.tag) {
                     .extract => &task.request.extract.tarball,
                     .local_tarball => &task.request.local_tarball.tarball,
@@ -815,11 +821,8 @@ pub fn runTasks(
             },
             .git_clone => {
                 const clone = &task.request.git_clone;
-                const repo_fd = task.data.git_clone;
                 const name = clone.name.slice();
                 const url = clone.url.slice();
-
-                manager.git_repositories.put(manager.allocator, task.id, repo_fd) catch unreachable;
 
                 if (task.status == .fail) {
                     const err = task.err orelse error.Failed;
@@ -899,6 +902,12 @@ pub fn runTasks(
                     continue;
                 }
 
+                const repo_fd = task.data.git_clone;
+                manager.git_repositories.put(manager.allocator, task.id, repo_fd) catch |err| {
+                    repo_fd.close();
+                    return err;
+                };
+
                 if (comptime @TypeOf(callbacks.onExtract) != void and Ctx == *PackageInstaller) {
                     // Installing!
                     // this dependency might be something other than a git dependency! only need the name and
@@ -920,20 +929,25 @@ pub fn runTasks(
                         committish,
                         task.id,
                     );
+                    defer manager.allocator.free(resolved);
 
                     const checkout_id = Task.Id.forGitCheckout(repo, resolved);
 
-                    if (manager.hasCreatedNetworkTask(checkout_id, dep.behavior.isRequired())) continue;
+                    if (try manager.hasCreatedNetworkTask(checkout_id, dep.behavior.isRequired())) continue;
 
-                    manager.task_batch.push(BackgroundTaskGroup.Batch.from(manager.enqueueGitCheckout(
+                    const checkout_task = manager.enqueueGitCheckout(
                         checkout_id,
                         repo_fd,
                         dep_id,
                         dep_name,
                         clone.res,
                         resolved,
-                        null,
-                    )));
+                        clone.patch_name_and_version_hash,
+                    ) catch |err| {
+                        _ = manager.network_dedupe_map.remove(checkout_id);
+                        return err;
+                    };
+                    manager.task_batch.push(BackgroundTaskGroup.Batch.from(checkout_task));
                 } else {
                     // Resolving!
                     const dependency_list_entry = manager.task_queue.getEntry(task.id).?;
@@ -959,10 +973,10 @@ pub fn runTasks(
                 if (task.status == .fail) {
                     const err = task.err orelse error.Failed;
 
-                    if (@TypeOf(callbacks.onPackageDownloadError) != void and Ctx == *Store.Installer) {
+                    if (@TypeOf(callbacks.onPackageDownloadError) != void) {
                         callbacks.onPackageDownloadError(
                             extract_ctx,
-                            task.id,
+                            if (Ctx == *Store.Installer) task.id else manager.lockfile.buffers.resolutions.items[git_checkout.dependency_id],
                             alias.slice(),
                             resolution,
                             err,
@@ -1156,8 +1170,8 @@ pub fn drainDependencyList(this: *PackageManager) void {
     _ = this.scheduleTasks();
 }
 
-pub fn getNetworkTask(this: *PackageManager) *NetworkTask {
-    return this.preallocated_network_tasks.get();
+pub fn getNetworkTask(this: *PackageManager) bun.OOM!*NetworkTask {
+    return this.preallocated_network_tasks.tryGet();
 }
 
 pub fn allocGitHubURL(this: *const PackageManager, repository: *const Repository) string {
@@ -1186,8 +1200,8 @@ pub fn allocGitHubURL(this: *const PackageManager, repository: *const Repository
     ) catch unreachable;
 }
 
-pub fn hasCreatedNetworkTask(this: *PackageManager, task_id: Task.Id, is_required: bool) bool {
-    const gpe = bun.handleOom(this.network_dedupe_map.getOrPut(task_id));
+pub fn hasCreatedNetworkTask(this: *PackageManager, task_id: Task.Id, is_required: bool) bun.OOM!bool {
+    const gpe = try this.network_dedupe_map.getOrPut(task_id);
 
     // if there's an existing network task that is optional, we want to make it non-optional if this one would be required
     gpe.value_ptr.is_required = if (!gpe.found_existing)
@@ -1209,27 +1223,22 @@ pub fn generateNetworkTaskForTarball(
     is_required: bool,
     dependency_id: DependencyID,
     package: Lockfile.Package,
-    patch_name_and_version_hash: ?u64,
     authorization: NetworkTask.Authorization,
 ) NetworkTask.ForTarballError!?*NetworkTask {
-    if (this.hasCreatedNetworkTask(task_id, is_required)) {
+    if (try this.hasCreatedNetworkTask(task_id, is_required)) {
         return null;
     }
 
-    var network_task = this.getNetworkTask();
+    errdefer _ = this.network_dedupe_map.remove(task_id);
+    var network_task = try this.getNetworkTask();
 
     network_task.* = .{
         .task_id = task_id,
         .callback = undefined,
         .allocator = this.allocator,
         .package_manager = this,
-        .apply_patch_task = if (patch_name_and_version_hash) |h| brk: {
-            const patch_hash = this.lockfile.patched_dependencies.get(h).?.patchfileHash().?;
-            const task = PatchTask.newApplyPatchHash(this, package.meta.id, patch_hash, h);
-            task.callback.apply.task_id = task_id;
-            break :brk task;
-        } else null,
     };
+    errdefer network_task.recycle();
 
     const scope = this.scopeForPackageName(this.lockfile.str(&package.name));
 
@@ -1237,21 +1246,21 @@ pub fn generateNetworkTaskForTarball(
         this.allocator,
         &.{
             .package_manager = this,
-            .name = strings.StringOrTinyString.initAppendIfNeeded(
+            .name = try strings.StringOrTinyString.initAppendIfNeeded(
                 this.lockfile.str(&package.name),
                 *FileSystem.FilenameStore,
                 FileSystem.FilenameStore.instance,
-            ) catch |err| bun.handleOom(err),
+            ),
             .resolution = package.resolution,
             .cache_dir = this.getCacheDirectory(),
             .temp_dir = this.getTemporaryDirectory().handle,
             .dependency_id = dependency_id,
             .integrity = package.meta.integrity,
-            .url = strings.StringOrTinyString.initAppendIfNeeded(
+            .url = try strings.StringOrTinyString.initAppendIfNeeded(
                 url,
                 *FileSystem.FilenameStore,
                 FileSystem.FilenameStore.instance,
-            ) catch |err| bun.handleOom(err),
+            ),
         },
         scope,
         authorization,
@@ -1295,7 +1304,6 @@ const NetworkTask = bun.install.NetworkTask;
 const Npm = bun.install.Npm;
 const PackageID = bun.install.PackageID;
 const PackageManifestError = bun.install.PackageManifestError;
-const PatchTask = bun.install.PatchTask;
 const Repository = bun.install.Repository;
 const Store = bun.install.Store;
 const TarballStream = bun.install.TarballStream;

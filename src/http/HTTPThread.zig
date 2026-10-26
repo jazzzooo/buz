@@ -14,7 +14,7 @@ const ssl_context_cache_ttl_ns = 30 * std.time.ns_per_min;
 var custom_ssl_context_map = std.array_hash_map.Auto(*SSLConfig, SslContextCacheEntry).empty;
 
 io: std.Io,
-loop: *jsc.MiniEventLoop,
+loop: *MiniEventLoop,
 http_context: NewHTTPContext(false),
 https_context: NewHTTPContext(true),
 
@@ -39,8 +39,6 @@ queued_response_body_drains: std.ArrayListUnmanaged(DrainMessage) = .empty,
 queued_shutdowns_lock: std.Io.Mutex = .init,
 queued_writes_lock: std.Io.Mutex = .init,
 queued_response_body_drains_lock: std.Io.Mutex = .init,
-
-queued_threadlocal_proxy_derefs: std.ArrayListUnmanaged(*ProxyTunnel) = .empty,
 
 has_awoken: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 timer: SystemTimer,
@@ -157,8 +155,9 @@ pub fn deflater(this: *@This()) *LibdeflateState {
     return this.lazy_libdeflater.?;
 }
 
-fn onInitErrorNoop(err: InitError, opts: InitOpts) noreturn {
+fn onInitErrorNoop(err: anyerror, opts: InitOpts) noreturn {
     switch (err) {
+        error.OutOfMemory => bun.outOfMemory(),
         error.LoadCAFile => {
             if (!bun.sys.existsZ(opts.abs_ca_file_name)) {
                 Output.err("HTTPThread", "failed to find CA file: '{s}'", .{opts.abs_ca_file_name});
@@ -175,6 +174,7 @@ fn onInitErrorNoop(err: InitError, opts: InitOpts) noreturn {
         error.FailedToOpenSocket => {
             Output.errGeneric("failed to start HTTP client thread", .{});
         },
+        else => Output.err(err, "failed to initialize HTTP client thread", .{}),
     }
     Global.crash();
 }
@@ -183,7 +183,7 @@ pub const InitOpts = struct {
     ca: []stringZ = &.{},
     abs_ca_file_name: stringZ = &.{},
 
-    onInitError: *const fn (err: InitError, opts: InitOpts) noreturn = &onInitErrorNoop,
+    onInitError: *const fn (err: anyerror, opts: InitOpts) noreturn = &onInitErrorNoop,
 };
 
 fn initOnce(io: std.Io, opts: *const InitOpts) void {
@@ -233,7 +233,7 @@ pub fn onStart(opts: InitOpts) void {
     const raw: u64 = @min(bun.env_var.BUN_CONFIG_HTTP_IDLE_TIMEOUT.get(), 239 * 60);
     bun.http.idle_timeout_seconds = @intCast(if (raw > 240) ((raw + 59) / 60) * 60 else raw);
 
-    const loop = bun.jsc.MiniEventLoop.initGlobal(bun.http.http_thread.io, null, null);
+    const loop = MiniEventLoop.initGlobal(bun.http.http_thread.io, null, null) catch |err| opts.onInitError(err, opts);
 
     if (Environment.isWindows) {
         if (bun.env_var.SYSTEMROOT.get() == null) {
@@ -285,6 +285,7 @@ pub fn connect(this: *@This(), client: *HTTPClient, comptime is_ssl: bool) !?New
                 bun.default_allocator.destroy(custom_context);
 
                 return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
                     error.FailedToOpenSocket => |e| e,
                     error.InvalidCA => error.FailedToOpenSocket,
                     error.InvalidCAFile => error.FailedToOpenSocket,
@@ -522,11 +523,6 @@ fn drainEvents(this: *@This()) void {
     this.drainQueuedShutdowns();
     bun.http.H3.PendingConnect.drainResolved(this.io);
 
-    for (this.queued_threadlocal_proxy_derefs.items) |http| {
-        http.deref();
-    }
-    this.queued_threadlocal_proxy_derefs.clearRetainingCapacity();
-
     var count: usize = 0;
     var active = AsyncHTTP.active_requests_count.load(.monotonic);
     const max = AsyncHTTP.max_simultaneous_requests.load(.monotonic);
@@ -694,13 +690,6 @@ pub fn scheduleRequestWrite(this: *@This(), http: *AsyncHTTP, messageType: Write
         this.loop.loop.wakeup();
 }
 
-pub fn scheduleProxyDeref(this: *@This(), proxy: *ProxyTunnel) void {
-    // this is always called on the http thread,
-    bun.handleOom(this.queued_threadlocal_proxy_derefs.append(bun.default_allocator, proxy));
-    if (this.has_awoken.load(.monotonic))
-        this.loop.loop.wakeup();
-}
-
 pub fn wakeup(this: *@This()) void {
     if (this.has_awoken.load(.monotonic))
         this.loop.loop.wakeup();
@@ -728,7 +717,6 @@ const log = Output.scoped(.HTTPThread, .visible);
 
 const stringZ = [:0]const u8;
 
-const ProxyTunnel = @import("./ProxyTunnel.zig");
 const std = @import("std");
 const SystemTimer = @import("../perf/system_timer.zig").Timer;
 
@@ -736,14 +724,13 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Global = bun.Global;
 const Output = bun.Output;
-const jsc = bun.jsc;
+const MiniEventLoop = @import("../event_loop/MiniEventLoop.zig");
 const strings = bun.strings;
 const Arena = bun.allocators.MimallocArena;
 const Batch = bun.BackgroundTaskGroup.Batch;
 const UnboundedQueue = bun.threading.UnboundedQueue;
-const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
+const SSLConfig = @import("../runtime/socket/SSLConfig.zig");
 
 const HTTPClient = bun.http;
 const AsyncHTTP = bun.http.AsyncHTTP;
-const InitError = HTTPClient.InitError;
 const NewHTTPContext = bun.http.NewHTTPContext;

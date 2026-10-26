@@ -41,7 +41,7 @@ CryptoKeyRaw::CryptoKeyRaw(CryptoAlgorithmIdentifier identifier, Vector<uint8_t>
 auto CryptoKeyRaw::algorithm() const -> KeyAlgorithm
 {
     CryptoKeyAlgorithm result;
-    result.name = CryptoAlgorithmRegistry::singleton().name(algorithmIdentifier());
+    result.name = CryptoAlgorithmRegistry::name(algorithmIdentifier());
     return result;
 }
 

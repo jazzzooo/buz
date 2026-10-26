@@ -14,11 +14,6 @@
 #define UV__ERR(x) (x)
 #endif
 
-void __bun_throw_not_implemented(const char* symbol_name)
-{
-    CrashHandler__unsupportedUVFunction(symbol_name);
-}
-
 // Internals
 
 uint64_t uv__hrtime(uv_clocktype_t type);

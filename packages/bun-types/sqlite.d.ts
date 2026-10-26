@@ -24,6 +24,46 @@
  * | `null`          | `NULL`                 |
  */
 declare module "bun:sqlite" {
+  export interface FileControlRetry {
+    retries: number;
+    delay: number;
+  }
+
+  export interface FileControlPragma {
+    name: string;
+    value?: string;
+  }
+
+  /** A view of a connection's current native file, journal, VFS, or Windows handle. */
+  export interface FileControlHandle {
+    readonly kind: "database" | "journal" | "vfs" | "win32";
+
+    /**
+     * Resolves the resource and lends its address for a synchronous native call.
+     * Database operations are rejected until the callback returns. Async work
+     * does not extend the borrow. Neither JavaScript nor foreign code may retain
+     * the address, free the resource, or invalidate resources owned by SQLite.
+     * Throws if the connection is closed or the resource is unavailable.
+     */
+    withUnsafePointer<T>(callback: (pointer: bigint) => T): T;
+  }
+
+  export type FileControlArgument =
+    | number
+    | bigint
+    | string
+    | ArrayBufferView
+    | Partial<FileControlRetry>
+    | FileControlPragma
+    | null;
+
+  export interface FileControlResult {
+    /** SQLite result code; zero means SQLITE_OK. */
+    statusCode: number;
+    /** The operation's output; 64-bit integers are returned as bigint. */
+    value: number | bigint | string | FileControlRetry | FileControlHandle | null;
+  }
+
   /**
    * Options for {@link Database}
    */
@@ -330,6 +370,8 @@ declare module "bun:sqlite" {
      *
      * It can only be run once because this will load
      * the SQLite library into the process.
+     * Failed loads release the library and may be retried. Builds using bundled
+     * SQLite reject this operation.
      *
      * @param path The path to the SQLite library
      */
@@ -554,15 +596,24 @@ declare module "bun:sqlite" {
     ): Database;
 
     /**
-     * See `sqlite3_file_control` for more information.
+     * Runs a supported SQLite file-control operation and returns its status and value.
+     * Integer operations accept numbers or buffers; 64-bit operations also accept
+     * bigint. Buffers use native byte order and need at least 4 bytes for a 32-bit
+     * integer, or 8 bytes for a 64-bit integer or retry pair. Buffers are updated
+     * only on success. Shared and detached buffers are rejected.
+     *
+     * Queries for strings or native handles take no argument. String results are
+     * copied; pointer queries return a FileControlHandle. PRAGMA accepts a
+     * FileControlPragma, and WIN32_AV_RETRY accepts optional retries and delay.
+     * Internal VFS protocols and unknown operations are rejected.
      * @link https://www.sqlite.org/c3ref/file_control.html
      */
-    fileControl(op: number, arg?: ArrayBufferView | number): number;
+    fileControl(op: number, arg?: FileControlArgument): FileControlResult;
     /**
-     * See `sqlite3_file_control` for more information.
+     * Runs a file-control operation on the named attached database.
      * @link https://www.sqlite.org/c3ref/file_control.html
      */
-    fileControl(zDbName: string, op: number, arg?: ArrayBufferView | number): number;
+    fileControl(zDbName: string, op: number, arg?: FileControlArgument): FileControlResult;
   }
 
   /**
@@ -877,6 +928,8 @@ declare module "bun:sqlite" {
      * Internally, this calls `sqlite3_finalize`.
      */
     finalize(): void;
+
+    readonly isFinalized: boolean;
 
     /**
      * Calls {@link finalize} if it wasn't already called.
@@ -1240,6 +1293,9 @@ declare module "bun:sqlite" {
      * @constant 42
      */
     const SQLITE_FCNTL_RESET_CACHE: number;
+
+    /** Configure whether connecting may block when the VFS supports it. */
+    const SQLITE_FCNTL_BLOCK_ON_CONNECT: number;
   }
 
   /**

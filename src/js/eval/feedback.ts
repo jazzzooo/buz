@@ -105,7 +105,7 @@ function parseCliArgs(argv: string[]): ParsedArgs {
     });
 
     return {
-      email: values.email,
+      email: values.email as string | undefined,
       help: Boolean(values.help),
       positionals,
     };

@@ -131,7 +131,7 @@ class BunWebSocket extends EventEmitter {
     super();
     // https://github.com/oven-sh/bun/issues/11866
     if (!WebSocket) {
-      WebSocket = $cpp("JSWebSocket.cpp", "getWebSocketConstructor");
+      WebSocket = $bindgenClass("WebCoreWebSocket.schema.zig", "WebSocket");
     }
 
     if (protocols === undefined) {

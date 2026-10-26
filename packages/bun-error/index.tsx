@@ -9,9 +9,8 @@ import type {
   Message,
   SourceLine,
   StackFrame,
-  WebsocketMessageBuildFailure,
 } from "../../src/api/schema";
-import { messagesToMarkdown, problemsToMarkdown, withBunInfo } from "./markdown";
+import { problemsToMarkdown, withBunInfo } from "./markdown";
 import { fetchAllMappings, remapPosition, sourceMappings } from "./sourcemap";
 
 export enum StackFrameScope {
@@ -982,29 +981,6 @@ const Footer = ({ toMarkdown, data }) => (
   </div>
 );
 
-const BuildFailureMessageContainer = ({ messages }: { messages: Message[] }) => {
-  return (
-    <div id="BunErrorOverlay-container">
-      <div className="BunError-content">
-        <div className="BunError-header">
-          <Summary onClose={dismissError} errorCount={messages.length} />
-        </div>
-        <div className={`BunError-list`}>
-          {messages.map((buildMessage, index) => {
-            if (buildMessage.on.build) {
-              return <BuildError key={index} message={buildMessage} />;
-            } else if (buildMessage.on.resolve) {
-              return <ResolveError key={index} message={buildMessage} />;
-            } else {
-              throw new Error("Unknown build message type");
-            }
-          })}
-        </div>
-        <Footer toMarkdown={messagesToMarkdown} data={messages} />
-      </div>
-    </div>
-  );
-};
 export var thisCwd = "";
 const ErrorGroupContext = createContext<{ cwd?: string }>({ cwd: undefined });
 var reactRoot;
@@ -1255,14 +1231,3 @@ export function dismissError() {
   }
 }
 
-export const renderBuildFailure = (failure: WebsocketMessageBuildFailure, cwd: string) => {
-  thisCwd = cwd;
-  renderWithFunc(() => (
-    <ErrorGroupContext.Provider value={{ cwd }}>
-      <BuildFailureMessageContainer messages={failure.log.msgs} />
-    </ErrorGroupContext.Provider>
-  ));
-};
-
-export const clearBuildFailure = dismissError;
-globalThis.__BunClearBuildFailure = dismissError;

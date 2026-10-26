@@ -4,36 +4,16 @@
 #include <JavaScriptCore/JSDestructibleObject.h>
 #include <JavaScriptCore/JSObject.h>
 #include "BunClientData.h"
+#include "StrongRef.h"
+#include <memory>
 
-extern "C" {
-struct us_socket_stream_buffer_t {
-    char* list_ptr = nullptr;
-    size_t list_cap = 0;
-    size_t listLen = 0;
-    size_t total_bytes_written = 0;
-    size_t cursor = 0;
-
-    size_t bufferedSize() const
-    {
-        return listLen - cursor;
-    }
-    size_t totalBytesWritten() const
-    {
-        return total_bytes_written;
-    }
-};
-
+struct us_socket_stream_buffer_t;
 struct us_socket_t;
-}
 
 namespace uWS {
 template<bool SSL>
 struct HttpResponseData;
 struct WebSocketData;
-}
-
-namespace WebCore {
-class JSNodeHTTPResponse;
 }
 
 namespace Bun {
@@ -45,15 +25,21 @@ public:
     using Base = JSC::JSDestructibleObject;
     static constexpr unsigned StructureFlags = Base::StructureFlags;
 
-    us_socket_stream_buffer_t streamBuffer = {};
+    struct StreamBufferDeleter {
+        void operator()(us_socket_stream_buffer_t*) const;
+    };
+    std::unique_ptr<us_socket_stream_buffer_t, StreamBufferDeleter> streamBuffer;
+    size_t bufferedSize() const;
+    size_t totalBytesWritten() const;
     us_socket_t* socket = nullptr;
     unsigned is_ssl : 1 = 0;
     unsigned ended : 1 = 0;
     unsigned upgraded : 1 = 0;
-    JSC::Strong<JSNodeHTTPServerSocket> strongThis = {};
+    StrongRef strongThis;
+    StrongRef retainForTask() const;
 
-    static JSNodeHTTPServerSocket* create(JSC::VM& vm, JSC::Structure* structure, us_socket_t* socket, bool is_ssl, WebCore::JSNodeHTTPResponse* response);
-    static JSNodeHTTPServerSocket* create(JSC::VM& vm, Zig::GlobalObject* globalObject, us_socket_t* socket, bool is_ssl, WebCore::JSNodeHTTPResponse* response);
+    static JSNodeHTTPServerSocket* create(JSC::VM& vm, JSC::Structure* structure, us_socket_t* socket, bool is_ssl, JSC::JSObject* response);
+    static JSNodeHTTPServerSocket* create(JSC::VM& vm, Zig::GlobalObject* globalObject, us_socket_t* socket, bool is_ssl, JSC::JSObject* response);
 
     static void destroy(JSC::JSCell* cell)
     {
@@ -69,12 +55,12 @@ public:
 
     ~JSNodeHTTPServerSocket();
 
-    JSNodeHTTPServerSocket(JSC::VM& vm, JSC::Structure* structure, us_socket_t* socket, bool is_ssl, WebCore::JSNodeHTTPResponse* response);
+    JSNodeHTTPServerSocket(JSC::VM& vm, JSC::Structure* structure, us_socket_t* socket, bool is_ssl, JSC::JSObject* response);
 
     mutable JSC::WriteBarrier<JSC::JSObject> functionToCallOnClose;
     mutable JSC::WriteBarrier<JSC::JSObject> functionToCallOnDrain;
     mutable JSC::WriteBarrier<JSC::JSObject> functionToCallOnData;
-    mutable JSC::WriteBarrier<WebCore::JSNodeHTTPResponse> currentResponseObject;
+    mutable JSC::WriteBarrier<JSC::JSObject> currentResponseObject;
     mutable JSC::WriteBarrier<JSC::JSObject> m_remoteAddress;
     mutable JSC::WriteBarrier<JSC::JSObject> m_localAddress;
     mutable JSC::WriteBarrier<JSC::JSObject> m_duplex;

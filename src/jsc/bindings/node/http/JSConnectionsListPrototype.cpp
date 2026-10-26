@@ -2,103 +2,107 @@
 #include "JSConnectionsList.h"
 #include "ErrorCode.h"
 #include "JSDOMExceptionHandling.h"
+#include "SchemaBindings.h"
 #include "uv.h"
 
 namespace Bun {
 
 using namespace JSC;
 
-JSC_DECLARE_HOST_FUNCTION(jsConnectionsList_all);
-JSC_DECLARE_HOST_FUNCTION(jsConnectionsList_idle);
-JSC_DECLARE_HOST_FUNCTION(jsConnectionsList_active);
-JSC_DECLARE_HOST_FUNCTION(jsConnectionsList_expired);
-
 const ClassInfo JSConnectionsListPrototype::s_info = { "ConnectionsList"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSConnectionsListPrototype) };
 
-static const HashTableValue JSConnectionsListPrototypeTableValues[] = {
-    { "all"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsConnectionsList_all, 0 } },
-    { "idle"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsConnectionsList_idle, 0 } },
-    { "active"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsConnectionsList_active, 0 } },
-    { "expired"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsConnectionsList_expired, 2 } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_JSConnectionsListPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSConnectionsListPrototype
 
 void JSConnectionsListPrototype::finishCreation(VM& vm)
 {
     Base::finishCreation(vm);
-    reifyStaticProperties(vm, info(), JSConnectionsListPrototypeTableValues, *this);
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+    bunBindgenObjectSurface_JSConnectionsListPrototype_install(vm, info(), *this);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsConnectionsList_all, (JSGlobalObject * globalObject, CallFrame* callFrame))
+static JSConnectionsList* connectionsList(const std::optional<JSC::JSValue>& value)
 {
+    if (!value)
+        return nullptr;
+    auto* connections = dynamicDowncast<JSConnectionsList>(*value);
+    RELEASE_ASSERT(connections);
+    return connections;
+}
+
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_connectionsListAll(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_connectionsListAll_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSConnectionsList* connections = dynamicDowncast<JSConnectionsList>(callFrame->thisValue());
-    if (!connections) {
-        return JSValue::encode(jsUndefined());
-    }
+    JSConnectionsList* connections = connectionsList(args.bindingThis);
+    if (!connections)
+        return std::nullopt;
 
     JSArray* result = connections->all(globalObject);
     RETURN_IF_EXCEPTION(scope, {});
 
-    return JSValue::encode(result);
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsConnectionsList_idle, (JSGlobalObject * globalObject, CallFrame* callFrame))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_connectionsListIdle(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_connectionsListIdle_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSConnectionsList* connections = dynamicDowncast<JSConnectionsList>(callFrame->thisValue());
-    if (!connections) {
-        return JSValue::encode(jsUndefined());
-    }
+    JSConnectionsList* connections = connectionsList(args.bindingThis);
+    if (!connections)
+        return std::nullopt;
 
     JSArray* result = connections->idle(globalObject);
     RETURN_IF_EXCEPTION(scope, {});
 
-    return JSValue::encode(result);
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsConnectionsList_active, (JSGlobalObject * globalObject, CallFrame* callFrame))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_connectionsListActive(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_connectionsListActive_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSConnectionsList* connections = dynamicDowncast<JSConnectionsList>(callFrame->thisValue());
-    if (!connections) {
-        return JSValue::encode(jsUndefined());
-    }
+    JSConnectionsList* connections = connectionsList(args.bindingThis);
+    if (!connections)
+        return std::nullopt;
 
     JSArray* result = connections->active(globalObject);
     RETURN_IF_EXCEPTION(scope, {});
 
-    return JSValue::encode(result);
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsConnectionsList_expired, (JSGlobalObject * globalObject, CallFrame* callFrame))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_connectionsListExpired(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_connectionsListExpired_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSConnectionsList* connections = dynamicDowncast<JSConnectionsList>(callFrame->thisValue());
-    if (!connections) {
-        return JSValue::encode(jsUndefined());
-    }
+    JSConnectionsList* connections = connectionsList(args.bindingThis);
+    if (!connections)
+        return std::nullopt;
 
-    JSValue headersTimeoutValue = callFrame->argument(0);
-    JSValue requestTimeoutValue = callFrame->argument(1);
-
-    uint64_t headersTimeout = headersTimeoutValue.toUInt32(globalObject) * 1000000;
-    RETURN_IF_EXCEPTION(scope, {});
-    uint64_t requestTimeout = requestTimeoutValue.toUInt32(globalObject) * 1000000;
-    RETURN_IF_EXCEPTION(scope, {});
+    uint64_t headersTimeout = static_cast<uint64_t>(args.headersTimeout) * 1000000;
+    uint64_t requestTimeout = static_cast<uint64_t>(args.requestTimeout) * 1000000;
 
     if (headersTimeout == 0 && requestTimeout == 0) {
         JSArray* result = constructEmptyArray(globalObject, nullptr);
         RETURN_IF_EXCEPTION(scope, {});
-        return JSValue::encode(result);
+        return result;
     } else if (requestTimeout > 0 && headersTimeout > requestTimeout) {
         std::swap(headersTimeout, requestTimeout);
     }
@@ -111,13 +115,13 @@ JSC_DEFINE_HOST_FUNCTION(jsConnectionsList_expired, (JSGlobalObject * globalObje
     if (headersDeadline == 0 && requestDeadline == 0) {
         JSArray* result = constructEmptyArray(globalObject, nullptr);
         RETURN_IF_EXCEPTION(scope, {});
-        return JSValue::encode(result);
+        return result;
     }
 
     JSArray* result = connections->expired(globalObject, headersDeadline, requestDeadline);
     RETURN_IF_EXCEPTION(scope, {});
 
-    return JSValue::encode(result);
+    return result;
 }
 
 } // namespace Bun

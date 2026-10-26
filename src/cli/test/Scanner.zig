@@ -275,8 +275,5 @@ const bun = @import("bun");
 const Transpiler = bun.Transpiler;
 const FileSystem = bun.fs.FileSystem;
 
-const jsc = bun.jsc;
-const jest = jsc.Jest;
-
 const strings = bun.strings;
 const StringOrTinyString = strings.StringOrTinyString;

@@ -109,37 +109,39 @@ pub const Repository = extern struct {
     resolved: String = .{},
     package_name: String = .{},
 
-    pub var shared_env: struct {
-        env: ?DotEnv.Map = null,
-        pub fn get(this: *@This(), io: std.Io, allocator: std.mem.Allocator, other: *DotEnv.Loader) DotEnv.Map {
-            return this.env orelse brk: {
-                // Note: currently if the user sets this to some value that causes
-                // a prompt for a password, the stdout of the prompt will be masked
-                // by further output of the rest of the install process.
-                // A value can still be entered, but we need to find a workaround
-                // so the user can see what is being prompted. By default the settings
-                // below will cause no prompt and throw instead.
-                var cloned = bun.handleOom(other.map.cloneWithAllocator(allocator));
+    pub const EnvironmentSnapshot = struct {
+        arena: std.heap.ArenaAllocator,
+        map: DotEnv.Map,
 
-                if (cloned.get("GIT_ASKPASS") == null) {
-                    const config = SloppyGlobalGitConfig.get(io);
-                    if (!config.has_askpass) {
-                        bun.handleOom(cloned.put("GIT_ASKPASS", "echo"));
-                    }
-                }
-
-                if (cloned.get("GIT_SSH_COMMAND") == null) {
-                    const config = SloppyGlobalGitConfig.get(io);
-                    if (!config.has_ssh_command) {
-                        bun.handleOom(cloned.put("GIT_SSH_COMMAND", "ssh -oStrictHostKeyChecking=accept-new"));
-                    }
-                }
-
-                this.env = cloned;
-                break :brk this.env.?;
-            };
+        pub fn create(io: std.Io, source: *const DotEnv.Map) OOM!*EnvironmentSnapshot {
+            const snapshot = try bun.default_allocator.create(EnvironmentSnapshot);
+            snapshot.* = .{ .arena = .init(bun.default_allocator), .map = undefined };
+            errdefer snapshot.destroy();
+            const allocator = snapshot.arena.allocator();
+            snapshot.map = DotEnv.Map.init(allocator);
+            try snapshot.map.ensureUnusedCapacity(source.map.count());
+            for (source.map.keys(), source.map.values()) |key, value| {
+                const owned_key = try allocator.dupe(u8, key);
+                const owned_value = try allocator.dupe(u8, value.value);
+                snapshot.map.map.putAssumeCapacityNoClobber(owned_key, .{
+                    .value = owned_value,
+                    .conditional = value.conditional,
+                });
+            }
+            if (snapshot.map.get("GIT_ASKPASS") == null and !SloppyGlobalGitConfig.get(io).has_askpass) {
+                try snapshot.map.put("GIT_ASKPASS", "echo");
+            }
+            if (snapshot.map.get("GIT_SSH_COMMAND") == null and !SloppyGlobalGitConfig.get(io).has_ssh_command) {
+                try snapshot.map.put("GIT_SSH_COMMAND", "ssh -oStrictHostKeyChecking=accept-new");
+            }
+            return snapshot;
         }
-    } = .{};
+
+        pub fn destroy(snapshot: *EnvironmentSnapshot) void {
+            snapshot.arena.deinit();
+            bun.default_allocator.destroy(snapshot);
+        }
+    };
 
     pub const Hosts = bun.ComptimeStringMap(string, .{
         .{ "bitbucket", ".org" },
@@ -355,7 +357,7 @@ pub const Repository = extern struct {
         manager: *PackageManager,
         _env: DotEnv.Map,
         argv: []const string,
-    ) !string {
+    ) ![]u8 {
         const allocator = manager.allocator;
         var env = _env;
         var std_map = try env.stdEnvMap(allocator);
@@ -366,10 +368,11 @@ pub const Repository = extern struct {
             .argv = argv,
             .environ_map = std_map.get(),
         });
+        defer allocator.free(result.stderr);
+        errdefer allocator.free(result.stdout);
 
         switch (result.term) {
             .exited => |sig| if (sig == 0) {
-                allocator.free(result.stderr);
                 return result.stdout;
             } else if (
             // remote: The page could not be found <-- for non git
@@ -385,9 +388,12 @@ pub const Repository = extern struct {
             else => {},
         }
 
-        allocator.free(result.stdout);
-        allocator.free(result.stderr);
         return error.InstallFailed;
+    }
+
+    fn execDiscardOutput(manager: *PackageManager, env: DotEnv.Map, argv: []const string) !void {
+        const output = try exec(manager, env, argv);
+        manager.allocator.free(output);
     }
 
     pub fn trySSH(url: string) ?string {
@@ -510,20 +516,22 @@ pub const Repository = extern struct {
         }, 0);
 
         return if (cache_dir.openDir(io, folder_name, .{})) |dir| fetch: {
+            errdefer dir.close(io);
             const path = Path.joinAbsString(manager.cache_directory_path, &.{folder_name}, .auto);
 
-            _ = exec(
+            execDiscardOutput(
                 manager,
                 env,
                 &[_]string{ "git", "-C", path, "fetch", "--quiet" },
             ) catch |err| {
-                log.addErrorFmt(
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                try log.addErrorFmt(
                     null,
                     logger.Loc.Empty,
                     allocator,
                     "\"git fetch\" for \"{s}\" failed",
                     .{name},
-                ) catch unreachable;
+                );
                 return err;
             };
             break :fetch dir;
@@ -532,7 +540,7 @@ pub const Repository = extern struct {
 
             const target = Path.joinAbsString(manager.cache_directory_path, &.{folder_name}, .auto);
 
-            _ = exec(manager, env, &[_]string{
+            execDiscardOutput(manager, env, &[_]string{
                 "git",
                 "clone",
                 "-c",
@@ -542,14 +550,15 @@ pub const Repository = extern struct {
                 url,
                 target,
             }) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
                 if (err == error.RepositoryNotFound or attempt > 1) {
-                    log.addErrorFmt(
+                    try log.addErrorFmt(
                         null,
                         logger.Loc.Empty,
                         allocator,
                         "\"git clone\" for \"{s}\" failed",
                         .{name},
-                    ) catch unreachable;
+                    );
                 }
                 return err;
             };
@@ -566,7 +575,7 @@ pub const Repository = extern struct {
         name: string,
         committish: string,
         task_id: Install.Task.Id,
-    ) !string {
+    ) ![]u8 {
         const allocator = manager.allocator;
         const path = Path.joinAbsString(manager.cache_directory_path, &.{try std.fmt.bufPrint(&tl_bufs.get().folder_name_buf, "{f}.git", .{
             bun.fmt.hexIntLower(task_id.get()),
@@ -574,23 +583,30 @@ pub const Repository = extern struct {
 
         _ = repo_dir;
 
-        return std.mem.trim(u8, exec(
+        const environment = try EnvironmentSnapshot.create(manager.io, env.map);
+        defer environment.destroy();
+        const output = exec(
             manager,
-            shared_env.get(manager.io, allocator, env),
+            environment.map,
             if (committish.len > 0)
                 &[_]string{ "git", "-C", path, "log", "--format=%H", "-1", committish }
             else
                 &[_]string{ "git", "-C", path, "log", "--format=%H", "-1" },
         ) catch |err| {
-            log.addErrorFmt(
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            try log.addErrorFmt(
                 null,
                 logger.Loc.Empty,
                 allocator,
                 "no commit matching \"{s}\" found for \"{s}\" (but repository exists)",
                 .{ committish, name },
-            ) catch unreachable;
+            );
             return err;
-        }, " \t\r\n");
+        };
+        errdefer allocator.free(output);
+        const trimmed = std.mem.trim(u8, output, " \t\r\n");
+        std.mem.copyForwards(u8, output[0..trimmed.len], trimmed);
+        return allocator.realloc(output, trimmed.len);
     }
 
     pub fn checkout(
@@ -614,7 +630,7 @@ pub const Repository = extern struct {
 
             const target = Path.joinAbsString(manager.cache_directory_path, &.{folder_name}, .auto);
 
-            _ = exec(manager, env, &[_]string{
+            execDiscardOutput(manager, env, &[_]string{
                 "git",
                 "clone",
                 "-c",
@@ -624,26 +640,28 @@ pub const Repository = extern struct {
                 try bun.getFdPath(.fromStdDir(repo_dir), &bufs.final_path_buf),
                 target,
             }) catch |err| {
-                log.addErrorFmt(
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                try log.addErrorFmt(
                     null,
                     logger.Loc.Empty,
                     allocator,
                     "\"git clone\" for \"{s}\" failed",
                     .{name},
-                ) catch unreachable;
+                );
                 return err;
             };
 
             const folder = Path.joinAbsString(manager.cache_directory_path, &.{folder_name}, .auto);
 
-            _ = exec(manager, env, &[_]string{ "git", "-C", folder, "checkout", "--quiet", resolved }) catch |err| {
-                log.addErrorFmt(
+            execDiscardOutput(manager, env, &[_]string{ "git", "-C", folder, "checkout", "--quiet", resolved }) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                try log.addErrorFmt(
                     null,
                     logger.Loc.Empty,
                     allocator,
                     "\"git checkout\" for \"{s}\" failed",
                     .{name},
-                ) catch unreachable;
+                );
                 return err;
             };
             var dir = try bun.openDir(cache_dir, folder_name);
@@ -662,6 +680,7 @@ pub const Repository = extern struct {
         defer package_dir.close(io);
 
         const json_file, const json_buf = bun.sys.File.readFileFrom(package_dir, "package.json", allocator).unwrap() catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             if (err == error.ENOENT) {
                 // allow git dependencies without package.json
                 return .{
@@ -670,27 +689,29 @@ pub const Repository = extern struct {
                 };
             }
 
-            log.addErrorFmt(
+            try log.addErrorFmt(
                 null,
                 logger.Loc.Empty,
                 allocator,
                 "\"package.json\" for \"{s}\" failed to open: {s}",
                 .{ name, @errorName(err) },
-            ) catch unreachable;
+            );
             return error.InstallFailed;
         };
         defer json_file.close();
+        errdefer allocator.free(json_buf);
 
         const json_path = json_file.getPath(
             &bufs.json_path_buf,
         ).unwrap() catch |err| {
-            log.addErrorFmt(
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            try log.addErrorFmt(
                 null,
                 logger.Loc.Empty,
                 allocator,
                 "\"package.json\" for \"{s}\" failed to resolve: {s}",
                 .{ name, @errorName(err) },
-            ) catch unreachable;
+            );
             return error.InstallFailed;
         };
 

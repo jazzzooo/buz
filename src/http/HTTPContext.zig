@@ -190,13 +190,6 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                     if (pooled.ssl_config) |*s| s.deinit();
                     pooled.ssl_config = null;
                     if (pooled.proxy_tunnel) |*rp| {
-                        // Do NOT call rp.data.shutdown() here — it drives
-                        // SSLWrapper.shutdown → triggerCloseCallback →
-                        // onClose(handlers.ctx), and handlers.ctx is the
-                        // stale HTTPClient pointer from detachOwner(). That
-                        // client is freed by now. http_socket.close(.failure)
-                        // below force-closes the TCP without triggering the
-                        // callback, same as addMemoryBackToPool().
                         rp.deref();
                     }
                     pooled.proxy_tunnel = null;
@@ -232,15 +225,16 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
 
         fn initWithOpts(this: *@This(), opts: *const uws.SocketContext.BunSocketContextOptions) InitError!void {
             if (!comptime ssl) @compileError("ssl only");
-            var err: uws.create_bun_socket_error_t = .none;
-            this.secure = opts.createSSLContext(&err) orelse return switch (err) {
+            var err: uws.TLSContextFailure = .{};
+            this.secure = opts.createSSLContext(&err) orelse return switch (err.kind) {
+                .out_of_memory => error.OutOfMemory,
                 .load_ca_file => error.LoadCAFile,
                 .invalid_ca_file => error.InvalidCAFile,
                 .invalid_ca => error.InvalidCA,
                 else => error.FailedToOpenSocket,
             };
             this.sslCtx().setup();
-            this.group.init(bun.http.http_thread.loop.loop, null, this);
+            this.group.init(bun.http.http_thread.loop.loop, socket_vtable.make(HTTPContextCallbacks.Callbacks(ssl)), this);
         }
 
         pub fn initWithThreadOpts(this: *@This(), init_opts: *const HTTPThread.InitOpts) InitError!void {
@@ -255,9 +249,9 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
         }
 
         pub fn init(this: *@This()) void {
-            this.group.init(bun.http.http_thread.loop.loop, null, this);
+            this.group.init(bun.http.http_thread.loop.loop, socket_vtable.make(HTTPContextCallbacks.Callbacks(ssl)), this);
             if (comptime ssl) {
-                var err: uws.create_bun_socket_error_t = .none;
+                var err: uws.TLSContextFailure = .{};
                 this.secure = (uws.SocketContext.BunSocketContextOptions{
                     // we request the cert so we load root certs and can verify it
                     .request_cert = 1,
@@ -346,15 +340,13 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
             }
             log("close socket", .{});
             if (tunnel) |t| {
-                t.shutdown();
                 t.detachAndDeref();
             }
             if (h2_session) |s| s.deref();
             closeSocket(socket);
         }
 
-        /// Named so `dispatch.zig` can `vtable.make` it. Ext is the
-        /// `ActiveSocket` tagged-pointer word.
+        /// Event handlers receive the ActiveSocket tagged-pointer word.
         pub const Handler = struct {
             pub fn onOpen(
                 ptr: *anyopaque,
@@ -571,12 +563,12 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
             pub fn onConnectError(
                 ptr: *anyopaque,
                 socket: HTTPSocket,
-                _: c_int,
+                failure: uws.ConnectFailure,
             ) void {
                 const tagged = getTagged(ptr);
                 markTaggedSocketAsDead(socket, tagged);
                 if (tagged.get(HTTPClient)) |client| {
-                    client.onConnectError();
+                    client.onConnectError(failure);
                 }
                 // us_connecting_socket_close is always called internally by uSockets
             }
@@ -663,6 +655,11 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                 }
 
                 if (want_tunnel) {
+                    const tunnel = socket.proxy_tunnel.?.data;
+                    if (if (tunnel.wrapper) |*wrapper| wrapper.isShutdown() else true) {
+                        terminateSocket(socket.http_socket);
+                        continue;
+                    }
                     if (socket.proxy_auth_hash != proxy_auth_hash) {
                         continue;
                     }
@@ -689,7 +686,7 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                         continue;
                     }
 
-                    if (http_socket.isShutdown() or http_socket.getError() != 0) {
+                    if (http_socket.isShutdown() or http_socket.hasError()) {
                         terminateSocket(http_socket);
                         continue;
                     }
@@ -856,8 +853,10 @@ const assert = bun.assert;
 const strings = bun.strings;
 const uws = bun.uws;
 const BoringSSL = bun.BoringSSL.c;
-const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
+const SSLConfig = @import("../runtime/socket/SSLConfig.zig");
 
 const HTTPClient = bun.http;
 const H2 = bun.http.H2;
 const InitError = HTTPClient.InitError;
+const HTTPContextCallbacks = @import("./HTTPContextCallbacks.zig");
+const socket_vtable = @import("../uws_sys/vtable.zig");

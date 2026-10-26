@@ -34,7 +34,7 @@ function isRequest(stream) {
 
 const nop = () => {};
 
-function eos(stream, options, callback) {
+function eos(stream, options, callback?) {
   if (arguments.length === 2) {
     callback = options;
     options = kEmptyObject;
@@ -272,7 +272,7 @@ function eosWeb(stream, options, callback) {
   return nop;
 }
 
-function finished(stream, opts) {
+function finished(stream, opts?) {
   let autoCleanup = false;
   if (opts === null) {
     opts = kEmptyObject;

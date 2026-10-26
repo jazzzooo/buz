@@ -27,7 +27,6 @@
 
 #include "CryptoAlgorithmIdentifier.h"
 #include <wtf/TypeCasts.h>
-#include <wtf/text/WTFString.h>
 
 #if ENABLE(WEB_CRYPTO)
 
@@ -54,11 +53,8 @@ public:
         RsaKeyGenParams,
         RsaOaepParams,
         RsaPssParams,
-        X25519Params,
     };
 
-    // FIXME: Consider merging name and identifier.
-    String name;
     CryptoAlgorithmIdentifier identifier { CryptoAlgorithmIdentifier::None };
 
     virtual ~CryptoAlgorithmParameters() = default;

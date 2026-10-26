@@ -82,13 +82,11 @@ pub const ReplCommand = struct {
         vm.is_main_thread = true;
         jsc.VirtualMachine.is_main_thread_vm = true;
 
-        // Store VM reference in REPL (safe - no JS allocation)
-        repl.vm = vm;
-        repl.global = vm.global;
+        repl.engine = ReplEngine.init(vm);
 
         // Create the ReplRunner and execute within the API lock
         // NOTE: JS-allocating operations like ExposeNodeModuleGlobals must
-        // be done inside the API lock callback, not before
+        // be done while the API lock is held, not before.
         var runner = ReplRunner{
             .repl = repl,
             .vm = vm,
@@ -98,8 +96,9 @@ pub const ReplCommand = struct {
             .eval_and_print = ctx.runtime_options.eval.eval_and_print,
         };
 
-        const callback = jsc.OpaqueWrap(ReplRunner, ReplRunner.start);
-        vm.global.vm().holdAPILock(&runner, callback);
+        const api_lock = vm.global.vm().getAPILock();
+        defer api_lock.release();
+        runner.start();
     }
 
     fn dumpBuildError(vm: *jsc.VirtualMachine) void {
@@ -123,11 +122,8 @@ const ReplRunner = struct {
         const vm = this.vm;
 
         // Set up the REPL environment (now inside API lock)
-        this.setupReplEnvironment() catch {
-            // setupGlobalRequire threw a JS exception — surface it and exit
-            if (vm.global.tryTakeException()) |exception| {
-                vm.printErrorLikeObjectToConsole(exception);
-            }
+        this.setupReplEnvironment() catch |err| {
+            vm.printFailureToConsole(err);
             vm.exit_handler.exit_code = 1;
             vm.onExit();
             vm.globalExit();
@@ -149,7 +145,7 @@ const ReplRunner = struct {
             }
         } else {
             // Interactive: run the REPL loop
-            this.repl.runWithVM(vm) catch |err| {
+            this.repl.runWithEngine(ReplEngine.init(vm)) catch |err| {
                 Output.prettyErrorln("<r><red>REPL error: {s}<r>", .{@errorName(err)});
             };
         }
@@ -164,24 +160,30 @@ const ReplRunner = struct {
 
         // Expose Node.js module globals (__dirname, __filename, require, etc.)
         // This must be done inside the API lock as it allocates JS objects
-        bun.cpp.Bun__ExposeNodeModuleGlobals(vm.global);
+        try bun.bindgen.Engine(ExposeNodeModuleGlobalsShim).call(vm.global, .{});
 
         // Set up require(), module, __filename, __dirname relative to cwd
         const cwd = vm.transpiler.fs.topLevelDirWithoutTrailingSlash();
-        try bun.cpp.Bun__REPL__setupGlobalRequire(vm.global, cwd.ptr, cwd.len);
+        var cwd_string = try bun.bindgen.DOMString.fromUTF8(cwd);
+        defer cwd_string.deinit();
+        try bun.bindgen.Engine(SetupGlobalRequireShim).call(vm.global, .{ .cwd = cwd_string.operand() });
 
         // Set timezone if specified
         if (vm.transpiler.env.get("TZ")) |tz| {
             if (tz.len > 0) {
-                _ = vm.global.setTimeZone(&jsc.ZigString.init(tz));
+                _ = try vm.global.setTimeZone(tz);
             }
         }
     }
 };
 
 const Repl = @import("./repl.zig");
+pub const ReplEngine = @import("./ReplEngine.zig");
 
 const bun = @import("bun");
+const ExposeNodeModuleGlobalsBindings = bun.bindgen.Module("ExposeNodeModuleGlobalsHost");
+const ExposeNodeModuleGlobalsShim = ExposeNodeModuleGlobalsBindings.engineShim("exposeNodeModuleGlobals");
+const SetupGlobalRequireShim = ExposeNodeModuleGlobalsBindings.engineShim("setupGlobalRequire");
 const Global = bun.Global;
 const Output = bun.Output;
 const js_ast = bun.ast;

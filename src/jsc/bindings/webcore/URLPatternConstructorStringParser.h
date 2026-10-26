@@ -59,18 +59,18 @@ public:
     ExceptionOr<URLPatternInit> parse(ScriptExecutionContext&);
 
 private:
-    void performParse(ScriptExecutionContext&);
+    ExceptionOr<void> performParse(ScriptExecutionContext&);
     void rewind();
     const URLPatternUtilities::Token& getSafeToken(size_t index) const;
     bool isNonSpecialPatternCharacter(size_t index, char value) const;
     bool isSearchPrefix() const;
     bool isAuthoritySlashesNext() const;
-    String makeComponentString() const;
-    void changeState(URLPatternConstructorStringParserState, size_t skip);
-    void updateState(ScriptExecutionContext&);
+    StringView componentString() const LIFETIME_BOUND;
+    ExceptionOr<void> changeState(URLPatternConstructorStringParserState, size_t skip);
+    ExceptionOr<void> updateState(ScriptExecutionContext&);
     ExceptionOr<void> computeProtocolMatchSpecialSchemeFlag(ScriptExecutionContext&);
 
-    StringView m_input;
+    String m_input;
     Vector<URLPatternUtilities::Token> m_tokenList;
     URLPatternInit m_result;
     size_t m_componentStart { 0 };

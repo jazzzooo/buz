@@ -360,7 +360,7 @@ pub const LengthValue = union(enum) {
         unreachable;
     }
 
-    pub fn tryFromToken(token: *const css.Token) css.Maybe(@This(), void) {
+    pub fn tryFromToken(token: *const css.Token) css.Outcome(@This(), void) {
         switch (token.*) {
             .dimension => |*dim| {
                 inline for (tag_info.field_names) |field_name| {

@@ -1,7 +1,6 @@
 pub const css = @import("../css_parser.zig");
 const Result = css.Result;
 const Printer = css.Printer;
-const Maybe = css.Maybe;
 const PrintErr = css.PrintErr;
 const Location = css.css_rules.Location;
 const SyntaxString = css.css_values.syntax.SyntaxString;
@@ -142,7 +141,7 @@ pub const PropertyRuleDeclarationParser = struct {
         pub fn parseValue(this: *This, name: []const u8, input: *css.Parser) Result(Declaration) {
             // todo_stuff.match_ignore_ascii_case
 
-            //   if (Map.getASCIIICaseInsensitive(
+            //   if (Map.getCaseInsensitiveASCII(
             //   name)) |field| {
             //     return switch (field) {
             //         .syntax => |syntax| {
@@ -202,7 +201,7 @@ pub const PropertyRuleDeclarationParser = struct {
             return .{ .err = input.newError(css.BasicParseErrorKind.at_rule_body_invalid) };
         }
 
-        pub fn ruleWithoutBlock(_: *This, _: AtRuleParser.Prelude, _: *const css.ParserState) css.Maybe(AtRuleParser.AtRule, void) {
+        pub fn ruleWithoutBlock(_: *This, _: AtRuleParser.Prelude, _: *const css.ParserState) css.Outcome(AtRuleParser.AtRule, void) {
             return .{ .err = {} };
         }
     };

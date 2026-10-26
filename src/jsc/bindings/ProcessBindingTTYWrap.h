@@ -10,9 +10,12 @@ class JSValue;
 
 namespace Bun {
 
-JSC::JSValue createBunTTYFunctions(Zig::GlobalObject* globalObject);
+class TTYWrapObject;
+class TTYWrapConstructor;
+TTYWrapObject* ttyWrapObjectCast(JSC::JSValue);
+TTYWrapConstructor* ttyWrapConstructorCast(JSC::JSValue);
+bool isTTYWrapObject(JSC::JSValue) noexcept;
+bool isTTYWrapConstructor(JSC::JSValue) noexcept;
 JSC::JSValue createNodeTTYWrapObject(JSC::JSGlobalObject* globalObject);
-
-JSC_DECLARE_HOST_FUNCTION(Process_functionInternalGetWindowSize);
 
 }

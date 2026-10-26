@@ -5,6 +5,7 @@
 #include "BunProcess.h"
 #include "NodeValidator.h"
 #include "JSBufferEncodingType.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/TypedArrayInlines.h>
 #include <JavaScriptCore/JSCJSValueInlines.h>
 
@@ -13,69 +14,53 @@ using namespace JSC;
 using namespace WebCore;
 using namespace ncrypto;
 
-JSC_DECLARE_HOST_FUNCTION(jsKeyObjectPrototype_equals);
-JSC_DECLARE_CUSTOM_GETTER(jsKeyObjectPrototype_type);
-
 const JSC::ClassInfo JSKeyObjectPrototype::s_info = { "KeyObject"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSKeyObjectPrototype) };
 
-static const JSC::HashTableValue JSKeyObjectPrototypeTableValues[] = {
-    { "equals"_s, static_cast<unsigned>(PropertyAttribute::Function | PropertyAttribute::DontEnum), NoIntrinsic, { HashTableValue::NativeFunctionType, jsKeyObjectPrototype_equals, 1 } },
-    { "type"_s, static_cast<unsigned>(PropertyAttribute::CustomAccessor | PropertyAttribute::ReadOnly), NoIntrinsic, { HashTableValue::GetterSetterType, jsKeyObjectPrototype_type, 0 } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_JSKeyObjectPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSKeyObjectPrototype
 
 void JSKeyObjectPrototype::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
-    reifyStaticProperties(vm, JSKeyObjectPrototype::info(), JSKeyObjectPrototypeTableValues, *this);
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+    bunBindgenObjectSurface_JSKeyObjectPrototype_install(vm, JSKeyObjectPrototype::info(), *this);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsKeyObjectPrototype_equals, (JSGlobalObject * globalObject, CallFrame* callFrame))
+bool Bun::Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_keyObjectEquals(
+    Bun::Bindgen::CppCallContext& context,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_keyObjectEquals_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
 
-    JSKeyObject* thisObject = dynamicDowncast<JSKeyObject>(callFrame->thisValue());
-    if (!thisObject) {
-        throwThisTypeError(*globalObject, scope, "KeyObject"_s, "equals"_s);
-        return {};
-    }
+    KeyObject& thisHandle = JSKeyObject::from(args.bindingThis)->handle();
 
-    JSValue otherKeyObjectValue = callFrame->argument(0);
-    JSKeyObject* otherKeyObject = dynamicDowncast<JSKeyObject>(otherKeyObjectValue);
-    if (!otherKeyObject) {
-        return ERR::INVALID_ARG_INSTANCE(scope, globalObject, "otherKeyObject"_s, "KeyObject"_s, otherKeyObjectValue);
-    }
-
-    KeyObject& thisHandle = thisObject->handle();
-    KeyObject& otherHandle = otherKeyObject->handle();
-
-    std::optional<bool> result = thisHandle.equals(otherHandle);
+    std::optional<bool> result = thisHandle.equals(JSKeyObject::from(args.otherKeyObject)->handle());
     if (!result.has_value()) {
-        return ERR::CRYPTO_UNSUPPORTED_OPERATION(scope, globalObject);
+        ERR::CRYPTO_UNSUPPORTED_OPERATION(scope, globalObject);
+        return false;
     }
 
-    return JSValue::encode(jsBoolean(*result));
+    return *result;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsKeyObjectPrototype_type, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, PropertyName propertyName))
+std::optional<WTF::String> Bun::Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_keyObjectType(
+    Bun::Bindgen::CppCallContext&,
+    const Bun::Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_keyObjectType_Arguments& args)
 {
-    VM& vm = globalObject->vm();
-    ThrowScope scope = DECLARE_THROW_SCOPE(vm);
+    JSKeyObject* key = JSKeyObject::from(args.bindingThis);
+    if (!key)
+        return std::nullopt;
 
-    JSKeyObject* keyObject = dynamicDowncast<JSKeyObject>(JSValue::decode(thisValue));
-    if (!keyObject) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    KeyObject& handle = keyObject->handle();
-
-    switch (handle.type()) {
+    switch (key->handle().type()) {
     case CryptoKeyType::Secret:
-        return JSValue::encode(jsNontrivialString(vm, "secret"_s));
+        return WTF::String("secret"_s);
     case CryptoKeyType::Public:
-        return JSValue::encode(jsNontrivialString(vm, "public"_s));
+        return WTF::String("public"_s);
     case CryptoKeyType::Private:
-        return JSValue::encode(jsNontrivialString(vm, "private"_s));
+        return WTF::String("private"_s);
     }
+
+    RELEASE_ASSERT_NOT_REACHED();
 }

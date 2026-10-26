@@ -24,9 +24,6 @@
  */
 
 export function initializeReadableStreamDefaultController(this, stream, underlyingSource, size, highWaterMark) {
-  if (arguments.length !== 5 && arguments[4] !== $isReadableStream)
-    throw new TypeError("ReadableStreamDefaultController constructor should not be called directly");
-
   return $privateInitializeReadableStreamDefaultController.$call(this, stream, underlyingSource, size, highWaterMark);
 }
 

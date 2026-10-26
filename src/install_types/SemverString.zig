@@ -436,8 +436,6 @@ pub const String = extern struct {
         };
     }
 
-    pub const toJS = @import("../semver_jsc/SemverString_jsc.zig").toJS;
-
     // String must be a pointer because we reference it as a slice. It will become a dead pointer if it is copied.
     pub fn slice(this: *const String, buf: string) string {
         switch (this.bytes[max_inline_len - 1] & 128) {

@@ -32,6 +32,7 @@
 #include "HTTPHeaderMap.h"
 #include <variant>
 #include <wtf/HashTraits.h>
+#include <wtf/RefPtr.h>
 #include <wtf/Vector.h>
 
 namespace WebCore {
@@ -41,6 +42,7 @@ class ScriptExecutionContext;
 DECLARE_ALLOCATOR_WITH_HEAP_IDENTIFIER(FetchHeaders);
 
 class FetchHeaders : public RefCounted<FetchHeaders> {
+    WTF_MAKE_NONCOPYABLE(FetchHeaders);
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED_WITH_HEAP_IDENTIFIER(FetchHeaders, FetchHeaders);
 
 public:
@@ -55,48 +57,52 @@ public:
     using Init = std::variant<Vector<Vector<String>>, Vector<KeyValuePair<String, String>>>;
     static ExceptionOr<Ref<FetchHeaders>> create(std::optional<Init>&&);
 
-    static Ref<FetchHeaders> create(Guard guard = Guard::None, HTTPHeaderMap&& headers = {}) { return adoptRef(*new FetchHeaders { guard, WTF::move(headers) }); }
-    static Ref<FetchHeaders> create(const FetchHeaders& headers) { return adoptRef(*new FetchHeaders { headers }); }
+    static RefPtr<FetchHeaders> tryCreate(Guard guard = Guard::None, HTTPHeaderMap&& headers = {});
+    static RefPtr<FetchHeaders> tryCreate(const FetchHeaders&);
+    static ExceptionOr<String> lowercaseName(const String&);
 
     ExceptionOr<void> append(const String& name, const String& value);
     ExceptionOr<void> remove(const StringView);
     ExceptionOr<String> get(const StringView) const;
+    ExceptionOr<String> get(HTTPHeaderName) const;
     ExceptionOr<bool> has(const StringView) const;
     ExceptionOr<void> set(const String& name, const String& value);
     ExceptionOr<void> set(const HTTPHeaderName name, const String& value);
 
-    ExceptionOr<void> fill(const Init&);
-    ExceptionOr<void> fill(const FetchHeaders&);
-    void filterAndFill(const HTTPHeaderMap&, Guard);
-
     size_t memoryCost() const;
 
-    inline uint32_t size() const
+    inline size_t size() const
     {
         return m_headers.size();
     }
 
-    inline uint32_t sizeAfterJoiningSetCookieHeader() const
+    inline size_t sizeAfterJoiningSetCookieHeader() const
     {
-        return m_headers.commonHeaders().size() + m_headers.uncommonHeaders().size() + (m_headers.getSetCookieHeaders().size() > 0);
+        return static_cast<size_t>(m_headers.commonHeaders().size()) + m_headers.uncommonHeaders().size() + !m_headers.getSetCookieHeaders().isEmpty();
     }
 
-    String fastGet(HTTPHeaderName name) const { return m_headers.get(name); }
     bool fastHas(HTTPHeaderName name) const { return m_headers.contains(name); }
-    bool fastRemove(HTTPHeaderName name) { return m_headers.remove(name); }
-    void fastSet(HTTPHeaderName name, const String& value) { m_headers.set(name, value); }
+    bool fastRemove(HTTPHeaderName name)
+    {
+        ++m_updateCounter;
+        return m_headers.remove(name);
+    }
 
     const Vector<String, 0>& getSetCookieHeaders() const { return m_headers.getSetCookieHeaders(); }
+    ExceptionOr<Vector<String>> copySetCookieHeaders() const;
 
     class Iterator {
+        WTF_DEPRECATED_MAKE_FAST_ALLOCATED(Iterator);
+
     public:
-        explicit Iterator(FetchHeaders&);
         Iterator(FetchHeaders&, bool lowerCaseKeys);
-        std::optional<KeyValuePair<String, String>> next();
+        ExceptionOr<std::optional<KeyValuePair<String, String>>> next();
 
     private:
         Ref<FetchHeaders> m_headers;
+        // The position in the flattened entry list survives header mutations.
         size_t m_currentIndex { 0 };
+        size_t m_keyIndex { 0 };
         Vector<String> m_keys;
         uint64_t m_updateCounter { 0 };
         size_t m_cookieIndex { 0 };
@@ -112,32 +118,24 @@ public:
         return Iterator(*this, true);
     }
 
-    void setInternalHeaders(HTTPHeaderMap&& headers) { m_headers = WTF::move(headers); }
     const HTTPHeaderMap& internalHeaders() const { return m_headers; }
 
     void setGuard(Guard);
     Guard guard() const { return m_guard; }
 
-    FetchHeaders(Guard, HTTPHeaderMap&&);
-    explicit FetchHeaders(const FetchHeaders&);
-
     uint64_t m_updateCounter { 0 };
 
 private:
+    FetchHeaders(Guard, HTTPHeaderMap&&);
+
     Guard m_guard;
+    // Names and values use 8-bit storage so socket writers only borrow bytes.
     HTTPHeaderMap m_headers;
 };
 
 inline FetchHeaders::FetchHeaders(Guard guard, HTTPHeaderMap&& headers)
     : m_guard(guard)
     , m_headers(WTF::move(headers))
-{
-}
-
-inline FetchHeaders::FetchHeaders(const FetchHeaders& other)
-    : RefCounted<FetchHeaders>()
-    , m_guard(other.m_guard)
-    , m_headers(other.m_headers)
 {
 }
 

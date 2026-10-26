@@ -1,0 +1,34 @@
+--- a/lshpack.h
++++ b/lshpack.h
+@@ -121,6 +121,8 @@
+ 
+ #define LSHPACK_MAX_INDEX           61
+ 
++#define LSHPACK_ERR_OUT_OF_MEMORY   (-4)
++#define LSHPACK_END_BLOCK           (1)
+ #define LSHPACK_ERR_MORE_BUF        (-3)
+ #define LSHPACK_ERR_TOO_LARGE       (-2)
+ #define LSHPACK_ERR_BAD_DATA        (-1)
+--- a/lshpack.c
++++ b/lshpack.c
+@@ -1822,7 +1822,10 @@
+             return LSHPACK_ERR_BAD_DATA;
+         hdec_update_max_capacity(dec, new_capacity);
+         if (s == src_end)
+-            return LSHPACK_ERR_BAD_DATA;
++        {
++            *src = s;
++            return LSHPACK_END_BLOCK;
++        }
+     }
+ 
+     /* lshpack_dec_dec_int() sets `index' and advances `src'.  If we do not
+@@ -2038,7 +2041,7 @@
+ 
+     if (indexed_type == LSHPACK_ADD_INDEX &&
+                                 0 != lshpack_dec_push_entry(dec, output))
+-        return LSHPACK_ERR_BAD_DATA;  //error
++        return LSHPACK_ERR_OUT_OF_MEMORY;
+ decode_end:
+     *src = s;
+ #if LSHPACK_DEC_HTTP1X_OUTPUT

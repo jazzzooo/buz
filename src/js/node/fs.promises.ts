@@ -1,7 +1,8 @@
 // Hardcoded module "node:fs/promises"
 const types = require("node:util/types");
 const EventEmitter = require("node:events");
-const fs = $zig("node_fs_binding.zig", "createBinding") as $ZigGeneratedClasses.NodeJSFS;
+const fs = $bindgenFn("NodeJSFS.schema.zig", "create")() as BunNativeBindings.NodeJSFS.NodeJSFS;
+const NativeFSWatcher = $bindgenClass("FSWatcher.schema.zig", "FSWatcher");
 const { glob } = require("internal/fs/glob");
 const { validateInteger } = require("internal/validators");
 const { validateCpOptions, needsJavaScriptCopier } = require("internal/fs/cp-options");
@@ -49,14 +50,14 @@ function watch(
   }
   const queue = $createFIFO();
 
-  const watcher = fs.watch(filename, options || {}, (eventType: string, filename: string | Buffer | undefined) => {
+  const watcher = new NativeFSWatcher(filename, options || {}, (eventType, filename) => {
     queue.push({ eventType, filename });
     if (nextEventResolve) {
       const resolve = nextEventResolve;
       nextEventResolve = null;
       resolve();
     }
-  });
+  }) as unknown as BunFSWatcher;
 
   return {
     [Symbol.asyncIterator]() {
@@ -70,7 +71,7 @@ function watch(
                 closed = true;
                 return { value: undefined, done: true };
               }
-              if (event.eventType === "error") {
+              if (event.eventType === "error" || event.eventType === "abort") {
                 closed = true;
                 throw event.filename;
               }
@@ -109,7 +110,7 @@ async function cp(src, dest, options) {
   return fs.cp(src, dest, options.recursive, options.errorOnExist, options.force, options.mode);
 }
 
-async function opendir(dir: string, options) {
+async function opendir(dir: string, options?) {
   return new (require("node:fs").Dir)(1, dir, options);
 }
 
@@ -129,7 +130,7 @@ const exports = {
   access: asyncWrap(fs.access, "access"),
   appendFile: async function (fileHandleOrFdOrPath, ...args) {
     fileHandleOrFdOrPath = fileHandleOrFdOrPath?.[kFd] ?? fileHandleOrFdOrPath;
-    return _appendFile(fileHandleOrFdOrPath, ...args);
+    return (_appendFile as any)(fileHandleOrFdOrPath, ...args);
   },
   close: asyncWrap(fs.close, "close"),
   copyFile: asyncWrap(fs.copyFile, "copyFile"),
@@ -159,7 +160,7 @@ const exports = {
   mkdtemp: asyncWrap(fs.mkdtemp, "mkdtemp"),
   statfs: asyncWrap(fs.statfs, "statfs"),
   open: async (path, flags = "r", mode = 0o666) => {
-    return new private_symbols.FileHandle(await fs.open(path, flags, mode), flags);
+    return new private_symbols.FileHandle(await fs.open(path, flags as any, mode), flags);
   },
   read: asyncWrap(fs.read, "read"),
   write: asyncWrap(fs.write, "write"),
@@ -180,10 +181,10 @@ const exports = {
       // @ts-expect-error
       return writeFileAsyncIterator(fileHandleOrFdOrPath, ...args);
     }
-    return _writeFile(fileHandleOrFdOrPath, ...args);
+    return (_writeFile as any)(fileHandleOrFdOrPath, ...args);
   },
   readlink: asyncWrap(fs.readlink, "readlink"),
-  realpath: asyncWrap(fs.realpath, "realpath"),
+  realpath: asyncWrap(fs.realpathNative, "realpath"),
   rename: asyncWrap(fs.rename, "rename"),
   stat: asyncWrap(fs.stat, "stat"),
   symlink: asyncWrap(fs.symlink, "symlink"),
@@ -572,7 +573,7 @@ function asyncWrap(fn: any, name: string) {
     createWriteStream(options = kEmptyObject) {
       const fd = this[kFd];
       throwEBADFIfNecessary("createWriteStream", fd);
-      return new (require("internal/fs/streams").WriteStream)(undefined, {
+      return new (require("internal/fs/streams").WriteStream)(undefined as any, {
         highWaterMark: 64 * 1024,
         ...options,
         fd: this,

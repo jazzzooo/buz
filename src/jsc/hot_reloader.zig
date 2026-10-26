@@ -11,21 +11,18 @@ pub const ImportWatcher = union(enum) {
         this.* = .none;
     }
 
-    pub inline fn watchlist(this: ImportWatcher) Watcher.WatchList {
-        return if (this.core()) |watcher| watcher.watchlist else .{};
-    }
-
-    pub inline fn indexOf(this: ImportWatcher, hash: Watcher.HashType) ?u32 {
-        return if (this.core()) |watcher| watcher.indexOf(hash) else null;
+    pub inline fn packageJsonForFile(this: ImportWatcher, hash: Watcher.HashType) ?*bun.PackageJSON {
+        return if (this.core()) |watcher| watcher.packageJsonForFile(hash) else null;
     }
 
     pub inline fn addFileByPathSlow(
         this: ImportWatcher,
         file_path: string,
         loader: options.Loader,
+        package_json: ?*bun.PackageJSON,
     ) bool {
         return if (this.core()) |watcher|
-            watcher.addFileByPathSlow(file_path, loader)
+            watcher.addFileByPathSlow(file_path, loader, package_json)
         else
             true;
     }
@@ -62,8 +59,8 @@ pub const ImportWatcher = union(enum) {
     }
 };
 
-pub const HotReloader = NewHotReloader(VirtualMachine, jsc.EventLoop, false);
-pub const WatchReloader = NewHotReloader(VirtualMachine, jsc.EventLoop, true);
+pub const HotReloader = NewHotReloader(VirtualMachine, jsc.EventLoop, false, false);
+pub const WatchReloader = NewHotReloader(VirtualMachine, jsc.EventLoop, true, false);
 
 /// When non-null, `onFileUpdate` records the absolute path of every file
 /// it sees change before triggering a reload. Used by `bun test --changed
@@ -113,9 +110,15 @@ fn flushChangedPathsForReload() void {
     _ = bun.sys.File.writeFile(bun.FD.cwd(), dest, buf.items);
 }
 
-extern fn BunDebugger__willHotReload() void;
-
-pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime reload_immediately: bool) type {
+pub fn NewHotReloader(
+    comptime Ctx: type,
+    comptime EventLoopType: type,
+    comptime reload_immediately: bool,
+    comptime notify_only: bool,
+) type {
+    if (notify_only and !reload_immediately) {
+        @compileError("notify-only file watching requires immediate reload handling");
+    }
     return struct {
         const Reloader = @This();
 
@@ -125,6 +128,7 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
         references: std.atomic.Value(u32) = .init(1),
         stopping: std.atomic.Value(bool) = .init(false),
         pending_count: std.atomic.Value(u32) = .init(0),
+        inspector_context_identifier: u32,
         watch_event: std.Io.Event = .unset,
         watch_outcome: std.atomic.Value(WatchOutcome) = .init(.waiting),
 
@@ -149,6 +153,10 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
             reloader.* = .{
                 .ctx = ctx,
                 .watcher = undefined,
+                .inspector_context_identifier = if (comptime Ctx == VirtualMachine)
+                    @backingInt(ctx.global.scriptExecutionContextIdentifier())
+                else
+                    0,
                 .verbose = Environment.enable_logs or verbose,
                 .main = MainFile.init(entry_path orelse ""),
             };
@@ -271,22 +279,17 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
             }
 
             pub fn enqueue(this: *Task) void {
-                jsc.markBinding(@src());
                 if (this.count == 0 or this.reloader.stopping.load(.acquire))
                     return;
 
                 if (comptime reload_immediately) {
-                    if (comptime Ctx == bun.bundle_v2.BuildWatchSession) {
+                    if (comptime notify_only) {
                         if (this.reloader.watch_outcome.cmpxchgStrong(.waiting, .reload, .release, .acquire) == null) {
                             this.reloader.watch_event.set(this.reloader.ctx.transpiler.io);
                         }
                         return;
                     }
                     Output.flush();
-                    if (comptime Ctx == ImportWatcher) {
-                        if (this.reloader.ctx.rare_data) |rare|
-                            rare.closeAllListenSocketsForWatchMode();
-                    }
                     flushChangedPathsForReload();
                     bun.reloadProcess(bun.default_allocator, clear_screen, false);
                     unreachable;
@@ -294,7 +297,9 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
 
                 _ = this.reloader.pending_count.fetchAdd(1, .monotonic);
 
-                BunDebugger__willHotReload();
+                bun.bindgen.Engine(DebuggerWillHotReloadSchema).call(.{
+                    .scriptId = this.reloader.inspector_context_identifier,
+                });
                 const that = bun.new(Task, .{
                     .reloader = this.reloader,
                     .count = this.count,
@@ -369,7 +374,7 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
 
         pub fn onError(this: *@This(), err: bun.sys.Error) void {
             Output.err(@as(bun.sys.E, @fromBackingInt(@intCast(err.errno))), "Watcher crashed", .{});
-            if (comptime Ctx == bun.bundle_v2.BuildWatchSession) {
+            if (comptime notify_only) {
                 if (this.watch_outcome.cmpxchgStrong(.waiting, .failed, .release, .acquire) == null) {
                     this.watch_event.set(this.ctx.transpiler.io);
                 }
@@ -619,8 +624,9 @@ pub fn NewHotReloader(comptime Ctx: type, comptime EventLoopType: type, comptime
     };
 }
 
+const DebuggerWillHotReloadSchema = bun.bindgen.Module("BunDebugger").engineShim("debuggerWillHotReload");
+
 const string = []const u8;
-pub const Buffer = MarkedArrayBuffer;
 
 const std = @import("std");
 
@@ -633,5 +639,4 @@ const options = bun.options;
 const strings = bun.strings;
 
 const jsc = bun.jsc;
-const MarkedArrayBuffer = bun.jsc.MarkedArrayBuffer;
 const VirtualMachine = jsc.VirtualMachine;

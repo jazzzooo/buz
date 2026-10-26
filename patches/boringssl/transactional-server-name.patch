@@ -1,0 +1,24 @@
+--- a/ssl/ssl_lib.cc
++++ b/ssl/ssl_lib.cc
+@@ -2253,17 +2253,18 @@
+ int SSL_set_tlsext_host_name(SSL *ssl, const char *name) {
+-  ssl->hostname.reset();
+   if (name == nullptr) {
++    ssl->hostname.reset();
+     return 1;
+   }
+ 
+   size_t len = strlen(name);
+   if (len == 0 || len > TLSEXT_MAXLEN_host_name) {
+     OPENSSL_PUT_ERROR(SSL, SSL_R_SSL3_EXT_INVALID_SERVERNAME);
+     return 0;
+   }
+-  ssl->hostname.reset(OPENSSL_strdup(name));
+-  if (ssl->hostname == nullptr) {
++  UniquePtr<char> hostname(OPENSSL_strdup(name));
++  if (hostname == nullptr) {
+     return 0;
+   }
++  ssl->hostname = std::move(hostname);
+   return 1;
+ }

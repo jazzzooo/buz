@@ -1,21 +1,24 @@
 #pragma once
 
 #include "root.h"
-#include "headers-handwritten.h"
+#include <wtf/text/WTFString.h>
+#include "SchemaBindings.h"
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <JavaScriptCore/Strong.h>
 #include "helpers.h"
 
-BUN_DECLARE_HOST_FUNCTION(jsFunctionBunPlugin);
-BUN_DECLARE_HOST_FUNCTION(jsFunctionBunPluginClear);
-
 namespace Zig {
 
 using namespace JSC;
+using BunPluginTarget = Bun::Bindgen::BunPluginTarget;
 
 class BunPlugin {
 public:
-    using VirtualModuleMap = WTF::UncheckedKeyHashMap<String, JSC::Strong<JSC::JSObject>>;
+    struct VirtualModule {
+        JSC::Strong<JSC::JSObject> callback;
+        bool isMock { false };
+    };
+    using VirtualModuleMap = WTF::UncheckedKeyHashMap<String, VirtualModule>;
 
     // This is a list of pairs of regexps and functions to match against
     class Group {
@@ -26,10 +29,10 @@ public:
         // TODO: evaluate if using JSInternalFieldImpl(2) is faster
         Vector<JSC::Strong<JSC::RegExp>> filters = {};
         Vector<JSC::Strong<JSC::JSObject>> callbacks = {};
-        BunPluginTarget target { BunPluginTargetBun };
+        BunPluginTarget target { BunPluginTarget::bun };
 
         void append(JSC::VM& vm, JSC::RegExp* filter, JSC::JSObject* func);
-        JSObject* find(JSC::JSGlobalObject* globalObj, String& path);
+        JSObject* find(JSC::JSGlobalObject* globalObj, const String& path);
         void clear()
         {
             filters.clear();
@@ -59,6 +62,13 @@ public:
         }
 
         void append(JSC::VM& vm, JSC::RegExp* filter, JSC::JSObject* func, String& namespaceString);
+
+        void clear()
+        {
+            fileNamespace.clear();
+            namespaces.clear();
+            groups.clear();
+        }
     };
 
     class OnLoad final : public Base {
@@ -71,13 +81,21 @@ public:
 
         VirtualModuleMap* _Nullable virtualModules = nullptr;
         bool mustDoExpensiveRelativeLookup = false;
-        JSC::EncodedJSValue run(JSC::JSGlobalObject* globalObject, BunString* namespaceString, BunString* path);
+        JSC::EncodedJSValue run(JSC::JSGlobalObject* globalObject, const WTF::String& namespaceString, const WTF::String& path);
 
         bool hasVirtualModules() const { return virtualModules != nullptr; }
 
         void addModuleMock(JSC::VM& vm, const String& path, JSC::JSObject* mock);
 
         std::optional<String> resolveVirtualModule(const String& path, const String& from);
+
+        void clear()
+        {
+            Base::clear();
+            delete virtualModules;
+            virtualModules = nullptr;
+            mustDoExpensiveRelativeLookup = false;
+        }
 
         ~OnLoad()
         {
@@ -95,7 +113,7 @@ public:
         {
         }
 
-        JSC::EncodedJSValue run(JSC::JSGlobalObject* globalObject, BunString* namespaceString, BunString* path, BunString* importer);
+        JSC::EncodedJSValue run(JSC::JSGlobalObject* globalObject, const WTF::String& namespaceString, const WTF::String& path, const WTF::String& importer);
     };
 };
 
@@ -104,6 +122,5 @@ class GlobalObject;
 } // namespace Zig
 
 namespace Bun {
-JSC::JSValue runVirtualModule(Zig::GlobalObject*, BunString* specifier, bool& wasModuleMock);
-JSC::Structure* createModuleMockStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype);
+std::optional<JSC::JSValue> runVirtualModule(Zig::GlobalObject*, const WTF::String& specifier, bool& wasModuleMock);
 }

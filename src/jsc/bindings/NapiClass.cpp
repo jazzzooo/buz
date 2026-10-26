@@ -28,7 +28,7 @@ JSC_HOST_CALL_ATTRIBUTES JSC::EncodedJSValue NapiClass_ConstructorFunction(JSC::
 
     if (!napi) [[unlikely]] {
         JSC::throwVMError(globalObject, scope, JSC::createTypeError(globalObject, "NapiClass constructor called on an object that is not a NapiClass"_s));
-        return JSValue::encode(JSC::jsUndefined());
+        return {};
     }
 
     JSValue newTarget;
@@ -41,7 +41,7 @@ JSC_HOST_CALL_ATTRIBUTES JSC::EncodedJSValue NapiClass_ConstructorFunction(JSC::
 
         if (!prototype) {
             JSC::throwVMError(globalObject, scope, JSC::createTypeError(globalObject, "NapiClass constructor is missing the prototype"_s));
-            return JSValue::encode(JSC::jsUndefined());
+            return {};
         }
 
         newTarget = callFrame->newTarget();
@@ -67,9 +67,7 @@ JSC_HOST_CALL_ATTRIBUTES JSC::EncodedJSValue NapiClass_ConstructorFunction(JSC::
 
     JSValue ret = toJS(napi->constructor()(napi->env(), frame.toNapi()));
     napi_set_last_error(napi->env(), napi_ok);
-    if (napi->env()->throwPendingException()) {
-        return {};
-    }
+    napi->env()->throwPendingException();
     RETURN_IF_EXCEPTION(scope, {});
     if (ret.isEmpty()) {
         ret = jsUndefined();
@@ -120,13 +118,12 @@ void NapiClass::finishCreation(VM& vm, const String& name, napi_callback constru
         const napi_property_descriptor& property = properties[i];
 
         if (property.attributes & napi_static) {
-            Napi::defineProperty(env, this, property, true, throwScope);
+            Napi::defineProperty(env, this, property);
         } else {
-            Napi::defineProperty(env, prototype, property, false, throwScope);
+            Napi::defineProperty(env, prototype, property);
         }
 
-        if (throwScope.exception())
-            break;
+        RETURN_IF_EXCEPTION(throwScope, void());
     }
 
     this->putDirect(vm, vm.propertyNames->prototype, prototype, JSC::PropertyAttribute::DontEnum | 0);

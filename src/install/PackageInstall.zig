@@ -525,31 +525,28 @@ pub const PackageInstall = struct {
         }
     };
 
-    const node_fs_bufs = bun.ThreadlocalBuffers(struct { fs: bun.jsc.Node.fs.NodeFS = .{} });
-    inline fn node_fs_for_package_installer() *bun.jsc.Node.fs.NodeFS {
-        return &node_fs_bufs.get().fs;
-    }
-
-    fn initInstallDir(this: *@This(), state: *InstallDirState, destination_dir: std.Io.Dir, method: Method) Result {
-        const io = this.manager.io;
+    fn initInstallDir(io: std.Io, allocator: std.mem.Allocator, cache_dir: std.Io.Dir, cache_dir_subpath: stringZ, destination_dir_subpath: stringZ, state: *InstallDirState, destination_dir: std.Io.Dir, method: Method) Result {
         const destbase = destination_dir;
-        const destpath = this.destination_dir_subpath;
+        const destpath = destination_dir_subpath;
 
         state.cached_package_dir = (if (comptime Environment.isWindows)
             if (method == .symlink)
-                bun.openDirNoRenamingOrDeletingWindows(.fromStdDir(this.cache_dir), this.cache_dir_subpath)
+                bun.openDirNoRenamingOrDeletingWindows(.fromStdDir(cache_dir), cache_dir_subpath)
             else
-                bun.openDir(this.cache_dir, this.cache_dir_subpath)
+                bun.openDir(cache_dir, cache_dir_subpath)
         else
-            bun.openDir(this.cache_dir, this.cache_dir_subpath)) catch |err|
+            bun.openDir(cache_dir, cache_dir_subpath)) catch |err|
             return Result.fail(err, .opening_cache_dir, @errorReturnTrace());
 
-        state.walker = DirectoryWalker.init(state.cached_package_dir, this.allocator, .{
-            .excluded_directories = if (method == .symlink and this.cache_dir_subpath.len == 1 and this.cache_dir_subpath[0] == '.')
+        state.walker = DirectoryWalker.init(state.cached_package_dir, allocator, .{
+            .excluded_directories = if (method == .symlink and cache_dir_subpath.len == 1 and cache_dir_subpath[0] == '.')
                 &.{"node_modules"}
             else
                 &.{},
-        }) catch |err| bun.handleOom(err);
+        }) catch |err| {
+            state.cached_package_dir.close(io);
+            return Result.fail(err, .opening_cache_dir, @errorReturnTrace());
+        };
 
         state.subdir = bun.MakePath.makeOpenPath(io, destbase, bun.span(destpath), .{
             .iterate = true,
@@ -574,9 +571,24 @@ pub const PackageInstall = struct {
     }
 
     fn installWithCopyfile(this: *@This(), destination_dir: std.Io.Dir) Result {
-        var state = InstallDirState{ .io = this.manager.io };
-        const res = this.initInstallDir(&state, destination_dir, .copyfile);
-        if (res.isFail()) return res;
+        return switch (copyDirectory(this.manager.io, this.allocator, this.cache_dir, this.cache_dir_subpath, destination_dir, this.destination_dir_subpath)) {
+            .success => |count| blk: {
+                this.file_count = count;
+                break :blk .success;
+            },
+            .failure => |failure| .{ .failure = failure },
+        };
+    }
+
+    pub const CopyResult = union(enum) {
+        success: u32,
+        failure: @FieldType(Result, "failure"),
+    };
+
+    pub fn copyDirectory(io_handle: std.Io, allocator: std.mem.Allocator, source_dir: std.Io.Dir, source_subpath: stringZ, destination_dir: std.Io.Dir, destination_subpath: stringZ) CopyResult {
+        var state = InstallDirState{ .io = io_handle };
+        const res = initInstallDir(io_handle, allocator, source_dir, source_subpath, destination_subpath, &state, destination_dir, .copyfile);
+        if (res == .failure) return .{ .failure = res.failure };
         defer state.deinit();
 
         const FileCopier = struct {
@@ -626,15 +638,15 @@ pub const PackageInstall = struct {
             }
         };
 
-        this.file_count = FileCopier.copy(
-            this.manager.io,
+        const count = FileCopier.copy(
+            io_handle,
             state.subdir,
             &state.walker,
             if (Environment.isWindows) &state.destination_path else {},
             if (Environment.isWindows) &state.source_path else {},
-        ) catch |err| return Result.fail(err, .copying_files, @errorReturnTrace());
+        ) catch |err| return .{ .failure = Result.fail(err, .copying_files, @errorReturnTrace()).failure };
 
-        return .success;
+        return .{ .success = count };
     }
 
     fn NewTaskQueue(comptime TaskType: type) type {
@@ -675,7 +687,7 @@ pub const PackageInstall = struct {
         bytes: []u16,
         src: [:0]bun.OSPathChar,
         dest: [:0]bun.OSPathChar,
-        task: bun.jsc.BackgroundTask = .{ .callback = &runInBackground },
+        task: bun.BackgroundTaskGroup.Task = .{ .callback = &runInBackground },
         err: ?anyerror = null,
 
         pub const Queue = NewTaskQueue(@This());
@@ -704,7 +716,7 @@ pub const PackageInstall = struct {
             });
         }
 
-        fn runInBackground(task: *bun.jsc.BackgroundTask) void {
+        fn runInBackground(task: *bun.BackgroundTaskGroup.Task) void {
             var self: *@This() = @fieldParentPtr("task", task);
             const queue = self.queue;
             defer queue.completeOne();
@@ -783,7 +795,7 @@ pub const PackageInstall = struct {
 
     fn installWithHardlink(this: *@This(), dest_dir: std.Io.Dir) !Result {
         var state = InstallDirState{ .io = this.manager.io };
-        const res = this.initInstallDir(&state, dest_dir, .hardlink);
+        const res = initInstallDir(this.manager.io, this.allocator, this.cache_dir, this.cache_dir_subpath, this.destination_dir_subpath, &state, dest_dir, .hardlink);
         if (res.isFail()) return res;
         defer state.deinit();
 
@@ -870,7 +882,7 @@ pub const PackageInstall = struct {
 
     fn installWithSymlink(this: *@This(), dest_dir: std.Io.Dir) !Result {
         var state = InstallDirState{ .io = this.manager.io };
-        const res = this.initInstallDir(&state, dest_dir, .symlink);
+        const res = initInstallDir(this.manager.io, this.allocator, this.cache_dir, this.cache_dir_subpath, this.destination_dir_subpath, &state, dest_dir, .symlink);
         if (res.isFail()) return res;
         defer state.deinit();
 
@@ -986,9 +998,9 @@ pub const PackageInstall = struct {
 
                     manager: *PackageManager,
                     absolute_path: []const u8,
-                    task: jsc.BackgroundTask = .{ .callback = &run },
+                    task: bun.BackgroundTaskGroup.Task = .{ .callback = &run },
 
-                    pub fn run(task: *jsc.BackgroundTask) void {
+                    pub fn run(task: *bun.BackgroundTaskGroup.Task) void {
                         const uninstall_task: *@This() = @fieldParentPtr("task", task);
                         const manager = uninstall_task.manager;
                         var debug_timer = bun.Output.DebugTimer.start();
@@ -1134,7 +1146,8 @@ pub const PackageInstall = struct {
                 wbuf[i] = 0;
                 const fullpath = wbuf[0..i :0];
 
-                _ = node_fs_for_package_installer().mkdirRecursiveOSPathImpl(void, {}, fullpath, 0, false);
+                var mkdir_error_buffer: bun.PathBuffer = undefined;
+                _ = NodeFSCore.mkdirRecursiveOSPath(&mkdir_error_buffer, void, {}, fullpath, 0, false);
             }
 
             const res = strings.copyUTF16IntoUTF8(dest_buf[0..], wbuf[0..i]);
@@ -1334,6 +1347,7 @@ const string = []const u8;
 const stringZ = [:0]const u8;
 
 const DirectoryWalker = @import("../sys/DirectoryWalker.zig");
+const NodeFSCore = @import("../runtime/node/NodeFSCore.zig");
 const std = @import("std");
 
 const bun = @import("bun");
@@ -1346,7 +1360,6 @@ const Path = bun.path;
 const Progress = bun.Progress;
 const Syscall = bun.sys;
 const BackgroundTaskGroup = bun.BackgroundTaskGroup;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 const Bitset = std.bit_set.Dynamic;

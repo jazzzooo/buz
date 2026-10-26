@@ -157,34 +157,40 @@ pub const PackageJSON = struct {
         macros: js_ast.Expr,
         log: *logger.Log,
         json_source: *const logger.Source,
-    ) MacroMap {
+    ) bun.OOM!MacroMap {
         var macro_map: MacroMap = .empty;
+        errdefer {
+            for (macro_map.values()) |*map| map.deinit(allocator);
+            macro_map.deinit(allocator);
+        }
         if (macros.data != .e_object) return macro_map;
 
         const properties = macros.data.e_object.properties.slice();
 
         for (properties) |property| {
-            const key = property.key.?.asString(allocator) orelse continue;
+            const key_expr = property.key orelse continue;
+            if (key_expr.data != .e_string) continue;
+            const key = try key_expr.data.e_string.string(allocator);
             if (!resolver.isPackagePath(key)) {
-                log.addRangeWarningFmt(
+                try log.addRangeWarningFmt(
                     json_source,
                     json_source.rangeOfString(property.key.?.loc),
                     allocator,
                     "\"{s}\" is not a package path. \"macros\" remaps package paths to macros. Skipping.",
                     .{key},
-                ) catch unreachable;
+                );
                 continue;
             }
 
             const value = property.value.?;
             if (value.data != .e_object) {
-                log.addWarningFmt(
+                try log.addWarningFmt(
                     json_source,
                     value.loc,
                     allocator,
                     "Invalid macro remapping in \"{s}\": expected object where the keys are import names and the value is a string path to replace",
                     .{key},
-                ) catch unreachable;
+                );
                 continue;
             }
 
@@ -192,28 +198,34 @@ pub const PackageJSON = struct {
             if (remap_properties.len == 0) continue;
 
             var map: MacroImportReplacementMap = .empty;
-            map.ensureUnusedCapacity(allocator, remap_properties.len) catch unreachable;
+            defer map.deinit(allocator);
+            try map.ensureUnusedCapacity(allocator, remap_properties.len);
             for (remap_properties) |remap| {
-                const import_name = remap.key.?.asString(allocator) orelse continue;
+                const import_key = remap.key orelse continue;
+                if (import_key.data != .e_string) continue;
+                const import_name = try import_key.data.e_string.string(allocator);
                 const remap_value = remap.value.?;
                 if (remap_value.data != .e_string or remap_value.data.e_string.data.len == 0) {
-                    log.addWarningFmt(
+                    try log.addWarningFmt(
                         json_source,
                         remap_value.loc,
                         allocator,
                         "Invalid macro remapping for import \"{s}\": expected string to remap to. e.g. \"graphql\": \"bun-macro-relay\" ",
                         .{import_name},
-                    ) catch unreachable;
+                    );
                     continue;
                 }
 
-                const remap_value_str = remap_value.data.e_string.data;
+                const remap_value_str = try remap_value.data.e_string.string(allocator);
 
-                map.putAssumeCapacityNoClobber(import_name, remap_value_str);
+                map.putAssumeCapacity(import_name, remap_value_str);
             }
 
             if (map.count() > 0) {
-                macro_map.put(allocator, key, map) catch unreachable;
+                const entry = try macro_map.getOrPut(allocator, key);
+                if (entry.found_existing) entry.value_ptr.deinit(allocator);
+                entry.value_ptr.* = map;
+                map = .empty;
             }
         }
 
@@ -227,13 +239,13 @@ pub const PackageJSON = struct {
         package_id: ?Install.PackageID,
         comptime include_scripts_: enum { ignore_scripts, include_scripts },
         comptime include_dependencies: enum { main, local, none },
-    ) ?PackageJSON {
+    ) bun.OOM!?PackageJSON {
         const include_scripts = include_scripts_ == .include_scripts;
 
         // TODO: remove this extra copy
         const parts = [_]string{ input_path, "package.json" };
         const package_json_path_ = r.fs.abs(&parts);
-        const package_json_path = r.fs.dirname_store.append(@TypeOf(package_json_path_), package_json_path_) catch unreachable;
+        const package_json_path = try r.fs.dirname_store.append(@TypeOf(package_json_path_), package_json_path_);
 
         // DirInfo cache is reused globally
         // So we cannot free these
@@ -248,8 +260,9 @@ pub const PackageJSON = struct {
             false,
             null,
         ) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             if (err != error.IsDir) {
-                r.log.addErrorFmt(null, logger.Loc.Empty, allocator, "Cannot read file \"{s}\": {s}", .{ input_path, @errorName(err) }) catch unreachable;
+                try r.log.addErrorFmt(null, logger.Loc.Empty, allocator, "Cannot read file \"{s}\": {s}", .{ input_path, @errorName(err) });
             }
 
             return null;
@@ -266,12 +279,7 @@ pub const PackageJSON = struct {
         json_source.path.pretty = json_source.path.text;
         const package_dir = std.fs.path.dirname(json_source.path.text) orelse input_path;
 
-        const json: js_ast.Expr = (r.caches.json.parsePackageJSON(r.log, &json_source, allocator, true) catch |err| {
-            if (Environment.isDebug) {
-                Output.printError("{s}: JSON parse error: {s}", .{ package_json_path, @errorName(err) });
-            }
-            return null;
-        } orelse return null);
+        const json: js_ast.Expr = (try r.caches.json.parsePackageJSON(r.log, &json_source, allocator, true)) orelse return null;
 
         if (json.data != .e_object) {
             // Invalid package.json in node_modules is noisy.
@@ -526,7 +534,7 @@ pub const PackageJSON = struct {
                 // // if there is a name & version, check if the lockfile has the package
                 if (package_json.name.len > 0 and package_json.version.len > 0) {
                     if (r.package_manager) |pm| {
-                        const tag = Dependency.Version.Tag.infer(package_json.version);
+                        const tag = Dependency.Version.Tag.infer(pm.javascript_semantics, package_json.version);
 
                         if (tag == .npm) {
                             const sliced = Semver.SlicedString.init(package_json.version, package_json.version);
@@ -538,7 +546,7 @@ pub const PackageJSON = struct {
                                 .npm,
                                 &sliced,
                                 r.log,
-                                pm,
+                                Dependency.ParseContext.fromPackageManager(pm),
                             )) |dependency_version| {
                                 if (dependency_version.value.npm.version.isExact()) {
                                     if (pm.lockfile.resolvePackageFromNameAndVersion(package_json.name, dependency_version)) |resolved| {
@@ -653,6 +661,7 @@ pub const PackageJSON = struct {
                                     const version_str = version_value.asString(allocator) orelse continue;
                                     const sliced_str = Semver.SlicedString.init(version_str, version_str);
 
+                                    const parse_context = r.dependencyParseContext();
                                     if (Dependency.parse(
                                         allocator,
                                         name,
@@ -660,7 +669,7 @@ pub const PackageJSON = struct {
                                         version_str,
                                         &sliced_str,
                                         r.log,
-                                        r.package_manager,
+                                        parse_context,
                                     )) |dependency_version| {
                                         const dependency = Dependency{
                                             .name = name,

@@ -1,157 +1,193 @@
-#include "Path.h"
+#include "PathInlines.h"
 #include "root.h"
-#include "headers.h"
+#include "SchemaBindings.h"
+#include "Bindgen/FileURL.h"
+#include "BindgenTypePredicates.h"
+#include "StringConversion.h"
 #include "BunClientData.h"
+#include "DOMURL.h"
+#include "ErrorCode.h"
+#include "JSDOMURL.h"
+#include "JSDOMExceptionHandling.h"
 #include "ZigGlobalObject.h"
+#include "helpers.h"
 
-#include <JavaScriptCore/JSFunction.h>
+#include <JavaScriptCore/JSArrayBufferView.h>
+#include <JavaScriptCore/Error.h>
+#include <JavaScriptCore/JSGenericTypedArrayViewInlines.h>
 #include <JavaScriptCore/JSMicrotask.h>
-#include <JavaScriptCore/ObjectConstructor.h>
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <span>
+#include <wtf/URL.h>
+#include <wtf/ASCIICType.h>
 
 #pragma mark - Node.js Path
 
-namespace Zig {
-
-static JSC::JSObject* createPath(JSC::JSGlobalObject* globalThis, bool isWindows);
-
-using JSGlobalObject = JSC::JSGlobalObject;
-using Exception = JSC::Exception;
-using JSValue = JSC::JSValue;
-using JSString = JSC::JSString;
-using JSModuleLoader = JSC::JSModuleLoader;
-using JSModuleRecord = JSC::JSModuleRecord;
-using Identifier = JSC::Identifier;
-using SourceOrigin = JSC::SourceOrigin;
-using JSObject = JSC::JSObject;
-using JSNonFinalObject = JSC::JSNonFinalObject;
-namespace JSCastingHelpers = JSC::JSCastingHelpers;
+namespace Bun::Bindgen {
 
 using namespace JSC;
 
-using PathFunction = JSC::EncodedJSValue (*SYSV_ABI)(JSGlobalObject*, bool, EncodedJSValue*, uint16_t len);
-
-template<bool isWindows, PathFunction Function>
-static inline JSC::EncodedJSValue createZigFunction(JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+static bool validateNodePath(JSC::JSGlobalObject& global, JSC::ThrowScope& scope, JSC::JSValue value, WTF::ASCIILiteral name, std::span<const uint8_t> bytes)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    MarkedArgumentBufferWithSize<8> args = MarkedArgumentBufferWithSize<8>();
-    for (unsigned i = 0, size = callFrame->argumentCount(); i < size; ++i) {
-        args.append(callFrame->argument(i));
+    if (std::find(bytes.begin(), bytes.end(), 0) != bytes.end()) {
+        Bun::ERR::INVALID_ARG_VALUE(scope, &global, name, value, "must be a string, Uint8Array, or URL without null bytes"_s);
+        return false;
     }
-    const auto result = Function(globalObject, isWindows, args.data(), args.size());
-    RETURN_IF_EXCEPTION(scope, {});
-    return result;
+    return true;
 }
 
-#define DEFINE_PATH_FUNCTION(jsFunctionName, Function, isWindows)               \
-    JSC_DEFINE_HOST_FUNCTION(jsFunctionName,                                    \
-        (JSC::JSGlobalObject * globalObject, JSC::CallFrame * callFrame))       \
-    {                                                                           \
-        return createZigFunction<isWindows, Function>(globalObject, callFrame); \
-    }
-
-DEFINE_PATH_FUNCTION(jsFunctionPath_basenamePosix, Bun__Path__basename, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_dirnamePosix, Bun__Path__dirname, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_extnamePosix, Bun__Path__extname, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_formatPosix, Bun__Path__format, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_isAbsolutePosix, Bun__Path__isAbsolute, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_joinPosix, Bun__Path__join, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_normalizePosix, Bun__Path__normalize, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_parsePosix, Bun__Path__parse, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_relativePosix, Bun__Path__relative, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_resolvePosix, Bun__Path__resolve, false)
-DEFINE_PATH_FUNCTION(jsFunctionPath_toNamespacedPathPosix, Bun__Path__toNamespacedPath, false)
-
-DEFINE_PATH_FUNCTION(jsFunctionPath_basenameWindows, Bun__Path__basename, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_dirnameWindows, Bun__Path__dirname, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_extnameWindows, Bun__Path__extname, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_formatWindows, Bun__Path__format, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_isAbsoluteWindows, Bun__Path__isAbsolute, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_joinWindows, Bun__Path__join, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_normalizeWindows, Bun__Path__normalize, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_parseWindows, Bun__Path__parse, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_relativeWindows, Bun__Path__relative, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_resolveWindows, Bun__Path__resolve, true)
-DEFINE_PATH_FUNCTION(jsFunctionPath_toNamespacedPathWindows, Bun__Path__toNamespacedPath, true)
-
-static JSC::JSObject* createPath(JSGlobalObject* globalThis, bool isWindows)
+static bool copyPathBytes(JSC::JSGlobalObject& global, JSC::ThrowScope& scope, WTF::Vector<uint8_t>& result, std::span<const uint8_t> bytes, bool shared)
 {
-    auto& vm = JSC::getVM(globalThis);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    auto* path = JSC::constructEmptyObject(globalThis);
-    RETURN_IF_EXCEPTION(scope, {});
-    auto& builtinNames = WebCore::builtinNames(vm);
-
-    if (!isWindows) {
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.basenamePublicName(), 1, jsFunctionPath_basenamePosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.dirnamePublicName(), 1, jsFunctionPath_dirnamePosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.extnamePublicName(), 1, jsFunctionPath_extnamePosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.formatPublicName(), 1, jsFunctionPath_formatPosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.isAbsolutePublicName(), 1, jsFunctionPath_isAbsolutePosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.joinPublicName(), 1, jsFunctionPath_joinPosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.normalizePublicName(), 1, jsFunctionPath_normalizePosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.parsePublicName(), 1, jsFunctionPath_parsePosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.relativePublicName(), 1, jsFunctionPath_relativePosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.resolvePublicName(), 1, jsFunctionPath_resolvePosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.toNamespacedPathPublicName(), 1, jsFunctionPath_toNamespacedPathPosix, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-    } else {
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.basenamePublicName(), 1, jsFunctionPath_basenameWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.dirnamePublicName(), 1, jsFunctionPath_dirnameWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.extnamePublicName(), 1, jsFunctionPath_extnameWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.formatPublicName(), 1, jsFunctionPath_formatWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.isAbsolutePublicName(), 1, jsFunctionPath_isAbsoluteWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.joinPublicName(), 1, jsFunctionPath_joinWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.normalizePublicName(), 1, jsFunctionPath_normalizeWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.parsePublicName(), 1, jsFunctionPath_parseWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.relativePublicName(), 1, jsFunctionPath_relativeWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.resolvePublicName(), 1, jsFunctionPath_resolveWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
-        path->putDirectNativeFunction(vm, globalThis, builtinNames.toNamespacedPathPublicName(), 1, jsFunctionPath_toNamespacedPathWindows, ImplementationVisibility::Public, Intrinsic::NoIntrinsic, 0);
+    if (!result.tryGrow(bytes.size())) {
+        JSC::throwOutOfMemoryError(&global, scope);
+        return false;
     }
+    if (shared) {
+        for (size_t index = 0; index < bytes.size(); ++index)
+            result[index] = std::atomic_ref<uint8_t>(const_cast<uint8_t&>(bytes[index])).load(std::memory_order_relaxed);
+    } else if (!bytes.empty()) {
+        memcpy(result.mutableSpan().data(), bytes.data(), bytes.size());
+    }
+    return true;
+}
 
+WTF::String fileURLToPath(JSC::JSGlobalObject& global, const WTF::URL& url)
+{
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    if (!url.isValid()) {
+        Bun::throwError(&global, scope, ErrorCode::ERR_INVALID_ARG_VALUE, "Expected a valid file URL"_s);
+        return {};
+    }
+    if (!url.protocolIsFile()) {
+        Bun::ERR::INVALID_URL_SCHEME(scope, &global, "file"_s);
+        return {};
+    }
+#if !OS(WINDOWS)
+    if (!url.host().isEmpty() && url.host() != "localhost"_s) {
+#if OS(DARWIN)
+        Bun::ERR::INVALID_FILE_URL_HOST(scope, &global, "darwin"_s);
+#else
+        Bun::ERR::INVALID_FILE_URL_HOST(scope, &global, "linux"_s);
+#endif
+        return {};
+    }
+#endif
+    const auto encodedPath = url.path();
+    if (encodedPath.containsIgnoringASCIICase("%2f"_s)
+#if OS(WINDOWS)
+        || encodedPath.containsIgnoringASCIICase("%5c"_s)
+#endif
+    ) {
+#if OS(WINDOWS)
+        Bun::ERR::INVALID_FILE_URL_PATH(scope, &global, "must not include encoded \\ or / characters"_s);
+#else
+        Bun::ERR::INVALID_FILE_URL_PATH(scope, &global, "must not include encoded / characters"_s);
+#endif
+        return {};
+    }
+    for (unsigned index = 0; index < encodedPath.length(); ++index) {
+        if (encodedPath[index] != '%')
+            continue;
+        if (encodedPath.length() - index < 3 || !WTF::isASCIIHexDigit(encodedPath[index + 1]) || !WTF::isASCIIHexDigit(encodedPath[index + 2])) {
+            scope.throwException(&global, JSC::createURIError(&global, "URI malformed"_s));
+            return {};
+        }
+        index += 2;
+    }
+    auto path = url.fileSystemPath();
+    if (path.isNull()) {
+        scope.throwException(&global, JSC::createURIError(&global, "URI malformed"_s));
+        return {};
+    }
+#if OS(WINDOWS)
+    if (!isAbsolutePath(path)) {
+        Bun::ERR::INVALID_FILE_URL_PATH(scope, &global, "must be an absolute path"_s);
+        return {};
+    }
+#endif
+    if (path.isEmpty()) {
+        Bun::throwError(&global, scope, ErrorCode::ERR_INVALID_ARG_VALUE, "URL must be a non-empty \"file:\" path"_s);
+        return {};
+    }
+    scope.release();
     return path;
 }
 
-} // namespace Zig
-
-extern "C" JSC::EncodedJSValue PathParsedObject__create(
-    JSC::JSGlobalObject* globalObject,
-    JSC::EncodedJSValue root,
-    JSC::EncodedJSValue dir,
-    JSC::EncodedJSValue base,
-    JSC::EncodedJSValue ext,
-    JSC::EncodedJSValue name)
+static WTF::Vector<uint8_t> convertFileURLPath(JSC::JSGlobalObject& global, JSC::JSValue value, WTF::ASCIILiteral name, const WTF::URL& url)
 {
-    auto* global = uncheckedDowncast<Zig::GlobalObject>(globalObject);
-    auto& vm = JSC::getVM(globalObject);
-    JSC::JSObject* result = JSC::constructEmptyObject(vm, global->pathParsedObjectStructure());
-    result->putDirectOffset(vm, 0, JSC::JSValue::decode(root));
-    result->putDirectOffset(vm, 1, JSC::JSValue::decode(dir));
-    result->putDirectOffset(vm, 2, JSC::JSValue::decode(base));
-    result->putDirectOffset(vm, 3, JSC::JSValue::decode(ext));
-    result->putDirectOffset(vm, 4, JSC::JSValue::decode(name));
-    return JSC::JSValue::encode(result);
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    auto path = fileURLToPath(global, url);
+    RETURN_IF_EXCEPTION(scope, {});
+    auto utf8 = Bun::encodeUTF8ReplacingInvalidSequences(path);
+    if (!utf8) {
+        JSC::throwOutOfMemoryError(&global, scope);
+        return {};
+    }
+    if (!validateNodePath(global, scope, value, name, utf8->span()))
+        return {};
+    scope.release();
+    return WTF::move(*utf8);
 }
 
-namespace Bun {
-
-JSC::JSValue createNodePathBinding(Zig::GlobalObject* globalObject)
+WTF::Vector<uint8_t> convertNodePath(JSC::JSGlobalObject& global, JSC::JSValue value, WTF::ASCIILiteral name, bool fileURLStrings, bool boxedStrings)
 {
-    auto& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    auto binding = constructEmptyArray(globalObject, nullptr, 2);
-    RETURN_IF_EXCEPTION(scope, {});
-    binding->putDirectIndex(
-        globalObject,
-        (unsigned)0,
-        Zig::createPath(globalObject, false));
-    RETURN_IF_EXCEPTION(scope, {});
-    binding->putDirectIndex(
-        globalObject,
-        (unsigned)1,
-        Zig::createPath(globalObject, true));
-    RETURN_IF_EXCEPTION(scope, {});
-    return binding;
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    WTF::Vector<uint8_t> result;
+
+    if (value.isString() || (boxedStrings && TypePredicates::isStringObject(value))) {
+        auto string = value.toWTFString(&global);
+        RETURN_IF_EXCEPTION(scope, {});
+        if (fileURLStrings && string.startsWith("file:"_s)) {
+            WTF::URL parsed { string };
+            auto path = convertFileURLPath(global, value, name, parsed.isValid() ? parsed : WTF::URL { });
+            RETURN_IF_EXCEPTION(scope, {});
+            scope.release();
+            return path;
+        }
+        auto utf8 = Bun::encodeUTF8ReplacingInvalidSequences(string);
+        if (!utf8) {
+            JSC::throwOutOfMemoryError(&global, scope);
+            return {};
+        }
+        if (!validateNodePath(global, scope, value, name, utf8->span()))
+            return {};
+        scope.release();
+        return WTF::move(*utf8);
+    }
+
+    if (auto* array = dynamicDowncast<JSC::JSUint8Array>(value)) {
+        if (array->isDetached() || array->isOutOfBounds()) {
+            JSC::throwTypeError(&global, scope, "Cannot perform %TypedArray%.prototype.includes on a detached or out-of-bounds ArrayBuffer"_s);
+            return {};
+        }
+        std::span<const uint8_t> bytes { static_cast<const uint8_t*>(array->vector()), array->byteLength() };
+        if (!copyPathBytes(global, scope, result, bytes, array->isShared())
+            || !validateNodePath(global, scope, value, name, result.span()))
+            return {};
+        JSC::ensureStillAliveHere(array);
+        scope.release();
+        return result;
+    }
+
+    if (dynamicDowncast<WebCore::JSDOMURL>(value)) {
+        auto domURL = WebCore::protectedDOMURL(&global, value);
+        RETURN_IF_EXCEPTION(scope, {});
+        RELEASE_ASSERT(domURL);
+        auto snapshot = domURL->href();
+        if (snapshot.hasException()) {
+            WebCore::propagateException(global, scope, snapshot.releaseException());
+            return {};
+        }
+        auto path = convertFileURLPath(global, value, name, snapshot.releaseReturnValue());
+        RETURN_IF_EXCEPTION(scope, {});
+        scope.release();
+        return path;
+    }
+
+    Bun::ERR::INVALID_ARG_TYPE_INSTANCE(scope, &global, name, "string"_s, "Buffer or URL"_s, value);
+    return {};
 }
 
-} // namespace Bun
+} // namespace Bun::Bindgen

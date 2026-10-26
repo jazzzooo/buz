@@ -2077,7 +2077,7 @@ pub fn detectKittyGraphics() bool {
 /// around the read so the bytes don't echo to the user's terminal.
 fn probeKittyGraphics() bool {
     if (comptime !bun.Environment.isPosix) return false;
-    if (bun.Output.bun_stdio_tty[0] == 0 or bun.Output.bun_stdio_tty[1] == 0) return false;
+    if (!bun.Output.stdio_is_tty[0] or !bun.Output.stdio_is_tty[1]) return false;
     // Honor an explicit opt-out.
     if (bun.getenvZ("BUN_DISABLE_KITTY_PROBE")) |_| return false;
 

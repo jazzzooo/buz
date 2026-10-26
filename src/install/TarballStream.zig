@@ -517,18 +517,18 @@ fn beginEntry(this: *TarballStream, entry: *lib.Archive.Entry) !void {
         var root_it = std.mem.tokenizeScalar(bun.OSPathChar, pathname, '/');
         const root = root_it.next() orelse pathname[0..0];
         if (comptime Environment.isWindows) {
-            const list = std.array_list.Managed(u8).init(bun.default_allocator);
-            var result = try strings.toUTF8ListWithType(list, root);
+            var result = std.array_list.Managed(u8).init(bun.default_allocator);
             defer result.deinit();
-            this.resolved_github_dirname = FileSystem.DirnameStore.instance.append(
+            try strings.toUTF8AppendToList(&result, root);
+            this.resolved_github_dirname = try FileSystem.DirnameStore.instance.append(
                 []const u8,
                 result.items,
-            ) catch unreachable;
+            );
         } else {
-            this.resolved_github_dirname = FileSystem.DirnameStore.instance.append(
+            this.resolved_github_dirname = try FileSystem.DirnameStore.instance.append(
                 []const u8,
                 bun.asByteSlice(root),
-            ) catch unreachable;
+            );
         }
     }
 
@@ -780,6 +780,7 @@ fn finish(this: *TarballStream) void {
     // later processes the NetworkTask, so freeing the buffer here is
     // safe and matches the `defer buffer.deinit()` in the buffered
     // `.extract` arm of `Task.callback`.
+    network.releaseRequestHeaders();
     network.response_buffer.deinit();
 
     this.populateResult(task);
@@ -800,13 +801,10 @@ fn finish(this: *TarballStream) void {
         task.request.extract.tarball.temp_dir.deleteTree(this.package_manager.io, this.tmpname) catch {};
     }
 
+    network.tarball_stream = null;
+    network.streaming_extract_task = null;
     this.deinit();
 
-    // `task.apply_patch_task` is intentionally not touched: the
-    // buffered `.extract` path (`enqueueExtractNPMPackage` →
-    // `Task.callback`) never populates it for npm tarballs either —
-    // patching is handled later by the install phase.
-    //
     // Publish last: once the task is on `resolve_tasks` the main
     // thread may immediately recycle it *and* the NetworkTask it
     // references, so nothing below this line may touch either.

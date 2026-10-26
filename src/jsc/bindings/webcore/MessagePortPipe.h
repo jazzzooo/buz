@@ -1,50 +1,86 @@
-// MessagePortPipe is the cross-thread concurrency primitive underlying
-// MessagePort / MessageChannel.
-//
-// A pipe has two sides. Each side has an inbox (messages waiting to be
-// delivered to the port attached on that side) protected by a per-side lock,
-// plus a single atomic state word that packs all flags and the queued-message
-// count. All mutations happen under the per-side lock; the atomic exists so
-// that lockless readers (the GC's hasPendingActivity check, and senders
-// deciding whether to schedule a wakeup) can observe a consistent snapshot.
-//
-// Wakeups are coalesced: a burst of N sends schedules one cross-thread drain
-// task on the receiving context. The drain task loops, popping one message at
-// a time under the lock and dispatching it, draining microtasks between each
-// (matching Node's MakeCallback / InternalCallbackScope behavior), up to
-// max(initial-queue-size, 1000) iterations before yielding back to the event
-// loop. Messages stay in the inbox until the instant they are dispatched, so
-// a port transferred mid-loop carries the remaining queue to the new owner.
-//
-// The Web API semantics (start(), close(), transfer, event dispatch) live in
-// MessagePort; this class knows nothing about EventTarget or JS.
-
 #pragma once
 
 #include "MessageWithMessagePorts.h"
-#include <wtf/Deque.h>
+#include "Bindgen/NativeResult.h"
+#include "ScriptExecutionContext.h"
+#include <memory>
+#include <wtf/FastMalloc.h>
 #include <wtf/Lock.h>
 #include <wtf/ThreadSafeRefCounted.h>
 #include <wtf/ThreadSafeWeakPtr.h>
 
 namespace WebCore {
 
-class MessagePort;
-class ScriptExecutionContext;
-using ScriptExecutionContextIdentifier = uint32_t;
+class MessagePortPipe;
 
-class MessagePortPipe final : public ThreadSafeRefCounted<MessagePortPipe> {
+class MessagePortContext final : public ThreadSafeRefCounted<MessagePortContext>, public ScriptExecutionContext::NativeLifetime {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(MessagePortContext);
+
 public:
-    static Ref<MessagePortPipe> create() { return adoptRef(*new MessagePortPipe); }
+    static RefPtr<MessagePortContext> tryCreate(ScriptExecutionContext&);
+    ~MessagePortContext();
+
+    struct Registration {
+        ThreadSafeWeakPtr<MessagePortPipe> pipe;
+        uint8_t side { 0 };
+
+    private:
+        friend class MessagePortContext;
+        MessagePortContext* owner { nullptr };
+        Registration* previous { nullptr };
+        Registration* next { nullptr };
+    };
+
+    void add(Registration&);
+    void remove(Registration&);
+
+private:
+    void contextClosed() noexcept final;
+    void removeLocked(Registration&) WTF_REQUIRES_LOCK(m_lock);
+    WTF::Lock m_lock;
+    Registration* m_head WTF_GUARDED_BY_LOCK(m_lock) { nullptr };
+};
+
+class MessagePortPipe final : public ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr<MessagePortPipe> {
+    struct MessageNode {
+        WTF_DEPRECATED_MAKE_STRUCT_FAST_ALLOCATED(MessageNode);
+        MessageNode* next { nullptr };
+        MessageWithMessagePorts message;
+    };
+
+public:
+    class PreparedSend {
+        WTF_MAKE_NONCOPYABLE(PreparedSend);
+
+    public:
+        PreparedSend() = default;
+        PreparedSend(PreparedSend&&) noexcept;
+        ~PreparedSend();
+        void commit(MessageWithMessagePorts&&);
+
+    private:
+        friend class MessagePortPipe;
+        PreparedSend(Ref<MessagePortPipe>&&, uint8_t side, std::unique_ptr<MessageNode>&&);
+        RefPtr<MessagePortPipe> m_pipe;
+        std::unique_ptr<MessageNode> m_node;
+        uint8_t m_side { 0 };
+        bool m_consumed { false };
+    };
+
+    class Wakeup : public ThreadSafeRefCounted<Wakeup> {
+    public:
+        virtual ~Wakeup() = default;
+        virtual void notify() const noexcept = 0;
+    };
+
+    static RefPtr<MessagePortPipe> tryCreate();
     ~MessagePortPipe();
 
     // Per-side state word layout. Low byte is flags; the queued-message count
     // lives in the upper bits so it can be bumped with fetch_add(QueuedOne).
     enum State : uint64_t {
         Closed = 1ull << 0, // close() was called on this side; drops further deliveries.
-        DrainScheduled = 1ull << 1, // a drain task for this side is in flight.
-        Attached = 1ull << 2, // ctxId/port are valid; ok to schedule drains.
-
+        Abandoned = 1ull << 1, // The owner was collected; discard deliveries without closing the peer.
         QueuedShift = 8,
         QueuedOne = 1ull << QueuedShift,
     };
@@ -52,17 +88,15 @@ public:
 
     // Sender-thread operations.
     // `fromSide` is the sender's side; the message lands in the *other* side's inbox.
-    void send(uint8_t fromSide, MessageWithMessagePorts&&);
+    Bun::Bindgen::NativeAllocationResult<PreparedSend> tryPrepareSend(uint8_t fromSide);
 
     // Receiver-thread synchronous pop, for node:worker_threads receiveMessageOnPort.
     std::optional<MessageWithMessagePorts> takeOne(uint8_t side);
 
-    // Attach this side to a context + port. Schedules a drain if messages are
-    // already queued (e.g. after transfer). Passing a null port is allowed and
-    // means "just buffer, don't dispatch" (used before start()).
-    void attach(uint8_t side, ScriptExecutionContextIdentifier, ThreadSafeWeakPtr<MessagePort>);
+    void attach(uint8_t side, Ref<Wakeup>&&, Ref<MessagePortContext>&&);
     void detach(uint8_t side);
     void close(uint8_t side);
+    void abandon(uint8_t side);
 
     // Lockless snapshot for the GC visitor / hasPendingActivity.
     uint64_t state(uint8_t side) const { return m_sides[side].state.load(std::memory_order_acquire); }
@@ -73,17 +107,22 @@ public:
 
 private:
     MessagePortPipe() = default;
-
-    void scheduleDrain(uint8_t side, ScriptExecutionContextIdentifier);
-    void drainAndDispatch(uint8_t side, ScriptExecutionContextIdentifier expectedCtx);
+    void disposeEndpoint(uint8_t side, State reason);
+    void detachContext(uint8_t side);
+    void finishClose(uint8_t side);
 
     struct Side {
         WTF::Lock lock;
-        WTF::Deque<MessageWithMessagePorts> inbox WTF_GUARDED_BY_LOCK(lock);
-        ScriptExecutionContextIdentifier ctxId WTF_GUARDED_BY_LOCK(lock) { 0 };
-        ThreadSafeWeakPtr<MessagePort> port WTF_GUARDED_BY_LOCK(lock);
+        MessageNode* first WTF_GUARDED_BY_LOCK(lock) { nullptr };
+        MessageNode* last WTF_GUARDED_BY_LOCK(lock) { nullptr };
+        uint64_t reserved WTF_GUARDED_BY_LOCK(lock) { 0 };
+        RefPtr<Wakeup> wakeup WTF_GUARDED_BY_LOCK(lock);
+        RefPtr<MessagePortContext> context WTF_GUARDED_BY_LOCK(lock);
+        MessagePortContext::Registration registration;
         // Packed flags + count. Written only while holding `lock`; read locklessly.
         std::atomic<uint64_t> state { 0 };
+        Side* closeNext { nullptr };
+        MessagePortPipe* closeOwner { nullptr };
     };
     Side m_sides[2];
 };

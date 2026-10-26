@@ -1,4 +1,5 @@
 #include "root.h"
+#include "JSEnvironmentVariableMap.h"
 #include "ZigGlobalObject.h"
 
 #include "helpers.h"
@@ -9,25 +10,188 @@
 #include <JavaScriptCore/JSArrayInlines.h>
 #include <JavaScriptCore/JSString.h>
 #include <JavaScriptCore/JSStringInlines.h>
+#include <JavaScriptCore/PropertyDescriptor.h>
 
 #include "BunClientData.h"
 #include "wtf/Compiler.h"
 #include "wtf/Forward.h"
 #include "wtf/TimeZone.h"
+#include "wtf-bindings.h"
 #include "WebCoreJSBuiltins.h"
+#include "SchemaBindings.h"
 
 using namespace JSC;
-
-extern "C" size_t Bun__getEnvCount(JSGlobalObject* globalObject, void** list_ptr);
-extern "C" size_t Bun__getEnvKey(void* list, size_t index, unsigned char** out);
-
-extern "C" bool Bun__getEnvValue(JSGlobalObject* globalObject, ZigString* name, ZigString* value);
-extern "C" bool Bun__getEnvValueBunString(JSGlobalObject* globalObject, BunString* name, BunString* value);
-extern "C" void Bun__setEnvValue(JSGlobalObject* globalObject, BunString* name, BunString* value);
 
 namespace Bun {
 
 using namespace WebCore;
+
+const ClassInfo JSEnvironmentVariableMap::s_info = { "Object"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSEnvironmentVariableMap) };
+
+static bool isProxyEnvironmentVariable(PropertyName propertyName)
+{
+    if (propertyName.isSymbol())
+        return false;
+    auto name = StringView(propertyName.publicName());
+    return name == "HTTP_PROXY"_s || name == "http_proxy"_s
+        || name == "HTTPS_PROXY"_s || name == "https_proxy"_s
+        || name == "NO_PROXY"_s || name == "no_proxy"_s;
+}
+
+static bool isRuntimeEnvironmentVariable(PropertyName propertyName)
+{
+    if (propertyName.isSymbol())
+        return false;
+    auto name = StringView(propertyName.publicName());
+    return isProxyEnvironmentVariable(propertyName) || name == "TZ"_s
+        || name == "NODE_TLS_REJECT_UNAUTHORIZED"_s || name == "BUN_CONFIG_VERBOSE_FETCH"_s;
+}
+
+static void applyRuntimeEnvironmentVariable(PropertyName propertyName, const String& value)
+{
+    auto name = StringView(propertyName.publicName());
+    if (name == "NODE_TLS_REJECT_UNAUTHORIZED"_s) {
+        Bindgen::ZigExports::bunBindgenZig_Process_setTLSRejectUnauthorizedValue(value != "0"_s && value != "false"_s);
+    } else if (name == "BUN_CONFIG_VERBOSE_FETCH"_s) {
+        Bindgen::ZigExports::bunBindgenZig_Process_setVerboseFetchValue(value == "1"_s || value == "true"_s ? 1 : value == "curl"_s ? 2 : 0);
+    }
+}
+
+class ProxyEnvironmentUpdateScope {
+public:
+    explicit ProxyEnvironmentUpdateScope(ProxyEnvironmentUpdate* update)
+        : m_update(update)
+    {
+    }
+
+    ProxyEnvironmentUpdateScope(const ProxyEnvironmentUpdateScope&) = delete;
+    ProxyEnvironmentUpdateScope& operator=(const ProxyEnvironmentUpdateScope&) = delete;
+    ~ProxyEnvironmentUpdateScope() { finish(false); }
+
+    void finish(bool commit)
+    {
+        if (!m_update)
+            return;
+        Bindgen::ZigExports::bunBindgenZig_BunObject_finishProxyEnvironmentVariable(m_update, commit);
+        m_update = nullptr;
+    }
+
+private:
+    ProxyEnvironmentUpdate* m_update;
+};
+
+bool JSEnvironmentVariableMap::defineOwnProperty(JSObject* object, JSGlobalObject* globalObject, PropertyName propertyName, const PropertyDescriptor& descriptor, bool shouldThrow)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    if (!isRuntimeEnvironmentVariable(propertyName))
+        RELEASE_AND_RETURN(scope, Base::defineOwnProperty(object, globalObject, propertyName, descriptor, shouldThrow));
+    if (descriptor.isAccessorDescriptor()) {
+        if (shouldThrow)
+            throwTypeError(globalObject, scope, "Environment variables require data properties"_s);
+        return false;
+    }
+
+    JSValue value = descriptor.value();
+    if (!value) {
+        PropertyDescriptor previous;
+        bool own = object->getOwnPropertyDescriptor(globalObject, propertyName, previous);
+        RETURN_IF_EXCEPTION(scope, false);
+        if (own)
+            RELEASE_AND_RETURN(scope, Base::defineOwnProperty(object, globalObject, propertyName, descriptor, shouldThrow));
+        value = jsUndefined();
+    }
+    auto* string = value.toString(globalObject);
+    RETURN_IF_EXCEPTION(scope, false);
+    auto nativeString = string->value(globalObject);
+    RETURN_IF_EXCEPTION(scope, false);
+    PreparedTimeZoneOverride timeZone;
+    bool hasTimeZone = false;
+    if (StringView(propertyName.publicName()) == "TZ"_s) {
+        auto result = timeZone.prepare(nativeString.data);
+        if (result == PreparedTimeZoneOverride::Result::OutOfMemory) {
+            throwOutOfMemoryError(globalObject, scope);
+            return false;
+        }
+        hasTimeZone = result == PreparedTimeZoneOverride::Result::Valid;
+    }
+    PropertyDescriptor converted = descriptor;
+    converted.setValue(string);
+    auto* global = defaultGlobalObject(globalObject);
+    ProxyEnvironmentUpdateScope update(isProxyEnvironmentVariable(propertyName)
+            ? Bindgen::ZigExports::bunBindgenZig_BunObject_prepareProxyEnvironmentVariable(global, String(propertyName.publicName()), nativeString.data)
+            : nullptr);
+    RETURN_IF_EXCEPTION(scope, false);
+    bool defined = Base::defineOwnProperty(object, globalObject, propertyName, converted, shouldThrow);
+    RETURN_IF_EXCEPTION(scope, false);
+    update.finish(defined);
+    if (defined) {
+        if (hasTimeZone) {
+            timeZone.commit();
+            WTF::timeZoneDidChange();
+            globalObject->vm().dateCache.clearForTimeZoneChange();
+        }
+        applyRuntimeEnvironmentVariable(propertyName, nativeString.data);
+    }
+    return defined;
+}
+
+bool JSEnvironmentVariableMap::put(JSCell* cell, JSGlobalObject* globalObject, PropertyName propertyName, JSValue value, PutPropertySlot& slot)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    if (!isRuntimeEnvironmentVariable(propertyName) || slot.thisValue() != cell)
+        RELEASE_AND_RETURN(scope, Base::put(cell, globalObject, propertyName, value, slot));
+    auto* object = asObject(cell);
+    auto* string = value.toString(globalObject);
+    RETURN_IF_EXCEPTION(scope, false);
+    PropertyDescriptor previous;
+    bool own = object->getOwnPropertyDescriptor(globalObject, propertyName, previous);
+    RETURN_IF_EXCEPTION(scope, false);
+    if (own && !previous.writable()) {
+        if (slot.isStrictMode())
+            throwTypeError(globalObject, scope, "Cannot assign to a read-only environment variable"_s);
+        return false;
+    }
+    PropertyDescriptor descriptor;
+    if (own)
+        descriptor.setValue(string);
+    else
+        descriptor = PropertyDescriptor(string, 0);
+    RELEASE_AND_RETURN(scope, defineOwnProperty(object, globalObject, propertyName, descriptor, slot.isStrictMode()));
+}
+
+bool JSEnvironmentVariableMap::deleteProperty(JSCell* cell, JSGlobalObject* globalObject, PropertyName propertyName, DeletePropertySlot& slot)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    if (!isRuntimeEnvironmentVariable(propertyName))
+        RELEASE_AND_RETURN(scope, Base::deleteProperty(cell, globalObject, propertyName, slot));
+    auto* global = defaultGlobalObject(globalObject);
+    ProxyEnvironmentUpdateScope update(isProxyEnvironmentVariable(propertyName)
+            ? Bindgen::ZigExports::bunBindgenZig_BunObject_prepareProxyEnvironmentVariable(global, String(propertyName.publicName()), std::nullopt)
+            : nullptr);
+    RETURN_IF_EXCEPTION(scope, false);
+    bool deleted = Base::deleteProperty(cell, globalObject, propertyName, slot);
+    RETURN_IF_EXCEPTION(scope, false);
+    update.finish(deleted);
+    if (deleted) {
+        if (StringView(propertyName.publicName()) == "TZ"_s) {
+            PreparedTimeZoneOverride timeZone;
+            auto result = timeZone.prepare(emptyString());
+            RELEASE_ASSERT(result == PreparedTimeZoneOverride::Result::Valid);
+            timeZone.commit();
+            WTF::timeZoneDidChange();
+            globalObject->vm().dateCache.clearForTimeZoneChange();
+        }
+        applyRuntimeEnvironmentVariable(propertyName, emptyString());
+    }
+    return deleted;
+}
+
+static std::optional<WTF::String> environmentVariableValue(JSGlobalObject* globalObject, PropertyName propertyName)
+{
+    auto* name = propertyName.publicName();
+    if (!name) return std::nullopt;
+    return Bindgen::ZigExports::bunBindgenZig_BunObject_environmentVariableGet(defaultGlobalObject(globalObject), WTF::String(name));
+}
 
 JSC_DEFINE_CUSTOM_GETTER(jsGetterEnvironmentVariable, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, PropertyName propertyName))
 {
@@ -38,370 +202,42 @@ JSC_DEFINE_CUSTOM_GETTER(jsGetterEnvironmentVariable, (JSGlobalObject * globalOb
     if (!thisObject) [[unlikely]]
         return JSValue::encode(jsUndefined());
 
-    ZigString name = toZigString(propertyName.publicName());
-    ZigString value = { nullptr, 0 };
-
-    if (name.len == 0) [[unlikely]]
-        return JSValue::encode(jsUndefined());
-
-    if (!Bun__getEnvValue(globalObject, &name, &value)) {
+    auto value = environmentVariableValue(globalObject, propertyName);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!value) {
         return JSValue::encode(jsUndefined());
     }
 
-    JSValue result = jsString(vm, Zig::toStringCopy(value));
+    JSValue result = jsString(vm, *value);
+    RETURN_IF_EXCEPTION(scope, {});
     thisObject->putDirect(vm, propertyName, result, 0);
+    RETURN_IF_EXCEPTION(scope, {});
     return JSValue::encode(result);
 }
-
-JSC_DEFINE_CUSTOM_SETTER(jsSetterEnvironmentVariable, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue value, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    JSC::JSObject* object = JSValue::decode(thisValue).getObject();
-    if (!object)
-        return false;
-
-    auto string = JSValue::decode(value).toString(globalObject);
-    if (!string) [[unlikely]]
-        return false;
-
-    object->putDirect(vm, propertyName, string, 0);
-    return true;
-}
-
-// Proxy-related env vars (HTTP_PROXY, HTTPS_PROXY, NO_PROXY and lowercase
-// variants) are read by fetch()'s Zig-side proxy resolution via
-// env_loader.getHttpProxyFor(). Writes from JS must sync back to the Zig env
-// map so runtime changes take effect. Unlike the generic getter, this does
-// NOT cache on the JS object — the Zig env map is the single source of truth
-// so set-then-get stays consistent and the CustomAccessor isn't clobbered.
-JSC_DEFINE_CUSTOM_GETTER(jsGetterProxyEnvironmentVariable, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSObject>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return JSValue::encode(jsUndefined());
-
-    BunString name = Bun::toStringView(propertyName.publicName());
-    BunString value = { BunStringTag::Dead };
-    if (!Bun__getEnvValueBunString(globalObject, &name, &value)) {
-        return JSValue::encode(jsUndefined());
-    }
-    RELEASE_AND_RETURN(scope, JSValue::encode(jsString(vm, value.toWTFString())));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsSetterProxyEnvironmentVariable, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue value, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    JSC::JSObject* object = JSValue::decode(thisValue).getObject();
-    if (!object)
-        return false;
-
-    auto* string = JSValue::decode(value).toString(globalObject);
-    RETURN_IF_EXCEPTION(scope, false);
-    if (!string) [[unlikely]]
-        return false;
-
-    auto view = string->view(globalObject);
-    RETURN_IF_EXCEPTION(scope, false);
-
-    BunString name = Bun::toStringView(propertyName.publicName());
-    BunString val = Bun::toStringView(view);
-    Bun__setEnvValue(globalObject, &name, &val);
-    return true;
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsTimeZoneEnvironmentVariableGetter, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = dynamicDowncast<JSObject>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return JSValue::encode(jsUndefined());
-
-    auto* clientData = WebCore::clientData(vm);
-
-    ZigString name = toZigString(propertyName.publicName());
-    ZigString value = { nullptr, 0 };
-
-    auto hasExistingValue = thisObject->getIfPropertyExists(globalObject, clientData->builtinNames().dataPrivateName());
-    RETURN_IF_EXCEPTION(scope, {});
-    if (hasExistingValue) {
-        return JSValue::encode(hasExistingValue);
-    }
-
-    if (!Bun__getEnvValue(globalObject, &name, &value) || value.len == 0) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    JSValue out = jsString(vm, Zig::toStringCopy(value));
-    thisObject->putDirect(vm, clientData->builtinNames().dataPrivateName(), out, 0);
-
-    return JSValue::encode(out);
-}
-
-// In Node.js, the "TZ" environment variable is special.
-// Setting it automatically updates the timezone.
-// We also expose an explicit setTimeZone function in bun:jsc
-JSC_DEFINE_CUSTOM_SETTER(jsTimeZoneEnvironmentVariableSetter, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue value, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    JSC::JSObject* object = JSValue::decode(thisValue).getObject();
-    if (!object)
-        return false;
-
-    JSValue decodedValue = JSValue::decode(value);
-    if (decodedValue.isString()) {
-        auto timeZoneName = decodedValue.toWTFString(globalObject);
-        if (timeZoneName.length() < 32) {
-            if (WTF::setTimeZoneOverride(timeZoneName)) {
-                WTF::timeZoneDidChange();
-                vm.dateCache.clearForTimeZoneChange();
-            }
-        }
-    }
-
-    auto* clientData = WebCore::clientData(vm);
-    auto* builtinNames = &clientData->builtinNames();
-    auto privateName = builtinNames->dataPrivateName();
-    object->putDirect(vm, privateName, JSValue::decode(value), 0);
-
-    // TODO: this is an assertion failure
-    // Recreate this because the property visibility needs to be set correctly
-    // object->putDirectWithoutTransition(vm, propertyName, JSC::CustomGetterSetter::create(vm, jsTimeZoneEnvironmentVariableGetter, jsTimeZoneEnvironmentVariableSetter), JSC::PropertyAttribute::CustomAccessor | 0);
-    return true;
-}
-
-extern "C" int Bun__getTLSRejectUnauthorizedValue();
-extern "C" int Bun__setTLSRejectUnauthorizedValue(int value);
-extern "C" int Bun__getVerboseFetchValue();
-extern "C" int Bun__setVerboseFetchValue(int value);
-
-ALWAYS_INLINE static Identifier NODE_TLS_REJECT_UNAUTHORIZED_PRIVATE_PROPERTY(VM& vm)
-{
-    auto* clientData = WebCore::clientData(vm);
-    auto& builtinNames = clientData->builtinNames();
-    // We just pick one to reuse. This will never be exposed to a user. And we
-    // don't want to pay the cost of adding another one.
-    return builtinNames.textDecoderStreamDecoderPrivateName();
-}
-
-ALWAYS_INLINE static Identifier BUN_CONFIG_VERBOSE_FETCH_PRIVATE_PROPERTY(VM& vm)
-{
-    auto* clientData = WebCore::clientData(vm);
-    auto& builtinNames = clientData->builtinNames();
-    // We just pick one to reuse. This will never be exposed to a user. And we
-    // don't want to pay the cost of adding another one.
-    return builtinNames.textEncoderStreamEncoderPrivateName();
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsNodeTLSRejectUnauthorizedGetter, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = dynamicDowncast<JSObject>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return JSValue::encode(jsUndefined());
-
-    const auto& privateName = NODE_TLS_REJECT_UNAUTHORIZED_PRIVATE_PROPERTY(vm);
-    JSValue result = thisObject->getDirect(vm, privateName);
-    if (result) [[unlikely]] {
-        return JSValue::encode(result);
-    }
-
-    ZigString name = toZigString(propertyName.publicName());
-    ZigString value = { nullptr, 0 };
-
-    if (!Bun__getEnvValue(globalObject, &name, &value) || value.len == 0) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    return JSValue::encode(jsString(vm, Zig::toStringCopy(value)));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsNodeTLSRejectUnauthorizedSetter, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue value, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    JSC::JSObject* object = JSValue::decode(thisValue).getObject();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    if (!object)
-        return false;
-
-    JSValue decodedValue = JSValue::decode(value);
-    WTF::String str = decodedValue.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, false);
-
-    // TODO: only check "0". Node doesn't check both. But we already did. So we
-    // should wait to do that until Bun v1.2.0.
-    if (str == "0"_s || str == "false"_s) {
-        Bun__setTLSRejectUnauthorizedValue(0);
-    } else {
-        Bun__setTLSRejectUnauthorizedValue(1);
-    }
-
-    const auto& privateName = NODE_TLS_REJECT_UNAUTHORIZED_PRIVATE_PROPERTY(vm);
-    object->putDirect(vm, privateName, JSValue::decode(value), 0);
-
-    // TODO: this is an assertion failure
-    // Recreate this because the property visibility needs to be set correctly
-    // object->putDirectWithoutTransition(vm, propertyName, JSC::CustomGetterSetter::create(vm, jsTimeZoneEnvironmentVariableGetter, jsTimeZoneEnvironmentVariableSetter), JSC::PropertyAttribute::CustomAccessor | 0);
-    return true;
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsBunConfigVerboseFetchGetter, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = dynamicDowncast<JSObject>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return JSValue::encode(jsUndefined());
-
-    const auto& privateName = BUN_CONFIG_VERBOSE_FETCH_PRIVATE_PROPERTY(vm);
-    JSValue result = thisObject->getDirect(vm, privateName);
-    if (result) [[unlikely]] {
-        return JSValue::encode(result);
-    }
-
-    ZigString name = toZigString(propertyName.publicName());
-    ZigString value = { nullptr, 0 };
-
-    if (!Bun__getEnvValue(globalObject, &name, &value) || value.len == 0) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    return JSValue::encode(jsString(vm, Zig::toStringCopy(value)));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsBunConfigVerboseFetchSetter, (JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue value, PropertyName propertyName))
-{
-    VM& vm = globalObject->vm();
-    JSC::JSObject* object = JSValue::decode(thisValue).getObject();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    if (!object)
-        return false;
-
-    JSValue decodedValue = JSValue::decode(value);
-    WTF::String str = decodedValue.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, false);
-
-    if (str == "1"_s || str == "true"_s) {
-        Bun__setVerboseFetchValue(1);
-    } else if (str == "curl"_s) {
-        Bun__setVerboseFetchValue(2);
-    } else {
-        Bun__setVerboseFetchValue(0);
-    }
-
-    const auto& privateName = BUN_CONFIG_VERBOSE_FETCH_PRIVATE_PROPERTY(vm);
-    object->putDirect(vm, privateName, JSValue::decode(value), 0);
-
-    // TODO: this is an assertion failure
-    // Recreate this because the property visibility needs to be set correctly
-    // object->putDirectWithoutTransition(vm, propertyName, JSC::CustomGetterSetter::create(vm, jsTimeZoneEnvironmentVariableGetter, jsTimeZoneEnvironmentVariableSetter), JSC::PropertyAttribute::CustomAccessor | 0);
-    return true;
-}
-
-#if OS(WINDOWS)
-extern "C" void Bun__Process__editWindowsEnvVar(BunString, BunString);
-
-JSC_DEFINE_HOST_FUNCTION(jsEditWindowsEnvVar, (JSGlobalObject * global, JSC::CallFrame* callFrame))
-{
-    auto scope = DECLARE_THROW_SCOPE(global->vm());
-    ASSERT(callFrame->argumentCount() == 2);
-    ASSERT(callFrame->uncheckedArgument(0).isString());
-    WTF::String string1 = callFrame->uncheckedArgument(0).toWTFString(global);
-    RETURN_IF_EXCEPTION(scope, {});
-    JSValue arg2 = callFrame->uncheckedArgument(1);
-    ASSERT(arg2.isNull() || arg2.isString());
-    if (arg2.isCell()) {
-        WTF::String string2 = arg2.toWTFString(global);
-        RETURN_IF_EXCEPTION(scope, {});
-        Bun__Process__editWindowsEnvVar(Bun::toString(string1), Bun::toString(string2));
-    } else {
-        Bun__Process__editWindowsEnvVar(Bun::toString(string1), { .tag = BunStringTag::Dead });
-    }
-    RELEASE_AND_RETURN(scope, JSValue::encode(jsUndefined()));
-}
-#endif
 
 JSValue createEnvironmentVariablesMap(Zig::GlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    void* list;
-    size_t count = Bun__getEnvCount(globalObject, &list);
-    JSC::JSObject* object = nullptr;
-    if (count < 63) {
-        object = constructEmptyObject(globalObject, globalObject->objectPrototype(), count);
-    } else {
-        object = constructEmptyObject(globalObject, globalObject->objectPrototype());
-    }
+    size_t count = Bindgen::ZigExports::bunBindgenZig_BunObject_environmentVariableCount(globalObject);
+    auto* object = JSEnvironmentVariableMap::create(vm, globalObject, globalObject->objectPrototype());
 
 #if OS(WINDOWS)
     JSArray* keyArray = constructEmptyArray(globalObject, nullptr, count);
     RETURN_IF_EXCEPTION(scope, {});
 #endif
 
-    static NeverDestroyed<String> TZ = MAKE_STATIC_STRING_IMPL("TZ");
-    String NODE_TLS_REJECT_UNAUTHORIZED = String("NODE_TLS_REJECT_UNAUTHORIZED"_s);
-    String BUN_CONFIG_VERBOSE_FETCH = String("BUN_CONFIG_VERBOSE_FETCH"_s);
-    bool hasTZ = false;
-    bool hasNodeTLSRejectUnauthorized = false;
-    bool hasBunConfigVerboseFetch = false;
-
-    // Proxy-related env vars need write-back to the Zig env map so that
-    // fetch()'s getHttpProxyFor() observes runtime changes.
-    static constexpr ASCIILiteral proxyVarNames[] = {
-        "HTTP_PROXY"_s,
-        "http_proxy"_s,
-        "HTTPS_PROXY"_s,
-        "https_proxy"_s,
-        "NO_PROXY"_s,
-        "no_proxy"_s,
-    };
-    constexpr size_t proxyVarCount = std::size(proxyVarNames);
-    bool hasProxyVar[proxyVarCount] = {};
-
-    auto isProxyVar = [&](const String& name) -> std::optional<size_t> {
-        for (size_t j = 0; j < proxyVarCount; j++) {
-            if (name == proxyVarNames[j]) return j;
-        }
-        return std::nullopt;
-    };
-
     auto* cached_getter_setter = JSC::CustomGetterSetter::create(vm, jsGetterEnvironmentVariable, nullptr);
-    auto* proxy_getter_setter = JSC::CustomGetterSetter::create(vm, jsGetterProxyEnvironmentVariable, jsSetterProxyEnvironmentVariable);
 
     for (size_t i = 0; i < count; i++) {
-        unsigned char* chars;
-        size_t len = Bun__getEnvKey(list, i, &chars);
-        // We can't really trust that the OS gives us valid UTF-8
-        auto name = String::fromUTF8ReplacingInvalidSequences(std::span { chars, len });
+        auto maybeName = Bindgen::ZigExports::bunBindgenZig_BunObject_environmentVariableKey(globalObject, i);
+        RETURN_IF_EXCEPTION(scope, {});
+        if (!maybeName || maybeName->isEmpty()) continue;
+        auto name = WTF::move(*maybeName);
 #if OS(WINDOWS)
         keyArray->putByIndexInline(globalObject, (unsigned)i, jsString(vm, name), false);
 #endif
-        if (name == TZ) {
-            hasTZ = true;
-            continue;
-        }
-        if (name == NODE_TLS_REJECT_UNAUTHORIZED) {
-            hasNodeTLSRejectUnauthorized = true;
-            continue;
-        }
-        if (name == BUN_CONFIG_VERBOSE_FETCH) {
-            hasBunConfigVerboseFetch = true;
-            continue;
-        }
-        if (auto idx = isProxyVar(name)) {
-            hasProxyVar[*idx] = true;
-            continue;
-        }
-        ASSERT(len > 0);
 #if OS(WINDOWS)
         String idName = name.convertToASCIIUppercase();
 #else
@@ -409,14 +245,26 @@ JSValue createEnvironmentVariablesMap(Zig::GlobalObject* globalObject)
 #endif
         Identifier identifier = Identifier::fromString(vm, idName);
 
+        if (isRuntimeEnvironmentVariable(identifier)) {
+            auto valueString = Bindgen::ZigExports::bunBindgenZig_BunObject_environmentVariableGet(globalObject, name);
+            RETURN_IF_EXCEPTION(scope, {});
+            if (valueString) {
+                auto* value = jsString(vm, *valueString);
+                RETURN_IF_EXCEPTION(scope, {});
+                object->putDirect(vm, identifier, value, 0);
+                RETURN_IF_EXCEPTION(scope, {});
+            }
+            continue;
+        }
+
         // CustomGetterSetter doesn't support indexed properties yet.
         // This causes strange issues when the environment variable name is an integer.
-        if (chars[0] >= '0' && chars[0] <= '9') [[unlikely]] {
+        if (name[0] >= '0' && name[0] <= '9') [[unlikely]] {
             if (auto index = parseIndex(identifier)) {
-                ZigString valueString = { nullptr, 0 };
-                ZigString nameStr = toZigString(name);
-                if (Bun__getEnvValue(globalObject, &nameStr, &valueString)) {
-                    JSValue value = jsString(vm, Zig::toStringCopy(valueString));
+                auto valueString = Bindgen::ZigExports::bunBindgenZig_BunObject_environmentVariableGet(globalObject, name);
+                RETURN_IF_EXCEPTION(scope, {});
+                if (valueString) {
+                    JSValue value = jsString(vm, *valueString);
                     RETURN_IF_EXCEPTION(scope, {});
                     object->putDirectIndex(globalObject, *index, value, 0, PutDirectIndexLikePutDirect);
                     RETURN_IF_EXCEPTION(scope, {});
@@ -432,48 +280,8 @@ JSValue createEnvironmentVariablesMap(Zig::GlobalObject* globalObject)
         object->putDirectCustomAccessor(vm, identifier, cached_getter_setter, JSC::PropertyAttribute::CustomValue | 0);
     }
 
-    unsigned int TZAttrs = JSC::PropertyAttribute::CustomAccessor | 0;
-    if (!hasTZ) {
-        TZAttrs |= JSC::PropertyAttribute::DontEnum;
-    }
-    object->putDirectCustomAccessor(
-        vm,
-        Identifier::fromString(vm, TZ), JSC::CustomGetterSetter::create(vm, jsTimeZoneEnvironmentVariableGetter, jsTimeZoneEnvironmentVariableSetter), TZAttrs);
-
-    unsigned int NODE_TLS_REJECT_UNAUTHORIZED_Attrs = JSC::PropertyAttribute::CustomAccessor | 0;
-    if (!hasNodeTLSRejectUnauthorized) {
-        NODE_TLS_REJECT_UNAUTHORIZED_Attrs |= JSC::PropertyAttribute::DontEnum;
-    }
-    object->putDirectCustomAccessor(
-        vm,
-        Identifier::fromString(vm, NODE_TLS_REJECT_UNAUTHORIZED), JSC::CustomGetterSetter::create(vm, jsNodeTLSRejectUnauthorizedGetter, jsNodeTLSRejectUnauthorizedSetter), NODE_TLS_REJECT_UNAUTHORIZED_Attrs);
-
-    unsigned int BUN_CONFIG_VERBOSE_FETCH_Attrs = JSC::PropertyAttribute::CustomAccessor | 0;
-    if (!hasBunConfigVerboseFetch) {
-        BUN_CONFIG_VERBOSE_FETCH_Attrs |= JSC::PropertyAttribute::DontEnum;
-    }
-    object->putDirectCustomAccessor(
-        vm,
-        Identifier::fromString(vm, BUN_CONFIG_VERBOSE_FETCH), JSC::CustomGetterSetter::create(vm, jsBunConfigVerboseFetchGetter, jsBunConfigVerboseFetchSetter), BUN_CONFIG_VERBOSE_FETCH_Attrs);
-
-    for (size_t j = 0; j < proxyVarCount; j++) {
-        // Known limitation: `delete process.env.NO_PROXY` removes the accessor
-        // without calling the setter, leaving Zig's env map stale (same as TZ).
-        // Use `process.env.NO_PROXY = ""` to unset. DontDelete would throw in
-        // strict mode, so we leave it deletable and document the gap.
-        unsigned attrs = JSC::PropertyAttribute::CustomAccessor | 0;
-        if (!hasProxyVar[j]) {
-            attrs |= JSC::PropertyAttribute::DontEnum;
-        }
-        object->putDirectCustomAccessor(
-            vm,
-            Identifier::fromString(vm, proxyVarNames[j]),
-            proxy_getter_setter,
-            attrs);
-    }
-
 #if OS(WINDOWS)
-    auto editWindowsEnvVar = JSC::JSFunction::create(vm, globalObject, 0, String("editWindowsEnvVar"_s), jsEditWindowsEnvVar, ImplementationVisibility::Public);
+    auto editWindowsEnvVar = JSC::JSFunction::create(vm, globalObject, 0, String("editWindowsEnvVar"_s), bun_bindgen_host_RuntimeFunctions_jsEditWindowsEnvVar, ImplementationVisibility::Public);
 
     JSC::JSFunction* getSourceEvent = JSC::JSFunction::create(vm, globalObject, processObjectInternalsWindowsEnvCodeGenerator(vm), globalObject);
     RETURN_IF_EXCEPTION(scope, {});
@@ -490,3 +298,21 @@ JSValue createEnvironmentVariablesMap(Zig::GlobalObject* globalObject)
 #endif
 }
 }
+
+namespace Bun::Bindgen::Engine {
+
+void releaseProxyEnvironmentUpdate(Bun::ProxyEnvironmentUpdate* update)
+{
+    ZigExports::bunBindgenZig_BunObject_finishProxyEnvironmentVariable(update, false);
+}
+
+}
+
+#if OS(WINDOWS)
+void Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsEditWindowsEnvVar(
+    CppCallContext&,
+    const BunBindgenCpp_RuntimeFunctions_jsEditWindowsEnvVar_Arguments& args)
+{
+    Bun::Bindgen::ZigExports::bunBindgenZig_Process_editWindowsEnvVar(args.name, args.value);
+}
+#endif

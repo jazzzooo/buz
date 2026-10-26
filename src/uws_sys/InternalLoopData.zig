@@ -18,14 +18,18 @@ pub const InternalLoopData = extern struct {
     closed_head: ?*us_socket_t,
     low_prio_head: ?*us_socket_t,
     low_prio_budget: i32,
-    dns_ready_head: *ConnectingSocket,
-    closed_connecting_head: *ConnectingSocket,
-    mutex: std.Io.Mutex,
+    dns_ready_head: std.atomic.Value(?*ConnectingSocket),
+    closed_connecting_head: ?*ConnectingSocket,
     parent_ptr: ?*anyopaque,
+    parent_vtable: ?*const ParentEventLoop.VTable,
     parent_tag: c_char,
     iteration_nr: usize,
-    jsc_vm: ?*jsc.VM,
+    before_wait_ctx: ?*anyopaque,
+    before_wait_cb: ?*const fn (?*anyopaque) callconv(.c) void,
+    dispatch_ready_poll: ?*const fn (*Loop, ?*anyopaque) callconv(.c) void,
     tick_depth: c_int,
+    pending_sweeps: u64,
+    sweep_in_progress: u8,
 
     pub fn recvSlice(this: *InternalLoopData) []u8 {
         return this.recv_buf[0..LIBUS_RECV_BUFFER_LENGTH];
@@ -35,52 +39,56 @@ pub const InternalLoopData = extern struct {
         return this.sweep_timer_count > 0;
     }
 
-    pub fn setParentEventLoop(this: *InternalLoopData, parent: jsc.EventLoopHandle) void {
-        switch (parent) {
-            .js => |ptr| {
-                this.parent_tag = 1;
-                this.parent_ptr = ptr;
-            },
-            .mini => |ptr| {
-                this.parent_tag = 2;
-                this.parent_ptr = ptr;
-            },
-        }
+    pub fn setBeforeWait(
+        this: *InternalLoopData,
+        context: ?*anyopaque,
+        callback: ?*const fn (?*anyopaque) callconv(.c) void,
+    ) void {
+        this.before_wait_ctx = context;
+        this.before_wait_cb = callback;
     }
 
-    pub fn getParent(this: *InternalLoopData) jsc.EventLoopHandle {
-        const parent = this.parent_ptr orelse @panic("Parent loop not set - pointer is null");
-        return switch (this.parent_tag) {
-            0 => @panic("Parent loop not set - tag is zero"),
-            1 => .{ .js = bun.cast(*jsc.EventLoop, parent) },
-            2 => .{ .mini = bun.cast(*jsc.MiniEventLoop, parent) },
-            else => @panic("Parent loop data corrupted - tag is invalid"),
+    pub fn setParent(this: *InternalLoopData, parent: ParentEventLoop) void {
+        this.parent_ptr = switch (parent.kind) {
+            .js => @ptrCast(parent.context.get(*bun.jsc.EventLoop)),
+            .mini => @ptrCast(parent.context.get(*bun.MiniEventLoop)),
+        };
+        this.parent_vtable = parent.vtable;
+        this.parent_tag = @intCast(@backingInt(parent.kind) + 1);
+    }
+
+    pub fn getParent(this: *const InternalLoopData) ParentEventLoop {
+        return .{
+            .context = switch (this.parent_tag) {
+                1 => .init(@as(*bun.jsc.EventLoop, @ptrCast(@alignCast(this.parent_ptr orelse @panic("Parent loop not set - pointer is null"))))),
+                2 => .init(@as(*bun.MiniEventLoop, @ptrCast(@alignCast(this.parent_ptr orelse @panic("Parent loop not set - pointer is null"))))),
+                else => @panic("Parent loop data corrupted - tag is invalid"),
+            },
+            .kind = switch (this.parent_tag) {
+                1 => .js,
+                2 => .mini,
+                else => @panic("Parent loop data corrupted - tag is invalid"),
+            },
+            .vtable = this.parent_vtable orelse @panic("Parent loop not set - vtable is null"),
         };
     }
 
     const LIBUS_RECV_BUFFER_LENGTH = 524288;
+
+    comptime {
+        const Native = @import("usockets-native").struct_us_internal_loop_data_t;
+        if (@sizeOf(@This()) != @sizeOf(Native) or @alignOf(@This()) != @alignOf(Native))
+            @compileError("uSockets loop data layout mismatch");
+        for (@typeInfo(@This()).@"struct".field_names) |field| {
+            if (@offsetOf(@This(), field) != @offsetOf(Native, field))
+                @compileError("uSockets loop data field offset mismatch: " ++ field);
+        }
+    }
 };
-
-export fn Bun__lock(mutex: *std.Io.Mutex) void {
-    std.Io.Threaded.mutexLock(mutex);
-}
-
-export fn Bun__unlock(mutex: *std.Io.Mutex) void {
-    std.Io.Threaded.mutexUnlock(mutex);
-}
-
-export const Bun__lock__size: usize = @sizeOf(std.Io.Mutex);
-
-comptime {
-    bun.assert(@sizeOf(std.Io.Mutex) == @sizeOf(u32));
-    bun.assert(@alignOf(std.Io.Mutex) == @alignOf(u32));
-    bun.assert(@backingInt(std.Io.Mutex.State.unlocked) == 0);
-    bun.assert(std.Io.Mutex.init.state.raw == .unlocked);
-}
 
 const std = @import("std");
 const bun = @import("bun");
-const jsc = bun.jsc;
+const ParentEventLoop = @import("../event_loop/ParentEventLoop.zig");
 
 const uws = bun.uws;
 const ConnectingSocket = uws.ConnectingSocket;

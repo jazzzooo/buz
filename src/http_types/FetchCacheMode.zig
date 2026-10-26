@@ -15,7 +15,6 @@ pub const FetchCacheMode = enum(u3) {
         .{ "force-cache", .@"force-cache" },
         .{ "only-if-cached", .@"only-if-cached" },
     });
-    pub const toJS = @import("../http_jsc/fetch_enums_jsc.zig").fetchCacheModeToJS;
 };
 
 const bun = @import("bun");

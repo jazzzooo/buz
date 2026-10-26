@@ -13,6 +13,8 @@ pub const ContextData = struct {
     log: *logger.Log,
     allocator: std.mem.Allocator,
     io: std.Io,
+    transpiler_capabilities: Transpiler.EngineCapabilities,
+    engine_capabilities: EngineCapabilities,
     positionals: []const string = &.{},
     passthrough: []const string = &.{},
     install: ?*api.BunInstall = null,
@@ -87,6 +89,14 @@ pub const ContextData = struct {
 
 pub const Context = *ContextData;
 
+pub const EngineCapabilities = struct {
+    transpiler: Transpiler.EngineCapabilities,
+    configure_process_runtime: *const fn (bool, bool, bool) void,
+    run_repl: *const fn (Context) anyerror!void,
+    run_tests: *const fn (Context) anyerror!void,
+    build_watch: BuildWatchSession.Factory,
+};
+
 pub const DebugOptions = struct {
     dump_limits: bool = false,
     fallback_only: bool = false,
@@ -138,9 +148,6 @@ pub const TestOptions = struct {
     path_ignore_patterns: []const []const u8 = &.{},
     path_ignore_patterns_from_cli: bool = false,
     test_filter_pattern: ?[]const u8 = null,
-    /// `?*bun.jsc.RegularExpression` — typed as opaque to keep this file free
-    /// of `jsc/` references. Read via `testFilterRegex()`.
-    test_filter_regex: ?*anyopaque = null,
     max_concurrency: u32 = 20,
     /// `bun test --isolate`: run each test file in a fresh global object on
     /// the same VM, force-closing leaked handles between files.
@@ -171,10 +178,6 @@ pub const TestOptions = struct {
         junit: bool = false,
     } = .{},
     reporter_outfile: ?[]const u8 = null,
-
-    pub inline fn testFilterRegex(self: *const TestOptions) ?*bun.jsc.RegularExpression {
-        return @ptrCast(@alignCast(self.test_filter_regex));
-    }
 };
 
 pub const Debugger = union(enum) {
@@ -188,6 +191,9 @@ pub const Debugger = union(enum) {
 
 pub const RuntimeOptions = struct {
     smol: bool = false,
+    no_deprecation: bool = false,
+    throw_deprecation: bool = false,
+    zero_fill_buffers: bool = false,
     debugger: Debugger = .{ .unspecified = {} },
     if_present: bool = false,
     redis_preconnect: bool = false,
@@ -231,6 +237,8 @@ const std = @import("std");
 const CodeCoverageOptions = @import("./CodeCoverageOptions.zig").CodeCoverageOptions;
 const GlobalCache = @import("./GlobalCache.zig").GlobalCache;
 const OfflineMode = @import("./OfflineMode.zig").OfflineMode;
+const Transpiler = @import("../bundler/transpiler.zig").Transpiler;
+const BuildWatchSession = @import("../cli/BuildWatchSession.zig");
 
 const bun = @import("bun");
 const logger = bun.logger;

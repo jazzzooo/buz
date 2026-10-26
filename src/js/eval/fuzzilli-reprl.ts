@@ -1,5 +1,8 @@
 // Comprehensive REPRL wrapper for Bun fuzzing with all runtime APIs exposed
 // Based on workerd's approach to maximize fuzzing coverage
+
+/** Injected as a global by FuzzilliREPRL.cpp. */
+declare const resetCoverage: () => void;
 // https://bun.com/docs/runtime
 
 const REPRL_CRFD = 100; // Control read FD

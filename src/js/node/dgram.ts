@@ -108,7 +108,7 @@ function newHandle(type, lookup) {
     validateFunction(lookup, "lookup");
   }
 
-  const handle = {};
+  const handle: { lookup?: Function; onmessage?: typeof onMessage } = {};
   if (type === "udp4") {
     handle.lookup = FunctionPrototypeBind.$call(lookup4, handle, lookup);
   } else if (type === "udp6") {
@@ -217,7 +217,7 @@ function bufferSize(self, size, _buffer) {
 }
 
 Socket.prototype.bind = function (port_, address_ /* , callback */) {
-  let port = port_;
+  let port = typeof port_ === "function" ? 0 : port_;
 
   const state = this[kStateSymbol];
 
@@ -397,7 +397,7 @@ function _connect(port, address, callback) {
   state.handle.lookup(address, afterDns);
 }
 
-const connectFn = $newZigFunction("udp_socket.zig", "UDPSocket.jsConnect", 2);
+const connectFn = $bindgenFn("NodeDgram.schema.zig", "connect");
 
 function doConnect(ex, self, ip, address, port, callback) {
   const state = self[kStateSymbol];
@@ -427,7 +427,7 @@ function doConnect(ex, self, ip, address, port, callback) {
   process.nextTick(() => self.emit("connect"));
 }
 
-const disconnectFn = $newZigFunction("udp_socket.zig", "UDPSocket.jsDisconnect", 0);
+const disconnectFn = $bindgenFn("NodeDgram.schema.zig", "disconnect");
 
 Socket.prototype.disconnect = function () {
   const state = this[kStateSymbol];
@@ -620,7 +620,7 @@ function doSend(ex, self, ip, list, address, port, callback) {
     return;
   }
 
-  let err = null;
+  let err: any = null;
   let success = false;
   let data;
   if (list === undefined) data = new $Buffer(0);
@@ -786,7 +786,8 @@ Socket.prototype.setMulticastLoopback = function (arg) {
   if (!handle?.socket) {
     throw new Error("setMulticastLoopback EBADF");
   }
-  return handle.socket.setMulticastLoopback(arg);
+  handle.socket.setMulticastLoopback(arg);
+  return arg;
 };
 
 Socket.prototype.setMulticastInterface = function (interfaceAddress) {

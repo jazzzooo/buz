@@ -593,13 +593,13 @@ function parseOptions(
   let username: string | null | undefined;
   let password: string | (() => Bun.MaybePromise<string>) | undefined | null;
   let database: string | undefined;
-  let tls: Bun.TLSOptions | boolean | undefined;
+  let tls: Bun.TLSOptions | boolean | Bun.BunFile | undefined;
   let query: string = "";
   let idleTimeout: number | null | undefined;
   let connectionTimeout: number | null | undefined;
   let maxLifetime: number | null | undefined;
-  let onconnect: ((error?: Error | undefined) => void) | undefined;
-  let onclose: ((error?: Error | undefined) => void) | undefined;
+  let onconnect: ((err: Error | null) => void) | undefined;
+  let onclose: ((err: Error | null) => void) | undefined;
   let max: number | null | undefined;
   let bigint: boolean | undefined;
   let path: string;
@@ -838,9 +838,10 @@ function parseOptions(
     }
   }
 
-  if (sslMode !== SSLMode.disable && !tls?.serverName) {
+  const tls_object = (typeof tls === "object" && tls !== null ? tls : undefined) as Bun.TLSOptions | undefined;
+  if (sslMode !== SSLMode.disable && !tls_object?.serverName) {
     if (hostname) {
-      tls = { ...tls, serverName: hostname };
+      tls = { ...tls_object, serverName: hostname };
     } else if (tls) {
       tls = true;
     }
@@ -915,7 +916,7 @@ export interface TransactionCommands {
 }
 
 export interface DatabaseAdapter<Connection, ConnectionHandle, QueryHandle> {
-  normalizeQuery(strings: string | TemplateStringsArray, values: unknown[]): [sql: string, values: unknown[]];
+  normalizeQuery(strings: import("./query.ts").QueryStrings, values: unknown[]): [sql: string, values: unknown[]];
   createQueryHandle(sql: string, values: unknown[], flags: number): QueryHandle;
   connect(onConnected: OnConnected<Connection>, reserved?: boolean): void;
   release(connection: Connection, connectingEvent?: boolean): void;

@@ -13,6 +13,7 @@ pub fn ParseTypescript(
             }
 
             var decorators = ListManaged(ExprNodeIndex).init(p.allocator);
+            errdefer decorators.deinit();
             while (p.lexer.token == T.t_at) {
                 try p.lexer.next();
 
@@ -123,7 +124,7 @@ pub fn ParseTypescript(
             try p.lexer.next();
 
             // Generate the namespace object
-            const ts_namespace = p.getOrCreateExportedNamespaceMembers(name_text, opts.is_export, false);
+            const ts_namespace = try p.getOrCreateExportedNamespaceMembers(name_text, opts.is_export, false);
             const exported_members = ts_namespace.exported_members;
             const ns_member_data = js_ast.TSNamespaceMember.Data{ .namespace = exported_members };
 
@@ -133,10 +134,12 @@ pub fn ParseTypescript(
             p.current_scope.ts_namespace = ts_namespace;
 
             const old_has_non_local_export_declare_inside_namespace = p.has_non_local_export_declare_inside_namespace;
+            defer p.has_non_local_export_declare_inside_namespace = old_has_non_local_export_declare_inside_namespace;
             p.has_non_local_export_declare_inside_namespace = false;
 
             // Parse the statements inside the namespace
             var stmts: ListManaged(Stmt) = ListManaged(Stmt).init(p.allocator);
+            errdefer stmts.deinit();
             if (p.lexer.token == .t_dot) {
                 const dot_loc = p.lexer.loc();
                 try p.lexer.next();
@@ -146,7 +149,7 @@ pub fn ParseTypescript(
                     .is_namespace_scope = true,
                     .is_typescript_declare = opts.is_typescript_declare,
                 };
-                stmts.append(try p.parseTypeScriptNamespaceStmt(dot_loc, &_opts)) catch unreachable;
+                try stmts.append(try p.parseTypeScriptNamespaceStmt(dot_loc, &_opts));
             } else if (opts.is_typescript_declare and p.lexer.token != .t_open_brace) {
                 try p.lexer.expectOrInsertSemicolon();
             } else {
@@ -257,8 +260,9 @@ pub fn ParseTypescript(
             if ((stmts.items.len == import_equal_count and !has_non_local_export_declare_inside_namespace) or opts.is_typescript_declare) {
                 p.popAndDiscardScope(scope_index);
                 if (opts.is_module_scope) {
-                    p.local_type_names.put(p.allocator, name_text, true) catch unreachable;
+                    try p.local_type_names.put(p.allocator, name_text, true);
                 }
+                stmts.deinit();
                 return p.s(S.TypeScript{}, loc);
             }
 
@@ -284,10 +288,10 @@ pub fn ParseTypescript(
                     // Add a "_" to make tests easier to read, since non-bundler tests don't
                     // run the renamer. For external-facing things the renamer will avoid
                     // collisions automatically so this isn't important for correctness.
-                    arg_ref = p.newSymbol(.hoisted, strings.cat(p.allocator, "_", name_text) catch unreachable) catch unreachable;
-                    bun.handleOom(p.current_scope.generated.append(p.allocator, arg_ref));
+                    arg_ref = try p.newSymbol(.hoisted, try strings.cat(p.allocator, "_", name_text));
+                    try p.current_scope.generated.append(p.allocator, arg_ref);
                 } else {
-                    arg_ref = p.newSymbol(.hoisted, name_text) catch unreachable;
+                    arg_ref = try p.newSymbol(.hoisted, name_text);
                 }
                 ts_namespace.arg_ref = arg_ref;
             }
@@ -311,7 +315,7 @@ pub fn ParseTypescript(
 
             const kind = S.Local.Kind.k_const;
             const name = p.lexer.identifier;
-            const target = p.newExpr(E.Identifier{ .ref = p.storeNameInRef(name) catch unreachable }, p.lexer.loc());
+            const target = p.newExpr(E.Identifier{ .ref = try p.storeNameInRef(name) }, p.lexer.loc());
             var value = target;
             try p.lexer.expect(.t_identifier);
 
@@ -344,8 +348,8 @@ pub fn ParseTypescript(
                 return p.s(S.TypeScript{}, loc);
             }
 
-            const ref = p.declareSymbol(.constant, default_name_loc, default_name) catch unreachable;
-            var decls = p.allocator.alloc(Decl, 1) catch unreachable;
+            const ref = try p.declareSymbol(.constant, default_name_loc, default_name);
+            const decls = try p.allocator.alloc(Decl, 1);
             decls[0] = Decl{
                 .binding = p.b(B.Identifier{ .ref = ref }, default_name_loc),
                 .value = value,
@@ -367,7 +371,7 @@ pub fn ParseTypescript(
 
             // Generate the namespace object
             var arg_ref: Ref = undefined;
-            const ts_namespace = p.getOrCreateExportedNamespaceMembers(name_text, opts.is_export, true);
+            const ts_namespace = try p.getOrCreateExportedNamespaceMembers(name_text, opts.is_export, true);
             const exported_members = ts_namespace.exported_members;
             const enum_member_data = js_ast.TSNamespaceMember.Data{ .namespace = exported_members };
 
@@ -377,13 +381,14 @@ pub fn ParseTypescript(
                 name.ref = try p.declareSymbol(.ts_enum, name_loc, name_text);
                 _ = try p.pushScopeForParsePass(.entry, loc);
                 p.current_scope.ts_namespace = ts_namespace;
-                bun.handleOom(p.ref_to_ts_namespace_member.putNoClobber(p.allocator, name.ref.?, enum_member_data));
+                try p.ref_to_ts_namespace_member.putNoClobber(p.allocator, name.ref.?, enum_member_data);
             }
 
             try p.lexer.expect(.t_open_brace);
 
             // Parse the body
             var values = std.array_list.Managed(js_ast.EnumValue).init(p.allocator);
+            errdefer values.deinit();
             while (p.lexer.token != .t_close_brace) {
                 var value = js_ast.EnumValue{ .loc = p.lexer.loc(), .ref = Ref.None, .name = undefined, .value = null };
                 var needs_symbol = false;
@@ -413,12 +418,12 @@ pub fn ParseTypescript(
                     value.value = try p.parseExpr(.comma);
                 }
 
-                values.append(value) catch unreachable;
+                try values.append(value);
 
-                exported_members.put(p.allocator, value.name, .{
+                try exported_members.put(p.allocator, value.name, .{
                     .loc = value.loc,
                     .data = .enum_property,
-                }) catch |err| bun.handleOom(err);
+                });
 
                 if (p.lexer.token != .t_comma and p.lexer.token != .t_semicolon) {
                     break;
@@ -460,12 +465,12 @@ pub fn ParseTypescript(
                     // Add a "_" to make tests easier to read, since non-bundler tests don't
                     // run the renamer. For external-facing things the renamer will avoid
                     // collisions automatically so this isn't important for correctness.
-                    arg_ref = p.newSymbol(.hoisted, strings.cat(p.allocator, "_", name_text) catch unreachable) catch unreachable;
-                    bun.handleOom(p.current_scope.generated.append(p.allocator, arg_ref));
+                    arg_ref = try p.newSymbol(.hoisted, try strings.cat(p.allocator, "_", name_text));
+                    try p.current_scope.generated.append(p.allocator, arg_ref);
                 } else {
-                    arg_ref = p.declareSymbol(.hoisted, name_loc, name_text) catch unreachable;
+                    arg_ref = try p.declareSymbol(.hoisted, name_loc, name_text);
                 }
-                bun.handleOom(p.ref_to_ts_namespace_member.put(p.allocator, arg_ref, enum_member_data));
+                try p.ref_to_ts_namespace_member.put(p.allocator, arg_ref, enum_member_data);
                 ts_namespace.arg_ref = arg_ref;
 
                 p.popScope();
@@ -478,6 +483,7 @@ pub fn ParseTypescript(
                     p.has_non_local_export_declare_inside_namespace = true;
                 }
 
+                values.deinit();
                 return p.s(S.TypeScript{}, loc);
             }
 
@@ -486,8 +492,8 @@ pub fn ParseTypescript(
             // Make a copy of "scopesInOrder" instead of a slice or index since
             // the original array may be flattened in the future by
             // "popAndFlattenScope"
-            p.scopes_in_order_for_enum.putNoClobber(
-                p.allocator,
+            try p.scopes_in_order_for_enum.ensureUnusedCapacity(p.allocator, 1);
+            p.scopes_in_order_for_enum.putAssumeCapacityNoClobber(
                 loc,
                 scope_order_clone: {
                     var count: usize = 0;
@@ -495,7 +501,7 @@ pub fn ParseTypescript(
                         if (i != null) count += 1;
                     }
 
-                    const items = bun.handleOom(p.allocator.alloc(ScopeOrder, count));
+                    const items = try p.allocator.alloc(ScopeOrder, count);
                     var i: usize = 0;
                     for (p.scopes_in_order.items[scope_index..]) |item| {
                         items[i] = item orelse continue;
@@ -503,7 +509,7 @@ pub fn ParseTypescript(
                     }
                     break :scope_order_clone items;
                 },
-            ) catch |err| bun.handleOom(err);
+            );
 
             return p.s(S.Enum{
                 .name = name,

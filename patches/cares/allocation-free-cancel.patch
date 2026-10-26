@@ -1,0 +1,107 @@
+diff --git a/src/lib/include/ares_llist.h b/src/lib/include/ares_llist.h
+--- a/src/lib/include/ares_llist.h
++++ b/src/lib/include/ares_llist.h
+@@ -199,3 +199,8 @@
+ CARES_EXTERN void              *ares_llist_node_claim(ares_llist_node_t *node);
+ 
++/* Claims the entries present on entry, without allocating. Callback additions
++ * remain in list; consume owns each claimed value. */
++CARES_EXTERN void ares_llist_claim_all(ares_llist_t *list,
++                                     ares_llist_destructor_t consume);
++
+ /*! Replace user-supplied value for node
+diff --git a/src/lib/dsa/ares_llist.c b/src/lib/dsa/ares_llist.c
+--- a/src/lib/dsa/ares_llist.c
++++ b/src/lib/dsa/ares_llist.c
+@@ -380,3 +380,26 @@
+   ares_llist_node_detach(node);
+   ares_llist_attach_at(new_parent, ARES__LLIST_INSERT_HEAD, NULL, node);
+ }
++
++void ares_llist_claim_all(ares_llist_t *list,
++                          ares_llist_destructor_t consume)
++{
++  ares_llist_t detached;
++  ares_llist_node_t *node;
++
++  if (list == NULL || consume == NULL) {
++    return;
++  }
++
++  detached = *list;
++  list->head = NULL;
++  list->tail = NULL;
++  list->cnt = 0;
++  for (node = detached.head; node != NULL; node = node->next) {
++    node->parent = &detached;
++  }
++
++  while ((node = ares_llist_node_first(&detached)) != NULL) {
++    consume(ares_llist_node_claim(node));
++  }
++}
+diff --git a/src/lib/ares_cancel.c b/src/lib/ares_cancel.c
+--- a/src/lib/ares_cancel.c
++++ b/src/lib/ares_cancel.c
+@@ -27,3 +27,11 @@
+ #include "ares_private.h"
+ 
++static void ares_cancel_query(void *data)
++{
++  ares_query_t *query = data;
++  query->node_all_queries = NULL;
++  query->callback(query->arg, ARES_ECANCELLED, 0, NULL);
++  ares_free_query(query);
++}
++
+ /*
+@@ -40,42 +48,6 @@
+   ares_channel_lock(channel);
+ 
+-  if (ares_llist_len(channel->all_queries) > 0) {
+-    ares_llist_node_t *node = NULL;
+-    ares_llist_node_t *next = NULL;
+-
+-    /* Swap list heads, so that only those queries which were present on entry
+-     * into this function are cancelled. New queries added by callbacks of
+-     * queries being cancelled will not be cancelled themselves.
+-     */
+-    ares_llist_t      *list_copy = channel->all_queries;
+-    channel->all_queries         = ares_llist_create(NULL);
+-
+-    /* Out of memory, this function doesn't return a result code though so we
+-     * can't report to caller */
+-    if (channel->all_queries == NULL) {
+-      channel->all_queries = list_copy; /* LCOV_EXCL_LINE: OutOfMemory */
+-      goto done;                        /* LCOV_EXCL_LINE: OutOfMemory */
+-    }
+-
+-    node = ares_llist_node_first(list_copy);
+-    while (node != NULL) {
+-      ares_query_t *query;
+-
+-      /* Cache next since this node is being deleted */
+-      next = ares_llist_node_next(node);
+-
+-      query                   = ares_llist_node_claim(node);
+-      query->node_all_queries = NULL;
+-
+-      /* NOTE: its possible this may enqueue new queries */
+-      query->callback(query->arg, ARES_ECANCELLED, 0, NULL);
+-      ares_free_query(query);
+-
+-      node = next;
+-    }
+-
+-    ares_llist_destroy(list_copy);
+-  }
++  ares_llist_claim_all(channel->all_queries, ares_cancel_query);
+ 
+   /* See if the connections should be cleaned up */
+   ares_check_cleanup_conns(channel);
+@@ -83,5 +55,4 @@
+   ares_queue_notify_empty(channel);
+ 
+-done:
+   ares_channel_unlock(channel);
+ }

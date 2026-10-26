@@ -27,11 +27,11 @@
 // @internal
 
 export function isWritableStream(stream) {
-  return $isObject(stream) && !!$getByIdDirectPrivate(stream, "underlyingSink");
+  return $bindgenFn("NativeTypePredicates.schema.zig", "isInternalWritableStream")(stream);
 }
 
 export function isWritableStreamDefaultWriter(writer) {
-  return $isObject(writer) && !!$getByIdDirectPrivate(writer, "closedPromise");
+  return $bindgenFn("NativeTypePredicates.schema.zig", "isWritableStreamDefaultWriter")(writer);
 }
 
 export function acquireWritableStreamDefaultWriter(stream) {
@@ -50,7 +50,7 @@ export function createWritableStream(
   $assert(typeof highWaterMark === "number" && highWaterMark === highWaterMark && highWaterMark >= 0);
 
   const internalStream = {};
-  $initializeWritableStreamSlots(internalStream, {});
+  $initializeWritableStreamSlots(internalStream);
   const controller = new WritableStreamDefaultController();
 
   $setUpWritableStreamDefaultController(
@@ -67,39 +67,28 @@ export function createWritableStream(
   return $createWritableStreamFromInternal(internalStream);
 }
 
-export function createInternalWritableStreamFromUnderlyingSink(underlyingSink, strategy) {
+export function createInternalWritableStreamFromUnderlyingSink(
+  underlyingSink,
+  typePresent,
+  start,
+  write,
+  close,
+  abort,
+  highWaterMark,
+  sizeAlgorithm,
+) {
   const stream = {};
 
   if (underlyingSink === undefined) underlyingSink = {};
 
-  if (strategy === undefined) strategy = {};
+  if (typePresent) $throwRangeError("Invalid type is specified");
+  if (highWaterMark < 0 || highWaterMark !== highWaterMark)
+    $throwRangeError("highWaterMark value is negative or not a number");
+  if (sizeAlgorithm === undefined) sizeAlgorithm = () => 1;
 
-  if (!$isObject(underlyingSink)) $throwTypeError("WritableStream constructor takes an object as first argument");
+  const underlyingSinkDict = { start, write, close, abort };
 
-  if ("type" in underlyingSink) $throwRangeError("Invalid type is specified");
-
-  const sizeAlgorithm = $extractSizeAlgorithm(strategy);
-  const highWaterMark = $extractHighWaterMark(strategy, 1);
-
-  const underlyingSinkDict = {};
-  if ("start" in underlyingSink) {
-    underlyingSinkDict["start"] = underlyingSink["start"];
-    if (typeof underlyingSinkDict["start"] !== "function") $throwTypeError("underlyingSink.start should be a function");
-  }
-  if ("write" in underlyingSink) {
-    underlyingSinkDict["write"] = underlyingSink["write"];
-    if (typeof underlyingSinkDict["write"] !== "function") $throwTypeError("underlyingSink.write should be a function");
-  }
-  if ("close" in underlyingSink) {
-    underlyingSinkDict["close"] = underlyingSink["close"];
-    if (typeof underlyingSinkDict["close"] !== "function") $throwTypeError("underlyingSink.close should be a function");
-  }
-  if ("abort" in underlyingSink) {
-    underlyingSinkDict["abort"] = underlyingSink["abort"];
-    if (typeof underlyingSinkDict["abort"] !== "function") $throwTypeError("underlyingSink.abort should be a function");
-  }
-
-  $initializeWritableStreamSlots(stream, underlyingSink);
+  $initializeWritableStreamSlots(stream);
   $setUpWritableStreamDefaultControllerFromUnderlyingSink(
     stream,
     underlyingSink,
@@ -111,7 +100,7 @@ export function createInternalWritableStreamFromUnderlyingSink(underlyingSink, s
   return stream;
 }
 
-export function initializeWritableStreamSlots(stream, underlyingSink) {
+export function initializeWritableStreamSlots(stream) {
   $putByIdDirectPrivate(stream, "state", "writable");
   $putByIdDirectPrivate(stream, "storedError", undefined);
   $putByIdDirectPrivate(stream, "writer", undefined);
@@ -122,7 +111,7 @@ export function initializeWritableStreamSlots(stream, underlyingSink) {
   $putByIdDirectPrivate(stream, "pendingAbortRequest", undefined);
   $putByIdDirectPrivate(stream, "writeRequests", $createFIFO());
   $putByIdDirectPrivate(stream, "backpressure", false);
-  $putByIdDirectPrivate(stream, "underlyingSink", underlyingSink);
+  $putByIdDirectPrivate(stream, "writableStreamBrand", true);
 }
 
 export function writableStreamCloseForBindings(stream) {
@@ -151,9 +140,6 @@ export function isWritableStreamLocked(stream) {
 export function setUpWritableStreamDefaultWriter(writer, stream) {
   if ($isWritableStreamLocked(stream)) $throwTypeError("WritableStream is locked");
 
-  $putByIdDirectPrivate(writer, "stream", stream);
-  $putByIdDirectPrivate(stream, "writer", writer);
-
   const readyPromiseCapability = $newPromiseCapability(Promise);
   const closedPromiseCapability = $newPromiseCapability(Promise);
   $putByIdDirectPrivate(writer, "readyPromise", readyPromiseCapability);
@@ -177,6 +163,9 @@ export function setUpWritableStreamDefaultWriter(writer, stream) {
     closedPromiseCapability.reject.$call(undefined, storedError);
     $markPromiseAsHandled(closedPromiseCapability.promise);
   }
+
+  $putByIdDirectPrivate(writer, "stream", stream);
+  $putByIdDirectPrivate(stream, "writer", writer);
 }
 
 export function writableStreamAbort(stream, reason) {
@@ -535,9 +524,6 @@ export function writableStreamDefaultWriterWrite(writer, chunk) {
   if ($writableStreamCloseQueuedOrInFlight(stream) || state === "closed")
     return Promise.$reject($makeTypeError("stream is closing or closed"));
 
-  if ($writableStreamCloseQueuedOrInFlight(stream) || state === "closed")
-    return Promise.$reject($makeTypeError("stream is closing or closed"));
-
   if (state === "erroring") return Promise.$reject($getByIdDirectPrivate(stream, "storedError"));
 
   $assert(state === "writable");
@@ -624,19 +610,19 @@ export function setUpWritableStreamDefaultControllerFromUnderlyingSink(
     return Promise.$resolve();
   };
 
-  if ("start" in underlyingSinkDict) {
+  if (underlyingSinkDict.start !== undefined) {
     const startMethod = underlyingSinkDict["start"];
     startAlgorithm = () => $promiseInvokeOrNoopMethodNoCatch(underlyingSink, startMethod, [controller]);
   }
-  if ("write" in underlyingSinkDict) {
+  if (underlyingSinkDict.write !== undefined) {
     const writeMethod = underlyingSinkDict["write"];
     writeAlgorithm = chunk => $promiseInvokeOrNoopMethod(underlyingSink, writeMethod, [chunk, controller]);
   }
-  if ("close" in underlyingSinkDict) {
+  if (underlyingSinkDict.close !== undefined) {
     const closeMethod = underlyingSinkDict["close"];
     closeAlgorithm = () => $promiseInvokeOrNoopMethod(underlyingSink, closeMethod, []);
   }
-  if ("abort" in underlyingSinkDict) {
+  if (underlyingSinkDict.abort !== undefined) {
     const abortMethod = underlyingSinkDict["abort"];
     abortAlgorithm = reason => $promiseInvokeOrNoopMethod(underlyingSink, abortMethod, [reason]);
   }
@@ -711,8 +697,10 @@ export function writableStreamDefaultControllerGetBackpressure(controller) {
 }
 
 export function writableStreamDefaultControllerGetChunkSize(controller, chunk) {
+  const sizeAlgorithm = $getByIdDirectPrivate(controller, "strategySizeAlgorithm");
+  if (sizeAlgorithm === undefined) return 1;
   try {
-    return $getByIdDirectPrivate(controller, "strategySizeAlgorithm").$call(undefined, chunk);
+    return $bindgenFn("StreamAlgorithms.schema.zig", "invokeSize")(sizeAlgorithm, chunk);
   } catch (e) {
     $writableStreamDefaultControllerErrorIfNeeded(controller, e);
     return 1;

@@ -14,6 +14,7 @@
 #define LIBUS_USE_QUIC 1
 
 #include "libusockets.h"
+#include "../../../src/dns/BunDNS.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,13 +78,19 @@ us_quic_socket_context_t *us_create_quic_client_context(
     unsigned int conn_ext_size, unsigned int stream_ext_size);
 
 struct us_quic_pending_connect_s;
-struct addrinfo_request;
+
+enum {
+    US_QUIC_CONNECT_OUT_OF_MEMORY = -2,
+    US_QUIC_CONNECT_FAILED = -1,
+    US_QUIC_CONNECT_PENDING = 0,
+    US_QUIC_CONNECT_READY = 1,
+};
 
 /* Open a QUIC connection to `host:port`. `host` may be an IP literal or
  * hostname; literals and DNS-cache hits connect synchronously (return 1,
  * *out_qs set). Uncached hostnames return 0 with *out_pending set — caller
- * registers a Bun__addrinfo callback and invokes
- * us_quic_pending_connect_resolved() once it fires. -1 on error. `sni` is
+ * registers a DNS callback and invokes us_quic_pending_connect_resolved()
+ * once it fires. Returns -1 on failure or -2 on allocation failure. `sni` is
  * the TLS ServerNameIndication; `reject_unauthorized` is per-connection. */
 int us_quic_socket_context_connect(
     us_quic_socket_context_t *ctx, const char *host, int port, const char *sni,
@@ -91,10 +98,11 @@ int us_quic_socket_context_connect(
     struct us_quic_pending_connect_s **out_pending, void *user);
 
 void *us_quic_pending_connect_user(struct us_quic_pending_connect_s *pc);
-struct addrinfo_request *us_quic_pending_connect_addrinfo(
+BunDNSRequest *us_quic_pending_connect_addrinfo(
     struct us_quic_pending_connect_s *pc);
-us_quic_socket_t *us_quic_pending_connect_resolved(
-    struct us_quic_pending_connect_s *pc);
+/* Consumes pc and returns READY, FAILED, or OUT_OF_MEMORY. */
+int us_quic_pending_connect_resolved(
+    struct us_quic_pending_connect_s *pc, us_quic_socket_t **out_socket);
 void us_quic_pending_connect_cancel(struct us_quic_pending_connect_s *pc);
 
 /* Request a new bidirectional stream; on_stream_open(is_client=1) fires when
@@ -134,12 +142,19 @@ void us_quic_socket_context_on_stream_close(us_quic_socket_context_t *ctx,
 int us_quic_stream_write(us_quic_stream_t *s, const char *data, unsigned int len);
 void us_quic_stream_want_read(us_quic_stream_t *s, int want);
 void us_quic_stream_want_write(us_quic_stream_t *s, int want);
-int us_quic_stream_send_headers(us_quic_stream_t *s,
+typedef uint8_t us_quic_header_status_t;
+enum {
+    US_QUIC_HEADERS_SUCCESS,
+    US_QUIC_HEADERS_OUT_OF_MEMORY,
+    US_QUIC_HEADERS_INVALID,
+    US_QUIC_HEADERS_STREAM_ERROR,
+};
+us_quic_header_status_t us_quic_stream_send_headers(us_quic_stream_t *s,
     const struct us_quic_header_t *headers, unsigned int count, int end_stream);
 /* Send a 1xx interim HEADERS frame (`:status` only); the final response
  * header block follows separately. */
-int us_quic_stream_send_informational(us_quic_stream_t *s, const char *status3);
-void us_quic_stream_shutdown(us_quic_stream_t *s);
+us_quic_header_status_t us_quic_stream_send_informational(us_quic_stream_t *s, const char *status3);
+int us_quic_stream_shutdown(us_quic_stream_t *s);
 void us_quic_stream_flush(us_quic_stream_t *s);
 void us_quic_stream_shutdown_read(us_quic_stream_t *s);
 void us_quic_stream_close(us_quic_stream_t *s);

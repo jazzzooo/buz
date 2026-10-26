@@ -30,7 +30,7 @@ const PipeReader = struct {
         _ = err;
     }
 
-    pub fn eventLoop(this: *This) *bun.jsc.MiniEventLoop {
+    pub fn eventLoop(this: *This) *bun.MiniEventLoop {
         return this.handle.state.event_loop;
     }
 
@@ -90,7 +90,8 @@ pub const ProcessHandle = struct {
             const envp = try this.state.env.map.createNullDelimitedEnvMap(arena.allocator());
             break :brk try (try bun.spawn.spawnProcess(&this.options, argv[0..], envp)).unwrap();
         };
-        var process = spawned.toProcess(this.state.event_loop, false);
+        defer spawned.close();
+        var process = spawned.toProcess(this.state.event_loop.runtimeLoopHandle(), false);
 
         this.stdout_reader.handle = this;
         this.stderr_reader.handle = this;
@@ -98,16 +99,16 @@ pub const ProcessHandle = struct {
         this.stderr_reader.reader.setParent(&this.stderr_reader);
 
         if (Environment.isWindows) {
-            this.stdout_reader.reader.source = .{ .pipe = this.options.stdout.buffer };
-            this.stderr_reader.reader.source = .{ .pipe = this.options.stderr.buffer };
+            this.stdout_reader.reader.source = .{ .pipe = spawned.stdout.take().buffer };
+            this.stderr_reader.reader.source = .{ .pipe = spawned.stderr.take().buffer };
         }
 
         if (Environment.isPosix) {
-            if (spawned.stdout) |stdout_fd| {
+            if (spawned.stdout.takeOwnedFd()) |stdout_fd| {
                 _ = bun.sys.setNonblocking(stdout_fd);
                 try this.stdout_reader.reader.start(stdout_fd, true).unwrap();
             }
-            if (spawned.stderr) |stderr_fd| {
+            if (spawned.stderr.takeOwnedFd()) |stderr_fd| {
                 _ = bun.sys.setNonblocking(stderr_fd);
                 try this.stderr_reader.reader.start(stderr_fd, true).unwrap();
             }
@@ -135,7 +136,7 @@ pub const ProcessHandle = struct {
         this.state.processExit(this) catch {};
     }
 
-    pub fn eventLoop(this: *This) *bun.jsc.MiniEventLoop {
+    pub fn eventLoop(this: *This) *bun.MiniEventLoop {
         return this.state.event_loop;
     }
 
@@ -162,7 +163,7 @@ const State = struct {
     const This = @This();
 
     handles: []ProcessHandle,
-    event_loop: *bun.jsc.MiniEventLoop,
+    event_loop: *bun.MiniEventLoop,
     remaining_scripts: usize = 0,
     max_label_len: usize,
     shell_bin: [:0]const u8,
@@ -544,13 +545,14 @@ pub fn run(ctx: Command.Context) !noreturn {
     const fsinstance = try bun.fs.FileSystem.init(ctx.io, null);
     var this_transpiler: transpiler.Transpiler = undefined;
     _ = try RunCommand.configureEnvForRun(ctx, &this_transpiler, null, true, false);
+    defer this_transpiler.feature_flags.deinit();
     const cwd = fsinstance.top_level_dir;
 
-    const event_loop = bun.jsc.MiniEventLoop.initGlobal(ctx.io, this_transpiler.env, null);
+    const event_loop = try bun.MiniEventLoop.initGlobal(ctx.io, this_transpiler.env, null);
     // --no-orphans: register the macOS kqueue parent watch on this MiniEventLoop
     // (the VirtualMachine.init path is never reached for --parallel). Linux is
     // already covered by prctl in enable() + linux_pdeathsig on each spawn.
-    bun.ParentDeathWatchdog.installOnEventLoop(bun.jsc.EventLoopHandle.init(event_loop));
+    bun.ParentDeathWatchdog.installOnEventLoop(event_loop.runtimeLoopHandle());
     const shell_bin: [:0]const u8 = if (Environment.isPosix)
         RunCommand.findShell(ctx.io, this_transpiler.env.get("PATH") orelse "", cwd) orelse return error.MissingShell
     else
@@ -595,7 +597,7 @@ pub fn run(ctx: Command.Context) !noreturn {
                 continue;
             }
 
-            const pkgjson = bun.PackageJSON.parse(&this_transpiler.resolver, dirpath, .invalid, null, .include_scripts, .main) orelse {
+            const pkgjson = (try bun.PackageJSON.parse(&this_transpiler.resolver, dirpath, .invalid, null, .include_scripts, .main)) orelse {
                 continue;
             };
 
@@ -770,7 +772,7 @@ pub fn run(ctx: Command.Context) !noreturn {
                 .stdout = if (Environment.isPosix) .buffer else .{ .buffer = bun.new(bun.windows.libuv.Pipe, std.mem.zeroes(bun.windows.libuv.Pipe)) },
                 .stderr = if (Environment.isPosix) .buffer else .{ .buffer = bun.new(bun.windows.libuv.Pipe, std.mem.zeroes(bun.windows.libuv.Pipe)) },
                 .cwd = config.cwd,
-                .windows = if (Environment.isWindows) .{ .loop = bun.jsc.EventLoopHandle.init(event_loop) },
+                .windows = if (Environment.isWindows) .{ .loop = event_loop.parentEventLoop() },
                 .stream = true,
             },
         };

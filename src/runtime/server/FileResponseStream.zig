@@ -5,43 +5,54 @@
 //! path streams instead of buffering the whole file.
 //!
 //! The caller writes status + headers first, then hands off body streaming by
-//! calling `start()`. Exactly one of `on_complete` / `on_error` fires, exactly
-//! once; after it fires the caller must not touch `resp` body methods again.
+//! calling `start()`. Exactly one terminal callback fires. Completion and
+//! error callbacks receive no response handle because it may already be closed.
 
 const FileResponseStream = @This();
+pub const Context = bun.bindgen.NativeCallbackContext(.vm);
 
 ref_count: RefCount,
 resp: AnyResponse,
-vm: *jsc.VirtualMachine,
+runtime_loop: bun.RuntimeLoopHandle,
 fd: bun.FD,
 auto_close: bool,
 idle_timeout: u8,
 
-ctx: *anyopaque,
-on_complete: *const fn (*anyopaque, AnyResponse) void,
-on_abort: ?*const fn (*anyopaque, AnyResponse) void,
-on_error: *const fn (*anyopaque, AnyResponse, bun.sys.Error) void,
+ctx: Context,
+on_complete: *const fn (Context) void,
+on_abort: ?*const fn (Context, AnyResponse) void,
+on_error: *const fn (Context, Failure) void,
 
 mode: Mode,
 reader: bun.io.BufferedReader = bun.io.BufferedReader.init(FileResponseStream),
 max_size: ?u64 = null,
-eof_task: ?jsc.AnyTask = null,
-sendfile: Sendfile = .{},
 
 state: packed struct(u8) {
     response_done: bool = false,
     finished: bool = false,
     errored: bool = false,
     resp_detached: bool = false,
-    _: u4 = 0,
+    reader_active: bool = false,
+    _: u3 = 0,
 } = .{},
 
-const Mode = enum { reader, sendfile };
+const Mode = union(enum) { reader, sendfile: Sendfile };
+
+pub const Failure = union(enum) {
+    system: bun.sys.Error,
+    out_of_memory,
+    connection_closed,
+    write_failed,
+    unexpected_eof,
+};
 
 const Sendfile = struct {
-    socket_fd: bun.FD = bun.invalid_fd,
-    remain: u64 = 0,
-    offset: u64 = 0,
+    response: *uws.NewApp(false).Response,
+    socket_fd: bun.FD,
+    remain: u64,
+    offset: u64,
+    written: u64 = 0,
+    headers_ready: bool = false,
     has_set_on_writable: bool = false,
 };
 
@@ -49,7 +60,7 @@ pub const StartOptions = struct {
     fd: bun.FD,
     auto_close: bool = true,
     resp: AnyResponse,
-    vm: *jsc.VirtualMachine,
+    runtime_loop: bun.RuntimeLoopHandle,
     file_type: bun.io.FileType,
     pollable: bool,
     /// Byte offset into the file to begin reading from.
@@ -58,21 +69,25 @@ pub const StartOptions = struct {
     /// should be `stat.size - offset` (after Range/slice clamping).
     length: ?u64 = null,
     idle_timeout: u8,
-    ctx: *anyopaque,
-    on_complete: *const fn (*anyopaque, AnyResponse) void,
+    ctx: Context,
+    on_complete: *const fn (Context) void,
     /// Fires instead of `on_complete` when the client disconnects mid-stream.
     /// If null, abort is reported via `on_complete`.
-    on_abort: ?*const fn (*anyopaque, AnyResponse) void = null,
-    on_error: *const fn (*anyopaque, AnyResponse, bun.sys.Error) void,
+    on_abort: ?*const fn (Context, AnyResponse) void = null,
+    on_error: *const fn (Context, Failure) void,
 };
 
 pub fn start(opts: StartOptions) void {
-    const use_sendfile = canSendfile(opts.resp, opts.file_type, opts.length);
+    const sendfile_response = sendfileResponse(opts.resp, opts.file_type, opts.length);
 
-    var this = bun.new(FileResponseStream, .{
+    opts.resp.clearOnWritable();
+    opts.resp.clearAborted();
+    opts.resp.clearTimeout();
+
+    var this = bun.tryNew(FileResponseStream, .{
         .ref_count = .init(),
         .resp = opts.resp,
-        .vm = opts.vm,
+        .runtime_loop = opts.runtime_loop,
         .fd = opts.fd,
         .auto_close = opts.auto_close,
         .idle_timeout = opts.idle_timeout,
@@ -80,27 +95,36 @@ pub fn start(opts: StartOptions) void {
         .on_complete = opts.on_complete,
         .on_abort = opts.on_abort,
         .on_error = opts.on_error,
-        .mode = if (use_sendfile) .sendfile else .reader,
-    });
+        .mode = if (sendfile_response) |response| .{ .sendfile = .{
+            .response = response,
+            .socket_fd = response.getNativeHandle(),
+            .offset = opts.offset,
+            .remain = opts.length.?,
+        } } else .reader,
+    }) catch {
+        if (opts.auto_close) opts.fd.close();
+        opts.resp.forceClose();
+        opts.on_error(opts.ctx, .out_of_memory);
+        return;
+    };
 
     this.resp.timeout(this.idle_timeout);
     this.resp.onAborted(*FileResponseStream, onAborted, this);
 
     log("start mode={s} len={?d}", .{ @tagName(this.mode), opts.length });
 
-    if (use_sendfile) {
-        this.sendfile = .{
-            .socket_fd = opts.resp.getNativeHandle(),
-            .offset = opts.offset,
-            .remain = opts.length.?,
-        };
-        this.resp.prepareForSendfile();
+    if (sendfile_response != null) {
         _ = this.onSendfile();
         return;
     }
 
-    // BufferedReader path
     this.max_size = opts.length;
+    if (opts.length) |length| {
+        if (length == 0) {
+            this.completeReader("");
+            return;
+        }
+    }
     this.reader.flags.close_handle = false; // we own fd via auto_close
     this.reader.flags.pollable = opts.pollable;
     this.reader.flags.nonblocking = opts.file_type != .file;
@@ -112,17 +136,24 @@ pub fn start(opts: StartOptions) void {
     this.ref();
     defer this.deref();
 
-    switch (if (opts.offset > 0)
+    this.state.reader_active = true;
+    this.ref();
+    switch (if (opts.file_type == .file or opts.offset > 0)
         this.reader.startFileOffset(this.fd, opts.pollable, opts.offset)
     else
         this.reader.start(this.fd, opts.pollable)) {
         .err => |err| {
-            this.failWith(err);
+            this.failWith(.{ .system = err });
+            if (this.state.reader_active) {
+                this.state.reader_active = false;
+                this.deref();
+            }
             return;
         },
         .result => {},
     }
 
+    if (this.state.response_done) return;
     this.reader.updateRef(true);
 
     if (comptime bun.Environment.isPosix) {
@@ -136,20 +167,19 @@ pub fn start(opts: StartOptions) void {
         }
     }
 
-    // hold a ref for the in-flight read; released in onReaderDone/onReaderError
-    this.ref();
     this.reader.read();
 }
 
-fn canSendfile(resp: AnyResponse, file_type: bun.io.FileType, length: ?u64) bool {
-    if (comptime bun.Environment.isWindows) return false;
+fn sendfileResponse(resp: AnyResponse, file_type: bun.io.FileType, length: ?u64) ?*uws.NewApp(false).Response {
+    if (comptime bun.Environment.isWindows) return null;
     // sendfile() needs a real socket fd; SSL writes go through BIO and H3
     // through lsquic stream frames — neither has one.
-    if (resp != .TCP) return false;
-    if (file_type != .file) return false;
-    const len = length orelse return false;
+    if (resp != .TCP) return null;
+    if (file_type != .file) return null;
+    if (!resp.state().hasWrittenContentLengthHeader()) return null;
+    const len = length orelse return null;
     // Below ~1MB the syscall + dual-readiness overhead doesn't pay off.
-    return len >= 1 << 20;
+    return if (len >= 1 << 20) resp.TCP else null;
 }
 
 // ───────────────────────── reader backend ─────────────────────────
@@ -165,9 +195,6 @@ pub fn onReadChunk(this: *FileResponseStream, chunk_: []const u8, state_: bun.io
             const c = chunk_[0..@min(chunk_.len, max.*)];
             max.* -|= c.len;
             if (state_ != .eof and max.* == 0) {
-                if (comptime !bun.Environment.isPosix) this.reader.pause();
-                this.eof_task = jsc.AnyTask.New(FileResponseStream, FileResponseStream.onReaderDone).init(this);
-                this.vm.eventLoop().enqueueTask(jsc.Task.init(&this.eof_task.?));
                 break :brk .{ c, .eof };
             }
             break :brk .{ c, state_ };
@@ -178,19 +205,18 @@ pub fn onReadChunk(this: *FileResponseStream, chunk_: []const u8, state_: bun.io
     this.resp.timeout(this.idle_timeout);
 
     if (state == .eof) {
-        this.state.response_done = true;
-        this.detachResp();
-        this.resp.end(chunk, this.resp.shouldCloseConnection());
-        this.on_complete(this.ctx, this.resp);
+        this.completeReader(chunk);
         return false;
     }
 
-    switch (this.resp.write(chunk)) {
+    const result = this.resp.write(chunk) catch |err| {
+        this.failWrite(err);
+        return false;
+    };
+    switch (result) {
         .backpressure => {
-            // release the read ref; onWritable re-takes it
-            defer this.deref();
             this.resp.onWritable(*FileResponseStream, onWritable, this);
-            if (comptime !bun.Environment.isPosix) this.reader.pause();
+            this.reader.pause();
             return false;
         },
         .want_more => return true,
@@ -198,13 +224,31 @@ pub fn onReadChunk(this: *FileResponseStream, chunk_: []const u8, state_: bun.io
 }
 
 pub fn onReaderDone(this: *FileResponseStream) void {
+    bun.assert(this.state.reader_active);
+    this.state.reader_active = false;
     defer this.deref();
+    if (this.state.response_done) this.finish() else this.completeReader("");
+}
+
+fn completeReader(this: *FileResponseStream, chunk: []const u8) void {
+    if (this.max_size) |remaining| {
+        if (remaining != 0) return this.failWith(.unexpected_eof);
+    }
+    this.detachResp();
+    this.resp.end(chunk, this.resp.shouldCloseConnection()) catch |err| {
+        this.failWrite(err);
+        return;
+    };
+    this.state.response_done = true;
+    this.on_complete(this.ctx);
     this.finish();
 }
 
 pub fn onReaderError(this: *FileResponseStream, err: bun.sys.Error) void {
+    bun.assert(this.state.reader_active);
+    this.state.reader_active = false;
     defer this.deref();
-    this.failWith(err);
+    this.failWith(.{ .system = err });
 }
 
 fn onWritable(this: *FileResponseStream, _: u64, _: AnyResponse) bool {
@@ -214,12 +258,9 @@ fn onWritable(this: *FileResponseStream, _: u64, _: AnyResponse) bool {
 
     if (this.mode == .sendfile) return this.onSendfile();
 
-    if (this.reader.isDone()) {
-        this.finish();
-        return true;
-    }
+    if (this.state.response_done or this.reader.isDone()) return false;
     this.resp.timeout(this.idle_timeout);
-    this.ref();
+    if (comptime bun.Environment.isPosix) this.reader.unpause();
     this.reader.read();
     return true;
 }
@@ -227,31 +268,50 @@ fn onWritable(this: *FileResponseStream, _: u64, _: AnyResponse) bool {
 // ───────────────────────── sendfile backend ─────────────────────────
 
 fn onSendfile(this: *FileResponseStream) bool {
-    log("onSendfile remain={d} offset={d}", .{ this.sendfile.remain, this.sendfile.offset });
+    const sendfile = &this.mode.sendfile;
+    log("onSendfile remain={d} offset={d}", .{ sendfile.remain, sendfile.offset });
     if (this.state.response_done) {
         this.finish();
         return false;
     }
 
+    if (!sendfile.headers_ready) {
+        const ready = sendfile.response.prepareForSendfile() catch |err| {
+            this.failWrite(err);
+            return false;
+        };
+        if (!ready) return this.armSendfileWritable();
+        sendfile.headers_ready = true;
+    }
+
     if (comptime bun.Environment.isLinux) {
         while (true) {
-            const adjusted = @min(this.sendfile.remain, @as(u64, std.math.maxInt(i32)));
-            var off: i64 = @intCast(this.sendfile.offset);
+            if (sendfile.remain == 0) {
+                this.endSendfile();
+                return false;
+            }
+            const adjusted = @min(sendfile.remain, @as(u64, std.math.maxInt(i32)));
+            var off: i64 = @intCast(sendfile.offset);
             const rc = std.os.linux.sendfile(
-                this.sendfile.socket_fd.cast(),
+                sendfile.socket_fd.cast(),
                 this.fd.cast(),
                 &off,
                 adjusted,
             );
             const errno = bun.sys.getErrno(rc);
-            const sent: u64 = @intCast(@max(@as(i64, @intCast(off)) - @as(i64, @intCast(this.sendfile.offset)), 0));
-            this.sendfile.offset = @intCast(off);
-            this.sendfile.remain -|= sent;
+            const sent: u64 = @intCast(@max(off - @as(i64, @intCast(sendfile.offset)), 0));
+            sendfile.offset = @intCast(off);
+            sendfile.remain -= sent;
+            sendfile.written += sent;
 
             switch (errno) {
                 .SUCCESS => {
-                    if (this.sendfile.remain == 0 or sent == 0) {
+                    if (sendfile.remain == 0) {
                         this.endSendfile();
+                        return false;
+                    }
+                    if (sent == 0) {
+                        this.failWith(.unexpected_eof);
                         return false;
                     }
                     return this.armSendfileWritable();
@@ -259,55 +319,60 @@ fn onSendfile(this: *FileResponseStream) bool {
                 .INTR => continue,
                 .AGAIN => return this.armSendfileWritable(),
                 else => {
-                    this.failWith(.{ .errno = @backingInt(errno), .syscall = .sendfile, .fd = this.fd });
+                    this.failWith(.{ .system = .{ .errno = @backingInt(errno), .syscall = .sendfile, .fd = this.fd } });
                     return false;
                 },
             }
         }
     } else if (comptime bun.Environment.isMac) {
         while (true) {
-            var sbytes: std.posix.off_t = @intCast(@min(this.sendfile.remain, @as(u64, std.math.maxInt(i32))));
+            if (sendfile.remain == 0) {
+                this.endSendfile();
+                return false;
+            }
+            var sbytes: std.posix.off_t = @intCast(@min(sendfile.remain, @as(u64, std.math.maxInt(i32))));
             const errno = bun.sys.getErrno(std.c.sendfile(
                 this.fd.cast(),
-                this.sendfile.socket_fd.cast(),
-                @intCast(this.sendfile.offset),
+                sendfile.socket_fd.cast(),
+                @intCast(sendfile.offset),
                 &sbytes,
                 null,
                 0,
             ));
             const sent: u64 = @intCast(sbytes);
-            this.sendfile.offset += sent;
-            this.sendfile.remain -|= sent;
+            sendfile.offset += sent;
+            sendfile.remain -= sent;
+            sendfile.written += sent;
 
             switch (errno) {
                 .SUCCESS => {
-                    if (this.sendfile.remain == 0 or sent == 0) {
+                    if (sendfile.remain == 0) {
                         this.endSendfile();
+                        return false;
+                    }
+                    if (sent == 0) {
+                        this.failWith(.unexpected_eof);
                         return false;
                     }
                     return this.armSendfileWritable();
                 },
                 .INTR => continue,
                 .AGAIN => return this.armSendfileWritable(),
-                .PIPE, .NOTCONN => {
-                    this.endSendfile();
-                    return false;
-                },
                 else => {
-                    this.failWith(.{ .errno = @backingInt(errno), .syscall = .sendfile, .fd = this.fd });
+                    this.failWith(.{ .system = .{ .errno = @backingInt(errno), .syscall = .sendfile, .fd = this.fd } });
                     return false;
                 },
             }
         }
     } else {
-        unreachable; // canSendfile gates this
+        unreachable;
     }
 }
 
 fn armSendfileWritable(this: *FileResponseStream) bool {
     log("armSendfileWritable", .{});
-    if (!this.sendfile.has_set_on_writable) {
-        this.sendfile.has_set_on_writable = true;
+    if (!this.mode.sendfile.has_set_on_writable) {
+        this.mode.sendfile.has_set_on_writable = true;
         this.resp.onWritable(*FileResponseStream, onWritable, this);
     }
     this.resp.markNeedsMore();
@@ -317,10 +382,13 @@ fn armSendfileWritable(this: *FileResponseStream) bool {
 fn endSendfile(this: *FileResponseStream) void {
     log("endSendfile", .{});
     if (this.state.response_done) return;
-    this.state.response_done = true;
     this.detachResp();
-    this.resp.endSendFile(this.sendfile.offset, this.resp.shouldCloseConnection());
-    this.on_complete(this.ctx, this.resp);
+    this.mode.sendfile.response.endSendFile(this.mode.sendfile.written, this.resp.shouldCloseConnection()) catch |err| {
+        this.failWrite(err);
+        return;
+    };
+    this.state.response_done = true;
+    this.on_complete(this.ctx);
     this.finish();
 }
 
@@ -331,18 +399,27 @@ fn onAborted(this: *FileResponseStream, _: AnyResponse) void {
     if (!this.state.response_done) {
         this.state.response_done = true;
         this.detachResp();
-        (this.on_abort orelse this.on_complete)(this.ctx, this.resp);
+        if (this.on_abort) |callback| callback(this.ctx, this.resp) else this.on_complete(this.ctx);
     }
     this.finish();
 }
 
-fn failWith(this: *FileResponseStream, err: bun.sys.Error) void {
+fn failWrite(this: *FileResponseStream, err: uws.ResponseWriteError) void {
+    if (err == error.ConnectionClosed) this.state.resp_detached = true;
+    this.failWith(switch (err) {
+        error.OutOfMemory => .out_of_memory,
+        error.ConnectionClosed => .connection_closed,
+        error.WriteFailed => .write_failed,
+    });
+}
+
+fn failWith(this: *FileResponseStream, err: Failure) void {
     if (!this.state.response_done) {
         this.state.response_done = true;
         this.state.errored = true;
         this.detachResp();
-        this.resp.forceClose();
-        this.on_error(this.ctx, this.resp, err);
+        if (err != .connection_closed) this.resp.forceClose();
+        this.on_error(this.ctx, err);
     }
     this.finish();
 }
@@ -350,8 +427,7 @@ fn failWith(this: *FileResponseStream, err: bun.sys.Error) void {
 /// Clear all uWS callbacks pointing at us. Must run while `resp` is still
 /// live (i.e., before `resp.end()` / `endSendFile()` / `forceClose()` give the
 /// socket back to uWS, which may free it on the next loop tick). After this
-/// runs, `finish()` — which can be reached from the deferred `eof_task` —
-/// will not touch `resp` again.
+/// runs, reader completion will not touch `resp` again.
 fn detachResp(this: *FileResponseStream) void {
     if (this.state.resp_detached) return;
     this.state.resp_detached = true;
@@ -363,15 +439,9 @@ fn detachResp(this: *FileResponseStream) void {
 fn finish(this: *FileResponseStream) void {
     log("finish (already={})", .{this.state.finished});
     if (this.state.finished) return;
+    bun.assert(this.state.response_done);
     this.state.finished = true;
-
-    if (!this.state.response_done) {
-        this.state.response_done = true;
-        this.detachResp();
-        this.resp.endWithoutBody(this.resp.shouldCloseConnection());
-        this.on_complete(this.ctx, this.resp);
-    }
-
+    if (this.state.reader_active) this.reader.close();
     this.deref();
 }
 
@@ -384,15 +454,12 @@ fn deinit(this: *FileResponseStream) void {
     bun.destroy(this);
 }
 
-pub fn eventLoop(this: *FileResponseStream) jsc.EventLoopHandle {
-    return jsc.EventLoopHandle.init(this.vm.eventLoop());
+pub fn eventLoop(this: *FileResponseStream) bun.RuntimeLoopHandle {
+    return this.runtime_loop;
 }
 
-pub fn loop(this: *FileResponseStream) *Async.Loop {
-    if (comptime bun.Environment.isWindows) {
-        return this.eventLoop().loop().uv_loop;
-    }
-    return this.eventLoop().loop();
+pub fn loop(this: *FileResponseStream) *bun.ParentEventLoop.PlatformEventLoop {
+    return this.runtime_loop.platformLoop();
 }
 
 const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
@@ -404,8 +471,6 @@ const log = bun.Output.scoped(.FileResponseStream, .hidden);
 const std = @import("std");
 
 const bun = @import("bun");
-const Async = bun.Async;
-const jsc = bun.jsc;
 
 const uws = bun.uws;
 const AnyResponse = uws.AnyResponse;

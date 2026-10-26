@@ -1,92 +1,40 @@
-//! `createPostgresError` / `postgresErrorToJS` bridges.
+const RunSchema = bun.bindgen.Module("PostgresSQLQuery").class("PostgresSQLQuery").member("run");
+pub const OwnedPayload = bun.bindgen.DomainErrorPayload(RunSchema, .postgres_failure);
 
-pub fn createPostgresError(
-    globalObject: *jsc.JSGlobalObject,
+pub fn createPostgresErrorPayload(
     message: []const u8,
     options: PostgresErrorOptions,
-) bun.JSError!JSValue {
-    const opts_obj = jsc.JSObject.createEmpty(globalObject, 0);
-    opts_obj.ensureStillAlive();
-    opts_obj.putDirect(globalObject, jsc.ZigString.static("code"), try bun.String.createUTF8ForJS(globalObject, options.code));
-    inline for (comptime std.meta.fieldNames(PostgresErrorOptions)) |field_name| {
-        const FieldType = @typeInfo(@TypeOf(@field(options, field_name)));
-        if (FieldType == .optional) {
-            if (@field(options, field_name)) |value| {
-                opts_obj.putDirect(globalObject, jsc.ZigString.static(field_name), try bun.String.createUTF8ForJS(globalObject, value));
-            }
-        }
-    }
-    opts_obj.putDirect(globalObject, jsc.ZigString.static("message"), try bun.String.createUTF8ForJS(globalObject, message));
+) bun.OOM!OwnedPayload {
+    var result: OwnedPayload = .{ .code = .empty(), .message = .empty() };
+    errdefer deinitPostgresErrorPayload(&result);
+    result.code = try bun.bindgen.DOMString.fromUTF8(options.code);
+    result.message = try bun.bindgen.DOMString.fromUTF8(message);
 
-    return opts_obj.toJS();
+    result.error_number = try optionalString(options.errno);
+    result.detail = try optionalString(options.detail);
+    result.hint = try optionalString(options.hint);
+    result.severity = try optionalString(options.severity);
+    result.position = try optionalString(options.position);
+    result.internal_position = try optionalString(options.internalPosition);
+    result.internal_query = try optionalString(options.internalQuery);
+    result.where = try optionalString(options.where);
+    result.schema = try optionalString(options.schema);
+    result.table = try optionalString(options.table);
+    result.column = try optionalString(options.column);
+    result.data_type = try optionalString(options.dataType);
+    result.constraint = try optionalString(options.constraint);
+    result.file = try optionalString(options.file);
+    result.line = try optionalString(options.line);
+    result.routine = try optionalString(options.routine);
+    return result;
 }
 
-pub fn postgresErrorToJS(globalObject: *jsc.JSGlobalObject, message: ?[]const u8, err: AnyPostgresError) JSValue {
-    const code = switch (err) {
-        error.ConnectionClosed => "ERR_POSTGRES_CONNECTION_CLOSED",
-        error.ExpectedRequest => "ERR_POSTGRES_EXPECTED_REQUEST",
-        error.ExpectedStatement => "ERR_POSTGRES_EXPECTED_STATEMENT",
-        error.InvalidBackendKeyData => "ERR_POSTGRES_INVALID_BACKEND_KEY_DATA",
-        error.InvalidBinaryData => "ERR_POSTGRES_INVALID_BINARY_DATA",
-        error.InvalidByteSequence => "ERR_POSTGRES_INVALID_BYTE_SEQUENCE",
-        error.InvalidByteSequenceForEncoding => "ERR_POSTGRES_INVALID_BYTE_SEQUENCE_FOR_ENCODING",
-        error.InvalidCharacter => "ERR_POSTGRES_INVALID_CHARACTER",
-        error.InvalidMessage => "ERR_POSTGRES_INVALID_MESSAGE",
-        error.InvalidMessageLength => "ERR_POSTGRES_INVALID_MESSAGE_LENGTH",
-        error.InvalidQueryBinding => "ERR_POSTGRES_INVALID_QUERY_BINDING",
-        error.InvalidServerKey => "ERR_POSTGRES_INVALID_SERVER_KEY",
-        error.InvalidServerSignature => "ERR_POSTGRES_INVALID_SERVER_SIGNATURE",
-        error.InvalidTimeFormat => "ERR_POSTGRES_INVALID_TIME_FORMAT",
-        error.MultidimensionalArrayNotSupportedYet => "ERR_POSTGRES_MULTIDIMENSIONAL_ARRAY_NOT_SUPPORTED_YET",
-        error.NullsInArrayNotSupportedYet => "ERR_POSTGRES_NULLS_IN_ARRAY_NOT_SUPPORTED_YET",
-        error.Overflow => "ERR_POSTGRES_OVERFLOW",
-        error.PBKDFD2 => "ERR_POSTGRES_AUTHENTICATION_FAILED_PBKDF2",
-        error.SASL_SIGNATURE_MISMATCH => "ERR_POSTGRES_SASL_SIGNATURE_MISMATCH",
-        error.SASL_SIGNATURE_INVALID_BASE64 => "ERR_POSTGRES_SASL_SIGNATURE_INVALID_BASE64",
-        error.TLSNotAvailable => "ERR_POSTGRES_TLS_NOT_AVAILABLE",
-        error.TLSUpgradeFailed => "ERR_POSTGRES_TLS_UPGRADE_FAILED",
-        error.TooManyParameters => {
-            const too_many_msg = "query has too many parameters - the PostgreSQL wire protocol supports a maximum of 65535 parameters per query. Try reducing your batch size.";
-            return createPostgresError(globalObject, too_many_msg, .{
-                .code = "ERR_POSTGRES_TOO_MANY_PARAMETERS",
-                .hint = "Reduce the number of rows in your batch insert so that total_rows * columns_per_row does not exceed 65535.",
-            }) catch |e| globalObject.takeError(e);
-        },
-        error.UnexpectedMessage => "ERR_POSTGRES_UNEXPECTED_MESSAGE",
-        error.UNKNOWN_AUTHENTICATION_METHOD => "ERR_POSTGRES_UNKNOWN_AUTHENTICATION_METHOD",
-        error.UNSUPPORTED_AUTHENTICATION_METHOD => "ERR_POSTGRES_UNSUPPORTED_AUTHENTICATION_METHOD",
-        error.UnsupportedByteaFormat => "ERR_POSTGRES_UNSUPPORTED_BYTEA_FORMAT",
-        error.UnsupportedArrayFormat => "ERR_POSTGRES_UNSUPPORTED_ARRAY_FORMAT",
-        error.UnsupportedIntegerSize => "ERR_POSTGRES_UNSUPPORTED_INTEGER_SIZE",
-        error.UnsupportedNumericFormat => "ERR_POSTGRES_UNSUPPORTED_NUMERIC_FORMAT",
-        error.UnknownFormatCode => "ERR_POSTGRES_UNKNOWN_FORMAT_CODE",
-        error.JSError => {
-            return globalObject.takeException(error.JSError);
-        },
-        error.JSTerminated => {
-            return globalObject.takeException(error.JSTerminated);
-        },
-        error.OutOfMemory => {
-            return globalObject.createOutOfMemoryError().toJS();
-        },
-        error.ShortRead => {
-            bun.unreachablePanic("Assertion failed: ShortRead should be handled by the caller in postgres", .{});
-        },
-    };
+const optionalString = bun.bindgen.DOMString.fromOptionalUTF8;
 
-    var buffer_message: [256]u8 = @splat(0);
-    const msg = message orelse std.fmt.bufPrint(buffer_message[0..], "Failed to bind query: {s}", .{@errorName(err)}) catch "Failed to bind query";
-
-    return createPostgresError(globalObject, msg, .{ .code = code }) catch |e| globalObject.takeError(e);
+pub fn deinitPostgresErrorPayload(payload: *OwnedPayload) void {
+    bun.bindgen.deinitDomainErrorPayload(RunSchema, .postgres_failure, payload);
 }
 
-const std = @import("std");
-
-const AnyPostgresError = @import("../../sql/postgres/AnyPostgresError.zig").AnyPostgresError;
 const PostgresErrorOptions = @import("../../sql/postgres/AnyPostgresError.zig").PostgresErrorOptions;
 
 const bun = @import("bun");
-const String = bun.String;
-
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;

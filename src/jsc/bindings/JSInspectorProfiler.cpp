@@ -1,50 +1,41 @@
 #include "root.h"
+#include "SchemaBindings.h"
 #include "helpers.h"
 #include "BunCPUProfiler.h"
-#include "NodeValidator.h"
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <JavaScriptCore/VM.h>
-#include <JavaScriptCore/Error.h>
 
-using namespace JSC;
+namespace Bun::Bindgen::Cpp {
 
-JSC_DECLARE_HOST_FUNCTION(jsFunction_startCPUProfiler);
-JSC_DEFINE_HOST_FUNCTION(jsFunction_startCPUProfiler, (JSGlobalObject * globalObject, CallFrame*))
+void bunBindgenCpp_InspectorProfiler_startCPUProfiler(
+    CppCallContext& context,
+    const BunBindgenCpp_InspectorProfiler_startCPUProfiler_Arguments&)
 {
-    Bun::startCPUProfiler(globalObject->vm());
-    return JSValue::encode(jsUndefined());
+    Bun::startCPUProfiler(context.globalObject.vm());
 }
 
-JSC_DECLARE_HOST_FUNCTION(jsFunction_stopCPUProfiler);
-JSC_DEFINE_HOST_FUNCTION(jsFunction_stopCPUProfiler, (JSGlobalObject * globalObject, CallFrame*))
+WTF::String bunBindgenCpp_InspectorProfiler_stopCPUProfiler(
+    CppCallContext& context,
+    const BunBindgenCpp_InspectorProfiler_stopCPUProfiler_Arguments&)
 {
-    auto& vm = globalObject->vm();
+    auto& vm = context.globalObject.vm();
     WTF::String result;
     Bun::stopCPUProfiler(vm, &result, nullptr);
-    return JSValue::encode(jsString(vm, result));
+    return result;
 }
 
-JSC_DECLARE_HOST_FUNCTION(jsFunction_setCPUSamplingInterval);
-JSC_DEFINE_HOST_FUNCTION(jsFunction_setCPUSamplingInterval, (JSGlobalObject * globalObject, CallFrame* callFrame))
+void bunBindgenCpp_InspectorProfiler_setCPUSamplingInterval(
+    CppCallContext&,
+    const BunBindgenCpp_InspectorProfiler_setCPUSamplingInterval_Arguments& args)
 {
-    auto& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (callFrame->argumentCount() < 1) {
-        throwVMError(globalObject, scope, createNotEnoughArgumentsError(globalObject));
-        return {};
-    }
-
-    int interval;
-    Bun::V::validateInteger(scope, globalObject, callFrame->uncheckedArgument(0), "interval"_s, jsNumber(1), jsUndefined(), &interval);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    Bun::setSamplingInterval(interval);
-    return JSValue::encode(jsUndefined());
+    Bun::setSamplingInterval(args.interval);
 }
 
-JSC_DECLARE_HOST_FUNCTION(jsFunction_isCPUProfilerRunning);
-JSC_DEFINE_HOST_FUNCTION(jsFunction_isCPUProfilerRunning, (JSGlobalObject*, CallFrame*))
+bool bunBindgenCpp_InspectorProfiler_isCPUProfilerRunning(
+    CppCallContext&,
+    const BunBindgenCpp_InspectorProfiler_isCPUProfilerRunning_Arguments&)
 {
-    return JSValue::encode(jsBoolean(Bun::isCPUProfilerRunning()));
+    return Bun::isCPUProfilerRunning();
+}
+
 }

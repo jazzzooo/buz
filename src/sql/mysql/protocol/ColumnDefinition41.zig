@@ -91,7 +91,7 @@ pub const decode = decoderWrap(ColumnDefinition41, decodeInternal).decode;
 const debug = bun.Output.scoped(.ColumnDefinition41, .hidden);
 
 const bun = @import("bun");
-const types = @import("../MySQLTypes.zig");
+const types = @import("mysql_domain").types;
 const ColumnIdentifier = @import("../../shared/ColumnIdentifier.zig").ColumnIdentifier;
 const Data = @import("../../shared/Data.zig").Data;
 

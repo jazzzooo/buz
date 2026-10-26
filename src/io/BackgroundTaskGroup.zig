@@ -4,6 +4,7 @@ executor: *Executor,
 mutex: std.Io.Mutex = .init,
 condition: std.Io.Condition = .init,
 outstanding: usize = 0,
+operations: ?*Operation = null,
 state: std.atomic.Value(State) = .init(.open),
 
 const State = enum(u8) {
@@ -15,7 +16,28 @@ const State = enum(u8) {
 
 pub const CloseMode = enum {
     drain,
+    cancel_operations,
     cancel_pending,
+};
+
+/// Keeps the scope alive across waits outside the worker pool.
+pub const Operation = struct {
+    previous: ?*Operation = null,
+    next: ?*Operation = null,
+    scope: ?*BackgroundTaskGroup = null,
+    request_cancel: *const fn (*Operation) void,
+
+    pub fn finish(this: *Operation) void {
+        const scope = this.scope orelse return;
+        scope.mutex.lockUncancelable(scope.executor.io);
+        if (this.previous) |previous| previous.next = this.next else scope.operations = this.next;
+        if (this.next) |next| next.previous = this.previous;
+        this.scope = null;
+        this.previous = null;
+        this.next = null;
+        scope.completeOneAssumeLocked();
+        scope.mutex.unlock(scope.executor.io);
+    }
 };
 
 pub const Task = struct {
@@ -225,9 +247,15 @@ pub fn close(this: *BackgroundTaskGroup, mode: CloseMode) void {
     this.mutex.lockUncancelable(this.executor.io);
     bun.assert(this.state.load(.monotonic) == .open);
     this.state.store(switch (mode) {
-        .drain => .draining,
+        .drain, .cancel_operations => .draining,
         .cancel_pending => .cancel_pending,
     }, .release);
+    if (mode != .drain) {
+        var operation = this.operations;
+        while (operation) |pending| : (operation = pending.next) {
+            pending.request_cancel(pending);
+        }
+    }
     this.mutex.unlock(this.executor.io);
 
     if (mode == .cancel_pending) this.executor.cancel(this);
@@ -236,6 +264,7 @@ pub fn close(this: *BackgroundTaskGroup, mode: CloseMode) void {
     while (this.outstanding > 0) {
         this.condition.waitUncancelable(this.executor.io, &this.mutex);
     }
+    bun.assert(this.operations == null);
     this.state.store(.closed, .release);
     this.mutex.unlock(this.executor.io);
 }
@@ -259,16 +288,40 @@ pub fn scheduleTask(this: *BackgroundTaskGroup, task: *Task) std.Io.ConcurrentEr
     try this.schedule(.from(task));
 }
 
+pub fn scheduleOperation(this: *BackgroundTaskGroup, operation: *Operation, task: *Task) std.Io.ConcurrentError!void {
+    this.mutex.lockUncancelable(this.executor.io);
+    defer this.mutex.unlock(this.executor.io);
+    if (this.state.load(.monotonic) != .open) return error.ConcurrencyUnavailable;
+    bun.assert(operation.scope == null);
+
+    operation.scope = this;
+    operation.next = this.operations;
+    if (this.operations) |head| head.previous = operation;
+    this.operations = operation;
+    task.scope = this;
+    this.outstanding += 2;
+    this.executor.schedule(.from(task)) catch |err| {
+        this.outstanding -= 2;
+        this.operations = operation.next;
+        if (operation.next) |next| next.previous = null;
+        operation.scope = null;
+        operation.next = null;
+        return err;
+    };
+}
+
 pub fn scheduleContinuation(this: *BackgroundTaskGroup, batch: Batch) void {
     if (batch.len == 0) return;
 
     this.mutex.lockUncancelable(this.executor.io);
     const state = this.state.load(.monotonic);
     if (state == .cancel_pending) {
+        this.outstanding += batch.len;
         this.mutex.unlock(this.executor.io);
         var canceled = batch;
         while (canceled.pop()) |task| {
             task.cancel();
+            this.completeOne();
         }
         return;
     }
@@ -285,11 +338,14 @@ pub fn scheduleContinuationTask(this: *BackgroundTaskGroup, task: *Task) void {
 
 fn completeOne(this: *BackgroundTaskGroup) void {
     this.mutex.lockUncancelable(this.executor.io);
+    this.completeOneAssumeLocked();
+    this.mutex.unlock(this.executor.io);
+}
+
+fn completeOneAssumeLocked(this: *BackgroundTaskGroup) void {
     bun.assert(this.outstanding > 0);
     this.outstanding -= 1;
-    const finished = this.outstanding == 0;
-    this.mutex.unlock(this.executor.io);
-    if (finished) this.condition.broadcast(this.executor.io);
+    if (this.outstanding == 0) this.condition.broadcast(this.executor.io);
 }
 
 const std = @import("std");

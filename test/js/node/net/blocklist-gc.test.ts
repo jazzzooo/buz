@@ -1,13 +1,7 @@
 import { expect, test } from "bun:test";
 import { bunEnv, bunExe } from "harness";
 
-// BlockList structured-clone serialize writes the native pointer and takes a
-// single ref. When the same SerializedScriptValue is deserialized more than
-// once (BroadcastChannel fans one message out to every subscriber), each
-// deserialize created a JS wrapper whose finalizer derefs, so wrappers > refs
-// and the backing was freed while a live wrapper still pointed at it. The
-// next GC's visitChildren -> estimatedSize then read freed memory, hitting
-// ASAN use-after-poison or SIGFPE (ref_count divisor read back as 0).
+// Each delivery owns a reference to the shared rules independently of the sender and other recipients.
 test("BlockList survives GC after BroadcastChannel fan-out clone", async () => {
   await using proc = Bun.spawn({
     cmd: [

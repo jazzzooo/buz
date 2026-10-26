@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include "SchemaBindings.h"
 #include "JavaScriptCore/JSObject.h"
 #include "JavaScriptCore/ObjectConstructor.h"
 #include "JavaScriptCore/ArrayConstructor.h"
@@ -14,21 +15,21 @@ using namespace JSC;
 // clear it, specifically within AsyncLocalStorage.prototype.enterWith.  this
 // function will not clear the async context until the next tick's microtask,
 // where it must inherit the context that scheduled that callback.
-JSC_DEFINE_HOST_FUNCTION(jsCleanupLater, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_AsyncHooks_cleanupLater(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_AsyncHooks_cleanupLater_Arguments&)
 {
-    ASSERT(callFrame->argumentCount() == 0);
-    auto* global = uncheckedDowncast<Zig::GlobalObject>(globalObject);
+    auto* global = uncheckedDowncast<::Zig::GlobalObject>(&context.globalObject);
     global->asyncHooksNeedsCleanup = true;
     global->resetOnEachMicrotaskTick();
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
 // This is called when AsyncLocalStorage is constructed.
-JSC_DEFINE_HOST_FUNCTION(jsSetAsyncHooksEnabled, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_AsyncHooks_setAsyncHooksEnabled(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_AsyncHooks_setAsyncHooksEnabled_Arguments& args)
 {
-    ASSERT(callFrame->argumentCount() == 1);
-    globalObject->setAsyncContextTrackingEnabled(callFrame->uncheckedArgument(0).toBoolean(globalObject));
-    return JSC::JSValue::encode(JSC::jsUndefined());
+    context.globalObject.setAsyncContextTrackingEnabled(args.enabled);
 }
 
 }

@@ -33,7 +33,6 @@ class CryptoKeyOKP;
 
 class CryptoAlgorithmEd25519 final : public CryptoAlgorithm {
 public:
-    static constexpr ASCIILiteral s_name = "Ed25519"_s;
     static constexpr CryptoAlgorithmIdentifier s_identifier = CryptoAlgorithmIdentifier::Ed25519;
     static Ref<CryptoAlgorithm> create();
 
@@ -44,11 +43,11 @@ private:
     CryptoAlgorithmEd25519() = default;
     CryptoAlgorithmIdentifier identifier() const final;
 
-    void generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap usages, KeyOrKeyPairCallback&&, ExceptionCallback&&, ScriptExecutionContext&);
-    void sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&) final;
-    void verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&& signature, Vector<uint8_t>&&, BoolCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&) final;
-    void importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyCallback&&, ExceptionCallback&&) final;
-    void exportKey(CryptoKeyFormat, Ref<CryptoKey>&&, KeyDataCallback&&, ExceptionCallback&&) final;
+    ExceptionOr<KeyOrKeyPair> generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap usages);
+    ExceptionOr<Vector<uint8_t>> sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&) final;
+    ExceptionOr<bool> verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&& signature, Vector<uint8_t>&&) final;
+    ExceptionOr<Ref<CryptoKey>> importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap) final;
+    ExceptionOr<KeyData> exportKey(CryptoKeyFormat, Ref<CryptoKey>&&) final;
 };
 
 inline CryptoAlgorithmIdentifier CryptoAlgorithmEd25519::identifier() const

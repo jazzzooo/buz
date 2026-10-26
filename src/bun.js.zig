@@ -1,7 +1,6 @@
 pub const jsc = @import("./jsc/jsc.zig");
-pub const webcore = @import("./runtime/webcore.zig");
-pub const api = @import("./runtime/api.zig");
-pub const bindgen = @import("./jsc/bindgen.zig");
+pub const webcore = @import("./runtime/WebCoreEngine.zig");
+pub const api = @import("./runtime/RuntimeApiEngine.zig");
 
 pub fn applyStandaloneRuntimeFlags(b: *bun.Transpiler, graph: *const bun.StandaloneModuleGraph) void {
     b.options.env.disable_default_env_files = graph.flags.disable_default_env_files;
@@ -19,13 +18,11 @@ pub const Run = struct {
     vm: *VirtualMachine,
     entry_path: string,
     arena: Arena,
-    any_unhandled: bool = false,
     is_html_entrypoint: bool = false,
 
     var run: Run = undefined;
 
     pub fn bootStandalone(ctx: Command.Context, entry_path: string, graph_ptr: *bun.StandaloneModuleGraph) !void {
-        jsc.markBinding(@src());
         bun.jsc.initialize(false);
         bun.analytics.Features.standalone_executable += 1;
 
@@ -109,13 +106,14 @@ pub const Run = struct {
 
         bun.http.experimental_http2_client_from_cli = ctx.runtime_options.experimental_http2_fetch;
         bun.http.experimental_http3_client_from_cli = ctx.runtime_options.experimental_http3_fetch;
-        doPreconnect(ctx.io, ctx.runtime_options.preconnect);
+        doPreconnect(ctx.io, ctx.transpiler_capabilities.javascript_semantics, ctx.runtime_options.preconnect);
 
-        const callback = OpaqueWrap(Run, Run.start);
-        vm.global.vm().holdAPILock(&run, callback);
+        const api_lock = vm.global.vm().getAPILock();
+        defer api_lock.release();
+        run.start();
     }
 
-    fn doPreconnect(io: std.Io, preconnect: []const string) void {
+    fn doPreconnect(io: std.Io, javascript_semantics: JavaScriptSemantics, preconnect: []const string) void {
         if (preconnect.len == 0) return;
         bun.HTTPThread.init(io, &.{});
 
@@ -137,30 +135,25 @@ pub const Run = struct {
                 Global.exit(1);
             }
 
-            AsyncHTTP.preconnect(url, false);
+            AsyncHTTP.preconnect(url, false, javascript_semantics);
         }
     }
 
     fn bootBunShell(ctx: Command.Context, entry_path: []const u8) !bun.shell.ExitCode {
         @branchHint(.cold);
 
-        // this is a hack: make dummy bundler so we can use its `.runEnvLoader()` function to populate environment variables probably should split out the functionality
-        var bundle = try bun.Transpiler.init(
-            ctx.allocator,
-            ctx.io,
-            ctx.log,
-            try @import("./jsc/config.zig").configureTransformOptionsForBunVM(ctx.allocator, ctx.args),
-            null,
-        );
-        try bundle.runEnvLoader(bundle.options.env.disable_default_env_files);
-        const mini = jsc.MiniEventLoop.initGlobal(ctx.io, bundle.env, null);
+        const env_map = try ctx.allocator.create(bun.DotEnv.Map);
+        env_map.* = bun.DotEnv.Map.init(ctx.allocator);
+        const env = try ctx.allocator.create(bun.DotEnv.Loader);
+        env.* = bun.DotEnv.Loader.init(env_map, ctx.allocator);
+        env.quiet = !ctx.log.level.atLeast(.info);
+        try env.loadCurrentDirectory(ctx.io, ctx.args.env_files, ctx.args.disable_default_env_files);
+        const mini = try jsc.MiniEventLoop.initGlobal(ctx.io, env, null);
         mini.top_level_dir = ctx.args.absolute_working_dir orelse "";
         return bun.shell.Interpreter.initAndRunFromFile(ctx, mini, entry_path);
     }
 
     pub fn boot(ctx: Command.Context, entry_path: string, loader: ?bun.options.Loader) !void {
-        jsc.markBinding(@src());
-
         if (!ctx.debug.loaded_bunfig) {
             try bun.cli.Arguments.loadConfigPath(ctx.allocator, true, "bunfig.toml", ctx, .RunCommand);
         }
@@ -291,29 +284,25 @@ pub const Run = struct {
         // Allow setting a custom timezone
         if (vm.transpiler.env.get("TZ")) |tz| {
             if (tz.len > 0) {
-                _ = vm.global.setTimeZone(&jsc.ZigString.init(tz));
+                _ = try vm.global.setTimeZone(tz);
             }
         }
 
         bun.http.experimental_http2_client_from_cli = ctx.runtime_options.experimental_http2_fetch;
         bun.http.experimental_http3_client_from_cli = ctx.runtime_options.experimental_http3_fetch;
-        doPreconnect(ctx.io, ctx.runtime_options.preconnect);
+        doPreconnect(ctx.io, ctx.transpiler_capabilities.javascript_semantics, ctx.runtime_options.preconnect);
 
         vm.main_is_html_entrypoint = (loader orelse vm.transpiler.options.loader(std.fs.path.extension(entry_path))) == .html;
 
-        const callback = OpaqueWrap(Run, Run.start);
-        vm.global.vm().holdAPILock(&run, callback);
-    }
-
-    fn onUnhandledRejectionBeforeClose(this: *jsc.VirtualMachine, _: *jsc.JSGlobalObject, value: jsc.JSValue) void {
-        this.runErrorHandler(value, this.onUnhandledRejectionExceptionList);
-        run.any_unhandled = true;
+        const api_lock = vm.global.vm().getAPILock();
+        defer api_lock.release();
+        run.start();
     }
 
     pub fn start(this: *Run) void {
         var vm = this.vm;
         vm.hot_reload = this.ctx.debug.hot_reload;
-        vm.onUnhandledRejection = &onUnhandledRejectionBeforeClose;
+        vm.useDefaultUnhandledRejectionHandler();
 
         // Start CPU profiler if enabled
         if (this.ctx.runtime_options.cpu_prof.enabled) {
@@ -344,45 +333,22 @@ pub const Run = struct {
         }
 
         this.addConditionalGlobals();
-        do_redis_preconnect: {
-            // This must happen within the API lock, which is why it's not in the "doPreconnect" function
-            if (this.ctx.runtime_options.redis_preconnect) {
-                // Go through the global object's getter because Bun.redis is a
-                // PropertyCallback which means we don't have a WriteBarrier we can access
-                const global = vm.global;
-                const bun_object = vm.global.toJSValue().get(global, "Bun") catch |err| {
-                    vm.global.reportActiveExceptionAsUnhandled(err);
-                    break :do_redis_preconnect;
-                } orelse break :do_redis_preconnect;
-                const redis = bun_object.get(global, "redis") catch |err| {
-                    vm.global.reportActiveExceptionAsUnhandled(err);
-                    break :do_redis_preconnect;
-                } orelse break :do_redis_preconnect;
-                const client = redis.as(bun.valkey.JSValkeyClient) orelse break :do_redis_preconnect;
-                // If connection fails, this will become an unhandled promise rejection, which is fine.
-                _ = client.doConnect(vm.global, redis) catch |err| {
-                    vm.global.reportActiveExceptionAsUnhandled(err);
-                    break :do_redis_preconnect;
-                };
+        if (this.ctx.runtime_options.redis_preconnect) {
+            const global = vm.global;
+            var scope: bun.bindgen.FocusedEngineScope = undefined;
+            scope.init(global);
+            defer scope.deinit();
+            if (scope.engine(RedisDefaultClientShim).call(.{})) |client_ref| {
+                client_ref.get(bun.valkey.RedisClientBinding).client.get().preconnect();
+            } else |err| {
+                global.reportActiveExceptionAsUnhandled(err);
             }
         }
 
         do_postgres_preconnect: {
             if (this.ctx.runtime_options.sql_preconnect) {
                 const global = vm.global;
-                const bun_object = vm.global.toJSValue().get(global, "Bun") catch |err| {
-                    global.reportActiveExceptionAsUnhandled(err);
-                    break :do_postgres_preconnect;
-                } orelse break :do_postgres_preconnect;
-                const sql_object = bun_object.get(global, "sql") catch |err| {
-                    global.reportActiveExceptionAsUnhandled(err);
-                    break :do_postgres_preconnect;
-                } orelse break :do_postgres_preconnect;
-                const connect_fn = sql_object.get(global, "connect") catch |err| {
-                    global.reportActiveExceptionAsUnhandled(err);
-                    break :do_postgres_preconnect;
-                } orelse break :do_postgres_preconnect;
-                _ = connect_fn.call(global, sql_object, &.{}) catch |err| {
+                bun.bindgen.Engine(SQLPreconnectShim).call(global, .{}) catch |err| {
                     global.reportActiveExceptionAsUnhandled(err);
                     break :do_postgres_preconnect;
                 };
@@ -401,11 +367,23 @@ pub const Run = struct {
 
         var printed_sourcemap_warning_and_version = false;
 
-        if (vm.loadEntryPoint(this.entry_path)) |promise| {
-            if (promise.status() == .rejected) {
-                const handled = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
-                promise.setHandled();
-                vm.pending_internal_promise_reported_at = vm.hot_reload_counter;
+        if (vm.loadEntryPoint(this.entry_path)) |loaded| {
+            var promise = loaded;
+            defer promise.deinit();
+            if (vm.entryPointPromiseStatus(&promise) == .rejected) {
+                const reporting_generation = vm.hot_reload_counter;
+                const handled = vm.reportEntryPointRejection(&promise) catch |err| failed: {
+                    vm.global.reportUncaughtExceptionFromError(err);
+                    break :failed false;
+                };
+                {
+                    var scope: bun.bindgen.FocusedEngineScope = undefined;
+                    scope.init(vm.global);
+                    defer scope.deinit();
+                    scope.engineIn("promises", "promiseSetHandled").call(.{ .promise = promise.operand(&scope) });
+                }
+                vm.pending_entry_promise_reported_at = reporting_generation;
+                promise.deinit();
 
                 if (vm.hot_reload != .none or handled) {
                     vm.addMainToWatcherIfNeeded();
@@ -415,7 +393,7 @@ pub const Run = struct {
                     vm.exit_handler.exit_code = 1;
                     vm.onExit();
 
-                    if (run.any_unhandled) {
+                    if (vm.hasReportedUnhandledRejection()) {
                         printed_sourcemap_warning_and_version = true;
                         bun.jsc.SavedSourceMap.MissingSourceMapNoteInfo.print();
 
@@ -428,16 +406,14 @@ pub const Run = struct {
                 }
             }
 
-            _ = promise.result(vm.global.vm());
-
             if (vm.log.msgs.items.len > 0) {
                 dumpBuildError(vm);
-                vm.log.msgs.items.len = 0;
+                vm.log.reset();
             }
         } else |err| {
             if (vm.log.msgs.items.len > 0) {
                 dumpBuildError(vm);
-                vm.log.msgs.items.len = 0;
+                vm.log.reset();
             } else {
                 Output.prettyErrorln("Error occurred loading entry point: {s}", .{@errorName(err)});
                 Output.flush();
@@ -446,7 +422,7 @@ pub const Run = struct {
             //   under hot reload mode
             vm.exit_handler.exit_code = 1;
             vm.onExit();
-            if (run.any_unhandled) {
+            if (vm.hasReportedUnhandledRejection()) {
                 printed_sourcemap_warning_and_version = true;
                 bun.jsc.SavedSourceMap.MissingSourceMapNoteInfo.print();
 
@@ -504,31 +480,9 @@ pub const Run = struct {
                 }
 
                 if (this.ctx.runtime_options.eval.eval_and_print) {
-                    const to_print = brk: {
-                        const result: jsc.JSValue = vm.entry_point_result.value.get() orelse .js_undefined;
-                        if (result.asAnyPromise()) |promise| {
-                            switch (promise.status()) {
-                                .pending => {
-                                    result.then2(vm.global, .js_undefined, Bun__onResolveEntryPointResult, Bun__onRejectEntryPointResult) catch {}; // TODO: properly propagate exception upwards
-
-                                    vm.tick();
-                                    vm.eventLoop().autoTickActive();
-
-                                    while (vm.isEventLoopAlive()) {
-                                        vm.tick();
-                                        vm.eventLoop().autoTickActive();
-                                    }
-
-                                    break :brk result;
-                                },
-                                else => break :brk promise.result(vm.jsc_vm),
-                            }
-                        }
-
-                        break :brk result;
+                    this.printEvalResult() catch |err| {
+                        vm.global.reportUncaughtExceptionFromError(err);
                     };
-
-                    to_print.print(vm.global, .Log, .Log);
                 }
 
                 vm.onBeforeExit();
@@ -540,11 +494,11 @@ pub const Run = struct {
             }
         }
 
-        vm.onUnhandledRejection = &onUnhandledRejectionBeforeClose;
+        vm.useDefaultUnhandledRejectionHandler();
         vm.global.handleRejectedPromises();
         vm.onExit();
 
-        if (this.any_unhandled and !printed_sourcemap_warning_and_version) {
+        if (vm.hasReportedUnhandledRejection() and !printed_sourcemap_warning_and_version) {
             this.vm.exit_handler.exit_code = 1;
 
             bun.jsc.SavedSourceMap.MissingSourceMapNoteInfo.print();
@@ -556,10 +510,52 @@ pub const Run = struct {
         }
 
         bun.api.napi.fixDeadCodeElimination();
-        bun.webcore.BakeResponse.fixDeadCodeElimination();
-        bun.crash_handler.fixDeadCodeElimination();
-        @import("./jsc/JSSecrets.zig").fixDeadCodeElimination();
         vm.globalExit();
+    }
+
+    fn printEvalResult(this: *Run) bun.JSError!void {
+        const vm = this.vm;
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(vm.global);
+        defer scope.deinit();
+        var to_print = vm.entry_point_result.value.cloneRoot() orelse try bun.bindgen.EngineRoot.initUndefined(&scope);
+        defer to_print.deinit();
+        if (try scope.engine(JSValueAsPromiseShim).call(.{
+            .value = to_print.operand(&scope),
+        })) |promise_result| {
+            var promise = try promise_result.toOwned();
+            defer promise.deinit();
+            switch (scope.engine(PromiseStatusShim).call(.{ .promise = promise.operand(&scope) })) {
+                .pending => {
+                    const reaction = bun.new(EntryPointPromiseReactionOwner, .{});
+                    EntryPointPromiseReaction.attach(
+                        &scope,
+                        promise.operand(&scope).asPromise(),
+                        reaction,
+                        EntryPointResolveBinding,
+                        EntryPointRejectBinding,
+                    ) catch {};
+
+                    vm.tick();
+                    vm.eventLoop().autoTickActive();
+
+                    while (vm.isEventLoopAlive()) {
+                        vm.tick();
+                        vm.eventLoop().autoTickActive();
+                    }
+                },
+                else => {
+                    const settled = try scope.engine(PromiseResultShim).call(.{
+                        .promise = promise.operand(&scope),
+                    });
+                    const value = settled orelse @panic("settled entry-point promise has no result");
+                    const retained = try value.toRoot();
+                    to_print.deinit();
+                    to_print = retained;
+                },
+            }
+        }
+        jsc.ConsoleObject.printOwnedEngineValue(vm.global, &to_print);
     }
 
     fn addConditionalGlobals(this: *Run) void {
@@ -567,29 +563,39 @@ pub const Run = struct {
         const runtime_options: *const Command.RuntimeOptions = &this.ctx.runtime_options;
 
         if (runtime_options.eval.script.len > 0) {
-            bun.cpp.Bun__ExposeNodeModuleGlobals(vm.global);
+            bun.bindgen.Engine(ExposeNodeModuleGlobalsShim).call(vm.global, .{}) catch unreachable;
         }
         if (runtime_options.expose_gc) {
-            bun.cpp.JSC__JSGlobalObject__addGc(vm.global);
+            bun.bindgen.Engine(AddGcShim).call(vm.global, .{}) catch unreachable;
         }
     }
 };
 
-pub export fn Bun__onResolveEntryPointResult(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) noreturn {
-    const arguments = callframe.arguments_old(1).slice();
-    const result = arguments[0];
-    result.print(global, .Log, .Log);
-    Global.exit(global.bunVM().exit_handler.exit_code);
-    return .js_undefined;
+fn onResolveEntryPointResult(
+    context: bun.bindgen.CallContext(EntryPointResolveSchema),
+    args: bun.bindgen.Args(EntryPointResolveSchema),
+) bun.JSError!void {
+    const reaction = EntryPointPromiseReaction.take(args.context) orelse return;
+    defer reaction.releasePromiseReactionRef();
+    jsc.ConsoleObject.printLogForBinding(context, args.result);
+    bun.Global.exit(jsc.VirtualMachine.get().exit_handler.exit_code);
 }
 
-pub export fn Bun__onRejectEntryPointResult(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) noreturn {
-    const arguments = callframe.arguments_old(1).slice();
-    const result = arguments[0];
-    result.print(global, .Log, .Log);
-    Global.exit(global.bunVM().exit_handler.exit_code);
-    return .js_undefined;
+fn onRejectEntryPointResult(
+    context: bun.bindgen.CallContext(EntryPointRejectSchema),
+    args: bun.bindgen.Args(EntryPointRejectSchema),
+) bun.JSError!void {
+    const reaction = EntryPointPromiseReaction.take(args.context) orelse return;
+    defer reaction.releasePromiseReactionRef();
+    jsc.ConsoleObject.printLogForBinding(context, args.result);
+    bun.Global.exit(jsc.VirtualMachine.get().exit_handler.exit_code);
 }
+
+const EntryPointPromiseReactionOwner = struct {
+    pub fn releasePromiseReactionRef(this: *@This()) void {
+        bun.destroy(this);
+    }
+};
 
 noinline fn dumpBuildError(vm: *jsc.VirtualMachine) void {
     @branchHint(.cold);
@@ -608,7 +614,6 @@ pub noinline fn failWithBuildError(vm: *jsc.VirtualMachine) noreturn {
     Global.exit(1);
 }
 
-const OpaqueWrap = jsc.OpaqueWrap;
 const VirtualMachine = jsc.VirtualMachine;
 
 const string = []const u8;
@@ -643,10 +648,34 @@ const CPUProfiler = @import("./jsc/BunCPUProfiler.zig");
 const HeapProfiler = @import("./jsc/BunHeapProfiler.zig");
 const options = @import("./bundler/options.zig");
 const std = @import("std");
+const JavaScriptSemantics = @import("./bun_core/JavaScriptSemantics.zig");
 const Command = @import("./cli/cli.zig").Command;
 const which = @import("./which/which.zig").which;
 
 const bun = @import("bun");
+const ExposeNodeModuleGlobalsBindings = bun.bindgen.Module("ExposeNodeModuleGlobalsHost");
+const GarbageCollectionBindings = bun.bindgen.Module("garbage_collection");
+const PromiseBindings = bun.bindgen.Module("promises");
+const BunJSBindings = bun.bindgen.Module("BunJS");
+const BunObjectBindings = bun.bindgen.Module("BunObject");
+const AddGcShim = GarbageCollectionBindings.engineShim("addGc");
+const ExposeNodeModuleGlobalsShim = ExposeNodeModuleGlobalsBindings.engineShim("exposeNodeModuleGlobals");
+const JSValueAsPromiseShim = PromiseBindings.engineShim("jsValueAsPromise");
+const PromiseResultShim = PromiseBindings.engineShim("promiseResult");
+const PromiseStatusShim = PromiseBindings.engineShim("promiseStatus");
+const SQLPreconnectShim = BunObjectBindings.engineShim("preconnectDefaultSQL");
+const RedisDefaultClientShim = BunObjectBindings.engineShim("defaultRedisClient");
+const EntryPointResolveSchema = BunJSBindings.function("onResolveEntryPointResult");
+const EntryPointRejectSchema = BunJSBindings.function("onRejectEntryPointResult");
+const EntryPointPromiseReaction = bun.bindgen.PromiseReaction(EntryPointResolveSchema.args[1].ArgumentType, EntryPointPromiseReactionOwner);
+pub const EntryPointResolveBinding = bun.bindgen.Fn(EntryPointResolveSchema, onResolveEntryPointResult);
+pub const EntryPointRejectBinding = bun.bindgen.Fn(EntryPointRejectSchema, onRejectEntryPointResult);
+
+comptime {
+    _ = EntryPointResolveBinding;
+    _ = EntryPointRejectBinding;
+}
+
 const Global = bun.Global;
 const Output = bun.Output;
 const default_allocator = bun.default_allocator;

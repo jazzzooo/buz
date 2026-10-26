@@ -4,15 +4,13 @@ pub const T = enum {
     t_open_paren,
     t_close_paren,
     t_open_bracket,
-    t_open_bracket_double,
-
     t_close_bracket,
-    t_close_bracket_double,
 
     t_open_brace,
     t_close_brace,
 
     t_numeric_literal,
+    t_date_time_literal,
 
     t_comma,
 
@@ -46,12 +44,16 @@ pub const Lexer = struct {
     code_point: CodePoint = -1,
     identifier: []const u8 = "",
     number: f64 = 0.0,
+    number_is_integer: bool = false,
+    integer_magnitude: u64 = 0,
+    integer_magnitude_overflow: bool = false,
+    number_error: ?NumberError = null,
     prev_error_loc: logger.Loc = logger.Loc.Empty,
     string_literal_slice: string = "",
     string_literal_is_ascii: bool = true,
     line_number: u32 = 0,
     token: T = T.t_end_of_file,
-    allow_double_bracket: bool = true,
+    scan_date_time_literal_next: bool = false,
 
     has_newline_before: bool = false,
 
@@ -173,6 +175,15 @@ pub const Lexer = struct {
         lexer.line_number += @as(u32, @intFromBool(lexer.code_point == '\n'));
     }
 
+    fn consumeQuoteRun(lexer: *Lexer, quote: CodePoint) usize {
+        var count: usize = 0;
+        while (lexer.code_point == quote) {
+            count += 1;
+            lexer.step();
+        }
+        return count;
+    }
+
     pub const Error = error{
         UTF8Fail,
         OutOfMemory,
@@ -182,307 +193,167 @@ pub const Lexer = struct {
         ParserError,
     };
 
+    const NumberError = enum {
+        leading_zero,
+        underscores,
+        invalid,
+    };
+
+    const DigitRun = struct {
+        count: usize = 0,
+        magnitude: u64 = 0,
+        overflow: bool = false,
+        previous_was_digit: bool = false,
+    };
+
+    fn digitValue(code_point: CodePoint, base: u8) ?u8 {
+        const value: u8 = switch (code_point) {
+            '0'...'9' => @intCast(code_point - '0'),
+            'a'...'f' => @intCast(code_point - 'a' + 10),
+            'A'...'F' => @intCast(code_point - 'A' + 10),
+            else => return null,
+        };
+        return if (value < base) value else null;
+    }
+
+    fn scanDigits(lexer: *Lexer, base: u8, initial: DigitRun) DigitRun {
+        var result = initial;
+        while (true) {
+            if (digitValue(lexer.code_point, base)) |digit| {
+                result.count += 1;
+                result.previous_was_digit = true;
+                if (!result.overflow) {
+                    const digit_value: u64 = digit;
+                    const radix: u64 = base;
+                    if (result.magnitude > (std.math.maxInt(u64) - digit_value) / radix) {
+                        result.overflow = true;
+                    } else {
+                        result.magnitude = result.magnitude * radix + digit_value;
+                    }
+                }
+                lexer.step();
+                continue;
+            }
+            if (lexer.code_point == '_') {
+                if (!result.previous_was_digit) lexer.number_error = .underscores;
+                result.previous_was_digit = false;
+                lexer.step();
+                continue;
+            }
+            break;
+        }
+        if (result.count > 0 and !result.previous_was_digit) lexer.number_error = .underscores;
+        return result;
+    }
+
     fn parseNumericLiteralOrDot(lexer: *Lexer) !void {
-        // Number or dot;
         const first = lexer.code_point;
         lexer.step();
 
-        // Dot without a digit after it;
-        if (first == '.' and (lexer.code_point < '0' or lexer.code_point > '9')) {
-
-            // "."
-            lexer.token = T.t_dot;
+        if (first == '.') {
+            lexer.token = .t_dot;
             return;
         }
 
-        var underscoreCount: usize = 0;
-        var lastUnderscoreEnd: usize = 0;
-        var hasDotOrExponent = first == '.';
-        var base: f32 = 0.0;
+        lexer.token = .t_numeric_literal;
+        lexer.number_is_integer = true;
+        lexer.integer_magnitude = 0;
+        lexer.integer_magnitude_overflow = false;
+        lexer.number_error = null;
 
-        var is_legacy_octal_literal = false;
-
-        // Assume this is a number, but potentially change to a date/time later;
-        lexer.token = T.t_numeric_literal;
-
-        // Check for binary, octal, or hexadecimal literal;
         if (first == '0') {
-            switch (lexer.code_point) {
-                'b', 'B' => {
-                    base = 2;
-                },
-
-                'o', 'O' => {
-                    base = 8;
-                },
-
-                'x', 'X' => {
-                    base = 16;
-                },
-
-                '0'...'7', '_' => {
-                    base = 8;
-                    is_legacy_octal_literal = true;
-                },
-                else => {},
+            const base: ?u8 = switch (lexer.code_point) {
+                'b' => 2,
+                'o' => 8,
+                'x' => 16,
+                else => null,
+            };
+            if (base) |radix| {
+                lexer.step();
+                const digits = lexer.scanDigits(radix, .{});
+                if (digits.count == 0) lexer.number_error = .invalid;
+                lexer.integer_magnitude = digits.magnitude;
+                lexer.integer_magnitude_overflow = digits.overflow;
+                lexer.number = @floatFromInt(digits.magnitude);
+                return;
             }
         }
 
-        if (base != 0) {
-            // Integer literal;
-            var isFirst = true;
-            var isInvalidLegacyOctalLiteral = false;
-            lexer.number = 0;
-            if (!is_legacy_octal_literal) {
-                lexer.step();
-            }
+        const integer = lexer.scanDigits(10, .{
+            .count = 1,
+            .magnitude = @intCast(first - '0'),
+            .previous_was_digit = true,
+        });
+        if (first == '0' and integer.count > 1) lexer.number_error = .leading_zero;
 
-            integerLiteral: while (true) {
-                switch (lexer.code_point) {
-                    '_' => {
-                        // Cannot have multiple underscores in a row;
-                        if (lastUnderscoreEnd > 0 and lexer.end == lastUnderscoreEnd + 1) {
-                            try lexer.syntaxError();
-                        }
-
-                        // The first digit must exist;
-                        if (isFirst or is_legacy_octal_literal) {
-                            try lexer.syntaxError();
-                        }
-
-                        lastUnderscoreEnd = lexer.end;
-                        underscoreCount += 1;
-                    },
-
-                    '0', '1' => {
-                        lexer.number = lexer.number * base + float64(lexer.code_point - '0');
-                    },
-
-                    '2', '3', '4', '5', '6', '7' => {
-                        if (base == 2) {
-                            try lexer.syntaxError();
-                        }
-                        lexer.number = lexer.number * base + float64(lexer.code_point - '0');
-                    },
-                    '8', '9' => {
-                        if (is_legacy_octal_literal) {
-                            isInvalidLegacyOctalLiteral = true;
-                        } else if (base < 10) {
-                            try lexer.syntaxError();
-                        }
-                        lexer.number = lexer.number * base + float64(lexer.code_point - '0');
-                    },
-                    'A', 'B', 'C', 'D', 'E', 'F' => {
-                        if (base != 16) {
-                            try lexer.syntaxError();
-                        }
-                        lexer.number = lexer.number * base + float64(lexer.code_point + 10 - 'A');
-                    },
-
-                    'a', 'b', 'c', 'd', 'e', 'f' => {
-                        if (base != 16) {
-                            try lexer.syntaxError();
-                        }
-                        lexer.number = lexer.number * base + float64(lexer.code_point + 10 - 'a');
-                    },
-                    else => {
-                        // The first digit must exist;
-                        if (isFirst) {
-                            try lexer.syntaxError();
-                        }
-
-                        break :integerLiteral;
-                    },
-                }
-
-                lexer.step();
-                isFirst = false;
-            }
-
-            const isBigIntegerLiteral = lexer.code_point == 'n' and !hasDotOrExponent;
-
-            // Slow path: do we need to re-scan the input as text?
-            if (isBigIntegerLiteral or isInvalidLegacyOctalLiteral) {
-                const text = lexer.raw();
-
-                // Can't use a leading zero for bigint literals;
-                if (isBigIntegerLiteral and is_legacy_octal_literal) {
-                    try lexer.syntaxError();
-                }
-
-                // Filter out underscores;
-                if (underscoreCount > 0) {
-                    var bytes = lexer.allocator.alloc(u8, text.len - underscoreCount) catch unreachable;
-                    var i: usize = 0;
-                    for (text) |char| {
-                        if (char != '_') {
-                            bytes[i] = char;
-                            i += 1;
-                        }
-                    }
-                }
-
-                // Store bigints as text to avoid precision loss;
-                if (isBigIntegerLiteral) {
-                    lexer.identifier = text;
-                } else if (isInvalidLegacyOctalLiteral) {
-                    if (std.fmt.parseFloat(f64, text)) |num| {
-                        lexer.number = num;
-                    } else |_| {
-                        try lexer.addSyntaxError(lexer.start, "Invalid number {s}", .{text});
-                    }
-                }
-            }
-        } else {
-            // Floating-point literal;
-            const isInvalidLegacyOctalLiteral = first == '0' and (lexer.code_point == '8' or lexer.code_point == '9');
-
-            // Initial digits;
-            while (true) {
-                if (lexer.code_point < '0' or lexer.code_point > '9') {
-                    switch (lexer.code_point) {
-                        // '-' => {
-                        //     if (lexer.raw().len == 5) {
-                        //         // Is this possibly a datetime literal that begins with a 4 digit year?
-                        //         lexer.step();
-                        //         while (!lexer.has_newline_before) {
-                        //             switch (lexer.code_point) {
-                        //                 ',' => {
-                        //                     lexer.string_literal_slice = lexer.raw();
-                        //                     lexer.token = T.t_string_literal;
-                        //                     break;
-                        //                 },
-                        //             }
-                        //         }
-                        //     }
-                        // },
-                        '_' => {},
-                        else => break,
-                    }
-                    if (lexer.code_point != '_') {
-                        break;
-                    }
-
-                    // Cannot have multiple underscores in a row;
-                    if (lastUnderscoreEnd > 0 and lexer.end == lastUnderscoreEnd + 1) {
-                        try lexer.syntaxError();
-                    }
-
-                    // The specification forbids underscores in this case;
-                    if (isInvalidLegacyOctalLiteral) {
-                        try lexer.syntaxError();
-                    }
-
-                    lastUnderscoreEnd = lexer.end;
-                    underscoreCount += 1;
-                }
-                lexer.step();
-            }
-
-            // Fractional digits;
-            if (first != '.' and lexer.code_point == '.') {
-                // An underscore must not come last;
-                if (lastUnderscoreEnd > 0 and lexer.end == lastUnderscoreEnd + 1) {
-                    lexer.end -= 1;
-                    try lexer.syntaxError();
-                }
-
-                hasDotOrExponent = true;
-                lexer.step();
-                if (lexer.code_point == '_') {
-                    try lexer.syntaxError();
-                }
-                while (true) {
-                    if (lexer.code_point < '0' or lexer.code_point > '9') {
-                        if (lexer.code_point != '_') {
-                            break;
-                        }
-
-                        // Cannot have multiple underscores in a row;
-                        if (lastUnderscoreEnd > 0 and lexer.end == lastUnderscoreEnd + 1) {
-                            try lexer.syntaxError();
-                        }
-
-                        lastUnderscoreEnd = lexer.end;
-                        underscoreCount += 1;
-                    }
-                    lexer.step();
-                }
-            }
-
-            // Exponent;
-            if (lexer.code_point == 'e' or lexer.code_point == 'E') {
-                // An underscore must not come last;
-                if (lastUnderscoreEnd > 0 and lexer.end == lastUnderscoreEnd + 1) {
-                    lexer.end -= 1;
-                    try lexer.syntaxError();
-                }
-
-                hasDotOrExponent = true;
-                lexer.step();
-                if (lexer.code_point == '+' or lexer.code_point == '-') {
-                    lexer.step();
-                }
-                if (lexer.code_point < '0' or lexer.code_point > '9') {
-                    try lexer.syntaxError();
-                }
-                while (true) {
-                    if (lexer.code_point < '0' or lexer.code_point > '9') {
-                        if (lexer.code_point != '_') {
-                            break;
-                        }
-
-                        // Cannot have multiple underscores in a row;
-                        if (lastUnderscoreEnd > 0 and lexer.end == lastUnderscoreEnd + 1) {
-                            try lexer.syntaxError();
-                        }
-
-                        lastUnderscoreEnd = lexer.end;
-                        underscoreCount += 1;
-                    }
-                    lexer.step();
-                }
-            }
-
-            // Take a slice of the text to parse;
-            var text = lexer.raw();
-
-            // Filter out underscores;
-            if (underscoreCount > 0) {
-                var i: usize = 0;
-                if (lexer.allocator.alloc(u8, text.len - underscoreCount)) |bytes| {
-                    for (text) |char| {
-                        if (char != '_') {
-                            bytes[i] = char;
-                            i += 1;
-                        }
-                    }
-                    text = bytes;
-                } else |_| {
-                    try lexer.addSyntaxError(lexer.start, "Out of Memory Wah Wah Wah", .{});
-                    return;
-                }
-            }
-
-            if (!hasDotOrExponent and lexer.end - lexer.start < 10) {
-                // Parse a 32-bit integer (very fast path);
-                var number: u32 = 0;
-                for (text) |c| {
-                    number = number * 10 + @as(u32, @intCast(c - '0'));
-                }
-                lexer.number = @as(f64, @floatFromInt(number));
-            } else {
-                // Parse a double-precision floating-point number;
-                if (std.fmt.parseFloat(f64, text)) |num| {
-                    lexer.number = num;
-                } else |_| {
-                    try lexer.addSyntaxError(lexer.start, "Invalid number", .{});
-                }
-            }
+        if (lexer.code_point == '.') {
+            lexer.number_is_integer = false;
+            lexer.step();
+            const fraction = lexer.scanDigits(10, .{});
+            if (fraction.count == 0 and lexer.number_error == null) lexer.number_error = .invalid;
         }
 
-        // if it's a space, it might be a date timestamp
-        if (isIdentifierPart(lexer.code_point) or lexer.code_point == ' ') {}
+        if (lexer.code_point == 'e' or lexer.code_point == 'E') {
+            lexer.number_is_integer = false;
+            lexer.step();
+            if (lexer.code_point == '+' or lexer.code_point == '-') lexer.step();
+            const exponent = lexer.scanDigits(10, .{});
+            if (exponent.count == 0 and lexer.number_error == null) lexer.number_error = .invalid;
+        }
+
+        lexer.integer_magnitude = integer.magnitude;
+        lexer.integer_magnitude_overflow = integer.overflow;
+        if (lexer.number_is_integer) {
+            lexer.number = @floatFromInt(integer.magnitude);
+            return;
+        }
+
+        const literal = lexer.raw();
+        const underscore_count = std.mem.count(u8, literal, "_");
+        const text = if (underscore_count == 0) literal else text: {
+            const bytes = try lexer.allocator.alloc(u8, literal.len - underscore_count);
+            var index: usize = 0;
+            for (literal) |byte| {
+                if (byte == '_') continue;
+                bytes[index] = byte;
+                index += 1;
+            }
+            break :text bytes;
+        };
+        lexer.number = std.fmt.parseFloat(f64, text) catch number: {
+            lexer.number_error = .invalid;
+            break :number 0;
+        };
+    }
+
+    fn scanDateTimeLiteral(lexer: *Lexer) !bool {
+        const input = lexer.source.contents;
+        const start = lexer.start;
+
+        const kind: DateTimeScanner.Kind = if (hasDigits(input, start, 4) and byteAt(input, start + 4) == '-')
+            .date
+        else if (hasDigits(input, start, 2) and byteAt(input, start + 2) == ':')
+            .time
+        else
+            return false;
+
+        var scanner = DateTimeScanner{
+            .lexer = lexer,
+            .input = input,
+            .index = start,
+        };
+        switch (kind) {
+            .date => try scanner.scanDate(),
+            .time => try scanner.scanTime(false),
+        }
+        if (!isValueTerminator(byteAt(input, scanner.index))) {
+            return scanner.failUnexpectedAfterValue();
+        }
+
+        lexer.current = scanner.index;
+        lexer.code_point = lexer.nextCodepoint();
+        lexer.token = .t_date_time_literal;
+        return true;
     }
 
     pub inline fn expect(self: *Lexer, comptime token: T) !void {
@@ -501,10 +372,17 @@ pub const Lexer = struct {
             },
         }
 
+        self.scan_date_time_literal_next = true;
         try self.next();
     }
 
+    pub fn atStatementEnd(lexer: *const Lexer) bool {
+        return lexer.token == .t_end_of_file or lexer.has_newline_before;
+    }
+
     pub fn next(lexer: *Lexer) !void {
+        const scan_date_time_literal = lexer.scan_date_time_literal_next;
+        lexer.scan_date_time_literal_next = false;
         lexer.has_newline_before = lexer.end == 0;
 
         while (true) {
@@ -530,12 +408,6 @@ pub const Lexer = struct {
                 '[' => {
                     lexer.step();
                     lexer.token = T.t_open_bracket;
-                    if (lexer.code_point == '[' and lexer.allow_double_bracket) {
-                        lexer.step();
-                        lexer.token = T.t_open_bracket_double;
-                        return;
-                    }
-
                     if (lexer.code_point == ']') {
                         lexer.step();
                         lexer.token = T.t_empty_array;
@@ -544,11 +416,6 @@ pub const Lexer = struct {
                 ']' => {
                     lexer.step();
                     lexer.token = T.t_close_bracket;
-
-                    if (lexer.code_point == ']' and lexer.allow_double_bracket) {
-                        lexer.step();
-                        lexer.token = T.t_close_bracket_double;
-                    }
                 },
                 '+' => {
                     lexer.step();
@@ -644,17 +511,24 @@ pub const Lexer = struct {
                         while (true) {
                             switch (lexer.code_point) {
                                 -1 => {
-                                    try lexer.addDefaultError("Unterminated string literal");
+                                    try lexer.addDefaultError("Unterminated string");
                                 },
                                 '\'' => {
-                                    const end = lexer.end;
-                                    lexer.step();
-                                    if (lexer.code_point != '\'') continue;
-                                    lexer.step();
-                                    if (lexer.code_point != '\'') continue;
-                                    lexer.step();
+                                    const quote_start = lexer.end;
+                                    const quote_count = lexer.consumeQuoteRun('\'');
+                                    if (quote_count < 3) continue;
+                                    if (quote_count > 5) {
+                                        lexer.addError(quote_start, "Too many quotes at the end of a multi-line string", .{});
+                                        return error.SyntaxError;
+                                    }
+
+                                    const content_end = quote_start + quote_count - 3;
+                                    const text = lexer.source.contents[start + 2 .. content_end];
+                                    var array_list = try std.array_list.Managed(u8).initCapacity(lexer.allocator, text.len);
+                                    try lexer.normalizeMultilineLiteral(start + 2, text, @TypeOf(array_list), &array_list);
                                     lexer.token = T.t_string_literal;
-                                    lexer.string_literal_slice = lexer.source.contents[start + 2 .. end];
+                                    lexer.string_literal_slice = try array_list.toOwnedSlice();
+                                    lexer.string_literal_is_ascii = false;
                                     return;
                                 },
                                 else => {},
@@ -664,11 +538,20 @@ pub const Lexer = struct {
                     } else {
                         while (true) {
                             switch (lexer.code_point) {
-                                '\r', '\n', 0x2028, 0x2029 => {
-                                    try lexer.addDefaultError("Unterminated string literal (single-line)");
+                                '\r' => {
+                                    if (lexer.current < lexer.source.contents.len and lexer.source.contents[lexer.current] == '\n') {
+                                        lexer.addError(lexer.end, "Unterminated string; literal strings cannot contain newlines", .{});
+                                    } else {
+                                        lexer.addError(lexer.end, "Bare carriage return is not allowed; use \\r\\n or \\n", .{});
+                                    }
+                                    return error.SyntaxError;
+                                },
+                                '\n' => {
+                                    lexer.addError(lexer.end, "Unterminated string; literal strings cannot contain newlines", .{});
+                                    return error.SyntaxError;
                                 },
                                 -1 => {
-                                    try lexer.addDefaultError("Unterminated string literal");
+                                    try lexer.addDefaultError("Unterminated string");
                                 },
                                 '\'' => {
                                     lexer.step();
@@ -676,7 +559,13 @@ pub const Lexer = struct {
                                     lexer.string_literal_slice = lexer.source.contents[start .. lexer.end - 1];
                                     return;
                                 },
-                                else => {},
+                                0...8, 11, 12, 14...31, 127 => {
+                                    lexer.addError(lexer.end, "Control character is not allowed in a literal string: (0x{X:0>2})", .{lexer.code_point});
+                                    return error.SyntaxError;
+                                },
+                                else => if (lexer.code_point > 0x7f) {
+                                    lexer.string_literal_is_ascii = false;
+                                },
                             }
                             lexer.step();
                         }
@@ -718,30 +607,41 @@ pub const Lexer = struct {
                                     }
                                 },
                                 '"' => {
-                                    const end = lexer.end;
-                                    lexer.step();
-                                    if (lexer.code_point != '"') continue;
-                                    lexer.step();
-                                    if (lexer.code_point != '"') continue;
-                                    lexer.step();
+                                    const quote_start = lexer.end;
+                                    const quote_count = lexer.consumeQuoteRun('"');
+                                    if (quote_count < 3) continue;
+                                    if (quote_count > 5) {
+                                        lexer.addError(quote_start, "Too many quotes at the end of a multi-line string", .{});
+                                        return error.SyntaxError;
+                                    }
 
                                     lexer.token = T.t_string_literal;
-                                    lexer.string_literal_slice = lexer.source.contents[start + 2 .. end];
-                                    if (needs_slow_pass) break;
-                                    return;
+                                    lexer.string_literal_slice = lexer.source.contents[start + 2 .. quote_start + quote_count - 3];
+                                    break;
                                 },
-                                else => {},
+                                else => if (lexer.code_point > 0x7f) {
+                                    lexer.string_literal_is_ascii = false;
+                                },
                             }
                             lexer.step();
                         }
                     } else {
                         while (true) {
                             switch (lexer.code_point) {
-                                '\r', '\n', 0x2028, 0x2029 => {
-                                    try lexer.addDefaultError("Unterminated basic string (single-line)");
+                                '\r' => {
+                                    if (lexer.current < lexer.source.contents.len and lexer.source.contents[lexer.current] == '\n') {
+                                        lexer.addError(lexer.end, "Unterminated string; newlines must be escaped in basic strings", .{});
+                                    } else {
+                                        lexer.addError(lexer.end, "Bare carriage return is not allowed; use \\r\\n or \\n", .{});
+                                    }
+                                    return error.SyntaxError;
+                                },
+                                '\n' => {
+                                    lexer.addError(lexer.end, "Unterminated string; newlines must be escaped in basic strings", .{});
+                                    return error.SyntaxError;
                                 },
                                 -1 => {
-                                    try lexer.addDefaultError("Unterminated basic string");
+                                    try lexer.addDefaultError("Unterminated string");
                                 },
                                 '\\' => {
                                     lexer.step();
@@ -759,18 +659,23 @@ pub const Lexer = struct {
                                     if (needs_slow_pass) break;
                                     return;
                                 },
-                                else => {},
+                                0...8, 11, 12, 14...31, 127 => {
+                                    lexer.addError(lexer.end, "Control character must be escaped in a string: (0x{X:0>2})", .{lexer.code_point});
+                                    return error.SyntaxError;
+                                },
+                                else => if (lexer.code_point > 0x7f) {
+                                    lexer.string_literal_is_ascii = false;
+                                },
                             }
                             lexer.step();
                         }
                     }
 
-                    lexer.start = start;
-                    if (needs_slow_pass) {
+                    if (needs_slow_pass or is_multiline_string_literal) {
                         const text = lexer.string_literal_slice;
                         var array_list = try std.array_list.Managed(u8).initCapacity(lexer.allocator, text.len);
                         if (is_multiline_string_literal) {
-                            try lexer.decodeEscapeSequences(start, text, true, @TypeOf(array_list), &array_list);
+                            try lexer.decodeEscapeSequences(start + 2, text, true, @TypeOf(array_list), &array_list);
                         } else {
                             try lexer.decodeEscapeSequences(start, text, false, @TypeOf(array_list), &array_list);
                         }
@@ -782,6 +687,9 @@ pub const Lexer = struct {
                 },
 
                 '.', '0'...'9' => {
+                    if (scan_date_time_literal and try lexer.scanDateTimeLiteral()) {
+                        return;
+                    }
                     try lexer.parseNumericLiteralOrDot();
                 },
 
@@ -792,6 +700,21 @@ pub const Lexer = struct {
                     }
                     lexer.identifier = lexer.raw();
                     lexer.token = switch (lexer.identifier.len) {
+                        3 => special: {
+                            if (strings.eqlComptimeIgnoreLen(lexer.identifier, "inf")) {
+                                lexer.number = std.math.inf(f64);
+                                lexer.number_is_integer = false;
+                                lexer.number_error = null;
+                                break :special T.t_numeric_literal;
+                            }
+                            if (strings.eqlComptimeIgnoreLen(lexer.identifier, "nan")) {
+                                lexer.number = std.math.nan(f64);
+                                lexer.number_is_integer = false;
+                                lexer.number_error = null;
+                                break :special T.t_numeric_literal;
+                            }
+                            break :special T.t_identifier;
+                        },
                         4 => if (strings.eqlComptimeIgnoreLen(lexer.identifier, "true")) T.t_true else T.t_identifier,
                         5 => if (strings.eqlComptimeIgnoreLen(lexer.identifier, "false")) T.t_false else T.t_identifier,
                         else => T.t_identifier,
@@ -804,313 +727,192 @@ pub const Lexer = struct {
         }
     }
 
+    fn normalizeMultilineLiteral(lexer: *Lexer, start: usize, text: string, comptime BufType: type, buf_: *BufType) !void {
+        var buf = buf_.*;
+        defer buf_.* = buf;
+
+        var index: usize = 0;
+        if (std.mem.startsWith(u8, text, "\r\n")) {
+            index = 2;
+        } else if (std.mem.startsWith(u8, text, "\n")) {
+            index = 1;
+        }
+
+        while (index < text.len) {
+            const byte = text[index];
+            switch (byte) {
+                '\r' => {
+                    if (index + 1 >= text.len or text[index + 1] != '\n') {
+                        lexer.addError(start + index, "Bare carriage return is not allowed; use \\r\\n or \\n", .{});
+                        return error.SyntaxError;
+                    }
+                    try buf.append('\n');
+                    index += 2;
+                },
+                0...8, 11, 12, 14...31, 127 => {
+                    lexer.addError(start + index, "Control character is not allowed in a literal string: (0x{X:0>2})", .{byte});
+                    return error.SyntaxError;
+                },
+                else => {
+                    try buf.append(byte);
+                    index += 1;
+                },
+            }
+        }
+    }
+
     pub fn decodeEscapeSequences(lexer: *Lexer, start: usize, text: string, comptime allow_multiline: bool, comptime BufType: type, buf_: *BufType) !void {
         var buf = buf_.*;
         defer buf_.* = buf;
 
-        const iterator = strings.CodepointIterator.init(text);
-        var iter = strings.CodepointIterator.Cursor{};
-        while (iterator.next(&iter)) {
-            const width = iter.width;
-            switch (iter.c) {
-                '\r' => {
+        var index: usize = 0;
+        if (comptime allow_multiline) {
+            if (std.mem.startsWith(u8, text, "\r\n")) {
+                index = 2;
+            } else if (std.mem.startsWith(u8, text, "\n")) {
+                index = 1;
+            }
+        }
 
-                    // Convert '\r\n' into '\n'
-                    if (iter.i < text.len and text[iter.i] == '\n') {
-                        iter.i += 1;
+        while (index < text.len) {
+            const byte = text[index];
+            switch (byte) {
+                '\r' => {
+                    if (index + 1 >= text.len or text[index + 1] != '\n') {
+                        lexer.addError(start + index, "Bare carriage return is not allowed; use \\r\\n or \\n", .{});
+                        return error.SyntaxError;
+                    }
+                    if (comptime !allow_multiline) {
+                        lexer.addError(start + index, "Unterminated string; newlines must be escaped in basic strings", .{});
+                        return error.SyntaxError;
+                    }
+                    try buf.append('\n');
+                    index += 2;
+                },
+                '\n' => {
+                    if (comptime !allow_multiline) {
+                        lexer.addError(start + index, "Unterminated string; newlines must be escaped in basic strings", .{});
+                        return error.SyntaxError;
+                    }
+                    try buf.append('\n');
+                    index += 1;
+                },
+                '\\' => {
+                    const escape_start = index;
+                    index += 1;
+                    if (index == text.len) {
+                        lexer.addError(start + escape_start, "Unterminated string", .{});
+                        return error.SyntaxError;
                     }
 
-                    // Convert '\r' into '\n'
-                    buf.append('\n') catch unreachable;
-                    continue;
-                },
-
-                '\\' => {
-                    _ = iterator.next(&iter) or return;
-
-                    const c2 = iter.c;
-
-                    const width2 = iter.width;
-                    switch (c2) {
-                        // https://mathiasbynens.be/notes/javascript-escapes#single
-                        'b' => {
-                            buf.append(8) catch unreachable;
-                            continue;
-                        },
-                        'f' => {
-                            buf.append(9) catch unreachable;
-                            continue;
-                        },
-                        'n' => {
-                            buf.append(10) catch unreachable;
-                            continue;
-                        },
-                        'v' => {
-                            // Vertical tab is invalid JSON
-                            // We're going to allow it.
-                            // if (comptime is_json) {
-                            //     lexer.end = start + iter.i - width2;
-                            //     try lexer.syntaxError();
-                            // }
-                            buf.append(11) catch unreachable;
-                            continue;
-                        },
-                        't' => {
-                            buf.append(12) catch unreachable;
-                            continue;
-                        },
-                        'r' => {
-                            buf.append(13) catch unreachable;
-                            continue;
-                        },
-
-                        // legacy octal literals
-                        '0'...'7' => {
-                            const octal_start = (iter.i + width2) - 2;
-
-                            // 1-3 digit octal
-                            var is_bad = false;
-                            var value: i64 = c2 - '0';
-                            var restore = iter;
-
-                            _ = iterator.next(&iter) or {
-                                if (value == 0) {
-                                    try buf.append(0);
-                                    return;
-                                }
-
-                                try lexer.syntaxError();
-                                return;
+                    const escaped = text[index];
+                    index += 1;
+                    switch (escaped) {
+                        'b' => try buf.append(0x08),
+                        't' => try buf.append(0x09),
+                        'n' => try buf.append(0x0a),
+                        'f' => try buf.append(0x0c),
+                        'r' => try buf.append(0x0d),
+                        'e' => try buf.append(0x1b),
+                        '"' => try buf.append('"'),
+                        '\\' => try buf.append('\\'),
+                        'x', 'u', 'U' => {
+                            const digit_count: usize = switch (escaped) {
+                                'x' => 2,
+                                'u' => 4,
+                                'U' => 8,
+                                else => unreachable,
                             };
-
-                            const c3: CodePoint = iter.c;
-
-                            switch (c3) {
-                                '0'...'7' => {
-                                    value = value * 8 + c3 - '0';
-                                    restore = iter;
-                                    _ = iterator.next(&iter) or return lexer.syntaxError();
-
-                                    const c4 = iter.c;
-                                    switch (c4) {
-                                        '0'...'7' => {
-                                            const temp = value * 8 + c4 - '0';
-                                            if (temp < 256) {
-                                                value = temp;
-                                            } else {
-                                                iter = restore;
-                                            }
-                                        },
-                                        '8', '9' => {
-                                            is_bad = true;
-                                        },
-                                        else => {
-                                            iter = restore;
-                                        },
-                                    }
-                                },
-                                '8', '9' => {
-                                    is_bad = true;
-                                },
-                                else => {
-                                    iter = restore;
-                                },
+                            const invalid_message = switch (escaped) {
+                                'x' => "A hex escape must be followed by exactly 2 hex digits",
+                                'u' => "A Unicode escape must be followed by exactly 4 hex digits",
+                                'U' => "A Unicode escape must be followed by exactly 8 hex digits",
+                                else => unreachable,
+                            };
+                            if (digit_count > text.len - index) {
+                                lexer.addError(start + escape_start, "{s}", .{invalid_message});
+                                return error.SyntaxError;
                             }
 
-                            iter.c = @as(i32, @intCast(value));
-                            if (is_bad) {
-                                lexer.addRangeError(
-                                    logger.Range{ .loc = .{ .start = @as(i32, @intCast(octal_start)) }, .len = @as(i32, @intCast(iter.i - octal_start)) },
-                                    "Invalid legacy octal literal",
-                                    .{},
-                                ) catch unreachable;
+                            var value: u32 = 0;
+                            for (text[index..][0..digit_count]) |digit_byte| {
+                                const digit = digitValue(@intCast(digit_byte), 16) orelse {
+                                    lexer.addError(start + escape_start, "{s}", .{invalid_message});
+                                    return error.SyntaxError;
+                                };
+                                value = value * 16 + @as(u32, digit);
                             }
-                        },
-                        '8', '9' => {
-                            iter.c = c2;
-                        },
-                        // 2-digit hexadecimal
-                        'x' => {
-                            if (comptime allow_multiline) {
-                                lexer.end = start + iter.i - width2;
-                                try lexer.syntaxError();
+                            index += digit_count;
+
+                            if (escaped != 'x' and (value > 0x10ffff or (value >= 0xd800 and value <= 0xdfff))) {
+                                lexer.addError(start + escape_start, "Escaped code point must be a Unicode scalar value", .{});
+                                return error.SyntaxError;
                             }
 
-                            var value: CodePoint = 0;
-                            var c3: CodePoint = 0;
-                            var width3: @TypeOf(iter.width) = 0;
-
-                            _ = iterator.next(&iter) or return lexer.syntaxError();
-                            c3 = iter.c;
-                            width3 = iter.width;
-                            switch (c3) {
-                                '0'...'9' => {
-                                    value = value * 16 | (c3 - '0');
-                                },
-                                'a'...'f' => {
-                                    value = value * 16 | (c3 + 10 - 'a');
-                                },
-                                'A'...'F' => {
-                                    value = value * 16 | (c3 + 10 - 'A');
-                                },
-                                else => {
-                                    lexer.end = start + iter.i - width3;
-                                    return lexer.syntaxError();
-                                },
-                            }
-
-                            _ = iterator.next(&iter) or return lexer.syntaxError();
-                            c3 = iter.c;
-                            width3 = iter.width;
-                            switch (c3) {
-                                '0'...'9' => {
-                                    value = value * 16 | (c3 - '0');
-                                },
-                                'a'...'f' => {
-                                    value = value * 16 | (c3 + 10 - 'a');
-                                },
-                                'A'...'F' => {
-                                    value = value * 16 | (c3 + 10 - 'A');
-                                },
-                                else => {
-                                    lexer.end = start + iter.i - width3;
-                                    return lexer.syntaxError();
-                                },
-                            }
-
-                            iter.c = value;
-                        },
-                        'u' => {
-                            // We're going to make this an i64 so we don't risk integer overflows
-                            // when people do weird things
-                            var value: i64 = 0;
-
-                            _ = iterator.next(&iter) or return lexer.syntaxError();
-                            var c3 = iter.c;
-                            var width3 = iter.width;
-
-                            // variable-length
-                            if (c3 == '{') {
-                                // TODO: Audit the range underflow when parsing \u{...} escapes
-                                // at the start of a TOML string.
-                                const hex_start = iter.i - width - width2 - width3;
-                                var is_first = true;
-                                var is_out_of_range = false;
-                                variableLength: while (true) {
-                                    _ = iterator.next(&iter) or break :variableLength;
-                                    c3 = iter.c;
-
-                                    switch (c3) {
-                                        '0'...'9' => {
-                                            value = value * 16 | (c3 - '0');
-                                        },
-                                        'a'...'f' => {
-                                            value = value * 16 | (c3 + 10 - 'a');
-                                        },
-                                        'A'...'F' => {
-                                            value = value * 16 | (c3 + 10 - 'A');
-                                        },
-                                        '}' => {
-                                            if (is_first) {
-                                                lexer.end = start + iter.i - width3;
-                                                return lexer.syntaxError();
-                                            }
-                                            break :variableLength;
-                                        },
-                                        else => {
-                                            lexer.end = start + iter.i - width3;
-                                            return lexer.syntaxError();
-                                        },
-                                    }
-
-                                    // '\U0010FFFF
-                                    // copied from golang utf8.MaxRune
-                                    if (value > 1114111) {
-                                        is_out_of_range = true;
-                                    }
-                                    is_first = false;
-                                }
-
-                                if (is_out_of_range) {
-                                    try lexer.addRangeError(
-                                        .{ .loc = .{ .start = @as(i32, @intCast(start + hex_start)) }, .len = @as(i32, @intCast((iter.i - hex_start))) },
-                                        "Unicode escape sequence is out of range",
-                                        .{},
-                                    );
-                                    return;
-                                }
-
-                                // fixed-length
-                            } else {
-                                // Fixed-length
-                                // comptime var j: usize = 0;
-                                var j: usize = 0;
-                                while (j < 4) : (j += 1) {
-                                    switch (c3) {
-                                        '0'...'9' => {
-                                            value = value * 16 | (c3 - '0');
-                                        },
-                                        'a'...'f' => {
-                                            value = value * 16 | (c3 + 10 - 'a');
-                                        },
-                                        'A'...'F' => {
-                                            value = value * 16 | (c3 + 10 - 'A');
-                                        },
-                                        else => {
-                                            lexer.end = start + iter.i - width3;
-                                            return lexer.syntaxError();
-                                        },
-                                    }
-
-                                    if (j < 3) {
-                                        _ = iterator.next(&iter) or return lexer.syntaxError();
-                                        c3 = iter.c;
-
-                                        width3 = iter.width;
-                                    }
-                                }
-                            }
-
-                            iter.c = @as(CodePoint, @truncate(value));
+                            var encoded: [4]u8 = undefined;
+                            const encoded_len = std.unicode.utf8Encode(@intCast(value), &encoded) catch unreachable;
+                            try buf.appendSlice(encoded[0..encoded_len]);
                         },
                         '\r' => {
                             if (comptime !allow_multiline) {
-                                lexer.end = start + iter.i - width2;
-                                try lexer.addDefaultError("Unexpected end of line");
+                                lexer.addError(start + escape_start, "Invalid escape sequence: (0x0D)", .{});
+                                return error.SyntaxError;
                             }
-
-                            // Ignore line continuations. A line continuation is not an escaped newline.
-                            if (iter.i < text.len and text[iter.i + 1] == '\n') {
-                                // Make sure Windows CRLF counts as a single newline
-                                iter.i += 1;
+                            if (index == text.len or text[index] != '\n') {
+                                lexer.addError(start + escape_start, "Invalid escape sequence: (0x0D)", .{});
+                                return error.SyntaxError;
                             }
-                            continue;
+                            index += 1;
+                            while (index < text.len) {
+                                switch (text[index]) {
+                                    ' ', '\t', '\n' => index += 1,
+                                    '\r' => {
+                                        if (index + 1 >= text.len or text[index + 1] != '\n') {
+                                            lexer.addError(start + index, "Bare carriage return is not allowed; use \\r\\n or \\n", .{});
+                                            return error.SyntaxError;
+                                        }
+                                        index += 2;
+                                    },
+                                    else => break,
+                                }
+                            }
                         },
-                        '\n', 0x2028, 0x2029 => {
-                            // Ignore line continuations. A line continuation is not an escaped newline.
+                        '\n' => {
                             if (comptime !allow_multiline) {
-                                lexer.end = start + iter.i - width2;
-                                try lexer.addDefaultError("Unexpected end of line");
+                                lexer.addError(start + escape_start, "Invalid escape sequence: (0x0A)", .{});
+                                return error.SyntaxError;
                             }
-                            continue;
+                            while (index < text.len) {
+                                switch (text[index]) {
+                                    ' ', '\t', '\n' => index += 1,
+                                    '\r' => {
+                                        if (index + 1 >= text.len or text[index + 1] != '\n') {
+                                            lexer.addError(start + index, "Bare carriage return is not allowed; use \\r\\n or \\n", .{});
+                                            return error.SyntaxError;
+                                        }
+                                        index += 2;
+                                    },
+                                    else => break,
+                                }
+                            }
                         },
                         else => {
-                            iter.c = c2;
+                            if (escaped >= 0x21 and escaped <= 0x7e) {
+                                lexer.addError(start + escape_start, "Invalid escape sequence: '{c}'", .{escaped});
+                            } else {
+                                lexer.addError(start + escape_start, "Invalid escape sequence: (0x{X:0>2})", .{escaped});
+                            }
+                            return error.SyntaxError;
                         },
                     }
                 },
-                else => {},
-            }
-
-            switch (iter.c) {
-                -1 => return try lexer.addDefaultError("Unexpected end of file"),
-                0...127 => {
-                    buf.append(@as(u8, @intCast(iter.c))) catch unreachable;
+                0...8, 11, 12, 14...31, 127 => {
+                    lexer.addError(start + index, "Control character must be escaped in a string: (0x{X:0>2})", .{byte});
+                    return error.SyntaxError;
                 },
                 else => {
-                    var part: [4]u8 = undefined;
-                    const len = strings.encodeWTF8Rune(&part, iter.c);
-                    try buf.appendSlice(part[0..len]);
+                    try buf.append(byte);
+                    index += 1;
                 },
             }
         }
@@ -1144,6 +946,7 @@ pub const Lexer = struct {
         };
 
         try self.addRangeError(self.range(), "Expected {s} but found {s}", .{ text, found });
+        return error.SyntaxError;
     }
 
     pub fn range(self: *Lexer) logger.Range {
@@ -1184,6 +987,155 @@ pub const Lexer = struct {
         return self.source.contents[self.start..self.end];
     }
 };
+
+const DateTimeScanner = struct {
+    const Kind = enum { date, time };
+
+    lexer: *Lexer,
+    input: []const u8,
+    index: usize,
+
+    fn fail(scanner: *DateTimeScanner, comptime message: []const u8) Lexer.Error {
+        scanner.lexer.addError(scanner.index, "{s}", .{message});
+        return error.SyntaxError;
+    }
+
+    fn failUnexpectedAfterValue(scanner: *DateTimeScanner) Lexer.Error {
+        scanner.lexer.addError(scanner.index, "Unexpected character after a value: '{c}'", .{scanner.input[scanner.index]});
+        return error.SyntaxError;
+    }
+
+    fn readDigits(scanner: *DateTimeScanner, comptime count: usize, comptime message: []const u8) !u16 {
+        if (!hasDigits(scanner.input, scanner.index, count)) {
+            return scanner.fail(message);
+        }
+
+        var value: u16 = 0;
+        for (scanner.input[scanner.index..][0..count]) |digit| {
+            value = value * 10 + digit - '0';
+        }
+        scanner.index += count;
+        return value;
+    }
+
+    fn expectByte(scanner: *DateTimeScanner, expected: u8, comptime message: []const u8) !void {
+        if (byteAt(scanner.input, scanner.index) != expected) {
+            return scanner.fail(message);
+        }
+        scanner.index += 1;
+    }
+
+    fn scanDate(scanner: *DateTimeScanner) !void {
+        const year = try scanner.readDigits(4, "Invalid date: expected a 4-digit year");
+        try scanner.expectByte('-', "Invalid date: expected '-' between year and month");
+        const month = try scanner.readDigits(2, "Invalid date: expected a 2-digit month");
+        try scanner.expectByte('-', "Invalid date: expected '-' between month and day");
+        const day = try scanner.readDigits(2, "Invalid date: expected a 2-digit day");
+
+        if (month < 1 or month > 12) {
+            return scanner.fail("Invalid date: month must be between 01 and 12");
+        }
+        if (day < 1 or day > daysInMonth(year, @intCast(month))) {
+            return scanner.fail("Invalid date: day is out of range for the month");
+        }
+
+        switch (byteAt(scanner.input, scanner.index) orelse return) {
+            'T', 't' => {
+                scanner.index += 1;
+                try scanner.scanTime(true);
+            },
+            ' ' => {
+                const time_start = scanner.index + 1;
+                if (hasDigits(scanner.input, time_start, 2) and byteAt(scanner.input, time_start + 2) == ':') {
+                    scanner.index = time_start;
+                    try scanner.scanTime(true);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn scanTime(scanner: *DateTimeScanner, allow_offset: bool) !void {
+        const hour = try scanner.readDigits(2, "Invalid time: expected 2-digit hours");
+        try scanner.expectByte(':', "Invalid time: expected ':' between hours and minutes");
+        const minute = try scanner.readDigits(2, "Invalid time: expected 2-digit minutes");
+
+        var second: ?u16 = null;
+        if (byteAt(scanner.input, scanner.index) == ':') {
+            scanner.index += 1;
+            second = try scanner.readDigits(2, "Invalid time: expected 2-digit seconds");
+
+            if (byteAt(scanner.input, scanner.index) == '.') {
+                scanner.index += 1;
+                const fraction_start = scanner.index;
+                while (byteAt(scanner.input, scanner.index)) |byte| {
+                    if (byte < '0' or byte > '9') break;
+                    scanner.index += 1;
+                }
+                if (scanner.index == fraction_start) {
+                    return scanner.fail("Invalid time: expected at least one digit of fractional seconds");
+                }
+            }
+        }
+
+        if (hour > 23) {
+            return scanner.fail("Invalid time: hours must be between 00 and 23");
+        }
+        if (minute > 59) {
+            return scanner.fail("Invalid time: minutes must be between 00 and 59");
+        }
+        if (second) |value| {
+            if (value > 60) {
+                return scanner.fail("Invalid time: seconds must be between 00 and 60");
+            }
+        }
+
+        if (!allow_offset) return;
+        switch (byteAt(scanner.input, scanner.index) orelse return) {
+            'Z', 'z' => scanner.index += 1,
+            '+', '-' => {
+                scanner.index += 1;
+                const offset_hour = try scanner.readDigits(2, "Invalid date-time offset: expected 2-digit hours");
+                try scanner.expectByte(':', "Invalid date-time offset: expected ':' between hours and minutes");
+                const offset_minute = try scanner.readDigits(2, "Invalid date-time offset: expected 2-digit minutes");
+                if (offset_hour > 23) {
+                    return scanner.fail("Invalid date-time offset: hours must be between 00 and 23");
+                }
+                if (offset_minute > 59) {
+                    return scanner.fail("Invalid date-time offset: minutes must be between 00 and 59");
+                }
+            },
+            else => {},
+        }
+    }
+};
+
+fn byteAt(input: []const u8, index: usize) ?u8 {
+    return if (index < input.len) input[index] else null;
+}
+
+fn isValueTerminator(byte: ?u8) bool {
+    return switch (byte orelse return true) {
+        ' ', '\t', '\r', '\n', '#', ',', ']', '}' => true,
+        else => false,
+    };
+}
+
+fn hasDigits(input: []const u8, start: usize, count: usize) bool {
+    if (start > input.len or count > input.len - start) return false;
+    for (input[start..][0..count]) |byte| {
+        if (byte < '0' or byte > '9') return false;
+    }
+    return true;
+}
+
+fn daysInMonth(year: u16, month: u8) u8 {
+    return switch (month) {
+        2 => if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) 29 else 28,
+        4, 6, 9, 11 => 30,
+        else => 31,
+    };
+}
 
 pub fn isIdentifierPart(code_point: CodePoint) bool {
     return switch (code_point) {

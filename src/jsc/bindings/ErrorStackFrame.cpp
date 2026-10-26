@@ -1,6 +1,7 @@
 #include "root.h"
+#include "ErrorStackFrame.h"
+#include "SchemaBindings.h"
 #include "JavaScriptCore/CodeBlock.h"
-#include "headers-handwritten.h"
 #include "JavaScriptCore/BytecodeIndex.h"
 #include "wtf/Assertions.h"
 #include "wtf/text/OrdinalNumber.h"
@@ -8,25 +9,25 @@
 namespace Bun {
 using namespace JSC;
 
-/// Adjust a `ZigStackFramePosition` by a number of bytes. This accounts for when the adjustment
+/// Adjust a source position by a number of bytes. This accounts for when the adjustment
 /// crosses line boundaries, and thus requires the source code in order to properly compute
 /// the result.
-void adjustPositionBackwards(ZigStackFramePosition& pos, int amount, CodeBlock* code)
+void adjustPositionBackwards(ErrorStackFramePosition& pos, int amount, CodeBlock* code)
 {
-    if (pos.byte_position - amount < 0) {
-        pos.line_zero_based = 0;
-        pos.column_zero_based = 0;
-        pos.byte_position = 0;
+    if (pos.bytePosition - amount < 0) {
+        pos.lineZeroBased = 0;
+        pos.columnZeroBased = 0;
+        pos.bytePosition = 0;
         return;
     }
 
-    pos.column_zero_based = pos.column_zero_based - amount;
-    if (pos.column_zero_based < 0) {
+    pos.columnZeroBased = pos.columnZeroBased - amount;
+    if (pos.columnZeroBased < 0) {
         auto* provider = code->source().provider();
         if (!provider) {
-            pos.line_zero_based = 0;
-            pos.column_zero_based = 0;
-            pos.byte_position = 0;
+            pos.lineZeroBased = 0;
+            pos.columnZeroBased = 0;
+            pos.bytePosition = 0;
             return;
         }
 
@@ -37,39 +38,39 @@ void adjustPositionBackwards(ZigStackFramePosition& pos, int amount, CodeBlock* 
             // fit's into latin1 / 8-bit strings for on-average lower memory usage.
             ASSERT_NOT_REACHED("16-bit source re-mapping is not implemented here.");
 
-            pos.line_zero_based = 0;
-            pos.column_zero_based = 0;
-            pos.byte_position = 0;
+            pos.lineZeroBased = 0;
+            pos.columnZeroBased = 0;
+            pos.bytePosition = 0;
             return;
         }
 
         for (int i = 0; i < amount; i++) {
-            if (source[pos.byte_position - i] == '\n') {
-                pos.line_zero_based = pos.line_zero_based - 1;
+            if (source[pos.bytePosition - i] == '\n') {
+                pos.lineZeroBased = pos.lineZeroBased - 1;
             }
         }
 
         int columns = 0;
         // Initial -1 to skip the newline that gets counted.
-        int i = pos.byte_position - amount - 1;
+        int i = pos.bytePosition - amount - 1;
         while (i > 0 && source[i] != '\n') {
             columns += 1;
             i -= 1;
         }
-        pos.column_zero_based = columns;
+        pos.columnZeroBased = columns;
     }
 
-    pos.byte_position -= amount;
+    pos.bytePosition -= amount;
 }
 
-ZigStackFramePosition getAdjustedPositionForBytecode(JSC::CodeBlock* code, JSC::BytecodeIndex bc)
+ErrorStackFramePosition getAdjustedPositionForBytecode(JSC::CodeBlock* code, JSC::BytecodeIndex bc)
 {
     auto expr = code->expressionInfoForBytecodeIndex(bc);
 
-    ZigStackFramePosition pos {
-        .line_zero_based = OrdinalNumber::fromOneBasedInt(expr.lineColumn.line).zeroBasedInt(),
-        .column_zero_based = OrdinalNumber::fromOneBasedInt(expr.lineColumn.column).zeroBasedInt(),
-        .byte_position = (int)expr.divot,
+    ErrorStackFramePosition pos {
+        .lineZeroBased = OrdinalNumber::fromOneBasedInt(expr.lineColumn.line).zeroBasedInt(),
+        .columnZeroBased = OrdinalNumber::fromOneBasedInt(expr.lineColumn.column).zeroBasedInt(),
+        .bytePosition = static_cast<int>(expr.divot),
     };
 
     auto inst = code->instructionAt(bc);
@@ -96,6 +97,30 @@ ZigStackFramePosition getAdjustedPositionForBytecode(JSC::CodeBlock* code, JSC::
     }
 
     return pos;
+}
+
+void remapStackFramePosition(::VirtualMachine* vm, RemappableStackFrame& frame)
+{
+    auto result = Bindgen::ZigExports::bunBindgenZig_source_providers_remapStackFramePosition(
+        vm,
+        frame.sourceURL,
+        knownStackIndex(frame.position.lineZeroBased),
+        knownStackIndex(frame.position.columnZeroBased),
+        knownStackIndex(frame.position.bytePosition),
+        frame.remapped);
+    if (!result)
+        return;
+    frame.sourceURL = result->sourceURL;
+    frame.position.lineZeroBased = stackIndexOrUnknown(result->line);
+    frame.position.columnZeroBased = stackIndexOrUnknown(result->column);
+    frame.position.bytePosition = stackIndexOrUnknown(result->bytePosition);
+    frame.remapped = result->remapped;
+}
+
+void remapStackFramePositions(::VirtualMachine* vm, std::span<RemappableStackFrame> frames)
+{
+    for (auto& frame : frames)
+        remapStackFramePosition(vm, frame);
 }
 
 } // namespace Bun

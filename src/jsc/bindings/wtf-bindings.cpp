@@ -1,300 +1,186 @@
 #include "root.h"
+#include "SchemaBindings.h"
 #include "wtf-bindings.h"
+#include <limits>
+#include <unicode/ucal.h>
+#include <wtf/DateMath.h>
+#include <wtf/GregorianDateTime.h>
 #include <wtf/StackBounds.h>
 #include <wtf/StackCheck.h>
 #include <wtf/StackTrace.h>
 #include <wtf/dtoa.h>
 #include <wtf/NumberOfCores.h>
 #include <wtf/RunLoop.h>
-#include <atomic>
-#include <cassert>
 
-#include "wtf/SIMDUTF.h"
-#if OS(WINDOWS)
-#include <uv.h>
-#endif
+#include <wtf/text/Base64.h>
+#include <wtf/text/MakeString.h>
+#include <wtf/text/StringImpl.h>
 
-#if !OS(WINDOWS)
-#include <stdatomic.h>
-
-#include <signal.h>
-#include <termios.h>
-static int orig_termios_fd = -1;
-static struct termios orig_termios;
-static std::atomic<int> orig_termios_spinlock;
-static std::once_flag reset_once_flag;
-
-static int current_tty_mode = 0;
-static struct termios orig_tty_termios;
-
-int uv__tcsetattr(int fd, int how, const struct termios* term)
-{
-    int rc;
-
-    do
-        rc = tcsetattr(fd, how, term);
-    while (rc == -1 && errno == EINTR);
-
-    if (rc == -1)
-        return errno;
-
-    return 0;
+extern "C" {
+extern const uint32_t Bun__WTFStringImpl__refCountOffset = WTF::StringImpl::refCountMemoryOffset();
+extern const uint32_t Bun__WTFStringImpl__lengthOffset = WTF::StringImpl::lengthMemoryOffset();
+extern const uint32_t Bun__WTFStringImpl__dataOffset = WTF::StringImpl::dataOffset();
+extern const uint32_t Bun__WTFStringImpl__flagsOffset = WTF::StringImpl::flagsOffset();
+extern const uint32_t Bun__WTFStringImpl__flagIs8Bit = WTF::StringImpl::flagIs8Bit();
+extern const uint32_t Bun__WTFStringImpl__stringKindMask = WTF::StringImpl::maskStringKind();
+extern const uint32_t Bun__WTFStringImpl__refCountStaticFlag = WTF::StringImpl::refCountFlagIsStaticString();
+extern const uint32_t Bun__WTFStringImpl__refCountIncrement = WTF::StringImpl::refCountIncrement();
 }
 
-extern "C" BUN_EXPORT int uv_tty_reset_mode(void)
+std::optional<double> Bun::Bindgen::Engine::bunBindgenEngine_numeric_conversions_parseDouble(
+    const Bun::Bindgen::Engine::BunBindgenEngine_numeric_conversions_parseDouble_Arguments& args)
 {
-    int saved_errno;
-    int err;
-
-    saved_errno = errno;
-
-    if (atomic_exchange(&orig_termios_spinlock, 1))
-        return 16; // UV_EBUSY; /* In uv_tty_set_mode(). */
-
-    err = 0;
-    if (orig_termios_fd != -1)
-        err = uv__tcsetattr(orig_termios_fd, TCSANOW, &orig_termios);
-
-    atomic_store(&orig_termios_spinlock, 0);
-    errno = saved_errno;
-
-    return err;
-}
-
-static void uv__tty_make_raw(struct termios* tio)
-{
-    assert(tio != NULL);
-
-#if defined __sun || defined __MVS__
-    /*
-     * This implementation of cfmakeraw for Solaris and derivatives is taken from
-     * http://www.perkin.org.uk/posts/solaris-portability-cfmakeraw.html.
-     */
-    tio->c_iflag &= ~(IMAXBEL | IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
-    tio->c_oflag &= ~OPOST;
-    tio->c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-    tio->c_cflag &= ~(CSIZE | PARENB);
-    tio->c_cflag |= CS8;
-
-    /*
-     * By default, most software expects a pending read to block until at
-     * least one byte becomes available.  As per termio(7I), this requires
-     * setting the MIN and TIME parameters appropriately.
-     *
-     * As a somewhat unfortunate artifact of history, the MIN and TIME slots
-     * in the control character array overlap with the EOF and EOL slots used
-     * for canonical mode processing.  Because the EOF character needs to be
-     * the ASCII EOT value (aka Control-D), it has the byte value 4.  When
-     * switching to raw mode, this is interpreted as a MIN value of 4; i.e.,
-     * reads will block until at least four bytes have been input.
-     *
-     * Other platforms with a distinct MIN slot like Linux and FreeBSD appear
-     * to default to a MIN value of 1, so we'll force that value here:
-     */
-    tio->c_cc[VMIN] = 1;
-    tio->c_cc[VTIME] = 0;
-#else
-    cfmakeraw(tio);
-#endif /* #ifdef __sun */
-}
-
-#endif
-
-extern "C" void Bun__atexit(void (*func)(void));
-
-#if !OS(WINDOWS)
-extern "C" volatile sig_atomic_t bun_stdio_modified[3];
-#endif
-
-extern "C" int Bun__ttySetMode(int fd, int mode)
-{
-#if !OS(WINDOWS)
-    struct termios tmp;
-    int expected;
-    int rc;
-
-    if (current_tty_mode == mode)
-        return 0;
-
-    if (current_tty_mode == 0 && mode != 0) {
-        do {
-            rc = tcgetattr(fd, &orig_tty_termios);
-        } while (rc == -1 && errno == EINTR);
-
-        if (rc == -1)
-            return errno;
-
-        /* This is used for uv_tty_reset_mode() */
-        do {
-            expected = 0;
-        } while (!atomic_compare_exchange_strong(&orig_termios_spinlock, &expected, 1));
-
-        if (orig_termios_fd == -1) {
-            orig_termios = orig_tty_termios;
-            orig_termios_fd = fd;
-        }
-
-        atomic_store(&orig_termios_spinlock, 0);
-    }
-
-    tmp = orig_tty_termios;
-    switch (mode) {
-    case 0: // normal
-        break;
-    case 1: // raw
-        tmp.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-        tmp.c_oflag |= (ONLCR);
-        tmp.c_cflag |= (CS8);
-        tmp.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-        tmp.c_cc[VMIN] = 1;
-        tmp.c_cc[VTIME] = 0;
-
-        std::call_once(reset_once_flag, [] {
-            Bun__atexit([] {
-                uv_tty_reset_mode();
-            });
-        });
-        break;
-    case 2: // io
-        uv__tty_make_raw(&tmp);
-
-        std::call_once(reset_once_flag, [] {
-            Bun__atexit([] {
-                uv_tty_reset_mode();
-            });
-        });
-        break;
-    }
-
-    // Mark the fd as modified *before* applying the change. If a
-    // SIGINT/SIGTERM lands between the device going raw and our bookkeeping
-    // catching up, bun_restore_stdio would otherwise read 0 and skip the
-    // restore — leaving the terminal in raw mode after exit. A spurious set
-    // when uv__tcsetattr fails is harmless: bun_restore_stdio then writes
-    // the cooked startup snapshot back to a still-cooked device (no-op,
-    // pre-PR behavior). Bounds-checked because the PTY master fd from
-    // Bun.Terminal calls through here too. See #29592.
-    //
-    // Marked on every transition, including setRawMode(true)→(false), so
-    // the signal-exit path (which runs only bun_restore_stdio, not the
-    // atexit uv_tty_reset_mode hook) still restores cooked mode on Ctrl-C.
-    if (fd >= 0 && fd < 3) {
-        bun_stdio_modified[fd] = 1;
-    }
-
-    /* Apply changes after draining */
-    rc = uv__tcsetattr(fd, TCSADRAIN, &tmp);
-    if (rc == 0) {
-        current_tty_mode = mode;
-    }
-
-    return rc;
-#else
-    return 0;
-
-#endif
-}
-
-extern "C" double WTF__parseDouble(const Latin1Character* string, size_t length, size_t* position)
-{
-    return WTF::parseDouble({ string, length }, *position);
-}
-
-extern "C" size_t WTF__base64URLEncode(const char* __restrict inputDataBuffer, size_t inputDataBufferSize,
-    char* __restrict destinationDataBuffer,
-    size_t destinationDataBufferSize)
-{
-    UNUSED_PARAM(destinationDataBufferSize);
-    return simdutf::binary_to_base64(inputDataBuffer, inputDataBufferSize, destinationDataBuffer, simdutf::base64_url);
-}
-
-extern "C" double WTF__parseES5Date(const Latin1Character* string, size_t length)
-{
-    bool isLocalTime;
-    return WTF::parseES5Date({ string, length }, isLocalTime);
-}
-
-namespace Bun {
-String base64URLEncodeToString(Vector<uint8_t> data)
-{
-    auto size = data.size();
-    size_t encodedLength = ((size * 4) + 2) / 3;
-    if (!encodedLength)
-        return String();
-
-    std::span<Latin1Character> ptr;
-    auto result = String::createUninitialized(encodedLength, ptr);
-
-    encodedLength = WTF__base64URLEncode(reinterpret_cast<const char*>(data.begin()), data.size(), reinterpret_cast<char*>(ptr.data()), encodedLength);
-    if (result.length() != encodedLength) {
-        return result.substringSharingImpl(0, encodedLength);
-    }
+    size_t position = 0;
+    double result = WTF::parseDouble(args.bytes, position);
+    if (position == 0)
+        return std::nullopt;
     return result;
 }
 
-// https://github.com/oven-sh/WebKit/blob/b7bc2ba65db9774d201018f2e1a0a891d6365c13/Source/JavaScriptCore/runtime/DatePrototype.cpp#L323-L345
-size_t toISOString(JSC::VM& vm, double date, char in[64])
+namespace Bun {
+
+PreparedTimeZoneOverride::Result PreparedTimeZoneOverride::prepare(WTF::StringView timeZone)
 {
+    RELEASE_ASSERT(!m_prepared);
+    if (timeZone.isEmpty()) {
+        m_identifier.clear();
+        m_prepared = true;
+        return Result::Valid;
+    }
+    if (timeZone.length() > static_cast<unsigned>(std::numeric_limits<int32_t>::max()))
+        return Result::Invalid;
+
+    Vector<char16_t, 32> input;
+    const char16_t* characters;
+    if (timeZone.is8Bit()) {
+        if (!input.tryAppend(timeZone.span8()))
+            return Result::OutOfMemory;
+        characters = input.span().data();
+    } else
+        characters = timeZone.span16().data();
+
+    Vector<char16_t> canonical;
+    if (!canonical.tryGrow(32))
+        return Result::OutOfMemory;
+    auto status = U_ZERO_ERROR;
+    const auto inputLength = static_cast<int32_t>(timeZone.length());
+    auto length = ucal_getCanonicalTimeZoneID(characters, inputLength, canonical.mutableSpan().data(), static_cast<int32_t>(canonical.size()), nullptr, &status);
+    if (status == U_BUFFER_OVERFLOW_ERROR) {
+        if (length <= 0)
+            return Result::Invalid;
+        if (!canonical.tryGrow(length))
+            return Result::OutOfMemory;
+        status = U_ZERO_ERROR;
+        length = ucal_getCanonicalTimeZoneID(characters, inputLength, canonical.mutableSpan().data(), static_cast<int32_t>(canonical.size()), nullptr, &status);
+    }
+    if (status == U_MEMORY_ALLOCATION_ERROR)
+        return Result::OutOfMemory;
+    if (U_FAILURE(status) || length < 0 || static_cast<size_t>(length) > canonical.size())
+        return Result::Invalid;
+    canonical.shrink(length);
+    m_identifier = WTF::move(canonical);
+    m_prepared = true;
+    return Result::Valid;
+}
+
+void PreparedTimeZoneOverride::commit()
+{
+    RELEASE_ASSERT(m_prepared);
+    WTF::commitTimeZoneOverride(m_identifier);
+    m_prepared = false;
+}
+
+String base64URLEncodeToString(const Vector<uint8_t>& data)
+{
+    return WTF::base64URLEncodeToString(data.span());
+}
+
+String toISOString(JSC::VM& vm, double date)
+{
+    date = WTF::timeClip(date);
     if (!std::isfinite(date))
-        return 0;
+        return {};
 
     GregorianDateTime gregorianDateTime;
     vm.dateCache.msToGregorianDateTime(date, WTF::TimeType::UTCTime, gregorianDateTime);
 
-    // Maximum amount of space we need in buffer: 8 (max. digits in year) + 2 * 5 (2 characters each for month, day, hour, minute, second) + 4 (. + 3 digits for milliseconds)
-    // 6 for formatting and one for null termination = 29.
-    char buffer[29];
-    // If the year is outside the bounds of 0 and 9999 inclusive we want to use the extended year format (ES 15.9.1.15.1).
     int ms = static_cast<int>(fmod(date, msPerSecond));
     if (ms < 0)
         ms += msPerSecond;
 
-    int charactersWritten;
-    if (gregorianDateTime.year() > 9999 || gregorianDateTime.year() < 0)
-        charactersWritten = snprintf(buffer, sizeof(buffer), "%+07d-%02d-%02dT%02d:%02d:%02d.%03dZ", gregorianDateTime.year(), gregorianDateTime.month() + 1, gregorianDateTime.monthDay(), gregorianDateTime.hour(), gregorianDateTime.minute(), gregorianDateTime.second(), ms);
-    else
-        charactersWritten = snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", gregorianDateTime.year(), gregorianDateTime.month() + 1, gregorianDateTime.monthDay(), gregorianDateTime.hour(), gregorianDateTime.minute(), gregorianDateTime.second(), ms);
-
-    ASSERT(charactersWritten > 0 && static_cast<unsigned>(charactersWritten) < sizeof(buffer));
-
-    memcpy(in, buffer, charactersWritten + 1);
-    if (static_cast<unsigned>(charactersWritten) >= sizeof(buffer))
-        return 0;
-
-    return charactersWritten;
+    int year = gregorianDateTime.year();
+    String prefix;
+    unsigned yearDigits = 4;
+    if (year < 0 || year > 9999) {
+        prefix = year < 0 ? "-"_s : "+"_s;
+        yearDigits = 6;
+        year = std::abs(year);
+    }
+    return makeString(prefix, pad('0', yearDigits, year), '-',
+        pad('0', 2, gregorianDateTime.month() + 1), '-', pad('0', 2, gregorianDateTime.monthDay()), 'T',
+        pad('0', 2, gregorianDateTime.hour()), ':', pad('0', 2, gregorianDateTime.minute()), ':',
+        pad('0', 2, gregorianDateTime.second()), '.', pad('0', 3, ms), 'Z');
 }
 
 static thread_local WTF::StackBounds stackBoundsForCurrentThread = WTF::StackBounds::emptyBounds();
 
-extern "C" [[ZIG_EXPORT(nothrow)]] void Bun__StackCheck__initialize()
-{
-    stackBoundsForCurrentThread = WTF::StackBounds::currentThreadStackBounds();
 }
 
-extern "C" [[ZIG_EXPORT(nothrow)]] void* Bun__StackCheck__getMaxStack()
+Bun::Bindgen::Engine::BunBindgenEngine_CrashHandlerBindings_dumpStackTrace_Return Bun::Bindgen::Engine::bunBindgenEngine_CrashHandlerBindings_dumpStackTrace(
+    const BunBindgenEngine_CrashHandlerBindings_dumpStackTrace_Arguments& args)
 {
-    return stackBoundsForCurrentThread.end();
+    WTF::Vector<void*, 32> addresses;
+    if (!addresses.tryReserveInitialCapacity(args.addresses.size()))
+        return Bun::Bindgen::nativeAllocationFailure();
+    for (uint64_t address : args.addresses)
+        addresses.unsafeAppendWithoutCapacityCheck(reinterpret_cast<void*>(address));
+    WTFPrintBacktrace(addresses.span());
+    return {};
 }
 
-extern "C" void WTF__DumpStackTrace(void** stack, size_t stack_count)
-{
-    WTFPrintBacktrace({ stack, stack_count });
-}
-
-extern "C" int WTF__numberOfProcessorCores()
+int32_t Bun::Bindgen::Engine::bunBindgenEngine_system_resources_numberOfProcessorCores(
+    const Bun::Bindgen::Engine::BunBindgenEngine_system_resources_numberOfProcessorCores_Arguments&)
 {
     return WTF::numberOfProcessorCores();
 }
 
-extern "C" void WTF__releaseFastMallocFreeMemoryForThisThread()
+void Bun::Bindgen::Engine::bunBindgenEngine_wtf_threading_releaseFastMallocFreeMemory(
+    const Bun::Bindgen::Engine::BunBindgenEngine_wtf_threading_releaseFastMallocFreeMemory_Arguments&)
+{
+    WTF::releaseFastMallocFreeMemory();
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_wtf_threading_releaseFastMallocFreeMemoryForThisThread(
+    const Bun::Bindgen::Engine::BunBindgenEngine_wtf_threading_releaseFastMallocFreeMemoryForThisThread_Arguments&)
 {
     WTF::releaseFastMallocFreeMemoryForThisThread();
 }
 
-extern "C" void WTF__prepareForThreadExit()
+void Bun::Bindgen::Engine::bunBindgenEngine_wtf_threading_prepareForThreadExit(
+    const Bun::Bindgen::Engine::BunBindgenEngine_wtf_threading_prepareForThreadExit_Arguments&)
 {
     WTF::RunLoop::currentSingleton().threadWillExit();
     WTF::releaseFastMallocFreeMemoryForThisThread();
 }
 
+void Bun::Bindgen::Engine::bunBindgenEngine_wtf_threading_stackCheckInitialize(
+    const Bun::Bindgen::Engine::BunBindgenEngine_wtf_threading_stackCheckInitialize_Arguments&)
+{
+    Bun::stackBoundsForCurrentThread = WTF::StackBounds::currentThreadStackBounds();
+}
+
+std::optional<size_t> Bun::Bindgen::Engine::bunBindgenEngine_wtf_threading_stackCheckGetEnd(
+    const Bun::Bindgen::Engine::BunBindgenEngine_wtf_threading_stackCheckGetEnd_Arguments&)
+{
+    auto* address = Bun::stackBoundsForCurrentThread.end();
+    if (!address)
+        return std::nullopt;
+    return reinterpret_cast<uintptr_t>(address);
+}
+
+double Bun::Bindgen::Engine::bunBindgenEngine_date_time_parseES5Date(
+    const Bun::Bindgen::Engine::BunBindgenEngine_date_time_parseES5Date_Arguments& args)
+{
+    bool isLocalTime;
+    return WTF::parseES5Date({ reinterpret_cast<const Latin1Character*>(args.bytes.data()), args.bytes.size() }, isLocalTime);
 }

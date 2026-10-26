@@ -34,8 +34,7 @@ namespace JSC {
 class MicrotaskCallCache;
 class JSAsyncGenerator;
 
-void runInternalMicrotask(JSGlobalObject*, VM&, InternalMicrotask, uint8_t, std::span<const JSValue, maxMicrotaskArguments>, MicrotaskCallCache* = nullptr);
-
+void runInternalMicrotask(JSGlobalObject*, VM&, InternalMicrotask, uint8_t, std::span<const JSValue, maxMicrotaskArguments>, MicrotaskCallCache* = nullptr, void* nativeContext = nullptr);
 // https://tc39.es/ecma262/#sec-asyncgeneratorresume and #sec-asyncgeneratorawaitreturn — used by the C++
 // %AsyncGeneratorPrototype%.return / .throw host functions to drive a non-busy generator.
 void asyncGeneratorResume(JSGlobalObject*, JSAsyncGenerator*, MicrotaskCallCache*);

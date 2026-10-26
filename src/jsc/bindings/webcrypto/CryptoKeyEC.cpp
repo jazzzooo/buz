@@ -212,7 +212,7 @@ bool CryptoKeyEC::isValidECAlgorithm(CryptoAlgorithmIdentifier algorithm)
 auto CryptoKeyEC::algorithm() const -> KeyAlgorithm
 {
     CryptoEcKeyAlgorithm result;
-    result.name = CryptoAlgorithmRegistry::singleton().name(algorithmIdentifier());
+    result.name = CryptoAlgorithmRegistry::name(algorithmIdentifier());
 
     switch (m_curve) {
     case NamedCurve::P256:

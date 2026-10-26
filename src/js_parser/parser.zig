@@ -246,7 +246,7 @@ pub const JSXTag = struct {
         }
 
         // The tag is an identifier
-        var name = p.lexer.identifier;
+        const name = p.lexer.identifier;
         var tag_range = p.lexer.range();
         try p.lexer.expectInsideJSXElementWithName(.t_identifier, "JSX element name");
 
@@ -270,6 +270,9 @@ pub const JSXTag = struct {
 
         // Parse a member expression chain
         // <Button.Red>
+        var member_name = std.ArrayListUnmanaged(u8).empty;
+        defer member_name.deinit(p.allocator);
+        if (p.lexer.token == .t_dot) try member_name.appendSlice(p.allocator, name);
         while (p.lexer.token == .t_dot) {
             try p.lexer.nextInsideJSXElement();
             const member_range = p.lexer.range();
@@ -281,16 +284,17 @@ pub const JSXTag = struct {
                 return error.SyntaxError;
             }
 
-            var _name = try p.allocator.alloc(u8, name.len + 1 + member.len);
-            bun.copy(u8, _name, name);
-            _name[name.len] = '.';
-            bun.copy(u8, _name[name.len + 1 .. _name.len], member);
-            name = _name;
+            try member_name.append(p.allocator, '.');
+            try member_name.appendSlice(p.allocator, member);
             tag_range.len = member_range.loc.start + member_range.len - tag_range.loc.start;
             tag = p.newExpr(E.Dot{ .target = tag, .name = member, .name_loc = member_range.loc }, loc);
         }
 
-        return JSXTag{ .data = Data{ .tag = tag }, .range = tag_range, .name = name };
+        return JSXTag{
+            .data = Data{ .tag = tag },
+            .range = tag_range,
+            .name = if (member_name.items.len > 0) try member_name.toOwnedSlice(p.allocator) else name,
+        };
     }
 };
 
@@ -452,6 +456,7 @@ pub const InvalidLoc = struct {
 
     pub const Tag = enum {
         spread,
+        rest_initializer,
         parentheses,
         getter,
         setter,
@@ -459,17 +464,18 @@ pub const InvalidLoc = struct {
         unknown,
     };
 
-    pub fn addError(loc: InvalidLoc, log: *logger.Log, source: *const logger.Source) void {
+    pub fn addError(loc: InvalidLoc, log: *logger.Log, source: *const logger.Source) bun.OOM!void {
         @branchHint(.cold);
         const text = switch (loc.kind) {
             .spread => "Unexpected trailing comma after rest element",
+            .rest_initializer => "A rest argument cannot have a default initializer",
             .parentheses => "Unexpected parentheses in binding pattern",
             .getter => "Unexpected getter in binding pattern",
             .setter => "Unexpected setter in binding pattern",
             .method => "Unexpected method in binding pattern",
             .unknown => "Invalid binding pattern",
         };
-        log.addError(source, loc.loc, text) catch unreachable;
+        try log.addError(source, loc.loc, text);
     }
 };
 pub const LocList = ListManaged(InvalidLoc);
@@ -909,6 +915,8 @@ pub fn newLazyExportASTImpl(
     symbols: Symbol.List,
 ) anyerror!?js_ast.Ast {
     var temp_log = logger.Log.init(allocator);
+    defer temp_log.deinit();
+    temp_log.level = log_to_copy_into.level;
     const log = &temp_log;
     var parser = Parser{
         .options = opts,
@@ -922,15 +930,16 @@ pub fn newLazyExportASTImpl(
         runtime_api_call,
         symbols,
     ) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
         if (temp_log.errors == 0) {
-            log_to_copy_into.addRangeError(source, parser.lexer.range(), @errorName(err)) catch unreachable;
+            try temp_log.addRangeError(source, parser.lexer.range(), @errorName(err));
         }
 
-        temp_log.appendToMaybeRecycled(log_to_copy_into, source) catch {};
+        try temp_log.appendTo(log_to_copy_into);
         return null;
     };
 
-    temp_log.appendToMaybeRecycled(log_to_copy_into, source) catch {};
+    try temp_log.appendTo(log_to_copy_into);
     result.ast.has_lazy_export = true;
     return result.ast;
 }
@@ -1114,6 +1123,7 @@ const ImportRecord = importRecord.ImportRecord;
 
 pub const RuntimeFeatures = _runtime.Runtime.Features;
 pub const RuntimeImports = _runtime.Runtime.Imports;
+pub const RuntimeTranspilerCache = @import("./RuntimeTranspilerCache.zig").RuntimeTranspilerCache;
 
 pub const NewParser_ = @import("./ast/P.zig").NewParser_;
 

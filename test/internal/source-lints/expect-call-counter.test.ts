@@ -7,24 +7,41 @@ import { basename, join } from "path";
 
 const MATCHER_DIR = join(import.meta.dir, "../../../src/test_runner/expect");
 
-const satisfying = ["incrementExpectCallCounter"];
-
-// Matchers that delegate to another matcher's implementation.
-const excluded = new Set(["toHaveReturnedTimes.zig"]);
-
 test("every expect matcher increments the expect-call counter", () => {
   const glob = new Glob("*.zig");
   const files = [...glob.scanSync({ cwd: MATCHER_DIR, absolute: true })].sort();
-  expect(files.length).toBeGreaterThan(40);
-
-  const missing: string[] = [];
+  const functions = new Map<string, string>();
   for (const file of files) {
-    if (excluded.has(basename(file))) continue;
-    const src = readFileSync(file, "utf8");
-    if (!satisfying.some(token => src.includes(token))) {
-      missing.push(basename(file));
+    const source = readFileSync(file, "utf8");
+    const module = basename(file, ".zig");
+    // Top-level Zig function bodies end at an unindented closing brace.
+    for (const match of source.matchAll(/^(?:pub )?fn (\w+)\([\s\S]*?^}/gm)) {
+      functions.set(`${module}.${match[1]}`, match[0].slice(match[0].indexOf("{") + 1, -1));
     }
   }
 
+  const missing: string[] = [];
+  function check(name: string, ancestors: string[] = []) {
+    const body = functions.get(name);
+    if (body === undefined || ancestors.includes(name)) {
+      missing.push([...ancestors, name].join(" -> "));
+      return;
+    }
+    if (/\b(?:incrementExpectCallCounter|CounterEngine\.increment)\(/.test(body)) {
+      return;
+    }
+
+    const module = name.slice(0, name.indexOf("."));
+    const delegates = new Set(
+      [...body.matchAll(/\b(?:(\w+)\.)?(\w+)\(/g)]
+        .map(match => `${match[1] ?? module}.${match[2]}`)
+        .filter(callee => functions.has(callee)),
+    );
+    if (delegates.size === 0) missing.push([...ancestors, name].join(" -> "));
+    for (const delegate of delegates) check(delegate, [...ancestors, name]);
+  }
+
+  check("MatcherEngine.run");
+  check("CustomMatcherEngine.apply");
   expect(missing).toEqual([]);
 });

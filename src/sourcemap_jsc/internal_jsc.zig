@@ -1,59 +1,80 @@
 //! JS testing bindings for `InternalSourceMap`. Keeps `src/sourcemap/` free of JSC types.
 
 pub const TestingAPIs = struct {
-    pub fn fromVLQ(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const vlq_str = try callframe.argument(0).toBunString(globalThis);
-        defer vlq_str.deref();
-        const vlq = vlq_str.toUTF8(bun.default_allocator);
+    pub fn fromVLQ(
+        context: bun.bindgen.CallContext(SourceMapFromVLQSchema),
+        args: bun.bindgen.Args(SourceMapFromVLQSchema),
+    ) bun.bindgen.CallError(SourceMapFromVLQSchema)!bun.bindgen.OwnedBytes {
+        const vlq = try args.vlq.toUTF8(bun.default_allocator);
         defer vlq.deinit();
 
-        const blob = InternalSourceMap.fromVLQ(bun.default_allocator, vlq.slice(), 0) catch {
-            return globalThis.throw("InternalSourceMap.fromVLQ: invalid VLQ input", .{});
+        const blob = InternalSourceMap.fromVLQ(bun.default_allocator, vlq.slice(), 0) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidSourceMap => return context.fail(.invalid_input, {}),
         };
         defer bun.default_allocator.free(blob);
-        return jsc.ArrayBuffer.createUint8Array(globalThis, blob);
+        return bun.bindgen.OwnedBytes.fromSlice(blob);
     }
 
-    pub fn toVLQ(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const ab = callframe.argument(0).asArrayBuffer(globalThis) orelse {
-            return globalThis.throw("InternalSourceMap.toVLQ: expected Uint8Array", .{});
-        };
-        const bytes = ab.byteSlice();
+    pub fn toVLQ(
+        context: bun.bindgen.CallContext(SourceMapToVLQSchema),
+        args: bun.bindgen.Args(SourceMapToVLQSchema),
+    ) bun.bindgen.CallError(SourceMapToVLQSchema)!bun.bindgen.DOMString {
+        const bytes = args.blob.unsafePtr("The generated call frame holds the blob lease through source-map encoding's last byte read");
         if (!InternalSourceMap.isValidBlob(bytes)) {
-            return globalThis.throw("InternalSourceMap.toVLQ: invalid blob", .{});
+            return context.fail(.invalid_blob, {});
         }
         const ism = InternalSourceMap{ .data = bytes.ptr };
         var out = MutableString.initEmpty(bun.default_allocator);
         defer out.deinit();
-        ism.appendVLQTo(&out);
-        return bun.String.createUTF8ForJS(globalThis, out.list.items);
+        try ism.appendVLQTo(&out);
+        return bun.bindgen.DOMString.fromUTF8(out.list.items);
     }
 
-    pub fn find(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const ab = callframe.argument(0).asArrayBuffer(globalThis) orelse {
-            return globalThis.throw("InternalSourceMap.find: expected Uint8Array", .{});
-        };
-        const bytes = ab.byteSlice();
+    pub fn find(
+        context: bun.bindgen.CallContext(SourceMapFindSchema),
+        args: bun.bindgen.Args(SourceMapFindSchema),
+    ) bun.bindgen.CallError(SourceMapFindSchema)!bun.bindgen.Return(SourceMapFindSchema) {
+        const bytes = args.blob.unsafePtr("The generated call frame owns the copied blob until source-map lookup returns");
         if (!InternalSourceMap.isValidBlob(bytes)) {
-            return globalThis.throw("InternalSourceMap.find: invalid blob", .{});
+            return context.fail(.invalid_blob, {});
         }
-        const line = callframe.argument(1).toInt32();
-        const col = callframe.argument(2).toInt32();
-        if (line < 0 or col < 0) return .null;
+        const line = if (args.line) |input| line: {
+            const converted = try input.convert(context);
+            break :line converted.value;
+        } else 0;
+        const column = if (args.column) |input| column: {
+            const converted = try input.convert(context);
+            break :column converted.value;
+        } else 0;
+        if (line < 0 or column < 0) return null;
         const ism = InternalSourceMap{ .data = bytes.ptr };
-        const mapping = ism.find(.fromZeroBased(line), .fromZeroBased(col)) orelse return .null;
+        const mapping = ism.find(.fromZeroBased(line), .fromZeroBased(column)) orelse return null;
 
-        const obj = jsc.JSObject.createEmpty(globalThis, 5);
-        obj.putDirect(globalThis, jsc.ZigString.static("generatedLine"), .jsNumber(mapping.generated.lines.zeroBased()));
-        obj.putDirect(globalThis, jsc.ZigString.static("generatedColumn"), .jsNumber(mapping.generated.columns.zeroBased()));
-        obj.putDirect(globalThis, jsc.ZigString.static("originalLine"), .jsNumber(mapping.original.lines.zeroBased()));
-        obj.putDirect(globalThis, jsc.ZigString.static("originalColumn"), .jsNumber(mapping.original.columns.zeroBased()));
-        obj.putDirect(globalThis, jsc.ZigString.static("sourceIndex"), .jsNumber(mapping.source_index));
-        return obj.toJS();
+        return .{
+            .generated_line = mapping.generated.lines.zeroBased(),
+            .generated_column = mapping.generated.columns.zeroBased(),
+            .original_line = mapping.original.lines.zeroBased(),
+            .original_column = mapping.original.columns.zeroBased(),
+            .source_index = mapping.source_index,
+        };
     }
 };
 
 const bun = @import("bun");
 const MutableString = bun.MutableString;
-const jsc = bun.jsc;
 const InternalSourceMap = bun.SourceMap.InternalSourceMap;
+
+const InternalTestingBindings = bun.bindgen.Module("InternalTesting");
+const SourceMapFromVLQSchema = InternalTestingBindings.function("sourceMapFromVLQ");
+const SourceMapToVLQSchema = InternalTestingBindings.function("sourceMapToVLQ");
+const SourceMapFindSchema = InternalTestingBindings.function("sourceMapFind");
+const SourceMapFromVLQBinding = bun.bindgen.Fn(SourceMapFromVLQSchema, TestingAPIs.fromVLQ);
+const SourceMapToVLQBinding = bun.bindgen.Fn(SourceMapToVLQSchema, TestingAPIs.toVLQ);
+const SourceMapFindBinding = bun.bindgen.Fn(SourceMapFindSchema, TestingAPIs.find);
+
+comptime {
+    _ = SourceMapFromVLQBinding;
+    _ = SourceMapToVLQBinding;
+    _ = SourceMapFindBinding;
+}

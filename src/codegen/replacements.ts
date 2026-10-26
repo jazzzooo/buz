@@ -1,8 +1,6 @@
 import { LoaderKeys } from "../api/schema";
-import NodeErrors from "../jsc/bindings/ErrorCode.ts";
-import jsclasses from "./../jsc/bindings/js_classes";
 import { sliceSourceCode } from "./builtin-parser";
-import { registerNativeCall } from "./generate-js2native";
+import { getErrorCodeMetadata, registerBindgenClass, registerBindgenFunction } from "./native-function-table";
 
 // This is a list of extra syntax replacements to do. Kind of like macros
 // These are only run on code itself, not string contents or comments.
@@ -14,30 +12,17 @@ export const replacements: ReplacementRule[] = [
   { from: /\bexport\s*default/g, to: "$exports =" },
 ];
 
-let error_i = 0;
-for (let i = 0; i < NodeErrors.length; i++) {
-  const [code, _constructor, _name, ...other_constructors] = NodeErrors[i];
-  replacements.push({
-    from: new RegExp(`\\b\\__intrinsic__${code}\\(`, "g"),
-    to: `$makeErrorWithCode(${error_i}, `,
-  });
-  error_i += 1;
-  for (const con of other_constructors) {
-    if (con == null) continue;
-    replacements.push({
-      from: new RegExp(`\\b\\__intrinsic__${code}_${con.name}\\(`, "g"),
-      to: `$makeErrorWithCode(${error_i}, `,
-    });
-    error_i += 1;
+let bindingReplacements: ReplacementRule[] | undefined;
+function getReplacements() {
+  if (!bindingReplacements) {
+    bindingReplacements = replacements.concat(
+      getErrorCodeMetadata().map(error => ({
+        from: new RegExp(`\\b__intrinsic__${error.tag}\\(`, "g"),
+        to: `$makeErrorWithCode(${JSON.stringify(error.tag)}, `,
+      })),
+    );
   }
-}
-
-for (let id = 0; id < jsclasses.length; id++) {
-  const name = jsclasses[id][0];
-  replacements.push({
-    from: new RegExp(`\\b\\__intrinsic__inherits${name}\\(`, "g"),
-    to: `$inherits(${id}, `,
-  });
+  return bindingReplacements;
 }
 
 // These rules are run on the entire file, including within strings.
@@ -68,7 +53,6 @@ export const globalsToPrefix = [
   "ReadableByteStreamController",
   "ReadableStream",
   "ReadableStreamBYOBReader",
-  "ReadableStreamBYOBRequest",
   "ReadableStreamDefaultController",
   "ReadableStreamDefaultReader",
   "TransformStream",
@@ -165,31 +149,58 @@ export interface ReplacementRule {
 export const function_replacements = [
   "$debug",
   "$assert",
-  "$zig",
-  "$newZigFunction",
-  "$cpp",
-  "$newCppFunction",
   "$isPromiseFulfilled",
   "$isPromiseRejected",
   "$isPromisePending",
   "$bindgenFn",
+  "$bindgenClass",
 ];
 const function_regexp = new RegExp(`__intrinsic__(${function_replacements.join("|").replaceAll("$", "")})`);
+
+function consumeTypeArguments(rest: string) {
+  let depth = 0;
+  let quote = "";
+
+  for (let i = 0; i < rest.length; i++) {
+    const char = rest[i];
+    if (quote) {
+      if (char === "\\") {
+        i++;
+      } else if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+    } else if (char === "<") {
+      depth++;
+    } else if (char === ">" && rest[i - 1] !== "=") {
+      depth--;
+      if (depth === 0) return rest.slice(i + 1).trimStart();
+    }
+  }
+
+  throw new Error("Unterminated type arguments in $bindgenFn call");
+}
 
 /** Applies source code replacements as defined in `replacements` */
 export function applyReplacements(src: string, length: number) {
   let slice = src.slice(0, length);
   let rest = src.slice(length);
   slice = slice.replace(/([^a-zA-Z0-9_\$])\$([a-zA-Z0-9_]+\b)/gm, `$1__intrinsic__$2`);
-  for (const replacement of replacements) {
+  for (const replacement of getReplacements()) {
     slice = slice.replace(
       replacement.from,
       replacement.toRaw ?? replacement.to!.replaceAll("$", "__intrinsic__").replaceAll("%", "$"),
     );
   }
   let match;
-  if ((match = slice.match(function_regexp)) && rest.startsWith("(")) {
+  if ((match = slice.match(function_regexp))) {
     const name = match[1];
+    if ((name === "bindgenFn" || name === "bindgenClass") && rest.startsWith("<")) rest = consumeTypeArguments(rest);
+    if (!rest.startsWith("(")) return [slice, rest, false];
     if (name === "debug") {
       const innerSlice = sliceSourceCode(rest, true);
       return [
@@ -222,52 +233,18 @@ export function applyReplacements(src: string, length: number) {
         rest2,
         true,
       ];
-    } else if (["zig", "cpp", "newZigFunction", "newCppFunction"].includes(name)) {
-      const kind = name.includes("ig") ? "zig" : "cpp";
-      const is_create_fn = name.startsWith("new");
-
-      const inner = sliceSourceCode(rest, true);
-      let args;
-      try {
-        const str =
-          "[" +
-          inner.result
-            .slice(1, -1)
-            .replaceAll("'", '"')
-            .replace(/,[\s\n]*$/s, "") +
-          "]";
-        args = JSON.parse(str);
-      } catch {
-        throw new Error(`Call is not known at bundle-time: '$${name}${inner.result}'`);
-      }
-      if (
-        args.length != (is_create_fn ? 3 : 2) ||
-        typeof args[0] !== "string" ||
-        typeof args[1] !== "string" ||
-        (is_create_fn && typeof args[2] !== "number")
-      ) {
-        if (is_create_fn) {
-          throw new Error(`$${name} takes three arguments, but got '$${name}${inner.result}'`);
-        } else {
-          throw new Error(`$${name} takes two string arguments, but got '$${name}${inner.result}'`);
-        }
-      }
-
-      const id = registerNativeCall(kind, args[0], args[1], is_create_fn ? args[2] : null);
-
-      return [slice.slice(0, match.index) + "__intrinsic__lazy(" + id + ")", inner.rest, true];
     } else if (name === "isPromiseFulfilled" || name === "isPromiseRejected" || name === "isPromisePending") {
       const inner = sliceSourceCode(rest, true);
       const status = name === "isPromisePending" ? 0 : name === "isPromiseFulfilled" ? 1 : 2;
       let args;
       if (debug) {
-        // use a property on @lazy as a temporary holder for the expression. only in debug!
-        args = `($assert(__intrinsic__isPromise(__intrinsic__lazy.temp=${inner.result.slice(0, -1)}))),__intrinsic__peekPromiseStatus(__intrinsic__lazy.temp) === (__intrinsic__lazy.temp = undefined, ${status}))`;
+        // Use a property on the private binding resolver as a temporary holder for the expression in debug builds.
+        args = `($assert(__intrinsic__isPromise(__intrinsic__bindingFactory.temp=${inner.result.slice(0, -1)}))),__intrinsic__peekPromiseStatus(__intrinsic__bindingFactory.temp) === (__intrinsic__bindingFactory.temp = undefined, ${status}))`;
       } else {
         args = `(__intrinsic__peekPromiseStatus${inner.result} === ${status})`;
       }
       return [slice.slice(0, match.index) + args, inner.rest, true];
-    } else if (name === "bindgenFn") {
+    } else if (name === "bindgenFn" || name === "bindgenClass") {
       const inner = sliceSourceCode(rest, true);
       let args;
       try {
@@ -286,9 +263,10 @@ export function applyReplacements(src: string, length: number) {
         throw new Error(`$${name} takes two string arguments, but got '$${name}${inner.result}'`);
       }
 
-      const id = registerNativeCall("bind", args[0], args[1], null);
+      const id =
+        name === "bindgenFn" ? registerBindgenFunction(args[0], args[1]) : registerBindgenClass(args[0], args[1]);
 
-      return [slice.slice(0, match.index) + "__intrinsic__lazy(" + id + ")", inner.rest, true];
+      return [slice.slice(0, match.index) + "__intrinsic__bindingFactory(" + id + ")", inner.rest, true];
     } else {
       throw new Error("Unknown preprocessor macro " + name);
     }

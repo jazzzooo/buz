@@ -126,6 +126,18 @@ pub const FD = packed struct(backing_int) {
             },
         };
     }
+
+    pub fn number(fd: FD) i64 {
+        if (!fd.isValid()) return -1;
+        return switch (os) {
+            .windows => switch (fd.kind) {
+                .system => @intCast(fd.value.as_system),
+                .uv => @intCast(fd.value.as_uv),
+            },
+            else => fd.value.as_system,
+        };
+    }
+
     pub fn unwrapValid(fd: FD) ?FD {
         return if (fd.isValid()) fd else null;
     }
@@ -211,7 +223,7 @@ pub const FD = packed struct(backing_int) {
         return .{ .result = maybe_windows_fd.makeLibUVOwned() catch |err| switch (err) {
             error.SystemFdQuotaExceeded => {
                 if (error_case == .close_on_fail) {
-                    maybe_windows_fd.close();
+                    _ = maybe_windows_fd.closeAllowingStandardIo(null);
                 }
                 return .{ .err = .{
                     .errno = @backingInt(bun.sys.E.MFILE),
@@ -313,11 +325,6 @@ pub const FD = packed struct(backing_int) {
         }
         return result;
     }
-
-    pub const fromJS = @import("../sys_jsc/fd_jsc.zig").fromJS;
-    pub const fromJSValidated = @import("../sys_jsc/fd_jsc.zig").fromJSValidated;
-    pub const toJS = @import("../sys_jsc/fd_jsc.zig").toJS;
-    pub const toJSWithoutMakingLibUVOwned = @import("../sys_jsc/fd_jsc.zig").toJSWithoutMakingLibUVOwned;
 
     pub const Stdio = enum(u8) {
         std_in = 0,
@@ -600,13 +607,13 @@ pub const MovableIfWindowsFd = union(enum) {
 
     pub fn close(self: *Self) void {
         if (comptime bun.Environment.isPosix) {
-            self._inner.close();
+            const fd = self._inner;
             self._inner = FD.invalid;
+            if (fd.isValid()) _ = fd.closeAllowingStandardIo(null);
             return;
         }
-        if (self._inner) |fd| {
-            fd.close();
-            self._inner = null;
+        if (self.take()) |fd| {
+            if (fd.isValid()) _ = fd.closeAllowingStandardIo(null);
         }
     }
 

@@ -37,7 +37,7 @@ pub const SignalCode = enum(u8) {
     pub const default = SignalCode.SIGTERM;
     pub const Map = ComptimeEnumMap(SignalCode);
     pub fn name(value: SignalCode) ?[]const u8 {
-        if (@backingInt(value) <= @backingInt(SignalCode.SIGSYS)) {
+        if (value.valid()) {
             return asByteSlice(@tagName(value));
         }
 
@@ -120,8 +120,6 @@ pub const SignalCode = enum(u8) {
     pub fn fmt(signal: SignalCode, enable_ansi_colors: bool) Fmt {
         return .{ .signal = signal, .enable_ansi_colors = enable_ansi_colors };
     }
-
-    pub const fromJS = @import("../sys_jsc/signal_code_jsc.zig").fromJS;
 };
 
 const std = @import("std");

@@ -5,11 +5,10 @@
 #include "BunGlobalScope.h"
 
 #include <JavaScriptCore/JSFunction.h>
+#include <JavaScriptCore/Strong.h>
 #include <JavaScriptCore/VM.h>
 
-#include "headers-handwritten.h"
 #include "BunClientData.h"
-#include <JavaScriptCore/CallFrame.h>
 #include <JavaScriptCore/Nodes.h>
 
 namespace Bun {
@@ -22,19 +21,31 @@ namespace NodeVM {
 
 RefPtr<JSC::CachedBytecode> getBytecode(JSGlobalObject* globalObject, JSC::ProgramExecutable* executable, const JSC::SourceCode& source);
 RefPtr<JSC::CachedBytecode> getBytecode(JSGlobalObject* globalObject, JSC::ModuleProgramExecutable* executable, const JSC::SourceCode& source);
-bool extractCachedData(JSValue cachedDataValue, WTF::Vector<uint8_t>& outCachedData);
 String stringifyAnonymousFunction(JSGlobalObject* globalObject, const ArgList& args, ThrowScope& scope, int* outOffset);
 JSC::EncodedJSValue createCachedData(JSGlobalObject* globalObject, const JSC::SourceCode& source);
-bool handleException(JSGlobalObject* globalObject, VM& vm, NakedPtr<JSC::Exception> exception, ThrowScope& throwScope);
-std::optional<JSC::EncodedJSValue> getNodeVMContextOptions(JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSValue optionsArg, NodeVMContextOptions& outOptions, ASCIILiteral codeGenerationKey, JSValue* importer);
+bool handleException(JSGlobalObject* globalObject, VM& vm, NakedPtr<JSC::Exception> exception, ThrowScope& throwScope, bool displayErrors);
 NodeVMGlobalObject* getGlobalObjectFromContext(JSGlobalObject* globalObject, JSValue contextValue, bool canThrow);
 JSC::EncodedJSValue INVALID_ARG_VALUE_VM_VARIATION(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, WTF::ASCIILiteral name, JSC::JSValue value);
 // For vm.compileFunction we need to return an anonymous function expression. This code is adapted from/inspired by JSC::constructFunction, which is used for function declarations.
 JSC::JSFunction* constructAnonymousFunction(JSC::JSGlobalObject* globalObject, const ArgList& args, const SourceOrigin& sourceOrigin, CompileFunctionOptions&& options, JSC::SourceTaintedOrigin sourceTaintOrigin, JSC::JSScope* scope);
 JSPromise* importModule(JSGlobalObject* globalObject, JSString* moduleNameValue, RefPtr<JSC::ScriptFetchParameters> parameters, const SourceOrigin& sourceOrigin);
 bool isContext(JSC::JSGlobalObject* globalObject, JSValue);
-bool getContextArg(JSC::JSGlobalObject* globalObject, JSValue& contextArg);
+bool isDontContextifyConstant(JSC::JSGlobalObject* globalObject, JSValue value);
 bool isUseMainContextDefaultLoaderConstant(JSC::JSGlobalObject* globalObject, JSValue value);
+
+namespace TypePredicates {
+
+bool isScript(JSC::JSValue) noexcept;
+bool isContext(JSC::JSGlobalObject&, JSC::JSValue) noexcept;
+bool isDontContextifyConstant(JSC::JSGlobalObject&, JSC::JSValue) noexcept;
+bool isUseMainContextDefaultLoaderConstant(JSC::JSGlobalObject&, JSC::JSValue) noexcept;
+bool isModule(JSC::JSValue) noexcept;
+bool isSourceTextModule(JSC::JSValue) noexcept;
+bool isSyntheticModule(JSC::JSValue) noexcept;
+bool isScriptConstructor(JSC::JSValue) noexcept;
+bool isModuleConstructor(JSC::JSValue) noexcept;
+
+}
 
 } // namespace NodeVM
 
@@ -43,28 +54,21 @@ public:
     String filename;
     OrdinalNumber lineOffset = OrdinalNumber::fromZeroBasedInt(0);
     OrdinalNumber columnOffset = OrdinalNumber::fromZeroBasedInt(0);
-    bool failed = false;
 
     BaseVMOptions() = default;
     BaseVMOptions(String filename);
     BaseVMOptions(String filename, OrdinalNumber lineOffset, OrdinalNumber columnOffset);
-
-    bool fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSValue optionsArg);
-    bool validateProduceCachedData(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSObject* options, bool& outProduceCachedData);
-    bool validateCachedData(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSObject* options, WTF::Vector<uint8_t>& outCachedData);
-    bool validateTimeout(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSObject* options, std::optional<int64_t>& outTimeout);
 };
 
 class CompileFunctionOptions : public BaseVMOptions {
 public:
     WTF::Vector<uint8_t> cachedData;
     JSGlobalObject* parsingContext = nullptr;
-    JSValue contextExtensions {};
+    WTF::Vector<JSC::Strong<JSC::JSObject>> contextExtensions;
     bool produceCachedData = false;
 
     using BaseVMOptions::BaseVMOptions;
 
-    bool fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSValue optionsArg, JSValue* importer);
 };
 
 class NodeVMContextOptions final {
@@ -150,14 +154,7 @@ private:
 };
 
 // Helper functions to create vm contexts and run code
-JSC::JSValue createNodeVMBinding(Zig::GlobalObject*);
 Structure* createNodeVMGlobalObjectStructure(JSC::VM&);
 void configureNodeVM(JSC::VM&, Zig::GlobalObject*);
-
-// VM module functions
-JSC_DECLARE_HOST_FUNCTION(vmModule_createContext);
-JSC_DECLARE_HOST_FUNCTION(vmModule_isContext);
-JSC_DECLARE_HOST_FUNCTION(vmModuleRunInNewContext);
-JSC_DECLARE_HOST_FUNCTION(vmModuleRunInThisContext);
 
 } // namespace Bun

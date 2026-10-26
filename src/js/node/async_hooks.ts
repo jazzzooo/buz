@@ -22,8 +22,8 @@
 // each key is an AsyncLocalStorage object and the value is the associated value. There are a ton of
 // calls to $assert which will verify this invariant (only during bun-debug)
 //
-const setAsyncHooksEnabled = $newCppFunction("NodeAsyncHooks.cpp", "jsSetAsyncHooksEnabled", 1);
-const cleanupLater = $newCppFunction("NodeAsyncHooks.cpp", "jsCleanupLater", 0);
+const setAsyncHooksEnabled = $bindgenFn("AsyncHooks.schema.zig", "setAsyncHooksEnabled");
+const cleanupLater = $bindgenFn("AsyncHooks.schema.zig", "cleanupLater");
 const { validateFunction, validateString, validateObject } = require("internal/validators");
 
 // Only run during debug
@@ -91,7 +91,7 @@ class AsyncLocalStorage {
   }
 
   static bind(fn, ...args: any) {
-    validateFunction(fn);
+    validateFunction(fn, "fn");
     return this.snapshot().bind(null, fn, ...args);
   }
 

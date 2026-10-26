@@ -3,7 +3,7 @@
 /// with binary collations (e.g., utf8mb4_bin) which have different character_set values.
 pub const binary_charset: u16 = 63;
 
-pub fn decodeBinaryValue(globalObject: *jsc.JSGlobalObject, field_type: types.FieldType, column_length: u32, raw: bool, bigint: bool, unsigned: bool, binary: bool, character_set: u16, comptime Context: type, reader: NewReader(Context)) !SQLDataCell {
+pub fn decodeBinaryValue(date_converter: anytype, field_type: types.FieldType, column_length: u32, raw: bool, bigint: bool, unsigned: bool, binary: bool, character_set: u16, comptime Context: type, reader: NewReader(Context)) !SQLDataCell {
     debug("decodeBinaryValue: {s}", .{@tagName(field_type)});
     return switch (field_type) {
         .MYSQL_TYPE_TINY => {
@@ -104,7 +104,7 @@ pub fn decodeBinaryValue(globalObject: *jsc.JSGlobalObject, field_type: types.Fi
                 8, 12 => |l| {
                     var data = try reader.read(l);
                     defer data.deinit();
-                    const time = try Time.fromData(&data);
+                    const time = Time.fromBinary(data.slice());
 
                     const total_hours = time.hours + time.days * 24;
                     // -838:59:59 to 838:59:59 is valid (it only store seconds)
@@ -130,8 +130,16 @@ pub fn decodeBinaryValue(globalObject: *jsc.JSGlobalObject, field_type: types.Fi
             11, 7, 4 => |l| {
                 var data = try reader.read(l);
                 defer data.deinit();
-                const time = try DateTime.fromData(&data);
-                return SQLDataCell{ .tag = .date, .value = .{ .date = try time.toJSTimestamp(globalObject) } };
+                const time = DateTime.fromBinary(data.slice());
+                return SQLDataCell{ .tag = .date, .value = .{ .date = try date_converter.fromParts(.{
+                    .year = time.year,
+                    .month = time.month,
+                    .day = time.day,
+                    .hour = time.hour,
+                    .minute = time.minute,
+                    .second = time.second,
+                    .millisecond = if (time.microsecond > 0) @intCast(@divFloor(time.microsecond, 1000)) else 0,
+                }) } };
             },
             else => error.InvalidBinaryValue,
         },
@@ -202,13 +210,10 @@ pub fn decodeBinaryValue(globalObject: *jsc.JSGlobalObject, field_type: types.Fi
 const debug = bun.Output.scoped(.MySQLDecodeBinaryValue, .visible);
 
 const std = @import("std");
-const types = @import("../../../sql/mysql/MySQLTypes.zig");
+const types = @import("mysql_domain").types;
 const NewReader = @import("../../../sql/mysql/protocol/NewReader.zig").NewReader;
 const SQLDataCell = @import("../../shared/SQLDataCell.zig").SQLDataCell;
 
-const Value = @import("../MySQLValue.zig").Value;
-const DateTime = Value.DateTime;
-const Time = Value.Time;
-
+const DateTime = @import("../../../sql/mysql/DateTime.zig");
+const Time = @import("../../../sql/mysql/Time.zig");
 const bun = @import("bun");
-const jsc = bun.jsc;

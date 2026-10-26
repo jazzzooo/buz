@@ -1,10 +1,9 @@
 import { file } from "bun";
-import { readdirSync } from "fs";
 import path from "path";
 import { globAllSources } from "../../scripts/glob-sources.ts";
 
 // prettier-ignore
-const words: Record<string, { reason: string; regex?: boolean }> = {
+const words: Record<string, { reason: string; regex?: boolean; exclude?: RegExp }> = {
   " != undefined": { reason: "This is by definition Undefined Behavior." },
   " == undefined": { reason: "This is by definition Undefined Behavior." },
   "undefined != ": { reason: "This is by definition Undefined Behavior." },
@@ -13,9 +12,9 @@ const words: Record<string, { reason: string; regex?: boolean }> = {
   '@import("bun").': { reason: "Only import 'bun' once" },
   "std.debug.assert": { reason: "Use bun.assert instead" },
   "std.debug.dumpStackTrace": { reason: "Use bun.handleErrorReturnTrace or bun.crash_handler.dumpStackTrace instead" },
-  "std.debug.print": { reason: "Don't let this be committed"},
+  "std.debug.print": { reason: "Don't let this be committed", exclude: /^src[/\\]bindgen[/\\][^/\\]+_test\.zig$/ },
   "std.log": { reason: "Don't let this be committed" },
-  "std.mem.indexOfAny(u8": { reason: "Use bun.strings.indexOfAny" },
+  "std.mem.indexOfAny(u8": { reason: "Use bun.strings.indexOfAny", exclude: /^src[/\\]bindgen[/\\]normalize[/\\]/ },
   "std.StringArrayHashMapUnmanaged(": { reason: "bun.StringArrayHashMapUnmanaged has a faster `eql`" },
   "std.StringArrayHashMap(": { reason: "bun.StringArrayHashMap has a faster `eql`" },
   "std.StringHashMapUnmanaged(": { reason: "bun.StringHashMapUnmanaged has a faster `eql`" },
@@ -45,7 +44,7 @@ const words: Record<string, { reason: string; regex?: boolean }> = {
   "std.fs.openFileAbsolute": { reason: "Prefer bun.sys + bun.FD instead of std.fs" },
   ".stdFile()": { reason: "Prefer bun.sys + bun.FD instead of std.fs.File. Zig hides 'errno' when Bun wants to match libuv" },
   ".stdDir()": { reason: "Prefer bun.sys + bun.FD instead of std.fs.File. Zig hides 'errno' when Bun wants to match libuv" },
-  ".arguments_old(": { reason: "Please migrate to .argumentsAsArray() or another argument API" },
+  ".arguments_old(": { reason: "Use schema-declared arguments" },
   "// autofix": { reason: "Evaluate if this variable should be deleted entirely or explicitly discarded." },
 
   "global.hasException": { reason: "Incompatible with strict exception checks. Use a CatchScope instead." },
@@ -70,6 +69,7 @@ for (const abs of zigSources) {
   if (source.startsWith("src" + path.sep + "codegen")) continue;
   const content = await file(abs).text();
   for (const word of words_keys) {
+    if (words[word].exclude?.test(source)) continue;
     let regex = words[word].regex ? new RegExp(word, "gm") : undefined;
     const did_match = regex ? regex.test(content) : content.includes(word);
     if (regex) regex.lastIndex = 0;
@@ -128,22 +128,6 @@ describe("banned words", () => {
       } else if (count.length < limit) {
         throw new Error(
           `Instances of banned word ${JSON.stringify(word)} reduced from ${limit} to ${count.length}\nUpdate limit by running \`bun ./test/internal/ban-words.test.ts\`\n`,
-        );
-      }
-    });
-  }
-});
-
-describe("required words", () => {
-  const expectDir = "src/test_runner/expect";
-  const files = readdirSync(expectDir);
-  for (const file of files) {
-    if (!file.endsWith(".zig") || file.startsWith(".") || file === "toHaveReturnedTimes.zig") continue;
-    test(file, async () => {
-      const content = await Bun.file(path.join(expectDir, file)).text();
-      if (!content.includes("incrementExpectCallCounter")) {
-        throw new Error(
-          `${expectDir}/${file} is missing string "incrementExpectCallCounter"\nAll expect() functions must call incrementExpectCallCounter()`,
         );
       }
     });

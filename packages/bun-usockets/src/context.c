@@ -18,6 +18,7 @@
 #include "internal/internal.h"
 #include "libusockets.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
@@ -48,6 +49,8 @@ int us_raw_root_certs(struct us_cert_string_t**out){
 
 void us_socket_group_init(struct us_socket_group_t *group, struct us_loop_t *loop,
                           const struct us_socket_vtable_t *vtable, void *ext) {
+    if (!vtable) BUN_PANIC("Socket group requires a callback table");
+    US_ASSERT((vtable->retain_group == NULL) == (vtable->release_group == NULL));
     memset(group, 0, sizeof(*group));
     group->loop = loop;
     group->vtable = vtable;
@@ -55,8 +58,8 @@ void us_socket_group_init(struct us_socket_group_t *group, struct us_loop_t *loo
 }
 
 void us_socket_group_deinit(struct us_socket_group_t *group) {
-    /* The owner is about to free the embedding storage. Every list head and the
-     * low-prio count must be zero or some socket/listener/DNS request still
+    /* The owner is about to free the embedding storage. Every list head must
+     * be empty or some socket/listener/DNS request still
      * holds s->group / c->group / ls->accept_group into us — that's a UAF the
      * caller must close_all() away first. iterator != NULL means we're inside
      * a dispatch on this very group; the on_close that triggers deinit is fine
@@ -65,8 +68,8 @@ void us_socket_group_deinit(struct us_socket_group_t *group) {
     US_ASSERT(group->head_sockets == NULL);
     US_ASSERT(group->head_connecting_sockets == NULL);
     US_ASSERT(group->head_listen_sockets == NULL);
-    US_ASSERT(group->low_prio_count == 0);
     US_ASSERT(group->iterator == NULL);
+    US_ASSERT(group->connecting_iterator == NULL);
     if (group->linked) {
         us_internal_loop_unlink_group(group->loop, group);
         group->linked = 0;
@@ -79,6 +82,8 @@ void us_socket_group_deinit(struct us_socket_group_t *group) {
  * closes it in finalize(), so closing+freeing it here turns that into a UAF
  * (the original LSAN was only the *accepted* sockets, not the listener). */
 void us_socket_group_close_all_ex(struct us_socket_group_t *group, int also_listeners) {
+    void (*release_group)(struct us_socket_group_t *) = group->vtable->release_group;
+    if (group->vtable->retain_group) group->vtable->retain_group(group);
     if (also_listeners) {
         /* Listeners first — stops new sockets from being accepted into
          * head_sockets while we're draining it. */
@@ -105,7 +110,7 @@ void us_socket_group_close_all_ex(struct us_socket_group_t *group, int also_list
              * the natural failure path would have, which detaches the
              * wrapper. The handler then closes; if it doesn't, the
              * force-drain below catches it. */
-            us_dispatch_connect_error(s, ECONNABORTED);
+            us_dispatch_connect_error(s, LIBUS_ERR_CONNECTION_ABORTED);
             if (!us_socket_is_closed(s)) {
                 us_internal_socket_close_raw(s, LIBUS_SOCKET_CLOSE_CODE_CONNECTION_RESET, 0);
             }
@@ -124,26 +129,7 @@ void us_socket_group_close_all_ex(struct us_socket_group_t *group, int also_list
     while (group->head_sockets) {
         us_internal_socket_close_raw(group->head_sockets, LIBUS_SOCKET_CLOSE_CODE_CONNECTION_RESET, 0);
     }
-
-    /* Sockets parked in the loop-wide low-prio queue aren't in head_sockets
-     * (the queue reuses prev/next), so they'd survive the walk above and later
-     * dereference s->group into freed owner storage. Drain ours out now. */
-    if (group->low_prio_count) {
-        /* Don't pre-unlink — leave low_prio_state==1 so us_socket_close takes
-         * its low-prio branch (which knows the socket is NOT in head_sockets
-         * and decrements low_prio_count itself). The cached `next` survives
-         * the close because that branch rewires the list before dispatch. */
-        struct us_internal_loop_data_t *ld = &group->loop->data;
-        struct us_socket_t *q = ld->low_prio_head;
-        while (q) {
-            struct us_socket_t *next = q->next;
-            if (q->group == group) {
-                us_socket_close(q, LIBUS_SOCKET_CLOSE_CODE_CLEAN_SHUTDOWN, 0);
-            }
-            q = next;
-        }
-        US_ASSERT(group->low_prio_count == 0);
-    }
+    if (release_group) release_group(group);
 }
 
 void us_socket_group_close_all(struct us_socket_group_t *group) {
@@ -171,8 +157,7 @@ struct us_socket_group_t *us_socket_group_next(struct us_socket_group_t *group) 
 static inline int us_internal_group_is_empty(struct us_socket_group_t *group) {
     return group->head_sockets == NULL
         && group->head_connecting_sockets == NULL
-        && group->head_listen_sockets == NULL
-        && group->low_prio_count == 0;
+        && group->head_listen_sockets == NULL;
 }
 
 static inline void us_internal_group_touched(struct us_socket_group_t *group) {
@@ -200,7 +185,6 @@ void us_internal_socket_group_link_socket(struct us_socket_group_t *group, struc
     }
     group->head_sockets = s;
     us_internal_group_touched(group);
-    us_internal_enable_sweep_timer(group->loop);
 }
 
 void us_internal_socket_group_unlink_socket(struct us_socket_group_t *group, struct us_socket_t *s) {
@@ -223,7 +207,6 @@ void us_internal_socket_group_unlink_socket(struct us_socket_group_t *group, str
             next->prev = prev;
         }
     }
-    us_internal_disable_sweep_timer(group->loop);
     us_internal_group_maybe_unlink(group);
 }
 
@@ -238,10 +221,10 @@ void us_internal_socket_group_link_connecting_socket(struct us_socket_group_t *g
     }
     group->head_connecting_sockets = c;
     us_internal_group_touched(group);
-    us_internal_enable_sweep_timer(group->loop);
 }
 
 void us_internal_socket_group_unlink_connecting_socket(struct us_socket_group_t *group, struct us_connecting_socket_t *c) {
+    if (group->connecting_iterator == c) group->connecting_iterator = c->next_pending;
     struct us_connecting_socket_t* prev = c->prev_pending;
     struct us_connecting_socket_t* next = c->next_pending;
     if (prev == next) {
@@ -256,7 +239,6 @@ void us_internal_socket_group_unlink_connecting_socket(struct us_socket_group_t 
             next->prev_pending = prev;
         }
     }
-    us_internal_disable_sweep_timer(group->loop);
     us_internal_group_maybe_unlink(group);
 }
 
@@ -269,44 +251,32 @@ struct us_socket_t *us_socket_adopt(struct us_socket_t *s, struct us_socket_grou
     }
     struct us_socket_group_t *old_group = s->group;
     struct us_loop_t *loop = old_group->loop;
-
-    if (s->flags.low_prio_state != 1) {
-        /* This properly updates the iterator if in on_timeout */
-        us_internal_socket_group_unlink_socket(old_group, s);
-    } else if (old_group != group) {
-        /* Stays on the loop-wide low-prio queue, but s->group changes owner —
-         * keep both groups' invariants consistent so old_group can deinit. */
-        old_group->low_prio_count--;
-        group->low_prio_count++;
-        us_internal_group_touched(group);
-        us_internal_group_maybe_unlink(old_group);
+    if (group->loop != loop) {
+        LIBUS_SET_ERR(LIBUS_ERR_INVALID_ARGUMENT);
+        return NULL;
     }
-
-    struct us_connecting_socket_t *c = s->connect_state;
+    const size_t prefix = sizeof(struct us_socket_t) - sizeof(struct us_poll_t);
+    if (s->connect_state || old_ext_size < 0 || ext_size < -1 ||
+        (size_t)old_ext_size > UINT_MAX - prefix ||
+        (ext_size >= 0 && (size_t)ext_size > UINT_MAX - prefix)) {
+        LIBUS_SET_ERR(LIBUS_ERR_INVALID_ARGUMENT);
+        return NULL;
+    }
     struct us_socket_t *new_s = s;
     if (ext_size != -1) {
         struct us_poll_t *poll_ref = &s->p;
         new_s = (struct us_socket_t *) us_poll_resize(poll_ref, loop,
             sizeof(struct us_socket_t) - sizeof(struct us_poll_t) + old_ext_size,
             sizeof(struct us_socket_t) - sizeof(struct us_poll_t) + ext_size);
-        if (new_s != s) {
-            /* Mark the old socket as closed */
-            s->flags.is_closed = 1;
-            /* Link this socket to the close-list and let it be deleted after this iteration */
-            s->next = loop->data.closed_head;
-            loop->data.closed_head = s;
-            /* Mark the old socket as adopted (reallocated) */
-            s->flags.adopted = 1;
-            /* Tell the event loop what is the new socket so we can route subsequent events */
-            s->prev = new_s;
-        }
-        if (c) {
-            c->connecting_head = new_s;
-            c->group = group;
-            c->kind = kind;
-            us_internal_socket_group_unlink_connecting_socket(old_group, c);
-            us_internal_socket_group_link_connecting_socket(group, c);
-        }
+        if (!new_s) return NULL;
+    }
+    us_internal_socket_group_unlink_socket(old_group, s);
+    if (new_s != s) {
+        s->flags.is_closed = 1;
+        s->next = loop->data.closed_head;
+        loop->data.closed_head = s;
+        s->flags.adopted = 1;
+        s->prev = new_s;
     }
     new_s->group = group;
     new_s->kind = kind;
@@ -314,14 +284,11 @@ struct us_socket_t *us_socket_adopt(struct us_socket_t *s, struct us_socket_grou
     new_s->long_timeout = 255;
 
     if (new_s->flags.low_prio_state == 1) {
-        /* update pointers in low-priority queue */
-        if (!new_s->prev) loop->data.low_prio_head = new_s;
-        else new_s->prev->next = new_s;
-
-        if (new_s->next) new_s->next->prev = new_s;
-    } else {
-        us_internal_socket_group_link_socket(group, new_s);
+        if (!new_s->low_prio_prev) loop->data.low_prio_head = new_s;
+        else new_s->low_prio_prev->low_prio_next = new_s;
+        if (new_s->low_prio_next) new_s->low_prio_next->low_prio_prev = new_s;
     }
+    us_internal_socket_group_link_socket(group, new_s);
     return new_s;
 }
 
@@ -347,6 +314,8 @@ static void us_internal_init_listen_socket(struct us_listen_socket_t *ls,
     s->prev = 0;
     s->connect_state = NULL;
     s->connect_next = NULL;
+    s->low_prio_prev = NULL;
+    s->low_prio_next = NULL;
 
     ls->accept_group = group;
     ls->accept_kind = kind;
@@ -363,17 +332,38 @@ static void us_internal_init_listen_socket(struct us_listen_socket_t *ls,
     us_internal_group_touched(group);
 }
 
+static struct us_poll_t *create_listen_poll(struct us_socket_group_t *group, int *error) {
+    _Static_assert(sizeof(struct us_listen_socket_t) - sizeof(struct us_poll_t) <= UINT_MAX, "listener storage exceeds poll allocator size limit");
+    struct us_poll_t *poll = us_create_poll(group->loop, 0, sizeof(struct us_listen_socket_t) - sizeof(struct us_poll_t));
+    if (!poll) {
+#ifdef _WIN32
+        *error = WSA_NOT_ENOUGH_MEMORY;
+#else
+        *error = ENOMEM;
+#endif
+    }
+    return poll;
+}
+
 struct us_listen_socket_t *us_socket_group_listen(struct us_socket_group_t *group,
         unsigned char kind, struct ssl_ctx_st *ssl_ctx,
-        const char *host, int port, int options, int socket_ext_size, int *error) {
-    LIBUS_SOCKET_DESCRIPTOR listen_socket_fd = bsd_create_listen_socket(host, port, options, error);
+        const char *host, int port, int options, int socket_ext_size, struct us_listen_error_t *error) {
+    *error = (struct us_listen_error_t){0};
+    struct us_poll_t *p = create_listen_poll(group, &error->system_error);
+    if (!p) return NULL;
+    LIBUS_SOCKET_DESCRIPTOR listen_socket_fd = bsd_create_listen_socket(host, port, options, &error->system_error);
     if (listen_socket_fd == LIBUS_SOCKET_ERROR) {
-        return 0;
+        us_internal_poll_discard(p, group->loop, 0);
+        return NULL;
     }
 
-    struct us_poll_t *p = us_create_poll(group->loop, 0, sizeof(struct us_listen_socket_t));
+    error->socket_bound = 1;
     us_poll_init(p, listen_socket_fd, POLL_TYPE_SEMI_SOCKET);
-    us_poll_start(p, group->loop, LIBUS_SOCKET_READABLE);
+    if (us_poll_start(p, group->loop, LIBUS_SOCKET_READABLE, &error->poll_error) != 0) {
+        bsd_close_socket(listen_socket_fd);
+        us_poll_free(p, group->loop);
+        return NULL;
+    }
 
     struct us_listen_socket_t *ls = (struct us_listen_socket_t *) p;
     us_internal_init_listen_socket(ls, group, kind, ssl_ctx, options, socket_ext_size);
@@ -387,15 +377,23 @@ struct us_listen_socket_t *us_socket_group_listen(struct us_socket_group_t *grou
 
 struct us_listen_socket_t *us_socket_group_listen_unix(struct us_socket_group_t *group,
         unsigned char kind, struct ssl_ctx_st *ssl_ctx,
-        const char *path, size_t pathlen, int options, int socket_ext_size, int *error) {
-    LIBUS_SOCKET_DESCRIPTOR listen_socket_fd = bsd_create_listen_socket_unix(path, pathlen, options, error);
+        const char *path, size_t pathlen, int options, int socket_ext_size, struct us_listen_error_t *error) {
+    *error = (struct us_listen_error_t){0};
+    struct us_poll_t *p = create_listen_poll(group, &error->system_error);
+    if (!p) return NULL;
+    LIBUS_SOCKET_DESCRIPTOR listen_socket_fd = bsd_create_listen_socket_unix(path, pathlen, options, &error->system_error);
     if (listen_socket_fd == LIBUS_SOCKET_ERROR) {
-        return 0;
+        us_internal_poll_discard(p, group->loop, 0);
+        return NULL;
     }
 
-    struct us_poll_t *p = us_create_poll(group->loop, 0, sizeof(struct us_listen_socket_t));
+    error->socket_bound = 1;
     us_poll_init(p, listen_socket_fd, POLL_TYPE_SEMI_SOCKET);
-    us_poll_start(p, group->loop, LIBUS_SOCKET_READABLE);
+    if (us_poll_start(p, group->loop, LIBUS_SOCKET_READABLE, &error->poll_error) != 0) {
+        bsd_close_socket(listen_socket_fd);
+        us_poll_free(p, group->loop);
+        return NULL;
+    }
 
     struct us_listen_socket_t *ls = (struct us_listen_socket_t *) p;
     us_internal_init_listen_socket(ls, group, kind, ssl_ctx, options, socket_ext_size);
@@ -426,10 +424,6 @@ void us_listen_socket_close(struct us_listen_socket_t *ls) {
         s->flags.is_closed = 1;
     }
     /* We cannot immediately free a listen socket as we can be inside an accept loop */
-}
-
-void *us_listen_socket_ext(struct us_listen_socket_t *ls) {
-    return ls + 1;
 }
 
 struct us_listen_socket_t *us_socket_group_head_listen_socket(struct us_socket_group_t *group) {
@@ -471,21 +465,64 @@ static inline void us_internal_init_connect_socket(struct us_socket_t *s,
     s->flags.last_write_failed = 0;
     s->connect_state = NULL;
     s->connect_next = NULL;
+    s->low_prio_prev = NULL;
+    s->low_prio_next = NULL;
 }
 
-struct us_socket_t *us_socket_group_connect_resolved_dns(struct us_socket_group_t *group,
+struct us_poll_t *us_internal_create_socket_poll(struct us_loop_t *loop, int socket_ext_size) {
+    _Static_assert(sizeof(struct us_socket_t) - sizeof(struct us_poll_t) <= UINT_MAX, "socket storage exceeds poll allocator size limit");
+    const size_t native_ext_size = sizeof(struct us_socket_t) - sizeof(struct us_poll_t);
+    if (socket_ext_size < 0 || (size_t)socket_ext_size > UINT_MAX - native_ext_size) {
+#ifdef _WIN32
+        LIBUS_SET_ERR(WSAEINVAL);
+#else
+        LIBUS_SET_ERR(EINVAL);
+#endif
+        return NULL;
+    }
+    struct us_poll_t *poll = us_create_poll(loop, 0, (unsigned int)(native_ext_size + (size_t)socket_ext_size));
+    if (!poll) {
+#ifdef _WIN32
+        LIBUS_SET_ERR(WSA_NOT_ENOUGH_MEMORY);
+#else
+        LIBUS_SET_ERR(ENOMEM);
+#endif
+    }
+    return poll;
+}
+
+int us_internal_socket_poll_start(struct us_poll_t *poll, struct us_loop_t *loop, int events, struct us_poll_error_t *failure) {
+    if (us_poll_start(poll, loop, events, failure) != 0) return -1;
+    if (us_internal_acquire_sweep_timer(loop, failure) != 0) {
+        us_poll_stop(poll, loop);
+        return -1;
+    }
+    return 0;
+}
+
+static struct us_socket_t *us_socket_group_connect_resolved_dns(struct us_socket_group_t *group,
         unsigned char kind, struct ssl_ctx_st *ssl_ctx,
-        struct sockaddr_storage *addr, int options, int socket_ext_size) {
+        struct sockaddr_storage *addr, int options, int socket_ext_size, struct us_connect_error_t *failure) {
+    struct us_poll_t *p = us_internal_create_socket_poll(group->loop, socket_ext_size);
+    if (!p) {
+        failure->system_error = LIBUS_ERR;
+        return NULL;
+    }
     LIBUS_SOCKET_DESCRIPTOR connect_socket_fd = bsd_create_connect_socket(addr, options);
     if (connect_socket_fd == LIBUS_SOCKET_ERROR) {
+        failure->system_error = LIBUS_ERR;
+        us_internal_poll_discard(p, group->loop, 0);
         return NULL;
     }
 
     bsd_socket_nodelay(connect_socket_fd, 1);
 
-    struct us_poll_t *p = us_create_poll(group->loop, 0, sizeof(struct us_socket_t) + socket_ext_size);
     us_poll_init(p, connect_socket_fd, POLL_TYPE_SEMI_SOCKET);
-    us_poll_start(p, group->loop, LIBUS_SOCKET_WRITABLE);
+    if (us_internal_socket_poll_start(p, group->loop, LIBUS_SOCKET_WRITABLE, &failure->poll_error) != 0) {
+        bsd_close_socket(connect_socket_fd);
+        us_poll_free(p, group->loop);
+        return NULL;
+    }
 
     struct us_socket_t *socket = (struct us_socket_t *) p;
     us_internal_init_connect_socket(socket, group, kind, options);
@@ -501,7 +538,7 @@ struct us_socket_t *us_socket_group_connect_resolved_dns(struct us_socket_group_
     return socket;
 }
 
-static void init_addr_with_port(struct addrinfo* info, int port, struct sockaddr_storage *addr) {
+static void init_addr_with_port(const struct addrinfo* info, int port, struct sockaddr_storage *addr) {
     if (info->ai_family == AF_INET) {
         struct sockaddr_in *addr_in = (struct sockaddr_in *) addr;
         memcpy(addr_in, info->ai_addr, info->ai_addrlen);
@@ -540,40 +577,58 @@ static bool try_parse_ip(const char *ip_str, int port, struct sockaddr_storage *
 
 void *us_socket_group_connect(struct us_socket_group_t *group, unsigned char kind,
         struct ssl_ctx_st *ssl_ctx, const char *host, int port, int options,
-        int socket_ext_size, int *has_dns_resolved) {
+        int socket_ext_size, int *has_dns_resolved, struct us_connect_error_t *failure) {
+    *failure = (struct us_connect_error_t){0};
+    *has_dns_resolved = 0;
     struct us_loop_t *loop = group->loop;
 
     struct sockaddr_storage addr;
     if (try_parse_ip(host, port, &addr)) {
         *has_dns_resolved = 1;
-        return us_socket_group_connect_resolved_dns(group, kind, ssl_ctx, &addr, options, socket_ext_size);
+        return us_socket_group_connect_resolved_dns(group, kind, ssl_ctx, &addr, options, socket_ext_size, failure);
     }
 
-    struct addrinfo_request *ai_req;
-    if (Bun__addrinfo_get(loop, host, (uint16_t)port, &ai_req) == 0) {
-        struct addrinfo_result *result = Bun__addrinfo_getRequestResult(ai_req);
-        if (result->error) {
-            errno = result->error;
-            Bun__addrinfo_freeRequest(ai_req, 1);
+    BunDNSRequest *ai_req = NULL;
+    uint8_t lookup_status = bun_dns_lookup(loop, host, (uint16_t)port, &ai_req);
+    if (lookup_status != BUN_DNS_READY && lookup_status != BUN_DNS_PENDING) {
+        failure->system_error = lookup_status == BUN_DNS_OUT_OF_MEMORY ? LIBUS_ERR_OUT_OF_MEMORY : LIBUS_ERR_INVALID_ARGUMENT;
+        return NULL;
+    }
+    if (lookup_status == BUN_DNS_READY) {
+        const struct addrinfo *addresses = NULL;
+        int error = bun_dns_result(ai_req, &addresses);
+        if (error || !addresses) {
+            failure->dns_error = error ? error : EAI_NONAME;
+            bun_dns_release(ai_req, 1);
             return NULL;
         }
 
-        struct addrinfo_result_entry *entries = result->entries;
-        if (entries && entries->info.ai_next == NULL) {
+        if (addresses->ai_next == NULL) {
             struct sockaddr_storage a;
-            init_addr_with_port(&entries->info, port, &a);
+            init_addr_with_port(addresses, port, &a);
             *has_dns_resolved = 1;
-            struct us_socket_t *s = us_socket_group_connect_resolved_dns(group, kind, ssl_ctx, &a, options, socket_ext_size);
-            Bun__addrinfo_freeRequest(ai_req, s == NULL);
+            struct us_socket_t *s = us_socket_group_connect_resolved_dns(group, kind, ssl_ctx, &a, options, socket_ext_size, failure);
+            bun_dns_release(ai_req, s == NULL);
             return s;
         }
     }
 
-    /* CodeRabbit: us_calloc is mimalloc, which aborts on OOM (matches the
-     * other 13 unchecked allocations in this library). A NULL-check here would
-     * also have to cancel the in-flight ai_req — brittle for an unreachable
-     * path. */
+    if (socket_ext_size < 0 || (size_t)socket_ext_size > SIZE_MAX - sizeof(struct us_connecting_socket_t)) {
+        failure->system_error = LIBUS_ERR_INVALID_ARGUMENT;
+        bun_dns_release(ai_req, 0);
+        return NULL;
+    }
     struct us_connecting_socket_t *c = us_calloc(1, sizeof(struct us_connecting_socket_t) + socket_ext_size);
+    if (!c) {
+        failure->system_error = LIBUS_ERR_OUT_OF_MEMORY;
+        bun_dns_release(ai_req, 0);
+        return NULL;
+    }
+    if (us_internal_acquire_sweep_timer(loop, &failure->poll_error) != 0) {
+        us_free(c);
+        bun_dns_release(ai_req, 0);
+        return NULL;
+    }
     c->socket_ext_size = socket_ext_size;
     c->options = options;
     c->kind = kind;
@@ -593,22 +648,46 @@ void *us_socket_group_connect(struct us_socket_group_t *group, unsigned char kin
     loop->num_polls++;
 #endif
 
-    Bun__addrinfo_set(ai_req, c);
+    if (!bun_dns_subscribe(ai_req, c)) {
+#ifdef _WIN32
+        loop->uv_loop->active_handles--;
+#else
+        loop->num_polls--;
+#endif
+        c->pending_resolve_callback = 0;
+        c->addrinfo_req = NULL;
+        c->closed = 1;
+        bun_dns_release(ai_req, 0);
+        us_connecting_socket_free(c);
+        failure->system_error = LIBUS_ERR_OUT_OF_MEMORY;
+        return NULL;
+    }
 
     return c;
 }
 
 struct us_socket_t *us_socket_group_connect_unix(struct us_socket_group_t *group,
         unsigned char kind, struct ssl_ctx_st *ssl_ctx,
-        const char *server_path, size_t pathlen, int options, int socket_ext_size) {
+        const char *server_path, size_t pathlen, int options, int socket_ext_size, struct us_connect_error_t *failure) {
+    *failure = (struct us_connect_error_t){0};
+    struct us_poll_t *p = us_internal_create_socket_poll(group->loop, socket_ext_size);
+    if (!p) {
+        failure->system_error = LIBUS_ERR;
+        return NULL;
+    }
     LIBUS_SOCKET_DESCRIPTOR connect_socket_fd = bsd_create_connect_socket_unix(server_path, pathlen, options);
     if (connect_socket_fd == LIBUS_SOCKET_ERROR) {
-        return 0;
+        failure->system_error = LIBUS_ERR;
+        us_internal_poll_discard(p, group->loop, 0);
+        return NULL;
     }
 
-    struct us_poll_t *p = us_create_poll(group->loop, 0, sizeof(struct us_socket_t) + socket_ext_size);
     us_poll_init(p, connect_socket_fd, POLL_TYPE_SEMI_SOCKET);
-    us_poll_start(p, group->loop, LIBUS_SOCKET_WRITABLE);
+    if (us_internal_socket_poll_start(p, group->loop, LIBUS_SOCKET_WRITABLE, &failure->poll_error) != 0) {
+        bsd_close_socket(connect_socket_fd);
+        us_poll_free(p, group->loop);
+        return NULL;
+    }
 
     struct us_socket_t *connect_socket = (struct us_socket_t *) p;
     us_internal_init_connect_socket(connect_socket, group, kind, options);
@@ -628,16 +707,29 @@ int start_connections(struct us_connecting_socket_t *c, int count) {
     for (; c->addrinfo_head != NULL && opened < count; c->addrinfo_head = c->addrinfo_head->ai_next) {
         struct sockaddr_storage addr;
         init_addr_with_port(c->addrinfo_head, c->port, &addr);
+        struct us_poll_t *poll = us_internal_create_socket_poll(loop, c->socket_ext_size);
+        if (!poll) {
+            c->failure = (struct us_connect_error_t){.system_error = LIBUS_ERR};
+            break;
+        }
         LIBUS_SOCKET_DESCRIPTOR connect_socket_fd = bsd_create_connect_socket(&addr, c->options);
         if (connect_socket_fd == LIBUS_SOCKET_ERROR) {
+            c->failure = (struct us_connect_error_t){.system_error = LIBUS_ERR};
+            us_internal_poll_discard(poll, loop, 0);
+            continue;
+        }
+        bsd_socket_nodelay(connect_socket_fd, 1);
+        struct us_socket_t *s = (struct us_socket_t *)poll;
+        us_poll_init(poll, connect_socket_fd, POLL_TYPE_SEMI_SOCKET);
+        struct us_poll_error_t poll_error;
+        if (us_internal_socket_poll_start(poll, loop, LIBUS_SOCKET_WRITABLE, &poll_error) != 0) {
+            c->failure = (struct us_connect_error_t){.poll_error = poll_error};
+            bsd_close_socket(connect_socket_fd);
+            us_poll_free(poll, loop);
             continue;
         }
         ++opened;
-        bsd_socket_nodelay(connect_socket_fd, 1);
-        struct us_socket_t *s = (struct us_socket_t *)us_create_poll(loop, 0, sizeof(struct us_socket_t) + c->socket_ext_size);
         us_internal_init_connect_socket(s, group, c->kind, c->options);
-        s->timeout = c->timeout;
-        s->long_timeout = c->long_timeout;
 
         us_internal_socket_group_link_socket(group, s);
 
@@ -647,9 +739,6 @@ int start_connections(struct us_connecting_socket_t *c, int count) {
         c->connecting_head = s;
         s->connect_state = c;
 
-        struct us_poll_t *poll = &s->p;
-        us_poll_init(poll, connect_socket_fd, POLL_TYPE_SEMI_SOCKET);
-        us_poll_start(poll, loop, LIBUS_SOCKET_WRITABLE);
     }
     return opened;
 }
@@ -658,11 +747,11 @@ void us_internal_socket_after_resolve(struct us_connecting_socket_t *c) {
     /* close_all() may have run between the DNS thread queuing this callback and
      * us reaching it; c->group is NULL'd at close so it can't be touched. The
      * keep-alive (num_polls/active_handles) was already balanced by the close
-     * path's Bun__addrinfo_cancel branch. */
+     * cancellation path. */
     c->pending_resolve_callback = 0;
     if (c->closed) {
         if (c->addrinfo_req) {
-            Bun__addrinfo_freeRequest(c->addrinfo_req, 0);
+            bun_dns_release(c->addrinfo_req, 0);
             c->addrinfo_req = 0;
         }
         us_connecting_socket_free(c);
@@ -675,13 +764,12 @@ void us_internal_socket_after_resolve(struct us_connecting_socket_t *c) {
 #else
     group->loop->num_polls--;
 #endif
-    struct addrinfo_result *result = Bun__addrinfo_getRequestResult(c->addrinfo_req);
-    if (result->error) {
+    int error = bun_dns_result(c->addrinfo_req, &c->addrinfo_head);
+    if (error || !c->addrinfo_head) {
+        c->failure = (struct us_connect_error_t){.dns_error = error ? error : EAI_NONAME};
         us_connecting_socket_close(c);
         return;
     }
-
-    c->addrinfo_head = &result->entries->info;
 
     int opened = start_connections(c, CONCURRENT_CONNECTIONS);
     if (opened == 0) {
@@ -689,27 +777,12 @@ void us_internal_socket_after_resolve(struct us_connecting_socket_t *c) {
     }
 }
 
-void us_internal_socket_after_open(struct us_socket_t *s, int error) {
+void us_internal_socket_after_open(struct us_socket_t *s) {
     struct us_connecting_socket_t *c = s->connect_state;
-    #if _WIN32
-    if (error == 0) {
-        if (recv(us_poll_fd((struct us_poll_t*)s), NULL, 0, MSG_PUSH_IMMEDIATE) == SOCKET_ERROR) {
-            error = WSAGetLastError();
-            switch (error) {
-                case WSAEWOULDBLOCK:
-                case WSAEINTR: {
-                    error = 0;
-                    break;
-                }
-                default: {
-                    break;
-                }
-            }
-        }
-    }
-    #endif
+    const int error = bsd_socket_error(us_poll_fd(&s->p));
     if (error) {
         if (c) {
+            c->failure = (struct us_connect_error_t){.system_error = error};
             for (struct us_socket_t **next = &c->connecting_head; *next; next = &(*next)->connect_next) {
                 if (*next == s) {
                     *next = s->connect_next;
@@ -735,6 +808,7 @@ void us_internal_socket_after_open(struct us_socket_t *s, int error) {
         us_socket_timeout(s, 0);
 
         if (c) {
+            s->long_timeout = c->long_timeout;
             for (struct us_socket_t *next = c->connecting_head; next; next = next->connect_next) {
                 if (next != s) {
                     us_socket_close(next, LIBUS_SOCKET_CLOSE_CODE_CONNECTION_RESET, 0);
@@ -744,7 +818,7 @@ void us_internal_socket_after_open(struct us_socket_t *s, int error) {
             if (c->ssl_ctx) {
                 us_internal_ssl_attach(s, c->ssl_ctx, 1, NULL, NULL);
             }
-            Bun__addrinfo_freeRequest(c->addrinfo_req, 0);
+            bun_dns_release(c->addrinfo_req, 0);
             us_connecting_socket_free(c);
             s->connect_state = NULL;
         }

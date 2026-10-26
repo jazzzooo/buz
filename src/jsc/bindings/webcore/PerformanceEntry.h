@@ -62,6 +62,7 @@ public:
     size_t memoryCost() const;
 
     static std::optional<Type> parseEntryTypeString(const String& entryType);
+    static bool tryStableSort(Vector<RefPtr<PerformanceEntry>>&);
 
     static bool startTimeCompareLessThan(const RefPtr<PerformanceEntry>& a, const RefPtr<PerformanceEntry>& b)
     {

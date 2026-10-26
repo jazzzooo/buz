@@ -89,8 +89,6 @@ pub const CssColor = union(enum) {
 
     const This = @This();
 
-    pub const jsFunctionColor = @import("../../css_jsc/color_js.zig").jsFunctionColor;
-
     pub fn isCompatible(this: *const CssColor, browsers: css.targets.Browsers) bool {
         return switch (this.*) {
             .current_color, .rgba, .float => true,
@@ -648,7 +646,7 @@ pub fn parseColorFunction(location: css.SourceLocation, function: []const u8, in
     const ColorFunctions = enum { lab, oklab, lch, oklch, color, hsl, hsla, hwb, rgb, rgba, @"color-mix", @"light-dark" };
     const Map = bun.ComptimeEnumMap(ColorFunctions);
 
-    if (Map.getASCIIICaseInsensitive(function)) |val| {
+    if (Map.getCaseInsensitiveASCII(function)) |val| {
         return switch (val) {
             .lab => parseLab(LAB, input, &parser, struct {
                 fn callback(l: f32, a: f32, b: f32, alpha: f32) LABColor {
@@ -2861,7 +2859,7 @@ pub fn parsePredefinedRelative(
             xyz,
         };
         const Map = bun.ComptimeEnumMap(Variants);
-        if (Map.getAnyCase(colorspace)) |ret| {
+        if (Map.getCaseInsensitiveASCII(colorspace)) |ret| {
             switch (ret) {
                 .srgb => break :predefined .{ .srgb = SRGB{
                     .r = a,

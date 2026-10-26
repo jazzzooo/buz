@@ -409,11 +409,9 @@ pub const INPUT_RECORD = extern struct {
     },
 };
 
-// Bun__UVSignalHandle__{init,close}: see src/runtime/node/uv_signal_handle_windows.zig
-
 comptime {
     if (Environment.isWindows) {
-        @export(&@"windows process.dlopen", .{ .name = "Bun__LoadLibraryBunString" });
+        _ = WindowsLoadLibraryBinding;
     }
 }
 
@@ -672,20 +670,11 @@ pub fn editWin32BinarySubsystem(fd: bun.sys.File, subsystem: Subsystem) !void {
 }
 
 pub const rescle = struct {
-    extern fn rescle__setIcon([*:0]const u16, [*:0]const u16) c_int;
-    extern fn rescle__setWindowsMetadata(
-        [*:0]const u16, // exe_path
-        ?[*:0]const u16, // icon_path (nullable)
-        ?[*:0]const u16, // title (nullable)
-        ?[*:0]const u16, // publisher (nullable)
-        ?[*:0]const u16, // version (nullable)
-        ?[*:0]const u16, // description (nullable)
-        ?[*:0]const u16, // copyright (nullable)
-    ) c_int;
+    const resource_c = @import("rescle-ffi");
 
     pub fn setIcon(exe_path: [*:0]const u16, icon: [*:0]const u16) !void {
         comptime bun.assert(bun.Environment.isWindows);
-        const status = rescle__setIcon(exe_path, icon);
+        const status = resource_c.rescle__setIcon(exe_path, icon);
         return switch (status) {
             0 => {},
             else => error.IconEditError,
@@ -703,32 +692,20 @@ pub const rescle = struct {
     ) !void {
         comptime bun.assert(bun.Environment.isWindows);
 
-        // Validate version string format if provided
-        if (version) |v| {
-            // Empty version string is invalid
-            if (v.len == 0) {
-                return error.InvalidVersionFormat;
-            }
-
-            // Basic validation: check format and ranges
-            var parts_count: u32 = 0;
-            var iter = std.mem.tokenizeAny(u8, v, ".");
-            while (iter.next()) |part| : (parts_count += 1) {
-                if (parts_count >= 4) {
-                    return error.InvalidVersionFormat;
+        const parsed_version: ?resource_c.BunResourceVersion = if (version) |v| blk: {
+            var components: [4]u16 = @splat(0);
+            var count: usize = 0;
+            var parts = std.mem.splitScalar(u8, v, '.');
+            while (parts.next()) |part| : (count += 1) {
+                if (count == components.len or part.len == 0) return error.InvalidVersionFormat;
+                for (part) |character| {
+                    if (!std.ascii.isDigit(character)) return error.InvalidVersionFormat;
                 }
-                const num = std.fmt.parseInt(u16, part, 10) catch {
-                    return error.InvalidVersionFormat;
-                };
-                // u16 already ensures value is 0-65535
-                _ = num;
+                components[count] = std.fmt.parseInt(u16, part, 10) catch return error.InvalidVersionFormat;
             }
-            if (parts_count == 0) {
-                return error.InvalidVersionFormat;
-            }
-        }
+            break :blk .{ .major = components[0], .minor = components[1], .patch = components[2], .revision = components[3] };
+        } else null;
 
-        // Allocate UTF-16 strings
         const allocator = bun.default_allocator;
 
         // Icon is a path, so use toWPathNormalized with proper buffer handling
@@ -747,21 +724,18 @@ pub const rescle = struct {
         const publisher_w = if (publisher) |p| try bun.strings.toUTF16AllocForReal(allocator, p, false, true) else null;
         defer if (publisher_w) |pw| allocator.free(pw);
 
-        const version_w = if (version) |v| try bun.strings.toUTF16AllocForReal(allocator, v, false, true) else null;
-        defer if (version_w) |vw| allocator.free(vw);
-
         const description_w = if (description) |d| try bun.strings.toUTF16AllocForReal(allocator, d, false, true) else null;
         defer if (description_w) |dw| allocator.free(dw);
 
         const copyright_w = if (copyright) |cr| try bun.strings.toUTF16AllocForReal(allocator, cr, false, true) else null;
         defer if (copyright_w) |cw| allocator.free(cw);
 
-        const status = rescle__setWindowsMetadata(
+        const status = resource_c.rescle__setWindowsMetadata(
             exe_path,
             if (icon_w) |iw| iw.ptr else null,
             if (title_w) |tw| tw.ptr else null,
             if (publisher_w) |pw| pw.ptr else null,
-            if (version_w) |vw| vw.ptr else null,
+            if (parsed_version) |*v| v else null,
             if (description_w) |dw| dw.ptr else null,
             if (copyright_w) |cw| cw.ptr else null,
         );
@@ -777,7 +751,6 @@ pub const rescle = struct {
             -8 => error.FailedToSetProductVersion,
             -9 => error.FailedToSetFileVersionString,
             -10 => error.FailedToSetProductVersionString,
-            -11 => error.InvalidVersionFormat,
             -12 => error.FailedToCommit,
             else => error.WindowsMetadataEditError,
         };
@@ -811,8 +784,6 @@ const watcherChildEnv: [:0]const u16 = bun.strings.toUTF16Literal("_BUN_WATCHER_
 // magic exit code to indicate to the watcher manager that the child process should be re-spawned
 // this was randomly generated - we need to avoid using a common exit code that might be used by the script itself
 pub const watcher_reload_exit: DWORD = 3224497970;
-
-pub const spawn = @import("../../runtime/api/bun/spawn.zig").PosixSpawn;
 
 pub fn isWatcherChild() bool {
     var buf: [1]u16 = undefined;
@@ -981,32 +952,38 @@ pub fn spawnWatcherChild(
 
 /// Returns null on error. Use windows API to lookup the actual error.
 /// The reason this function is in zig is so that we can use our own utf16-conversion functions.
-///
-/// Using characters16() does not seem to always have the sentinel. or something else
-/// broke when I just used it. Not sure. ... but this works!
-fn @"windows process.dlopen"(str: *bun.String) callconv(.c) ?*anyopaque {
+fn bindWindowsLoadLibrary(
+    args: bun.bindgen.Args(WindowsLoadLibrarySchema),
+) bun.bindgen.Return(WindowsLoadLibrarySchema) {
     if (comptime !bun.Environment.isWindows) {
         @compileError("unreachable");
     }
 
     var buf: bun.WPathBuffer = undefined;
-    const data = switch (str.encoding()) {
-        .utf8 => bun.strings.convertUTF8toUTF16InBuffer(&buf, str.utf8()),
-        .utf16 => brk: {
-            @memcpy(buf[0..str.length()], str.utf16());
-            break :brk buf[0..str.length()];
+    const data = switch (args.path.unsafePtr("the generated native-export frame owns the path string until the Windows loader finishes reading it")) {
+        .utf16 => |units| brk: {
+            @memcpy(buf[0..units.len], units);
+            break :brk buf[0..units.len];
         },
-        .latin1 => brk: {
-            bun.strings.copyU8IntoU16(&buf, str.latin1());
-            break :brk buf[0..str.length()];
+        .latin1 => |units| brk: {
+            bun.strings.copyU8IntoU16(&buf, units);
+            break :brk buf[0..units.len];
         },
     };
     buf[data.len] = 0;
     const LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008;
-    return bun.windows.LoadLibraryExW(buf[0..data.len :0].ptr, null, LOAD_WITH_ALTERED_SEARCH_PATH);
+    const handle = bun.windows.LoadLibraryExW(buf[0..data.len :0].ptr, null, LOAD_WITH_ALTERED_SEARCH_PATH) orelse return null;
+    return @ptrCast(handle);
 }
 
-pub const windows_enable_stdio_inheritance = @import("../../windows_sys/externs.zig").windows_enable_stdio_inheritance;
+pub fn windows_enable_stdio_inheritance() void {
+    for ([_]DWORD{ c.STD_INPUT_HANDLE, c.STD_OUTPUT_HANDLE, c.STD_ERROR_HANDLE }) |kind| {
+        const handle = c.GetStdHandle(kind);
+        if (handle != null and handle != windows.INVALID_HANDLE_VALUE) {
+            _ = c.SetHandleInformation(handle, c.HANDLE_FLAG_INHERIT, c.HANDLE_FLAG_INHERIT);
+        }
+    }
+}
 
 /// Extracted from standard library except this takes an open file descriptor
 ///
@@ -1229,6 +1206,9 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
 const c = bun.c;
+const WindowsDynamicLibraryBindings = bun.bindgen.Module("windows_dynamic_library");
+const WindowsLoadLibrarySchema = WindowsDynamicLibraryBindings.nativeExport("windowsLoadLibrary");
+const WindowsLoadLibraryBinding = bun.bindgen.Fn(WindowsLoadLibrarySchema, bindWindowsLoadLibrary);
 
 const Maybe = bun.sys.Maybe;
 const SystemErrno = bun.sys.SystemErrno;

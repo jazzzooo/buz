@@ -1,6 +1,7 @@
 #include "NodeVMScriptFetcher.h"
 #include "NodeVMSourceTextModule.h"
 #include "NodeVMSyntheticModule.h"
+#include "JSBuffer.h"
 
 #include "ErrorCode.h"
 #include "JSDOMExceptionHandling.h"
@@ -15,6 +16,7 @@
 #include "JavaScriptCore/JSSourceCode.h"
 #include "JavaScriptCore/ModuleAnalyzer.h"
 #include "JavaScriptCore/ModuleProgramCodeBlock.h"
+#include "JavaScriptCore/ObjectConstructor.h"
 #include "JavaScriptCore/Parser.h"
 #include "JavaScriptCore/SourceCodeKey.h"
 
@@ -23,79 +25,25 @@
 namespace Bun {
 using namespace NodeVM;
 
-NodeVMSourceTextModule* NodeVMSourceTextModule::create(VM& vm, JSGlobalObject* globalObject, ArgList args)
+NodeVMSourceTextModule* NodeVMSourceTextModule::create(
+    VM& vm,
+    JSGlobalObject* globalObject,
+    WTF::String identifier,
+    JSObject* context,
+    WTF::String sourceText,
+    uint32_t lineOffset,
+    uint32_t columnOffset,
+    WTF::Vector<uint8_t> cachedData,
+    JSValue initializeImportMeta,
+    JSValue moduleWrapper,
+    JSValue dynamicImportCallback)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
-
-    JSValue identifierValue = args.at(0);
-    if (!identifierValue.isString()) {
-        throwArgumentTypeError(*globalObject, scope, 0, "identifier"_s, "Module"_s, "Module"_s, "string"_s);
-        return nullptr;
-    }
-
-    JSValue contextValue = args.at(1);
-    if (contextValue.isUndefined()) {
-        contextValue = globalObject;
-    } else if (!contextValue.isObject()) {
-        throwArgumentTypeError(*globalObject, scope, 1, "context"_s, "Module"_s, "Module"_s, "object"_s);
-        return nullptr;
-    }
-
-    JSValue sourceTextValue = args.at(2);
-    if (!sourceTextValue.isString()) {
-        throwArgumentTypeError(*globalObject, scope, 2, "sourceText"_s, "Module"_s, "Module"_s, "string"_s);
-        return nullptr;
-    }
-
-    JSValue lineOffsetValue = args.at(3);
-    if (!lineOffsetValue.isUInt32AsAnyInt()) {
-        throwArgumentTypeError(*globalObject, scope, 3, "lineOffset"_s, "Module"_s, "Module"_s, "number"_s);
-        return nullptr;
-    }
-
-    JSValue columnOffsetValue = args.at(4);
-    if (!columnOffsetValue.isUInt32AsAnyInt()) {
-        throwArgumentTypeError(*globalObject, scope, 4, "columnOffset"_s, "Module"_s, "Module"_s, "number"_s);
-        return nullptr;
-    }
-
-    JSValue cachedDataValue = args.at(5);
-    WTF::Vector<uint8_t> cachedData;
-    if (!cachedDataValue.isUndefined() && !extractCachedData(cachedDataValue, cachedData)) {
-        Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "options.cachedData"_s, "Buffer, TypedArray, or DataView"_s, cachedDataValue);
-        return nullptr;
-    }
-
-    JSValue initializeImportMeta = args.at(6);
-    if (!initializeImportMeta.isUndefined() && !initializeImportMeta.isCallable()) {
-        throwArgumentTypeError(*globalObject, scope, 6, "options.initializeImportMeta"_s, "Module"_s, "Module"_s, "function"_s);
-        return nullptr;
-    }
-
-    JSValue moduleWrapper = args.at(7);
-    if (!moduleWrapper.isUndefined() && !moduleWrapper.isObject()) {
-        throwArgumentTypeError(*globalObject, scope, 7, "moduleWrapper"_s, "Module"_s, "Module"_s, "object"_s);
-        return nullptr;
-    }
-
-    JSValue dynamicImportCallback = args.at(8);
-    if (!dynamicImportCallback.isUndefined() && !dynamicImportCallback.isCallable()) {
-        throwArgumentTypeError(*globalObject, scope, 8, "dynamicImportCallback"_s, "Module"_s, "Module"_s, "function"_s);
-        return nullptr;
-    }
-
-    uint32_t lineOffset = lineOffsetValue.toUInt32(globalObject);
-    RETURN_IF_EXCEPTION(scope, nullptr);
-    uint32_t columnOffset = columnOffsetValue.toUInt32(globalObject);
-    RETURN_IF_EXCEPTION(scope, nullptr);
 
     RefPtr fetcher(NodeVMScriptFetcher::create(vm, dynamicImportCallback, moduleWrapper));
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     SourceOrigin sourceOrigin { {}, *fetcher };
-
-    WTF::String sourceText = sourceTextValue.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, nullptr);
 
     Ref<StringSourceProvider> sourceProvider = StringSourceProvider::create(WTF::move(sourceText), sourceOrigin, String {}, SourceTaintedOrigin::Untainted,
         TextPosition { OrdinalNumber::fromZeroBasedInt(lineOffset), OrdinalNumber::fromZeroBasedInt(columnOffset) }, SourceProviderSourceType::Module);
@@ -103,10 +51,8 @@ NodeVMSourceTextModule* NodeVMSourceTextModule::create(VM& vm, JSGlobalObject* g
     SourceCode sourceCode(WTF::move(sourceProvider), lineOffset, columnOffset);
 
     auto* zigGlobalObject = defaultGlobalObject(globalObject);
-    WTF::String identifier = identifierValue.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, nullptr);
     NodeVMSourceTextModule* ptr = new (NotNull, allocateCell<NodeVMSourceTextModule>(vm)) NodeVMSourceTextModule(
-        vm, zigGlobalObject->NodeVMSourceTextModuleStructure(), WTF::move(identifier), contextValue,
+        vm, zigGlobalObject->NodeVMSourceTextModuleStructure(), WTF::move(identifier), context,
         WTF::move(sourceCode), moduleWrapper, initializeImportMeta);
     RETURN_IF_EXCEPTION(scope, nullptr);
     ptr->finishCreation(vm);
@@ -312,11 +258,10 @@ AbstractModuleRecord* NodeVMSourceTextModule::moduleRecord(JSGlobalObject* globa
     return m_moduleRecord.get();
 }
 
-JSValue NodeVMSourceTextModule::link(JSGlobalObject* globalObject, JSArray* specifiers, JSArray* moduleNatives, JSValue scriptFetcher)
+JSValue NodeVMSourceTextModule::link(JSGlobalObject* globalObject, const WTF::Vector<WTF::String>& specifiers, const WTF::Vector<NodeVMModule*>& moduleNatives)
 {
-    const unsigned length = specifiers->getArrayLength();
-
-    ASSERT(length == moduleNatives->getArrayLength());
+    const unsigned length = specifiers.size();
+    ASSERT(length == moduleNatives.size());
 
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -331,19 +276,9 @@ JSValue NodeVMSourceTextModule::link(JSGlobalObject* globalObject, JSArray* spec
     if (length != 0) {
         const auto& requested = record->requestedModules();
         for (unsigned i = 0; i < length; i++) {
-            JSValue specifierValue = specifiers->getDirectIndex(globalObject, i);
-            RETURN_IF_EXCEPTION(scope, {});
-            JSValue moduleNativeValue = moduleNatives->getDirectIndex(globalObject, i);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            ASSERT(specifierValue.isString());
-            ASSERT(moduleNativeValue.isObject());
-
-            WTF::String specifier = specifierValue.toWTFString(globalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-            JSObject* moduleNative = moduleNativeValue.getObject();
-            RETURN_IF_EXCEPTION(scope, {});
-            AbstractModuleRecord* resolvedRecord = uncheckedDowncast<NodeVMModule>(moduleNative)->moduleRecord(globalObject);
+            WTF::String specifier = specifiers[i];
+            NodeVMModule* moduleNative = moduleNatives[i];
+            AbstractModuleRecord* resolvedRecord = moduleNative->moduleRecord(globalObject);
             RETURN_IF_EXCEPTION(scope, {});
 
             // innerModuleLinking asserts every visited cyclic record is past
@@ -386,7 +321,6 @@ JSValue NodeVMSourceTextModule::link(JSGlobalObject* globalObject, JSArray* spec
     if (record->status() == JSC::CyclicModuleRecord::Status::New)
         record->setStatus(JSC::CyclicModuleRecord::Status::Unlinked);
 
-    UNUSED_PARAM(scriptFetcher);
     status(Status::Linked);
     return jsUndefined();
 }
@@ -494,7 +428,6 @@ void NodeVMSourceTextModule::visitChildrenImpl(JSCell* cell, Visitor& visitor)
     visitor.append(vmModule->m_moduleRequestsArray);
     visitor.append(vmModule->m_cachedExecutable);
     visitor.append(vmModule->m_cachedBytecodeBuffer);
-    visitor.append(vmModule->m_evaluationException);
     visitor.append(vmModule->m_initializeImportMeta);
 }
 

@@ -1,11 +1,13 @@
 unsafe_http_client: AsyncHTTP = undefined,
+request_headers: ?HTTP.Headers = null,
+if_modified_since_owned: []const u8 = "",
 response: bun.http.HTTPClientResult = .{},
 task_id: Task.Id,
 url_buf: []const u8 = &[_]u8{},
+owned_url: ?[]const u8 = null,
 retried: u16 = 0,
 allocator: std.mem.Allocator,
-request_buffer: MutableString = undefined,
-response_buffer: MutableString = undefined,
+response_buffer: MutableString = MutableString.initEmpty(bun.default_allocator),
 package_manager: *PackageManager,
 callback: union(Task.Tag) {
     package_manifest: struct {
@@ -18,8 +20,6 @@ callback: union(Task.Tag) {
     git_checkout: void,
     local_tarball: void,
 },
-/// Key in patchedDependencies in package.json
-apply_patch_task: ?*PatchTask = null,
 next: ?*NetworkTask = null,
 
 /// Producer/consumer buffer that feeds tarball bytes from the HTTP thread
@@ -155,31 +155,15 @@ pub const Authorization = enum {
 const accept_header_value = "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*";
 const accept_header_value_extended = "application/json, */*";
 
-const default_headers_buf: string = "Accept" ++ accept_header_value;
-const extended_headers_buf: string = "Accept" ++ accept_header_value_extended;
-
-fn appendAuth(header_builder: *HeaderBuilder, scope: *const Npm.Registry.Scope) void {
+fn appendAuth(headers: *HTTP.Headers, scope: *const Npm.Registry.Scope) OOM!void {
     if (scope.token.len > 0) {
-        header_builder.appendFmt("Authorization", "Bearer {s}", .{scope.token});
+        try headers.appendFmt("Authorization", "Bearer {s}", .{scope.token});
     } else if (scope.auth.len > 0) {
-        header_builder.appendFmt("Authorization", "Basic {s}", .{scope.auth});
+        try headers.appendFmt("Authorization", "Basic {s}", .{scope.auth});
     } else {
         return;
     }
-    header_builder.append("npm-auth-type", "legacy");
-}
-
-fn countAuth(header_builder: *HeaderBuilder, scope: *const Npm.Registry.Scope) void {
-    if (scope.token.len > 0) {
-        header_builder.count("Authorization", "");
-        header_builder.content.cap += "Bearer ".len + scope.token.len;
-    } else if (scope.auth.len > 0) {
-        header_builder.count("Authorization", "");
-        header_builder.content.cap += "Basic ".len + scope.auth.len;
-    } else {
-        return;
-    }
-    header_builder.count("npm-auth-type", "legacy");
+    try headers.append("npm-auth-type", "legacy");
 }
 
 const ForManifestError = OOM || error{
@@ -210,10 +194,11 @@ pub fn forManifest(
             encoded_name = try std.mem.replaceOwned(u8, stack_fallback_allocator.allocator(), name, "/", "%2f");
         }
 
-        const tmp = bun.jsc.URL.join(
-            bun.String.borrowUTF8(scope.url.href),
-            bun.String.borrowUTF8(encoded_name),
-        );
+        const base_url = bun.String.cloneUTF8(scope.url.href);
+        defer base_url.deref();
+        const relative_url = bun.String.cloneUTF8(encoded_name);
+        defer relative_url.deref();
+        const tmp = try this.package_manager.javascript_semantics.joinURL(base_url, relative_url);
         defer tmp.deref();
 
         if (tmp.tag == .Dead) {
@@ -261,6 +246,10 @@ pub fn forManifest(
         // This actually duplicates the string! So we defer deref the WTF managed one above.
         break :blk try tmp.toOwnedSlice(allocator);
     };
+    errdefer {
+        allocator.free(this.url_buf);
+        this.url_buf = "";
+    }
 
     var last_modified: string = "";
     var etag: string = "";
@@ -271,57 +260,28 @@ pub fn forManifest(
         }
     }
 
-    var header_builder = HeaderBuilder{};
-
-    countAuth(&header_builder, scope);
-
+    var headers: HTTP.Headers = .{ .allocator = allocator };
+    defer headers.deinit();
+    try appendAuth(&headers, scope);
     if (etag.len != 0) {
-        header_builder.count("If-None-Match", etag);
+        try headers.append("If-None-Match", etag);
+    } else if (last_modified.len != 0) {
+        try headers.append("If-Modified-Since", last_modified);
     }
-
-    if (last_modified.len != 0) {
-        header_builder.count("If-Modified-Since", last_modified);
-    }
-
-    if (header_builder.header_count > 0) {
-        const accept_header = if (needs_extended) accept_header_value_extended else accept_header_value;
-        header_builder.count("Accept", accept_header);
-        if (last_modified.len > 0 and etag.len > 0) {
-            header_builder.content.count(last_modified);
-        }
-        try header_builder.allocate(allocator);
-
-        appendAuth(&header_builder, scope);
-
-        if (etag.len != 0) {
-            header_builder.append("If-None-Match", etag);
-        } else if (last_modified.len != 0) {
-            header_builder.append("If-Modified-Since", last_modified);
-        }
-
-        header_builder.append("Accept", accept_header);
-
-        if (last_modified.len > 0 and etag.len > 0) {
-            last_modified = header_builder.content.append(last_modified);
-        }
-    } else {
-        const header_buf = if (needs_extended) &extended_headers_buf else &default_headers_buf;
-        try header_builder.entries.append(
-            allocator,
-            .{
-                .name = .{ .offset = 0, .length = @as(u32, @truncate("Accept".len)) },
-                .value = .{ .offset = "Accept".len, .length = @as(u32, @truncate(header_buf.len - "Accept".len)) },
-            },
-        );
-        header_builder.header_count = 1;
-        header_builder.content = GlobalStringBuilder{ .ptr = @as([*]u8, @ptrCast(@constCast(header_buf.ptr))), .len = header_buf.len, .cap = header_buf.len };
-    }
+    try headers.append("Accept", if (needs_extended) accept_header_value_extended else accept_header_value);
+    const last_modified_owned: []const u8 = if (last_modified.len != 0 and bun.feature_flag.BUN_FEATURE_FLAG_LAST_MODIFIED_PRETEND_304.get())
+        try allocator.dupe(u8, last_modified)
+    else
+        "";
+    errdefer allocator.free(last_modified_owned);
 
     this.response_buffer = try MutableString.init(allocator, 0);
+    errdefer this.response_buffer.deinit();
     this.allocator = allocator;
 
     const url = URL.parse(this.url_buf);
-    this.unsafe_http_client = AsyncHTTP.init(allocator, .GET, url, header_builder.entries, header_builder.content.ptr.?[0..header_builder.content.len], &this.response_buffer, "", this.getCompletionCallback(), HTTP.FetchRedirect.follow, .{
+    this.unsafe_http_client = AsyncHTTP.init(allocator, .GET, url, headers.entries, headers.buf.items, &this.response_buffer, "", this.getCompletionCallback(), HTTP.FetchRedirect.follow, .{
+        .javascript_semantics = this.package_manager.javascript_semantics,
         .http_proxy = this.package_manager.httpProxy(url),
     });
     this.unsafe_http_client.client.flags.reject_unauthorized = this.package_manager.tlsRejectUnauthorized();
@@ -343,11 +303,13 @@ pub fn forManifest(
         this.unsafe_http_client.client.verbose = .headers;
     }
 
-    // Incase the ETag causes invalidation, we fallback to the last modified date.
-    if (last_modified.len != 0 and bun.feature_flag.BUN_FEATURE_FLAG_LAST_MODIFIED_PRETEND_304.get()) {
+    if (last_modified_owned.len != 0) {
         this.unsafe_http_client.client.flags.force_last_modified = true;
-        this.unsafe_http_client.client.if_modified_since = last_modified;
+        this.unsafe_http_client.client.if_modified_since = last_modified_owned;
     }
+    this.if_modified_since_owned = last_modified_owned;
+    this.request_headers = headers.take();
+    this.owned_url = this.url_buf;
 }
 
 pub fn getCompletionCallback(this: *NetworkTask) HTTP.HTTPClientResult.Callback {
@@ -396,26 +358,14 @@ pub fn forTarball(
     this.response_buffer = MutableString.initEmpty(allocator);
     this.allocator = allocator;
 
-    var header_builder = HeaderBuilder{};
-    var header_buf: string = "";
-
-    if (authorization == .allow_authorization) {
-        countAuth(&header_builder, scope);
-    }
-
-    if (header_builder.header_count > 0) {
-        try header_builder.allocate(allocator);
-
-        if (authorization == .allow_authorization) {
-            appendAuth(&header_builder, scope);
-        }
-
-        header_buf = header_builder.content.ptr.?[0..header_builder.content.len];
-    }
+    var headers: HTTP.Headers = .{ .allocator = allocator };
+    defer headers.deinit();
+    if (authorization == .allow_authorization) try appendAuth(&headers, scope);
 
     const url = URL.parse(this.url_buf);
 
     var http_options: AsyncHTTP.Options = .{
+        .javascript_semantics = this.package_manager.javascript_semantics,
         .http_proxy = this.package_manager.httpProxy(url),
     };
 
@@ -444,11 +394,38 @@ pub fn forTarball(
         };
     }
 
-    this.unsafe_http_client = AsyncHTTP.init(allocator, .GET, url, header_builder.entries, header_buf, &this.response_buffer, "", this.getCompletionCallback(), HTTP.FetchRedirect.follow, http_options);
+    this.unsafe_http_client = AsyncHTTP.init(allocator, .GET, url, headers.entries, headers.buf.items, &this.response_buffer, "", this.getCompletionCallback(), HTTP.FetchRedirect.follow, http_options);
     this.unsafe_http_client.client.flags.reject_unauthorized = this.package_manager.tlsRejectUnauthorized();
     if (PackageManager.verbose_install) {
         this.unsafe_http_client.client.verbose = .headers;
     }
+    this.request_headers = headers.take();
+}
+
+pub fn releaseRequestHeaders(this: *NetworkTask) void {
+    if (this.request_headers == null) return;
+    this.unsafe_http_client.request_headers = .empty;
+    this.unsafe_http_client.request_header_buf = "";
+    this.unsafe_http_client.client.header_entries = .empty;
+    this.unsafe_http_client.client.header_buf = "";
+    this.unsafe_http_client.client.if_modified_since = "";
+    this.unsafe_http_client.client.flags.force_last_modified = false;
+    if (this.request_headers) |*headers| headers.deinit();
+    this.request_headers = null;
+    this.allocator.free(this.if_modified_since_owned);
+    this.if_modified_since_owned = "";
+}
+
+pub fn recycle(this: *NetworkTask) void {
+    const manager = this.package_manager;
+    if (!this.streaming_committed) this.discardUnusedStreamingState(manager);
+    bun.assert(this.tarball_stream == null and this.streaming_extract_task == null);
+    this.releaseRequestHeaders();
+    this.response_buffer.deinit();
+    if (this.owned_url) |url| this.allocator.free(url);
+    this.owned_url = null;
+    this.url_buf = "";
+    manager.preallocated_network_tasks.put(this);
 }
 
 /// Release any streaming-extraction resources that were never used because
@@ -484,12 +461,10 @@ const ExtractTarball = install.ExtractTarball;
 const NetworkTask = install.NetworkTask;
 const Npm = install.Npm;
 const PackageManager = install.PackageManager;
-const PatchTask = install.PatchTask;
 const TarballStream = install.TarballStream;
 const Task = install.Task;
 
 const bun = @import("bun");
-const GlobalStringBuilder = bun.StringBuilder;
 const IdentityContext = bun.IdentityContext;
 const MutableString = bun.MutableString;
 const OOM = bun.OOM;
@@ -503,4 +478,3 @@ const FileSystem = Fs.FileSystem;
 
 const HTTP = bun.http;
 const AsyncHTTP = HTTP.AsyncHTTP;
-const HeaderBuilder = HTTP.HeaderBuilder;

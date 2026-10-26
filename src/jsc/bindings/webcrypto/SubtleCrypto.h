@@ -27,66 +27,42 @@
 
 #if ENABLE(WEB_CRYPTO)
 
-#include "ContextDestructionObserver.h"
 #include "CryptoKeyFormat.h"
-#include <JavaScriptCore/Strong.h>
+#include "CryptoOperationResult.h"
+#include <memory>
 #include <variant>
 #include <wtf/Ref.h>
-#include <wtf/RefCounted.h>
-#include <wtf/WeakPtr.h>
-#include "PhonyWorkQueue.h"
-
-namespace JSC {
-class ArrayBufferView;
-class ArrayBuffer;
-class CallFrame;
-}
+#include <wtf/Vector.h>
+#include "ExceptionOr.h"
 
 namespace WebCore {
 
-using WorkQueue = Bun::PhonyWorkQueue;
-
 struct JsonWebKey;
 
-class BufferSource;
 class CryptoKey;
-class DeferredPromise;
+class CryptoAlgorithmParameters;
 
-enum class CryptoAlgorithmIdentifier : uint8_t;
-enum class CryptoKeyUsage;
-
-class SubtleCrypto : public ContextDestructionObserver, public RefCounted<SubtleCrypto>, public CanMakeWeakPtr<SubtleCrypto> {
+class SubtleCrypto {
 public:
-    static Ref<SubtleCrypto> create(ScriptExecutionContext* context) { return adoptRef(*new SubtleCrypto(context)); }
-    static SubtleCrypto* createPtr(ScriptExecutionContext* context) { return new SubtleCrypto(context); }
-    ~SubtleCrypto();
-
     using KeyFormat = CryptoKeyFormat;
 
-    using AlgorithmIdentifier = std::variant<JSC::Strong<JSC::JSObject>, String>;
-    using KeyDataVariant = std::variant<RefPtr<JSC::ArrayBufferView>, RefPtr<JSC::ArrayBuffer>, JsonWebKey>;
+    using KeyDataVariant = KeyData;
 
-    void encrypt(JSC::JSGlobalObject&, AlgorithmIdentifier&&, CryptoKey&, BufferSource&& data, Ref<DeferredPromise>&&);
-    void decrypt(JSC::JSGlobalObject&, AlgorithmIdentifier&&, CryptoKey&, BufferSource&& data, Ref<DeferredPromise>&&);
-    void sign(JSC::JSGlobalObject&, AlgorithmIdentifier&&, CryptoKey&, BufferSource&& data, Ref<DeferredPromise>&&);
-    void verify(JSC::JSGlobalObject&, AlgorithmIdentifier&&, CryptoKey&, BufferSource&& signature, BufferSource&& data, Ref<DeferredPromise>&&);
-    void digest(JSC::JSGlobalObject&, AlgorithmIdentifier&&, BufferSource&& data, Ref<DeferredPromise>&&);
-    void generateKey(JSC::JSGlobalObject&, AlgorithmIdentifier&&, bool extractable, Vector<CryptoKeyUsage>&& keyUsages, Ref<DeferredPromise>&&);
-    void deriveKey(JSC::JSGlobalObject&, AlgorithmIdentifier&&, CryptoKey& baseKey, AlgorithmIdentifier&& derivedKeyType, bool extractable, Vector<CryptoKeyUsage>&&, Ref<DeferredPromise>&&);
-    void deriveBits(JSC::JSGlobalObject&, AlgorithmIdentifier&&, CryptoKey& baseKey, unsigned length, Ref<DeferredPromise>&&);
-    void importKey(JSC::JSGlobalObject&, KeyFormat, KeyDataVariant&&, AlgorithmIdentifier&&, bool extractable, Vector<CryptoKeyUsage>&&, Ref<DeferredPromise>&&);
-    void exportKey(KeyFormat, CryptoKey&, Ref<DeferredPromise>&&);
-    void wrapKey(JSC::JSGlobalObject&, KeyFormat, CryptoKey&, CryptoKey& wrappingKey, AlgorithmIdentifier&& wrapAlgorithm, Ref<DeferredPromise>&&);
-    void unwrapKey(JSC::JSGlobalObject&, KeyFormat, BufferSource&& wrappedKey, CryptoKey& unwrappingKey, AlgorithmIdentifier&& unwrapAlgorithm, AlgorithmIdentifier&& unwrappedKeyAlgorithm, bool extractable, Vector<CryptoKeyUsage>&&, Ref<DeferredPromise>&&);
+    static ExceptionOr<Vector<uint8_t>> encrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&& data);
+    static ExceptionOr<Vector<uint8_t>> decrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&& data);
+    static ExceptionOr<Vector<uint8_t>> sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&& data);
+    static ExceptionOr<bool> verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&& signature, Vector<uint8_t>&& data);
+    static ExceptionOr<KeyOrKeyPair> generateKey(const CryptoAlgorithmParameters&, bool extractable, Vector<CryptoKeyUsage>&&);
+    static ExceptionOr<Ref<CryptoKey>> deriveKey(const CryptoAlgorithmParameters&, Ref<CryptoKey>&& baseKey, const CryptoAlgorithmParameters& importParams, const CryptoAlgorithmParameters& lengthParams, bool extractable, Vector<CryptoKeyUsage>&&);
+    static ExceptionOr<Vector<uint8_t>> deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, unsigned length);
+    static ExceptionOr<Ref<CryptoKey>> importKey(KeyFormat, KeyDataVariant&&, const CryptoAlgorithmParameters&, bool extractable, Vector<CryptoKeyUsage>&&);
+    static ExceptionOr<KeyData> exportKey(KeyFormat, Ref<CryptoKey>&&);
+    static ExceptionOr<void> validateWrappingKey(const CryptoAlgorithmParameters&, const CryptoKey&, bool unwrap);
+    static ExceptionOr<Vector<uint8_t>> wrapKey(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&);
+    static ExceptionOr<Vector<uint8_t>> unwrapKey(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&);
 
 private:
-    explicit SubtleCrypto(ScriptExecutionContext*);
-
-    void addAuthenticatedEncryptionWarningIfNecessary(CryptoAlgorithmIdentifier);
-    inline friend RefPtr<DeferredPromise> getPromise(DeferredPromise*, WeakPtr<SubtleCrypto>);
-
-    Ref<WorkQueue> m_workQueue;
-    HashMap<DeferredPromise*, Ref<DeferredPromise>> m_pendingPromises;
+    SubtleCrypto() = delete;
 };
 
 }

@@ -18,11 +18,13 @@
 #include "libusockets.h"
 #include "internal/internal.h"
 #include "quic.h"
+#include "SchemaBindings+UWSRuntime.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #ifndef WIN32
 #include <sys/ioctl.h>
+#include <unistd.h>
 #endif
 #ifdef __linux__
 #include <netinet/in.h>
@@ -39,49 +41,62 @@
 #endif
 #endif
 
-#if ASSERT_ENABLED
-extern const size_t Bun__lock__size;
-#endif
+static void sweep_timer_cb(struct us_loop_t *loop);
 
-extern void Bun__internal_ensureDateHeaderTimerIsEnabled(struct us_loop_t *loop);
-
-void sweep_timer_cb(struct us_internal_callback_t *cb);
-
-// when the sweep timer is disabled, we don't need to do anything
-void sweep_timer_noop(struct us_timer_t *timer) {}
-
-void us_internal_enable_sweep_timer(struct us_loop_t *loop) {
+int us_internal_acquire_sweep_timer(struct us_loop_t *loop, struct us_poll_error_t *failure) {
+    *failure = (struct us_poll_error_t){0};
+    if (loop->data.sweep_timer_count == 0 &&
+        us_internal_timer_set(loop->data.sweep_timer, LIBUS_TIMEOUT_GRANULARITY * 1000,
+            LIBUS_TIMEOUT_GRANULARITY * 1000, failure) != 0) return -1;
     loop->data.sweep_timer_count++;
     if (loop->data.sweep_timer_count == 1) {
-        us_timer_set(loop->data.sweep_timer, (void (*)(struct us_timer_t *)) sweep_timer_cb, LIBUS_TIMEOUT_GRANULARITY * 1000, LIBUS_TIMEOUT_GRANULARITY * 1000);
-        Bun__internal_ensureDateHeaderTimerIsEnabled(loop);
+        bunBindgenC_WTFTimer_ensureDateHeaderTimerIsEnabled(loop);
     }
+    return 0;
 }
 
-void us_internal_disable_sweep_timer(struct us_loop_t *loop) {
+void us_internal_release_sweep_timer(struct us_loop_t *loop) {
+    if (loop->data.sweep_timer_count <= 0) BUN_PANIC("socket timeout reference imbalance");
     loop->data.sweep_timer_count--;
     if (loop->data.sweep_timer_count == 0) {
-        us_timer_set(loop->data.sweep_timer, (void (*)(struct us_timer_t *)) sweep_timer_noop, 0, 0);
+        struct us_poll_error_t failure;
+        // The loop retains the timer; a late tick sees zero subscribers.
+        (void)us_internal_timer_set(loop->data.sweep_timer, 0, 0, &failure);
     }
 }
 
-/* The loop has 2 fallthrough polls */
-void us_internal_loop_data_init(struct us_loop_t *loop, void (*wakeup_cb)(struct us_loop_t *loop),
-    void (*pre_cb)(struct us_loop_t *loop), void (*post_cb)(struct us_loop_t *loop)) {
-    // We allocate with calloc, so we only need to initialize the specific fields in use.
-    loop->data.sweep_timer = us_create_timer(loop, 1, 0);
+int us_internal_loop_data_init(struct us_loop_t *loop, void (*wakeup_cb)(struct us_loop_t *loop),
+    void (*pre_cb)(struct us_loop_t *loop), void (*post_cb)(struct us_loop_t *loop), struct us_poll_error_t *failure) {
+    *failure = (struct us_poll_error_t){0};
     loop->data.sweep_timer_count = 0;
     loop->data.recv_buf = malloc(LIBUS_RECV_BUFFER_LENGTH + LIBUS_RECV_BUFFER_PADDING * 2);
+    if (!loop->data.recv_buf) goto out_of_memory;
     loop->data.send_buf = malloc(LIBUS_SEND_BUFFER_LENGTH);
+    if (!loop->data.send_buf) goto out_of_memory;
+    loop->data.sweep_timer = us_internal_create_timer(loop, sweep_timer_cb, failure);
+    if (!loop->data.sweep_timer) goto cleanup;
+#ifdef LIBUS_USE_LIBUV
+    loop->data.quic_timer = us_internal_create_timer(loop, us_quic_loop_process, failure);
+    if (!loop->data.quic_timer) goto cleanup;
+#endif
+    loop->data.wakeup_async = us_internal_create_async(loop, wakeup_cb, failure);
+    if (!loop->data.wakeup_async) goto cleanup;
     loop->data.pre_cb = pre_cb;
     loop->data.post_cb = post_cb;
-    loop->data.wakeup_async = us_internal_create_async(loop, 1, 0);
-    us_internal_async_set(loop->data.wakeup_async, (void (*)(struct us_internal_async *)) wakeup_cb);
-#if ASSERT_ENABLED
-    if (Bun__lock__size != sizeof(loop->data.mutex)) {
-        BUN_PANIC("The size of the mutex must match the size of the lock");
-    }
-#endif
+    return 0;
+
+out_of_memory:
+    *failure = (struct us_poll_error_t){.domain = US_POLL_ERROR_SYSTEM, .code = LIBUS_ERR_OUT_OF_MEMORY};
+cleanup:
+    if (loop->data.quic_timer) us_internal_timer_close(loop->data.quic_timer);
+    if (loop->data.sweep_timer) us_internal_timer_close(loop->data.sweep_timer);
+    free(loop->data.send_buf);
+    free(loop->data.recv_buf);
+    loop->data.sweep_timer = NULL;
+    loop->data.quic_timer = NULL;
+    loop->data.send_buf = NULL;
+    loop->data.recv_buf = NULL;
+    return -1;
 }
 
 void us_internal_loop_data_free(struct us_loop_t *loop) {
@@ -92,8 +107,8 @@ void us_internal_loop_data_free(struct us_loop_t *loop) {
     free(loop->data.recv_buf);
     free(loop->data.send_buf);
 
-    us_timer_close(loop->data.sweep_timer, 0);
-    if (loop->data.quic_timer) us_timer_close(loop->data.quic_timer, 0);
+    us_internal_timer_close(loop->data.sweep_timer);
+    if (loop->data.quic_timer) us_internal_timer_close(loop->data.quic_timer);
     us_internal_async_close(loop->data.wakeup_async);
 }
 
@@ -135,36 +150,20 @@ void us_internal_loop_unlink_group(struct us_loop_t *loop, struct us_socket_grou
     }
 }
 
-/* Teardown helper: close every socket in every group currently linked to this
- * loop. Covers Listener/uWS-App-owned groups that the Zig RareData group list
- * doesn't know about — without this, an accepted us_socket_t whose group is
- * embedded in a still-live Listener leaks at process.exit() (LSAN: 88-byte
- * us_create_poll from loop.c:375). closeAll may unlink the group it's called
- * on, so cache `next` before each call. Returns 1 if anything was linked. */
+/* Close callbacks may destroy any group. Rescan the live list after each walk;
+ * listen sockets remain owned by their listeners and apps. */
 int us_loop_close_all_groups(struct us_loop_t *loop) {
-    struct us_socket_group_t *g = loop->data.head;
     int any = 0;
-    while (g) {
-        struct us_socket_group_t *next = g->next;
-        /* Only connecting/connected sockets are stranded — listen sockets are
-         * 1:1 owned by a Zig Listener / uWS App that holds a raw pointer and
-         * closes them in finalize(). Closing them here turns that into a UAF
-         * after drainClosedSockets(). */
-        if (g->head_sockets || g->head_connecting_sockets || g->low_prio_count) {
-            us_socket_group_close_all_ex(g, /* also_listeners */ 0);
-            any = 1;
-        }
-        /* close_all → unlink may have spliced our cached `next` out too (an
-         * on_close handler closing a different group's last socket); re-read
-         * from the loop head if `next` is no longer linked. */
-        if (next && !next->linked) next = loop->data.head;
-        g = next;
+    while (1) {
+        struct us_socket_group_t *group = loop->data.head;
+        while (group && !group->head_sockets && !group->head_connecting_sockets) group = group->next;
+        if (!group) return any;
+        us_socket_group_close_all_ex(group, 0);
+        any = 1;
     }
-    return any;
 }
 
-/* This functions should never run recursively */
-void us_internal_timer_sweep(struct us_loop_t *loop) {
+static void us_internal_timer_sweep_once(struct us_loop_t *loop) {
     struct us_internal_loop_data_t *loop_data = &loop->data;
     /* For all socket groups in this loop */
     loop_data->iterator = loop_data->head;
@@ -222,17 +221,54 @@ void us_internal_timer_sweep(struct us_loop_t *loop) {
             }
         }
         next_group:
-        /* Only safe to write back / step ->next if the group survived dispatch. */
         group->iterator = 0;
+        struct us_connecting_socket_t *c = group->head_connecting_sockets;
+        while (c) {
+            group->connecting_iterator = c;
+            if (!c->closed && short_ticks == c->timeout) {
+                c->timeout = 255;
+                us_dispatch_connecting_timeout(c, 0);
+            }
+            if (loop_data->iterator != group) goto outer_continue;
+            if (group->connecting_iterator == c && !c->closed && long_ticks == c->long_timeout) {
+                c->long_timeout = 255;
+                us_dispatch_connecting_timeout(c, 1);
+            }
+            if (loop_data->iterator != group) goto outer_continue;
+            c = group->connecting_iterator == c ? c->next_pending : group->connecting_iterator;
+        }
+        group->connecting_iterator = NULL;
         loop_data->iterator = group->next;
         outer_continue:;
     }
+}
+
+void us_internal_timer_sweep(struct us_loop_t *loop) {
+    struct us_internal_loop_data_t *data = &loop->data;
+    data->pending_sweeps++;
+    if (data->sweep_in_progress) return;
+    data->sweep_in_progress = 1;
+    while (data->pending_sweeps) {
+        data->pending_sweeps--;
+        us_internal_timer_sweep_once(loop);
+    }
+    data->sweep_in_progress = 0;
 }
 
 /* We do not want to block the loop with tons and tons of CPU-intensive work for SSL handshakes.
  * Spread it out during many loop iterations, prioritizing already open connections, they are far
  * easier on CPU */
 static const int MAX_LOW_PRIO_SOCKETS_PER_LOOP_ITERATION = 5;
+
+void us_internal_low_prio_unlink(struct us_socket_t *s) {
+    if (s->flags.low_prio_state != 1) return;
+    if (s->low_prio_prev) s->low_prio_prev->low_prio_next = s->low_prio_next;
+    else s->group->loop->data.low_prio_head = s->low_prio_next;
+    if (s->low_prio_next) s->low_prio_next->low_prio_prev = s->low_prio_prev;
+    s->low_prio_prev = NULL;
+    s->low_prio_next = NULL;
+    s->flags.low_prio_state = 0;
+}
 
 void us_internal_handle_low_priority_sockets(struct us_loop_t *loop) {
     struct us_internal_loop_data_t *loop_data = &loop->data;
@@ -241,41 +277,30 @@ void us_internal_handle_low_priority_sockets(struct us_loop_t *loop) {
     loop_data->low_prio_budget = MAX_LOW_PRIO_SOCKETS_PER_LOOP_ITERATION;
 
     for (s = loop_data->low_prio_head; s && loop_data->low_prio_budget > 0; s = loop_data->low_prio_head, loop_data->low_prio_budget--) {
-        /* Unlink this socket from the low-priority queue */
-        loop_data->low_prio_head = s->next;
-        if (s->next) s->next->prev = 0;
-        s->next = 0;
-        s->group->low_prio_count--;
+        us_internal_low_prio_unlink(s);
 
         if(us_socket_is_closed(s)) {
             s->flags.low_prio_state = 2;
             continue;
         }
 
-        us_internal_socket_group_link_socket(s->group, s);
         us_poll_change(&s->p, s->group->loop, us_poll_events(&s->p) | LIBUS_SOCKET_READABLE);
 
         s->flags.low_prio_state = 2;
     }
 }
 
-// Called when DNS resolution completes
-// Does not wake up the loop.
-void us_internal_dns_callback(struct us_connecting_socket_t *c, void* addrinfo_req) {
-    (void)addrinfo_req; /* already stored on c by us_socket_group_connect */
+void us_internal_dns_callback(struct us_connecting_socket_t *c) {
     struct us_loop_t *loop = c->loop;
-    Bun__lock(&loop->data.mutex);
-    c->next = loop->data.dns_ready_head;
-    loop->data.dns_ready_head = c;
-    Bun__unlock(&loop->data.mutex);
+    struct us_connecting_socket_t *head = __atomic_load_n(&loop->data.dns_ready_head, __ATOMIC_RELAXED);
+    do {
+        c->next = head;
+    } while (!__atomic_compare_exchange_n(&loop->data.dns_ready_head, &head, c, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
 }
 
-// Called when DNS resolution completes
-// Wakes up the loop.
-// Can be caleld from any thread.
-void us_internal_dns_callback_threadsafe(struct us_connecting_socket_t *c, void* addrinfo_req) {
+void us_internal_dns_callback_threadsafe(struct us_connecting_socket_t *c) {
     struct us_loop_t *loop = c->loop;
-    us_internal_dns_callback(c, addrinfo_req);
+    us_internal_dns_callback(c);
     us_wakeup_loop(loop);
 }
 
@@ -288,10 +313,7 @@ void us_internal_drain_pending_dns_resolve(struct us_loop_t *loop, struct us_con
 }
 
 int us_internal_handle_dns_results(struct us_loop_t *loop) {
-    Bun__lock(&loop->data.mutex);
-    struct us_connecting_socket_t *s = loop->data.dns_ready_head;
-    loop->data.dns_ready_head = NULL;
-    Bun__unlock(&loop->data.mutex);
+    struct us_connecting_socket_t *s = __atomic_exchange_n(&loop->data.dns_ready_head, NULL, __ATOMIC_ACQUIRE);
     us_internal_drain_pending_dns_resolve(loop, s);
     return s != NULL;
 }
@@ -322,8 +344,8 @@ void us_internal_free_closed_sockets(struct us_loop_t *loop) {
     loop->data.closed_connecting_head = NULL;
 }
 
-void sweep_timer_cb(struct us_internal_callback_t *cb) {
-    us_internal_timer_sweep(cb->loop);
+static void sweep_timer_cb(struct us_loop_t *loop) {
+    if (loop->data.sweep_timer_count > 0) us_internal_timer_sweep(loop);
 }
 
 long long us_loop_iteration_number(struct us_loop_t *loop) {
@@ -335,7 +357,7 @@ void us_internal_loop_pre(struct us_loop_t *loop) {
     loop->data.iteration_nr++;
     us_internal_handle_dns_results(loop);
     us_internal_handle_low_priority_sockets(loop);
-    loop->data.pre_cb(loop);
+    if (loop->data.pre_cb) loop->data.pre_cb(loop);
 #ifdef LIBUS_USE_QUIC
     /* Flush stream writes that JS tasks made before this tick (timers,
      * immediates, promise resolutions outside on_read) so they go out
@@ -357,7 +379,7 @@ void us_internal_loop_post(struct us_loop_t *loop) {
     if (loop->data.tick_depth <= 1) {
         us_internal_free_closed_sockets(loop);
     }
-    loop->data.post_cb(loop);
+    if (loop->data.post_cb) loop->data.post_cb(loop);
 }
 
 #ifdef WIN32
@@ -377,14 +399,14 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                 us_internal_accept_poll_event(p);
     #endif
             }
-            cb->cb(cb->cb_expects_the_loop ? (struct us_internal_callback_t *) cb->loop : (struct us_internal_callback_t *) &cb->p);
+            if (cb->cb) cb->cb(cb->loop);
             break;
         }
     case POLL_TYPE_SEMI_SOCKET: {
             /* Both connect and listen sockets are semi-sockets
              * but they poll for different events */
             if (us_poll_events(p) == LIBUS_SOCKET_WRITABLE) {
-                us_internal_socket_after_open((struct us_socket_t *) p, error || eof);
+                us_internal_socket_after_open((struct us_socket_t *) p);
             } else {
                 struct us_listen_socket_t *listen_socket = (struct us_listen_socket_t *) p;
                 struct us_socket_group_t *accept_group = listen_socket->accept_group;
@@ -400,9 +422,18 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                     /* Todo: stop timer if any */
 
                     do {
-                        struct us_poll_t *accepted_p = us_create_poll(loop, 0, sizeof(struct us_socket_t) - sizeof(struct us_poll_t) + listen_socket->socket_ext_size);
+                        struct us_poll_t *accepted_p = us_internal_create_socket_poll(loop, listen_socket->socket_ext_size);
+                        if (!accepted_p) {
+                            bsd_close_socket(client_fd);
+                            break;
+                        }
                         us_poll_init(accepted_p, client_fd, POLL_TYPE_SOCKET);
-                        us_poll_start(accepted_p, loop, LIBUS_SOCKET_READABLE);
+                        struct us_poll_error_t failure;
+                        if (us_internal_socket_poll_start(accepted_p, loop, LIBUS_SOCKET_READABLE, &failure) != 0) {
+                            bsd_close_socket(client_fd);
+                            us_poll_free(accepted_p, loop);
+                            break;
+                        }
 
                         struct us_socket_t *s = (struct us_socket_t *) accepted_p;
 
@@ -410,6 +441,9 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                         s->kind = listen_socket->accept_kind;
                         s->ssl = NULL;
                         s->connect_state = NULL;
+                        s->connect_next = NULL;
+                        s->low_prio_prev = NULL;
+                        s->low_prio_next = NULL;
                         s->timeout = 255;
                         s->long_timeout = 255;
                         s->flags.low_prio_state = 0;
@@ -506,28 +540,21 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                  * NULL — no Zig handler defines isLowPrio and every C++ vtable
                  * sets is_low_prio = nullptr — so it's been dropped. */
                 if (s->ssl && us_internal_ssl_is_low_prio(s)) {
-                    if (flags->low_prio_state == 2) {
+                    if (flags->low_prio_state == 1) {
+                        break;
+                    } else if (flags->low_prio_state == 2) {
                         flags->low_prio_state = 0; /* Socket has been delayed and now it's time to process incoming data for one iteration */
                     } else if (loop->data.low_prio_budget > 0) {
                         loop->data.low_prio_budget--; /* Still having budget for this iteration - do normal processing */
                     } else {
                         struct us_poll_t* poll = &s->p;
                         us_poll_change(poll, loop, us_poll_events(poll) & LIBUS_SOCKET_WRITABLE);
-                        struct us_socket_group_t *g = s->group;
-                        /* Queued sockets aren't in head_sockets while parked, so
-                         * the group's emptiness check needs this counter to know
-                         * the owner can't deinit yet. Bump BEFORE unlinking so
-                         * maybe_unlink() inside it still sees the group as
-                         * non-empty. */
-                        g->low_prio_count++;
-                        us_internal_socket_group_unlink_socket(g, s);
-
                         /* Link this socket to the low-priority queue - we use a LIFO queue, to prioritize newer clients that are
                          * maybe not already timeouted - sounds unfair, but works better in real-life with smaller client-timeouts
                          * under high load */
-                        s->prev = 0;
-                        s->next = loop->data.low_prio_head;
-                        if (s->next) s->next->prev = s;
+                        s->low_prio_prev = NULL;
+                        s->low_prio_next = loop->data.low_prio_head;
+                        if (s->low_prio_next) s->low_prio_next->low_prio_prev = s;
                         loop->data.low_prio_head = s;
 
                         flags->low_prio_state = 1;
@@ -550,7 +577,10 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                     if(s->flags.is_ipc) {
                         struct msghdr msg = {0};
                         struct iovec iov = {0};
-                        char cmsg_buf[CMSG_SPACE(sizeof(int))];
+                        union {
+                            struct cmsghdr alignment;
+                            char bytes[CMSG_SPACE(64 * sizeof(int))];
+                        } control = {0};
 
                         iov.iov_base = loop->data.recv_buf + LIBUS_RECV_BUFFER_PADDING;
                         iov.iov_len = LIBUS_RECV_BUFFER_LENGTH;
@@ -560,21 +590,50 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
                         msg.msg_iovlen = 1;
                         msg.msg_name = NULL;
                         msg.msg_namelen = 0;
-                        msg.msg_controllen = CMSG_LEN(sizeof(int));
-                        msg.msg_control = cmsg_buf;
+                        msg.msg_controllen = sizeof(control.bytes);
+                        msg.msg_control = control.bytes;
 
                         length = bsd_recvmsg(us_poll_fd(&s->p), &msg, recv_flags);
 
-                        // Extract file descriptor if present
-                        if (length > 0 && msg.msg_controllen > 0) {
-                            struct cmsghdr *cmsg_ptr = CMSG_FIRSTHDR(&msg);
-                            if (cmsg_ptr && cmsg_ptr->cmsg_level == SOL_SOCKET && cmsg_ptr->cmsg_type == SCM_RIGHTS) {
-                                int fd = *(int *)CMSG_DATA(cmsg_ptr);
-                                s = us_dispatch_fd(s, fd);
+                        if (length >= 0) {
+                            int descriptors[64];
+                            size_t descriptor_count = 0;
+                            int invalid = (msg.msg_flags & MSG_CTRUNC) != 0;
+                            for (struct cmsghdr *header = CMSG_FIRSTHDR(&msg); header;
+                                 header = CMSG_NXTHDR(&msg, header)) {
+                                size_t available = (char *)msg.msg_control + msg.msg_controllen - (char *)header;
+                                if (header->cmsg_len < CMSG_LEN(0) || header->cmsg_len > available) {
+                                    invalid = 1;
+                                    break;
+                                }
+                                if (header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS) continue;
+                                size_t bytes = header->cmsg_len - CMSG_LEN(0);
+                                if (bytes % sizeof(int)) invalid = 1;
+                                for (size_t offset = 0; offset + sizeof(int) <= bytes; offset += sizeof(int)) {
+                                    int fd;
+                                    memcpy(&fd, (char *)CMSG_DATA(header) + offset, sizeof(fd));
+                                    if (descriptor_count == 64) {
+                                        close(fd);
+                                        invalid = 1;
+                                    } else {
+                                        descriptors[descriptor_count++] = fd;
+                                    }
+                                }
+                            }
+                            if (!length && descriptor_count) invalid = 1;
+                            if (invalid) {
+                                for (size_t i = 0; i < descriptor_count; ++i) close(descriptors[i]);
+                                s = us_internal_socket_close_raw(s, LIBUS_ERR, NULL);
+                                return;
+                            }
+                            for (size_t i = 0; i < descriptor_count; ++i) {
+                                s = us_dispatch_fd(s, descriptors[i]);
                                 if (!s || us_socket_is_closed(s)) {
+                                    for (++i; i < descriptor_count; ++i) close(descriptors[i]);
                                     break;
                                 }
                             }
+                            if (!s || us_socket_is_closed(s)) break;
                         }
                     }else{
                     #endif
@@ -782,10 +841,6 @@ void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, in
 }
 
 /* Integration only requires the timer to be set up, but not automatically enabled */
-void us_loop_integrate(struct us_loop_t *loop) {
-    /* Timer is now controlled dynamically by socket count, not enabled automatically */
-}
-
 void *us_loop_ext(struct us_loop_t *loop) {
     return loop + 1;
 }

@@ -262,6 +262,7 @@ fn generateCompileResultForHTMLChunkImpl(worker: *Executor.Worker, c: *LinkerCon
         .added_head_tags = false,
         .added_body_script = false,
     };
+    defer html_loader.output.deinit();
 
     HTMLScanner.HTMLProcessor(HTMLLoader, true).run(
         &html_loader,
@@ -314,13 +315,15 @@ fn generateCompileResultForHTMLChunkImpl(worker: *Executor.Worker, c: *LinkerCon
     };
 
     return .{ .html = .{
-        .code = html_loader.output.items,
+        .result = if (html_loader.output.toOwnedSlice()) |code|
+            .{ .result = code }
+        else |err|
+            .{ .err = err },
         .source_index = chunk.entry_point.source_index,
         .script_injection_offset = script_injection_offset,
     } };
 }
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 

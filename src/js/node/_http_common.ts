@@ -1,6 +1,10 @@
 const { checkIsHttpToken } = require("internal/validators");
 const FreeList = require("internal/freelist");
-const { methods, allMethods, HTTPParser } = process.binding("http_parser");
+const { methods, allMethods, HTTPParser } = process.binding("http_parser") as {
+  methods: string[];
+  allMethods: string[];
+  HTTPParser: any;
+};
 const incoming = require("node:_http_incoming");
 
 const { IncomingMessage, readStart, readStop } = incoming;

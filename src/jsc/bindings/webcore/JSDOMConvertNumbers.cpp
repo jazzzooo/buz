@@ -22,12 +22,9 @@
 #include "config.h"
 #include "JSDOMConvertNumbers.h"
 
-#include "JSDOMExceptionHandling.h"
 #include <JavaScriptCore/HeapInlines.h>
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <wtf/MathExtras.h>
-#include <wtf/text/StringConcatenateNumbers.h>
-#include <wtf/text/WTFString.h>
 
 // WebIDL §3.2.4.9 requires round-half-to-even for [Clamp].
 static ALWAYS_INLINE double clampRoundEven(double x) { return __builtin_roundeven(x); }
@@ -36,35 +33,9 @@ namespace WebCore {
 using namespace JSC;
 
 enum class IntegerConversionConfiguration { Normal,
-    EnforceRange,
     Clamp };
 
-static const int32_t kMaxInt32 = 0x7fffffff;
-static const int32_t kMinInt32 = -kMaxInt32 - 1;
-static const uint32_t kMaxUInt32 = 0xffffffffU;
 static const int64_t kJSMaxInteger = 0x20000000000000LL - 1; // 2^53 - 1, largest integer exactly representable in ECMAScript.
-
-static String rangeErrorString(double value, double min, double max)
-{
-    return makeString("Value "_s, value, " is outside the range ["_s, min, ", "_s, max, ']');
-}
-
-static double enforceRange(JSGlobalObject& lexicalGlobalObject, double x, double minimum, double maximum)
-{
-    VM& vm = lexicalGlobalObject.vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (std::isnan(x) || std::isinf(x)) {
-        throwTypeError(&lexicalGlobalObject, scope, rangeErrorString(x, minimum, maximum));
-        return 0;
-    }
-    x = trunc(x);
-    if (x < minimum || x > maximum) {
-        throwTypeError(&lexicalGlobalObject, scope, rangeErrorString(x, minimum, maximum));
-        return 0;
-    }
-    return x;
-}
 
 namespace {
 
@@ -117,9 +88,6 @@ static inline T toSmallerInt(JSGlobalObject& lexicalGlobalObject, JSValue value)
         switch (configuration) {
         case IntegerConversionConfiguration::Normal:
             break;
-        case IntegerConversionConfiguration::EnforceRange:
-            throwTypeError(&lexicalGlobalObject, scope);
-            return 0;
         case IntegerConversionConfiguration::Clamp:
             return d < LimitsTrait::minValue ? LimitsTrait::minValue : LimitsTrait::maxValue;
         }
@@ -133,8 +101,6 @@ static inline T toSmallerInt(JSGlobalObject& lexicalGlobalObject, JSValue value)
     switch (configuration) {
     case IntegerConversionConfiguration::Normal:
         break;
-    case IntegerConversionConfiguration::EnforceRange:
-        return enforceRange(lexicalGlobalObject, x, LimitsTrait::minValue, LimitsTrait::maxValue);
     case IntegerConversionConfiguration::Clamp:
         return std::isnan(x) ? 0 : clampTo<T>(clampRoundEven(x));
     }
@@ -165,9 +131,6 @@ static inline T toSmallerUInt(JSGlobalObject& lexicalGlobalObject, JSValue value
         switch (configuration) {
         case IntegerConversionConfiguration::Normal:
             return static_cast<T>(d);
-        case IntegerConversionConfiguration::EnforceRange:
-            throwTypeError(&lexicalGlobalObject, scope);
-            return 0;
         case IntegerConversionConfiguration::Clamp:
             return LimitsTrait::maxValue;
         }
@@ -179,8 +142,6 @@ static inline T toSmallerUInt(JSGlobalObject& lexicalGlobalObject, JSValue value
     switch (configuration) {
     case IntegerConversionConfiguration::Normal:
         break;
-    case IntegerConversionConfiguration::EnforceRange:
-        return enforceRange(lexicalGlobalObject, x, 0, LimitsTrait::maxValue);
     case IntegerConversionConfiguration::Clamp:
         return std::isnan(x) ? 0 : clampTo<T>(clampRoundEven(x));
     }
@@ -193,16 +154,6 @@ static inline T toSmallerUInt(JSGlobalObject& lexicalGlobalObject, JSValue value
     if (x < 0)
         x += LimitsTrait::numberOfValues;
     return static_cast<T>(x);
-}
-
-template<> int8_t convertToIntegerEnforceRange<int8_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    return toSmallerInt<int8_t, IntegerConversionConfiguration::EnforceRange>(lexicalGlobalObject, value);
-}
-
-template<> uint8_t convertToIntegerEnforceRange<uint8_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    return toSmallerUInt<uint8_t, IntegerConversionConfiguration::EnforceRange>(lexicalGlobalObject, value);
 }
 
 template<> int8_t convertToIntegerClamp<int8_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
@@ -225,16 +176,6 @@ template<> uint8_t convertToInteger<uint8_t>(JSC::JSGlobalObject& lexicalGlobalO
     return toSmallerUInt<uint8_t, IntegerConversionConfiguration::Normal>(lexicalGlobalObject, value);
 }
 
-template<> int16_t convertToIntegerEnforceRange<int16_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    return toSmallerInt<int16_t, IntegerConversionConfiguration::EnforceRange>(lexicalGlobalObject, value);
-}
-
-template<> uint16_t convertToIntegerEnforceRange<uint16_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    return toSmallerUInt<uint16_t, IntegerConversionConfiguration::EnforceRange>(lexicalGlobalObject, value);
-}
-
 template<> int16_t convertToIntegerClamp<int16_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
 {
     return toSmallerInt<int16_t, IntegerConversionConfiguration::Clamp>(lexicalGlobalObject, value);
@@ -253,32 +194,6 @@ template<> int16_t convertToInteger<int16_t>(JSC::JSGlobalObject& lexicalGlobalO
 template<> uint16_t convertToInteger<uint16_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
 {
     return toSmallerUInt<uint16_t, IntegerConversionConfiguration::Normal>(lexicalGlobalObject, value);
-}
-
-template<> int32_t convertToIntegerEnforceRange<int32_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    if (value.isInt32())
-        return value.asInt32();
-
-    VM& vm = lexicalGlobalObject.vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    double x = value.toNumber(&lexicalGlobalObject);
-    RETURN_IF_EXCEPTION(scope, 0);
-    return enforceRange(lexicalGlobalObject, x, kMinInt32, kMaxInt32);
-}
-
-template<> uint32_t convertToIntegerEnforceRange<uint32_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    if (value.isUInt32())
-        return value.asUInt32();
-
-    VM& vm = lexicalGlobalObject.vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    double x = value.toNumber(&lexicalGlobalObject);
-    RETURN_IF_EXCEPTION(scope, 0);
-    return enforceRange(lexicalGlobalObject, x, 0, kMaxUInt32);
 }
 
 template<> int32_t convertToIntegerClamp<int32_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
@@ -307,32 +222,6 @@ template<> int32_t convertToInteger<int32_t>(JSC::JSGlobalObject& lexicalGlobalO
 template<> uint32_t convertToInteger<uint32_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
 {
     return value.toUInt32(&lexicalGlobalObject);
-}
-
-template<> int64_t convertToIntegerEnforceRange<int64_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    if (value.isInt32())
-        return value.asInt32();
-
-    VM& vm = lexicalGlobalObject.vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    double x = value.toNumber(&lexicalGlobalObject);
-    RETURN_IF_EXCEPTION(scope, 0);
-    return enforceRange(lexicalGlobalObject, x, -kJSMaxInteger, kJSMaxInteger);
-}
-
-template<> uint64_t convertToIntegerEnforceRange<uint64_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-{
-    if (value.isUInt32())
-        return value.asUInt32();
-
-    VM& vm = lexicalGlobalObject.vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    double x = value.toNumber(&lexicalGlobalObject);
-    RETURN_IF_EXCEPTION(scope, 0);
-    return enforceRange(lexicalGlobalObject, x, 0, kJSMaxInteger);
 }
 
 template<> int64_t convertToIntegerClamp<int64_t>(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)

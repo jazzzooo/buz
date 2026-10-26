@@ -4,22 +4,33 @@
 #include "DOMIsoSubspaces.h"
 #include "ZigGlobalObject.h"
 #include "ErrorCode.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/LazyClassStructure.h>
 #include <JavaScriptCore/LazyClassStructureInlines.h>
 #include <JavaScriptCore/FunctionPrototype.h>
+#include <JavaScriptCore/GetterSetter.h>
 #include <JavaScriptCore/ObjectPrototype.h>
 
 namespace Bun {
 
-JSC_DECLARE_HOST_FUNCTION(jsDiffieHellmanGroupGetter_verifyError);
+static JSDiffieHellmanGroup* diffieHellmanGroup(JSC::JSValue value)
+{
+    auto* result = dynamicDowncast<JSDiffieHellmanGroup>(value);
+    RELEASE_ASSERT(result);
+    return result;
+}
 
 const JSC::ClassInfo JSDiffieHellmanGroup::s_info = { "DiffieHellmanGroup"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSDiffieHellmanGroup) };
+
+#define BUN_BINDGEN_OBJECT_SURFACE_JSDiffieHellmanGroupInstance
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSDiffieHellmanGroupInstance
 
 void JSDiffieHellmanGroup::finishCreation(JSC::VM& vm, JSC::JSGlobalObject* globalObject)
 {
     Base::finishCreation(vm);
-    JSC_NATIVE_GETTER("verifyError"_s, jsDiffieHellmanGroupGetter_verifyError, PropertyAttribute::ReadOnly | PropertyAttribute::Accessor);
+    bunBindgenObjectSurface_JSDiffieHellmanGroupInstance_install(vm, info(), *this);
 
     m_sizeForGC = this->m_dh.size();
     vm.heap.reportExtraMemoryAllocated(this, m_sizeForGC);
@@ -51,25 +62,22 @@ void setupDiffieHellmanGroupClassStructure(JSC::LazyClassStructure::Initializer&
     init.setConstructor(constructor);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsDiffieHellmanGroupGetter_verifyError, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+int32_t Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupVerifyError(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupVerifyError_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSValue thisValue = callFrame->thisValue();
-
-    JSDiffieHellmanGroup* thisObject = dynamicDowncast<JSDiffieHellmanGroup>(thisValue);
-    if (!thisObject) [[unlikely]] {
-        return ERR::INVALID_THIS(scope, globalObject, "DiffieHellmanGroup"_s);
-    }
-
-    auto& dh = thisObject->getImpl();
+    auto& dh = diffieHellmanGroup(args.bindingThis)->getImpl();
     auto result = dh.check();
     if (result == ncrypto::DHPointer::CheckResult::CHECK_FAILED) {
-        return ERR::CRYPTO_OPERATION_FAILED(scope, globalObject, "Checking DH parameters failed"_s);
+        ERR::CRYPTO_OPERATION_FAILED(scope, globalObject, "Checking DH parameters failed"_s);
+        return 0;
     }
 
-    return JSValue::encode(JSC::jsNumber(static_cast<int>(result)));
+    return static_cast<int32_t>(result);
 }
 
 } // namespace Bun

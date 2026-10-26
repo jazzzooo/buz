@@ -1,4 +1,8 @@
-import type { DatabaseAdapter } from "./shared.ts";
+import type { DatabaseAdapter, SQLHelper } from "./shared.ts";
+
+/// The raw query input a Query can carry; adapters normalize it in
+/// `normalizeQuery` (helpers and nested queries included).
+export type QueryStrings = string | TemplateStringsArray | Query<any, any> | SQLHelper<any>;
 
 const _resolve = Symbol("resolve");
 const _reject = Symbol("reject");
@@ -21,13 +25,14 @@ export interface BaseQueryHandle<Connection> {
 }
 
 export type { Query };
+export type { SQLQueryResultMode };
 class Query<T, Handle extends BaseQueryHandle<any>> extends PublicPromise<T> {
   public [_resolve]: (value: T) => void;
-  public [_reject]: (reason?: Error) => void;
+  public [_reject]: (reason?: unknown) => void;
   public [_handle]: Handle | null;
   public [_handler]: (query: Query<T, Handle>, handle: Handle) => T;
   public [_queryStatus]: SQLQueryStatus;
-  public [_strings]: string | TemplateStringsArray;
+  public [_strings]: QueryStrings;
   public [_values]: any[];
   public [_flags]: SQLQueryFlags;
 
@@ -62,7 +67,7 @@ class Query<T, Handle extends BaseQueryHandle<any>> extends PublicPromise<T> {
   }
 
   constructor(
-    strings: string | TemplateStringsArray,
+    strings: QueryStrings,
     values: any[],
     flags: number,
     handler,
@@ -193,7 +198,7 @@ class Query<T, Handle extends BaseQueryHandle<any>> extends PublicPromise<T> {
     return this[_resolve](x);
   }
 
-  reject(x: Error) {
+  reject(x: unknown) {
     this[_queryStatus] &= ~SQLQueryStatus.active;
     this[_queryStatus] |= SQLQueryStatus.error;
 
@@ -281,7 +286,10 @@ class Query<T, Handle extends BaseQueryHandle<any>> extends PublicPromise<T> {
     }
   }
 
-  then() {
+  then<TResult1 = T, TResult2 = never>(
+    onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
     this.#runAsyncAndCatch();
 
     const result = super.$then.$apply(this, arguments);
@@ -295,7 +303,9 @@ class Query<T, Handle extends BaseQueryHandle<any>> extends PublicPromise<T> {
     return result;
   }
 
-  catch() {
+  catch<TResult = never>(
+    onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null,
+  ): Promise<T | TResult> {
     if (this[_flags] & SQLQueryFlags.notTagged) {
       throw this[_adapter].notTaggedCallError();
     }
@@ -348,8 +358,12 @@ const enum SQLQueryStatus {
 
 export default {
   Query,
+  // @ts-expect-error we're exporting a const enum which works in our builtins
+  // generator but not in typescript officially
   SQLQueryFlags,
+  // @ts-expect-error same as above
   SQLQueryResultMode,
+  // @ts-expect-error same as above
   SQLQueryStatus,
 
   symbols: {

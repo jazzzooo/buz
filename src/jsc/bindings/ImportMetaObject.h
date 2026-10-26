@@ -7,14 +7,7 @@
 #include "ZigGlobalObject.h"
 
 #include "JSDOMWrapperCache.h"
-
-extern "C" JSC_DECLARE_HOST_FUNCTION(functionImportMeta__resolveSync);
-extern "C" JSC_DECLARE_HOST_FUNCTION(functionImportMeta__resolveSyncPrivate);
-extern "C" JSC::EncodedJSValue Bun__resolve(JSC::JSGlobalObject* global, JSC::EncodedJSValue specifier, JSC::EncodedJSValue from, bool is_esm);
-extern "C" JSC::EncodedJSValue Bun__resolveSync(JSC::JSGlobalObject* global, JSC::EncodedJSValue specifier, JSC::EncodedJSValue from, bool is_esm, bool isUserRequireResolve);
-extern "C" JSC::EncodedJSValue Bun__resolveSyncWithPaths(JSC::JSGlobalObject* global, JSC::EncodedJSValue specifier, JSC::EncodedJSValue from, bool is_esm, bool isUserRequireResolve, const BunString* paths, size_t paths_len);
-extern "C" JSC::EncodedJSValue Bun__resolveSyncWithSource(JSC::JSGlobalObject* global, JSC::EncodedJSValue specifier, BunString* from, bool is_esm, bool isUserRequireResolve);
-extern "C" JSC::EncodedJSValue Bun__resolveSyncWithStrings(JSC::JSGlobalObject* global, BunString* specifier, BunString* from, bool is_esm);
+#include <JavaScriptCore/WriteBarrier.h>
 
 namespace Zig {
 
@@ -30,26 +23,11 @@ public:
     /// Must be called with a valid url string (for `import.meta.url`)
     static ImportMetaObject* create(JSC::JSGlobalObject* globalObject, const String& url);
 
-    /// Creates an ImportMetaObject from a specifier or URL JSValue
-    /// - URL object -> use that url
-    /// - string -> see the below method for how the string is processed
-    /// - other -> assertion failure
+    // URL wrappers supply their native href; other values are converted to strings.
     static ImportMetaObject* create(JSC::JSGlobalObject* globalObject, JSValue specifierOrURL);
 
-    /// TODO(@paperclover):
-    /// The rules for this function's input is a bit weird. `specifier` is an import path specifier aka a file path.
-    ///
-    /// - Should be an absolute path or name of a plugin module
-    /// - A '?' is handled not as a literal '?' in a file, but rather as the query string
-    /// - The string is not URL encoded, despite having a query string.
-    ///
-    /// caveat: It is impossible to have a module with a `?` in it's file name.
-    ///
-    /// Fixing this means adjusting a lot of how the module resolver works to operate and handle URL
-    /// escaping, see https://github.com/oven-sh/bun/issues/8640 for more details.
-    ///
-    /// The above rules get a best estimate bandage to solve the problems
-    /// stated in https://github.com/oven-sh/bun/pull/9399
+    // Specifiers are unescaped filesystem paths with an optional query suffix.
+    // A literal '?' in a filename cannot be distinguished from that suffix here.
     static ImportMetaObject* createFromSpecifier(JSC::JSGlobalObject* globalObject, const String& specifier);
 
     static ImportMetaObject* createRequireFunction(VM& vm, JSGlobalObject* lexicalGlobalObject, const WTF::String& pathString);
@@ -71,26 +49,26 @@ public:
     }
 
     static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, bool isBake = false);
-    static void analyzeHeap(JSCell*, JSC::HeapAnalyzer&);
     static JSValue getPrototype(JSObject*, JSC::JSGlobalObject* globalObject);
 
-    WTF::String url;
-    LazyProperty<JSObject, JSCell> requireProperty;
-    LazyProperty<JSObject, JSString> dirProperty;
-    LazyProperty<JSObject, JSString> urlProperty;
-    LazyProperty<JSObject, JSString> fileProperty;
-    LazyProperty<JSObject, JSString> pathProperty;
+    enum class StringProperty : uint8_t { URL, Path, Directory, File };
+    JSString* getStringProperty(JSGlobalObject*, StringProperty);
+    JSCell* getRequire(JSGlobalObject*);
+    WriteBarrier<JSCell> requireProperty;
 
 private:
+    WriteBarrier<JSString> dirProperty;
+    WriteBarrier<JSString> urlProperty;
+    WriteBarrier<JSString> fileProperty;
+    WriteBarrier<JSString> pathProperty;
     static ImportMetaObject* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::Structure* structure, const WTF::String& url);
 
-    ImportMetaObject(JSC::VM& vm, JSC::Structure* structure, const WTF::String& url)
+    ImportMetaObject(JSC::VM& vm, JSC::Structure* structure)
         : Base(vm, structure)
-        , url(url)
     {
     }
 
-    void finishCreation(JSC::VM&);
+    void finishCreation(JSC::VM&, const WTF::String& url);
 };
 
 }

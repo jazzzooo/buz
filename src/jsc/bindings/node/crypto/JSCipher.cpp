@@ -1,4 +1,5 @@
 #include "JSCipher.h"
+#include "SchemaBindings.h"
 #include "JSCipherPrototype.h"
 #include "JSCipherConstructor.h"
 #include "DOMIsoSubspaces.h"
@@ -11,7 +12,6 @@
 #include <JavaScriptCore/ObjectPrototype.h>
 #include "CryptoUtil.h"
 #include "openssl/rsa.h"
-#include "NodeValidator.h"
 #include "KeyObject.h"
 
 namespace Bun {
@@ -47,11 +47,6 @@ void setupCipherClassStructure(JSC::LazyClassStructure::Initializer& init)
     init.setConstructor(constructor);
 }
 
-enum class KeyType {
-    Public,
-    Private,
-};
-
 enum class CipherOperation {
     encrypt,
     decrypt,
@@ -59,106 +54,105 @@ enum class CipherOperation {
     recover,
 };
 
-JSValue rsaFunction(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame, KeyType keyType, CipherOperation operation, int32_t defaultPadding)
+struct NodeCryptoRsaKey {
+    RefPtr<KeyObjectData> keyData;
+    std::optional<int32_t> padding;
+    ncrypto::Digest digest;
+    WebCore::BufferEncodingType encoding;
+    WTF::Vector<uint8_t> oaepLabel;
+};
+
+static std::optional<NodeCryptoRsaKey> rsaKeyFromInput(JSC::JSGlobalObject& global, const Bindgen::NodeCryptoAsymmetricKeyInput& input, bool privateKey)
+{
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    ncrypto::MarkPopErrorOnReturn popErrorScope;
+    auto keyData = KeyObject::prepareAsymmetricKey(
+        &global,
+        scope,
+        input,
+        privateKey ? KeyObject::PrepareAsymmetricKeyMode::ConsumePrivate : KeyObject::PrepareAsymmetricKeyMode::ConsumePublic);
+    RETURN_IF_EXCEPTION(scope, std::nullopt);
+    if (!keyData)
+        return std::nullopt;
+
+    std::optional<int32_t> padding;
+    ncrypto::Digest digest;
+    BufferEncodingType encoding = BufferEncodingType::utf8;
+    WTF::Vector<uint8_t> oaepLabel;
+    if (input.is_options()) {
+        const auto& options = input.options();
+        const auto* convertedPadding = options.padding.convert();
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        const auto* convertedHash = options.oaep_hash.convert();
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        if (!convertedPadding || !convertedHash)
+            return std::nullopt;
+
+        padding = *convertedPadding;
+        if (convertedHash->has_value()) {
+            digest = ncrypto::Digest::FromName(WTF::StringView { **convertedHash });
+            if (!digest) {
+                ERR::OSSL_EVP_INVALID_DIGEST(scope, &global);
+                return std::nullopt;
+            }
+        }
+        const auto* convertedEncoding = options.encoding.convert();
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        if (!convertedEncoding)
+            return std::nullopt;
+        if (convertedEncoding->has_value())
+            encoding = nodeEncodingToBufferEncoding(**convertedEncoding);
+
+        const auto* convertedLabel = options.oaep_label.convert();
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        if (!convertedLabel)
+            return std::nullopt;
+        if (convertedLabel->has_value()) {
+            const auto& label = **convertedLabel;
+            bool copied;
+            if (label.is_buffer()) {
+                copied = oaepLabel.tryAppend(label.buffer());
+            } else {
+                RELEASE_ASSERT(label.is_string());
+                auto* encoded = encodeCryptoString(&global, scope, label.string(), encoding);
+                RETURN_IF_EXCEPTION(scope, std::nullopt);
+                copied = oaepLabel.tryAppend(encoded->span());
+                JSC::ensureStillAliveHere(encoded);
+            }
+            if (!copied) {
+                JSC::throwOutOfMemoryError(&global, scope);
+                return std::nullopt;
+            }
+        }
+    }
+
+    scope.release();
+    return NodeCryptoRsaKey { WTF::move(keyData), padding, digest, encoding, WTF::move(oaepLabel) };
+}
+
+template<typename Buffer>
+WTF::Vector<uint8_t> rsaFunction(Bindgen::CppCallContext& context, JSC::JSGlobalObject* lexicalGlobalObject, const Bindgen::NodeCryptoAsymmetricKeyInput& keyInput, const Bindgen::CppLazyArgument<Buffer>& bufferArgument, CipherOperation operation, int32_t defaultPadding, bool privateKey)
 {
     VM& vm = lexicalGlobalObject->vm();
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
 
-    JSValue optionsValue = callFrame->argument(0);
-    JSValue bufferValue = callFrame->argument(1);
+    auto key = rsaKeyFromInput(*globalObject, keyInput, privateKey);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!key)
+        return {};
+    KeyObject::discardAsymmetricKeyDeferred(keyInput);
+    auto& pkey = key->keyData->asymmetricKey;
+    int32_t padding = key->padding.value_or(defaultPadding);
 
-    KeyObject keyObject;
-    switch (keyType) {
-    case KeyType::Public: {
-        ncrypto::MarkPopErrorOnReturn popErrorScope;
-        auto prepareResult = KeyObject::preparePublicOrPrivateKey(globalObject, scope, optionsValue);
-        RETURN_IF_EXCEPTION(scope, {});
-        if (prepareResult.keyData) {
-            RefPtr<KeyObjectData> data = *prepareResult.keyData;
-            keyObject = KeyObject::create(CryptoKeyType::Public, WTF::move(data));
-        } else {
-            keyObject = KeyObject::getPublicOrPrivateKey(
-                globalObject,
-                scope,
-                prepareResult.keyDataView,
-                CryptoKeyType::Public,
-                prepareResult.formatType,
-                prepareResult.encodingType,
-                prepareResult.cipher,
-                WTF::move(prepareResult.passphrase));
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-        break;
-    }
-    case KeyType::Private: {
-        ncrypto::MarkPopErrorOnReturn popErrorScope;
-        auto prepareResult = KeyObject::preparePrivateKey(globalObject, scope, optionsValue);
-        RETURN_IF_EXCEPTION(scope, {});
-        if (prepareResult.keyData) {
-            RefPtr<KeyObjectData> data = *prepareResult.keyData;
-            keyObject = KeyObject::create(CryptoKeyType::Private, WTF::move(data));
-        } else {
-            keyObject = KeyObject::getPublicOrPrivateKey(
-                globalObject,
-                scope,
-                prepareResult.keyDataView,
-                CryptoKeyType::Private,
-                prepareResult.formatType,
-                prepareResult.encodingType,
-                prepareResult.cipher,
-                WTF::move(prepareResult.passphrase));
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-        break;
-    }
-    }
-
-    auto& pkey = keyObject.asymmetricKey();
-
-    ncrypto::Digest digest;
-    int32_t padding = defaultPadding;
-    GCOwnedDataScope<std::span<const uint8_t>> oaepLabel = { nullptr, {} };
-    JSValue encodingValue = jsUndefined();
-    if (JSObject* options = optionsValue.getObject()) {
-        JSValue paddingValue = options->get(lexicalGlobalObject, Identifier::fromString(vm, "padding"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!paddingValue.isUndefined()) {
-            padding = paddingValue.toInt32(lexicalGlobalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-
-        JSValue oaepHashValue = options->get(lexicalGlobalObject, Identifier::fromString(vm, "oaepHash"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!oaepHashValue.isUndefined()) {
-            V::validateString(scope, lexicalGlobalObject, oaepHashValue, "options.oaepHash"_s);
-            RETURN_IF_EXCEPTION(scope, {});
-            JSString* oaepHashString = oaepHashValue.toString(lexicalGlobalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-            GCOwnedDataScope<WTF::StringView> oaepHashView = oaepHashString->view(lexicalGlobalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-            digest = ncrypto::Digest::FromName(oaepHashView);
-            if (!digest) {
-                ERR::OSSL_EVP_INVALID_DIGEST(scope, lexicalGlobalObject);
-                return {};
-            }
-        }
-
-        encodingValue = options->get(lexicalGlobalObject, Identifier::fromString(vm, "encoding"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-
-        JSValue oaepLabelValue = options->get(lexicalGlobalObject, Identifier::fromString(vm, "oaepLabel"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!oaepLabelValue.isUndefined()) {
-            oaepLabel = getArrayBufferOrView2(lexicalGlobalObject, scope, oaepLabelValue, "options.oaepLabel"_s, encodingValue);
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-    }
-
-    auto buffer = getArrayBufferOrView2(lexicalGlobalObject, scope, bufferValue, "buffer"_s, encodingValue);
+    const auto* convertedBuffer = Bindgen::convertLastAndLease(context, bufferArgument);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!convertedBuffer)
+        return {};
+    auto buffer = getStringOrBufferBytes(lexicalGlobalObject, scope, *convertedBuffer, key->encoding);
     RETURN_IF_EXCEPTION(scope, {});
 
-    if (operation == CipherOperation::decrypt && keyType == KeyType::Private && padding == RSA_PKCS1_PADDING) {
+    if (operation == CipherOperation::decrypt && padding == RSA_PKCS1_PADDING) {
         ncrypto::EVPKeyCtxPointer ctx = pkey.newCtx();
 
         if (!ctx.initForDecrypt()) {
@@ -167,19 +161,20 @@ JSValue rsaFunction(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* ca
         }
 
         throwError(lexicalGlobalObject, scope, ErrorCode::ERR_INVALID_ARG_VALUE, "RSA_PKCS1_PADDING is no longer supported for private decryption"_s);
+        return {};
     }
 
     ncrypto::Buffer<const void> labelBuf = {};
-    if (oaepLabel.owner) {
+    if (!key->oaepLabel.isEmpty()) {
         labelBuf = {
-            .data = oaepLabel->data(),
-            .len = oaepLabel->size(),
+            .data = key->oaepLabel.begin(),
+            .len = key->oaepLabel.size(),
         };
     }
 
     ncrypto::Cipher::CipherParams cipherParams {
         .padding = padding,
-        .digest = digest,
+        .digest = key->digest,
         .label = labelBuf,
     };
 
@@ -209,30 +204,40 @@ JSValue rsaFunction(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* ca
         return {};
     }
 
-    RefPtr<ArrayBuffer> outBuf = JSC::ArrayBuffer::tryCreate(result.span());
-    if (!outBuf) {
+    WTF::Vector<uint8_t> output;
+    if (!output.tryGrow(result.size())) {
         throwOutOfMemoryError(lexicalGlobalObject, scope);
         return {};
     }
+    if (!result.span().empty())
+        memcpy(output.mutableSpan().data(), result.span().data(), result.size());
 
-    RELEASE_AND_RETURN(scope, JSUint8Array::create(lexicalGlobalObject, globalObject->JSBufferSubclassStructure(), WTF::move(outBuf), 0, result.size()));
+    return output;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsPublicEncrypt, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bun::Bindgen::CppBytes Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_publicEncrypt(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_publicEncrypt_Arguments& args)
 {
-    return JSValue::encode(rsaFunction(globalObject, callFrame, KeyType::Public, CipherOperation::encrypt, RSA_PKCS1_OAEP_PADDING));
+    return rsaFunction(context, &context.globalObject, args.options, args.buffer, CipherOperation::encrypt, RSA_PKCS1_OAEP_PADDING, false);
 }
-JSC_DEFINE_HOST_FUNCTION(jsPublicDecrypt, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bun::Bindgen::CppBytes Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_publicDecrypt(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_publicDecrypt_Arguments& args)
 {
-    return JSValue::encode(rsaFunction(globalObject, callFrame, KeyType::Public, CipherOperation::recover, RSA_PKCS1_PADDING));
+    return rsaFunction(context, &context.globalObject, args.options, args.buffer, CipherOperation::recover, RSA_PKCS1_PADDING, false);
 }
-JSC_DEFINE_HOST_FUNCTION(jsPrivateEncrypt, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bun::Bindgen::CppBytes Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_privateEncrypt(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_privateEncrypt_Arguments& args)
 {
-    return JSValue::encode(rsaFunction(globalObject, callFrame, KeyType::Private, CipherOperation::sign, RSA_PKCS1_PADDING));
+    return rsaFunction(context, &context.globalObject, args.options, args.buffer, CipherOperation::sign, RSA_PKCS1_PADDING, true);
 }
-JSC_DEFINE_HOST_FUNCTION(jsPrivateDecrypt, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bun::Bindgen::CppBytes Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_privateDecrypt(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_privateDecrypt_Arguments& args)
 {
-    return JSValue::encode(rsaFunction(globalObject, callFrame, KeyType::Private, CipherOperation::decrypt, RSA_PKCS1_OAEP_PADDING));
+    return rsaFunction(context, &context.globalObject, args.options, args.buffer, CipherOperation::decrypt, RSA_PKCS1_OAEP_PADDING, true);
 }
 
 } // namespace Bun

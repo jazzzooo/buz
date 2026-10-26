@@ -26,7 +26,6 @@
 #pragma once
 
 #include "CryptoAlgorithmParameters.h"
-#include <JavaScriptCore/Uint8Array.h>
 #include <wtf/Vector.h>
 
 #if ENABLE(WEB_CRYPTO)
@@ -36,21 +35,15 @@ namespace WebCore {
 class CryptoAlgorithmRsaKeyGenParams : public CryptoAlgorithmParameters {
 public:
     size_t modulusLength;
-    RefPtr<Uint8Array> publicExponent;
+    Vector<uint8_t> publicExponent;
 
     Class parametersClass() const override { return Class::RsaKeyGenParams; }
 
     const Vector<uint8_t>& publicExponentVector() const
     {
-        if (!m_publicExponentVector.isEmpty() || !publicExponent->byteLength())
-            return m_publicExponentVector;
-
-        m_publicExponentVector.append(std::span { publicExponent->data(), publicExponent->byteLength() });
-        return m_publicExponentVector;
+        return publicExponent;
     }
 
-private:
-    mutable Vector<uint8_t> m_publicExponentVector;
 };
 
 } // namespace WebCore

@@ -39,12 +39,11 @@
 
 namespace WebCore {
 
-class PerformanceServerTiming;
 class ResourceTiming;
 
 class PerformanceResourceTiming : public PerformanceEntry {
 public:
-    static Ref<PerformanceResourceTiming> create(MonotonicTime timeOrigin, ResourceTiming&&);
+    static RefPtr<PerformanceResourceTiming> tryCreate(MonotonicTime timeOrigin, ResourceTiming&&);
 
     const String& initiatorType() const { return m_resourceTiming.initiatorType(); }
     const String& nextHopProtocol() const;
@@ -67,7 +66,7 @@ public:
 
     size_t memoryCost() const;
 
-    const Vector<Ref<PerformanceServerTiming>>& serverTiming() const { return m_serverTiming; }
+    std::span<const ServerTiming> serverTiming() const { return m_resourceTiming.serverTiming(); }
 
     Type performanceEntryType() const override { return Type::Resource; }
     ASCIILiteral entryType() const override { return "resource"_s; }
@@ -80,7 +79,6 @@ protected:
 
     MonotonicTime m_timeOrigin;
     ResourceTiming m_resourceTiming;
-    Vector<Ref<PerformanceServerTiming>> m_serverTiming;
 };
 
 } // namespace WebCore

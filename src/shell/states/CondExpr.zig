@@ -213,10 +213,7 @@ fn commandImplStart(this: *CondExpr) Yield {
 
 fn doStat(this: *CondExpr) Yield {
     const stat_task = bun.new(ShellCondExprStatTask, .{
-        .task = .{
-            .event_loop = this.base.eventLoop(),
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(this.base.eventLoop()),
-        },
+        .task = .init(this.base.eventLoop()),
         .condexpr = this,
         .path = this.args.items[0],
         .cwdfd = this.base.shell.cwd_fd,
@@ -268,7 +265,7 @@ pub fn writeFailingError(this: *CondExpr, comptime fmt: []const u8, args: anytyp
     return this.base.shell.writeFailingErrorFmt(this, handler.enqueueCb, fmt, args);
 }
 
-pub fn onIOWriterChunk(this: *CondExpr, _: usize, err: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *CondExpr, _: usize, err: ?bun.sys.SystemError) Yield {
     if (err != null) {
         defer err.?.deref();
         const exit_code: ExitCode = @backingInt(err.?.getErrno());
@@ -286,7 +283,6 @@ const std = @import("std");
 
 const bun = @import("bun");
 const assert = bun.assert;
-const jsc = bun.jsc;
 const Maybe = bun.sys.Maybe;
 
 const shell = bun.shell;

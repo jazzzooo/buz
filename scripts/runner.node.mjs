@@ -31,6 +31,7 @@ import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { prestartMap as dockerPrestartMap } from "../test/docker/prestart-map.mjs";
 import pLimit from "./p-limit.mjs";
+import { compactTestResult, summarizeTestResult } from "./test-output.mjs";
 import {
   getAbi,
   getAbiVersion,
@@ -560,6 +561,8 @@ async function runTests() {
   const failedResults = [];
   const failedResultsTitles = [];
   const maxAttempts = 1 + (parseInt(options["retries"]) || 0);
+  const resultsJournal = cliOptions["results-json"] ? `${cliOptions["results-json"]}.jsonl` : null;
+  if (resultsJournal) writeFileSync(resultsJournal, "");
 
   const parallelism = options["parallel"] ? Number(process.env.TEST_PARALLELISM) || availableParallelism() : 1;
   console.log("parallelism", parallelism);
@@ -609,6 +612,10 @@ async function runTests() {
         result = await startGroup(grouptitle, () => fn(index));
       }
 
+      compactTestResult(result);
+      if (resultsJournal) {
+        appendFileSync(resultsJournal, JSON.stringify({ ...summarizeTestResult(result), attempt }) + "\n");
+      }
       const { ok, stdoutPreview, error } = result;
       if (ok) {
         if (failure) {
@@ -740,7 +747,7 @@ async function runTests() {
         }
         if (shouldValidateExceptions(testPath)) {
           env.BUN_JSC_validateExceptionChecks = "1";
-          env.BUN_JSC_dumpSimulatedThrows = "1";
+          env.BUN_JSC_dumpSimulatedThrows ??= process.env.BUN_JSC_dumpSimulatedThrows ?? "1";
         }
         if (shouldValidateLeakSan(testPath)) {
           env.BUN_DESTRUCT_VM_ON_EXIT = "1";
@@ -751,7 +758,7 @@ async function runTests() {
         return runTest(
           title,
           async index => {
-            const { ok, error, stdout, crashes } = await spawnBun(execPath, {
+            const { ok, error, stdout, crashes, captureTruncated } = await spawnBun(execPath, {
               cwd: cwd,
               args: [
                 subcommand,
@@ -767,8 +774,8 @@ async function runTests() {
                 // calls from wiping each other when parallelSafeWidth > 1.
                 TEST_SERIAL_ID: String(index),
               },
-              stdout: concurrent ? () => {} : chunk => pipeTestStdout(process.stdout, chunk),
-              stderr: concurrent ? () => {} : chunk => pipeTestStdout(process.stderr, chunk),
+              stdout: chunk => pipeTestStdout(process.stdout, chunk),
+              stderr: chunk => pipeTestStdout(process.stderr, chunk),
             });
             const mb = 1024 ** 3;
             let stdoutPreview = stdout.slice(0, mb).split("\n").slice(0, 50).join("\n");
@@ -782,6 +789,7 @@ async function runTests() {
               tests: [],
               stdout: stdout,
               stdoutPreview: stdoutPreview,
+              captureTruncated,
             };
           },
           concurrent,
@@ -792,8 +800,8 @@ async function runTests() {
           async () =>
             spawnBunTest(execPath, join("test", testPath), {
               cwd,
-              stdout: concurrent ? () => {} : chunk => pipeTestStdout(process.stdout, chunk),
-              stderr: concurrent ? () => {} : chunk => pipeTestStdout(process.stderr, chunk),
+              stdout: chunk => pipeTestStdout(process.stdout, chunk),
+              stderr: chunk => pipeTestStdout(process.stderr, chunk),
             }),
           concurrent,
         );
@@ -1040,16 +1048,7 @@ async function runTests() {
 
   // Dump per-file results as JSON for post-processing.
   if (cliOptions["results-json"]) {
-    const all = [...okResults, ...flakyResults, ...failedResults].map(r => ({
-      testPath: r.testPath,
-      ok: r.ok,
-      status: r.status,
-      error: r.error,
-      exitCode: r.exitCode,
-      signalCode: r.signalCode,
-      duration: r.duration,
-      stdoutPreview: r.stdoutPreview?.slice?.(-4000),
-    }));
+    const all = [...okResults, ...flakyResults, ...failedResults].map(summarizeTestResult);
     writeFileSync(cliOptions["results-json"], JSON.stringify(all, null, 2));
     !isQuiet && console.log(`Wrote ${all.length} results to ${cliOptions["results-json"]}`);
   }
@@ -1079,6 +1078,7 @@ async function runTests() {
  * @property {number} timestamp
  * @property {number} duration
  * @property {string} stdout
+ * @property {boolean} captureTruncated
  * @property {number} [pid]
  */
 
@@ -1105,6 +1105,8 @@ async function spawnSafe(options) {
   let subprocess;
   let timer;
   let buffer = "";
+  let omittedCharacters = 0;
+  let capturing = true;
   let doneCalls = 0;
   const beforeDone = resolve => {
     // TODO: wait for stderr as well, spawn.test currently causes it to hang
@@ -1176,24 +1178,29 @@ async function spawnSafe(options) {
       subprocess.stdout.on("end", () => {
         beforeDone(resolve);
       });
-      // Stop accumulating past 128 MB: a runaway test's output otherwise
-      // grows `buffer` to V8's max string length and crashes the runner.
-      const maxBuffer = 128 * 1024 * 1024;
-      subprocess.stdout.on("data", chunk => {
-        const text = chunk.toString("utf-8");
+      const maxBuffer = 16 * 1024 * 1024;
+      const capture = text => {
+        if (!capturing) return;
+        const count = Math.min(text.length, Math.max(0, maxBuffer - buffer.length));
+        buffer += text.slice(0, count);
+        omittedCharacters += text.length - count;
+      };
+      subprocess.stdout.setEncoding("utf8");
+      subprocess.stderr.setEncoding("utf8");
+      subprocess.stdout.on("data", text => {
         stdout?.(text);
-        if (buffer.length < maxBuffer) buffer += text;
+        capture(text);
       });
-      subprocess.stderr.on("data", chunk => {
-        const text = chunk.toString("utf-8");
+      subprocess.stderr.on("data", text => {
         stderr?.(text);
-        if (buffer.length < maxBuffer) buffer += text;
+        capture(text);
       });
     } catch (error) {
       spawnError = error;
       resolve();
     }
   });
+  capturing = false;
   if (spawnError && retries < 5) {
     const { code } = spawnError;
     if (code === "EBUSY" || code === "UNKNOWN") {
@@ -1205,6 +1212,9 @@ async function spawnSafe(options) {
     }
   }
   let error;
+  if (omittedCharacters) {
+    buffer += `\n[runner capture omitted ${omittedCharacters} characters; full output was streamed]\n`;
+  }
   if (exitCode === 0) {
     // ...
   } else if (spawnError) {
@@ -1271,13 +1281,16 @@ async function spawnSafe(options) {
     }
     error = `code ${exitCode}`;
   }
+  const capturedOutput = buffer;
+  buffer = "";
   return {
     ok: exitCode === 0 && !signalCode && !spawnError,
     error,
     exitCode,
     signalCode,
     spawnError,
-    stdout: buffer,
+    stdout: capturedOutput,
+    captureTruncated: omittedCharacters > 0,
     timestamp: timestamp || Date.now(),
     duration: duration || 0,
     pid: subprocess?.pid,
@@ -1501,7 +1514,7 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
   };
   if (shouldValidateExceptions(relative(cwd, absPath))) {
     env.BUN_JSC_validateExceptionChecks = "1";
-    env.BUN_JSC_dumpSimulatedThrows = "1";
+    env.BUN_JSC_dumpSimulatedThrows ??= process.env.BUN_JSC_dumpSimulatedThrows ?? "1";
   }
   if (shouldValidateLeakSan(relative(cwd, absPath))) {
     env.BUN_DESTRUCT_VM_ON_EXIT = "1";
@@ -1517,7 +1530,7 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
     env.BUN_FEATURE_FLAG_NO_ORPHANS = "1";
   }
 
-  const { ok, error, stdout, crashes } = await spawnBun(execPath, {
+  const { ok, error, stdout, crashes, captureTruncated } = await spawnBun(execPath, {
     command,
     args: commandArgs,
     cwd: opts["cwd"],
@@ -1528,8 +1541,8 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
     // per-test multiplier so the overall shard stays inside the job timeout.
     timeout: isReallyTest ? Math.ceil(timeout * (isAsan ? 2 : 1)) : 30_000,
     env,
-    stdout: options.stdout,
-    stderr: options.stderr,
+    stdout: opts.stdout,
+    stderr: opts.stderr,
   });
   let { tests, errors, stdout: stdoutPreview } = parseTestStdout(stdout, testPath);
   if (crashes) stdoutPreview += crashes;
@@ -1551,6 +1564,7 @@ async function spawnBunTest(execPath, testPath, opts = { cwd }) {
     tests,
     stdout,
     stdoutPreview,
+    captureTruncated,
   };
 }
 
@@ -1708,7 +1722,7 @@ function parseTestStdout(stdout, testPath) {
  * @returns {Promise<TestResult>}
  */
 async function spawnBunInstall(execPath, options) {
-  let { ok, error, stdout, duration, crashes } = await spawnBun(execPath, {
+  let { ok, error, stdout, duration, crashes, captureTruncated } = await spawnBun(execPath, {
     args: ["install"],
     timeout: testTimeout,
     ...options,
@@ -1733,6 +1747,7 @@ async function spawnBunInstall(execPath, options) {
     ],
     stdout,
     stdoutPreview: stdout,
+    captureTruncated,
   };
 }
 

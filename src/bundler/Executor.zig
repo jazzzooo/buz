@@ -62,6 +62,7 @@ pub const Executor = struct {
         condition: std.Io.Condition = .init,
         pending: Batch = .{},
         stopping: bool = false,
+        joined: bool = false,
         workers: []*Worker,
         worker_count: usize = 0,
         active_workers: usize = 0,
@@ -82,7 +83,8 @@ pub const Executor = struct {
             }
         }
 
-        fn deinit(this: *Lane) void {
+        fn join(this: *Lane) void {
+            if (this.joined) return;
             const io = this.executor.io;
             this.mutex.lockUncancelable(io);
             this.stopping = true;
@@ -97,6 +99,11 @@ pub const Executor = struct {
 
             bun.assert(this.pending.len == 0);
             bun.assert(this.active_workers == 0);
+            this.joined = true;
+        }
+
+        fn deinit(this: *Lane) void {
+            this.join();
             for (this.workers[0..this.worker_count]) |worker| worker.deinit();
             bun.default_allocator.free(this.workers);
         }
@@ -204,6 +211,11 @@ pub const Executor = struct {
         }
     }
 
+    pub fn join(this: *Executor) void {
+        this.read_lane.join();
+        this.parse_lane.join();
+    }
+
     fn usesReadLane() bool {
         if (bun.feature_flag.BUN_FEATURE_FLAG_FORCE_IO_POOL.get()) return true;
         if (bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_IO_POOL.get()) return false;
@@ -265,22 +277,7 @@ pub const Executor = struct {
         comptime run_fn: anytype,
         values: anytype,
     ) !void {
-        const Context = struct {
-            ctx: @TypeOf(ctx),
-            values: @TypeOf(values),
-            next: std.atomic.Value(usize) = .init(0),
-        };
-        var context: Context = .{ .ctx = ctx, .values = values };
-        try this.parallel(&context, values.len, struct {
-            fn run(state: *Context) std.Io.Cancelable!void {
-                while (true) {
-                    try std.Io.checkCancel(Worker.current.?.ctx.transpiler.io);
-                    const index = state.next.fetchAdd(1, .monotonic);
-                    if (index >= state.values.len) return;
-                    run_fn(state.ctx, state.values[index], index);
-                }
-            }
-        }.run);
+        try this.eachImpl(ctx, run_fn, values, false);
     }
 
     pub fn eachPtr(
@@ -289,22 +286,45 @@ pub const Executor = struct {
         comptime run_fn: anytype,
         values: anytype,
     ) !void {
+        try this.eachImpl(ctx, run_fn, values, true);
+    }
+
+    fn eachImpl(
+        this: *Executor,
+        ctx: anytype,
+        comptime run_fn: anytype,
+        values: anytype,
+        comptime by_pointer: bool,
+    ) !void {
+        const RunResult = @TypeOf(run_fn(ctx, if (by_pointer) &values[0] else values[0], @as(usize, 0)));
+        const RunError = if (@typeInfo(RunResult) == .error_union) @typeInfo(RunResult).error_union.error_set else error{};
         const Context = struct {
             ctx: @TypeOf(ctx),
             values: @TypeOf(values),
             next: std.atomic.Value(usize) = .init(0),
+            failure_mutex: std.Io.Mutex = .init,
+            failure: ?RunError = null,
         };
         var context: Context = .{ .ctx = ctx, .values = values };
         try this.parallel(&context, values.len, struct {
             fn run(state: *Context) std.Io.Cancelable!void {
+                const io = Worker.current.?.ctx.transpiler.io;
                 while (true) {
-                    try std.Io.checkCancel(Worker.current.?.ctx.transpiler.io);
+                    try std.Io.checkCancel(io);
                     const index = state.next.fetchAdd(1, .monotonic);
                     if (index >= state.values.len) return;
-                    run_fn(state.ctx, &state.values[index], index);
+                    const result = run_fn(state.ctx, if (by_pointer) &state.values[index] else state.values[index], index);
+                    if (comptime @typeInfo(@TypeOf(result)) == .error_union) {
+                        result catch |err| {
+                            state.failure_mutex.lockUncancelable(io);
+                            defer state.failure_mutex.unlock(io);
+                            if (state.failure == null) state.failure = err;
+                        };
+                    }
                 }
             }
         }.run);
+        if (context.failure) |err| return err;
     }
 
     fn parallel(this: *Executor, context: anytype, len: usize, comptime run: anytype) !void {
@@ -315,10 +335,10 @@ pub const Executor = struct {
         errdefer group.cancel(this.io);
 
         for (0..count - 1) |_| {
-            const worker = this.createOperationWorker();
+            const worker = try this.createOperationWorker();
             group.async(this.io, runParallelShard(@TypeOf(context), run), .{ worker, context });
         }
-        try runParallelShard(@TypeOf(context), run)(this.createOperationWorker(), context);
+        try runParallelShard(@TypeOf(context), run)(try this.createOperationWorker(), context);
         try group.await(this.io);
     }
 
@@ -344,6 +364,9 @@ pub const Executor = struct {
 
         pub fn deinit(this: *Worker) void {
             if (this.has_created) {
+                this.data.transpiler.destroyMacroContext();
+                if (this.data.other_transpiler) |*transpiler| transpiler.destroyMacroContext();
+                this.data.log.deinit();
                 this.heap.deinit();
             }
 
@@ -406,10 +429,11 @@ pub const Executor = struct {
         }
 
         fn configureTranspiler(this: *Worker, transpiler: *Transpiler, allocator: std.mem.Allocator) void {
+            transpiler.feature_flags = .empty;
             transpiler.setLog(&this.data.log);
             transpiler.setAllocator(allocator);
             transpiler.linker.resolver = &transpiler.resolver;
-            transpiler.macro_context = js_ast.Macro.MacroContext.init(transpiler);
+            transpiler.clearMacroContext();
             const CacheSet = @import("./cache.zig");
             transpiler.resolver.caches = CacheSet.Set.init(allocator);
         }
@@ -432,8 +456,8 @@ pub const Executor = struct {
         }
     };
 
-    fn createOperationWorker(this: *Executor) *Worker {
-        const worker = bun.handleOom(bun.default_allocator.create(Worker));
+    fn createOperationWorker(this: *Executor) bun.OOM!*Worker {
+        const worker = try bun.default_allocator.create(Worker);
         worker.* = .{
             .ctx = this.v2,
             .lane = .parse,

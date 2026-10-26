@@ -26,11 +26,13 @@ running: std.atomic.Value(bool) = .init(false),
 evict_list: [max_eviction_count]WatchItemIndex = undefined,
 evict_list_i: WatchItemIndex = 0,
 
-ctx: *anyopaque,
-onFileUpdate: *const fn (this: *anyopaque, events: []WatchEvent, changed_files: []?[:0]u8, watchlist: WatchList) void,
-onError: *const fn (this: *anyopaque, err: bun.sys.Error) void,
+ctx: Context,
+onFileUpdate: *const fn (this: Context, events: []WatchEvent, changed_files: []?[:0]u8, watchlist: WatchList) void,
+onError: *const fn (this: Context, err: bun.sys.Error) void,
 
 thread_lock: bun.safety.ThreadLock = .initUnlocked(),
+
+const Context = bun.bindgen.NativeCallbackContext(.vm);
 
 pub const max_count = 128;
 pub const requires_file_descriptors = switch (Environment.os) {
@@ -66,14 +68,14 @@ const no_watch_item: WatchItemIndex = std.math.maxInt(WatchItemIndex);
 ///     bundle_v2.borrowed_watcher = watcher;
 pub fn init(comptime T: type, ctx: *T, fs: *bun.fs.FileSystem, allocator: std.mem.Allocator) !*Watcher {
     const wrapped = struct {
-        fn onFileUpdateWrapped(ctx_opaque: *anyopaque, events: []WatchEvent, changed_files: []?[:0]u8, watchlist: WatchList) void {
-            T.onFileUpdate(@ptrCast(@alignCast(ctx_opaque)), events, changed_files, watchlist);
+        fn onFileUpdateWrapped(ctx_opaque: Context, events: []WatchEvent, changed_files: []?[:0]u8, watchlist: WatchList) void {
+            T.onFileUpdate(ctx_opaque.get(*T), events, changed_files, watchlist);
         }
-        fn onErrorWrapped(ctx_opaque: *anyopaque, err: bun.sys.Error) void {
+        fn onErrorWrapped(ctx_opaque: Context, err: bun.sys.Error) void {
             if (@hasDecl(T, "onWatchError")) {
-                T.onWatchError(@ptrCast(@alignCast(ctx_opaque)), err);
+                T.onWatchError(ctx_opaque.get(*T), err);
             } else {
-                T.onError(@ptrCast(@alignCast(ctx_opaque)), err);
+                T.onError(ctx_opaque.get(*T), err);
             }
         }
     };
@@ -87,7 +89,7 @@ pub fn init(comptime T: type, ctx: *T, fs: *bun.fs.FileSystem, allocator: std.me
         .watchlist = WatchList{},
         .mutex = .init,
         .cwd = fs.top_level_dir,
-        .ctx = ctx,
+        .ctx = .init(ctx),
         .onFileUpdate = &wrapped.onFileUpdateWrapped,
         .onError = &wrapped.onErrorWrapped,
         .platform = .{},
@@ -653,62 +655,38 @@ pub fn addFileByPathSlow(
     this: *Watcher,
     file_path: string,
     loader: options.Loader,
+    package_json: ?*PackageJSON,
 ) bool {
     if (file_path.len == 0) return false;
     const hash = getHash(file_path);
 
-    // Check if already watched (with lock to avoid race with removal)
-    {
-        this.mutex.lockUncancelable(this.io);
-        const already_watched = this.indexOf(hash) != null;
-        this.mutex.unlock(this.io);
+    this.mutex.lockUncancelable(this.io);
+    defer this.mutex.unlock(this.io);
+    if (this.indexOf(hash) != null) return true;
 
-        if (already_watched) {
-            return true;
-        }
-    }
-
-    // Only open fd if we might need it
-    var fd: bun.FD = bun.invalid_fd;
+    var fd: bun.FD = .invalid;
     if (Environment.isKqueue) {
         const path_z = std.posix.toPosixPath(file_path) catch return false;
-        switch (bun.sys.open(&path_z, watch_open_flags, 0)) {
-            .result => |opened| fd = opened,
+        fd = switch (bun.sys.open(&path_z, watch_open_flags, 0)) {
+            .result => |opened| opened,
             .err => return false,
-        }
+        };
     }
 
-    const res = this.addFile(fd, file_path, hash, loader, bun.invalid_fd, null, true);
-    switch (res) {
-        .result => {
-            // On kqueue platforms, addFile may have found the file already
-            // watched (race) and returned success without using our fd.
-            // Close it if unused.
-            if ((comptime Environment.isKqueue) and fd.isValid()) {
-                this.mutex.lockUncancelable(this.io);
-                const maybe_idx = this.indexOf(hash);
-                const stored_fd = if (maybe_idx) |idx|
-                    this.watchlist.items(.fd)[idx]
-                else
-                    bun.invalid_fd;
-                this.mutex.unlock(this.io);
-
-                // Only close if entry exists and stored fd differs from ours.
-                // Race scenarios:
-                // 1. Entry removed (maybe_idx == null): our fd was stored then closed by flushEvictions → don't close
-                // 2. Entry exists with different fd: another thread added entry, addFile didn't use our fd → close ours
-                // 3. Entry exists with same fd: our fd was stored → don't close
-                if (maybe_idx != null and stored_fd.native() != fd.native()) {
-                    fd.close();
-                }
-            }
-            return true;
-        },
+    switch (this.appendFileMaybeLock(fd, file_path, hash, loader, .invalid, package_json, true, false)) {
+        .result => return true,
         .err => {
             if (fd.isValid()) fd.close();
             return false;
         },
     }
+}
+
+pub fn packageJsonForFile(this: *Watcher, hash: HashType) ?*PackageJSON {
+    this.mutex.lockUncancelable(this.io);
+    defer this.mutex.unlock(this.io);
+    const index = this.indexOf(hash) orelse return null;
+    return this.watchlist.items(.package_json)[index];
 }
 
 pub fn addFile(
@@ -788,7 +766,10 @@ pub fn onMaybeWatchDirectory(watch: *Watcher, file_path: string, dir_fd: bun.FD)
 }
 
 pub const TestingAPIs = struct {
-    pub fn startWithUnavailableIo(global: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    pub fn startWithUnavailableIo(
+        _: bun.bindgen.CallContext(StartWithUnavailableIoSchema),
+        _: bun.bindgen.Args(StartWithUnavailableIoSchema),
+    ) bun.JSError!bun.bindgen.DOMString {
         var threaded = std.Io.Threaded.init_single_threaded;
         var watcher: Watcher = undefined;
         watcher.io = threaded.io();
@@ -798,7 +779,7 @@ pub const TestingAPIs = struct {
         watcher.start() catch |err| {
             bun.assert(watcher.task == null);
             bun.assert(!watcher.running.load(.acquire));
-            return jsc.ZigString.fromBytes(@errorName(err)).toJS(global);
+            return bun.bindgen.DOMString.fromUTF8(@errorName(err));
         };
         @panic("single-threaded Io unexpectedly provided concurrency");
     }
@@ -813,8 +794,15 @@ const std = @import("std");
 const PackageJSON = @import("../resolver/package_json.zig").PackageJSON;
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const Output = bun.Output;
 const strings = bun.strings;
+
+const InternalTestingBindings = bun.bindgen.Module("InternalTesting");
+const StartWithUnavailableIoSchema = InternalTestingBindings.function("fileWatcherStartWithUnavailableIo");
+const StartWithUnavailableIoBinding = bun.bindgen.Fn(StartWithUnavailableIoSchema, TestingAPIs.startWithUnavailableIo);
+
+comptime {
+    _ = StartWithUnavailableIoBinding;
+}

@@ -115,6 +115,11 @@
             .hash = "N-V-__8AABASQgCtrlfXYF79gMIeExM-Kv9nquZFv_ACS7Jy",
             .lazy = true,
         },
+        .libffi = .{
+            .url = "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz",
+            .hash = "N-V-__8AAOYhWgCH5wkDwAHY4b2B-WwRcdVHQwuCRZB5Xe3b",
+            .lazy = true,
+        },
         // Source provenance of src/build/prebuilt/liblolhtml.a; never fetched.
         .lolhtml = .{
             .url = "https://github.com/cloudflare/lol-html/archive/77127cd2b8545998756e8d64e36ee2313c4bb312.tar.gz",

@@ -69,7 +69,7 @@ pub const Size = union(enum) {
                     .err => |e| return .{ .err = e },
                 };
 
-                if (Map.getASCIIICaseInsensitive(ident)) |res| {
+                if (Map.getCaseInsensitiveASCII(ident)) |res| {
                     return .{ .result = switch (res) {
                         .auto => .auto,
                         .@"min-content" => .{ .min_content = css.VendorPrefix{ .none = true } },
@@ -229,7 +229,7 @@ pub const MaxSize = union(enum) {
                     .result => |v| v,
                     .err => |e| return .{ .err = e },
                 };
-                const mapped = IdentMap.getASCIIICaseInsensitive(ident) orelse return .{ .err = i.newCustomError(css.ParserError.invalid_value) };
+                const mapped = IdentMap.getCaseInsensitiveASCII(ident) orelse return .{ .err = i.newCustomError(css.ParserError.invalid_value) };
                 return .{ .result = switch (mapped) {
                     .none => .none,
                     .min_content => .{ .min_content = .{ .none = true } },

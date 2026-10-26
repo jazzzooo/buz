@@ -80,7 +80,7 @@ JSC_DEFINE_HOST_FUNCTION(jsJavaScriptCallFramePrototypeFunctionEvaluateWithScope
     if (!castedThis)
         return throwVMTypeError(globalObject, scope);
 
-    return JSValue::encode(castedThis->evaluateWithScopeExtension(globalObject, callFrame));
+    RELEASE_AND_RETURN(scope, JSValue::encode(castedThis->evaluateWithScopeExtension(globalObject, callFrame)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsJavaScriptCallFramePrototypeFunctionScopeDescriptions, (JSGlobalObject* globalObject, CallFrame* callFrame))
@@ -93,7 +93,7 @@ JSC_DEFINE_HOST_FUNCTION(jsJavaScriptCallFramePrototypeFunctionScopeDescriptions
     if (!castedThis)
         return throwVMTypeError(globalObject, scope);
 
-    return JSValue::encode(castedThis->scopeDescriptions(globalObject));
+    RELEASE_AND_RETURN(scope, JSValue::encode(castedThis->scopeDescriptions(globalObject)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsJavaScriptCallFrameAttributeCaller, (JSGlobalObject* globalObject, CallFrame* callFrame))
@@ -106,7 +106,7 @@ JSC_DEFINE_HOST_FUNCTION(jsJavaScriptCallFrameAttributeCaller, (JSGlobalObject* 
     if (!castedThis)
         return throwVMTypeError(globalObject, scope);
 
-    return JSValue::encode(castedThis->caller(globalObject));
+    RELEASE_AND_RETURN(scope, JSValue::encode(castedThis->caller(globalObject)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsJavaScriptCallFrameAttributeSourceID, (JSGlobalObject* globalObject, CallFrame* callFrame))
@@ -171,7 +171,7 @@ JSC_DEFINE_HOST_FUNCTION(jsJavaScriptCallFrameAttributeScopeChain, (JSGlobalObje
     if (!castedThis)
         return throwVMTypeError(globalObject, scope);
 
-    return JSValue::encode(castedThis->scopeChain(globalObject));
+    RELEASE_AND_RETURN(scope, JSValue::encode(castedThis->scopeChain(globalObject)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsJavaScriptCallFrameAttributeThisObject, (JSGlobalObject* globalObject, CallFrame* callFrame))

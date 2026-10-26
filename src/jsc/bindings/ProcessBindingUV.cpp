@@ -1,4 +1,5 @@
 #include "ProcessBindingUV.h"
+#include "SchemaBindings.h"
 #include "JavaScriptCore/ArrayAllocationProfile.h"
 #include "JavaScriptCore/JSCJSValue.h"
 #include "JavaScriptCore/ThrowScope.h"
@@ -342,74 +343,75 @@
   macro(EUNATCH, "protocol driver not attached")
 
 // clang-format on
-namespace Bun {
-namespace ProcessBindingUV {
+namespace Bun::Bindgen::Cpp {
+using namespace JSC;
+using namespace WTF;
 
-JSC_DEFINE_HOST_FUNCTION(jsErrname, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+WTF::String bunBindgenCpp_ProcessBindingUV_errname(
+    CppCallContext&,
+    const BunBindgenCpp_ProcessBindingUV_errname_Arguments& args)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto arg0 = callFrame->argument(0);
+    if (!args.value) [[unlikely]]
+        return "Unknown system error"_s;
 
-    // Node.js crashes here:
-    // However, we should ensure this function never throws
-    // That's why we do not call toPrimitive here or throw on invalid input.
-    if (!arg0.isInt32AsAnyInt()) [[unlikely]] {
-        return JSValue::encode(jsString(vm, String("Unknown system error"_s)));
-    }
-
-    auto err = arg0.toInt32(globalObject);
+    auto err = *args.value;
 #define CASE(name, desc) \
-    if (err == -name) return JSValue::encode(JSC::jsString(vm, String(#name##_s)));
+    if (err == -name) return String(#name##_s);
 
     BUN_UV_ERRNO_MAP(CASE)
 #undef CASE
 
-    return JSValue::encode(jsString(vm, makeString("Unknown system error: "_s, err)));
+    return makeString("Unknown system error: "_s, err);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsGetErrorMap, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+JSC::JSValue bunBindgenCpp_ProcessBindingUV_getErrorMap(
+    CppCallContext& context,
+    const BunBindgenCpp_ProcessBindingUV_getErrorMap_Arguments&)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
+    auto scope = DECLARE_THROW_SCOPE(vm);
     auto map = JSC::JSMap::create(vm, globalObject->mapStructure());
 
     // Inlining each of these via macros costs like 300 KB.
-    const auto putProperty = [](JSC::VM& vm, JSC::JSMap* map, JSC::JSGlobalObject* globalObject, ASCIILiteral name, int value, ASCIILiteral desc) -> void {
+    const auto putProperty = [](JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSMap* map, JSC::JSGlobalObject* globalObject, ASCIILiteral name, int value, ASCIILiteral desc) -> void {
         auto arr = JSC::constructEmptyArray(globalObject, static_cast<JSC::ArrayAllocationProfile*>(nullptr), 2);
-        // RETURN_IF_EXCEPTION
+        RETURN_IF_EXCEPTION(scope, void());
         arr->putDirectIndex(globalObject, 0, JSC::jsString(vm, String(name)));
+        RETURN_IF_EXCEPTION(scope, void());
         arr->putDirectIndex(globalObject, 1, JSC::jsString(vm, String(desc)));
+        RETURN_IF_EXCEPTION(scope, void());
         map->set(globalObject, JSC::jsNumber(value), arr);
+        RETURN_IF_EXCEPTION(scope, void());
     };
 
-#define PUT_PROPERTY(name, desc) putProperty(vm, map, globalObject, #name##_s, -name, desc##_s);
+#define PUT_PROPERTY(name, desc) \
+    putProperty(vm, scope, map, globalObject, #name##_s, -name, desc##_s); \
+    RETURN_IF_EXCEPTION(scope, {});
     BUN_UV_ERRNO_MAP(PUT_PROPERTY)
 #undef PUT_PROPERTY
 
-    return JSValue::encode(map);
+    return map;
 }
+
+} // namespace Bun::Bindgen::Cpp
+
+namespace Bun::ProcessBindingUV {
+using namespace JSC;
+
+#define DEFINE_BINDING_CONSTANT(name, desc) inline constexpr int BunBindgenProcessBindingUV_##name = -name;
+BUN_UV_ERRNO_MAP(DEFINE_BINDING_CONSTANT)
+#undef DEFINE_BINDING_CONSTANT
+
+#define BUN_BINDGEN_OBJECT_SURFACE_ProcessBindingUV
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_ProcessBindingUV
 
 JSObject* create(VM& vm, JSGlobalObject* globalObject)
 {
     auto bindingObject = JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), 0);
-    EnsureStillAliveScope ensureStillAlive(bindingObject);
-    bindingObject->putDirect(vm, JSC::Identifier::fromString(vm, "errname"_s), JSC::JSFunction::create(vm, globalObject, 1, "errname"_s, jsErrname, ImplementationVisibility::Public));
-
-    // Inlining each of these via macros costs like 300 KB.
-    // Before: 96305608
-    // After:  95973832
-    const auto putNamedProperty = [](JSC::VM& vm, JSObject* bindingObject, const ASCIILiteral name, int value) -> void {
-        bindingObject->putDirect(vm, JSC::Identifier::fromString(vm, name), JSC::jsNumber(value));
-    };
-
-#define PUT_PROPERTY(name, desc) \
-    putNamedProperty(vm, bindingObject, "UV_" #name##_s, -name);
-    BUN_UV_ERRNO_MAP(PUT_PROPERTY)
-#undef PUT_PROPERTY
-
-    bindingObject->putDirect(vm, JSC::Identifier::fromString(vm, "getErrorMap"_s), JSC::JSFunction::create(vm, globalObject, 0, "getErrorMap"_s, jsGetErrorMap, ImplementationVisibility::Public));
-
+    bunBindgenObjectSurface_ProcessBindingUV_install(vm, bindingObject->classInfo(), *bindingObject);
     return bindingObject;
 }
 
-} // namespace ProcessBindingUV
-} // namespace Bun
+} // namespace Bun::ProcessBindingUV

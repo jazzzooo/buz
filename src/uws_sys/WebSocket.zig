@@ -27,10 +27,10 @@ pub fn NewWebSocket(comptime ssl_flag: c_int) type {
         pub fn sendLastFragment(this: *WebSocket, message: []const u8, compress: bool) SendStatus {
             return c.uws_ws_send_last_fragment(ssl_flag, this.raw(), message.ptr, message.len, compress);
         }
-        pub fn end(this: *WebSocket, code: i32, message: []const u8) void {
-            return c.uws_ws_end(ssl_flag, this.raw(), code, message.ptr, message.len);
+        pub fn end(this: *WebSocket, code: i32, message: []const u8) bun.OOM!void {
+            if (!c.uws_ws_end(ssl_flag, this.raw(), code, message.ptr, message.len)) return error.OutOfMemory;
         }
-        pub fn cork(this: *WebSocket, ctx: anytype, comptime callback: anytype) void {
+        pub fn cork(this: *WebSocket, ctx: anytype, comptime callback: anytype) bun.OOM!void {
             const ContextType = @TypeOf(ctx);
             const Wrapper = struct {
                 pub fn wrap(user_data: ?*anyopaque) callconv(.c) void {
@@ -38,7 +38,7 @@ pub fn NewWebSocket(comptime ssl_flag: c_int) type {
                 }
             };
 
-            return c.uws_ws_cork(ssl_flag, this.raw(), Wrapper.wrap, ctx);
+            if (!c.uws_ws_cork(ssl_flag, this.raw(), Wrapper.wrap, ctx)) return error.OutOfMemory;
         }
         pub fn subscribe(this: *WebSocket, topic: []const u8) bool {
             return c.uws_ws_subscribe(ssl_flag, this.raw(), topic.ptr, topic.len);
@@ -49,8 +49,6 @@ pub fn NewWebSocket(comptime ssl_flag: c_int) type {
         pub fn isSubscribed(this: *WebSocket, topic: []const u8) bool {
             return c.uws_ws_is_subscribed(ssl_flag, this.raw(), topic.ptr, topic.len);
         }
-        // getTopicsAsJSArray: use AnyWebSocket.getTopicsAsJSArray (src/runtime/socket/uws_jsc.zig)
-
         pub fn publish(this: *WebSocket, topic: []const u8, message: []const u8) bool {
             return c.uws_ws_publish(ssl_flag, this.raw(), topic.ptr, topic.len, message.ptr, message.len);
         }
@@ -126,13 +124,14 @@ pub const AnyWebSocket = union(enum) {
             .ssl => return c.uws_ws_send_last_fragment(1, this.raw(), message.ptr, message.len, compress),
         }
     }
-    pub fn end(this: AnyWebSocket, code: i32, message: []const u8) void {
-        switch (this) {
+    pub fn end(this: AnyWebSocket, code: i32, message: []const u8) bun.OOM!void {
+        const success = switch (this) {
             .tcp => c.uws_ws_end(0, this.tcp.raw(), code, message.ptr, message.len),
             .ssl => c.uws_ws_end(1, this.ssl.raw(), code, message.ptr, message.len),
-        }
+        };
+        if (!success) return error.OutOfMemory;
     }
-    pub fn cork(this: AnyWebSocket, ctx: anytype, comptime callback: anytype) void {
+    pub fn cork(this: AnyWebSocket, ctx: anytype, comptime callback: anytype) bun.OOM!void {
         const ContextType = @TypeOf(ctx);
         const Wrapper = struct {
             pub fn wrap(user_data: ?*anyopaque) callconv(.c) void {
@@ -140,10 +139,11 @@ pub const AnyWebSocket = union(enum) {
             }
         };
 
-        switch (this) {
+        const success = switch (this) {
             .ssl => c.uws_ws_cork(1, this.raw(), Wrapper.wrap, ctx),
             .tcp => c.uws_ws_cork(0, this.raw(), Wrapper.wrap, ctx),
-        }
+        };
+        if (!success) return error.OutOfMemory;
     }
     pub fn subscribe(this: AnyWebSocket, topic: []const u8) bool {
         return switch (this) {
@@ -163,7 +163,6 @@ pub const AnyWebSocket = union(enum) {
             .tcp => c.uws_ws_is_subscribed(0, this.raw(), topic.ptr, topic.len),
         };
     }
-    pub const getTopicsAsJSArray = @import("../runtime/socket/uws_jsc.zig").anyWebSocketGetTopicsAsJSArray;
     // pub fn iterateTopics(this: AnyWebSocket) {
     //     return uws_ws_iterate_topics(ssl_flag, this.raw(), callback: ?*const fn ([*c]const u8, usize, ?*anyopaque) callconv(.c) void, user_data: ?*anyopaque) void;
     // }
@@ -325,7 +324,6 @@ pub const WebSocketBehavior = extern struct {
 
 pub const c = struct {
     pub extern fn uws_ws_memory_cost(ssl: i32, ws: *RawWebSocket) usize;
-    pub extern fn uws_ws(ssl: i32, app: *uws_app_t, ctx: *anyopaque, pattern: [*]const u8, pattern_len: usize, id: usize, behavior: *const WebSocketBehavior) void;
     pub extern fn uws_ws_get_user_data(ssl: i32, ws: ?*RawWebSocket) ?*anyopaque;
     pub extern fn uws_ws_close(ssl: i32, ws: ?*RawWebSocket) void;
     pub extern fn uws_ws_send(ssl: i32, ws: ?*RawWebSocket, message: [*c]const u8, length: usize, opcode: Opcode) SendStatus;
@@ -334,13 +332,12 @@ pub const c = struct {
     pub extern fn uws_ws_send_first_fragment(ssl: i32, ws: ?*RawWebSocket, message: [*c]const u8, length: usize, compress: bool) SendStatus;
     pub extern fn uws_ws_send_first_fragment_with_opcode(ssl: i32, ws: ?*RawWebSocket, message: [*c]const u8, length: usize, opcode: Opcode, compress: bool) SendStatus;
     pub extern fn uws_ws_send_last_fragment(ssl: i32, ws: ?*RawWebSocket, message: [*c]const u8, length: usize, compress: bool) SendStatus;
-    pub extern fn uws_ws_end(ssl: i32, ws: ?*RawWebSocket, code: i32, message: [*c]const u8, length: usize) void;
-    pub extern fn uws_ws_cork(ssl: i32, ws: ?*RawWebSocket, handler: ?*const fn (?*anyopaque) callconv(.c) void, user_data: ?*anyopaque) void;
+    pub extern fn uws_ws_end(ssl: i32, ws: ?*RawWebSocket, code: i32, message: [*c]const u8, length: usize) bool;
+    pub extern fn uws_ws_cork(ssl: i32, ws: ?*RawWebSocket, handler: ?*const fn (?*anyopaque) callconv(.c) void, user_data: ?*anyopaque) bool;
     pub extern fn uws_ws_subscribe(ssl: i32, ws: ?*RawWebSocket, topic: [*c]const u8, length: usize) bool;
     pub extern fn uws_ws_unsubscribe(ssl: i32, ws: ?*RawWebSocket, topic: [*c]const u8, length: usize) bool;
     pub extern fn uws_ws_is_subscribed(ssl: i32, ws: ?*RawWebSocket, topic: [*c]const u8, length: usize) bool;
     pub extern fn uws_ws_iterate_topics(ssl: i32, ws: ?*RawWebSocket, callback: ?*const fn ([*c]const u8, usize, ?*anyopaque) callconv(.c) void, user_data: ?*anyopaque) void;
-    // uws_ws_get_topics_as_js_array: see src/runtime/socket/uws_jsc.zig
     pub extern fn uws_ws_publish(ssl: i32, ws: ?*RawWebSocket, topic: [*]const u8, topic_length: usize, message: [*]const u8, message_length: usize) bool;
     pub extern fn uws_ws_publish_with_options(ssl: i32, ws: ?*RawWebSocket, topic: [*c]const u8, topic_length: usize, message: [*c]const u8, message_length: usize, opcode: Opcode, compress: bool) bool;
     pub extern fn uws_ws_get_buffered_amount(ssl: i32, ws: ?*RawWebSocket) usize;

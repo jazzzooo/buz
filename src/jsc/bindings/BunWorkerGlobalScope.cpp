@@ -1,39 +1,69 @@
 #include "config.h"
 
 #include "BunWorkerGlobalScope.h"
+#include <JavaScriptCore/JSGlobalObject.h>
+#include <JavaScriptCore/SlotVisitorMacros.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(WorkerGlobalScope);
 
-void WorkerGlobalScope::onDidChangeListenerImpl(EventTarget& self, const AtomString& eventType, OnDidChangeListenerKind kind)
+JSC::JSGlobalObject* WorkerGlobalScope::globalObject() const
 {
-    if (eventType == eventNames().messageEvent) {
-        auto& global = static_cast<WorkerGlobalScope&>(self);
-        switch (kind) {
-        case Add:
-            if (global.m_messageEventCount == 0) {
-                global.scriptExecutionContext()->refEventLoop();
-            }
-            global.m_messageEventCount++;
-            break;
-        case Remove:
-            global.m_messageEventCount--;
-            if (global.m_messageEventCount == 0) {
-                global.scriptExecutionContext()->unrefEventLoop();
-            }
-            break;
-        // I dont think clear in this context is ever called. If it is (search OnDidChangeListenerKind::Clear for the impl),
-        // it may actually call once per event, in a way the Remove code above would suffice.
-        case Clear:
-            if (global.m_messageEventCount > 0) {
-                global.scriptExecutionContext()->unrefEventLoop();
-            }
-            global.m_messageEventCount = 0;
-            break;
-        }
+    Locker locker { m_globalLock };
+    return m_globalObject.get();
+}
+
+template<typename Visitor>
+void WorkerGlobalScope::visitGlobalObject(Visitor& visitor) const
+{
+    Locker locker { m_globalLock };
+    visitor.append(m_globalObject);
+}
+
+template void WorkerGlobalScope::visitGlobalObject(JSC::AbstractSlotVisitor&) const;
+template void WorkerGlobalScope::visitGlobalObject(JSC::SlotVisitor&) const;
+
+void WorkerGlobalScope::releaseMessageActivity(ScriptExecutionContext* context)
+{
+    if (m_hasMessageActivity) {
+        m_hasMessageActivity = false;
+        if (context)
+            context->unrefEventLoop();
     }
-};
+}
+
+void WorkerGlobalScope::detachGlobalObject()
+{
+    releaseMessageActivity(scriptExecutionContext());
+    observeContext(nullptr);
+    Locker locker { m_globalLock };
+    m_globalObject.clear();
+}
+
+void WorkerGlobalScope::contextDestroyed(ScriptExecutionContext& context)
+{
+    releaseMessageActivity(&context);
+    detachGlobalObject();
+}
+
+void WorkerGlobalScope::onDidChangeListenerImpl(EventTarget& self, const AtomString& eventType, OnDidChangeListenerKind)
+{
+    if (eventType != eventNames().messageEvent)
+        return;
+    auto& global = static_cast<WorkerGlobalScope&>(self);
+    auto* context = global.scriptExecutionContext();
+    const bool hasActivity = context && global.hasEventListeners(eventType);
+    if (hasActivity == global.m_hasMessageActivity)
+        return;
+    global.m_hasMessageActivity = hasActivity;
+    if (!context)
+        return;
+    if (hasActivity)
+        context->refEventLoop();
+    else
+        context->unrefEventLoop();
+}
 
 }

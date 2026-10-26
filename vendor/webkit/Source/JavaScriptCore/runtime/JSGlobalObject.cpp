@@ -701,6 +701,7 @@ const GlobalObjectMethodTable* JSGlobalObject::baseGlobalObjectMethodTable()
         nullptr, // moduleLoaderFetch
         nullptr, // moduleLoaderCreateImportMetaProperties
         nullptr, // moduleLoaderEvaluate
+        nullptr, // moduleLoaderAnalyzeTranspiledModule
         &promiseRejectionTracker,
         &reportUncaughtExceptionAtEventLoop,
         &currentScriptExecutionOwner,

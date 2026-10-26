@@ -1,73 +1,47 @@
-//! Q: What does this struct do?
-//! A: This struct segments the `OutputFile` list into 3 separate spaces so
-//!    chunk indexing remains the same:
-//!
-//!      1. chunks
-//!      2. sourcemaps, bytecode, and module_info
-//!      3. additional output files
-//!
-//!    We can calculate the space ahead of time and avoid having to do something
-//!    more complicated or which requires extra work.
-//!
-//! Q: Why does it need to do that?
-//! A: We would like it so if we have a chunk index, we can also index its
-//!    corresponding output file in the output file list.
-//!
-//!    The DevServer uses the `referenced_css_chunks` (a list of chunk indices)
-//!    field on `OutputFile` to know which CSS files to hand to the rendering
-//!    function. For React this just adds <link> tags that point to each output CSS
-//!    file.
-//!
-//!    However, we previously were pushing sourcemaps and bytecode output files
-//!    to the output file list directly after their corresponding chunk, meaning
-//!    the index of the chunk in the chunk list and its corresponding
-//!    `OutputFile` in the output file list got scrambled.
-//!
-//!    If we maintain the property that `outputIndexForChunk(chunk[i]) == i`
-//!    then we don't need to do any allocations or extra work to get the output
-//!    file for a chunk.
+//! Chunk slots retain chunk indices; supplementary and asset outputs follow them.
+//! Reserved capacity is an estimate, while list entries represent owned outputs.
 pub const OutputFileList = @This();
 
 output_files: std.array_list.Managed(options.OutputFile),
-index_for_chunk: u32,
-index_for_sourcemaps_and_bytecode: ?u32,
-additional_output_files_start: u32,
-
-total_insertions: u32,
+index_for_chunk: u32 = 0,
+chunk_count: u32,
+additional_started: bool = false,
 
 pub fn init(
     allocator: std.mem.Allocator,
     c: *const bun.bundle_v2.LinkerContext,
     chunks: []const bun.bundle_v2.Chunk,
-    _: usize,
 ) !@This() {
-    const length, const supplementary_file_count = OutputFileList.calculateOutputFileListCapacity(c, chunks);
+    const length = try OutputFileList.calculateOutputFileListCapacity(c, chunks);
+    const chunk_count = std.math.cast(u32, chunks.len) orelse return error.OutOfMemory;
     var output_files = try std.array_list.Managed(options.OutputFile).initCapacity(
         allocator,
         length,
     );
-    output_files.appendNTimesAssumeCapacity(OutputFile.zero_value, length);
+    output_files.appendNTimesAssumeCapacity(OutputFile.zero_value, chunks.len);
 
     return .{
         .output_files = output_files,
-        .index_for_chunk = 0,
-        .index_for_sourcemaps_and_bytecode = if (supplementary_file_count == 0) null else @as(u32, @truncate(chunks.len)),
-        .additional_output_files_start = @as(u32, @intCast(chunks.len)) + supplementary_file_count,
-        .total_insertions = 0,
+        .chunk_count = chunk_count,
     };
 }
 
 pub fn take(this: *@This()) std.array_list.Managed(options.OutputFile) {
-    // TODO: should this return an error
-    bun.assertf(this.total_insertions == this.output_files.items.len, "total_insertions ({d}) != output_files.items.len ({d})", .{ this.total_insertions, this.output_files.items.len });
-    // Set the length just in case so the list doesn't have undefined memory
-    this.output_files.items.len = this.total_insertions;
+    bun.assert(this.index_for_chunk == this.chunk_count);
     const list = this.output_files;
-    this.output_files = std.array_list.Managed(options.OutputFile).init(bun.default_allocator);
+    this.output_files = .init(list.allocator);
+    this.chunk_count = 0;
+    this.index_for_chunk = 0;
+    this.additional_started = false;
     return list;
 }
 
-pub fn calculateOutputFileListCapacity(c: *const bun.bundle_v2.LinkerContext, chunks: []const bun.bundle_v2.Chunk) struct { u32, u32 } {
+pub fn deinit(this: *OutputFileList) void {
+    for (this.output_files.items) |*file| file.deinit();
+    this.output_files.clearAndFree();
+}
+
+pub fn calculateOutputFileListCapacity(c: *const bun.bundle_v2.LinkerContext, chunks: []const bun.bundle_v2.Chunk) bun.OOM!u32 {
     const source_map_count = if (c.options.source_maps.hasExternalFiles()) brk: {
         var count: usize = 0;
         for (chunks) |*chunk| {
@@ -98,49 +72,41 @@ pub fn calculateOutputFileListCapacity(c: *const bun.bundle_v2.LinkerContext, ch
     const module_info_count = if (c.options.generate_bytecode_cache and c.options.output_format == .esm and c.options.compile) bytecode_count else 0;
 
     const additional_output_files_count = if (c.options.compile_to_standalone_html) 0 else c.parse_graph.additional_output_files.items.len;
-    return .{ @intCast(chunks.len + source_map_count + bytecode_count + module_info_count + additional_output_files_count), @intCast(source_map_count + bytecode_count + module_info_count) };
+    var length = chunks.len;
+    for ([_]usize{ source_map_count, bytecode_count, module_info_count, additional_output_files_count }) |count| {
+        length = std.math.add(usize, length, count) catch return error.OutOfMemory;
+    }
+    return std.math.cast(u32, length) orelse error.OutOfMemory;
 }
 
 pub fn insertForChunk(this: *OutputFileList, output_file: options.OutputFile) u32 {
-    const index = this.indexForChunk();
-    bun.assertf(index < this.index_for_sourcemaps_and_bytecode orelse std.math.maxInt(u32), "index ({d}) \\< index_for_sourcemaps_and_bytecode ({d})", .{ index, this.index_for_sourcemaps_and_bytecode orelse std.math.maxInt(u32) });
-    this.output_files.items[index] = output_file;
-    this.total_insertions += 1;
-    return index;
-}
-
-pub fn insertForSourcemapOrBytecode(this: *OutputFileList, output_file: options.OutputFile) !u32 {
-    const index = this.indexForSourcemapOrBytecode() orelse return error.NoSourceMapsOrBytecode;
-    bun.assertf(index < this.additional_output_files_start, "index ({d}) \\< additional_output_files_start ({d})", .{ index, this.additional_output_files_start });
-    this.output_files.items[index] = output_file;
-    this.total_insertions += 1;
-    return index;
-}
-
-pub fn insertAdditionalOutputFiles(this: *OutputFileList, additional_output_files: []const options.OutputFile) void {
-    bun.assertf(this.index_for_sourcemaps_and_bytecode orelse 0 <= this.additional_output_files_start, "index_for_sourcemaps_and_bytecode ({d}) \\< additional_output_files_start ({d})", .{ this.index_for_sourcemaps_and_bytecode orelse 0, this.additional_output_files_start });
-    bun.copy(
-        options.OutputFile,
-        this.getMutableAdditionalOutputFiles(),
-        additional_output_files,
-    );
-    this.total_insertions += @as(u32, @intCast(additional_output_files.len));
-}
-
-pub fn getMutableAdditionalOutputFiles(this: *OutputFileList) []options.OutputFile {
-    return this.output_files.items[this.additional_output_files_start..];
-}
-
-fn indexForChunk(this: *@This()) u32 {
-    const result = this.index_for_chunk;
+    bun.assert(!this.additional_started);
+    const index = this.index_for_chunk;
+    bun.assert(index < this.chunk_count);
     this.index_for_chunk += 1;
-    return result;
+    this.output_files.items[index] = output_file;
+    return index;
 }
 
-fn indexForSourcemapOrBytecode(this: *@This()) ?u32 {
-    const result = this.index_for_sourcemaps_and_bytecode orelse return null;
-    this.index_for_sourcemaps_and_bytecode.? += 1;
-    return result;
+pub fn insertForSourcemapOrBytecode(this: *OutputFileList, output_file: *options.OutputFile) bun.OOM!u32 {
+    bun.assert(!this.additional_started);
+    const index = this.output_files.items.len;
+    try this.ensureUnusedCapacity(1);
+    this.output_files.appendAssumeCapacity(output_file.take());
+    return @intCast(index);
+}
+
+pub fn insertAdditionalOutputFiles(this: *OutputFileList, additional_output_files: []options.OutputFile) bun.OOM!void {
+    bun.assert(this.index_for_chunk == this.chunk_count);
+    try this.ensureUnusedCapacity(additional_output_files.len);
+    this.additional_started = true;
+    for (additional_output_files) |*file| this.output_files.appendAssumeCapacity(file.take());
+}
+
+fn ensureUnusedCapacity(this: *OutputFileList, count: usize) bun.OOM!void {
+    const length = std.math.add(usize, this.output_files.items.len, count) catch return error.OutOfMemory;
+    if (length > std.math.maxInt(u32)) return error.OutOfMemory;
+    try this.output_files.ensureUnusedCapacity(count);
 }
 
 const bun = @import("bun");

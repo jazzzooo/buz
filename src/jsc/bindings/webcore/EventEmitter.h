@@ -7,6 +7,7 @@
 #include "ContextDestructionObserver.h"
 #include "ScriptWrappable.h"
 #include <memory>
+#include <optional>
 #include <variant>
 #include <wtf/Forward.h>
 
@@ -59,7 +60,7 @@ public:
     WEBCORE_EXPORT void uncaughtExceptionInEventHandler();
 
     WEBCORE_EXPORT Vector<Identifier> getEventNames();
-    WEBCORE_EXPORT Vector<JSObject*> getListeners(const Identifier& eventType);
+    WEBCORE_EXPORT std::optional<Vector<JSObject*>> getListeners(const Identifier& eventType);
     WEBCORE_EXPORT int listenerCount(const Identifier& eventType);
 
     bool hasEventListeners() const;
@@ -76,7 +77,8 @@ public:
     Vector<Identifier> eventTypes();
     const SimpleEventListenerVector& eventListeners(const Identifier& eventType);
 
-    bool fireEventListeners(const Identifier& eventName, const MarkedArgumentBuffer& arguments);
+    enum class ExceptionHandling { Report, Propagate };
+    bool fireEventListeners(const Identifier& eventName, const MarkedArgumentBuffer& arguments, ExceptionHandling = ExceptionHandling::Report);
     bool isFiringEventListeners() const;
 
     void invalidateJSEventListeners(JSC::JSObject*);
@@ -107,7 +109,7 @@ private:
     {
     }
 
-    bool innerInvokeEventListeners(const Identifier&, SimpleEventListenerVector, const MarkedArgumentBuffer& arguments);
+    bool innerInvokeEventListeners(const Identifier&, SimpleEventListenerVector, const MarkedArgumentBuffer& arguments, ExceptionHandling);
     void invalidateEventListenerRegions();
 
     EventEmitterData m_eventTargetData;

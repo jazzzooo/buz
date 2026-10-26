@@ -1,73 +1,100 @@
-export const NodeModuleModule__findPath = jsc.host_fn.wrap3(findPath);
+fn resolveFilename(
+    context: bun.bindgen.CallContext(ResolveFilenameSchema),
+    args: bun.bindgen.Args(ResolveFilenameSchema),
+) bun.JSError!bun.bindgen.DOMString {
+    const globalThis = context.viewToken().globalObject();
+    var bound_specifier = args.specifier.toOwned();
+    defer bound_specifier.deinit();
+    const specifier = bound_specifier.takeBunString();
+    defer specifier.deref();
 
-// https://github.com/nodejs/node/blob/40ef9d541ed79470977f90eb445c291b95ab75a0/lib/internal/modules/cjs/loader.js#L666
+    var bound_source: ?bun.bindgen.DOMString = if (args.source) |source_input| switch (source_input) {
+        .module => |module| try context.engineIn("NodeModuleModule", "commonJSModuleSourceFilename").call(.{ .module = module.operand(context) }),
+        .string => |value| value.toOwned(),
+        .object => |object| source: {
+            if (object.filename) |filename| break :source filename.toOwned();
+            const id = (try object.id.convert(context)).value;
+            break :source if (id) |value| value.toOwned() else null;
+        },
+        .ignored => null,
+    } else null;
+    defer if (bound_source) |*value| value.deinit();
+    const source = if (bound_source) |*value| value.takeBunString() else bun.String.empty;
+    defer source.deref();
+
+    const resolved_options = if (args.options) |options| try options.convert(context) else null;
+    const paths_view = if (resolved_options) |input| switch (input.value) {
+        .options => |options| options.paths,
+        .ignored => null,
+    } else null;
+    if (paths_view) |paths_input| {
+        return bun.api.Bun.resolveStringWithPaths(globalThis, specifier, source, false, true, paths_input);
+    }
+
+    return bun.api.Bun.resolveString(globalThis, specifier, source, false, true, true);
+}
+
 fn findPath(
-    global: *JSGlobalObject,
-    request_bun_str: bun.String,
-    paths_maybe: ?*jsc.JSArray,
-) bun.JSError!JSValue {
+    context: bun.bindgen.CallContext(FindPathSchema),
+    args: bun.bindgen.Args(FindPathSchema),
+) bun.JSError!bun.bindgen.Return(FindPathSchema) {
+    const globalThis = context.viewToken().globalObject();
     var stack_buf_buffer: [8192]u8 = undefined;
     var stack_buf: std.heap.BufferFirstAllocator = .init(&stack_buf_buffer, bun.default_allocator);
     const alloc = stack_buf.allocator();
 
-    const request_slice = request_bun_str.toUTF8(alloc);
+    const request_slice = try args.request.toUTF8(alloc);
     defer request_slice.deinit();
     const request = request_slice.slice();
+    var request_value = try bun.bindgen.DOMString.fromUTF8(request);
+    const request_bun_str = request_value.takeBunString();
+    defer request_bun_str.deref();
 
     const absolute_request = std.fs.path.isAbsolute(request);
-    if (!absolute_request and paths_maybe == null) {
-        return .false;
-    }
+    var found = switch (args.paths) {
+        .paths => |paths| found: {
+            for (0..paths.len()) |index| {
+                var path = paths.at(index).?.toOwned();
+                defer path.deinit();
+                var cur_path = path.takeBunString();
+                defer cur_path.deref();
 
-    // for each path
-    var found = if (paths_maybe) |paths| found: {
-        var iter = try paths.iterator(global);
-        while (try iter.next()) |path| {
-            const cur_path = try bun.String.fromJS(path, global);
-            defer cur_path.deref();
-
-            if (findPathInner(request_bun_str, cur_path, global)) |found| {
-                break :found found;
+                if (try findPathInner(globalThis, request_bun_str, cur_path)) |resolved| {
+                    break :found resolved;
+                }
             }
-        }
+            break :found null;
+        },
+        .ignored => if (absolute_request)
+            try findPathInner(globalThis, request_bun_str, bun.String.static(""))
+        else
+            return .{ .boolean = false },
+    };
 
-        break :found null;
-    } else findPathInner(request_bun_str, bun.String.static(""), global);
-
-    if (found) |*str| {
-        return str.transferToJS(global);
+    if (found) |*resolved| {
+        return .{ .string = resolved.take() };
     }
 
-    return .false;
+    return .{ .boolean = false };
 }
 
 fn findPathInner(
+    globalThis: *bun.jsc.JSGlobalObject,
     request: bun.String,
     cur_path: bun.String,
-    global: *JSGlobalObject,
-) ?bun.String {
-    var errorable: ErrorableString = undefined;
-    jsc.VirtualMachine.resolveMaybeNeedsTrailingSlash(
-        &errorable,
-        global,
-        request,
-        cur_path,
-        null,
-        false,
-        true,
-        true,
-    ) catch |err| switch (err) {
-        error.JSError => {
-            global.clearException(); // TODO sus
-            return null;
-        },
-        else => return null,
-    };
-    return errorable.unwrap() catch null;
+) bun.JSError!?bun.bindgen.DOMString {
+    const resolved = try bun.jsc.VirtualMachine.findModuleSpecifier(globalThis, request, cur_path) orelse return null;
+    return try bun.bindgen.DOMString.fromBunString(resolved);
 }
 
-pub fn _stat(path: []const u8) i32 {
-    const exists = bun.sys.existsAtType(.cwd(), path).unwrap() catch
+pub fn _stat(
+    context: bun.bindgen.CallContext(StatSchema),
+    args: bun.bindgen.Args(StatSchema),
+) bun.JSError!i32 {
+    _ = context;
+    const path = try args.path.toUTF8(bun.default_allocator);
+    defer path.deinit();
+    const exists = bun.sys.existsAtType(.cwd(), path.slice()).unwrap() catch
         return -1; // Returns a negative integer for any other kind of strings.
     return switch (exists) {
         .file => 0, // Returns 0 for files.
@@ -75,125 +102,39 @@ pub fn _stat(path: []const u8) i32 {
     };
 }
 
-pub const CustomLoader = union(enum) {
-    loader: bun.options.Loader,
-    custom: jsc.Strong,
-};
-
-extern fn JSCommonJSExtensions__appendFunction(global: *jsc.JSGlobalObject, value: jsc.JSValue) u32;
-extern fn JSCommonJSExtensions__setFunction(global: *jsc.JSGlobalObject, index: u32, value: jsc.JSValue) void;
-/// Returns the index of the last value, which must have it's references updated to `index`
-extern fn JSCommonJSExtensions__swapRemove(global: *jsc.JSGlobalObject, index: u32) u32;
-
-// Memory management is complicated because JSValues are stored in gc-visitable
-// WriteBarriers in C++ but the hash map for extensions is in Zig for flexibility.
-fn onRequireExtensionModify(global: *jsc.JSGlobalObject, str: []const u8, loader: bun.schema.api.Loader, value: jsc.JSValue) bun.OOM!void {
-    const vm = global.bunVM();
-    const list = &vm.commonjs_custom_extensions;
-    defer vm.transpiler.resolver.opts.extra_cjs_extensions = list.keys();
-    const is_built_in = bun.options.defaultLoaders.get(str) != null;
-
-    const gop = try list.getOrPut(bun.default_allocator, str);
-    if (!gop.found_existing) {
-        gop.key_ptr.* = try bun.default_allocator.dupe(u8, str);
-        if (is_built_in) {
-            vm.has_mutated_built_in_extensions += 1;
-        }
-
-        gop.value_ptr.* = if (loader != ._none)
-            .{ .loader = .fromAPI(loader) }
-        else
-            .{ .custom = .create(value, global) };
-    } else {
-        if (loader != ._none) {
-            switch (gop.value_ptr.*) {
-                .loader => {},
-                .custom => |*strong| strong.deinit(),
-            }
-            gop.value_ptr.* = .{ .loader = .fromAPI(loader) };
-        } else {
-            switch (gop.value_ptr.*) {
-                .loader => gop.value_ptr.* = .{ .custom = .create(value, global) },
-                .custom => |*strong| strong.set(global, value),
-            }
-        }
-    }
+fn bindPrepareCommonJSExtensionUpdate(
+    context: bun.bindgen.CallContext(PrepareCommonJSExtensionSchema),
+    args: bun.bindgen.Args(PrepareCommonJSExtensionSchema),
+) bun.JSError!bun.bindgen.Return(PrepareCommonJSExtensionSchema) {
+    return bun.jsc.ModuleLoader.prepareCommonJSExtensionUpdate(context, args);
 }
 
-fn onRequireExtensionModifyNonFunction(global: *JSGlobalObject, str: []const u8) bun.OOM!void {
-    const vm = global.bunVM();
-    const list = &vm.commonjs_custom_extensions;
-    defer vm.transpiler.resolver.opts.extra_cjs_extensions = list.keys();
-    const is_built_in = bun.options.defaultLoaders.get(str) != null;
-
-    if (list.fetchSwapRemove(str)) |prev| {
-        bun.default_allocator.free(prev.key);
-        if (is_built_in) {
-            vm.has_mutated_built_in_extensions -= 1;
-        }
-        switch (prev.value) {
-            .loader => {},
-            .custom => |strong| {
-                var mut = strong;
-                mut.deinit();
-            },
-        }
-    }
-}
-
-pub fn findLongestRegisteredExtension(vm: *jsc.VirtualMachine, filename: []const u8) ?CustomLoader {
-    const basename = std.fs.path.basename(filename);
-    var next: usize = 0;
-    while (bun.strings.indexOfCharPos(basename, '.', next)) |i| {
-        next = i + 1;
-        if (i == 0) continue;
-        const ext = basename[i..];
-        if (vm.commonjs_custom_extensions.get(ext)) |value| {
-            return value;
-        }
-    }
-    return null;
-}
-
-fn onRequireExtensionModifyBinding(
-    global: *jsc.JSGlobalObject,
-    str: *const bun.String,
-    loader: bun.schema.api.Loader,
-    value: jsc.JSValue,
-) callconv(.c) void {
-    var sfa_state_buffer: [8192]u8 = undefined;
-    var sfa_state: std.heap.BufferFirstAllocator = .init(&sfa_state_buffer, bun.default_allocator);
-    const alloc = sfa_state.allocator();
-    const str_slice = str.toUTF8(alloc);
-    defer str_slice.deinit();
-    onRequireExtensionModify(global, str_slice.slice(), loader, value) catch |err| switch (err) {
-        error.OutOfMemory => bun.outOfMemory(),
-    };
-}
-
-fn onRequireExtensionModifyNonFunctionBinding(
-    global: *jsc.JSGlobalObject,
-    str: *const bun.String,
-) callconv(.c) void {
-    var sfa_state_buffer: [8192]u8 = undefined;
-    var sfa_state: std.heap.BufferFirstAllocator = .init(&sfa_state_buffer, bun.default_allocator);
-    const alloc = sfa_state.allocator();
-    const str_slice = str.toUTF8(alloc);
-    defer str_slice.deinit();
-    onRequireExtensionModifyNonFunction(global, str_slice.slice()) catch |err| switch (err) {
-        error.OutOfMemory => bun.outOfMemory(),
-    };
+fn bindFinishCommonJSExtensionUpdate(
+    args: *bun.bindgen.Args(FinishCommonJSExtensionSchema),
+) bun.bindgen.Return(FinishCommonJSExtensionSchema) {
+    bun.jsc.ModuleLoader.finishCommonJSExtensionUpdate(args);
 }
 
 comptime {
-    @export(&onRequireExtensionModifyBinding, .{ .name = "NodeModuleModule__onRequireExtensionModify" });
-    @export(&onRequireExtensionModifyNonFunctionBinding, .{ .name = "NodeModuleModule__onRequireExtensionModifyNonFunction" });
+    _ = ResolveFilenameBinding;
+    _ = StatBinding;
+    _ = FindPathBinding;
+    _ = PrepareCommonJSExtensionBinding;
+    _ = FinishCommonJSExtensionBinding;
 }
 
 const bun = @import("bun");
 const std = @import("std");
 
-const jsc = bun.jsc;
-const ErrorableString = jsc.ErrorableString;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+const NodeModuleBindings = bun.bindgen.Module("NodeModuleModule");
+const ResolveFilenameSchema = NodeModuleBindings.function("resolveFilename");
+const StatSchema = NodeModuleBindings.function("_stat");
+const FindPathSchema = NodeModuleBindings.function("_findPath");
+const ResolveFilenameBinding = bun.bindgen.Fn(ResolveFilenameSchema, resolveFilename);
+const StatBinding = bun.bindgen.Fn(StatSchema, _stat);
+const FindPathBinding = bun.bindgen.Fn(FindPathSchema, findPath);
+const ModuleLoaderBindings = bun.bindgen.Module("ModuleLoader");
+const PrepareCommonJSExtensionSchema = ModuleLoaderBindings.nativeExport("prepareCommonJSExtensionUpdate");
+const FinishCommonJSExtensionSchema = ModuleLoaderBindings.nativeExport("finishCommonJSExtensionUpdate");
+const PrepareCommonJSExtensionBinding = bun.bindgen.Fn(PrepareCommonJSExtensionSchema, bindPrepareCommonJSExtensionUpdate);
+const FinishCommonJSExtensionBinding = bun.bindgen.Fn(FinishCommonJSExtensionSchema, bindFinishCommonJSExtensionUpdate);

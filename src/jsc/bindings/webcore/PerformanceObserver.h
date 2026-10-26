@@ -27,59 +27,74 @@
 
 #include "ExceptionOr.h"
 #include "PerformanceEntry.h"
-#include "PerformanceObserverCallback.h"
+#include "Bindgen/NativeResult.h"
+#include <JavaScriptCore/Weak.h>
+#include <atomic>
+#include <span>
+#include <wtf/FastMalloc.h>
 #include <wtf/OptionSet.h>
 #include <wtf/RefCounted.h>
+#include <wtf/RefPtr.h>
 #include <wtf/Vector.h>
 #include <wtf/text/WTFString.h>
 
 namespace WebCore {
 
 class Performance;
-class ScriptExecutionContext;
 
 class PerformanceObserver : public RefCounted<PerformanceObserver> {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(PerformanceObserver);
+
 public:
     struct Init {
-        std::optional<Vector<String>> entryTypes;
+        std::optional<std::span<const String>> entryTypes;
         std::optional<String> type;
         bool buffered;
     };
 
-    static Ref<PerformanceObserver> create(ScriptExecutionContext& context, Ref<PerformanceObserverCallback>&& callback)
+    static RefPtr<PerformanceObserver> tryCreate(Performance& performance, JSC::JSObject& callback)
     {
-        return adoptRef(*new PerformanceObserver(context, WTF::move(callback)));
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(PerformanceObserver)).getValue(allocation))
+            return nullptr;
+        return adoptRef(*new (NotNull, allocation) PerformanceObserver(performance, callback));
     }
 
-    static Vector<String> supportedEntryTypes(ScriptExecutionContext&);
+    ~PerformanceObserver();
 
     void disassociate();
 
-    ExceptionOr<void> observe(Init&&);
+    ExceptionOr<void> observe(const Init&);
     void disconnect();
     Vector<RefPtr<PerformanceEntry>> takeRecords();
 
     OptionSet<PerformanceEntry::Type> typeFilter() const { return m_typeFilter; }
 
-    bool hasNavigationTiming() const { return m_hasNavigationTiming; }
-    void addedNavigationTiming() { m_hasNavigationTiming = true; }
-
-    void queueEntry(PerformanceEntry&);
-    void deliver();
+    Bun::Bindgen::NativeAllocationResult<void> deliver();
 
     bool isRegistered() const { return m_registered; }
-    PerformanceObserverCallback& callback() { return m_callback.get(); }
+    bool hasPendingDelivery() const { return m_pendingDeliveries.load(std::memory_order_relaxed) != 0; }
+    template<typename Visitor> void visitCallback(Visitor&);
 
 private:
-    PerformanceObserver(ScriptExecutionContext&, Ref<PerformanceObserverCallback>&&);
+    friend class Performance;
+
+    PerformanceObserver(Performance&, JSC::JSObject&);
+    void invokeCallback(JSC::JSObject&, std::span<const RefPtr<PerformanceEntry>>);
+    bool tryRetainDelivery();
+    void releaseDelivery();
+    bool prepareEntry();
+    void appendPreparedEntry(PerformanceEntry&);
 
     RefPtr<Performance> m_performance;
     Vector<RefPtr<PerformanceEntry>> m_entriesToDeliver;
-    Ref<PerformanceObserverCallback> m_callback;
+    JSC::Weak<JSC::JSObject> m_callback;
+    PerformanceObserver* m_previousObserver { nullptr };
+    PerformanceObserver* m_nextObserver { nullptr };
+    std::atomic<uint32_t> m_pendingDeliveries { 0 };
     OptionSet<PerformanceEntry::Type> m_typeFilter;
     bool m_registered { false };
     bool m_isTypeObserver { false };
-    bool m_hasNavigationTiming { false };
 };
 
 } // namespace WebCore

@@ -12,7 +12,25 @@ const {
   getCompleteWebRequestOrResponseBodyValueAsArrayBuffer,
   drainMicrotasks,
   setServerIdleTimeout,
-} = $cpp("NodeHTTP.cpp", "createNodeHTTPInternalBinding") as {
+} = {
+  getHeader: $bindgenFn("NodeHTTP.schema.zig", "getHeader"),
+  setHeader: $bindgenFn("NodeHTTP.schema.zig", "setHeader"),
+  Headers: $bindgenClass("WebCoreHeaders.schema.zig", "Headers"),
+  assignHeaders: $bindgenFn("NodeHTTP.schema.zig", "assignHeaders"),
+  setRequestTimeout: $bindgenFn("NodeHTTP.schema.zig", "setTimeout"),
+  headersTuple: $bindgenFn("NodeHTTP.schema.zig", "createHeadersTuple")(),
+  webRequestOrResponseHasBodyValue: $bindgenFn(
+    "RequestResponseBody.schema.zig",
+    "requestOrResponseHasBodyValue",
+  ),
+  setServerCustomOptions: $bindgenFn("NodeHTTP.schema.zig", "setCustomOptions"),
+  getCompleteWebRequestOrResponseBodyValueAsArrayBuffer: $bindgenFn(
+    "RequestResponseBody.schema.zig",
+    "getCompleteRequestOrResponseBodyValueAsArrayBuffer",
+  ),
+  drainMicrotasks: $bindgenFn("NodeHTTP.schema.zig", "drainMicrotasks"),
+  setServerIdleTimeout: $bindgenFn("NodeHTTP.schema.zig", "setServerIdleTimeout"),
+} as {
   getHeader: (headers: Headers, name: string) => string | undefined;
   setHeader: (headers: Headers, name: string, value: string) => void;
   Headers: (typeof globalThis)["Headers"];
@@ -25,14 +43,14 @@ const {
     requireHostHeader: boolean,
     useStrictMethodValidation: boolean,
     maxHeaderSize: number,
-    onClientError: (ssl: boolean, socket: any, errorCode: number, rawPacket: ArrayBuffer) => undefined,
+    onClientError: (ssl: boolean, socket: any, errorCode: number, rawPacket: Buffer) => undefined,
   ) => void;
   getCompleteWebRequestOrResponseBodyValueAsArrayBuffer: (arg: any) => ArrayBuffer | undefined;
   drainMicrotasks: () => void;
   setServerIdleTimeout: (server: any, timeout: number) => void;
 };
 
-const getRawKeys = $newCppFunction("JSFetchHeaders.cpp", "jsFetchHeaders_getRawKeys", 0);
+const getRawKeys = $bindgenFn("FetchHeaders.schema.zig", "getRawKeys");
 
 const kDeprecatedReplySymbol = Symbol("deprecatedReply");
 const kBodyChunks = Symbol("bodyChunks");
@@ -351,8 +369,8 @@ function emitErrorNt(msg, err, callback) {
     msg.emit("error", err);
   }
 }
-const setMaxHTTPHeaderSize = $newZigFunction("node_http_binding.zig", "setMaxHTTPHeaderSize", 1);
-const getMaxHTTPHeaderSize = $newZigFunction("node_http_binding.zig", "getMaxHTTPHeaderSize", 0);
+const setMaxHTTPHeaderSize = $bindgenFn("NodeHTTP.schema.zig", "setMaxHeaderSize");
+const getMaxHTTPHeaderSize = $bindgenFn("NodeHTTP.schema.zig", "getMaxHeaderSize");
 const kOutHeaders = Symbol("kOutHeaders");
 
 function ipToInt(ip) {

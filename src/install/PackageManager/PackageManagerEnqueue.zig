@@ -92,13 +92,18 @@ pub fn enqueueTarballForDownload(
     package_id: PackageID,
     url: string,
     task_context: TaskCallbackContext,
-    patch_name_and_version_hash: ?u64,
 ) EnqueueTarballForDownloadError!void {
     const task_id = Task.Id.forTarball(url);
     var task_queue = try this.task_queue.getOrPut(this.allocator, task_id);
     if (!task_queue.found_existing) {
         task_queue.value_ptr.* = .empty;
     }
+    errdefer if (!task_queue.found_existing) {
+        if (this.task_queue.fetchRemove(task_id)) |removed| {
+            var callbacks = removed.value;
+            callbacks.deinit(this.allocator);
+        }
+    };
 
     try task_queue.value_ptr.append(
         this.allocator,
@@ -113,7 +118,6 @@ pub fn enqueueTarballForDownload(
         this.lockfile.buffers.dependencies.items[dependency_id].behavior.isRequired(),
         dependency_id,
         this.lockfile.packages.get(package_id),
-        patch_name_and_version_hash,
         .no_authorization,
     )) |task| {
         task.schedule(&this.network_tarball_batch);
@@ -165,48 +169,55 @@ pub fn enqueueGitForCheckout(
     resolution: *const Resolution,
     task_context: TaskCallbackContext,
     patch_name_and_version_hash: ?u64,
-) void {
+) bun.OOM!void {
     const repository = &resolution.value.git;
     const url = this.lockfile.str(&repository.repo);
     const clone_id = Task.Id.forGitClone(url);
     const resolved = this.lockfile.str(&repository.resolved);
     const checkout_id = Task.Id.forGitCheckout(url, resolved);
-    var checkout_queue = this.task_queue.getOrPut(this.allocator, checkout_id) catch unreachable;
+    const checkout_queue = try this.task_queue.getOrPut(this.allocator, checkout_id);
     if (!checkout_queue.found_existing) {
         checkout_queue.value_ptr.* = .empty;
     }
+    errdefer if (!checkout_queue.found_existing) {
+        var removed = this.task_queue.fetchRemove(checkout_id).?.value;
+        removed.deinit(this.allocator);
+    };
 
-    checkout_queue.value_ptr.append(
+    try checkout_queue.value_ptr.append(
         this.allocator,
         task_context,
-    ) catch unreachable;
+    );
 
     if (checkout_queue.found_existing) return;
 
     if (this.git_repositories.get(clone_id)) |repo_fd| {
-        this.task_batch.push(BackgroundTaskGroup.Batch.from(this.enqueueGitCheckout(checkout_id, repo_fd, dependency_id, alias, resolution.*, resolved, patch_name_and_version_hash)));
+        this.task_batch.push(BackgroundTaskGroup.Batch.from(try this.enqueueGitCheckout(checkout_id, repo_fd, dependency_id, alias, resolution.*, resolved, patch_name_and_version_hash)));
     } else {
-        var clone_queue = this.task_queue.getOrPut(this.allocator, clone_id) catch unreachable;
+        const clone_queue = try this.task_queue.getOrPut(this.allocator, clone_id);
         if (!clone_queue.found_existing) {
             clone_queue.value_ptr.* = .empty;
         }
+        errdefer if (!clone_queue.found_existing) {
+            var removed = this.task_queue.fetchRemove(clone_id).?.value;
+            removed.deinit(this.allocator);
+        };
 
-        clone_queue.value_ptr.append(
+        try clone_queue.value_ptr.append(
             this.allocator,
             .{ .dependency = dependency_id },
-        ) catch unreachable;
+        );
 
         if (clone_queue.found_existing) return;
 
-        this.task_batch.push(BackgroundTaskGroup.Batch.from(enqueueGitClone(
+        this.task_batch.push(BackgroundTaskGroup.Batch.from(try enqueueGitClone(
             this,
             clone_id,
             alias,
             repository,
             dependency_id,
-            &this.lockfile.buffers.dependencies.items[dependency_id],
             resolution,
-            null,
+            patch_name_and_version_hash,
         )));
     }
 }
@@ -242,13 +253,18 @@ pub fn enqueuePackageForDownload(
     version: bun.Semver.Version,
     url: []const u8,
     task_context: TaskCallbackContext,
-    patch_name_and_version_hash: ?u64,
 ) EnqueuePackageForDownloadError!void {
     const task_id = Task.Id.forNPMPackage(name, version);
     var task_queue = try this.task_queue.getOrPut(this.allocator, task_id);
     if (!task_queue.found_existing) {
         task_queue.value_ptr.* = .empty;
     }
+    errdefer if (!task_queue.found_existing) {
+        if (this.task_queue.fetchRemove(task_id)) |removed| {
+            var callbacks = removed.value;
+            callbacks.deinit(this.allocator);
+        }
+    };
 
     try task_queue.value_ptr.append(
         this.allocator,
@@ -265,7 +281,6 @@ pub fn enqueuePackageForDownload(
         is_required,
         dependency_id,
         this.lockfile.packages.get(package_id),
-        patch_name_and_version_hash,
         .allow_authorization,
     )) |task| {
         task.schedule(&this.network_tarball_batch);
@@ -742,8 +757,17 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                                 },
                             );
 
+                        var pending_network_task: ?*NetworkTask = null;
+                        defer if (pending_network_task) |task| {
+                            _ = this.network_dedupe_map.remove(task_id);
+                            task.recycle();
+                        };
                         if (!dependency.behavior.isPeer() or install_peer) {
-                            if (!this.hasCreatedNetworkTask(task_id, dependency.behavior.isRequired())) {
+                            if (!(try this.hasCreatedNetworkTask(task_id, dependency.behavior.isRequired()))) {
+                                var reservation_transferred = false;
+                                defer if (!reservation_transferred) {
+                                    _ = this.network_dedupe_map.remove(task_id);
+                                };
                                 const needs_extended_manifest = this.options.minimum_release_age_ms != null;
                                 if (this.options.enable.manifest_cache) {
                                     var expired = false;
@@ -770,7 +794,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                                                         return;
                                                     }
                                                 }
-                                                if (getOrPutResolvedPackageWithFindResult(
+                                                if (try getOrPutResolvedPackageWithFindResult(
                                                     this,
                                                     name_hash,
                                                     name,
@@ -782,9 +806,8 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                                                     find_result,
                                                     install_peer,
                                                     successFn,
-                                                ) catch null) |new_resolve_result| {
+                                                )) |new_resolve_result| {
                                                     resolve_result_ = new_resolve_result;
-                                                    _ = this.network_dedupe_map.remove(task_id);
                                                     continue :retry_with_new_resolve_result;
                                                 }
                                             }
@@ -792,7 +815,6 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
                                         // Was it recent enough to just load it without the network call?
                                         if (this.options.enable.manifest_cache_control and !expired) {
-                                            _ = this.network_dedupe_map.remove(task_id);
                                             continue :retry_from_manifests_ptr;
                                         }
                                     }
@@ -802,13 +824,15 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                                     Output.prettyErrorln("Enqueue package manifest for download: {s}", .{name_str});
                                 }
 
-                                var network_task = this.getNetworkTask();
+                                var network_task = try this.getNetworkTask();
                                 network_task.* = .{
                                     .package_manager = this,
                                     .callback = undefined,
                                     .task_id = task_id,
                                     .allocator = this.allocator,
                                 };
+                                pending_network_task = network_task;
+                                reservation_transferred = true;
 
                                 try network_task.forManifest(
                                     name_str,
@@ -818,7 +842,6 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                                     dependency.behavior.isOptional(),
                                     needs_extended_manifest,
                                 );
-                                this.enqueueNetworkTask(network_task);
                             }
                         } else {
                             try this.peer_dependencies.writeItem(id);
@@ -829,9 +852,19 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                         if (!manifest_entry_parse.found_existing) {
                             manifest_entry_parse.value_ptr.* = TaskCallbackList.empty;
                         }
+                        errdefer if (!manifest_entry_parse.found_existing) {
+                            if (this.task_queue.fetchRemove(task_id)) |removed| {
+                                var callbacks = removed.value;
+                                callbacks.deinit(this.allocator);
+                            }
+                        };
 
                         const callback_tag = comptime if (successFn == assignRootResolution) "root_dependency" else "dependency";
                         try manifest_entry_parse.value_ptr.append(this.allocator, @unionInit(TaskCallbackContext, callback_tag, id));
+                        if (pending_network_task) |task| {
+                            this.enqueueNetworkTask(task);
+                            pending_network_task = null;
+                        }
                     }
                     return;
                 }
@@ -884,6 +917,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                     this.lockfile.str(&dep.committish),
                     clone_id,
                 );
+                defer this.allocator.free(resolved);
                 const checkout_id = Task.Id.forGitCheckout(url, resolved);
 
                 var entry = this.task_queue.getOrPutContext(this.allocator, checkout_id, .{}) catch unreachable;
@@ -899,9 +933,9 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                     }
                 }
 
-                if (this.hasCreatedNetworkTask(checkout_id, dependency.behavior.isRequired())) return;
+                if (try this.hasCreatedNetworkTask(checkout_id, dependency.behavior.isRequired())) return;
 
-                this.task_batch.push(BackgroundTaskGroup.Batch.from(this.enqueueGitCheckout(
+                const checkout_task = this.enqueueGitCheckout(
                     checkout_id,
                     repo_fd,
                     id,
@@ -909,7 +943,11 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                     res,
                     resolved,
                     null,
-                )));
+                ) catch |err| {
+                    _ = this.network_dedupe_map.remove(checkout_id);
+                    return err;
+                };
+                this.task_batch.push(BackgroundTaskGroup.Batch.from(checkout_task));
             } else {
                 var entry = this.task_queue.getOrPutContext(this.allocator, clone_id, .{}) catch unreachable;
                 if (!entry.found_existing) entry.value_ptr.* = .empty;
@@ -922,9 +960,13 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                     }
                 }
 
-                if (this.hasCreatedNetworkTask(clone_id, dependency.behavior.isRequired())) return;
+                if (try this.hasCreatedNetworkTask(clone_id, dependency.behavior.isRequired())) return;
 
-                this.task_batch.push(BackgroundTaskGroup.Batch.from(enqueueGitClone(this, clone_id, alias, dep, id, dependency, &res, null)));
+                const clone_task = enqueueGitClone(this, clone_id, alias, dep, id, &res, null) catch |err| {
+                    _ = this.network_dedupe_map.remove(clone_id);
+                    return err;
+                };
+                this.task_batch.push(BackgroundTaskGroup.Batch.from(clone_task));
             }
         },
         .github => {
@@ -982,7 +1024,6 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                     .name_hash = dependency.name_hash,
                     .resolution = res,
                 },
-                null,
                 .no_authorization,
             )) |network_task| {
                 this.enqueueNetworkTask(network_task);
@@ -1162,7 +1203,7 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
             switch (version.value.tarball.uri) {
                 .local => {
-                    if (this.hasCreatedNetworkTask(task_id, dependency.behavior.isRequired())) return;
+                    if (try this.hasCreatedNetworkTask(task_id, dependency.behavior.isRequired())) return;
 
                     this.task_batch.push(BackgroundTaskGroup.Batch.from(enqueueLocalTarball(
                         this,
@@ -1185,7 +1226,6 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                             .name_hash = dependency.name_hash,
                             .resolution = res,
                         },
-                        null,
                         .no_authorization,
                     )) |network_task| {
                         this.enqueueNetworkTask(network_task);
@@ -1201,10 +1241,6 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 /// Shared by the buffered path (`enqueueExtractNPMPackage`) and the
 /// streaming path (`createExtractTaskForStreaming`) so both produce
 /// an identical Task shape; only the return type differs.
-///
-/// Intentionally does *not* move `network_task.apply_patch_task`: the
-/// install phase creates its own PatchTask via `PackageInstaller`, so
-/// applying it here would run the patch twice.
 fn initExtractTask(
     this: *PackageManager,
     tarball: *const ExtractTarball,
@@ -1255,45 +1291,36 @@ fn enqueueGitClone(
     name: string,
     repository: *const Repository,
     dep_id: DependencyID,
-    dependency: *const Dependency,
     res: *const Resolution,
-    /// if patched then we need to do apply step after network task is done
     patch_name_and_version_hash: ?u64,
-) *BackgroundTaskGroup.Task {
-    var task = this.preallocated_resolve_tasks.get();
+) bun.OOM!*BackgroundTaskGroup.Task {
+    const task = try this.preallocated_resolve_tasks.tryGet();
+    errdefer this.preallocated_resolve_tasks.put(task);
+    const environment = try Repository.EnvironmentSnapshot.create(this.io, this.env.map);
+    errdefer environment.destroy();
     task.* = Task{
         .package_manager = this,
         .log = logger.Log.init(this.allocator),
         .tag = Task.Tag.git_clone,
         .request = .{
             .git_clone = .{
-                .name = strings.StringOrTinyString.initAppendIfNeeded(
+                .name = try strings.StringOrTinyString.initAppendIfNeeded(
                     name,
                     *FileSystem.FilenameStore,
                     FileSystem.FilenameStore.instance,
-                ) catch unreachable,
-                .url = strings.StringOrTinyString.initAppendIfNeeded(
+                ),
+                .url = try strings.StringOrTinyString.initAppendIfNeeded(
                     this.lockfile.str(&repository.repo),
                     *FileSystem.FilenameStore,
                     FileSystem.FilenameStore.instance,
-                ) catch unreachable,
-                .env = Repository.shared_env.get(this.io, this.allocator, this.env),
+                ),
+                .env = environment,
                 .dep_id = dep_id,
                 .res = res.*,
+                .patch_name_and_version_hash = patch_name_and_version_hash,
             },
         },
         .id = task_id,
-        .apply_patch_task = if (patch_name_and_version_hash) |h| brk: {
-            const dep = dependency;
-            const pkg_id = switch (this.lockfile.package_index.get(dep.name_hash) orelse @panic("Package not found")) {
-                .id => |p| p,
-                .ids => |ps| ps.items[0], // TODO is this correct
-            };
-            const patch_hash = this.lockfile.patched_dependencies.get(h).?.patchfileHash().?;
-            const pt = PatchTask.newApplyPatchHash(this, pkg_id, patch_hash, h);
-            pt.callback.apply.task_id = task_id;
-            break :brk pt;
-        } else null,
         .data = undefined,
     };
     return &task.background_task;
@@ -1309,8 +1336,11 @@ pub fn enqueueGitCheckout(
     resolved: string,
     /// if patched then we need to do apply step after network task is done
     patch_name_and_version_hash: ?u64,
-) *BackgroundTaskGroup.Task {
-    var task = this.preallocated_resolve_tasks.get();
+) bun.OOM!*BackgroundTaskGroup.Task {
+    const task = try this.preallocated_resolve_tasks.tryGet();
+    errdefer this.preallocated_resolve_tasks.put(task);
+    const environment = try Repository.EnvironmentSnapshot.create(this.io, this.env.map);
+    errdefer environment.destroy();
     task.* = Task{
         .package_manager = this,
         .log = logger.Log.init(this.allocator),
@@ -1320,32 +1350,29 @@ pub fn enqueueGitCheckout(
                 .repo_dir = dir,
                 .resolution = resolution,
                 .dependency_id = dependency_id,
-                .name = strings.StringOrTinyString.initAppendIfNeeded(
+                .name = try strings.StringOrTinyString.initAppendIfNeeded(
                     name,
                     *FileSystem.FilenameStore,
                     FileSystem.FilenameStore.instance,
-                ) catch unreachable,
-                .url = strings.StringOrTinyString.initAppendIfNeeded(
+                ),
+                .url = try strings.StringOrTinyString.initAppendIfNeeded(
                     this.lockfile.str(&resolution.value.git.repo),
                     *FileSystem.FilenameStore,
                     FileSystem.FilenameStore.instance,
-                ) catch unreachable,
-                .resolved = strings.StringOrTinyString.initAppendIfNeeded(
+                ),
+                .resolved = try strings.StringOrTinyString.initAppendIfNeeded(
                     resolved,
                     *FileSystem.FilenameStore,
                     FileSystem.FilenameStore.instance,
-                ) catch unreachable,
-                .env = Repository.shared_env.get(this.io, this.allocator, this.env),
+                ),
+                .env = environment,
             },
         },
         .apply_patch_task = if (patch_name_and_version_hash) |h| brk: {
-            const dep = this.lockfile.buffers.dependencies.items[dependency_id];
-            const pkg_id = switch (this.lockfile.package_index.get(dep.name_hash) orelse @panic("Package not found")) {
-                .id => |p| p,
-                .ids => |ps| ps.items[0], // TODO is this correct
-            };
+            const pkg_id = this.lockfile.buffers.resolutions.items[dependency_id];
+            bun.assert(pkg_id != invalid_package_id);
             const patch_hash = this.lockfile.patched_dependencies.get(h).?.patchfileHash().?;
-            const pt = PatchTask.newApplyPatchHash(this, pkg_id, patch_hash, h);
+            const pt = try PatchTask.newApplyPatchHash(this, pkg_id, patch_hash, h);
             pt.callback.apply.task_id = task_id;
             break :brk pt;
         } else null,
@@ -1558,7 +1585,6 @@ fn getOrPutResolvedPackageWithFindResult(
                         behavior.isRequired(),
                         dependency_id,
                         package,
-                        name_and_version_hash,
                         // its npm.
                         .allow_authorization,
                     ) orelse unreachable,
@@ -1584,7 +1610,7 @@ fn getOrPutResolvedPackageWithFindResult(
             .package = package,
             .is_first_time = true,
             .task = .{
-                .patch_task = PatchTask.newApplyPatchHash(
+                .patch_task = try PatchTask.newApplyPatchHash(
                     this,
                     package.meta.id,
                     patchfile_hash.?,

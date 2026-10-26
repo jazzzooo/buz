@@ -59,6 +59,7 @@ pub const PatchTask = struct {
 
         patchfilepath: []const u8,
         pkgname: String,
+        resolution_label: []u8,
 
         cache_dir: std.Io.Dir,
         cache_dir_subpath: stringZ,
@@ -81,6 +82,8 @@ pub const PatchTask = struct {
             .apply => {
                 this.manager.allocator.free(this.callback.apply.patchfilepath);
                 this.manager.allocator.free(this.callback.apply.cache_dir_subpath);
+                this.manager.allocator.free(this.callback.apply.cache_dir_subpath_without_patch_hash);
+                this.manager.allocator.free(this.callback.apply.resolution_label);
                 if (this.callback.apply.install_context) |ictx| ictx.path.deinit();
                 this.callback.apply.logger.deinit();
             },
@@ -146,10 +149,8 @@ pub const PatchTask = struct {
         }
     }
 
-    pub fn runFromMainThreadApply(this: *PatchTask, manager: *PackageManager) void {
-        _ = manager; // autofix
+    pub fn runFromMainThreadApply(this: *PatchTask, _: *PackageManager) void {
         if (this.callback.apply.logger.errors > 0) {
-            defer this.callback.apply.logger.deinit();
             Output.errGeneric("failed to apply patchfile ({s})", .{this.callback.apply.patchfilepath});
             this.callback.apply.logger.print(Output.errorWriter()) catch {};
         }
@@ -207,7 +208,6 @@ pub const PatchTask = struct {
                         manager.lockfile.buffers.dependencies.items[dep_id].behavior.isRequired(),
                         dep_id,
                         pkg,
-                        this.callback.calc_hash.name_and_version_hash,
                         switch (pkg.resolution.tag) {
                             .npm => .allow_authorization,
                             else => .no_authorization,
@@ -220,13 +220,13 @@ pub const PatchTask = struct {
                 },
                 .apply_patch => {
                     debug("pkg: {s} apply patch", .{pkg.name.slice(manager.lockfile.buffers.string_bytes.items)});
-                    const patch_task = PatchTask.newApplyPatchHash(
-                        manager,
-                        pkg.meta.id,
-                        hash,
-                        this.callback.calc_hash.name_and_version_hash,
-                    );
                     if (manager.getPreinstallState(pkg.meta.id) == .apply_patch) {
+                        const patch_task = try PatchTask.newApplyPatchHash(
+                            manager,
+                            pkg.meta.id,
+                            hash,
+                            this.callback.calc_hash.name_and_version_hash,
+                        );
                         manager.setPreinstallState(pkg.meta.id, manager.lockfile, .applying_patch);
                         manager.enqueuePatchTask(patch_task);
                     }
@@ -302,41 +302,28 @@ pub const PatchTask = struct {
         };
 
         const system_tmpdir = this.tempdir;
-
-        const pkg_name = this.callback.apply.pkgname;
-
-        const dummy_node_modules: PackageManager.PackageInstaller.NodeModulesFolder = .{
-            .path = std.array_list.Managed(u8).init(this.manager.allocator),
-            .tree_id = 0,
+        system_tmpdir.createDir(this.manager.io, tempdir_name, .default_dir) catch |err| {
+            return try log.addErrorFmtOpts(
+                this.manager.allocator,
+                "failed to create temporary patch directory: {s}",
+                .{@errorName(err)},
+                .{},
+            );
         };
-
-        const resolution_label, const resolution_tag = brk: {
-            // TODO: fix this threadsafety issue.
-            const resolution = &this.manager.lockfile.packages.items(.resolution)[patch.pkg_id];
-            break :brk .{ bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "{f}", .{resolution.fmt(this.manager.lockfile.buffers.string_bytes.items, .posix)})), resolution.tag };
-        };
-        defer this.manager.allocator.free(resolution_label);
+        defer system_tmpdir.deleteTree(this.manager.io, tempdir_name) catch {};
 
         // 3. copy the unpatched files into temp dir
-        var pkg_install: PackageInstall = .{
-            .allocator = bun.default_allocator,
-            .manager = this.manager,
-            .cache_dir = this.callback.apply.cache_dir,
-            .cache_dir_subpath = this.callback.apply.cache_dir_subpath_without_patch_hash,
-            .destination_dir_subpath = tempdir_name,
-            .destination_dir_subpath_buf = tmpname_buf[0..],
-            .patch = null,
-            .progress = null,
-            .package_name = pkg_name,
-            .package_version = resolution_label,
-            // dummy value
-            .node_modules = &dummy_node_modules,
-            .lockfile = this.manager.lockfile,
-        };
-
-        switch (pkg_install.install(true, system_tmpdir, .copyfile, resolution_tag)) {
+        switch (PackageInstall.copyDirectory(
+            this.manager.io,
+            this.manager.allocator,
+            patch.cache_dir,
+            patch.cache_dir_subpath_without_patch_hash,
+            system_tmpdir,
+            tempdir_name,
+        )) {
             .success => {},
             .failure => |reason| {
+                if (reason.err == error.OutOfMemory) return error.OutOfMemory;
                 return try log.addErrorFmtOpts(
                     this.manager.allocator,
                     "{s} while executing step: {s}",
@@ -358,7 +345,7 @@ pub const PatchTask = struct {
                     this.manager.allocator,
                     e,
                     "failed trying to open temporary dir to apply patch to package: {s}",
-                    .{resolution_label},
+                    .{patch.resolution_label},
                 ),
             };
             defer patch_pkg_dir.close();
@@ -446,7 +433,7 @@ pub const PatchTask = struct {
                 if (e.getErrno() == .NOENT) {
                     bun.handleOom(log.addErrorFmt(null, Loc.Empty, this.manager.allocator, "Couldn't find patch file: '{s}'\n\nTo create a new patch file run:\n\n  <cyan>bun patch {s}<r>", .{
                         this.callback.calc_hash.patchfile_path,
-                        this.manager.lockfile.patched_dependencies.get(this.callback.calc_hash.name_and_version_hash).?.path.slice(this.manager.lockfile.buffers.string_bytes.items),
+                        this.callback.calc_hash.patchfile_path,
                     }));
                     return null;
                 }
@@ -557,7 +544,7 @@ pub const PatchTask = struct {
         pkg_id: PackageID,
         patch_hash: u64,
         name_and_version_hash: u64,
-    ) *PatchTask {
+    ) bun.OOM!*PatchTask {
         const pkg_name = pkg_manager.lockfile.packages.items(.name)[pkg_id];
 
         const resolution = &pkg_manager.lockfile.packages.items(.resolution)[pkg_id];
@@ -570,9 +557,22 @@ pub const PatchTask = struct {
             patch_hash,
         );
 
-        const patchfilepath = bun.handleOom(pkg_manager.allocator.dupe(u8, pkg_manager.lockfile.patched_dependencies.get(name_and_version_hash).?.path.slice(pkg_manager.lockfile.buffers.string_bytes.items)));
+        const patchfilepath = try pkg_manager.allocator.dupe(u8, pkg_manager.lockfile.patched_dependencies.get(name_and_version_hash).?.path.slice(pkg_manager.lockfile.buffers.string_bytes.items));
+        errdefer pkg_manager.allocator.free(patchfilepath);
+        const cache_dir_subpath = try pkg_manager.allocator.dupeSentinel(u8, stuff.cache_dir_subpath, 0);
+        errdefer pkg_manager.allocator.free(cache_dir_subpath);
+        const unpatched = pkg_manager.computeCacheDirAndSubpath(
+            pkg_name.slice(pkg_manager.lockfile.buffers.string_bytes.items),
+            resolution,
+            &folder_path_buf,
+            null,
+        );
+        const cache_dir_subpath_without_patch_hash = try pkg_manager.allocator.dupeSentinel(u8, unpatched.cache_dir_subpath, 0);
+        errdefer pkg_manager.allocator.free(cache_dir_subpath_without_patch_hash);
+        const resolution_label = try std.fmt.allocPrint(pkg_manager.allocator, "{f}", .{resolution.fmt(pkg_manager.lockfile.buffers.string_bytes.items, .posix)});
+        errdefer pkg_manager.allocator.free(resolution_label);
 
-        const pt = bun.new(PatchTask, .{
+        const pt = try bun.tryNew(PatchTask, .{
             .tempdir = pkg_manager.getTemporaryDirectory().handle,
             .callback = .{
                 .apply = .{
@@ -582,12 +582,10 @@ pub const PatchTask = struct {
                     .cache_dir = stuff.cache_dir,
                     .patchfilepath = patchfilepath,
                     .pkgname = pkg_name,
+                    .resolution_label = resolution_label,
                     .logger = logger.Log.init(pkg_manager.allocator),
-                    // need to dupe this as it's calculated using
-                    // `PackageManager.cached_package_folder_name_buf` which may be
-                    // modified
-                    .cache_dir_subpath = bun.handleOom(pkg_manager.allocator.dupeSentinel(u8, stuff.cache_dir_subpath, 0)),
-                    .cache_dir_subpath_without_patch_hash = bun.handleOom(pkg_manager.allocator.dupeSentinel(u8, stuff.cache_dir_subpath[0 .. std.mem.indexOf(u8, stuff.cache_dir_subpath, "_patch_hash=") orelse @panic("This is a bug in Bun.")], 0)),
+                    .cache_dir_subpath = cache_dir_subpath,
+                    .cache_dir_subpath_without_patch_hash = cache_dir_subpath_without_patch_hash,
                 },
             },
             .manager = pkg_manager,

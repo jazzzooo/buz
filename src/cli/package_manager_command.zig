@@ -16,23 +16,7 @@ const ByName = struct {
 };
 
 pub const PackageManagerCommand = struct {
-    pub fn handleLoadLockfileErrors(load_lockfile: Lockfile.LoadResult, pm: *PackageManager) void {
-        if (load_lockfile == .not_found) {
-            if (pm.options.log_level != .silent) {
-                Output.errGeneric("Lockfile not found", .{});
-            }
-            Global.exit(1);
-        }
-
-        if (load_lockfile == .err) {
-            if (pm.options.log_level != .silent) {
-                Output.errGeneric("Error loading lockfile: {s}", .{@errorName(load_lockfile.err.value)});
-            }
-            Global.exit(1);
-        }
-    }
-
-    pub fn printHash(ctx: Command.Context, file: File) !void {
+    pub fn printHash(ctx: Context, file: File) !void {
         @branchHint(.cold);
 
         const cli = try PackageManager.CommandLineArguments.parse(ctx.allocator, .pm);
@@ -44,9 +28,9 @@ pub const PackageManagerCommand = struct {
             Global.crash();
         };
 
-        const load_lockfile = pm.lockfile.loadFromBytes(pm, bytes, ctx.allocator, ctx.log);
+        const load_lockfile = pm.lockfile.loadFromBytes(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), bytes, ctx.allocator, ctx.log);
 
-        handleLoadLockfileErrors(load_lockfile, pm);
+        handleLockfileLoadErrors(load_lockfile, pm);
 
         Output.flush();
         Output.disableBuffering();
@@ -76,66 +60,10 @@ pub const PackageManagerCommand = struct {
     }
 
     pub fn printHelp() void {
-
-        // the output of --help uses the following syntax highlighting
-        // template: <b>Usage<r>: <b><green>bun <command><r> <cyan>[flags]<r> <blue>[arguments]<r>
-        // use [foo] for multiple arguments or flags for foo.
-        // use <bar> to emphasize 'bar'
-
-        const intro_text =
-            \\
-            \\<b>Usage<r>: <b><green>bun pm<r> <cyan>[flags]<r> <blue>[\<command\>]<r>
-            \\
-            \\  Run package manager utilities.
-        ;
-        const outro_text =
-            \\
-            \\
-            \\<b>Commands:<r>
-            \\
-            \\  <b><green>bun pm<r> <blue>scan<r>                 scan all packages in lockfile for security vulnerabilities
-            \\  <b><green>bun pm<r> <blue>pack<r>                 create a tarball of the current workspace
-            \\  <d>├<r> <cyan>--dry-run<r>                 do everything except for writing the tarball to disk
-            \\  <d>├<r> <cyan>--destination<r>             the directory the tarball will be saved in
-            \\  <d>├<r> <cyan>--filename<r>                the name of the tarball
-            \\  <d>├<r> <cyan>--ignore-scripts<r>          don't run pre/postpack and prepare scripts
-            \\  <d>├<r> <cyan>--gzip-level<r>              specify a custom compression level for gzip (0-9, default is 9)
-            \\  <d>└<r> <cyan>--quiet<r>                   only output the tarball filename
-            \\  <b><green>bun pm<r> <blue>bin<r>                  print the path to bin folder
-            \\  <d>└<r> <cyan>-g<r>                        print the <b>global<r> path to bin folder
-            \\  <b><green>bun<r> <blue>list<r>                  list the dependency tree according to the current lockfile
-            \\  <d>└<r> <cyan>--all<r>                     list the entire dependency tree according to the current lockfile
-            \\  <b><green>bun pm<r> <blue>why<r> <d>\<pkg\><r>            show dependency tree explaining why a package is installed
-            \\  <b><green>bun pm<r> <blue>whoami<r>               print the current npm username
-            \\  <b><green>bun pm<r> <blue>view<r> <d>name[@version]<r>  view package metadata from the registry <d>(use `bun info` instead)<r>
-            \\  <b><green>bun pm<r> <blue>version<r> <d>[increment]<r>  bump the version in package.json and create a git tag
-            \\  <d>└<r> <cyan>increment<r>                 patch, minor, major, prepatch, preminor, premajor, prerelease, from-git, or a specific version
-            \\  <b><green>bun pm<r> <blue>pkg<r>                  manage data in package.json
-            \\  <d>├<r> <cyan>get<r> <d>[key ...]<r>
-            \\  <d>├<r> <cyan>set<r> <d>key=value ...<r>
-            \\  <d>├<r> <cyan>delete<r> <d>key ...<r>
-            \\  <d>└<r> <cyan>fix<r>                       auto-correct common package.json errors
-            \\  <b><green>bun pm<r> <blue>hash<r>                 generate & print the hash of the current lockfile
-            \\  <b><green>bun pm<r> <blue>hash-string<r>          print the string used to hash the lockfile
-            \\  <b><green>bun pm<r> <blue>hash-print<r>           print the hash stored in the current lockfile
-            \\  <b><green>bun pm<r> <blue>cache<r>                print the path to the cache folder
-            \\  <b><green>bun pm<r> <blue>cache rm<r>             clear the cache
-            \\  <b><green>bun pm<r> <blue>migrate<r>              migrate another package manager's lockfile without installing anything
-            \\  <b><green>bun pm<r> <blue>untrusted<r>            print current untrusted dependencies with scripts
-            \\  <b><green>bun pm<r> <blue>trust<r> <d>names ...<r>      run scripts for untrusted dependencies and add to `trustedDependencies`
-            \\  <d>└<r>  <cyan>--all<r>                    trust all untrusted dependencies
-            \\  <b><green>bun pm<r> <blue>default-trusted<r>      print the default trusted dependencies list
-            \\
-            \\Learn more about these at <magenta>https://bun.com/docs/cli/pm<r>.
-            \\
-        ;
-
-        Output.pretty(intro_text, .{});
-        Output.pretty(outro_text, .{});
-        Output.flush();
+        PackageManager.CommandLineArguments.printHelp(.pm);
     }
 
-    pub fn exec(ctx: Command.Context) !void {
+    pub fn exec(ctx: Context) !void {
         const args = bun.argv[1..];
 
         // Check if we're being invoked directly as "bun whoami" instead of "bun pm whoami"
@@ -222,8 +150,8 @@ pub const PackageManagerCommand = struct {
             Output.flush();
             return;
         } else if (strings.eqlComptime(subcommand, "hash")) {
-            const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
-            handleLoadLockfileErrors(load_lockfile, pm);
+            const load_lockfile = pm.lockfile.loadFromCwd(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), ctx.allocator, ctx.log, true);
+            handleLockfileLoadErrors(load_lockfile, pm);
 
             _ = try pm.lockfile.hasMetaHashChanged(false, pm.lockfile.packages.len);
 
@@ -233,8 +161,8 @@ pub const PackageManagerCommand = struct {
             Output.enableBuffering();
             Global.exit(0);
         } else if (strings.eqlComptime(subcommand, "hash-print")) {
-            const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
-            handleLoadLockfileErrors(load_lockfile, pm);
+            const load_lockfile = pm.lockfile.loadFromCwd(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), ctx.allocator, ctx.log, true);
+            handleLockfileLoadErrors(load_lockfile, pm);
 
             Output.flush();
             Output.disableBuffering();
@@ -242,8 +170,8 @@ pub const PackageManagerCommand = struct {
             Output.enableBuffering();
             Global.exit(0);
         } else if (strings.eqlComptime(subcommand, "hash-string")) {
-            const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
-            handleLoadLockfileErrors(load_lockfile, pm);
+            const load_lockfile = pm.lockfile.loadFromCwd(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), ctx.allocator, ctx.log, true);
+            handleLockfileLoadErrors(load_lockfile, pm);
 
             _ = try pm.lockfile.hasMetaHashChanged(true, pm.lockfile.packages.len);
             Global.exit(0);
@@ -317,8 +245,8 @@ pub const PackageManagerCommand = struct {
             try TrustCommand.exec(ctx, pm, args);
             Global.exit(0);
         } else if (strings.eqlComptime(subcommand, "ls")) {
-            const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
-            handleLoadLockfileErrors(load_lockfile, pm);
+            const load_lockfile = pm.lockfile.loadFromCwd(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), ctx.allocator, ctx.log, true);
+            handleLockfileLoadErrors(load_lockfile, pm);
 
             Output.flush();
             Output.disableBuffering();
@@ -429,7 +357,7 @@ pub const PackageManagerCommand = struct {
                 , .{});
                 Global.exit(1);
             }
-            handleLoadLockfileErrors(load_lockfile, pm);
+            handleLockfileLoadErrors(load_lockfile, pm);
             const lockfile = load_lockfile.ok.lockfile;
 
             lockfile.saveToDisk(&load_lockfile, &pm.options);
@@ -595,7 +523,8 @@ const Lockfile = @import("../install/lockfile.zig");
 const Path = @import("../paths/resolve_path.zig");
 const PmViewCommand = @import("./pm_view_command.zig");
 const std = @import("std");
-const Command = @import("./cli.zig").Command;
+const Context = @import("../options_types/Context.zig").Context;
+const handleLockfileLoadErrors = @import("./lockfile_load_result.zig").handleErrors;
 const PmPkgCommand = @import("./pm_pkg_command.zig").PmPkgCommand;
 const PmVersionCommand = @import("./pm_version_command.zig").PmVersionCommand;
 const PmWhyCommand = @import("./pm_why_command.zig").PmWhyCommand;

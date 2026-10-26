@@ -1,44 +1,7 @@
 var path_buf: bun.PathBuffer = undefined;
 var path_buf2: bun.PathBuffer = undefined;
 
-pub fn escapeXml(str: string, writer: anytype) !void {
-    var last: usize = 0;
-    var i: usize = 0;
-    const len = str.len;
-    while (i < len) : (i += 1) {
-        const c = str[i];
-        switch (c) {
-            '&',
-            '<',
-            '>',
-            '"',
-            '\'',
-            => {
-                if (i > last) {
-                    try writer.writeAll(str[last..i]);
-                }
-                const escaped = switch (c) {
-                    '&' => "&amp;",
-                    '<' => "&lt;",
-                    '>' => "&gt;",
-                    '"' => "&quot;",
-                    '\'' => "&apos;",
-                    else => unreachable,
-                };
-                try writer.writeAll(escaped);
-                last = i + 1;
-            },
-            0...0x1f => {
-                // Escape all control characters
-                try writer.print("&#{d};", .{c});
-            },
-            else => {},
-        }
-    }
-    if (len > last) {
-        try writer.writeAll(str[last..]);
-    }
-}
+pub const escapeXml = @import("./test/reporting.zig").escapeXml;
 fn fmtStatusTextLine(status: bun_test.Execution.Result, emoji_or_color: bool) []const u8 {
     // emoji and color might be split into two different options in the future
     // some terminals support color, but not emoji.
@@ -1014,7 +977,8 @@ pub const CommandLineReporter = struct {
 
         var map = coverage.ByteRangeMapping.map orelse return;
         var iter = map.valueIterator();
-        var byte_ranges = try std.array_list.Managed(bun.SourceMap.coverage.ByteRangeMapping).initCapacity(bun.default_allocator, map.count());
+        var byte_ranges = try std.array_list.Managed(coverage.ByteRangeMapping).initCapacity(bun.default_allocator, map.count());
+        defer byte_ranges.deinit();
 
         while (iter.next()) |entry| {
             byte_ranges.appendAssumeCapacity(entry.*);
@@ -1025,10 +989,10 @@ pub const CommandLineReporter = struct {
         }
 
         std.sort.pdq(
-            bun.SourceMap.coverage.ByteRangeMapping,
+            coverage.ByteRangeMapping,
             byte_ranges.items,
             {},
-            bun.SourceMap.coverage.ByteRangeMapping.isLessThan,
+            coverage.ByteRangeMapping.isLessThan,
         );
 
         try this.printCodeCoverage(vm, opts, byte_ranges.items, reporters, enable_ansi_colors);
@@ -1039,15 +1003,15 @@ pub const CommandLineReporter = struct {
     pub fn writeLcovOnly(_: *CommandLineReporter, vm: *jsc.VirtualMachine, opts: *const TestCommand.CodeCoverageOptions, out_path: [:0]const u8) !void {
         var map = coverage.ByteRangeMapping.map orelse return;
         var iter = map.valueIterator();
-        var byte_ranges = try std.array_list.Managed(bun.SourceMap.coverage.ByteRangeMapping).initCapacity(bun.default_allocator, map.count());
+        var byte_ranges = try std.array_list.Managed(coverage.ByteRangeMapping).initCapacity(bun.default_allocator, map.count());
         defer byte_ranges.deinit();
         while (iter.next()) |entry| byte_ranges.appendAssumeCapacity(entry.*);
         if (byte_ranges.items.len == 0) return;
         std.sort.pdq(
-            bun.SourceMap.coverage.ByteRangeMapping,
+            coverage.ByteRangeMapping,
             byte_ranges.items,
             {},
-            bun.SourceMap.coverage.ByteRangeMapping.isLessThan,
+            coverage.ByteRangeMapping.isLessThan,
         );
 
         const relative_dir = vm.transpiler.fs.top_level_dir;
@@ -1063,7 +1027,7 @@ pub const CommandLineReporter = struct {
 
         for (byte_ranges.items) |*entry| {
             if (opts.ignore_patterns.len > 0) {
-                const rel = try std.fs.path.relative(bun.default_allocator, relative_dir, null, relative_dir, entry.source_url.slice());
+                const rel = try std.fs.path.relative(bun.default_allocator, relative_dir, null, relative_dir, entry.source_url);
                 defer bun.default_allocator.free(rel);
                 var skip = false;
                 for (opts.ignore_patterns) |p| if (bun.glob.match(p, rel).matches()) {
@@ -1072,7 +1036,7 @@ pub const CommandLineReporter = struct {
                 };
                 if (skip) continue;
             }
-            var report = CodeCoverageReport.generate(vm.global, bun.default_allocator, entry, opts.ignore_sourcemap) orelse continue;
+            var report = try CodeCoverageEngine.generate(vm.global, bun.default_allocator, entry, opts.ignore_sourcemap) orelse continue;
             defer report.deinit(bun.default_allocator);
             CodeCoverageReport.Lcov.writeFormat(&report, relative_dir, bun.default_allocator, writer) catch continue;
         }
@@ -1083,7 +1047,7 @@ pub const CommandLineReporter = struct {
         _: *CommandLineReporter,
         vm: *jsc.VirtualMachine,
         opts: *TestCommand.CodeCoverageOptions,
-        byte_ranges: []bun.SourceMap.coverage.ByteRangeMapping,
+        byte_ranges: []coverage.ByteRangeMapping,
         comptime reporters: TestCommand.Reporters,
         comptime enable_ansi_colors: bool,
     ) !void {
@@ -1108,7 +1072,7 @@ pub const CommandLineReporter = struct {
         const max_filepath_length: usize = if (reporters.text) brk: {
             var len = "All files".len;
             for (byte_ranges) |*entry| {
-                const utf8 = entry.source_url.slice();
+                const utf8 = entry.source_url;
                 const relative_path = try std.fs.path.relative(bun.default_allocator, relative_dir, null, relative_dir, utf8);
                 defer bun.default_allocator.free(relative_path);
 
@@ -1153,7 +1117,7 @@ pub const CommandLineReporter = struct {
         var console_buffer = std.Io.Writer.Allocating.init(bun.default_allocator);
         const console_writer = &console_buffer.writer;
 
-        var avg = bun.SourceMap.coverage.Fraction{
+        var avg = coverage.Fraction{
             .functions = 0.0,
             .lines = 0.0,
             .stmts = 0.0,
@@ -1167,11 +1131,11 @@ pub const CommandLineReporter = struct {
             if (comptime !reporters.lcov) break :brk .{ {}, {}, {} };
 
             // Ensure the directory exists
-            var fs = bun.jsc.Node.fs.NodeFS{};
+            var fs = bun.api.node.fs.NodeFS{};
             _ = fs.mkdirRecursive(
                 .{
-                    .path = bun.jsc.Node.PathLike{
-                        .encoded_slice = jsc.ZigString.Slice.fromUTF8NeverFree(opts.reports_directory),
+                    .path = bun.api.node.PathLike{
+                        .encoded_slice = bun.String.Slice.fromUTF8NeverFree(opts.reports_directory),
                     },
                     .always_return_none = true,
                 },
@@ -1205,7 +1169,7 @@ pub const CommandLineReporter = struct {
         for (byte_ranges) |*entry| {
             // Check if this file should be ignored based on coveragePathIgnorePatterns
             if (opts.ignore_patterns.len > 0) {
-                const utf8 = entry.source_url.slice();
+                const utf8 = entry.source_url;
                 const relative_path = try std.fs.path.relative(bun.default_allocator, relative_dir, null, relative_dir, utf8);
                 defer bun.default_allocator.free(relative_path);
 
@@ -1222,7 +1186,7 @@ pub const CommandLineReporter = struct {
                 }
             }
 
-            var report = CodeCoverageReport.generate(vm.global, bun.default_allocator, entry, opts.ignore_sourcemap) orelse continue;
+            var report = try CodeCoverageEngine.generate(vm.global, bun.default_allocator, entry, opts.ignore_sourcemap) orelse continue;
             defer report.deinit(bun.default_allocator);
 
             if (comptime reporters.text) {
@@ -1261,7 +1225,7 @@ pub const CommandLineReporter = struct {
                     avg.stmts /= avg_count;
                 }
 
-                const failed = if (avg_count > 0) base_fraction else bun.SourceMap.coverage.Fraction{
+                const failed = if (avg_count > 0) base_fraction else coverage.Fraction{
                     .functions = 0,
                     .lines = 0,
                     .stmts = 0,
@@ -1312,17 +1276,7 @@ pub const CommandLineReporter = struct {
     }
 };
 
-export fn BunTest__shouldGenerateCodeCoverage(test_name_str: bun.String) callconv(.c) bool {
-    var zig_slice: bun.jsc.ZigString.Slice = .{};
-    defer zig_slice.deinit();
-
-    // In this particular case, we don't actually care about non-ascii latin1 characters.
-    // so we skip the ascii check
-    const slice = brk: {
-        zig_slice = test_name_str.toUTF8(bun.default_allocator);
-        break :brk zig_slice.slice();
-    };
-
+pub fn shouldGenerateCodeCoverage(slice: []const u8) bool {
     // always ignore node_modules.
     if (bun.strings.contains(slice, "/node_modules/") or bun.strings.contains(slice, "\\node_modules\\")) {
         return false;
@@ -1401,8 +1355,22 @@ pub const TestCommand = struct {
         var snapshot_file_buf = std.array_list.Managed(u8).init(ctx.allocator);
         var snapshot_values = Snapshots.ValuesHashMap.init(ctx.allocator);
         var snapshot_counts = bun.StringHashMap(usize).init(ctx.allocator);
-        var inline_snapshots_to_write = std.array_hash_map.Auto(TestRunner.File.ID, std.array_list.Managed(Snapshots.InlineSnapshotToWrite)).empty;
-        jsc.VirtualMachine.isBunTest = true;
+        var inline_snapshots_to_write = std.array_hash_map.Auto(Snapshots.FileID, std.array_list.Managed(Snapshots.InlineSnapshotToWrite)).empty;
+        jsc.VirtualMachine.setIsBunTest(true);
+
+        const filter_regex = filter: {
+            const pattern = ctx.test_options.test_filter_pattern orelse break :filter null;
+            const pattern_string = bun.String.cloneUTF8(pattern);
+            defer pattern_string.deref();
+            break :filter jsc.RegularExpression.init(pattern_string, .none) catch {
+                Output.prettyErrorln(
+                    "<r><red>error<r>: --test-name-pattern expects a valid regular expression but received {f}",
+                    .{bun.fmt.QuotedFormatter{ .text = pattern }},
+                );
+                Global.exit(1);
+            };
+        };
+        defer if (filter_regex) |regex| regex.deinit();
 
         var reporter = try ctx.allocator.create(CommandLineReporter);
         defer {
@@ -1416,14 +1384,13 @@ pub const TestCommand = struct {
                 .allocator = ctx.allocator,
                 .default_timeout_ms = ctx.test_options.default_timeout_ms,
                 .concurrent = ctx.test_options.concurrent,
-                .randomize = random,
                 .randomize_seed = if (enable_random) seed else null,
                 .concurrent_test_glob = ctx.test_options.concurrent_test_glob,
                 .run_todo = ctx.test_options.run_todo,
                 .only = ctx.test_options.only,
                 .bail = ctx.test_options.bail,
                 .max_concurrency = ctx.test_options.max_concurrency,
-                .filter_regex = ctx.test_options.testFilterRegex(),
+                .filter_regex = filter_regex,
                 .snapshots = Snapshots{
                     .allocator = ctx.allocator,
                     .io = ctx.io,
@@ -1491,6 +1458,15 @@ pub const TestCommand = struct {
 
         try vm.transpiler.configureDefines();
 
+        var snapshot_parser_options = bun.js_parser.Parser.Options.init(vm.transpiler.options.jsx, .js);
+        snapshot_parser_options.javascript_semantics = vm.transpiler.engine_capabilities.javascript_semantics;
+        reporter.jest.snapshots.configure(.{
+            .file_context = @ptrCast(&reporter.jest),
+            .file_path = TestRunner.snapshotFilePath,
+            .parser_options = snapshot_parser_options,
+            .define = vm.transpiler.options.define,
+        });
+
         vm.loadExtraEnvAndSourceCodePrinter();
         vm.is_main_thread = true;
         jsc.VirtualMachine.is_main_thread_vm = true;
@@ -1519,7 +1495,7 @@ pub const TestCommand = struct {
         }
 
         if (TZ_NAME.len > 0) {
-            _ = vm.global.setTimeZone(&jsc.ZigString.init(TZ_NAME));
+            _ = try vm.global.setTimeZone(TZ_NAME);
         }
 
         if (ctx.test_options.test_worker) {
@@ -1629,7 +1605,15 @@ pub const TestCommand = struct {
             // --changed success.
             if (all_test_files.len == 0) break :brk all_test_files;
 
-            const result = ChangedFilesFilter.filter(ctx, vm, all_test_files, changed_since) catch |err| {
+            const result = ChangedFilesFilter.filter(
+                ctx,
+                &vm.transpiler,
+                all_test_files,
+                changed_since,
+                if (Environment.isWindows)
+                    vm.parentEventLoop()
+                else {},
+            ) catch |err| {
                 Output.err(err, "--changed: unable to determine affected tests", .{});
                 Global.exit(1);
             };
@@ -1719,7 +1703,10 @@ pub const TestCommand = struct {
             // runAllTests (separate concern; see O_EVTONLY comment
             // below).
             if (ctx.test_options.changed != null and vm.hot_reload == .watch) {
-                ChangedFilesFilter.initWatchTrigger(ctx.io, ctx.allocator);
+                if (ChangedFilesFilter.initWatchTrigger(ctx.io, ctx.allocator)) |state| {
+                    jsc.hot_reloader.watch_changed_paths = state.paths;
+                    jsc.hot_reloader.watch_changed_trigger_file = state.trigger_file;
+                }
             }
 
             switch (vm.hot_reload) {
@@ -1763,7 +1750,7 @@ pub const TestCommand = struct {
         // before the next file edit.
         if (ctx.test_options.changed != null and vm.isWatcherEnabled()) {
             for (changed_module_graph_files) |path| {
-                _ = vm.bun_watcher.addFileByPathSlow(path, vm.transpiler.options.loader(std.fs.path.extension(path)));
+                _ = vm.bun_watcher.addFileByPathSlow(path, vm.transpiler.options.loader(std.fs.path.extension(path)), null);
             }
         }
 
@@ -2085,8 +2072,7 @@ pub const TestCommand = struct {
 
             if (vm.log.errors > 0) {
                 vm.log.print(Output.errorWriter()) catch {};
-                vm.log.msgs.clearRetainingCapacity();
-                vm.log.errors = 0;
+                vm.log.reset();
             }
 
             Output.flush();
@@ -2124,8 +2110,7 @@ pub const TestCommand = struct {
             // Clear the module cache before re-running (except for the first run)
             if (repeat_index > 0) {
                 try vm.clearEntryPoint();
-                var entry = jsc.ZigString.init(file_path);
-                try vm.global.deleteModuleRegistryEntry(&entry);
+                try vm.global.deleteModuleRegistryEntry(file_path);
                 // Reset per-test snapshot counters so rerun N matches the same
                 // snapshot keys as run 1 instead of looking for "test name 2", etc.
                 reporter.jest.snapshots.resetCounts();
@@ -2144,14 +2129,15 @@ pub const TestCommand = struct {
             // need to wake up so autoTick() doesn't wait for 16-100ms after loading the entrypoint
             vm.wakeup();
             var promise = try vm.loadEntryPointForTestRunner(file_path);
+            defer promise.deinit();
             // Only count the file once, not once per repeat
             if (repeat_index == 0) {
                 reporter.summary().files += 1;
             }
 
-            switch (promise.status()) {
+            switch (vm.entryPointPromiseStatus(&promise)) {
                 .rejected => {
-                    vm.unhandledRejection(vm.global, promise.result(vm.global.vm()), promise.toJS());
+                    try vm.reportUnhandledEntryPoint(&promise);
                     reporter.summary().fail += 1;
 
                     if (reporter.jest.bail == reporter.summary().fail) {
@@ -2236,15 +2222,11 @@ pub fn handleTopLevelTestErrorBeforeJavaScriptStart(err: anyerror) noreturn {
     Global.exit(1);
 }
 
-pub fn @"export"() void {
-    _ = &Scanner.BunTest__shouldGenerateCodeCoverage;
-}
-
 const string = []const u8;
 
 const ChangedFilesFilter = @import("./test/ChangedFilesFilter.zig");
 const DotEnv = @import("../dotenv/env_loader.zig");
-const ParallelRunner = @import("./test/ParallelRunner.zig");
+const ParallelRunner = @import("./test/parallel/runner.zig");
 const Scanner = @import("./test/Scanner.zig");
 const bun_test = @import("../test_runner/bun_test.zig");
 const options = @import("../bundler/options.zig");
@@ -2265,7 +2247,8 @@ const strings = bun.strings;
 const uws = bun.uws;
 const HTTPThread = bun.http.HTTPThread;
 
-const coverage = bun.SourceMap.coverage;
+const coverage = @import("../sourcemap/CodeCoverage.zig");
+const CodeCoverageEngine = @import("../sourcemap_jsc/CodeCoverageEngine.zig");
 const CodeCoverageReport = coverage.Report;
 
 const jsc = bun.jsc;

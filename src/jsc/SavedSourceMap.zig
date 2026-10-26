@@ -4,13 +4,10 @@ const SavedSourceMap = @This();
 map: *HashTable,
 io: std.Io,
 mutex: std.Io.Mutex = .init,
+next_registration: u64 = 1,
 
-/// Warm cache for `remapStackFramePositions`: the last decoded sync window and
-/// the last (path_hash -> ISM) resolution. Guarded by `mutex`. Invalidated on
-/// any `putValue` since that may free the cached blob.
+/// Decoded sync windows, guarded by `mutex` and invalidated before freeing a blob.
 find_cache: InternalSourceMap.FindCache = .{},
-last_path_hash: u64 = 0,
-last_ism: ?InternalSourceMap = null,
 
 pub fn init(this: *SavedSourceMap, io: std.Io, map: *HashTable) void {
     this.* = .{
@@ -32,14 +29,10 @@ pub inline fn unlock(map: *SavedSourceMap) void {
 }
 
 /// `InternalSourceMap` is the storage for runtime-transpiled modules.
-/// `ParsedSourceMap` is materialized lazily from a `SourceProviderMap` /
-/// `BakeSourceProvider` / `DevServerSourceProvider` for sources that ship
-/// their own external `.map`.
+/// `ParsedSourceMap` is materialized lazily from owned source-map input.
 pub const Value = bun.TaggedPointerUnion(.{
     ParsedSourceMap,
-    SourceProviderMap,
-    BakeSourceProvider,
-    DevServerSourceProvider,
+    SourceMapInput,
     InternalSourceMap,
 });
 
@@ -57,62 +50,83 @@ pub const MissingSourceMapNoteInfo = struct {
     }
 };
 
-pub fn putBakeSourceProvider(this: *SavedSourceMap, opaque_source_provider: *BakeSourceProvider, path: []const u8) void {
-    bun.handleOom(this.putValue(path, Value.init(opaque_source_provider)));
+pub fn putInput(this: *SavedSourceMap, path: []const u8, input: *SourceMapInput) bun.OOM!u64 {
+    const stored_path = try StoredPath.create(path);
+    errdefer stored_path.deref();
+    this.lock();
+    defer this.unlock();
+    const registration = this.next_registration;
+    const next = std.math.add(u64, registration, 1) catch return error.OutOfMemory;
+    try this.putValueLocked(stored_path, Value.init(input), registration);
+    this.next_registration = next;
+    return registration;
 }
 
-pub fn putDevServerSourceProvider(this: *SavedSourceMap, opaque_source_provider: *DevServerSourceProvider, path: []const u8) void {
-    this.putValue(path, Value.init(opaque_source_provider)) catch |err| bun.handleOom(err);
-}
-
-pub fn removeDevServerSourceProvider(this: *SavedSourceMap, opaque_source_provider: *anyopaque, path: []const u8) void {
+pub fn removeRegistration(this: *SavedSourceMap, registration: u64, path: bun.bindgen.DOMStringView) void {
     this.lock();
     defer this.unlock();
 
-    const entry = this.map.getEntry(bun.hash(path)) orelse return;
-    const old_value = Value.from(entry.value_ptr.*);
-    if (old_value.get(DevServerSourceProvider)) |prov| {
-        if (@intFromPtr(prov) == @intFromPtr(opaque_source_provider)) {
-            // there is nothing to unref or deinit
-            this.map.removeByPtr(entry.key_ptr);
-        }
-    } else if (old_value.get(ParsedSourceMap)) |map| {
-        if (map.underlying_provider.provider()) |prov| {
-            if (@intFromPtr(prov.ptr()) == @intFromPtr(opaque_source_provider)) {
-                this.map.removeByPtr(entry.key_ptr);
-                map.deref();
-            }
-        }
+    const entry = this.map.getEntryAdapted(path, PathLookup{}) orelse return;
+    if (registration != 0 and entry.value_ptr.registration == registration) {
+        this.removeValueLocked(entry.key_ptr.*);
     }
 }
 
-pub fn putZigSourceProvider(this: *SavedSourceMap, opaque_source_provider: *anyopaque, path: []const u8) void {
-    const source_provider: *SourceProviderMap = @ptrCast(opaque_source_provider);
-    bun.handleOom(this.putValue(path, Value.init(source_provider)));
-}
+pub const StoredPath = struct {
+    const RefCount = bun.ptr.ThreadSafeRefCount(@This(), "references", StoredPath.destroy, .{});
+    pub const ref = RefCount.ref;
+    pub const deref = RefCount.deref;
 
-pub fn removeZigSourceProvider(this: *SavedSourceMap, opaque_source_provider: *anyopaque, path: []const u8) void {
-    this.lock();
-    defer this.unlock();
+    bytes: []const u8,
+    references: RefCount = .init(),
 
-    const entry = this.map.getEntry(bun.hash(path)) orelse return;
-    const old_value = Value.from(entry.value_ptr.*);
-    if (old_value.get(SourceProviderMap)) |prov| {
-        if (@intFromPtr(prov) == @intFromPtr(opaque_source_provider)) {
-            // there is nothing to unref or deinit
-            this.map.removeByPtr(entry.key_ptr);
-        }
-    } else if (old_value.get(ParsedSourceMap)) |map| {
-        if (map.underlying_provider.provider()) |prov| {
-            if (@intFromPtr(prov.ptr()) == @intFromPtr(opaque_source_provider)) {
-                this.map.removeByPtr(entry.key_ptr);
-                map.deref();
-            }
-        }
+    fn create(path: []const u8) bun.OOM!*StoredPath {
+        const bytes = try bun.default_allocator.dupe(u8, path);
+        errdefer bun.default_allocator.free(bytes);
+        const stored = try bun.default_allocator.create(StoredPath);
+        stored.* = .{ .bytes = bytes };
+        return stored;
+    }
+
+    fn destroy(path: *StoredPath) void {
+        bun.default_allocator.free(path.bytes);
+        bun.default_allocator.destroy(path);
+    }
+};
+
+const Entry = struct {
+    value: Value,
+    path: *StoredPath,
+    registration: u64,
+
+    fn deinit(entry: Entry) void {
+        entry.path.deref();
+        destroyValue(entry.value);
+    }
+};
+
+fn destroyValue(value: Value) void {
+    if (value.get(ParsedSourceMap)) |map| {
+        map.deref();
+    } else if (value.get(SourceMapInput)) |input| {
+        input.deref();
+    } else if (value.get(InternalSourceMap)) |ism| {
+        (InternalSourceMap{ .data = @as([*]u8, @ptrCast(ism)) }).deinit();
     }
 }
 
-pub const HashTable = std.HashMap(u64, *anyopaque, bun.IdentityContext(u64), 80);
+pub const HashTable = bun.StringHashMap(Entry);
+
+const PathLookup = struct {
+    pub fn hash(_: @This(), path: anytype) u64 {
+        return path.hashUTF8();
+    }
+
+    pub fn eql(_: @This(), path: anytype, key: []const u8) bool {
+        if (@TypeOf(path) == bun.TextView) return path.eqlUTF8View(.{ .utf8 = key });
+        return path.eqlUTF8(key);
+    }
+};
 
 pub fn onSourceMapChunk(this: *SavedSourceMap, chunk: SourceMap.Chunk, source: *const logger.Source) anyerror!void {
     try this.putMappings(source, chunk.buffer);
@@ -127,14 +141,7 @@ pub fn deinit(this: *SavedSourceMap) void {
 
         var iter = this.map.valueIterator();
         while (iter.next()) |val| {
-            var value = Value.from(val.*);
-            if (value.get(ParsedSourceMap)) |source_map| {
-                source_map.deref();
-            } else if (value.get(SourceProviderMap)) |provider| {
-                _ = provider; // do nothing, we did not hold a ref to ZigSourceProvider
-            } else if (value.get(InternalSourceMap)) |ism| {
-                (InternalSourceMap{ .data = @as([*]u8, @ptrCast(ism)) }).deinit();
-            }
+            val.deinit();
         }
     }
 
@@ -154,7 +161,7 @@ pub fn putMappings(this: *SavedSourceMap, source: *const logger.Source, mappings
         if (incoming.mappingCount() == 0) {
             this.lock();
             defer this.unlock();
-            if (this.map.contains(bun.hash(source.path.text))) return;
+            if (this.map.contains(source.path.text)) return;
         }
     }
 
@@ -163,25 +170,27 @@ pub fn putMappings(this: *SavedSourceMap, source: *const logger.Source, mappings
     try this.putValue(source.path.text, Value.init(bun.cast(*InternalSourceMap, blob.ptr)));
 }
 
-pub fn putValue(this: *SavedSourceMap, path: []const u8, value: Value) !void {
+pub fn putValue(this: *SavedSourceMap, path: []const u8, value: Value) bun.OOM!void {
+    const stored_path = try StoredPath.create(path);
+    errdefer stored_path.deref();
     this.lock();
     defer this.unlock();
 
+    try this.putValueLocked(stored_path, value, 0);
+}
+
+fn putValueLocked(this: *SavedSourceMap, stored_path: *StoredPath, value: Value, registration: u64) bun.OOM!void {
+    const entry = try this.map.getOrPut(stored_path.bytes);
     this.find_cache.invalidateAll();
-    this.last_ism = null;
-    const entry = try this.map.getOrPut(bun.hash(path));
-    if (entry.found_existing) {
-        var old_value = Value.from(entry.value_ptr.*);
-        if (old_value.get(ParsedSourceMap)) |parsed_source_map| {
-            var source_map: *ParsedSourceMap = parsed_source_map;
-            source_map.deref();
-        } else if (old_value.get(SourceProviderMap)) |provider| {
-            _ = provider; // do nothing, we did not hold a ref to ZigSourceProvider
-        } else if (old_value.get(InternalSourceMap)) |ism| {
-            (InternalSourceMap{ .data = @as([*]u8, @ptrCast(ism)) }).deinit();
-        }
-    }
-    entry.value_ptr.* = value.ptr();
+    entry.key_ptr.* = stored_path.bytes;
+    if (entry.found_existing) entry.value_ptr.deinit();
+    entry.value_ptr.* = .{ .value = value, .path = stored_path, .registration = registration };
+}
+
+fn removeValueLocked(this: *SavedSourceMap, path: []const u8) void {
+    const entry = this.map.fetchRemove(path) orelse return;
+    this.find_cache.invalidateAll();
+    entry.value.deinit();
 }
 
 /// You must call `sourcemap.map.deref()` or you will leak memory
@@ -189,19 +198,17 @@ fn getWithContent(
     this: *SavedSourceMap,
     path: string,
     hint: SourceMap.ParseUrlResultHint,
-) SourceMap.ParseUrl {
-    const hash = bun.hash(path);
-
+) bun.OOM!SourceMap.ParseUrl {
     // This lock is for the hash table
     this.lock();
 
     // This mapping entry is only valid while the mutex is locked
-    const mapping = this.map.getEntry(hash) orelse {
+    const mapping = this.map.getEntry(path) orelse {
         this.unlock();
         return .{};
     };
 
-    switch (Value.from(mapping.value_ptr.*).tag()) {
+    switch (mapping.value_ptr.value.tag()) {
         @field(Value.Tag, @typeName(InternalSourceMap)) => {
             // Runtime-transpiled module. Wrap the blob in a refcounted
             // ParsedSourceMap shell (no VLQ decode, no Mapping.List) so callers
@@ -209,102 +216,34 @@ fn getWithContent(
             // of the blob.
             defer this.unlock();
             const ism: InternalSourceMap = .{
-                .data = @as([*]u8, @ptrCast(Value.from(mapping.value_ptr.*).as(InternalSourceMap))),
+                .data = @as([*]u8, @ptrCast(mapping.value_ptr.value.as(InternalSourceMap))),
             };
-            const result = bun.new(ParsedSourceMap, .{
+            const result = try bun.default_allocator.create(ParsedSourceMap);
+            result.* = .{
                 .ref_count = .init(),
                 .input_line_count = ism.inputLineCount(),
                 .internal = ism,
-            });
-            mapping.value_ptr.* = Value.init(result).ptr();
+            };
+            mapping.value_ptr.value = Value.init(result);
             result.ref();
             return .{ .map = result };
         },
         @field(Value.Tag, @typeName(ParsedSourceMap)) => {
             defer this.unlock();
-            const map = Value.from(mapping.value_ptr.*).as(ParsedSourceMap);
+            const map = mapping.value_ptr.value.as(ParsedSourceMap);
             map.ref();
             return .{ .map = map };
         },
-        @field(Value.Tag, @typeName(SourceProviderMap)) => {
-            const ptr: *SourceProviderMap = Value.from(mapping.value_ptr.*).as(SourceProviderMap);
+        @field(Value.Tag, @typeName(SourceMapInput)) => {
+            const input = mapping.value_ptr.value.as(SourceMapInput);
+            input.ref();
+            defer input.deref();
+            const stored_path = mapping.value_ptr.path;
+            stored_path.ref();
+            defer stored_path.deref();
+            const registration = mapping.value_ptr.registration;
             this.unlock();
-
-            // Do not lock the mutex while we're parsing JSON!
-            if (ptr.getSourceMap(path, .none, hint)) |parse| {
-                if (parse.map) |map| {
-                    map.ref();
-                    // The mutex is not locked. We have to check the hash table again.
-                    bun.handleOom(this.putValue(path, Value.init(map)));
-
-                    return parse;
-                }
-            }
-
-            this.lock();
-            defer this.unlock();
-            // does not have a valid source map. let's not try again
-            _ = this.map.remove(hash);
-
-            // Store path for a user note.
-            const storage = MissingSourceMapNoteInfo.storage[0..path.len];
-            @memcpy(storage, path);
-            MissingSourceMapNoteInfo.path = storage;
-            return .{};
-        },
-        @field(Value.Tag, @typeName(BakeSourceProvider)) => {
-            // TODO: This is a copy-paste of above branch
-            const ptr: *BakeSourceProvider = Value.from(mapping.value_ptr.*).as(BakeSourceProvider);
-            this.unlock();
-
-            // Do not lock the mutex while we're parsing JSON!
-            if (ptr.getSourceMap(path, .none, hint)) |parse| {
-                if (parse.map) |map| {
-                    map.ref();
-                    // The mutex is not locked. We have to check the hash table again.
-                    bun.handleOom(this.putValue(path, Value.init(map)));
-
-                    return parse;
-                }
-            }
-
-            this.lock();
-            defer this.unlock();
-            // does not have a valid source map. let's not try again
-            _ = this.map.remove(hash);
-
-            // Store path for a user note.
-            const storage = MissingSourceMapNoteInfo.storage[0..path.len];
-            @memcpy(storage, path);
-            MissingSourceMapNoteInfo.path = storage;
-            return .{};
-        },
-        @field(Value.Tag, @typeName(DevServerSourceProvider)) => {
-            // TODO: This is a copy-paste of above branch
-            const ptr: *DevServerSourceProvider = Value.from(mapping.value_ptr.*).as(DevServerSourceProvider);
-            this.unlock();
-
-            // Do not lock the mutex while we're parsing JSON!
-            if (ptr.getSourceMap(path, .none, hint)) |parse| {
-                if (parse.map) |map| {
-                    map.ref();
-                    // The mutex is not locked. We have to check the hash table again.
-                    this.putValue(path, Value.init(map)) catch |err| bun.handleOom(err);
-
-                    return parse;
-                }
-            }
-
-            this.lock();
-            defer this.unlock();
-            // does not have a valid source map. let's not try again
-            _ = this.map.remove(hash);
-
-            // Store path for a user note.
-            const storage = MissingSourceMapNoteInfo.storage[0..path.len];
-            @memcpy(storage, path);
-            MissingSourceMapNoteInfo.path = storage;
-            return .{};
+            return this.loadInput(input, stored_path.bytes, registration, hint);
         },
         else => {
             if (Environment.allow_assert) {
@@ -317,15 +256,46 @@ fn getWithContent(
     }
 }
 
-/// You must `deref()` the returned value or you will leak memory
-pub fn get(this: *SavedSourceMap, path: string) ?*ParsedSourceMap {
-    return this.getWithContent(path, .mappings_only).map;
+fn loadInput(
+    this: *SavedSourceMap,
+    input: *SourceMapInput,
+    path: []const u8,
+    registration: u64,
+    hint: SourceMap.ParseUrlResultHint,
+) bun.OOM!SourceMap.ParseUrl {
+    const parsed = try source_provider_jsc.getSourceMap(this.io, input, path, .none, hint) orelse SourceMap.ParseUrl{};
+
+    this.lock();
+    defer this.unlock();
+    if (this.map.getEntry(path)) |entry| {
+        if (entry.value_ptr.registration == registration and entry.value_ptr.value.get(SourceMapInput) == input) {
+            if (parsed.map) |map| {
+                map.ref();
+                destroyValue(entry.value_ptr.value);
+                entry.value_ptr.value = Value.init(map);
+                this.find_cache.invalidateAll();
+            } else {
+                if (path.len <= MissingSourceMapNoteInfo.storage.len) {
+                    const storage = MissingSourceMapNoteInfo.storage[0..path.len];
+                    @memcpy(storage, path);
+                    MissingSourceMapNoteInfo.path = storage;
+                }
+                this.removeValueLocked(path);
+            }
+        }
+    }
+
+    return parsed;
 }
 
-/// Mutex must already be held. Returns the raw table value for `hash` if any.
-pub fn getValueLocked(this: *SavedSourceMap, hash: u64) ?Value {
-    const raw = this.map.get(hash) orelse return null;
-    return Value.from(raw);
+/// You must `deref()` the returned value or you will leak memory
+pub fn get(this: *SavedSourceMap, path: string) bun.OOM!?*ParsedSourceMap {
+    return (try this.getWithContent(path, .mappings_only)).map;
+}
+
+/// The returned path and value are borrowed until the mutex is released.
+pub fn getEntryLocked(this: *SavedSourceMap, path: bun.TextView) ?Entry {
+    return this.map.getAdapted(path, PathLookup{});
 }
 
 pub fn resolveMapping(
@@ -334,16 +304,22 @@ pub fn resolveMapping(
     line: bun.Ordinal,
     column: bun.Ordinal,
     source_handling: SourceMap.SourceContentHandling,
-) ?SourceMap.Mapping.Lookup {
-    const parse = this.getWithContent(path, switch (source_handling) {
+) bun.OOM!?SourceMap.Mapping.Lookup {
+    const parse = try this.getWithContent(path, switch (source_handling) {
         .no_source_contents => .mappings_only,
         .source_contents => .{ .all = .{ .line = @max(line.zeroBased(), 0), .column = @max(column.zeroBased(), 0) } },
     });
-    const map = parse.map orelse return null;
+    const map = parse.map orelse {
+        if (parse.source_contents) |contents| bun.default_allocator.free(contents);
+        return null;
+    };
 
     const mapping = parse.mapping orelse
-        map.findMapping(line, column) orelse
+        map.findMapping(line, column) orelse {
+        map.deref();
+        if (parse.source_contents) |contents| bun.default_allocator.free(contents);
         return null;
+    };
 
     return .{
         .mapping = mapping,
@@ -364,8 +340,7 @@ const js_printer = bun.js_printer;
 const logger = bun.logger;
 
 const SourceMap = bun.SourceMap;
-const BakeSourceProvider = bun.SourceMap.BakeSourceProvider;
-const DevServerSourceProvider = bun.SourceMap.DevServerSourceProvider;
 const InternalSourceMap = SourceMap.InternalSourceMap;
 const ParsedSourceMap = SourceMap.ParsedSourceMap;
-const SourceProviderMap = SourceMap.SourceProviderMap;
+const SourceMapInput = SourceMap.SourceMapInput;
+const source_provider_jsc = @import("../sourcemap_jsc/SourceProviderEngine.zig");

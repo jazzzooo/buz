@@ -26,7 +26,7 @@
 #pragma once
 
 #include "CryptoKeyAlgorithm.h"
-#include <JavaScriptCore/Uint8Array.h>
+#include <wtf/Vector.h>
 
 namespace WebCore {
 
@@ -34,7 +34,7 @@ struct CryptoRsaKeyAlgorithm : CryptoKeyAlgorithm {
     // The length, in bits, of the RSA modulus
     unsigned modulusLength;
     // The RSA public exponent
-    RefPtr<Uint8Array> publicExponent;
+    Vector<uint8_t> publicExponent;
 };
 
 }

@@ -3,6 +3,7 @@
 #include "ErrorCode.h"
 #include "JSBufferEncodingType.h"
 #include "NodeValidator.h"
+#include <JavaScriptCore/JSArrayBuffer.h>
 #include <JavaScriptCore/TypedArrayInlines.h>
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include "CryptoUtil.h"
@@ -10,167 +11,201 @@
 #include "openssl/bn.h"
 #include "openssl/err.h"
 #include "ncrypto.h"
+
 namespace Bun {
 
 const JSC::ClassInfo JSDiffieHellmanConstructor::s_info = { "DiffieHellman"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSDiffieHellmanConstructor) };
 
-JSC_DEFINE_HOST_FUNCTION(callDiffieHellman, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorCall(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorCall_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     JSC::VM& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
     auto* constructor = globalObject->m_JSDiffieHellmanClassStructure.constructor(globalObject);
-
-    ArgList args = ArgList(callFrame);
-    auto callData = JSC::getConstructData(constructor);
-    JSC::JSValue result = JSC::construct(globalObject, constructor, callData, args);
     RETURN_IF_EXCEPTION(scope, {});
-    return JSValue::encode(result);
+
+    JSC::MarkedArgumentBuffer forwardedArguments;
+    if (args.sizeOrKey) args.sizeOrKey->appendTo(forwardedArguments);
+    if (args.keyEncoding) args.keyEncoding->appendTo(forwardedArguments);
+    if (args.generator) args.generator->appendTo(forwardedArguments);
+    if (args.generatorEncoding) args.generatorEncoding->appendTo(forwardedArguments);
+    auto callData = JSC::getConstructData(constructor);
+    JSC::JSValue result = JSC::construct(globalObject, constructor, callData, ArgList(forwardedArguments));
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(constructDiffieHellman, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+static JSC::JSValue createDiffieHellman(JSC::JSGlobalObject* globalObject, ncrypto::DHPointer&& dh)
 {
-    JSC::VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* zigGlobalObject = defaultGlobalObject(globalObject);
+    auto* structure = zigGlobalObject->m_JSDiffieHellmanClassStructure.get(zigGlobalObject);
+    return JSDiffieHellman::create(globalObject->vm(), structure, globalObject, WTF::move(dh));
+}
 
-    JSValue sizeOrKey = callFrame->argument(0);
-
-    if (!sizeOrKey.isNumber() && !sizeOrKey.isString() && !isArrayBufferOrView(sizeOrKey)) {
-        return Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "sizeOrKey"_s, "number, string, ArrayBuffer, Buffer, TypedArray, or DataView"_s, sizeOrKey);
+static JSC::JSValue constructDiffieHellmanFromBits(
+    JSC::JSGlobalObject* globalObject,
+    int32_t bits,
+    const std::optional<Bindgen::DiffieHellmanGenerator>& generatorValue)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    if (bits < 2) {
+        ERR_put_error(ERR_LIB_DH, 0, DH_R_MODULUS_TOO_LARGE, __FILE__, __LINE__);
+        throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid prime length"_s);
+        return {};
     }
 
-    if (sizeOrKey.isNumber()) {
-        Bun::V::validateInt32(scope, globalObject, sizeOrKey, "sizeOrKey"_s, jsUndefined(), jsUndefined());
-        RETURN_IF_EXCEPTION(scope, {});
+    int32_t generator = 2;
+    if (generatorValue) {
+        if (!generatorValue->is_number())
+            return createError(globalObject, ErrorCode::ERR_INVALID_ARG_TYPE, "Second argument must be an int32"_s);
+        generator = generatorValue->number();
     }
 
-    JSValue keyEncodingValue = callFrame->argument(1);
-    JSValue generatorValue = callFrame->argument(2);
-    JSValue genEncodingValue = callFrame->argument(3);
-
-    std::optional<BufferEncodingType> keyEncoding = std::nullopt;
-
-    if (keyEncodingValue.pureToBoolean() != TriState::False) {
-        if (keyEncodingValue.isString()) {
-            WTF::String keyEncodingString = keyEncodingValue.toWTFString(globalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            keyEncoding = WebCore::parseEnumerationFromView<BufferEncodingType>(keyEncodingString);
-
-            if (!keyEncoding.has_value() && keyEncodingString == "buffer"_s) {
-                keyEncoding = BufferEncodingType::buffer;
-            }
-        }
-
-        if (!keyEncoding.has_value()) {
-            genEncodingValue = generatorValue;
-            generatorValue = keyEncodingValue;
-            keyEncodingValue = jsBoolean(false);
-            keyEncoding = std::nullopt;
-        }
+    if (generator < 2) {
+        ERR_put_error(ERR_LIB_DH, 0, DH_R_BAD_GENERATOR, __FILE__, __LINE__);
+        throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid generator"_s);
+        return {};
     }
 
-    if (generatorValue.pureToBoolean() == TriState::False) {
-        generatorValue = jsNumber(2);
-    } else if (generatorValue.isNumber()) {
-        Bun::V::validateInt32(scope, globalObject, generatorValue, "generator"_s, jsUndefined(), jsUndefined());
-        RETURN_IF_EXCEPTION(scope, {});
-    } else if (!generatorValue.isString() && !isArrayBufferOrView(generatorValue)) {
-        return Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "generator"_s, "number, string, ArrayBuffer, Buffer, TypedArray, or DataView"_s, generatorValue);
-    }
+    auto dh = ncrypto::DHPointer::New(bits, generator);
+    if (!dh)
+        return createError(globalObject, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid DH parameters"_s);
+    return createDiffieHellman(globalObject, WTF::move(dh));
+}
 
-    ncrypto::DHPointer dh;
+static std::optional<BufferEncodingType> diffieHellmanGeneratorEncoding(
+    JSC::JSGlobalObject* globalObject,
+    JSC::ThrowScope& scope,
+    const std::optional<Bindgen::NodeEncodingOrOriginal>& candidate)
+{
+    if (!candidate)
+        return BufferEncodingType::utf8;
+    if (candidate->is_encoding())
+        return nodeEncodingToBufferEncoding(candidate->encoding());
+    RELEASE_ASSERT(candidate->is_original());
+    ERR::UNKNOWN_ENCODING(scope, globalObject, candidate->original());
+    return std::nullopt;
+}
 
-    if (sizeOrKey.isNumber()) {
-        int32_t bits = sizeOrKey.toInt32(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
+static JSC::JSValue constructDiffieHellmanFromPrime(
+    JSC::JSGlobalObject* globalObject,
+    const Bindgen::DiffieHellmanPrime& prime,
+    const std::optional<Bindgen::CoercedNodeEncoding>& keyEncoding,
+    const std::optional<Bindgen::DiffieHellmanGenerator>& generatorValue,
+    const std::optional<Bindgen::NodeEncodingOrOriginal>& generatorEncodingValue)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto primeBytes = getStringOrBufferBytes(
+        globalObject,
+        scope,
+        prime,
+        nodeEncodingOrDefault(keyEncoding, BufferEncodingType::utf8));
+    RETURN_IF_EXCEPTION(scope, {});
 
-        if (bits < 2) {
-            ERR_put_error(ERR_LIB_DH, 0, DH_R_MODULUS_TOO_LARGE, __FILE__, __LINE__);
-            throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid prime length"_s);
-            return {};
-        }
+    if (primeBytes->size() > INT32_MAX)
+        return createError(globalObject, ErrorCode::ERR_OUT_OF_RANGE, "prime is too big"_s);
 
-        if (!generatorValue.isNumber()) {
-            return JSValue::encode(createError(globalObject, ErrorCode::ERR_INVALID_ARG_TYPE, "Second argument must be an int32"_s));
-        }
+    ncrypto::BignumPointer primeNumber(
+        static_cast<const unsigned char*>(primeBytes->data()),
+        primeBytes->size());
+    if (!primeNumber)
+        return createError(globalObject, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid prime"_s);
 
-        int32_t generator = 0;
-        V::validateInt32(scope, globalObject, generatorValue, "generator"_s, jsUndefined(), jsUndefined(), &generator);
-        RETURN_IF_EXCEPTION(scope, {});
-
+    ncrypto::BignumPointer generatorNumber;
+    if (!generatorValue || generatorValue->is_number()) {
+        int32_t generator = generatorValue ? generatorValue->number() : 2;
         if (generator < 2) {
             ERR_put_error(ERR_LIB_DH, 0, DH_R_BAD_GENERATOR, __FILE__, __LINE__);
             throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid generator"_s);
             return {};
         }
-
-        dh = ncrypto::DHPointer::New(bits, generator);
-        if (!dh) {
-            return JSValue::encode(createError(globalObject, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid DH parameters"_s));
+        generatorNumber = ncrypto::BignumPointer::New();
+        if (!generatorNumber.setWord(generator)) {
+            ERR_put_error(ERR_LIB_DH, 0, DH_R_BAD_GENERATOR, __FILE__, __LINE__);
+            throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid generator"_s);
+            return {};
         }
     } else {
-
-        auto* keyView = keyEncoding.has_value()
-            ? getArrayBufferOrView(globalObject, scope, sizeOrKey, "sizeOrKey"_s, keyEncoding.value())
-            : getArrayBufferOrView(globalObject, scope, sizeOrKey, "sizeOrKey"_s, keyEncodingValue, true);
-
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (keyView->byteLength() > INT32_MAX) {
-            return JSValue::encode(createError(globalObject, ErrorCode::ERR_OUT_OF_RANGE, "prime is too big"_s));
-        }
-
-        ncrypto::BignumPointer bn_p(reinterpret_cast<uint8_t*>(keyView->vector()), keyView->byteLength());
-        if (!bn_p) {
-            return JSValue::encode(createError(globalObject, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid prime"_s));
-        }
-        ncrypto::BignumPointer bn_g;
-
-        if (generatorValue.isNumber()) {
-            int32_t generator = generatorValue.asInt32();
-            if (generator < 2) {
-                ERR_put_error(ERR_LIB_DH, 0, DH_R_BAD_GENERATOR, __FILE__, __LINE__);
-                throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid generator"_s);
-                return {};
-            }
-            bn_g = ncrypto::BignumPointer::New();
-            if (!bn_g.setWord(generator)) {
-                ERR_put_error(ERR_LIB_DH, 0, DH_R_BAD_GENERATOR, __FILE__, __LINE__);
-                throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid generator"_s);
-            }
-        } else {
-            auto* generatorView = getArrayBufferOrView(globalObject, scope, generatorValue, "generator"_s, genEncodingValue);
+        std::span<const uint8_t> generatorBytes;
+        JSC::JSArrayBufferView* generatorOwner = nullptr;
+        if (generatorValue->is_string()) {
+            auto encoding = diffieHellmanGeneratorEncoding(globalObject, scope, generatorEncodingValue);
             RETURN_IF_EXCEPTION(scope, {});
-
-            if (generatorView->byteLength() > INT32_MAX) {
-                return JSValue::encode(createError(globalObject, ErrorCode::ERR_OUT_OF_RANGE, "generator is too big"_s));
-            }
-
-            bn_g = ncrypto::BignumPointer(reinterpret_cast<uint8_t*>(generatorView->vector()), generatorView->byteLength());
-            if (!bn_g) {
-                return JSValue::encode(createError(globalObject, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid generator"_s));
-            }
-
-            if (bn_g.getWord() < 2) {
-                ERR_put_error(ERR_LIB_DH, 0, DH_R_BAD_GENERATOR, __FILE__, __LINE__);
-                throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid generator"_s);
-                return {};
-            }
+            RELEASE_ASSERT(encoding);
+            generatorOwner = encodeCryptoString(
+                globalObject,
+                scope,
+                generatorValue->string(),
+                *encoding);
+            RETURN_IF_EXCEPTION(scope, {});
+            generatorBytes = generatorOwner->span();
+        } else {
+            RELEASE_ASSERT(generatorValue->is_buffer());
+            generatorBytes = generatorValue->buffer();
         }
 
-        dh = ncrypto::DHPointer::New(WTF::move(bn_p), WTF::move(bn_g));
-        if (!dh) {
-            return JSValue::encode(createError(globalObject, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid DH parameters"_s));
+        if (generatorBytes.size() > INT32_MAX)
+            return createError(globalObject, ErrorCode::ERR_OUT_OF_RANGE, "generator is too big"_s);
+
+        generatorNumber = ncrypto::BignumPointer(
+            static_cast<const unsigned char*>(generatorBytes.data()),
+            generatorBytes.size());
+        if (!generatorNumber)
+            return createError(globalObject, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid generator"_s);
+
+        if (generatorNumber.getWord() < 2) {
+            ERR_put_error(ERR_LIB_DH, 0, DH_R_BAD_GENERATOR, __FILE__, __LINE__);
+            throwCryptoError(globalObject, scope, ERR_get_error(), "Invalid generator"_s);
+            return {};
         }
     }
 
-    // Get the appropriate structure and create the DiffieHellman object
-    auto* zigGlobalObject = defaultGlobalObject(globalObject);
-    JSC::Structure* structure = zigGlobalObject->m_JSDiffieHellmanClassStructure.get(zigGlobalObject);
+    auto dh = ncrypto::DHPointer::New(WTF::move(primeNumber), WTF::move(generatorNumber));
+    if (!dh)
+        return createError(globalObject, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid DH parameters"_s);
+    return createDiffieHellman(globalObject, WTF::move(dh));
+}
 
-    return JSC::JSValue::encode(JSDiffieHellman::create(vm, structure, globalObject, WTF::move(dh)));
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorConstruct_overload_bits_with_encoding(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorConstruct_overload_bits_with_encoding_Arguments& args)
+{
+    return constructDiffieHellmanFromBits(&context.globalObject, args.sizeOrKey, args.generator);
+}
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorConstruct_overload_bits_with_generator(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorConstruct_overload_bits_with_generator_Arguments& args)
+{
+    return constructDiffieHellmanFromBits(&context.globalObject, args.sizeOrKey, args.generator);
+}
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorConstruct_overload_prime_with_encoding(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorConstruct_overload_prime_with_encoding_Arguments& args)
+{
+    return constructDiffieHellmanFromPrime(
+        &context.globalObject,
+        args.sizeOrKey,
+        args.keyEncoding,
+        args.generator,
+        args.generatorEncoding);
+}
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorConstruct_overload_prime_with_generator(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanConstructorConstruct_overload_prime_with_generator_Arguments& args)
+{
+    return constructDiffieHellmanFromPrime(
+        &context.globalObject,
+        args.sizeOrKey,
+        std::nullopt,
+        args.generator,
+        args.generatorEncoding);
 }
 
 } // namespace Bun

@@ -19,7 +19,6 @@ const Self = @This();
 
 const RefCount = bun.ptr.ThreadSafeRefCount(@This(), "ref_count", deinit, .{});
 
-pub const new = bun.TrivialNew(@This());
 pub const ref = RefCount.ref;
 pub const deref = RefCount.deref;
 
@@ -77,10 +76,10 @@ const AllocatorInterface = struct {
 };
 
 pub fn alloc(self: *Self, len: usize, offset: usize, flags: std.posix.MAP) bun.sys.Maybe(bun.webcore.Blob.Store.Bytes) {
-    var size = len;
-
-    // size rounded up to nearest page
-    size = std.mem.alignForward(usize, size, std.heap.pageSize());
+    const page_mask = std.heap.pageSize() - 1;
+    const rounded = std.math.add(usize, len, page_mask) catch
+        return .{ .err = bun.sys.Error.fromCode(.NOMEM, .mmap) };
+    const size = rounded & ~page_mask;
 
     var flags_mut = flags;
     flags_mut.TYPE = .SHARED;
@@ -94,13 +93,14 @@ pub fn alloc(self: *Self, len: usize, offset: usize, flags: std.posix.MAP) bun.s
         offset,
     )) {
         .result => |slice| {
+            const bytes = bun.webcore.Blob.Store.Bytes.initCapacity(slice, len, self.allocator()) catch {
+                bun.sys.munmap(slice).unwrap() catch |err| {
+                    bun.Output.debugWarn("Failed to munmap memfd: {}", .{err});
+                };
+                return .{ .err = bun.sys.Error.fromCode(.NOMEM, .mmap) };
+            };
             return .{
-                .result = bun.webcore.Blob.Store.Bytes{
-                    .cap = @truncate(slice.len),
-                    .ptr = slice.ptr,
-                    .len = @truncate(len),
-                    .allocator = self.allocator(),
-                },
+                .result = bytes,
             };
         },
         .err => |errno| {
@@ -116,7 +116,7 @@ pub fn shouldUse(bytes: []const u8) bool {
 
     if (!bun.sys.canUseMemfd()) return false;
 
-    if (bun.jsc.VirtualMachine.is_smol_mode) {
+    if (bun.RuntimeConfig.is_smol_mode) {
         return bytes.len >= 1024 * 1024 * 1;
     }
 
@@ -170,11 +170,15 @@ pub fn create(bytes: []const u8) bun.sys.Maybe(bun.webcore.Blob.Store.Bytes) {
         }
     }
 
-    var linux_memfd_allocator = Self.new(.{
+    const linux_memfd_allocator = bun.default_allocator.create(Self) catch {
+        fd.close();
+        return .{ .err = bun.sys.Error.fromCode(.NOMEM, .mmap) };
+    };
+    linux_memfd_allocator.* = .{
         .fd = fd,
         .ref_count = .init(),
         .size = bytes.len,
-    });
+    };
 
     switch (linux_memfd_allocator.alloc(bytes.len, 0, .{ .TYPE = .SHARED })) {
         .result => |res| {

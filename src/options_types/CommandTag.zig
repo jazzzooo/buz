@@ -2,9 +2,8 @@
 //! Extracted to `options_types/` so lower tiers (install/, bundler/) can
 //! switch on which command is running without importing `cli/`.
 //!
-//! Heavy methods that reference `Arguments`/`HelpCommand`/`clap` (`params()`,
-//! `printHelp()`) live in `src/cli/cli.zig` as free fns; only the pure enum,
-//! `char()`, classifier predicates, and the `EnumArray` flag tables are here.
+//! CLI parsing and help rendering live in `src/cli/cli.zig`; only the pure
+//! discriminant, classifiers, and flag tables are defined here.
 
 pub const Tag = enum {
     AddCommand,
@@ -173,13 +172,6 @@ pub const Tag = enum {
         .UnlinkCommand = false,
         .UpdateCommand = false,
     });
-
-    /// Heavy methods that pull in `Arguments` / help text live in `cli/cli.zig`.
-    /// Aliased here so existing `cmd.params()` / `cmd.printHelp()` call sites
-    /// keep working; Zig's lazy decl resolution means `options_types/` does
-    /// not compile-depend on `cli/` unless one of these is actually invoked.
-    pub const params = @import("../cli/cli.zig").Command.tagParams;
-    pub const printHelp = @import("../cli/cli.zig").Command.tagPrintHelp;
 };
 
 const std = @import("std");

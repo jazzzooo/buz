@@ -4,10 +4,9 @@
 ///
 /// `kvs` expects a list literal containing list literals or an array/slice of structs
 /// where `.@"0"` is the `[]const u8` key and `.@"1"` is the associated value of type `V`.
-/// TODO: https://github.com/ziglang/zig/issues/4335
-pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, comptime kvs_list: anytype) type {
+pub fn ComptimeStringMap(comptime V: type, comptime kvs_list: anytype) type {
     const KV = struct {
-        key: []const KeyType,
+        key: []const u8,
         value: V,
     };
 
@@ -21,37 +20,25 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
                 if (a.key.len != b.key.len) {
                     return a.key.len < b.key.len;
                 }
-                // https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array
                 @setEvalBranchQuota(999999);
-                return std.mem.order(KeyType, a.key, b.key) == .lt;
+                return std.mem.order(u8, a.key, b.key) == .lt;
             }
         }).lenAsc;
-        if (KeyType == u8) {
-            for (kvs_list, 0..) |kv, i| {
-                if (V != void) {
-                    sorted_kvs[i] = .{ .key = kv.@"0", .value = kv.@"1" };
-                } else {
-                    sorted_kvs[i] = .{ .key = kv.@"0", .value = {} };
-                }
-            }
-        } else {
-            @compileError("Not implemented for this key type");
+        for (kvs_list, &sorted_kvs) |kv, *sorted| {
+            sorted.* = .{ .key = kv.@"0", .value = if (V == void) {} else kv.@"1" };
         }
         std.sort.pdq(KV, &sorted_kvs, {}, lenAsc);
-        const min_len = sorted_kvs[0].key.len;
-        const max_len = sorted_kvs[sorted_kvs.len - 1].key.len;
-        var len_indexes: [max_len + 1]usize = undefined;
-        var len: usize = 0;
+        const min_len = if (sorted_kvs.len == 0) 0 else sorted_kvs[0].key.len;
+        const max_len = if (sorted_kvs.len == 0) 0 else sorted_kvs[sorted_kvs.len - 1].key.len;
+        var len_indexes: [max_len + 2]usize = undefined;
         var i: usize = 0;
 
-        while (len <= max_len) : (len += 1) {
+        for (&len_indexes, 0..) |*start, len| {
             @setEvalBranchQuota(99999);
-
-            // find the first keyword len == len
-            while (len > sorted_kvs[i].key.len) {
+            while (i < sorted_kvs.len and sorted_kvs[i].key.len < len) {
                 i += 1;
             }
-            len_indexes[len] = i;
+            start.* = i;
         }
         break :blk .{
             .min_len = min_len,
@@ -65,8 +52,8 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
         const len_indexes = precomputed.len_indexes;
         pub const kvs = precomputed.sorted_kvs;
 
-        const keys_list: []const []const KeyType = blk: {
-            var k: [kvs.len][]const KeyType = undefined;
+        const keys_list: []const []const u8 = blk: {
+            var k: [kvs.len][]const u8 = undefined;
             for (kvs, 0..) |kv, i| {
                 k[i] = kv.key;
             }
@@ -76,48 +63,21 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
 
         pub const Value = V;
 
-        pub fn keys() []const []const KeyType {
+        pub fn keys() []const []const u8 {
             return keys_list;
         }
 
-        pub fn has(str: []const KeyType) bool {
+        pub fn has(str: []const u8) bool {
             return get(str) != null;
         }
 
-        pub fn getWithLength(str: []const KeyType, comptime len: usize) ?V {
-            const end = comptime brk: {
-                var i = len_indexes[len];
-                @setEvalBranchQuota(99999);
-
-                while (i < kvs.len and kvs[i].key.len == len) : (i += 1) {}
-
-                break :brk i;
-            };
-
-            // This benchmarked faster for both small and large lists of strings than using a big switch statement
-            // But only so long as the keys are a sorted list.
-            inline for (len_indexes[len]..end) |i| {
-                if (strings.eqlComptimeCheckLenWithType(KeyType, str, kvs[i].key, false)) {
-                    return kvs[i].value;
-                }
-            }
-
-            return null;
+        pub fn getWithLength(str: []const u8, comptime len: usize) ?V {
+            const i = indexOfWithLength(str, len) orelse return null;
+            return kvs[i].value;
         }
 
         pub fn getWithLengthAndEql(str: anytype, comptime len: usize, comptime eqls: anytype) ?V {
-            const end = comptime brk: {
-                var i = len_indexes[len];
-                @setEvalBranchQuota(99999);
-
-                while (i < kvs.len and kvs[i].key.len == len) : (i += 1) {}
-
-                break :brk i;
-            };
-
-            // This benchmarked faster for both small and large lists of strings than using a big switch statement
-            // But only so long as the keys are a sorted list.
-            inline for (len_indexes[len]..end) |i| {
+            inline for (len_indexes[len]..len_indexes[len + 1]) |i| {
                 if (eqls(str, kvs[i].key)) {
                     return kvs[i].value;
                 }
@@ -127,17 +87,8 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
         }
 
         pub fn getWithLengthAndEqlList(str: anytype, comptime len: usize, comptime eqls: anytype) ?V {
-            const end = comptime brk: {
-                var i = len_indexes[len];
-                @setEvalBranchQuota(99999);
-
-                while (i < kvs.len and kvs[i].key.len == len) : (i += 1) {}
-
-                break :brk i;
-            };
-
             const start = comptime len_indexes[len];
-            const range = comptime keys()[start..end];
+            const range = comptime keys()[start..len_indexes[len + 1]];
             if (eqls(str, range)) |k| {
                 return kvs[start + k].value;
             }
@@ -145,7 +96,7 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
             return null;
         }
 
-        pub fn get(str: []const KeyType) ?V {
+        pub fn get(str: []const u8) ?V {
             if (str.len < precomputed.min_len or str.len > precomputed.max_len)
                 return null;
 
@@ -160,73 +111,42 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
         }
 
         /// Returns the index of the key in the sorted list of keys.
-        pub fn indexOf(str: []const KeyType) ?usize {
+        pub fn indexOf(str: []const u8) ?usize {
             if (str.len < precomputed.min_len or str.len > precomputed.max_len)
                 return null;
 
             comptime var len: usize = precomputed.min_len;
             inline while (len <= precomputed.max_len) : (len += 1) {
                 if (str.len == len) {
-                    const end = comptime brk: {
-                        var i = len_indexes[len];
-                        @setEvalBranchQuota(99999);
-
-                        while (i < kvs.len and kvs[i].key.len == len) : (i += 1) {}
-
-                        break :brk i;
-                    };
-
-                    // This benchmarked faster for both small and large lists of strings than using a big switch statement
-                    // But only so long as the keys are a sorted list.
-                    inline for (len_indexes[len]..end) |i| {
-                        if (strings.eqlComptimeCheckLenWithType(KeyType, str, kvs[i].key, false)) {
-                            return i;
-                        }
-                    }
-
-                    return null;
+                    return indexOfWithLength(str, len);
                 }
             }
             return null;
         }
 
-        /// Throws if toString() throws. Typed `anytype` so `collections/` has
-        /// no JSC references; the body lives in `jsc/comptime_string_map_jsc.zig`.
-        pub fn fromJS(globalThis: anytype, input: anytype) bun.JSError!?V {
-            return @import("../jsc/comptime_string_map_jsc.zig").fromJS(@This(), globalThis, input);
-        }
-
-        /// Throws if toString() throws.
-        pub fn fromJSCaseInsensitive(globalThis: anytype, input: anytype) bun.JSError!?V {
-            return @import("../jsc/comptime_string_map_jsc.zig").fromJSCaseInsensitive(@This(), globalThis, input);
+        fn indexOfWithLength(str: []const u8, comptime len: usize) ?usize {
+            // An unrolled scan over the length-sorted keys is faster than a switch for both small and large key sets.
+            inline for (len_indexes[len]..len_indexes[len + 1]) |i| {
+                if (strings.eqlComptimeCheckLenWithType(u8, str, kvs[i].key, false)) return i;
+            }
+            return null;
         }
 
         pub fn fromString(str: bun.String) ?V {
             return getWithEql(str, bun.String.eqlComptime);
         }
 
-        pub fn getASCIIICaseInsensitive(input: anytype) ?V {
-            return getWithEqlLowercase(input, bun.strings.eqlComptimeIgnoreLen);
-        }
-
-        pub fn getWithEqlLowercase(input: anytype, comptime eql: anytype) ?V {
-            const Input = @TypeOf(input);
-            const length = if (@hasField(Input, "len")) input.len else input.length();
-            if (length < precomputed.min_len or length > precomputed.max_len)
+        /// Looks up `input` with its ASCII letters lowercased, so only lowercase keys can match.
+        pub fn getCaseInsensitiveASCII(input: []const u8) ?V {
+            if (input.len < precomputed.min_len or input.len > precomputed.max_len)
                 return null;
 
-            comptime var i: usize = precomputed.min_len;
-            inline while (i <= precomputed.max_len) : (i += 1) {
-                if (length == i) {
-                    const lowerbuf: [i]u8 = brk: {
-                        var buf: [i]u8 = undefined;
-                        for (input, &buf) |c, *j| {
-                            j.* = std.ascii.toLower(c);
-                        }
-                        break :brk buf;
-                    };
-
-                    return getWithLengthAndEql(&lowerbuf, i, eql);
+            comptime var len: usize = precomputed.min_len;
+            inline while (len <= precomputed.max_len) : (len += 1) {
+                if (input.len == len) {
+                    var lowercased: [len]u8 = undefined;
+                    for (input, &lowercased) |c, *lower| lower.* = std.ascii.toLower(c);
+                    return getWithLengthAndEql(&lowercased, len, bun.strings.eqlComptimeIgnoreLen);
                 }
             }
 
@@ -249,39 +169,14 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
             return null;
         }
 
-        pub fn getAnyCase(input: anytype) ?V {
-            return getCaseInsensitiveWithEql(input, bun.strings.eqlComptimeIgnoreLen);
-        }
-
-        pub fn getCaseInsensitiveWithEql(input: anytype, comptime eql: anytype) ?V {
-            const Input = @TypeOf(input);
-            const length = if (@hasField(Input, "len")) input.len else input.length();
-            if (length < precomputed.min_len or length > precomputed.max_len)
-                return null;
-
-            comptime var i: usize = precomputed.min_len;
-            inline while (i <= precomputed.max_len) : (i += 1) {
-                if (length == i) {
-                    const lowercased: [i]u8 = brk: {
-                        var buf: [i]u8 = undefined;
-                        for (input[0..i], &buf) |c, *b| {
-                            b.* = switch (c) {
-                                'A'...'Z' => c + 32,
-                                else => c,
-                            };
-                        }
-                        break :brk buf;
-                    };
-                    return getWithLengthAndEql(&lowercased, i, eql);
-                }
-            }
-
-            return null;
-        }
-
         pub fn getWithEqlList(input: anytype, comptime eql: anytype) ?V {
             const Input = @TypeOf(input);
-            const length = if (@hasField(Input, "len")) input.len else input.length();
+            const length = if (@hasField(Input, "len"))
+                input.len
+            else if (comptime std.meta.hasFn(Input, "length"))
+                input.length()
+            else
+                input.len();
             if (length < precomputed.min_len or length > precomputed.max_len)
                 return null;
 
@@ -298,7 +193,7 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
         /// Lookup the first-defined string key for a given value.
         ///
         /// Linear search.
-        pub fn getKey(value: V) ?[]const KeyType {
+        pub fn getKey(value: V) ?[]const u8 {
             inline for (kvs) |kv| {
                 if (kv.value == value) return kv.key;
             }
@@ -306,14 +201,6 @@ pub fn ComptimeStringMapWithKeyType(comptime KeyType: type, comptime V: type, co
             return null;
         }
     };
-}
-
-pub fn ComptimeStringMap(comptime V: type, comptime kvs_list: anytype) type {
-    return ComptimeStringMapWithKeyType(u8, V, kvs_list);
-}
-
-pub fn ComptimeStringMap16(comptime V: type, comptime kvs_list: anytype) type {
-    return ComptimeStringMapWithKeyType(u16, V, kvs_list);
 }
 
 const TestEnum = enum {
@@ -419,135 +306,7 @@ fn testSet(comptime map: anytype) !void {
     try std.testing.expect(map.has("these"));
 }
 
-const TestEnum2 = enum {
-    A,
-    B,
-    C,
-    D,
-    E,
-    F,
-    G,
-    H,
-    I,
-    J,
-    K,
-    L,
-    M,
-    N,
-    O,
-    P,
-    Q,
-    R,
-    S,
-    T,
-    U,
-    V,
-    W,
-    X,
-    Y,
-    FZ,
-    FA,
-    FB,
-    FC,
-    FD,
-    FE,
-    FF,
-    FG,
-    FH,
-    FI,
-    FJ,
-    FK,
-    FL,
-
-    pub const map = ComptimeStringMap(TestEnum2, .{
-        .{ "these", .A },
-        .{ "have", .B },
-        .{ "nothing", .C },
-        .{ "nothinz", .D },
-        .{ "nothinc", .E },
-        .{ "nothina", .F },
-        .{ "nothinb", .G },
-        .{ "nothiaa", .H },
-        .{ "nothaaa", .I },
-        .{ "notaaaa", .J },
-        .{ "noaaaaa", .K },
-        .{ "naaaaaa", .L },
-        .{ "incommon", .M },
-        .{ "ancommon", .N },
-        .{ "ab1ommon", .O },
-        .{ "ab2ommon", .P },
-        .{ "ab3ommon", .Q },
-        .{ "ab4ommon", .R },
-        .{ "ab5ommon", .S },
-        .{ "ab6ommon", .T },
-        .{ "ab7ommon", .U },
-        .{ "ab8ommon", .V },
-        .{ "ab9ommon", .W },
-        .{ "abAommon", .X },
-        .{ "abBommon", .Y },
-        .{ "abCommon", .FZ },
-        .{ "abZommon", .FA },
-        .{ "abEommon", .FB },
-        .{ "abFommon", .FC },
-        .{ "ab10omon", .FD },
-        .{ "ab11omon", .FE },
-        .{ "ab12omon", .FF },
-        .{ "ab13omon", .FG },
-        .{ "ab14omon", .FH },
-        .{ "ab15omon", .FI },
-        .{ "ab16omon", .FJ },
-        .{ "ab16omon1", .FH },
-        .{ "samelen", .FK },
-        .{ "0", .FL },
-        .{ "00", .FL },
-    });
-
-    pub const official = std.ComptimeStringMap(TestEnum2, .{
-        .{ "these", .A },
-        .{ "have", .B },
-        .{ "naaaaaa", .L },
-        .{ "noaaaaa", .K },
-        .{ "notaaaa", .J },
-        .{ "nothaaa", .I },
-        .{ "nothiaa", .H },
-        .{ "nothina", .F },
-        .{ "nothinb", .G },
-        .{ "nothinc", .E },
-        .{ "nothing", .C },
-        .{ "nothinz", .D },
-        .{ "incommon", .M },
-        .{ "ancommon", .N },
-        .{ "ab1ommon", .O },
-        .{ "ab2ommon", .P },
-        .{ "ab3ommon", .Q },
-        .{ "ab4ommon", .R },
-        .{ "ab5ommon", .S },
-        .{ "ab6ommon", .T },
-        .{ "ab7ommon", .U },
-        .{ "ab8ommon", .V },
-        .{ "ab9ommon", .W },
-        .{ "abAommon", .X },
-        .{ "abBommon", .Y },
-        .{ "abCommon", .FZ },
-        .{ "abZommon", .FA },
-        .{ "abEommon", .FB },
-        .{ "abFommon", .FC },
-        .{ "ab10omon", .FD },
-        .{ "ab11omon", .FE },
-        .{ "ab12omon", .FF },
-        .{ "ab13omon", .FG },
-        .{ "ab14omon", .FH },
-        .{ "ab15omon", .FI },
-        .{ "ab16omon", .FJ },
-        .{ "samelen", .FK },
-        .{ "ab16omon1", .FH },
-        .{ "0", .FL },
-        .{ "00", .FL },
-    });
-};
-
 const bun = @import("bun");
 const strings = bun.strings;
 
 const std = @import("std");
-const mem = std.mem;

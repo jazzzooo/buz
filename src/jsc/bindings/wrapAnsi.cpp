@@ -1,5 +1,5 @@
 #include "root.h"
-#include "wrapAnsi.h"
+#include "SchemaBindings.h"
 #include "ANSIHelpers.h"
 
 #include <wtf/text/WTFString.h>
@@ -7,11 +7,6 @@
 #include <wtf/Vector.h>
 #include <wtf/MathExtras.h>
 #include <cmath>
-
-// Zig exports for visible width calculation
-extern "C" size_t Bun__visibleWidthExcludeANSI_utf16(const uint16_t* ptr, size_t len, bool ambiguous_as_wide);
-extern "C" size_t Bun__visibleWidthExcludeANSI_latin1(const uint8_t* ptr, size_t len, bool ambiguous_as_wide);
-extern "C" uint8_t Bun__codepointWidth(uint32_t cp, bool ambiguous_as_wide);
 
 namespace Bun {
 using namespace WTF;
@@ -26,7 +21,7 @@ static inline char32_t decodeUTF16(const UChar* ptr, size_t available, size_t& o
 
 static inline uint8_t getVisibleWidth(char32_t cp, bool ambiguousIsWide)
 {
-    return Bun__codepointWidth(cp, ambiguousIsWide);
+    return Bindgen::ZigExports::bunBindgenZig_StringWidth_codepointWidth(cp, ambiguousIsWide);
 }
 
 // Options for wrapping
@@ -50,9 +45,11 @@ static size_t stringWidth(const Char* start, const Char* end, bool ambiguousIsNa
 
     if constexpr (sizeof(Char) == 1) {
         // 8-bit JSC strings are Latin1, not UTF-8
-        return Bun__visibleWidthExcludeANSI_latin1(reinterpret_cast<const uint8_t*>(start), len, !ambiguousIsNarrow);
+        return Bun::Bindgen::ZigExports::bunBindgenZig_StringWidth_visibleWidthExcludeANSILatin1(
+            std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(start), len }, !ambiguousIsNarrow);
     } else {
-        return Bun__visibleWidthExcludeANSI_utf16(reinterpret_cast<const uint16_t*>(start), len, !ambiguousIsNarrow);
+        return Bun::Bindgen::ZigExports::bunBindgenZig_StringWidth_visibleWidthExcludeANSIUTF16(
+            std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(start), len * sizeof(Char) }, !ambiguousIsNarrow);
     }
 }
 
@@ -677,72 +674,42 @@ static WTF::String wrapAnsiImpl(std::span<const Char> input, size_t columns, con
 // JavaScript Binding
 // ============================================================================
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionBunWrapAnsi, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+WTF::String Bindgen::Cpp::bunBindgenCpp_StringWidth_wrapAnsi(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_StringWidth_wrapAnsi_Arguments& args)
 {
-    auto& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    UNUSED_PARAM(context);
+    WTF::String input = args.input.value_or("undefined"_s);
+    WTF::StringView view(input);
 
-    // Get arguments
-    JSC::JSValue inputValue = callFrame->argument(0);
-    JSC::JSValue columnsValue = callFrame->argument(1);
-    JSC::JSValue optionsValue = callFrame->argument(2);
+    if (view.isEmpty())
+        return emptyString();
 
-    // Convert input to string
-    JSC::JSString* jsString = inputValue.toString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    auto view = jsString->view(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (view->isEmpty())
-        return JSC::JSValue::encode(JSC::jsEmptyString(vm));
-
-    // Get columns
     size_t columns = 0;
-    if (!columnsValue.isUndefined()) {
-        double colsDouble = columnsValue.toIntegerOrInfinity(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-        // Only set columns if positive and finite (negative values would wrap to huge size_t)
+    if (args.columns) {
+        double colsDouble = *args.columns;
         if (colsDouble > 0 && std::isfinite(colsDouble))
             columns = truncateDoubleToUint64(colsDouble);
     }
 
-    // Parse options
     WrapAnsiOptions options;
-    if (optionsValue.isObject()) {
-        JSC::JSObject* optionsObj = optionsValue.toObject(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        JSC::JSValue hardValue = optionsObj->get(globalObject, JSC::Identifier::fromString(vm, "hard"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!hardValue.isUndefined())
-            options.hard = hardValue.toBoolean(globalObject);
-
-        JSC::JSValue wordWrapValue = optionsObj->get(globalObject, JSC::Identifier::fromString(vm, "wordWrap"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!wordWrapValue.isUndefined())
-            options.wordWrap = wordWrapValue.toBoolean(globalObject);
-
-        JSC::JSValue trimValue = optionsObj->get(globalObject, JSC::Identifier::fromString(vm, "trim"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!trimValue.isUndefined())
-            options.trim = trimValue.toBoolean(globalObject);
-
-        JSC::JSValue ambiguousValue = optionsObj->get(globalObject, JSC::Identifier::fromString(vm, "ambiguousIsNarrow"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!ambiguousValue.isUndefined())
-            options.ambiguousIsNarrow = ambiguousValue.toBoolean(globalObject);
+    if (args.options && args.options->is_options()) {
+        const auto& converted = args.options->options();
+        options.hard = converted.hard;
+        options.wordWrap = converted.word_wrap;
+        options.trim = converted.trim;
+        options.ambiguousIsNarrow = converted.ambiguous_is_narrow;
     }
 
     // Process based on encoding
     WTF::String result;
-    if (view->is8Bit()) {
-        result = wrapAnsiImpl<Latin1Character>(view->span8(), columns, options);
+    if (view.is8Bit()) {
+        result = wrapAnsiImpl<Latin1Character>(view.span8(), columns, options);
     } else {
-        result = wrapAnsiImpl<UChar>(view->span16(), columns, options);
+        result = wrapAnsiImpl<UChar>(view.span16(), columns, options);
     }
 
-    return JSC::JSValue::encode(JSC::jsString(vm, result));
+    return result;
 }
 
 } // namespace Bun

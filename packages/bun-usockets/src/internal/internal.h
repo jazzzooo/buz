@@ -68,16 +68,25 @@ void us_internal_loop_update_pending_ready_polls(struct us_loop_t *loop,
 #define UNLIKELY(cond) __builtin_expect((_Bool)(cond), 0)
 #endif
 
-extern void __attribute__((__noreturn__)) Bun__panic(const char *message, size_t length);
-#define BUN_PANIC(message) Bun__panic(message, sizeof(message) - 1)
+#include "BunPanic.h"
 
 #ifdef _WIN32
 #define IS_EINTR(rc) (rc == SOCKET_ERROR && WSAGetLastError() == WSAEINTR)
 #define LIBUS_ERR WSAGetLastError()
+#define LIBUS_SET_ERR(value) WSASetLastError(value)
+#define LIBUS_ERR_OUT_OF_MEMORY WSA_NOT_ENOUGH_MEMORY
+#define LIBUS_ERR_INVALID_ARGUMENT WSAEINVAL
+#define LIBUS_ERR_CONNECTION_ABORTED WSAECONNABORTED
+#define LIBUS_ERR_CONNECTION_REFUSED WSAECONNREFUSED
 #else
 #include <errno.h>
 #define IS_EINTR(rc) (rc == -1 && errno == EINTR)
 #define LIBUS_ERR errno
+#define LIBUS_SET_ERR(value) (errno = (value))
+#define LIBUS_ERR_OUT_OF_MEMORY ENOMEM
+#define LIBUS_ERR_INVALID_ARGUMENT EINVAL
+#define LIBUS_ERR_CONNECTION_ABORTED ECONNABORTED
+#define LIBUS_ERR_CONNECTION_REFUSED ECONNREFUSED
 #endif
 #include <stdbool.h>
 /* Poll type and what it polls for */
@@ -99,25 +108,9 @@ enum {
 #define POLL_TYPE_POLLING_MASK 0b11000
 #define POLL_TYPE_MASK (POLL_TYPE_KIND_MASK | POLL_TYPE_POLLING_MASK)
 
-/* Bun APIs implemented in Zig */
-void Bun__lock(zig_mutex_t *lock);
-void Bun__unlock(zig_mutex_t *lock);
+#include "../../../../src/dns/BunDNS.h"
 
-struct addrinfo_request;
-struct addrinfo_result_entry {
-    struct addrinfo info;
-    struct sockaddr_storage _storage;
-};
-struct addrinfo_result {
-    struct addrinfo_result_entry* entries;
-    int error;
-};
-
-/* Dispatch — defined out-of-library (Zig: src/deps/uws/dispatch.zig). loop.c
- * never reads s->group->vtable directly; it calls these and the closed-world
- * switch on s->kind decides whether to direct-call into Zig/C++ or fall back
- * to the vtable. Signatures track the vtable entries (us_dispatch_handshake
- * drops the trailing custom_data — dispatch always passes NULL). */
+/* Event delivery through the owning group's callback table. */
 extern struct us_socket_t *us_dispatch_open(us_socket_r s, int is_client, char *ip, int ip_length);
 extern struct us_socket_t *us_dispatch_data(us_socket_r s, char *data, int length);
 extern struct us_socket_t *us_dispatch_fd(us_socket_r s, int fd);
@@ -127,22 +120,19 @@ extern struct us_socket_t *us_dispatch_timeout(us_socket_r s);
 extern struct us_socket_t *us_dispatch_long_timeout(us_socket_r s);
 extern struct us_socket_t *us_dispatch_end(us_socket_r s);
 extern struct us_socket_t *us_dispatch_connect_error(us_socket_r s, int code);
-extern struct us_connecting_socket_t *us_dispatch_connecting_error(struct us_connecting_socket_t *c, int code);
+void us_dispatch_connecting_timeout(struct us_connecting_socket_t *c, int long_timeout);
+void us_internal_connecting_socket_begin_callback(struct us_connecting_socket_t *c);
+void us_internal_connecting_socket_end_callback(struct us_connecting_socket_t *c);
 extern void us_dispatch_handshake(us_socket_r s, int success, struct us_bun_verify_error_t err);
 extern struct us_socket_t *us_dispatch_ssl_raw_tap(us_socket_r s, char *data, int length);
-
-extern int Bun__addrinfo_get(struct us_loop_t* loop, const char* host, uint16_t port,  struct addrinfo_request** ptr);
-extern int Bun__addrinfo_set(struct addrinfo_request* ptr, struct us_connecting_socket_t* socket);
-extern int Bun__addrinfo_cancel(struct addrinfo_request* ptr, struct us_connecting_socket_t* socket);
-extern void Bun__addrinfo_freeRequest(struct addrinfo_request* addrinfo_req, int error);
-extern struct addrinfo_result *Bun__addrinfo_getRequestResult(struct addrinfo_request* addrinfo_req);
-
 
 /* Loop related */
 void us_internal_dispatch_ready_poll(struct us_poll_t *p, int error, int eof, int events);
 void us_internal_timer_sweep(us_loop_r loop);
-void us_internal_enable_sweep_timer(struct us_loop_t *loop);
-void us_internal_disable_sweep_timer(struct us_loop_t *loop);
+int us_internal_acquire_sweep_timer(struct us_loop_t *loop, struct us_poll_error_t *failure);
+void us_internal_release_sweep_timer(struct us_loop_t *loop);
+void us_internal_low_prio_unlink(struct us_socket_t *s);
+int us_internal_socket_poll_start(struct us_poll_t *poll, struct us_loop_t *loop, int events, struct us_poll_error_t *failure);
 void us_internal_free_closed_sockets(us_loop_r loop);
 void us_internal_loop_link_group(struct us_loop_t *loop, struct us_socket_group_t *group);
 void us_internal_loop_unlink_group(struct us_loop_t *loop, struct us_socket_group_t *group);
@@ -154,21 +144,21 @@ void us_internal_group_maybe_unlink(struct us_socket_group_t *group);
  * SSL path calls _raw once it's actually time to drop the fd. */
 struct us_socket_t *us_internal_socket_close_raw(us_socket_r s, int code, void *reason);
 struct us_socket_t *us_internal_ssl_close(us_socket_r s, int code, void *reason);
-void us_internal_loop_data_init(struct us_loop_t *loop,
+int us_internal_loop_data_init(struct us_loop_t *loop,
                                 void (*wakeup_cb)(us_loop_r loop),
                                 void (*pre_cb)(us_loop_r loop),
-                                void (*post_cb)(us_loop_r loop));
+                                void (*post_cb)(us_loop_r loop), struct us_poll_error_t *failure);
 void us_internal_loop_data_free(us_loop_r loop);
 void us_internal_loop_pre(us_loop_r loop);
 void us_internal_loop_post(us_loop_r loop);
 
-/* Asyncs (old) */
+struct us_timer_t *us_internal_create_timer(struct us_loop_t *loop, void (*cb)(struct us_loop_t *), struct us_poll_error_t *failure);
+void us_internal_timer_close(struct us_timer_t *timer);
+int us_internal_timer_set(struct us_timer_t *timer, int ms, int repeat_ms, struct us_poll_error_t *failure);
+
 struct us_internal_async *us_internal_create_async(struct us_loop_t *loop,
-                                                   int fallthrough,
-                                                   unsigned int ext_size);
+    void (*cb)(struct us_loop_t *), struct us_poll_error_t *failure);
 void us_internal_async_close(struct us_internal_async *a);
-void us_internal_async_set(struct us_internal_async *a,
-                           void (*cb)(struct us_internal_async *));
 void us_internal_async_wakeup(struct us_internal_async *a);
 
 /* Eventing related */
@@ -185,7 +175,7 @@ void us_internal_socket_group_link_socket(us_socket_group_r group, us_socket_r s
 void us_internal_socket_group_unlink_socket(us_socket_group_r group, us_socket_r s);
 
 void us_internal_socket_after_resolve(struct us_connecting_socket_t *s);
-void us_internal_socket_after_open(us_socket_r s, int error);
+void us_internal_socket_after_open(us_socket_r s);
 /* SSL_new() + BIO setup + connect/accept state; sets s->ssl and the ssl_*
  * bitfields on us_socket_t. No separate per-socket allocation — `s->ssl` is a
  * direct SSL*, and the 6 state bits live in us_socket_t's pad-to-pointer gap.
@@ -209,7 +199,7 @@ int us_internal_ssl_is_handshake_finished(us_socket_r s);
 int us_internal_ssl_handshake_callback_has_fired(us_socket_r s);
 int us_internal_ssl_is_shut_down(us_socket_r s);
 void us_internal_ssl_shutdown(us_socket_r s);
-int us_internal_ssl_write(us_socket_r s, const char *data, int length);
+struct us_socket_write_result us_internal_ssl_write_checked(us_socket_r s, const char *data, int length);
 void *us_internal_ssl_get_native_handle(us_socket_r s);
 struct us_bun_verify_error_t us_internal_ssl_verify_error(us_socket_r s);
 void *us_internal_ssl_sni_userdata(us_socket_r s);
@@ -249,7 +239,7 @@ struct us_socket_t {
   unsigned char timeout;
   unsigned char long_timeout;
   struct us_socket_flags flags;
-  /* enum SocketKind. Selects the static dispatch arm in us_dispatch_*. */
+  /* Application-defined socket tag. */
   unsigned char kind;
   /* SSL state. These 6 bits live in the pad-to-pointer gap before `group`, so
    * they cost nothing on epoll/kqueue (poll=4 + 4×u8 + 1 byte bits = 9, padded
@@ -271,6 +261,7 @@ struct us_socket_t {
    * in adopt_tls / connect-with-ssl_ctx / accept-with-ssl_ctx. */
   struct ssl_st *ssl;
   struct us_socket_t *prev, *next;
+  struct us_socket_t *low_prio_prev, *low_prio_next;
   struct us_socket_t *connect_next;
   struct us_connecting_socket_t *connect_state;
 };
@@ -280,7 +271,7 @@ _Static_assert(sizeof(struct us_socket_flags) == 1, "us_socket_flags grew");
 #endif
 
 struct us_connecting_socket_t {
-    alignas(LIBUS_EXT_ALIGNMENT) struct addrinfo_request *addrinfo_req;
+    alignas(LIBUS_EXT_ALIGNMENT) BunDNSRequest *addrinfo_req;
     struct us_socket_group_t *group;
     /* Captured at create — stays valid after `group` is detached so the late
      * after_resolve / dns_callback / free path never derefs into freed owner
@@ -293,13 +284,15 @@ struct us_connecting_socket_t {
     struct us_socket_t *connecting_head;
     int options;
     int socket_ext_size;
+    unsigned int callback_depth;
+    enum { US_CONNECTING_FREE_NONE, US_CONNECTING_FREE_DEFERRED, US_CONNECTING_FREE_QUEUED } free_state;
     unsigned int closed : 1, shutdown : 1, shutdown_read : 1, pending_resolve_callback : 1;
     unsigned char timeout;
     unsigned char long_timeout;
     unsigned char kind;
     uint16_t port;
-    int error;
-    struct addrinfo *addrinfo_head;
+    struct us_connect_error_t failure;
+    const struct addrinfo *addrinfo_head;
     // this is used to track pending connecting sockets in the context
     struct us_connecting_socket_t* next_pending;
     struct us_connecting_socket_t* prev_pending;
@@ -330,9 +323,8 @@ struct us_udp_socket_t {
 struct us_internal_callback_t {
   alignas(LIBUS_EXT_ALIGNMENT) struct us_poll_t p;
   struct us_loop_t *loop;
-  int cb_expects_the_loop;
   int leave_poll_ready;
-  void (*cb)(struct us_internal_callback_t *cb);
+  void (*cb)(struct us_loop_t *loop);
   mach_port_t port;
   void *machport_buf;
 };
@@ -342,10 +334,8 @@ struct us_internal_callback_t {
 struct us_internal_callback_t {
   alignas(LIBUS_EXT_ALIGNMENT) struct us_poll_t p;
   struct us_loop_t *loop;
-  int cb_expects_the_loop;
   int leave_poll_ready;
-  void (*cb)(struct us_internal_callback_t *cb);
-  unsigned has_added_timer_to_event_loop;
+  void (*cb)(struct us_loop_t *loop);
 };
 
 #endif
@@ -354,6 +344,10 @@ struct us_internal_callback_t {
 extern "C" {
 #endif
 int us_internal_raw_root_certs(struct us_cert_string_t **out);
+/* Only for storage that has not reached us_poll_init or us_poll_start.
+ * fallthrough must match the argument passed to us_create_poll. */
+void us_internal_poll_discard(struct us_poll_t *poll, struct us_loop_t *loop, int fallthrough);
+struct us_poll_t *us_internal_create_socket_poll(struct us_loop_t *loop, int socket_ext_size);
 
 #if __cplusplus
 }

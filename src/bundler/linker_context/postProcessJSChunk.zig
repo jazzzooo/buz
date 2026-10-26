@@ -16,8 +16,10 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
     defer arena.deinit();
 
     // Also generate the cross-chunk binding code
-    var cross_chunk_prefix: js_printer.PrintResult = undefined;
-    var cross_chunk_suffix: js_printer.PrintResult = undefined;
+    var cross_chunk_prefix: js_printer.PrintResult = .{ .result = .{ .code = &.{} } };
+    defer cross_chunk_prefix.deinit(worker.allocator);
+    var cross_chunk_suffix: js_printer.PrintResult = .{ .result = .{ .code = &.{} } };
+    defer cross_chunk_suffix.deinit(worker.allocator);
 
     var runtime_scope: *Scope = &c.graph.ast.items(.module_scope)[c.graph.files.items(.input_file)[Index.runtime.value].get()];
     var runtime_members = &runtime_scope.members;
@@ -30,9 +32,10 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
     const loader = c.parse_graph.input_files.items(.loader)[chunk.entry_point.source_index];
     const is_typescript = loader.isTypeScript();
     const module_info: ?*analyze_transpiled_module.ModuleInfo = if (generate_module_info)
-        analyze_transpiled_module.ModuleInfo.create(bun.default_allocator, is_typescript) catch null
+        try analyze_transpiled_module.ModuleInfo.create(bun.default_allocator, is_typescript)
     else
         null;
+    errdefer if (module_info) |mi| mi.destroy();
 
     {
         const print_options = js_printer.Options{
@@ -52,7 +55,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             // .const_values = c.graph.const_values,
         };
 
-        var cross_chunk_import_records = ImportRecord.List.initCapacity(worker.allocator, chunk.cross_chunk_imports.len) catch unreachable;
+        var cross_chunk_import_records = try ImportRecord.List.initCapacity(worker.allocator, chunk.cross_chunk_imports.len);
         defer cross_chunk_import_records.deinit(worker.allocator);
         for (chunk.cross_chunk_imports.slice()) |import_record| {
             cross_chunk_import_records.appendAssumeCapacity(
@@ -79,6 +82,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             chunk.renamer,
             false,
         );
+        try cross_chunk_prefix.checkForError();
         cross_chunk_suffix = js_printer.print(
             worker.allocator,
             c.resolver.opts.target,
@@ -92,6 +96,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             chunk.renamer,
             false,
         );
+        try cross_chunk_suffix.checkForError();
     }
 
     // Populate ModuleInfo with declarations collected during parallel printing,
@@ -110,8 +115,8 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
                     .declared => .declared,
                     .lexical => .lexical,
                 };
-                const string_id = mi.str(decl.name) catch continue;
-                mi.addVar(string_id, var_kind) catch continue;
+                const string_id = try mi.str(decl.name);
+                try mi.addVar(string_id, var_kind);
             }
         }
 
@@ -182,32 +187,32 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
                             if (record.flags.is_unused) continue;
 
                             const import_path = record.path.text;
-                            const irp_id = mi.str(import_path) catch continue;
-                            mi.requestModule(irp_id, .none) catch continue;
+                            const irp_id = try mi.str(import_path);
+                            try mi.requestModule(irp_id, .none);
 
                             if (s.default_name) |name| {
                                 if (name.ref) |name_ref| {
                                     const local_name = chunk.renamer.nameForSymbol(name_ref);
-                                    const local_name_id = mi.str(local_name) catch continue;
-                                    mi.addVar(local_name_id, .lexical) catch continue;
-                                    mi.addImportInfoSingle(irp_id, mi.str("default") catch continue, local_name_id, false) catch continue;
+                                    const local_name_id = try mi.str(local_name);
+                                    try mi.addVar(local_name_id, .lexical);
+                                    try mi.addImportInfoSingle(irp_id, try mi.str("default"), local_name_id, false);
                                 }
                             }
 
                             for (s.items) |item| {
                                 if (item.name.ref) |name_ref| {
                                     const local_name = chunk.renamer.nameForSymbol(name_ref);
-                                    const local_name_id = mi.str(local_name) catch continue;
-                                    mi.addVar(local_name_id, .lexical) catch continue;
-                                    mi.addImportInfoSingle(irp_id, mi.str(item.alias) catch continue, local_name_id, false) catch continue;
+                                    const local_name_id = try mi.str(local_name);
+                                    try mi.addVar(local_name_id, .lexical);
+                                    try mi.addImportInfoSingle(irp_id, try mi.str(item.alias), local_name_id, false);
                                 }
                             }
 
                             if (record.flags.contains_import_star) {
                                 const local_name = chunk.renamer.nameForSymbol(s.namespace_ref);
-                                const local_name_id = mi.str(local_name) catch continue;
-                                mi.addVar(local_name_id, .lexical) catch continue;
-                                mi.addImportInfoNamespace(irp_id, local_name_id) catch continue;
+                                const local_name_id = try mi.str(local_name);
+                                try mi.addVar(local_name_id, .lexical);
+                                try mi.addImportInfoNamespace(irp_id, local_name_id);
                             }
                         },
                         else => {},
@@ -226,8 +231,8 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
                 if (!wrapper_ref.isEmpty()) {
                     const name = chunk.renamer.nameForSymbol(wrapper_ref);
                     if (name.len > 0) {
-                        const string_id = mi.str(name) catch continue;
-                        mi.addVar(string_id, .declared) catch continue;
+                        const string_id = try mi.str(name);
+                        try mi.addVar(string_id, .declared);
                     }
                 }
             }
@@ -237,9 +242,9 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
     // Generate the exports for the entry point, if there are any.
     // This must happen before module_info serialization so the printer
     // can populate export entries in module_info.
-    const entry_point_tail = brk: {
+    var entry_point_tail = brk: {
         if (chunk.isEntryPoint()) {
-            break :brk generateEntryPointTailJS(
+            break :brk try generateEntryPointTailJS(
                 c,
                 toCommonJSRef,
                 toESMRef,
@@ -253,22 +258,13 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
 
         break :brk CompileResult.empty;
     };
-
-    // Store unserialized ModuleInfo on the chunk. Serialization is deferred to
-    // generateChunksInParallel after final chunk paths are computed, so that
-    // cross-chunk import specifiers (which use unique_key placeholders during
-    // printing) can be resolved to actual paths.
-    if (module_info) |mi| {
-        chunk.content.javascript.module_info = mi;
-    }
+    defer entry_point_tail.deinit(worker.allocator);
+    try entry_point_tail.checkForError();
 
     var j = StringJoiner{
         .allocator = worker.allocator,
-        .watcher = .{
-            .input = chunk.unique_key,
-        },
     };
-    errdefer j.deinit();
+    defer j.deinit();
     const output_format = c.options.output_format;
 
     var line_offset: bun.SourceMap.LineColumnOffset.Optional = if (c.options.source_maps != .none) .{ .value = .{} } else .{ .null = {} };
@@ -302,8 +298,8 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
     // Start with the hashbang if there is one. This must be done before the
     // banner because it only works if it's literally the first character.
     if (hashbang.len > 0) {
-        j.pushStatic(hashbang);
-        j.pushStatic("\n");
+        try j.pushStatic(hashbang);
+        try j.pushStatic("\n");
         line_offset.advance(hashbang);
         line_offset.advance("\n");
         newline_before_comment = true;
@@ -316,26 +312,26 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
         const cjs_entry_chunk = "(function(exports, require, module, __filename, __dirname) {";
         if (ctx.c.options.generate_bytecode_cache and output_format == .cjs) {
             const input = "// @bun @bytecode @bun-cjs\n" ++ cjs_entry_chunk;
-            j.pushStatic(input);
+            try j.pushStatic(input);
             line_offset.advance(input);
         } else if (ctx.c.options.generate_bytecode_cache) {
-            j.pushStatic("// @bun @bytecode\n");
+            try j.pushStatic("// @bun @bytecode\n");
             line_offset.advance("// @bun @bytecode\n");
         } else if (output_format == .cjs) {
-            j.pushStatic("// @bun @bun-cjs\n" ++ cjs_entry_chunk);
+            try j.pushStatic("// @bun @bun-cjs\n" ++ cjs_entry_chunk);
             line_offset.advance("// @bun @bun-cjs\n" ++ cjs_entry_chunk);
         } else {
-            j.pushStatic("// @bun\n");
+            try j.pushStatic("// @bun\n");
             line_offset.advance("// @bun\n");
         }
     }
 
     // Add the banner (excluding any hashbang part) for all chunks
     if (banner.len > 0) {
-        j.pushStatic(banner);
+        try j.pushStatic(banner);
         line_offset.advance(banner);
         if (!strings.endsWithChar(banner, '\n')) {
-            j.pushStatic("\n");
+            try j.pushStatic("\n");
             line_offset.advance("\n");
         }
         newline_before_comment = true;
@@ -347,7 +343,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
         const flags: JSAst.Flags = c.graph.ast.items(.flags)[chunk.entry_point.source_index];
 
         if (flags.has_explicit_use_strict_directive) {
-            j.pushStatic("\"use strict\";\n");
+            try j.pushStatic("\"use strict\";\n");
             line_offset.advance("\"use strict\";\n");
             newline_before_comment = true;
         }
@@ -356,24 +352,24 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
     // For Kit, hoist runtime.js outside of the IIFE
     const compile_results = chunk.compile_results_for_chunk;
     if (c.options.output_format == .internal_bake_dev) {
-        for (compile_results) |compile_result| {
+        for (compile_results) |*compile_result| {
             const source_index = compile_result.sourceIndex();
             if (source_index != Index.runtime.value) break;
             line_offset.advance(compile_result.code());
-            j.push(compile_result.code(), bun.default_allocator);
+            try j.push(compile_result.takeCode(), bun.default_allocator);
         }
     }
 
     switch (c.options.output_format) {
         .internal_bake_dev => {
-            const start = bun.bake.getHmrRuntime(c.resolver.io, if (c.options.target.isServerSide()) .server else .client);
-            j.pushStatic(start.code);
+            const start = BakeCore.getHmrRuntime(c.resolver.io, if (c.options.target.isServerSide()) .server else .client);
+            try j.pushStatic(start.code);
             line_offset.advance(start.code);
         },
         .iife => {
             // Bun does not do arrow function lowering. So the wrapper can be an arrow.
             const start = if (c.options.minify_whitespace) "(()=>{" else "(() => {\n";
-            j.pushStatic(start);
+            try j.pushStatic(start);
             line_offset.advance(start);
         },
         else => {}, // no wrapper
@@ -382,14 +378,15 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
     if (cross_chunk_prefix.result.code.len > 0) {
         newline_before_comment = true;
         line_offset.advance(cross_chunk_prefix.result.code);
-        j.push(cross_chunk_prefix.result.code, worker.allocator);
+        try j.push(cross_chunk_prefix.takeCode(), worker.allocator);
     }
 
     // Concatenate the generated JavaScript chunks together
     var prev_filename_comment: Index.Int = 0;
 
     var compile_results_for_source_map: std.MultiArrayList(CompileResultForSourceMap) = .{};
-    bun.handleOom(compile_results_for_source_map.setCapacity(worker.allocator, compile_results.len));
+    defer compile_results_for_source_map.deinit(worker.allocator);
+    try compile_results_for_source_map.setCapacity(worker.allocator, compile_results.len);
 
     const show_comments = c.options.mode == .bundle and
         !c.options.minify_whitespace;
@@ -398,7 +395,8 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
 
     const sources: []const Logger.Source = c.parse_graph.input_files.items(.source);
     const targets: []const options.Target = c.parse_graph.ast.items(.target);
-    for (compile_results) |compile_result| {
+    for (compile_results) |*compile_result| {
+        const code = compile_result.code();
         const source_index = compile_result.sourceIndex();
         const is_runtime = source_index == Index.runtime.value;
 
@@ -409,7 +407,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             prev_filename_comment = source_index;
 
             if (newline_before_comment) {
-                j.pushStatic("\n");
+                try j.pushStatic("\n");
                 line_offset.advance("\n");
             }
 
@@ -430,41 +428,41 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             if (!c.options.minify_whitespace and
                 (output_format == .iife or output_format == .internal_bake_dev))
             {
-                j.pushStatic("  ");
+                try j.pushStatic("  ");
                 line_offset.advance("  ");
             }
 
             switch (comment_type) {
                 .multiline => {
-                    j.pushStatic("/* ");
+                    try j.pushStatic("/* ");
                     line_offset.advance("/* ");
                 },
                 .single => {
-                    j.pushStatic("// ");
+                    try j.pushStatic("// ");
                     line_offset.advance("// ");
                 },
             }
 
-            j.pushStatic(pretty);
+            try j.pushStatic(pretty);
             line_offset.advance(pretty);
 
             if (emit_targets_in_commands) {
-                j.pushStatic(" (");
+                try j.pushStatic(" (");
                 line_offset.advance(" (");
                 const target = @tagName(targets[source_index].bakeGraph());
-                j.pushStatic(target);
+                try j.pushStatic(target);
                 line_offset.advance(target);
-                j.pushStatic(")");
+                try j.pushStatic(")");
                 line_offset.advance(")");
             }
 
             switch (comment_type) {
                 .multiline => {
-                    j.pushStatic(" */\n");
+                    try j.pushStatic(" */\n");
                     line_offset.advance(" */\n");
                 },
                 .single => {
-                    j.pushStatic("\n");
+                    try j.pushStatic("\n");
                     line_offset.advance("\n");
                 },
             }
@@ -473,10 +471,10 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
         if (is_runtime) {
             if (c.options.output_format != .internal_bake_dev) {
                 line_offset.advance(compile_result.code());
-                j.push(compile_result.code(), bun.default_allocator);
+                try j.push(compile_result.takeCode(), bun.default_allocator);
             }
         } else {
-            j.push(compile_result.code(), bun.default_allocator);
+            try j.push(compile_result.takeCode(), bun.default_allocator);
 
             if (compile_result.sourceMapChunk()) |source_map_chunk| {
                 if (c.options.source_maps != .none) {
@@ -489,12 +487,12 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
 
                 line_offset.reset();
             } else {
-                line_offset.advance(compile_result.code());
+                line_offset.advance(code);
             }
         }
 
         // TODO: metafile
-        newline_before_comment = compile_result.code().len > 0;
+        newline_before_comment = code.len > 0;
     }
 
     const tail_code = entry_point_tail.code();
@@ -502,16 +500,16 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
         // Stick the entry point tail at the end of the file. Deliberately don't
         // include any source mapping information for this because it's automatically
         // generated and doesn't correspond to a location in the input file.
-        j.push(tail_code, worker.allocator);
+        try j.push(entry_point_tail.takeCode(), worker.allocator);
     }
 
     // Put the cross-chunk suffix inside the IIFE
     if (cross_chunk_suffix.result.code.len > 0) {
         if (newline_before_comment) {
-            j.pushStatic("\n");
+            try j.pushStatic("\n");
         }
 
-        j.push(cross_chunk_suffix.result.code, worker.allocator);
+        try j.push(cross_chunk_suffix.takeCode(), worker.allocator);
     }
 
     switch (output_format) {
@@ -523,61 +521,56 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             else
                 without_newline;
 
-            j.pushStatic(with_newline);
+            try j.pushStatic(with_newline);
         },
         .internal_bake_dev => {
             {
                 const str = "}, {\n  main: ";
-                j.pushStatic(str);
+                try j.pushStatic(str);
                 line_offset.advance(str);
             }
             {
                 const input = c.parse_graph.input_files.items(.source)[chunk.entry_point.source_index].path;
                 var buf = MutableString.initEmpty(worker.allocator);
-                bun.handleOom(js_printer.quoteForJSON(input.pretty, &buf, true));
+                try js_printer.quoteForJSON(input.pretty, &buf, true);
                 const str = buf.slice(); // worker.allocator is an arena
-                j.pushStatic(str);
+                try j.pushStatic(str);
                 line_offset.advance(str);
             }
-            // {
-            //     const str = "\n  react_refresh: ";
-            //     j.pushStatic(str);
-            //     line_offset.advance(str);
-            // }
             {
                 const str = "\n});";
-                j.pushStatic(str);
+                try j.pushStatic(str);
                 line_offset.advance(str);
             }
         },
         .cjs => {
             if (is_bun) {
-                j.pushStatic("})\n");
+                try j.pushStatic("})\n");
                 line_offset.advance("})\n");
             }
         },
         else => {},
     }
 
-    j.ensureNewlineAtEnd();
+    try j.ensureNewlineAtEnd();
     // TODO: maybeAppendLegalComments
 
     if (c.options.footer.len > 0) {
         if (newline_before_comment) {
-            j.pushStatic("\n");
+            try j.pushStatic("\n");
             line_offset.advance("\n");
         }
-        j.pushStatic(ctx.c.options.footer);
+        try j.pushStatic(ctx.c.options.footer);
         line_offset.advance(ctx.c.options.footer);
-        j.pushStatic("\n");
+        try j.pushStatic("\n");
         line_offset.advance("\n");
     }
 
-    chunk.intermediate_output = c.breakOutputIntoPieces(
+    chunk.intermediate_output = try c.breakOutputIntoPieces(
         worker.allocator,
         &j,
-        @as(u32, @truncate(ctx.chunks.len)),
-    ) catch @panic("Unhandled out of memory error in breakOutputIntoPieces()");
+        std.math.cast(u32, ctx.chunks.len) orelse return error.OutOfMemory,
+    );
 
     // TODO: meta contents
 
@@ -594,6 +587,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             can_have_shifts,
         );
     }
+    chunk.content.javascript.module_info = module_info;
 }
 
 /// Recursively walk a binding and add all declared names to `ModuleInfo`.
@@ -604,23 +598,23 @@ fn addBindingVarsToModuleInfo(
     var_kind: analyze_transpiled_module.ModuleInfo.VarKind,
     r: renamer.Renamer,
     symbols: *const js_ast.Symbol.Map,
-) void {
+) !void {
     switch (binding.data) {
         .b_identifier => |b| {
             const name = r.nameForSymbol(symbols.follow(b.ref));
             if (name.len > 0) {
-                const str_id = mi.str(name) catch return;
-                mi.addVar(str_id, var_kind) catch {};
+                const str_id = try mi.str(name);
+                try mi.addVar(str_id, var_kind);
             }
         },
         .b_array => |b| {
             for (b.items) |item| {
-                addBindingVarsToModuleInfo(mi, item.binding, var_kind, r, symbols);
+                try addBindingVarsToModuleInfo(mi, item.binding, var_kind, r, symbols);
             }
         },
         .b_object => |b| {
             for (b.properties) |prop| {
-                addBindingVarsToModuleInfo(mi, prop.value, var_kind, r, symbols);
+                try addBindingVarsToModuleInfo(mi, prop.value, var_kind, r, symbols);
             }
         },
         .b_missing => {},
@@ -636,7 +630,7 @@ pub fn generateEntryPointTailJS(
     temp_allocator: std.mem.Allocator,
     r: renamer.Renamer,
     module_info: ?*analyze_transpiled_module.ModuleInfo,
-) CompileResult {
+) !CompileResult {
     const flags: JSMeta.Flags = c.graph.meta.items(.flags)[source_index];
     var stmts = std.array_list.Managed(Stmt).init(temp_allocator);
     defer stmts.deinit();
@@ -646,7 +640,7 @@ pub fn generateEntryPointTailJS(
         .esm => {
             switch (flags.wrap) {
                 .cjs => {
-                    stmts.append(
+                    try stmts.append(
                         Stmt.alloc(
                             // "export default require_foo();"
                             S.ExportDefault,
@@ -670,13 +664,13 @@ pub fn generateEntryPointTailJS(
                             },
                             Logger.Loc.Empty,
                         ),
-                    ) catch unreachable;
+                    );
                 },
                 else => {
                     if (flags.wrap == .esm and ast.wrapper_ref.isValid()) {
                         if (flags.is_async_or_has_async_dependency) {
                             // "await init_foo();"
-                            stmts.append(
+                            try stmts.append(
                                 Stmt.alloc(
                                     S.SExpr,
                                     .{
@@ -699,10 +693,10 @@ pub fn generateEntryPointTailJS(
                                     },
                                     Logger.Loc.Empty,
                                 ),
-                            ) catch unreachable;
+                            );
                         } else {
                             // "init_foo();"
-                            stmts.append(
+                            try stmts.append(
                                 Stmt.alloc(
                                     S.SExpr,
                                     .{
@@ -719,7 +713,7 @@ pub fn generateEntryPointTailJS(
                                     },
                                     Logger.Loc.Empty,
                                 ),
-                            ) catch unreachable;
+                            );
                         }
                     }
 
@@ -793,11 +787,11 @@ pub fn generateEntryPointTailJS(
                                 //     export_foo as foo
                                 //   };
                                 //
-                                stmts.append(
+                                try stmts.append(
                                     Stmt.alloc(
                                         S.Local,
                                         .{
-                                            .decls = js_ast.G.Decl.List.fromSlice(
+                                            .decls = try js_ast.G.Decl.List.fromSlice(
                                                 temp_allocator,
                                                 &.{
                                                     .{
@@ -817,13 +811,13 @@ pub fn generateEntryPointTailJS(
                                                         ),
                                                     },
                                                 },
-                                            ) catch unreachable,
+                                            ),
                                         },
                                         Logger.Loc.Empty,
                                     ),
-                                ) catch unreachable;
+                                );
 
-                                items.append(
+                                try items.append(
                                     .{
                                         .name = js_ast.LocRef{
                                             .ref = temp_ref,
@@ -832,7 +826,7 @@ pub fn generateEntryPointTailJS(
                                         .alias = alias,
                                         .alias_loc = Logger.Loc.Empty,
                                     },
-                                ) catch unreachable;
+                                );
                             } else {
                                 // Local identifiers can be exported using an export clause. This is done
                                 // this way instead of leaving the "export" keyword on the local declaration
@@ -857,18 +851,18 @@ pub fn generateEntryPointTailJS(
                                 //     foo
                                 //   };
                                 //
-                                items.append(.{
+                                try items.append(.{
                                     .name = js_ast.LocRef{
                                         .ref = resolved_export.data.import_ref,
                                         .loc = resolved_export.data.name_loc,
                                     },
                                     .alias = alias,
                                     .alias_loc = resolved_export.data.name_loc,
-                                }) catch unreachable;
+                                });
                             }
                         }
 
-                        stmts.append(
+                        try stmts.append(
                             Stmt.alloc(
                                 S.ExportClause,
                                 .{
@@ -877,11 +871,11 @@ pub fn generateEntryPointTailJS(
                                 },
                                 Logger.Loc.Empty,
                             ),
-                        ) catch unreachable;
+                        );
 
                         if (flags.needs_synthetic_default_export and !had_default_export) {
-                            var properties = G.Property.List.initCapacity(allocator, items.items.len) catch unreachable;
-                            const getter_fn_body = allocator.alloc(Stmt, items.items.len) catch unreachable;
+                            var properties = try G.Property.List.initCapacity(temp_allocator, items.items.len);
+                            const getter_fn_body = try temp_allocator.alloc(Stmt, items.items.len);
                             var remain_getter_fn_body = getter_fn_body;
                             for (items.items) |export_item| {
                                 var fn_body = remain_getter_fn_body[0..1];
@@ -928,7 +922,7 @@ pub fn generateEntryPointTailJS(
                                     },
                                 );
                             }
-                            stmts.append(
+                            try stmts.append(
                                 Stmt.alloc(
                                     S.ExportDefault,
                                     S.ExportDefault{
@@ -948,7 +942,7 @@ pub fn generateEntryPointTailJS(
                                     },
                                     Logger.Loc.Empty,
                                 ),
-                            ) catch unreachable;
+                            );
                         }
                     }
                 },
@@ -967,7 +961,7 @@ pub fn generateEntryPointTailJS(
             switch (flags.wrap) {
                 .cjs => {
                     // "module.exports = require_foo();"
-                    stmts.append(
+                    try stmts.append(
                         Stmt.assign(
                             Expr.init(
                                 E.Dot,
@@ -986,11 +980,11 @@ pub fn generateEntryPointTailJS(
                                 Logger.Loc.Empty,
                             ),
                         ),
-                    ) catch unreachable;
+                    );
                 },
                 .esm => {
                     // "init_foo();"
-                    stmts.append(
+                    try stmts.append(
                         Stmt.alloc(
                             S.SExpr,
                             .{
@@ -1004,7 +998,7 @@ pub fn generateEntryPointTailJS(
                             },
                             Logger.Loc.Empty,
                         ),
-                    ) catch unreachable;
+                    );
                 },
                 else => {},
             }
@@ -1026,7 +1020,7 @@ pub fn generateEntryPointTailJS(
                 .s_local => |s| {
                     const var_kind: analyze_transpiled_module.ModuleInfo.VarKind = if (s.kind == .k_var) .declared else .lexical;
                     for (s.decls.slice()) |decl| {
-                        addBindingVarsToModuleInfo(mi, decl.binding, var_kind, r, &c.graph.symbols);
+                        try addBindingVarsToModuleInfo(mi, decl.binding, var_kind, r, &c.graph.symbols);
                     }
                 },
                 else => {},
@@ -1086,6 +1080,7 @@ pub fn generateEntryPointTailJS(
 }
 
 const analyze_transpiled_module = @import("../analyze_transpiled_module.zig");
+const BakeCore = @import("../../bake/BakeCore.zig");
 const std = @import("std");
 
 const bun = @import("bun");

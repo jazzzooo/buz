@@ -1,7 +1,7 @@
 const SourceFileProjectGenerator = @This();
 
 // Generate project files based on the entry point and dependencies
-pub fn generate(ctx: Command.Context, _: Example.Tag, entry_point: string, result: *BundleV2.DependenciesScanner.Result) !void {
+pub fn generate(ctx: Context, _: ExampleTag, entry_point: string, result: *BundleV2.DependenciesScanner.Result) !void {
     const react_component_export = findReactComponentExport(result.bundle_v2) orelse {
         Output.errGeneric("No component export found in <b>{f}<r>", .{bun.fmt.quote(entry_point)});
         Output.flush();
@@ -172,7 +172,7 @@ fn runInstall(argv: [][]const u8) !void {
         .stdin = .inherit,
 
         .windows = if (Environment.isWindows) .{
-            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+            .loop = (try bun.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)).parentEventLoop(),
         },
     }) catch |err| {
         Output.err(err, "failed to install dependencies", .{});
@@ -374,7 +374,7 @@ pub fn generateFiles(io: std.Io, allocator: std.mem.Allocator, entry_point: stri
         .stdin = .inherit,
 
         .windows = if (Environment.isWindows) .{
-            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+            .loop = (try bun.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)).parentEventLoop(),
         },
     }) catch |err| {
         Output.err(err, "failed to start app", .{});
@@ -864,7 +864,8 @@ const string = []const u8;
 
 const linker = @import("../../bundler/linker.zig");
 const std = @import("std");
-const Example = @import("../create_command.zig").Example;
+const Context = @import("../../options_types/Context.zig").Context;
+const ExampleTag = @import("./ExampleTag.zig").Tag;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
@@ -876,4 +877,3 @@ const js_ast = bun.ast;
 const logger = bun.logger;
 const strings = bun.strings;
 const BundleV2 = bun.bundle_v2.BundleV2;
-const Command = bun.cli.Command;

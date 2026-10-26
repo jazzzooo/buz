@@ -413,8 +413,10 @@ bool CodeBlock::finishCreation(VM& vm, ScriptExecutable* ownerExecutable, Unlink
 
     auto throwScope = DECLARE_THROW_SCOPE(vm);
 
-    if (m_unlinkedCode->wasCompiledWithTypeProfilerOpcodes() || m_unlinkedCode->wasCompiledWithControlFlowProfilerOpcodes())
-        vm.functionHasExecutedCache()->removeUnexecutedRange(ownerExecutable->sourceID(), ownerExecutable->typeProfilingStartOffset(), ownerExecutable->typeProfilingEndOffset());
+    if (m_unlinkedCode->wasCompiledWithTypeProfilerOpcodes() || m_unlinkedCode->wasCompiledWithControlFlowProfilerOpcodes()) {
+        auto kind = ownerExecutable->inherits<FunctionExecutable>() ? FunctionHasExecutedCache::RangeKind::Function : FunctionHasExecutedCache::RangeKind::Program;
+        vm.functionHasExecutedCache()->removeUnexecutedRange(ownerExecutable->sourceID(), ownerExecutable->typeProfilingStartOffset(), ownerExecutable->typeProfilingEndOffset(), kind);
+    }
 
     ScriptExecutable* topLevelExecutable = ownerExecutable->topLevelExecutable();
     // We wait to initialize template objects until the end of finishCreation beecause it can

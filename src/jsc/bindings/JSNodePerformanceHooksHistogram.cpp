@@ -5,7 +5,6 @@
 #include "JSNodePerformanceHooksHistogramConstructor.h"
 #include "ZigGlobalObject.h"
 #include "ErrorCode.h"
-#include "BunString.h"
 #include "JSDOMExceptionHandling.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/JSCellInlines.h>

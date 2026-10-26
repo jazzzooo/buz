@@ -18,6 +18,8 @@ const Loader = {
   "17": "sqlite_embedded",
   "18": "html",
   "19": "yaml",
+  "20": "json5",
+  "21": "md",
   jsx: 1,
   js: 2,
   ts: 3,
@@ -37,6 +39,8 @@ const Loader = {
   sqlite_embedded: 17,
   html: 18,
   yaml: 19,
+  json5: 20,
+  md: 21,
 };
 const LoaderKeys = {
   "1": "jsx",
@@ -58,6 +62,8 @@ const LoaderKeys = {
   "17": "sqlite_embedded",
   "18": "html",
   "19": "yaml",
+  "20": "json5",
+  "21": "md",
   jsx: "jsx",
   js: "js",
   ts: "ts",
@@ -77,22 +83,8 @@ const LoaderKeys = {
   sqlite_embedded: "sqlite_embedded",
   html: "html",
   yaml: "yaml",
-};
-const FrameworkEntryPointType = {
-  "1": 1,
-  "2": 2,
-  "3": 3,
-  "client": 1,
-  "server": 2,
-  "fallback": 3,
-};
-const FrameworkEntryPointTypeKeys = {
-  "1": "client",
-  "2": "server",
-  "3": "fallback",
-  "client": "client",
-  "server": "server",
-  "fallback": "fallback",
+  json5: "json5",
+  md: "md",
 };
 const StackFrameScope = {
   "1": 1,
@@ -702,339 +694,6 @@ function encodeStringPointer(message, bb) {
   }
 }
 
-function decodeJavascriptBundledModule(bb) {
-  var result = {};
-
-  result["path"] = decodeStringPointer(bb);
-  result["code"] = decodeStringPointer(bb);
-  result["package_id"] = bb.readUint32();
-  result["id"] = bb.readUint32();
-  result["path_extname_length"] = bb.readByte();
-  return result;
-}
-
-function encodeJavascriptBundledModule(message, bb) {
-  var value = message["path"];
-  if (value != null) {
-    encodeStringPointer(value, bb);
-  } else {
-    throw new Error('Missing required field "path"');
-  }
-
-  var value = message["code"];
-  if (value != null) {
-    encodeStringPointer(value, bb);
-  } else {
-    throw new Error('Missing required field "code"');
-  }
-
-  var value = message["package_id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "package_id"');
-  }
-
-  var value = message["id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "id"');
-  }
-
-  var value = message["path_extname_length"];
-  if (value != null) {
-    bb.writeByte(value);
-  } else {
-    throw new Error('Missing required field "path_extname_length"');
-  }
-}
-
-function decodeJavascriptBundledPackage(bb) {
-  var result = {};
-
-  result["name"] = decodeStringPointer(bb);
-  result["version"] = decodeStringPointer(bb);
-  result["hash"] = bb.readUint32();
-  result["modules_offset"] = bb.readUint32();
-  result["modules_length"] = bb.readUint32();
-  return result;
-}
-
-function encodeJavascriptBundledPackage(message, bb) {
-  var value = message["name"];
-  if (value != null) {
-    encodeStringPointer(value, bb);
-  } else {
-    throw new Error('Missing required field "name"');
-  }
-
-  var value = message["version"];
-  if (value != null) {
-    encodeStringPointer(value, bb);
-  } else {
-    throw new Error('Missing required field "version"');
-  }
-
-  var value = message["hash"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "hash"');
-  }
-
-  var value = message["modules_offset"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "modules_offset"');
-  }
-
-  var value = message["modules_length"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "modules_length"');
-  }
-}
-
-function decodeJavascriptBundle(bb) {
-  var result = {};
-
-  var length = bb.readVarUint();
-  var values = (result["modules"] = Array(length));
-  for (var i = 0; i < length; i++) values[i] = decodeJavascriptBundledModule(bb);
-  var length = bb.readVarUint();
-  var values = (result["packages"] = Array(length));
-  for (var i = 0; i < length; i++) values[i] = decodeJavascriptBundledPackage(bb);
-  result["etag"] = bb.readByteArray();
-  result["generated_at"] = bb.readUint32();
-  result["app_package_json_dependencies_hash"] = bb.readByteArray();
-  result["import_from_name"] = bb.readByteArray();
-  result["manifest_string"] = bb.readByteArray();
-  return result;
-}
-
-function encodeJavascriptBundle(message, bb) {
-  var value = message["modules"];
-  if (value != null) {
-    var values = value,
-      n = values.length;
-    bb.writeVarUint(n);
-    for (var i = 0; i < n; i++) {
-      value = values[i];
-      encodeJavascriptBundledModule(value, bb);
-    }
-  } else {
-    throw new Error('Missing required field "modules"');
-  }
-
-  var value = message["packages"];
-  if (value != null) {
-    var values = value,
-      n = values.length;
-    bb.writeVarUint(n);
-    for (var i = 0; i < n; i++) {
-      value = values[i];
-      encodeJavascriptBundledPackage(value, bb);
-    }
-  } else {
-    throw new Error('Missing required field "packages"');
-  }
-
-  var value = message["etag"];
-  if (value != null) {
-    bb.writeByteArray(value);
-  } else {
-    throw new Error('Missing required field "etag"');
-  }
-
-  var value = message["generated_at"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "generated_at"');
-  }
-
-  var value = message["app_package_json_dependencies_hash"];
-  if (value != null) {
-    bb.writeByteArray(value);
-  } else {
-    throw new Error('Missing required field "app_package_json_dependencies_hash"');
-  }
-
-  var value = message["import_from_name"];
-  if (value != null) {
-    bb.writeByteArray(value);
-  } else {
-    throw new Error('Missing required field "import_from_name"');
-  }
-
-  var value = message["manifest_string"];
-  if (value != null) {
-    bb.writeByteArray(value);
-  } else {
-    throw new Error('Missing required field "manifest_string"');
-  }
-}
-
-function decodeJavascriptBundleContainer(bb) {
-  var result = {};
-
-  while (true) {
-    switch (bb.readByte()) {
-      case 0:
-        return result;
-
-      case 1:
-        result["bundle_format_version"] = bb.readUint32();
-        break;
-
-      case 3:
-        result["routes"] = decodeLoadedRouteConfig(bb);
-        break;
-
-      case 2:
-        result["framework"] = decodeLoadedFramework(bb);
-        break;
-
-      case 4:
-        result["bundle"] = decodeJavascriptBundle(bb);
-        break;
-
-      case 5:
-        result["code_length"] = bb.readUint32();
-        break;
-
-      default:
-        throw new Error("Attempted to parse invalid message");
-    }
-  }
-}
-
-function encodeJavascriptBundleContainer(message, bb) {
-  var value = message["bundle_format_version"];
-  if (value != null) {
-    bb.writeByte(1);
-    bb.writeUint32(value);
-  }
-
-  var value = message["routes"];
-  if (value != null) {
-    bb.writeByte(3);
-    encodeLoadedRouteConfig(value, bb);
-  }
-
-  var value = message["framework"];
-  if (value != null) {
-    bb.writeByte(2);
-    encodeLoadedFramework(value, bb);
-  }
-
-  var value = message["bundle"];
-  if (value != null) {
-    bb.writeByte(4);
-    encodeJavascriptBundle(value, bb);
-  }
-
-  var value = message["code_length"];
-  if (value != null) {
-    bb.writeByte(5);
-    bb.writeUint32(value);
-  }
-  bb.writeByte(0);
-}
-const ScanDependencyMode = {
-  "1": 1,
-  "2": 2,
-  "app": 1,
-  "all": 2,
-};
-const ScanDependencyModeKeys = {
-  "1": "app",
-  "2": "all",
-  "app": "app",
-  "all": "all",
-};
-const ModuleImportType = {
-  "1": 1,
-  "2": 2,
-  "import": 1,
-  "require": 2,
-};
-const ModuleImportTypeKeys = {
-  "1": "import",
-  "2": "require",
-  "import": "import",
-  "require": "require",
-};
-
-function decodeModuleImportRecord(bb) {
-  var result = {};
-
-  result["kind"] = ModuleImportType[bb.readByte()];
-  result["path"] = bb.readString();
-  result["dynamic"] = !!bb.readByte();
-  return result;
-}
-
-function encodeModuleImportRecord(message, bb) {
-  var value = message["kind"];
-  if (value != null) {
-    var encoded = ModuleImportType[value];
-    if (encoded === void 0) throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "ModuleImportType"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "kind"');
-  }
-
-  var value = message["path"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "path"');
-  }
-
-  var value = message["dynamic"];
-  if (value != null) {
-    bb.writeByte(value);
-  } else {
-    throw new Error('Missing required field "dynamic"');
-  }
-}
-
-function decodeModule(bb) {
-  var result = {};
-
-  result["path"] = bb.readString();
-  var length = bb.readVarUint();
-  var values = (result["imports"] = Array(length));
-  for (var i = 0; i < length; i++) values[i] = decodeModuleImportRecord(bb);
-  return result;
-}
-
-function encodeModule(message, bb) {
-  var value = message["path"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "path"');
-  }
-
-  var value = message["imports"];
-  if (value != null) {
-    var values = value,
-      n = values.length;
-    bb.writeVarUint(n);
-    for (var i = 0; i < n; i++) {
-      value = values[i];
-      encodeModuleImportRecord(value, bb);
-    }
-  } else {
-    throw new Error('Missing required field "imports"');
-  }
-}
-
 function decodeStringMap(bb) {
   var result = {};
 
@@ -1174,40 +833,6 @@ function encodeEnvConfig(message, bb) {
   bb.writeByte(0);
 }
 
-function decodeLoadedEnvConfig(bb) {
-  var result = {};
-
-  result["dotenv"] = DotEnvBehavior[bb.readVarUint()];
-  result["defaults"] = decodeStringMap(bb);
-  result["prefix"] = bb.readString();
-  return result;
-}
-
-function encodeLoadedEnvConfig(message, bb) {
-  var value = message["dotenv"];
-  if (value != null) {
-    var encoded = DotEnvBehavior[value];
-    if (encoded === void 0) throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "DotEnvBehavior"');
-    bb.writeVarUint(encoded);
-  } else {
-    throw new Error('Missing required field "dotenv"');
-  }
-
-  var value = message["defaults"];
-  if (value != null) {
-    encodeStringMap(value, bb);
-  } else {
-    throw new Error('Missing required field "defaults"');
-  }
-
-  var value = message["prefix"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "prefix"');
-  }
-}
-
 function decodeFrameworkConfig(bb) {
   var result = {};
 
@@ -1307,88 +932,6 @@ function encodeFrameworkConfig(message, bb) {
   bb.writeByte(0);
 }
 
-function decodeFrameworkEntryPoint(bb) {
-  var result = {};
-
-  result["kind"] = FrameworkEntryPointType[bb.readByte()];
-  result["path"] = bb.readString();
-  result["env"] = decodeLoadedEnvConfig(bb);
-  return result;
-}
-
-function encodeFrameworkEntryPoint(message, bb) {
-  var value = message["kind"];
-  if (value != null) {
-    var encoded = FrameworkEntryPointType[value];
-    if (encoded === void 0)
-      throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "FrameworkEntryPointType"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "kind"');
-  }
-
-  var value = message["path"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "path"');
-  }
-
-  var value = message["env"];
-  if (value != null) {
-    encodeLoadedEnvConfig(value, bb);
-  } else {
-    throw new Error('Missing required field "env"');
-  }
-}
-
-function decodeFrameworkEntryPointMap(bb) {
-  var result = {};
-
-  while (true) {
-    switch (bb.readByte()) {
-      case 0:
-        return result;
-
-      case 1:
-        result["client"] = decodeFrameworkEntryPoint(bb);
-        break;
-
-      case 2:
-        result["server"] = decodeFrameworkEntryPoint(bb);
-        break;
-
-      case 3:
-        result["fallback"] = decodeFrameworkEntryPoint(bb);
-        break;
-
-      default:
-        throw new Error("Attempted to parse invalid message");
-    }
-  }
-}
-
-function encodeFrameworkEntryPointMap(message, bb) {
-  var value = message["client"];
-  if (value != null) {
-    bb.writeByte(1);
-    encodeFrameworkEntryPoint(value, bb);
-  }
-
-  var value = message["server"];
-  if (value != null) {
-    bb.writeByte(2);
-    encodeFrameworkEntryPoint(value, bb);
-  }
-
-  var value = message["fallback"];
-  if (value != null) {
-    bb.writeByte(3);
-    encodeFrameworkEntryPoint(value, bb);
-  }
-  bb.writeByte(0);
-}
-
 function decodeFrameworkEntryPointMessage(bb) {
   var result = {};
 
@@ -1424,112 +967,6 @@ function encodeFrameworkEntryPointMessage(message, bb) {
     encodeEnvConfig(value, bb);
   }
   bb.writeByte(0);
-}
-
-function decodeLoadedFramework(bb) {
-  var result = {};
-
-  result["package"] = bb.readString();
-  result["display_name"] = bb.readString();
-  result["development"] = !!bb.readByte();
-  result["entry_points"] = decodeFrameworkEntryPointMap(bb);
-  result["client_css_in_js"] = CSSInJSBehavior[bb.readByte()];
-  result["overrideModules"] = decodeStringMap(bb);
-  return result;
-}
-
-function encodeLoadedFramework(message, bb) {
-  var value = message["package"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "package"');
-  }
-
-  var value = message["display_name"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "display_name"');
-  }
-
-  var value = message["development"];
-  if (value != null) {
-    bb.writeByte(value);
-  } else {
-    throw new Error('Missing required field "development"');
-  }
-
-  var value = message["entry_points"];
-  if (value != null) {
-    encodeFrameworkEntryPointMap(value, bb);
-  } else {
-    throw new Error('Missing required field "entry_points"');
-  }
-
-  var value = message["client_css_in_js"];
-  if (value != null) {
-    var encoded = CSSInJSBehavior[value];
-    if (encoded === void 0) throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "CSSInJSBehavior"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "client_css_in_js"');
-  }
-
-  var value = message["overrideModules"];
-  if (value != null) {
-    encodeStringMap(value, bb);
-  } else {
-    throw new Error('Missing required field "overrideModules"');
-  }
-}
-
-function decodeLoadedRouteConfig(bb) {
-  var result = {};
-
-  result["dir"] = bb.readString();
-  var length = bb.readVarUint();
-  var values = (result["extensions"] = Array(length));
-  for (var i = 0; i < length; i++) values[i] = bb.readString();
-  result["static_dir"] = bb.readString();
-  result["asset_prefix"] = bb.readString();
-  return result;
-}
-
-function encodeLoadedRouteConfig(message, bb) {
-  var value = message["dir"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "dir"');
-  }
-
-  var value = message["extensions"];
-  if (value != null) {
-    var values = value,
-      n = values.length;
-    bb.writeVarUint(n);
-    for (var i = 0; i < n; i++) {
-      value = values[i];
-      bb.writeString(value);
-    }
-  } else {
-    throw new Error('Missing required field "extensions"');
-  }
-
-  var value = message["static_dir"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "static_dir"');
-  }
-
-  var value = message["asset_prefix"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "asset_prefix"');
-  }
 }
 
 function decodeRouteConfig(bb) {
@@ -2546,369 +1983,6 @@ function encodeLog(message, bb) {
     throw new Error('Missing required field "msgs"');
   }
 }
-const Reloader = {
-  "1": 1,
-  "2": 2,
-  "3": 3,
-  "disable": 1,
-  "live": 2,
-  "fast_refresh": 3,
-};
-const ReloaderKeys = {
-  "1": "disable",
-  "2": "live",
-  "3": "fast_refresh",
-  "disable": "disable",
-  "live": "live",
-  "fast_refresh": "fast_refresh",
-};
-const WebsocketMessageKind = {
-  "1": 1,
-  "2": 2,
-  "3": 3,
-  "4": 4,
-  "5": 5,
-  "6": 6,
-  "7": 7,
-  "8": 8,
-  "welcome": 1,
-  "file_change_notification": 2,
-  "build_success": 3,
-  "build_fail": 4,
-  "manifest_success": 5,
-  "manifest_fail": 6,
-  "resolve_file": 7,
-  "file_change_notification_with_hint": 8,
-};
-const WebsocketMessageKindKeys = {
-  "1": "welcome",
-  "2": "file_change_notification",
-  "3": "build_success",
-  "4": "build_fail",
-  "5": "manifest_success",
-  "6": "manifest_fail",
-  "7": "resolve_file",
-  "8": "file_change_notification_with_hint",
-  "welcome": "welcome",
-  "file_change_notification": "file_change_notification",
-  "build_success": "build_success",
-  "build_fail": "build_fail",
-  "manifest_success": "manifest_success",
-  "manifest_fail": "manifest_fail",
-  "resolve_file": "resolve_file",
-  "file_change_notification_with_hint": "file_change_notification_with_hint",
-};
-const WebsocketCommandKind = {
-  "1": 1,
-  "2": 2,
-  "3": 3,
-  "build": 1,
-  "manifest": 2,
-  "build_with_file_path": 3,
-};
-const WebsocketCommandKindKeys = {
-  "1": "build",
-  "2": "manifest",
-  "3": "build_with_file_path",
-  "build": "build",
-  "manifest": "manifest",
-  "build_with_file_path": "build_with_file_path",
-};
-
-function decodeWebsocketMessage(bb) {
-  var result = {};
-
-  result["timestamp"] = bb.readUint32();
-  result["kind"] = WebsocketMessageKind[bb.readByte()];
-  return result;
-}
-
-function encodeWebsocketMessage(message, bb) {
-  var value = message["timestamp"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "timestamp"');
-  }
-
-  var value = message["kind"];
-  if (value != null) {
-    var encoded = WebsocketMessageKind[value];
-    if (encoded === void 0)
-      throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "WebsocketMessageKind"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "kind"');
-  }
-}
-
-function decodeWebsocketMessageWelcome(bb) {
-  var result = {};
-
-  result["epoch"] = bb.readUint32();
-  result["javascriptReloader"] = Reloader[bb.readByte()];
-  result["cwd"] = bb.readString();
-  result["assetPrefix"] = bb.readString();
-  return result;
-}
-
-function encodeWebsocketMessageWelcome(message, bb) {
-  var value = message["epoch"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "epoch"');
-  }
-
-  var value = message["javascriptReloader"];
-  if (value != null) {
-    var encoded = Reloader[value];
-    if (encoded === void 0) throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "Reloader"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "javascriptReloader"');
-  }
-
-  var value = message["cwd"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "cwd"');
-  }
-
-  var value = message["assetPrefix"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "assetPrefix"');
-  }
-}
-
-function decodeWebsocketMessageFileChangeNotification(bb) {
-  var result = {};
-
-  result["id"] = bb.readUint32();
-  result["loader"] = Loader[bb.readByte()];
-  return result;
-}
-
-function encodeWebsocketMessageFileChangeNotification(message, bb) {
-  var value = message["id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "id"');
-  }
-
-  var value = message["loader"];
-  if (value != null) {
-    var encoded = Loader[value];
-    if (encoded === void 0) throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "Loader"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "loader"');
-  }
-}
-
-function decodeWebsocketCommand(bb) {
-  var result = {};
-
-  result["kind"] = WebsocketCommandKind[bb.readByte()];
-  result["timestamp"] = bb.readUint32();
-  return result;
-}
-
-function encodeWebsocketCommand(message, bb) {
-  var value = message["kind"];
-  if (value != null) {
-    var encoded = WebsocketCommandKind[value];
-    if (encoded === void 0)
-      throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "WebsocketCommandKind"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "kind"');
-  }
-
-  var value = message["timestamp"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "timestamp"');
-  }
-}
-
-function decodeWebsocketCommandBuild(bb) {
-  var result = {};
-
-  result["id"] = bb.readUint32();
-  return result;
-}
-
-function encodeWebsocketCommandBuild(message, bb) {
-  var value = message["id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "id"');
-  }
-}
-
-function decodeWebsocketCommandManifest(bb) {
-  var result = {};
-
-  result["id"] = bb.readUint32();
-  return result;
-}
-
-function encodeWebsocketCommandManifest(message, bb) {
-  var value = message["id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "id"');
-  }
-}
-
-function decodeWebsocketMessageBuildSuccess(bb) {
-  var result = {};
-
-  result["id"] = bb.readUint32();
-  result["from_timestamp"] = bb.readUint32();
-  result["loader"] = Loader[bb.readByte()];
-  result["module_path"] = bb.readString();
-  result["blob_length"] = bb.readUint32();
-  return result;
-}
-
-function encodeWebsocketMessageBuildSuccess(message, bb) {
-  var value = message["id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "id"');
-  }
-
-  var value = message["from_timestamp"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "from_timestamp"');
-  }
-
-  var value = message["loader"];
-  if (value != null) {
-    var encoded = Loader[value];
-    if (encoded === void 0) throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "Loader"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "loader"');
-  }
-
-  var value = message["module_path"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "module_path"');
-  }
-
-  var value = message["blob_length"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "blob_length"');
-  }
-}
-
-function decodeWebsocketMessageBuildFailure(bb) {
-  var result = {};
-
-  result["id"] = bb.readUint32();
-  result["from_timestamp"] = bb.readUint32();
-  result["loader"] = Loader[bb.readByte()];
-  result["module_path"] = bb.readString();
-  result["log"] = decodeLog(bb);
-  return result;
-}
-
-function encodeWebsocketMessageBuildFailure(message, bb) {
-  var value = message["id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "id"');
-  }
-
-  var value = message["from_timestamp"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "from_timestamp"');
-  }
-
-  var value = message["loader"];
-  if (value != null) {
-    var encoded = Loader[value];
-    if (encoded === void 0) throw new Error("Invalid value " + JSON.stringify(value) + ' for enum "Loader"');
-    bb.writeByte(encoded);
-  } else {
-    throw new Error('Missing required field "loader"');
-  }
-
-  var value = message["module_path"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "module_path"');
-  }
-
-  var value = message["log"];
-  if (value != null) {
-    encodeLog(value, bb);
-  } else {
-    throw new Error('Missing required field "log"');
-  }
-}
-
-function decodeWebsocketCommandBuildWithFilePath(bb) {
-  var result = {};
-
-  result["id"] = bb.readUint32();
-  result["file_path"] = bb.readString();
-  return result;
-}
-
-function encodeWebsocketCommandBuildWithFilePath(message, bb) {
-  var value = message["id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "id"');
-  }
-
-  var value = message["file_path"];
-  if (value != null) {
-    bb.writeString(value);
-  } else {
-    throw new Error('Missing required field "file_path"');
-  }
-}
-
-function decodeWebsocketMessageResolveID(bb) {
-  var result = {};
-
-  result["id"] = bb.readUint32();
-  return result;
-}
-
-function encodeWebsocketMessageResolveID(message, bb) {
-  var value = message["id"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "id"');
-  }
-}
-
 function decodeNPMRegistry(bb) {
   var result = {};
 
@@ -3224,134 +2298,6 @@ function encodeBunInstall(message, bb) {
   bb.writeByte(0);
 }
 
-function decodeClientServerModule(bb) {
-  var result = {};
-
-  result["moduleId"] = bb.readUint32();
-  result["inputName"] = decodeStringPointer(bb);
-  result["assetName"] = decodeStringPointer(bb);
-  result["exportNames"] = decodeStringPointer(bb);
-  return result;
-}
-
-function encodeClientServerModule(message, bb) {
-  var value = message["moduleId"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "moduleId"');
-  }
-
-  var value = message["inputName"];
-  if (value != null) {
-    encodeStringPointer(value, bb);
-  } else {
-    throw new Error('Missing required field "inputName"');
-  }
-
-  var value = message["assetName"];
-  if (value != null) {
-    encodeStringPointer(value, bb);
-  } else {
-    throw new Error('Missing required field "assetName"');
-  }
-
-  var value = message["exportNames"];
-  if (value != null) {
-    encodeStringPointer(value, bb);
-  } else {
-    throw new Error('Missing required field "exportNames"');
-  }
-}
-
-function decodeClientServerModuleManifest(bb) {
-  var result = {};
-
-  result["version"] = bb.readUint32();
-  var length = bb.readVarUint();
-  var values = (result["clientModules"] = Array(length));
-  for (var i = 0; i < length; i++) values[i] = decodeClientServerModule(bb);
-  var length = bb.readVarUint();
-  var values = (result["serverModules"] = Array(length));
-  for (var i = 0; i < length; i++) values[i] = decodeClientServerModule(bb);
-  var length = bb.readVarUint();
-  var values = (result["ssrModules"] = Array(length));
-  for (var i = 0; i < length; i++) values[i] = decodeClientServerModule(bb);
-  var length = bb.readVarUint();
-  var values = (result["exportNames"] = Array(length));
-  for (var i = 0; i < length; i++) values[i] = decodeStringPointer(bb);
-  result["contents"] = bb.readByteArray();
-  return result;
-}
-
-function encodeClientServerModuleManifest(message, bb) {
-  var value = message["version"];
-  if (value != null) {
-    bb.writeUint32(value);
-  } else {
-    throw new Error('Missing required field "version"');
-  }
-
-  var value = message["clientModules"];
-  if (value != null) {
-    var values = value,
-      n = values.length;
-    bb.writeVarUint(n);
-    for (var i = 0; i < n; i++) {
-      value = values[i];
-      encodeClientServerModule(value, bb);
-    }
-  } else {
-    throw new Error('Missing required field "clientModules"');
-  }
-
-  var value = message["serverModules"];
-  if (value != null) {
-    var values = value,
-      n = values.length;
-    bb.writeVarUint(n);
-    for (var i = 0; i < n; i++) {
-      value = values[i];
-      encodeClientServerModule(value, bb);
-    }
-  } else {
-    throw new Error('Missing required field "serverModules"');
-  }
-
-  var value = message["ssrModules"];
-  if (value != null) {
-    var values = value,
-      n = values.length;
-    bb.writeVarUint(n);
-    for (var i = 0; i < n; i++) {
-      value = values[i];
-      encodeClientServerModule(value, bb);
-    }
-  } else {
-    throw new Error('Missing required field "ssrModules"');
-  }
-
-  var value = message["exportNames"];
-  if (value != null) {
-    var values = value,
-      n = values.length;
-    bb.writeVarUint(n);
-    for (var i = 0; i < n; i++) {
-      value = values[i];
-      encodeStringPointer(value, bb);
-    }
-  } else {
-    throw new Error('Missing required field "exportNames"');
-  }
-
-  var value = message["contents"];
-  if (value != null) {
-    bb.writeByteArray(value);
-  } else {
-    throw new Error('Missing required field "contents"');
-  }
-}
-
 function decodeGetTestsRequest(bb) {
   var result = {};
 
@@ -3461,8 +2407,6 @@ export {
   DotEnvBehaviorKeys,
   FallbackStep,
   FallbackStepKeys,
-  FrameworkEntryPointType,
-  FrameworkEntryPointTypeKeys,
   ImportKind,
   ImportKindKeys,
   JSXRuntime,
@@ -3471,14 +2415,8 @@ export {
   LoaderKeys,
   MessageLevel,
   MessageLevelKeys,
-  ModuleImportType,
-  ModuleImportTypeKeys,
-  Reloader,
-  ReloaderKeys,
   ResolveMode,
   ResolveModeKeys,
-  ScanDependencyMode,
-  ScanDependencyModeKeys,
   SourceMapMode,
   SourceMapModeKeys,
   StackFrameScope,
@@ -3489,39 +2427,22 @@ export {
   TestKindKeys,
   TransformResponseStatus,
   TransformResponseStatusKeys,
-  WebsocketCommandKind,
-  WebsocketCommandKindKeys,
-  WebsocketMessageKind,
-  WebsocketMessageKindKeys,
   decodeBunInstall,
-  decodeClientServerModule,
-  decodeClientServerModuleManifest,
   decodeEnvConfig,
   decodeFallbackMessageContainer,
   decodeFileHandle,
   decodeFrameworkConfig,
-  decodeFrameworkEntryPoint,
-  decodeFrameworkEntryPointMap,
   decodeFrameworkEntryPointMessage,
   decodeGetTestsRequest,
   decodeGetTestsResponse,
   decodeJSException,
   decodeJSX,
-  decodeJavascriptBundle,
-  decodeJavascriptBundleContainer,
-  decodeJavascriptBundledModule,
-  decodeJavascriptBundledPackage,
-  decodeLoadedEnvConfig,
-  decodeLoadedFramework,
-  decodeLoadedRouteConfig,
   decodeLoaderMap,
   decodeLocation,
   decodeLog,
   decodeMessage,
   decodeMessageData,
   decodeMessageMeta,
-  decodeModule,
-  decodeModuleImportRecord,
   decodeNPMRegistry,
   decodeNPMRegistryMap,
   decodeOutputFile,
@@ -3541,45 +2462,22 @@ export {
   decodeTransform,
   decodeTransformOptions,
   decodeTransformResponse,
-  decodeWebsocketCommand,
-  decodeWebsocketCommandBuild,
-  decodeWebsocketCommandBuildWithFilePath,
-  decodeWebsocketCommandManifest,
-  decodeWebsocketMessage,
-  decodeWebsocketMessageBuildFailure,
-  decodeWebsocketMessageBuildSuccess,
-  decodeWebsocketMessageFileChangeNotification,
-  decodeWebsocketMessageResolveID,
-  decodeWebsocketMessageWelcome,
   encodeBunInstall,
-  encodeClientServerModule,
-  encodeClientServerModuleManifest,
   encodeEnvConfig,
   encodeFallbackMessageContainer,
   encodeFileHandle,
   encodeFrameworkConfig,
-  encodeFrameworkEntryPoint,
-  encodeFrameworkEntryPointMap,
   encodeFrameworkEntryPointMessage,
   encodeGetTestsRequest,
   encodeGetTestsResponse,
   encodeJSException,
   encodeJSX,
-  encodeJavascriptBundle,
-  encodeJavascriptBundleContainer,
-  encodeJavascriptBundledModule,
-  encodeJavascriptBundledPackage,
-  encodeLoadedEnvConfig,
-  encodeLoadedFramework,
-  encodeLoadedRouteConfig,
   encodeLoaderMap,
   encodeLocation,
   encodeLog,
   encodeMessage,
   encodeMessageData,
   encodeMessageMeta,
-  encodeModule,
-  encodeModuleImportRecord,
   encodeNPMRegistry,
   encodeNPMRegistryMap,
   encodeOutputFile,
@@ -3599,14 +2497,4 @@ export {
   encodeTransform,
   encodeTransformOptions,
   encodeTransformResponse,
-  encodeWebsocketCommand,
-  encodeWebsocketCommandBuild,
-  encodeWebsocketCommandBuildWithFilePath,
-  encodeWebsocketCommandManifest,
-  encodeWebsocketMessage,
-  encodeWebsocketMessageBuildFailure,
-  encodeWebsocketMessageBuildSuccess,
-  encodeWebsocketMessageFileChangeNotification,
-  encodeWebsocketMessageResolveID,
-  encodeWebsocketMessageWelcome,
 };

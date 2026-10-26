@@ -1,24 +1,23 @@
 pub const S3ListObjectsOptions = struct {
-    continuation_token: ?[]const u8,
-    delimiter: ?[]const u8,
-    encoding_type: ?[]const u8,
-    fetch_owner: ?bool,
-    max_keys: ?i64,
-    prefix: ?[]const u8,
-    start_after: ?[]const u8,
+    continuation_token: ?bun.String.Slice = null,
+    delimiter: ?bun.String.Slice = null,
+    url_encoding: bool = false,
+    fetch_owner: ?bool = null,
+    max_keys: ?i64 = null,
+    prefix: ?bun.String.Slice = null,
+    start_after: ?bun.String.Slice = null,
 
-    _continuation_token: ?jsc.ZigString.Slice,
-    _delimiter: ?jsc.ZigString.Slice,
-    _encoding_type: ?jsc.ZigString.Slice,
-    _prefix: ?jsc.ZigString.Slice,
-    _start_after: ?jsc.ZigString.Slice,
+    pub fn take(this: *@This()) @This() {
+        const result = this.*;
+        this.* = .{};
+        return result;
+    }
 
     pub fn deinit(this: *@This()) void {
-        if (this._continuation_token) |slice| slice.deinit();
-        if (this._delimiter) |slice| slice.deinit();
-        if (this._encoding_type) |slice| slice.deinit();
-        if (this._prefix) |slice| slice.deinit();
-        if (this._start_after) |slice| slice.deinit();
+        const owned = this.take();
+        inline for (.{ "continuation_token", "delimiter", "prefix", "start_after" }) |field| {
+            if (@field(owned, field)) |slice| slice.deinit();
+        }
     }
 };
 
@@ -36,7 +35,7 @@ const S3ListObjectsContents = struct {
     key: []const u8,
     etag: ?bun.ptr.OwnedIn([]const u8, bun.allocators.MaybeOwned(bun.DefaultAllocator)),
     checksum_type: ?[]const u8,
-    checksum_algorithme: ?[]const u8,
+    checksum_algorithm: ?[]const u8,
     last_modified: ?[]const u8,
     object_size: ?i64,
     storage_class: ?[]const u8,
@@ -72,115 +71,102 @@ pub const S3ListObjectsV2Result = struct {
         }
     }
 
-    pub fn toJS(this: *const @This(), globalObject: *JSGlobalObject) bun.JSError!JSValue {
-        const jsResult = jsc.JSObject.createEmpty(globalObject, 0);
+    pub fn toBindingResult(this: *const @This(), comptime FunctionSchema: type) bun.OOM!bun.bindgen.Return(FunctionSchema) {
+        const Result = bun.bindgen.Return(FunctionSchema);
+        var result: Result = .{
+            .key_count = if (this.key_count) |value| @floatFromInt(value) else null,
+            .max_keys = if (this.max_keys) |value| @floatFromInt(value) else null,
+            .is_truncated = this.is_truncated,
+        };
+        errdefer bun.bindgen.deinitReturn(FunctionSchema, &result);
 
-        if (this.name) |name| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("name"), try bun.String.createUTF8ForJS(globalObject, name));
+        inline for (.{ "name", "prefix", "delimiter", "encoding_type", "continuation_token", "next_continuation_token", "start_after" }) |field| {
+            @field(result, field) = try optionalString(@field(this, field));
         }
 
-        if (this.prefix) |prefix| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("prefix"), try bun.String.createUTF8ForJS(globalObject, prefix));
-        }
-
-        if (this.delimiter) |delimiter| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("delimiter"), try bun.String.createUTF8ForJS(globalObject, delimiter));
-        }
-
-        if (this.start_after) |start_after| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("startAfter"), try bun.String.createUTF8ForJS(globalObject, start_after));
-        }
-        if (this.encoding_type) |encoding_type| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("encodingType"), try bun.String.createUTF8ForJS(globalObject, encoding_type));
-        }
-
-        if (this.continuation_token) |continuation_token| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("continuationToken"), try bun.String.createUTF8ForJS(globalObject, continuation_token));
-        }
-
-        if (this.next_continuation_token) |next_continuation_token| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("nextContinuationToken"), try bun.String.createUTF8ForJS(globalObject, next_continuation_token));
-        }
-
-        if (this.is_truncated) |is_truncated| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("isTruncated"), JSValue.jsBoolean(is_truncated));
-        }
-
-        if (this.key_count) |key_count| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("keyCount"), JSValue.jsNumber(key_count));
-        }
-
-        if (this.max_keys) |max_keys| {
-            jsResult.putDirect(globalObject, jsc.ZigString.static("maxKeys"), JSValue.jsNumber(max_keys));
+        if (this.common_prefixes) |prefixes| {
+            const Sequence = @typeInfo(@FieldType(Result, "common_prefixes")).optional.child;
+            var builder = try Sequence.Builder.init(prefixes.items.len);
+            errdefer builder.deinit();
+            for (prefixes.items) |prefix| {
+                builder.appendOwned(.{ .prefix = try bun.bindgen.DOMString.fromUTF8(prefix) });
+            }
+            result.common_prefixes = builder.finish();
         }
 
         if (this.contents) |contents| {
-            const jsContents = try jsc.JSArray.createEmpty(globalObject, contents.items.len);
-
-            for (contents.items, 0..) |item, i| {
-                const objectInfo = jsc.JSObject.createEmpty(globalObject, 0);
-                objectInfo.putDirect(globalObject, jsc.ZigString.static("key"), try bun.String.createUTF8ForJS(globalObject, item.key));
-
-                if (item.etag) |etag| {
-                    objectInfo.putDirect(globalObject, jsc.ZigString.static("eTag"), try bun.String.createUTF8ForJS(globalObject, etag.get()));
+            const Sequence = @typeInfo(@FieldType(Result, "contents")).optional.child;
+            var builder = try Sequence.Builder.init(contents.items.len);
+            errdefer builder.deinit();
+            for (contents.items) |item| {
+                var value: Sequence.Element = .{
+                    .key = try bun.bindgen.DOMString.fromUTF8(item.key),
+                    .size = if (item.object_size) |size| @floatFromInt(size) else null,
+                };
+                errdefer Sequence.deinitElement(&value);
+                value.etag = try optionalString(if (item.etag) |etag| etag.get() else null);
+                inline for (.{ "checksum_algorithm", "checksum_type", "last_modified", "storage_class" }) |field| {
+                    @field(value, field) = try optionalString(@field(item, field));
                 }
-
-                if (item.checksum_algorithme) |checksum_algorithme| {
-                    objectInfo.putDirect(globalObject, jsc.ZigString.static("checksumAlgorithme"), try bun.String.createUTF8ForJS(globalObject, checksum_algorithme));
-                }
-
-                if (item.checksum_type) |checksum_type| {
-                    objectInfo.putDirect(globalObject, jsc.ZigString.static("checksumType"), try bun.String.createUTF8ForJS(globalObject, checksum_type));
-                }
-
-                if (item.last_modified) |last_modified| {
-                    objectInfo.putDirect(globalObject, jsc.ZigString.static("lastModified"), try bun.String.createUTF8ForJS(globalObject, last_modified));
-                }
-
-                if (item.object_size) |object_size| {
-                    objectInfo.putDirect(globalObject, jsc.ZigString.static("size"), JSValue.jsNumber(object_size));
-                }
-
-                if (item.storage_class) |storage_class| {
-                    objectInfo.putDirect(globalObject, jsc.ZigString.static("storageClass"), try bun.String.createUTF8ForJS(globalObject, storage_class));
-                }
-
                 if (item.owner) |owner| {
-                    const jsOwner = jsc.JSObject.createEmpty(globalObject, 0);
-                    if (owner.id) |id| {
-                        jsOwner.putDirect(globalObject, jsc.ZigString.static("id"), try bun.String.createUTF8ForJS(globalObject, id));
-                    }
-
-                    if (owner.display_name) |display_name| {
-                        jsOwner.putDirect(globalObject, jsc.ZigString.static("displayName"), try bun.String.createUTF8ForJS(globalObject, display_name));
-                    }
-
-                    objectInfo.putDirect(globalObject, jsc.ZigString.static("owner"), jsOwner.toJS());
+                    value.owner = .{};
+                    value.owner.?.id = try optionalString(owner.id);
+                    value.owner.?.display_name = try optionalString(owner.display_name);
                 }
-
-                try jsContents.putDirectIndex(globalObject, @intCast(i), objectInfo.toJS());
+                if (item.restore_status) |restore_status| {
+                    value.restore_status = .{
+                        .is_restore_in_progress = restore_status.is_restore_in_progress,
+                    };
+                    value.restore_status.?.restore_expiry_date = try optionalString(restore_status.restore_expiry_date);
+                }
+                builder.appendOwned(value);
             }
-
-            jsResult.putDirect(globalObject, jsc.ZigString.static("contents"), jsContents.toJS());
+            result.contents = builder.finish();
         }
 
-        if (this.common_prefixes) |common_prefixes| {
-            const jsCommonPrefixes = try jsc.JSArray.createEmpty(globalObject, common_prefixes.items.len);
-
-            for (common_prefixes.items, 0..) |prefix, i| {
-                const jsPrefix = jsc.JSObject.createEmpty(globalObject, 0);
-                jsPrefix.putDirect(globalObject, jsc.ZigString.static("prefix"), try bun.String.createUTF8ForJS(globalObject, prefix));
-                try jsCommonPrefixes.putDirectIndex(globalObject, @intCast(i), jsPrefix.toJS());
-            }
-
-            jsResult.putDirect(globalObject, jsc.ZigString.static("commonPrefixes"), jsCommonPrefixes.toJS());
-        }
-
-        return jsResult.toJS();
+        return result;
     }
 };
 
-pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
+const optionalString = bun.bindgen.DOMString.fromOptionalUTF8;
+
+const CompletionPayload = struct {
+    success: bun.MutableString,
+
+    pub fn deinit(this: *CompletionPayload) void {
+        this.success.deinit();
+    }
+};
+
+const CompletionOps = struct {
+    pub fn materialize(
+        comptime FunctionSchema: type,
+        context: bun.bindgen.MaterializationContext(FunctionSchema),
+        payload: *CompletionPayload,
+    ) bun.bindgen.MaterializationError(FunctionSchema)!bun.bindgen.Return(FunctionSchema) {
+        _ = context;
+        var result = try parseS3ListObjectsResult(payload.success.slice());
+        defer result.deinit();
+        return try result.toBindingResult(FunctionSchema);
+    }
+
+    pub fn destroyPayload(payload: *CompletionPayload) void {
+        payload.deinit();
+        bun.destroy(payload);
+    }
+
+};
+
+const S3ClientClassSchema = bun.bindgen.Module("S3Client").class("S3Client");
+
+pub const S3ListCompletions = bun.bindgen.MaterializedCompletionSet(.{
+    S3ClientClassSchema.memberKind("list", .method),
+    S3ClientClassSchema.memberKind("list", .static_method),
+}, CompletionPayload, CompletionOps);
+
+pub const Acceptor = @import("./completions.zig").ResultAcceptor(CompletionPayload, S3ListCompletions);
+
+pub fn parseS3ListObjectsResult(xml: []const u8) bun.OOM!S3ListObjectsV2Result {
     var result: S3ListObjectsV2Result = .{
         .contents = null,
         .common_prefixes = null,
@@ -225,7 +211,7 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                     var etag: ?[]const u8 = null;
                     var etag_owned: bool = false;
                     var checksum_type: ?[]const u8 = null;
-                    var checksum_algorithme: ?[]const u8 = null;
+                    var checksum_algorithm: ?[]const u8 = null;
                     var owner_id: ?[]const u8 = null;
                     var owner_display_name: ?[]const u8 = null;
                     var is_restore_in_progress: ?bool = null;
@@ -273,7 +259,7 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "ChecksumAlgorithm")) {
                                     if (strings.indexOf(xml[i..], "</ChecksumAlgorithm>")) |__tag_end| {
-                                        checksum_algorithme = xml[i .. i + __tag_end];
+                                        checksum_algorithm = xml[i .. i + __tag_end];
                                         i = i + __tag_end + 20;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "ETag")) {
@@ -383,7 +369,7 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                             .key = object_key_val,
                             .etag = if (etag) |etag_| if (etag_owned) .fromRawIn(etag_, .init()) else .fromRawIn(etag_, .initBorrowed()) else null,
                             .checksum_type = checksum_type,
-                            .checksum_algorithme = checksum_algorithme,
+                            .checksum_algorithm = checksum_algorithm,
                             .last_modified = last_modified,
                             .object_size = object_size,
                             .storage_class = storage_class,
@@ -499,100 +485,51 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
     return result;
 }
 
-pub fn getListObjectsOptionsFromJS(globalThis: *jsc.JSGlobalObject, listOptions: JSValue) !S3ListObjectsOptions {
-    var listObjectsOptions: S3ListObjectsOptions = .{
-        .continuation_token = null,
-        .delimiter = null,
-        .encoding_type = null,
-        .fetch_owner = null,
-        .max_keys = null,
-        .prefix = null,
-        .start_after = null,
-
-        ._continuation_token = null,
-        ._delimiter = null,
-        ._encoding_type = null,
-        ._prefix = null,
-        ._start_after = null,
+pub fn getListObjectsOptionsFromBinding(context: anytype, input: anytype) bun.bindgen.CallError(@TypeOf(context))!S3ListObjectsOptions {
+    var result: S3ListObjectsOptions = .{};
+    errdefer result.deinit();
+    if (input) |value| switch (value) {
+        .options => |options| try applyListOptions(&result, &options),
+        .nulled, .undefined => {},
+        .invalid => return context.fail(.invalid_list_options, {}),
     };
+    return result;
+}
 
-    if (!listOptions.isObject()) {
-        return listObjectsOptions;
-    }
+fn applyListOptions(result: *S3ListObjectsOptions, options: anytype) bun.OOM!void {
+    result.continuation_token = try listString(&options.continuation_token);
+    result.delimiter = try listString(&options.delimiter);
+    if (options.encoding_type) |value| result.url_encoding = switch (value) {
+        .string => |string| string.length() != 0,
+        .ignored => false,
+    };
+    result.fetch_owner = options.fetch_owner;
+    if (options.max_keys) |*value| switch (value.*) {
+        .number => |number| result.max_keys = coerceDoubleToInt32(number),
+        .ignored => {},
+    };
+    result.prefix = try listString(&options.prefix);
+    result.start_after = try listString(&options.start_after);
+}
 
-    if (try listOptions.getOptional(globalThis, "continuationToken", JSValue)) |val| {
-        if (val.isString()) {
-            const str = try bun.String.fromJS(val, globalThis);
+fn listString(input: anytype) bun.OOM!?bun.String.Slice {
+    if (input.*) |*value| switch (value.*) {
+        .string => |*string| {
+            if (string.length() != 0) return try string.toUTF8(bun.default_allocator);
+        },
+        .ignored => {},
+    };
+    return null;
+}
 
-            if (str.tag != .Empty and str.tag != .Dead) {
-                listObjectsOptions._continuation_token = str.toUTF8(bun.default_allocator);
-                listObjectsOptions.continuation_token = listObjectsOptions._continuation_token.?.slice();
-            }
-        }
-    }
-
-    if (try listOptions.getOptional(globalThis, "delimiter", JSValue)) |val| {
-        if (val.isString()) {
-            const str = try bun.String.fromJS(val, globalThis);
-
-            if (str.tag != .Empty and str.tag != .Dead) {
-                listObjectsOptions._delimiter = str.toUTF8(bun.default_allocator);
-                listObjectsOptions.delimiter = listObjectsOptions._delimiter.?.slice();
-            }
-        }
-    }
-
-    if (try listOptions.getOptional(globalThis, "encodingType", JSValue)) |val| {
-        if (val.isString()) {
-            const str = try bun.String.fromJS(val, globalThis);
-
-            if (str.tag != .Empty and str.tag != .Dead) {
-                listObjectsOptions._encoding_type = str.toUTF8(bun.default_allocator);
-                listObjectsOptions.encoding_type = listObjectsOptions._encoding_type.?.slice();
-            }
-        }
-    }
-
-    if (try listOptions.getBooleanLoose(globalThis, "fetchOwner")) |val| {
-        listObjectsOptions.fetch_owner = val;
-    }
-
-    if (try listOptions.getOptional(globalThis, "maxKeys", JSValue)) |val| {
-        if (val.isNumber()) {
-            listObjectsOptions.max_keys = val.toInt32();
-        }
-    }
-
-    if (try listOptions.getOptional(globalThis, "prefix", JSValue)) |val| {
-        if (val.isString()) {
-            const str = try bun.String.fromJS(val, globalThis);
-
-            if (str.tag != .Empty and str.tag != .Dead) {
-                listObjectsOptions._prefix = str.toUTF8(bun.default_allocator);
-                listObjectsOptions.prefix = listObjectsOptions._prefix.?.slice();
-            }
-        }
-    }
-
-    if (try listOptions.getOptional(globalThis, "startAfter", JSValue)) |val| {
-        if (val.isString()) {
-            const str = try bun.String.fromJS(val, globalThis);
-
-            if (str.tag != .Empty and str.tag != .Dead) {
-                listObjectsOptions._start_after = str.toUTF8(bun.default_allocator);
-                listObjectsOptions.start_after = listObjectsOptions._start_after.?.slice();
-            }
-        }
-    }
-
-    return listObjectsOptions;
+fn coerceDoubleToInt32(value: f64) i32 {
+    if (std.math.isNan(value)) return 0;
+    if (value <= std.math.minInt(i32) or std.math.isNegativeInf(value)) return std.math.minInt(i32);
+    if (value >= std.math.maxInt(i32) or std.math.isPositiveInf(value)) return std.math.maxInt(i32);
+    return @intFromFloat(value);
 }
 
 const std = @import("std");
 
 const bun = @import("bun");
 const strings = bun.strings;
-
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;

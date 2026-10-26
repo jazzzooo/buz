@@ -71,26 +71,31 @@ pub const HtmlRenderer = struct {
     fn enterBlockImpl(ptr: *anyopaque, block_type: BlockType, data: u32, flags: u32) bun.JSError!void {
         const self: *HtmlRenderer = @ptrCast(@alignCast(ptr));
         self.enterBlock(block_type, data, flags);
+        if (self.out.oom) return error.OutOfMemory;
     }
 
     fn leaveBlockImpl(ptr: *anyopaque, block_type: BlockType, data: u32) bun.JSError!void {
         const self: *HtmlRenderer = @ptrCast(@alignCast(ptr));
         self.leaveBlock(block_type, data);
+        if (self.out.oom) return error.OutOfMemory;
     }
 
     fn enterSpanImpl(ptr: *anyopaque, span_type: SpanType, detail: SpanDetail) bun.JSError!void {
         const self: *HtmlRenderer = @ptrCast(@alignCast(ptr));
         self.enterSpan(span_type, detail);
+        if (self.out.oom) return error.OutOfMemory;
     }
 
     fn leaveSpanImpl(ptr: *anyopaque, span_type: SpanType) bun.JSError!void {
         const self: *HtmlRenderer = @ptrCast(@alignCast(ptr));
         self.leaveSpan(span_type);
+        if (self.out.oom) return error.OutOfMemory;
     }
 
     fn textImpl(ptr: *anyopaque, text_type: TextType, content: []const u8) bun.JSError!void {
         const self: *HtmlRenderer = @ptrCast(@alignCast(ptr));
         self.text(text_type, content);
+        if (self.out.oom) return error.OutOfMemory;
     }
 
     // ========================================
@@ -208,7 +213,11 @@ pub const HtmlRenderer = struct {
             .li => self.write("</li>\n"),
             .hr => {},
             .h => {
-                if (self.heading_tracker.leaveHeading(self.allocator)) |slug| {
+                const heading_id = self.heading_tracker.leaveHeading(self.allocator) catch {
+                    self.out.oom = true;
+                    return;
+                };
+                if (heading_id) |slug| {
                     // Write opening tag with id
                     self.out.write(switch (data) {
                         1 => "<h1",
@@ -364,7 +373,10 @@ pub const HtmlRenderer = struct {
         const in_image = self.image_nesting_level > 0;
 
         // Track plain text for slug generation when inside a heading
-        self.heading_tracker.trackText(text_type, content, self.allocator);
+        self.heading_tracker.trackText(text_type, content, self.allocator) catch {
+            self.out.oom = true;
+            return;
+        };
 
         switch (text_type) {
             .null_char => self.write("\xEF\xBF\xBD"),

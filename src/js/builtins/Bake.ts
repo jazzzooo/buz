@@ -7,6 +7,67 @@ type FrameworkGetParams = Bake.ServerEntryPoint["getParams"];
 type TypeAndFlags = number;
 type FileIndex = number;
 
+interface FrameworkFileSystemRouter {
+  $matchNative(path: string): {
+    params: NonNullable<Bake.RouteMetadata["params"]>;
+    hasParams: boolean;
+    route: Array<{ part: string; page: string | null; layout: string | null }>;
+  } | null;
+  $toJSONNative(): Array<{
+    part: string;
+    page: string | null;
+    layout: string | null;
+    parent: number | null;
+  }>;
+}
+
+export function frameworkRouterMatch(this: FrameworkFileSystemRouter, path: string) {
+  const matched = this.$matchNative(path);
+  if (matched === null) return null;
+
+  let parent = null;
+  for (let i = 0; i < matched.route.length; i++) {
+    const segment = matched.route[i];
+    parent = {
+      part: segment.part,
+      page: segment.page,
+      layout: segment.layout,
+      parent,
+    };
+  }
+  return {
+    params: matched.hasParams ? matched.params : null,
+    route: parent,
+  };
+}
+
+export function frameworkRouterToJSON(this: FrameworkFileSystemRouter) {
+  const routes = this.$toJSONNative();
+  const nodes = new Array(routes.length);
+  let root = null;
+
+  for (let i = 0; i < routes.length; i++) {
+    const route = routes[i];
+    nodes[i] = {
+      part: route.part,
+      page: route.page,
+      layout: route.layout,
+      children: [],
+    };
+  }
+
+  for (let i = 0; i < routes.length; i++) {
+    const parent = routes[i].parent;
+    if (parent === null) {
+      root = nodes[i];
+    } else {
+      nodes[parent].children.push(nodes[i]);
+    }
+  }
+
+  return root;
+}
+
 /**
  * This layer is implemented in JavaScript to reduce Native <-> JS context switches,
  * as well as use the async primitives provided by the language.
@@ -16,8 +77,8 @@ export async function renderRoutesForProdStatic(
   allServerFiles: string[],
   // Indexed by router type index
   renderStatic: FrameworkPrerender[],
-  getParams: FrameworkGetParams[],
-  clientEntryUrl: string[],
+  getParams: Array<FrameworkGetParams | null>,
+  clientEntryUrl: Array<string | null>,
   // Indexed by route index
   patterns: string[],
   files: FileIndex[][],
@@ -48,7 +109,7 @@ export async function renderRoutesForProdStatic(
     i: number,
     layouts: any[],
     pageModule: any,
-    params: Record<string, string | string[]> | null,
+    params: Bake.RouteMetadata["params"],
   ) {
     // Call the framework's rendering function
     const callback = renderStatic[type];
@@ -95,7 +156,7 @@ export async function renderRoutesForProdStatic(
     i: number,
     layouts: any[],
     pageModule: any,
-    params: Record<string, string | string[]>,
+    params: NonNullable<Bake.RouteMetadata["params"]>,
   ) {
     for (const param of paramInformation[i]!) {
       if (params[param] === undefined) {
@@ -105,13 +166,13 @@ export async function renderRoutesForProdStatic(
     return doGenerateRoute(type, noClient, i, layouts, pageModule, params);
   }
 
-  let modulesForFiles = [];
+  let modulesForFiles: any[][] = [];
   for (const fileList of files) {
     $assert(fileList.length > 0);
     if (fileList.length > 1) {
       let anyPromise = false;
       let loaded = fileList.map(
-        x => loadedModules[x] ?? ((anyPromise = true), import(allServerFiles[x]).then(x => (loadedModules[x] = x))),
+        x => loadedModules[x] ?? ((anyPromise = true), import(allServerFiles[x]).then(mod => (loadedModules[x] = mod))),
       );
       modulesForFiles.push(anyPromise ? await Promise.all(loaded) : loaded);
     } else {
@@ -120,7 +181,7 @@ export async function renderRoutesForProdStatic(
     }
   }
 
-  return Promise.all(
+  await Promise.all(
     modulesForFiles.map(async (modules, i) => {
       const typeAndFlag = typeAndFlags[i];
       const type = typeAndFlag & 0xff;
@@ -136,14 +197,14 @@ export async function renderRoutesForProdStatic(
           layouts,
         });
         let result;
-        if (paramGetter[Symbol.asyncIterator] != undefined) {
+        if (Symbol.asyncIterator in paramGetter) {
           for await (const params of paramGetter) {
             result = callRouteGenerator(type, noClient, i, layouts, pageModule, params);
             if ($isPromise(result) && $isPromisePending(result)) {
               await result;
             }
           }
-        } else if (paramGetter[Symbol.iterator] != undefined) {
+        } else if (Symbol.iterator in paramGetter) {
           for (const params of paramGetter) {
             result = callRouteGenerator(type, noClient, i, layouts, pageModule, params);
             if ($isPromise(result) && $isPromisePending(result)) {

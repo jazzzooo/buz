@@ -1,6 +1,8 @@
 const EventLoop = @This();
 
-tasks: Queue = undefined,
+tasks: Queue = .{},
+accepts_cancellable_tasks: bool = true,
+native_completion_registry: ?*jsc.NativeCompletionRegistry = null,
 
 /// setImmediate() gets it's own two task queues
 /// When you call `setImmediate` in JS, it queues to the start of the next tick
@@ -17,8 +19,6 @@ next_immediate_tasks: std.ArrayListUnmanaged(*Timer.ImmediateObject) = .empty,
 concurrent_tasks: ConcurrentTask.Queue = ConcurrentTask.Queue{},
 global: *jsc.JSGlobalObject = undefined,
 virtual_machine: *VirtualMachine = undefined,
-waker: ?Waker = null,
-forever_timer: ?*uws.Timer = null,
 deferred_tasks: DeferredTaskQueue = .{},
 uws_loop: if (Environment.isWindows) ?*uws.Loop else void = if (Environment.isWindows) null,
 
@@ -58,7 +58,7 @@ pub const Debug = if (Environment.isDebug) struct {
 };
 
 /// Before your code enters JavaScript at the top of the event loop, call
-/// `loop.enter()`. If running a single callback, prefer `runCallback` instead.
+/// `loop.enter()`. Typed callback dispatch manages this scope automatically.
 ///
 /// When we call into JavaScript, we must drain process.nextTick & microtasks
 /// afterwards (so that promises run). We must only do that once per task in the
@@ -83,7 +83,8 @@ pub fn exit(this: *EventLoop) void {
     defer this.debug.exit();
 
     if (count == 1 and !this.virtual_machine.is_inside_deferred_task_queue) {
-        this.drainMicrotasksWithGlobal(this.global, this.virtual_machine.jsc_vm) catch {};
+        this.drainMicrotasksWithGlobal(this.global, this.virtual_machine.jsc_vm) catch |err|
+            this.global.reportActiveExceptionAsUnhandled(err);
     }
 
     this.entered_event_loop_count -= 1;
@@ -110,7 +111,7 @@ pub fn pipeReadBuffer(this: *const EventLoop) []u8 {
     return this.virtual_machine.rareData().pipeReadBuffer();
 }
 
-pub const Queue = bun.LinearFifo(Task, .Dynamic);
+pub const Queue = @import("../event_loop/TaskQueue.zig");
 const log = bun.Output.scoped(.EventLoop, .hidden);
 
 pub fn tickWhilePaused(this: *EventLoop, done: *bool) void {
@@ -119,27 +120,21 @@ pub fn tickWhilePaused(this: *EventLoop, done: *bool) void {
     }
 }
 
-const DrainMicrotasksResult = enum(u8) {
-    success = 0,
-    JSTerminated = 1,
-};
-extern fn JSC__JSGlobalObject__drainMicrotasks(*jsc.JSGlobalObject) DrainMicrotasksResult;
 pub fn drainMicrotasksWithGlobal(this: *EventLoop, globalObject: *jsc.JSGlobalObject, jsc_vm: *jsc.VM) bun.JSTerminated!void {
     // During spawnSync, the isolated event loop shares the same VM/GlobalObject.
     // Draining microtasks would execute user JavaScript, which must not happen.
     if (this.virtual_machine.suppress_microtask_drain) return;
 
-    jsc.markBinding(@src());
     jsc_vm.releaseWeakRefs();
 
-    switch (JSC__JSGlobalObject__drainMicrotasks(globalObject)) {
-        .success => {},
-        .JSTerminated => return error.JSTerminated,
-    }
+    bun.bindgen.Engine(DrainMicrotasksSchema).call(globalObject, .{}) catch return error.JSTerminated;
 
-    this.virtual_machine.is_inside_deferred_task_queue = true;
-    this.deferred_tasks.run();
-    this.virtual_machine.is_inside_deferred_task_queue = false;
+    {
+        const was_inside = this.virtual_machine.is_inside_deferred_task_queue;
+        this.virtual_machine.is_inside_deferred_task_queue = true;
+        defer this.virtual_machine.is_inside_deferred_task_queue = was_inside;
+        this.deferred_tasks.run();
+    }
 
     if (this.virtual_machine.event_loop_handle != null) {
         this.virtual_machine.uwsLoop().drainQuicIfNecessary();
@@ -157,82 +152,29 @@ pub fn drainMicrotasks(this: *EventLoop) bun.JSTerminated!void {
 // should be called after exit()
 pub fn maybeDrainMicrotasks(this: *EventLoop) void {
     if (this.entered_event_loop_count == 0 and !this.virtual_machine.is_inside_deferred_task_queue) {
-        this.drainMicrotasksWithGlobal(this.global, this.virtual_machine.jsc_vm) catch {};
+        this.drainMicrotasksWithGlobal(this.global, this.virtual_machine.jsc_vm) catch |err|
+            this.global.reportActiveExceptionAsUnhandled(err);
     }
 }
 
-/// When you call a JavaScript function from outside the event loop task
-/// queue
-///
-/// It has to be wrapped in `runCallback` to ensure that microtasks are
-/// drained and errors are handled.
-///
-/// Otherwise, you will risk a large number of microtasks being queued and
-/// not being drained, which can lead to catastrophic memory usage and
-/// application slowdown.
-pub fn runCallback(this: *EventLoop, callback: jsc.JSValue, globalObject: *jsc.JSGlobalObject, thisValue: jsc.JSValue, arguments: []const jsc.JSValue) void {
-    this.enter();
-    defer this.exit();
-    _ = callback.call(globalObject, thisValue, arguments) catch |err|
-        globalObject.reportActiveExceptionAsUnhandled(err);
+fn bindEnter(
+    _: bun.bindgen.CallContext(EnterSchema),
+    _: bun.bindgen.Args(EnterSchema),
+) bun.bindgen.Return(EnterSchema) {
+    jsc.VirtualMachine.get().eventLoop().enter();
 }
 
-fn externRunCallback1(global: *jsc.JSGlobalObject, callback: jsc.JSValue, thisValue: jsc.JSValue, arg0: jsc.JSValue) callconv(.c) void {
-    const vm = global.bunVM();
-    var loop = vm.eventLoop();
-    loop.runCallback(callback, global, thisValue, &.{arg0});
-}
-
-fn externRunCallback2(global: *jsc.JSGlobalObject, callback: jsc.JSValue, thisValue: jsc.JSValue, arg0: jsc.JSValue, arg1: jsc.JSValue) callconv(.c) void {
-    const vm = global.bunVM();
-    var loop = vm.eventLoop();
-    loop.runCallback(callback, global, thisValue, &.{ arg0, arg1 });
-}
-
-fn externRunCallback3(global: *jsc.JSGlobalObject, callback: jsc.JSValue, thisValue: jsc.JSValue, arg0: jsc.JSValue, arg1: jsc.JSValue, arg2: jsc.JSValue) callconv(.c) void {
-    const vm = global.bunVM();
-    var loop = vm.eventLoop();
-    loop.runCallback(callback, global, thisValue, &.{ arg0, arg1, arg2 });
-}
-
-fn externEnter(global: *jsc.JSGlobalObject) callconv(.c) void {
-    global.bunVM().eventLoop().enter();
-}
-
-fn externExit(global: *jsc.JSGlobalObject) callconv(.c) void {
-    global.bunVM().eventLoop().exit();
-}
-
-comptime {
-    @export(&externRunCallback1, .{ .name = "Bun__EventLoop__runCallback1" });
-    @export(&externRunCallback2, .{ .name = "Bun__EventLoop__runCallback2" });
-    @export(&externRunCallback3, .{ .name = "Bun__EventLoop__runCallback3" });
-    @export(&externEnter, .{ .name = "Bun__EventLoop__enter" });
-    @export(&externExit, .{ .name = "Bun__EventLoop__exit" });
-}
-
-/// Prefer `runCallbackWithResult` unless you really need to make sure that microtasks are drained.
-pub fn runCallbackWithResultAndForcefullyDrainMicrotasks(this: *EventLoop, callback: jsc.JSValue, globalObject: *jsc.JSGlobalObject, thisValue: jsc.JSValue, arguments: []const jsc.JSValue) !jsc.JSValue {
-    const result = try callback.call(globalObject, thisValue, arguments);
-    result.ensureStillAlive();
-    try this.drainMicrotasksWithGlobal(globalObject, globalObject.bunVM().jsc_vm);
-    return result;
-}
-
-pub fn runCallbackWithResult(this: *EventLoop, callback: jsc.JSValue, globalObject: *jsc.JSGlobalObject, thisValue: jsc.JSValue, arguments: []const jsc.JSValue) jsc.JSValue {
-    this.enter();
-    defer this.exit();
-
-    const result = callback.call(globalObject, thisValue, arguments) catch |err| {
-        globalObject.reportActiveExceptionAsUnhandled(err);
-        return .zero;
-    };
-    return result;
+fn bindExit(
+    _: bun.bindgen.CallContext(ExitSchema),
+    _: bun.bindgen.Args(ExitSchema),
+) bun.bindgen.Return(ExitSchema) {
+    jsc.VirtualMachine.get().eventLoop().exit();
 }
 
 fn tickWithCount(this: *EventLoop, virtual_machine: *VirtualMachine) u32 {
     var counter: u32 = 0;
-    this.tickQueueWithCount(virtual_machine, &counter) catch {};
+    this.tickQueueWithCount(virtual_machine, &counter) catch |err|
+        this.global.reportActiveExceptionAsUnhandled(err);
     return counter;
 }
 
@@ -316,44 +258,19 @@ pub fn tickConcurrentWithCount(this: *EventLoop) usize {
 
     this.runImminentGCTimer();
 
-    var concurrent = this.concurrent_tasks.popBatch();
-    const count = concurrent.count;
-    if (count == 0)
-        return 0;
+    const concurrent = this.concurrent_tasks.popBatch();
+    this.tasks.appendBatch(concurrent);
+    return concurrent.count;
+}
 
-    var iter = concurrent.iterator();
-    const start_count = this.tasks.count;
-    if (start_count == 0) {
-        this.tasks.head = 0;
-    }
+pub fn cancelTask(this: *EventLoop, task: *ConcurrentTask) bool {
+    this.tasks.appendBatch(this.concurrent_tasks.popBatch());
+    return this.tasks.remove(&task.node);
+}
 
-    this.tasks.ensureUnusedCapacity(count) catch unreachable;
-    var writable = this.tasks.writableSlice(0);
-
-    // Defer destruction of the ConcurrentTask to avoid issues with pointer aliasing
-    var to_destroy: ?*ConcurrentTask = null;
-
-    while (iter.next()) |task| {
-        if (to_destroy) |dest| {
-            to_destroy = null;
-            dest.deinit();
-        }
-
-        if (task.autoDelete()) {
-            to_destroy = task;
-        }
-
-        writable[0] = task.task;
-        writable = writable[1..];
-        this.tasks.count += 1;
-        if (writable.len == 0) break;
-    }
-
-    if (to_destroy) |dest| {
-        dest.deinit();
-    }
-
-    return this.tasks.count - start_count;
+pub fn cancelNativeTask(this: *EventLoop, task: *AnyTaskWithExtraContext) bool {
+    this.tasks.appendBatch(this.concurrent_tasks.popBatch());
+    return this.tasks.remove(&task.event_loop_node);
 }
 
 pub fn usocketsLoop(this: *const EventLoop) *uws.Loop {
@@ -432,25 +349,17 @@ pub fn tickPossiblyForever(this: *EventLoop) void {
         }
     }
 
-    if (!loop.isActive()) {
-        if (this.forever_timer == null) {
-            var t = uws.Timer.create(loop, this);
-            t.set(this, &noopForeverTimer, 1000 * 60 * 4, 1000 * 60 * 4);
-            this.forever_timer = t;
-        }
-    }
+    loop.ref();
+    defer loop.unref();
 
     this.processGCTimer();
-    this.processGCTimer();
-    loop.tick();
+    var timeout: bun.timespec = undefined;
+    loop.tickWithTimeout(if (ctx.timer.getTimeout(&timeout, ctx)) &timeout else null);
+    if (comptime Environment.isPosix) ctx.timer.drainTimers(ctx);
 
     ctx.onAfterEventLoop();
     this.tickConcurrent();
     this.tick();
-}
-
-fn noopForeverTimer(_: *uws.Timer) callconv(.c) void {
-    // do nothing
 }
 
 pub fn autoTickActive(this: *EventLoop) void {
@@ -497,10 +406,6 @@ pub fn processGCTimer(this: *EventLoop) void {
 }
 
 pub fn tick(this: *EventLoop) void {
-    jsc.markBinding(@src());
-    var scope: jsc.TopExceptionScope = undefined;
-    scope.init(this.global, @src());
-    defer scope.deinit();
     this.entered_event_loop_count += 1;
     this.debug.enter();
     defer {
@@ -509,6 +414,7 @@ pub fn tick(this: *EventLoop) void {
     }
 
     const ctx = this.virtual_machine;
+    defer ctx.drainNativeFinalizers();
     this.tickConcurrent();
     this.processGCTimer();
 
@@ -520,7 +426,7 @@ pub fn tick(this: *EventLoop) void {
             this.tickConcurrent();
         } else {
             this.drainMicrotasksWithGlobal(global, global_vm) catch return;
-            if (scope.hasException()) return;
+            if (this.global.hasExceptionIncludingTraps()) return;
             this.tickConcurrent();
             if (this.tasks.count > 0) continue;
         }
@@ -554,43 +460,6 @@ pub fn tickTasksOnly(this: *EventLoop) void {
     }
 }
 
-pub fn waitForPromise(this: *EventLoop, promise: jsc.AnyPromise) void {
-    const jsc_vm = this.virtual_machine.jsc_vm;
-    switch (promise.status()) {
-        .pending => {
-            while (promise.status() == .pending) {
-                // If execution is forbidden (e.g. due to a timeout in vm.SourceTextModule.evaluate),
-                // the Promise callbacks can never run, so we must exit to avoid an infinite loop.
-                if (jsc_vm.executionForbidden()) {
-                    break;
-                }
-                this.tick();
-
-                if (promise.status() == .pending) {
-                    this.autoTick();
-                }
-            }
-        },
-        else => {},
-    }
-}
-
-pub fn waitForPromiseWithTermination(this: *EventLoop, promise: jsc.AnyPromise) void {
-    const worker = this.virtual_machine.worker orelse @panic("EventLoop.waitForPromiseWithTermination: worker is not initialized");
-    switch (promise.status()) {
-        .pending => {
-            while (!worker.hasRequestedTerminate() and promise.status() == .pending) {
-                this.tick();
-
-                if (!worker.hasRequestedTerminate() and promise.status() == .pending) {
-                    this.autoTick();
-                }
-            }
-        },
-        else => {},
-    }
-}
-
 pub fn enqueueTask(this: *EventLoop, task: Task) void {
     this.tasks.writeItem(task) catch unreachable;
 }
@@ -600,7 +469,6 @@ pub fn enqueueImmediateTask(this: *EventLoop, task: *Timer.ImmediateObject) void
 }
 
 pub fn ensureWaker(this: *EventLoop) void {
-    jsc.markBinding(@src());
     if (this.virtual_machine.event_loop_handle == null) {
         if (comptime Environment.isWindows) {
             this.uws_loop = bun.uws.Loop.get();
@@ -610,15 +478,13 @@ pub fn ensureWaker(this: *EventLoop) void {
         }
 
         this.virtual_machine.gc_controller.init(this.virtual_machine);
-        // _ = actual.addPostHandler(*jsc.EventLoop, this, jsc.EventLoop.afterUSocketsTick);
-        // _ = actual.addPreHandler(*jsc.VM, this.virtual_machine.jsc_vm, jsc.VM.drainMicrotasks);
     }
     if (comptime Environment.isWindows) {
         if (this.uws_loop == null) {
             this.uws_loop = bun.uws.Loop.get();
         }
     }
-    bun.uws.Loop.get().internal_loop_data.setParentEventLoop(bun.jsc.EventLoopHandle.init(this));
+    bun.jsc.EventLoopHandle.init(this).attach(bun.uws.Loop.get());
 }
 
 /// Asynchronously run the garbage collector and track how much memory is now allocated
@@ -649,8 +515,23 @@ pub fn enqueueTaskConcurrent(this: *EventLoop, task: *ConcurrentTask) void {
         log("enqueueTaskConcurrent({s})", .{task.task.typeName() orelse "[unknown]"});
     }
 
-    this.concurrent_tasks.push(task);
+    this.concurrent_tasks.push(&task.node);
     this.wakeup();
+}
+
+pub fn enqueueNativeTaskConcurrent(this: *EventLoop, task: *AnyTaskWithExtraContext) void {
+    bun.assert(!this.virtual_machine.has_terminated);
+    this.concurrent_tasks.push(&task.event_loop_node);
+    this.wakeup();
+}
+
+pub fn enqueueNativeTask(this: *EventLoop, task: *AnyTaskWithExtraContext) void {
+    bun.assert(!this.virtual_machine.has_terminated);
+    this.tasks.appendBatch(.{
+        .front = &task.event_loop_node,
+        .last = &task.event_loop_node,
+        .count = 1,
+    });
 }
 
 pub fn enqueueTaskConcurrentBatch(this: *EventLoop, batch: ConcurrentTask.Queue.Batch) void {
@@ -680,41 +561,77 @@ pub fn unrefConcurrently(this: *EventLoop) void {
 }
 
 /// Testing API to expose event loop state
-pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const vm = globalObject.bunVM();
+pub fn getActiveTasks(
+    _: bun.bindgen.CallContext(GetActiveTasksSchema),
+    _: bun.bindgen.Args(GetActiveTasksSchema),
+) bun.JSError!bun.bindgen.Return(GetActiveTasksSchema) {
+    const vm = jsc.VirtualMachine.get();
     const event_loop = vm.event_loop;
-
-    const result = jsc.JSObject.createEmpty(globalObject, 3);
-    result.putDirect(globalObject, jsc.ZigString.static("activeTasks"), jsc.JSValue.jsNumber(vm.active_tasks));
-    result.putDirect(globalObject, jsc.ZigString.static("concurrentRef"), jsc.JSValue.jsNumber(event_loop.concurrent_ref.load(.seq_cst)));
 
     // Get num_polls from uws loop (POSIX) or active_handles from libuv (Windows)
     const num_polls: i32 = if (Environment.isWindows)
         @intCast(bun.windows.libuv.Loop.get().active_handles)
     else
         uws.Loop.get().num_polls;
-    result.putDirect(globalObject, jsc.ZigString.static("numPolls"), jsc.JSValue.jsNumber(num_polls));
+    return .{
+        .active_tasks = vm.active_tasks,
+        .concurrent_ref = event_loop.concurrent_ref.load(.seq_cst),
+        .num_polls = num_polls,
+    };
+}
 
-    return result.toJS();
+pub fn discardEngineTasks(this: *EventLoop) usize {
+    this.accepts_cancellable_tasks = false;
+    const EngineTasks = struct {
+        fn matches(task: Task) bool {
+            if (task.get(AnyTaskWithExtraContext)) |native| return native.on_cancel != null;
+            return task.get(CppTask) != null or task.get(JSCDeferredWorkTask) != null or
+                task.get(jsc.IntrusiveTask) != null;
+        }
+    };
+    var discarded: usize = 0;
+    while (true) {
+        this.tasks.appendBatch(this.concurrent_tasks.popBatch());
+        const task = this.tasks.takeMatching(EngineTasks.matches) orelse break;
+        discarded += 1;
+        if (task.get(CppTask)) |callback| {
+            callback.deinit();
+        } else if (task.get(jsc.IntrusiveTask)) |callback| {
+            callback.cancel();
+        } else if (task.get(AnyTaskWithExtraContext)) |callback| {
+            callback.cancel();
+        } else {
+            task.get(JSCDeferredWorkTask).?.deinit();
+        }
+    }
+    return discarded;
 }
 
 pub fn deinit(this: *EventLoop) void {
+    this.deferred_tasks.deinit();
+    if (this.native_completion_registry) |registry| {
+        this.native_completion_registry = null;
+        registry.close();
+        this.virtual_machine.rare_data.?.unregisterNativeCompletionRegistry(registry);
+        registry.release();
+    }
+    this.tasks.appendBatch(this.concurrent_tasks.popBatch());
     this.tasks.deinit();
     this.immediate_tasks.clearAndFree(bun.default_allocator);
     this.next_immediate_tasks.clearAndFree(bun.default_allocator);
 }
 
-pub const AnyEventLoop = @import("../event_loop/AnyEventLoop.zig").AnyEventLoop;
-pub const ConcurrentPromiseTask = @import("./ConcurrentPromiseTask.zig").ConcurrentPromiseTask;
 pub const WorkTask = @import("./WorkTask.zig").WorkTask;
-pub const AnyTask = @import("../event_loop/AnyTask.zig");
-pub const ManagedTask = @import("../event_loop/ManagedTask.zig");
+pub const AnyTask = @import("../event_loop/AnyTaskEngine.zig");
+pub const ManagedTask = @import("../event_loop/ManagedTaskEngine.zig");
 pub const AnyTaskWithExtraContext = @import("../event_loop/AnyTaskWithExtraContext.zig");
+pub const CppTaskModule = @import("./CppTask.zig");
 pub const CppTask = @import("./CppTask.zig").CppTask;
 pub const ConcurrentCppTask = @import("./CppTask.zig").ConcurrentCppTask;
 pub const JSCScheduler = @import("./JSCScheduler.zig");
+const JSCDeferredWorkTask = JSCScheduler.JSCDeferredWorkTask;
 pub const Task = @import("./Task.zig").Task;
-pub const ConcurrentTask = @import("../event_loop/ConcurrentTask.zig");
+pub const ConcurrentTask = @import("../event_loop/ConcurrentTaskEngine.zig");
 pub const GarbageCollectionController = @import("./GarbageCollectionController.zig");
 pub const DeferredTaskQueue = @import("../event_loop/DeferredTaskQueue.zig");
 pub const DeferredRepeatingTask = DeferredTaskQueue.DeferredRepeatingTask;
@@ -722,16 +639,56 @@ pub const PosixSignalHandle = @import("./PosixSignalHandle.zig");
 pub const PosixSignalTask = PosixSignalHandle.PosixSignalTask;
 pub const MiniEventLoop = @import("../event_loop/MiniEventLoop.zig");
 pub const MiniVM = MiniEventLoop.MiniVM;
-pub const JsVM = MiniEventLoop.JsVM;
-pub const EventLoopKind = MiniEventLoop.EventLoopKind;
-pub const AbstractVM = MiniEventLoop.AbstractVM;
+pub const EventLoopKind = @import("../event_loop/types.zig").Kind;
+
+pub const JsVM = struct {
+    vm: *VirtualMachine,
+
+    pub inline fn init(inner: *VirtualMachine) JsVM {
+        return .{ .vm = inner };
+    }
+
+    pub inline fn loop(this: JsVM) *EventLoop {
+        return this.vm.event_loop;
+    }
+
+    pub inline fn platformEventLoop(this: JsVM) *jsc.PlatformEventLoop {
+        return this.vm.event_loop_handle.?;
+    }
+
+    pub inline fn incrementPendingUnrefCounter(this: JsVM) void {
+        this.vm.pending_unref_counter +|= 1;
+    }
+
+    pub inline fn filePolls(this: JsVM) *Async.FilePoll.Store {
+        return this.vm.rareData().filePolls(this.vm);
+    }
+};
+
+pub fn AbstractVM(inner: anytype) switch (@TypeOf(inner)) {
+    *VirtualMachine => JsVM,
+    *MiniEventLoop => MiniVM,
+    RuntimeLoopHandle => RuntimeLoopHandle,
+    else => @compileError("Invalid event loop ctx: " ++ @typeName(@TypeOf(inner))),
+} {
+    if (comptime @TypeOf(inner) == *VirtualMachine) return JsVM.init(inner);
+    if (comptime @TypeOf(inner) == *MiniEventLoop) return MiniVM.init(inner);
+    if (comptime @TypeOf(inner) == RuntimeLoopHandle) return inner;
+    @compileError("Invalid event loop ctx: " ++ @typeName(@TypeOf(inner)));
+}
+
+pub fn setLoopVM(loop: *uws.Loop, vm: ?*jsc.VM) void {
+    loop.internal_loop_data.setBeforeWait(vm, if (vm == null) null else onBeforeWait);
+}
+
+fn onBeforeWait(context: ?*anyopaque) callconv(.c) void {
+    const vm: *jsc.VM = @ptrCast(@alignCast(context orelse unreachable));
+    vm.onBeforeWait();
+}
 
 pub const EventLoopHandle = @import("./EventLoopHandle.zig").EventLoopHandle;
 pub const EventLoopTask = @import("./EventLoopHandle.zig").EventLoopTask;
 pub const EventLoopTaskPtr = @import("./EventLoopHandle.zig").EventLoopTaskPtr;
-
-pub const BackgroundWork = @import("../io/BackgroundWork.zig").BackgroundWork;
-pub const BackgroundTask = @import("../io/BackgroundWork.zig").Task;
 
 const std = @import("std");
 const tickQueueWithCount = @import("./Task.zig").tickQueueWithCount;
@@ -742,7 +699,24 @@ const uws = bun.uws;
 const Timer = bun.api.Timer;
 
 const Async = bun.Async;
-const Waker = bun.Async.Waker;
 
 const jsc = bun.jsc;
 const VirtualMachine = bun.jsc.VirtualMachine;
+const RuntimeLoopHandle = bun.RuntimeLoopHandle;
+const DrainMicrotasksSchema = bun.bindgen.Module("microtasks").engineShim("drainMicrotasks");
+
+const EventLoopBindings = bun.bindgen.Module("EventLoop");
+const EnterSchema = EventLoopBindings.nativeExport("enter");
+const ExitSchema = EventLoopBindings.nativeExport("exit");
+const EnterBinding = bun.bindgen.Fn(EnterSchema, bindEnter);
+const ExitBinding = bun.bindgen.Fn(ExitSchema, bindExit);
+
+const InternalTestingBindings = bun.bindgen.Module("InternalTesting");
+const GetActiveTasksSchema = InternalTestingBindings.function("getActiveTasks");
+const GetActiveTasksBinding = bun.bindgen.Fn(GetActiveTasksSchema, getActiveTasks);
+
+comptime {
+    _ = EnterBinding;
+    _ = ExitBinding;
+    _ = GetActiveTasksBinding;
+}

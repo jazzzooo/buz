@@ -3,7 +3,6 @@
 #include "JavaScriptCore/CallData.h"
 #include "JavaScriptCore/ExceptionScope.h"
 #include "JavaScriptCore/JSCast.h"
-#include "headers-handwritten.h"
 #include "helpers.h"
 #include "ZigGlobalObject.h"
 
@@ -26,7 +25,6 @@
 #include <JavaScriptCore/RegularExpression.h>
 #include <JavaScriptCore/SourceOrigin.h>
 #include <JavaScriptCore/Structure.h>
-#include <JavaScriptCore/SubspaceInlines.h>
 #include <wtf/text/WTFString.h>
 
 #include "BunClientData.h"
@@ -34,13 +32,15 @@
 #include "isBuiltinModule.h"
 #include "AsyncContextFrame.h"
 #include "ImportMetaObject.h"
+#include "SchemaBindings.h"
 
 namespace Zig {
 
-extern "C" void Bun__onDidAppendPlugin(void* bunVM, JSGlobalObject* globalObject);
-using OnAppendPluginCallback = void (*)(void*, JSGlobalObject* globalObject);
+#define BUN_BINDGEN_OBJECT_SURFACE_BunPluginBuilder
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_BunPluginBuilder
 
-static bool isValidNamespaceString(String& namespaceString)
+static bool isValidNamespaceString(const String& namespaceString)
 {
     static JSC::Yarr::RegularExpression* namespaceRegex = nullptr;
     if (!namespaceRegex) {
@@ -49,98 +49,39 @@ static bool isValidNamespaceString(String& namespaceString)
     return namespaceRegex->match(namespaceString) > -1;
 }
 
-static JSC::EncodedJSValue jsFunctionAppendOnLoadPluginBody(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe, BunPluginTarget target, BunPlugin::Base& plugin, void* ctx, OnAppendPluginCallback callback)
+static void appendPlugin(
+    JSC::JSGlobalObject* globalObject,
+    const Bun::Bindgen::PluginRegistrationInput& registration,
+    JSC::JSObject* callback,
+    BunPlugin::Base& plugin)
 {
     auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (callframe->argumentCount() < 2) {
-        throwException(globalObject, scope, createError(globalObject, "onLoad() requires at least 2 arguments"_s));
-        return {};
-    }
-
-    auto* filterObject = callframe->uncheckedArgument(0).toObject(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    JSC::RegExpObject* filter = nullptr;
-    auto filterValue = filterObject->getIfPropertyExists(globalObject, Identifier::fromString(vm, "filter"_s));
-    RETURN_IF_EXCEPTION(scope, {});
-    if (filterValue) {
-        if (filterValue.isCell() && filterValue.asCell()->inherits<JSC::RegExpObject>())
-            filter = uncheckedDowncast<JSC::RegExpObject>(filterValue);
-    }
-
-    if (!filter) {
-        throwException(globalObject, scope, createError(globalObject, "onLoad() expects first argument to be an object with a filter RegExp"_s));
-        return {};
-    }
-
-    String namespaceString = String();
-    auto namespaceValue = filterObject->getIfPropertyExists(globalObject, Identifier::fromString(vm, "namespace"_s));
-    RETURN_IF_EXCEPTION(scope, {});
-    if (namespaceValue) {
-        if (namespaceValue.isString()) {
-            namespaceString = namespaceValue.toWTFString(globalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-            if (!isValidNamespaceString(namespaceString)) {
-                throwException(globalObject, scope, createError(globalObject, "namespace can only contain letters, numbers, dashes, or underscores"_s));
-                return {};
-            }
-        }
-    }
-
-    auto func = callframe->uncheckedArgument(1);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (!func.isCell() || !func.isCallable()) {
-        throwException(globalObject, scope, createError(globalObject, "onLoad() expects second argument to be a function"_s));
-        return {};
-    }
-
-    plugin.append(vm, filter->regExp(), func.getObject(), namespaceString);
-    callback(ctx, globalObject);
-
-    return JSValue::encode(callframe->thisValue());
+    String namespaceString = registration.namespaceString;
+    plugin.append(vm, uncheckedDowncast<JSC::RegExpObject>(registration.filter)->regExp(), callback, namespaceString);
+    Bun::Bindgen::ZigExports::bunBindgenZig_ModuleLoader_onDidAppendPlugin(globalObject);
 }
 
-static EncodedJSValue jsFunctionAppendVirtualModulePluginBody(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe)
+static void appendVirtualModule(
+    JSC::JSGlobalObject* globalObject,
+    const String& moduleId,
+    JSC::JSObject* callback)
 {
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (callframe->argumentCount() < 2) {
-        throwException(globalObject, scope, createError(globalObject, "module() needs 2 arguments: a module ID and a function to call"_s));
-        return {};
-    }
-
-    JSValue moduleIdValue = callframe->uncheckedArgument(0);
-    JSValue functionValue = callframe->uncheckedArgument(1);
-
-    if (!moduleIdValue.isString()) {
-        throwException(globalObject, scope, createError(globalObject, "module() expects first argument to be a string for the module ID"_s));
-        return {};
-    }
-
-    if (!functionValue.isCallable()) {
-        throwException(globalObject, scope, createError(globalObject, "module() expects second argument to be a function"_s));
-        return {};
-    }
-
-    String moduleId = moduleIdValue.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
 
     if (moduleId.isEmpty()) {
         throwException(globalObject, scope, createError(globalObject, "virtual module cannot be blank"_s));
-        return {};
+        return;
     }
 
     if (Bun::isBuiltinModule(moduleId)) {
         throwException(globalObject, scope, createError(globalObject, makeString("module() cannot be used to override builtin module \""_s, moduleId, "\""_s)));
-        return {};
+        return;
     }
 
     if (moduleId.startsWith("."_s)) {
         throwException(globalObject, scope, createError(globalObject, "virtual module cannot start with \".\""_s));
-        return {};
+        return;
     }
 
     Zig::GlobalObject* global = defaultGlobalObject(globalObject);
@@ -150,213 +91,41 @@ static EncodedJSValue jsFunctionAppendVirtualModulePluginBody(JSC::JSGlobalObjec
     }
     auto* virtualModules = global->onLoadPlugins.virtualModules;
 
-    virtualModules->set(moduleId, JSC::Strong<JSC::JSObject> { vm, uncheckedDowncast<JSC::JSObject>(functionValue) });
+    virtualModules->set(moduleId, BunPlugin::VirtualModule { JSC::Strong<JSC::JSObject> { vm, callback }, false });
 
     auto* requireMap = global->requireMap();
-    RETURN_IF_EXCEPTION(scope, {});
+    RETURN_IF_EXCEPTION(scope, void());
+    JSValue moduleIdValue = jsString(vm, moduleId);
     requireMap->remove(globalObject, moduleIdValue);
-    RETURN_IF_EXCEPTION(scope, {});
+    RETURN_IF_EXCEPTION(scope, void());
 
-    if (moduleIdValue.isString()) {
-        auto idIdent = JSC::Identifier::fromString(vm, asString(moduleIdValue)->value(globalObject));
-        RETURN_IF_EXCEPTION(scope, {});
-        global->moduleLoader()->removeEntry(idIdent);
-    }
-
-    return JSValue::encode(callframe->thisValue());
+    auto idIdent = JSC::Identifier::fromString(vm, moduleId);
+    RETURN_IF_EXCEPTION(scope, void());
+    global->moduleLoader()->removeEntry(idIdent);
 }
 
-static JSC::EncodedJSValue jsFunctionAppendOnResolvePluginBody(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe, BunPluginTarget target, BunPlugin::Base& plugin, void* ctx, OnAppendPluginCallback callback)
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (callframe->argumentCount() < 2) {
-        throwException(globalObject, scope, createError(globalObject, "onResolve() requires at least 2 arguments"_s));
-        return {};
-    }
-
-    auto* filterObject = callframe->uncheckedArgument(0).toObject(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    JSC::RegExpObject* filter = nullptr;
-    auto filterValue = filterObject->getIfPropertyExists(globalObject, Identifier::fromString(vm, "filter"_s));
-    RETURN_IF_EXCEPTION(scope, {});
-    if (filterValue) {
-        RETURN_IF_EXCEPTION(scope, {});
-        if (filterValue.isCell() && filterValue.asCell()->inherits<JSC::RegExpObject>())
-            filter = uncheckedDowncast<JSC::RegExpObject>(filterValue);
-    }
-
-    if (!filter) {
-        throwException(globalObject, scope, createError(globalObject, "onResolve() expects first argument to be an object with a filter RegExp"_s));
-        return {};
-    }
-
-    String namespaceString = String();
-    auto namespaceValue = filterObject->getIfPropertyExists(globalObject, Identifier::fromString(vm, "namespace"_s));
-    RETURN_IF_EXCEPTION(scope, {});
-    if (namespaceValue) {
-        if (namespaceValue.isString()) {
-            namespaceString = namespaceValue.toWTFString(globalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-            if (!isValidNamespaceString(namespaceString)) {
-                throwException(globalObject, scope, createError(globalObject, "namespace can only contain letters, numbers, dashes, or underscores"_s));
-                return {};
-            }
-        }
-        RETURN_IF_EXCEPTION(scope, {});
-    }
-
-    auto func = callframe->uncheckedArgument(1);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (!func.isCell() || !func.isCallable()) {
-        throwException(globalObject, scope, createError(globalObject, "onResolve() expects second argument to be a function"_s));
-        return {};
-    }
-
-    RETURN_IF_EXCEPTION(scope, {});
-    plugin.append(vm, filter->regExp(), uncheckedDowncast<JSObject>(func), namespaceString);
-    callback(ctx, globalObject);
-
-    return JSValue::encode(callframe->thisValue());
-}
-
-static JSC::EncodedJSValue jsFunctionAppendOnResolvePluginGlobal(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe, BunPluginTarget target)
-{
-    Zig::GlobalObject* global = defaultGlobalObject(globalObject);
-
-    auto& plugins = global->onResolvePlugins;
-    auto callback = Bun__onDidAppendPlugin;
-    return jsFunctionAppendOnResolvePluginBody(globalObject, callframe, target, plugins, global->bunVM(), callback);
-}
-
-static JSC::EncodedJSValue jsFunctionAppendOnLoadPluginGlobal(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe, BunPluginTarget target)
-{
-    Zig::GlobalObject* global = defaultGlobalObject(globalObject);
-
-    auto& plugins = global->onLoadPlugins;
-    auto callback = Bun__onDidAppendPlugin;
-    return jsFunctionAppendOnLoadPluginBody(globalObject, callframe, target, plugins, global->bunVM(), callback);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionAppendOnLoadPluginNode, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
-{
-    return jsFunctionAppendOnLoadPluginGlobal(globalObject, callframe, BunPluginTargetNode);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionAppendOnLoadPluginBun, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
-{
-    return jsFunctionAppendOnLoadPluginGlobal(globalObject, callframe, BunPluginTargetBun);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionAppendOnLoadPluginBrowser, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
-{
-    return jsFunctionAppendOnLoadPluginGlobal(globalObject, callframe, BunPluginTargetBrowser);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionAppendOnResolvePluginNode, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
-{
-    return jsFunctionAppendOnResolvePluginGlobal(globalObject, callframe, BunPluginTargetNode);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionAppendOnResolvePluginBun, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
-{
-    return jsFunctionAppendOnResolvePluginGlobal(globalObject, callframe, BunPluginTargetBun);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionAppendVirtualModule, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
-{
-    return jsFunctionAppendVirtualModulePluginBody(globalObject, callframe);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionAppendOnResolvePluginBrowser, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
-{
-    return jsFunctionAppendOnResolvePluginGlobal(globalObject, callframe, BunPluginTargetBrowser);
-}
-
-/// `Bun.plugin()`
-static inline JSC::EncodedJSValue setupBunPlugin(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe, BunPluginTarget target)
+static std::optional<JSC::JSValue> setupBunPlugin(
+    JSC::JSGlobalObject* globalObject,
+    JSC::JSObject* function)
 {
     auto& vm = JSC::getVM(globalObject);
     auto throwScope = DECLARE_THROW_SCOPE(vm);
-    if (callframe->argumentCount() < 1) {
-        JSC::throwTypeError(globalObject, throwScope, "plugin needs at least one argument (an object)"_s);
-        return {};
-    }
-
-    JSC::JSObject* obj = callframe->uncheckedArgument(0).getObject();
-    if (!obj) {
-        JSC::throwTypeError(globalObject, throwScope, "plugin needs an object as first argument"_s);
-        return {};
-    }
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    JSC::JSValue setupFunctionValue = obj->getIfPropertyExists(globalObject, Identifier::fromString(vm, "setup"_s));
-    RETURN_IF_EXCEPTION(throwScope, {});
-    if (!setupFunctionValue || setupFunctionValue.isUndefinedOrNull() || !setupFunctionValue.isCell() || !setupFunctionValue.isCallable()) {
-        JSC::throwTypeError(globalObject, throwScope, "plugin needs a setup() function"_s);
-        return {};
-    }
-
-    auto targetValue = obj->getIfPropertyExists(globalObject, Identifier::fromString(vm, "target"_s));
-    RETURN_IF_EXCEPTION(throwScope, {});
-    if (targetValue) {
-        if (auto* targetJSString = targetValue.toStringOrNull(globalObject)) {
-            String targetString = targetJSString->value(globalObject);
-            if (!(targetString == "node"_s || targetString == "bun"_s || targetString == "browser"_s)) {
-                JSC::throwTypeError(globalObject, throwScope, "plugin target must be one of 'node', 'bun' or 'browser'"_s);
-                return {};
-            }
-        }
-    }
-
     JSObject* builderObject = JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), 4);
-
-    builderObject->putDirect(vm, Identifier::fromString(vm, "target"_s), jsString(vm, String("bun"_s)), 0);
-    builderObject->putDirectNativeFunction(
-        vm,
-        globalObject,
-        JSC::Identifier::fromString(vm, "onLoad"_s),
-        1,
-        jsFunctionAppendOnLoadPluginBun,
-        ImplementationVisibility::Public,
-        NoIntrinsic,
-        JSC::PropertyAttribute::DontDelete | 0);
-    builderObject->putDirectNativeFunction(
-        vm,
-        globalObject,
-        JSC::Identifier::fromString(vm, "onResolve"_s),
-        1,
-        jsFunctionAppendOnResolvePluginBun,
-        ImplementationVisibility::Public,
-        NoIntrinsic,
-        JSC::PropertyAttribute::DontDelete | 0);
-
-    builderObject->putDirectNativeFunction(
-        vm,
-        globalObject,
-        JSC::Identifier::fromString(vm, "module"_s),
-        1,
-        jsFunctionAppendVirtualModule,
-        ImplementationVisibility::Public,
-        NoIntrinsic,
-        JSC::PropertyAttribute::DontDelete | 0);
+    bunBindgenObjectSurface_BunPluginBuilder_install(vm, builderObject->classInfo(), *builderObject);
 
     JSC::MarkedArgumentBuffer args;
     args.append(builderObject);
 
-    JSObject* function = uncheckedDowncast<JSObject>(setupFunctionValue);
     JSC::CallData callData = JSC::getCallData(function);
     JSValue result = call(globalObject, function, callData, JSC::jsUndefined(), args);
 
-    RETURN_IF_EXCEPTION(throwScope, {});
+    RETURN_IF_EXCEPTION(throwScope, std::nullopt);
 
     if (auto* promise = dynamicDowncast<JSC::JSPromise>(result)) {
-        RELEASE_AND_RETURN(throwScope, JSValue::encode(promise));
+        return JSC::JSValue(promise);
     }
 
-    RELEASE_AND_RETURN(throwScope, JSValue::encode(jsUndefined()));
+    return std::nullopt;
 }
 
 void BunPlugin::Group::append(JSC::VM& vm, JSC::RegExp* filter, JSC::JSObject* func)
@@ -379,7 +148,7 @@ void BunPlugin::Base::append(JSC::VM& vm, JSC::RegExp* filter, JSC::JSObject* fu
     }
 }
 
-JSC::JSObject* BunPlugin::Group::find(JSC::JSGlobalObject* globalObject, String& path)
+JSC::JSObject* BunPlugin::Group::find(JSC::JSGlobalObject* globalObject, const String& path)
 {
     size_t count = filters.size();
     for (size_t i = 0; i < count; i++) {
@@ -393,150 +162,29 @@ JSC::JSObject* BunPlugin::Group::find(JSC::JSGlobalObject* globalObject, String&
 
 void BunPlugin::OnLoad::addModuleMock(JSC::VM& vm, const String& path, JSC::JSObject* mockObject)
 {
-    Zig::GlobalObject* globalObject = defaultGlobalObject(mockObject->globalObject());
-
-    if (globalObject->onLoadPlugins.virtualModules == nullptr) {
-        globalObject->onLoadPlugins.virtualModules = new BunPlugin::VirtualModuleMap;
-    }
-    auto* virtualModules = globalObject->onLoadPlugins.virtualModules;
-
-    virtualModules->set(path, JSC::Strong<JSC::JSObject> { vm, mockObject });
+    if (!virtualModules)
+        virtualModules = new BunPlugin::VirtualModuleMap;
+    virtualModules->set(path, BunPlugin::VirtualModule { JSC::Strong<JSC::JSObject> { vm, mockObject }, true });
 }
 
-class JSModuleMock final : public JSC::JSNonFinalObject {
-public:
-    using Base = JSC::JSNonFinalObject;
-
-    mutable WriteBarrier<JSObject> callbackFunctionOrCachedResult;
-    bool hasCalledModuleMock = false;
-
-    static JSModuleMock* create(JSC::VM& vm, JSC::Structure* structure, JSC::JSObject* callback);
-    static Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype);
-
-    DECLARE_INFO;
-    DECLARE_VISIT_CHILDREN;
-
-    JSObject* executeOnce(JSC::JSGlobalObject* lexicalGlobalObject);
-
-    template<typename, JSC::SubspaceAccess mode> static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm)
-    {
-        if constexpr (mode == JSC::SubspaceAccess::Concurrently)
-            return nullptr;
-        return WebCore::subspaceForImpl<JSModuleMock, WebCore::UseCustomHeapCellType::No>(
-            vm,
-            [](auto& spaces) { return spaces.m_clientSubspaceForJSModuleMock.get(); },
-            [](auto& spaces, auto&& space) { spaces.m_clientSubspaceForJSModuleMock = std::forward<decltype(space)>(space); },
-            [](auto& spaces) { return spaces.m_subspaceForJSModuleMock.get(); },
-            [](auto& spaces, auto&& space) { spaces.m_subspaceForJSModuleMock = std::forward<decltype(space)>(space); });
-    }
-
-    void finishCreation(JSC::VM&);
-
-private:
-    JSModuleMock(JSC::VM&, JSC::Structure*, JSC::JSObject* callback);
-};
-
-const JSC::ClassInfo JSModuleMock::s_info = { "ModuleMock"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSModuleMock) };
-
-JSModuleMock* JSModuleMock::create(JSC::VM& vm, JSC::Structure* structure, JSC::JSObject* callback)
-{
-    JSModuleMock* ptr = new (NotNull, JSC::allocateCell<JSModuleMock>(vm)) JSModuleMock(vm, structure, callback);
-    ptr->finishCreation(vm);
-    return ptr;
-}
-
-void JSModuleMock::finishCreation(JSC::VM& vm)
-{
-    Base::finishCreation(vm);
-}
-
-JSModuleMock::JSModuleMock(JSC::VM& vm, JSC::Structure* structure, JSC::JSObject* callback)
-    : Base(vm, structure)
-    , callbackFunctionOrCachedResult(callback, JSC::WriteBarrierEarlyInit)
-{
-}
-
-Structure* JSModuleMock::createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
-{
-    return Structure::create(vm, globalObject, prototype, JSC::TypeInfo(JSC::ObjectType, StructureFlags), info());
-}
-
-JSObject* JSModuleMock::executeOnce(JSC::JSGlobalObject* lexicalGlobalObject)
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (hasCalledModuleMock) {
-        return callbackFunctionOrCachedResult.get();
-    }
-
-    hasCalledModuleMock = true;
-
-    if (!callbackFunctionOrCachedResult) {
-        scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "Cannot call mock without a callback"_s));
-        return nullptr;
-    }
-
-    JSC::JSValue callbackValue = callbackFunctionOrCachedResult.get();
-    if (!callbackValue.isCell() || !callbackValue.isCallable()) {
-        scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "mock(module, fn) requires a function"_s));
-        return nullptr;
-    }
-
-    JSObject* callback = callbackValue.getObject();
-    JSC::JSValue result = JSC::profiledCall(lexicalGlobalObject, ProfilingReason::API, callback, JSC::getCallData(callback), JSC::jsUndefined(), ArgList());
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (!result.isObject()) {
-        scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "mock(module, fn) requires a function that returns an object"_s));
-        return nullptr;
-    }
-
-    auto* object = result.getObject();
-    this->callbackFunctionOrCachedResult.set(vm, this, object);
-
-    return object;
-}
-
-BUN_DECLARE_HOST_FUNCTION(JSMock__jsModuleMock);
-extern "C" JSC_DEFINE_HOST_FUNCTION(JSMock__jsModuleMock, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callframe))
+static void registerModuleMock(
+    JSC::JSGlobalObject* lexicalGlobalObject,
+    WTF::String specifier,
+    JSC::JSObject* callback,
+    const JSC::SourceOrigin& sourceOrigin)
 {
     auto& vm = JSC::getVM(lexicalGlobalObject);
     Zig::GlobalObject* globalObject = defaultGlobalObject(lexicalGlobalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
     if (!globalObject) [[unlikely]] {
         scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "Cannot run mock from a different global context"_s));
-        return {};
+        return;
     }
 
-    if (callframe->argumentCount() < 1) {
-        scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "mock(module, fn) requires a module and function"_s));
-        return {};
-    }
-
-    if (!callframe->argument(0).isString()) {
-        scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "mock(module, fn) requires a module name string"_s));
-        return {};
-    }
-
-    JSC::JSString* specifierString = callframe->argument(0).toString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    WTF::String specifier = specifierString->value(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (specifier.isEmpty()) {
-        scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "mock(module, fn) requires a module and function"_s));
-        return {};
-    }
-
-    JSC::JSValue callbackValue = callframe->argument(1);
-    if (!callbackValue.isCell() || !callbackValue.isCallable()) {
-        scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "mock(module, fn) requires a function"_s));
-        return {};
-    }
+    JSC::JSString* specifierString = jsString(vm, specifier);
+    bool requiresRelativeLookup = false;
 
     auto resolveSpecifier = [&]() -> void {
-        JSC::SourceOrigin sourceOrigin = callframe->callerSourceOrigin(vm);
         if (sourceOrigin.isNull())
             return;
         const URL& url = sourceOrigin.url();
@@ -546,7 +194,7 @@ extern "C" JSC_DEFINE_HOST_FUNCTION(JSMock__jsModuleMock, (JSC::JSGlobalObject *
             if (fileURL.isValid()) {
                 specifier = fileURL.fileSystemPath();
                 specifierString = jsString(vm, specifier);
-                globalObject->onLoadPlugins.mustDoExpensiveRelativeLookup = true;
+                requiresRelativeLookup = true;
                 return;
             } else {
                 scope.throwException(lexicalGlobalObject, JSC::createTypeError(lexicalGlobalObject, "Invalid \"file:\" URL"_s));
@@ -556,25 +204,22 @@ extern "C" JSC_DEFINE_HOST_FUNCTION(JSMock__jsModuleMock, (JSC::JSGlobalObject *
 
         if (url.isValid() && url.protocolIsFile()) {
             auto fromString = url.fileSystemPath();
-            BunString from = Bun::toString(fromString);
             auto topExceptionScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-            auto result = JSValue::decode(Bun__resolveSyncWithSource(globalObject, JSValue::encode(specifierString), &from, true, false));
+            auto result = Bun::Bindgen::ZigExports::bunBindgenZig_BunObject_resolveSyncWithSource(globalObject, specifierString, fromString, true, false);
             if (topExceptionScope.exception()) {
-                (void)topExceptionScope.tryClearException();
+                if (!topExceptionScope.tryClearException())
+                    return;
             }
 
-            if (result && result.isString()) {
-                auto* specifierStr = result.toString(globalObject);
-                if (specifierStr->length() > 0) {
-                    specifierString = specifierStr;
-                    specifier = specifierString->value(globalObject);
-                }
+            if (!result.isEmpty()) {
+                specifierString = jsString(vm, result);
+                specifier = result;
             } else if (specifier.startsWith("./"_s) || specifier.startsWith(".."_s)) {
                 // If module resolution fails, we try to resolve it relative to the current file
                 auto relativeURL = URL(url, specifier);
 
                 if (relativeURL.isValid()) {
-                    globalObject->onLoadPlugins.mustDoExpensiveRelativeLookup = true;
+                    requiresRelativeLookup = true;
 
                     if (relativeURL.protocolIsFile())
                         specifier = relativeURL.fileSystemPath();
@@ -588,150 +233,62 @@ extern "C" JSC_DEFINE_HOST_FUNCTION(JSMock__jsModuleMock, (JSC::JSGlobalObject *
     };
 
     resolveSpecifier();
-    RETURN_IF_EXCEPTION(scope, {});
+    RETURN_IF_EXCEPTION(scope, void());
 
-    JSC::JSObject* callback = callbackValue.getObject();
+    auto factory = bun_bindgen_source_function_RuntimeFunctions_createModuleMock_value(globalObject);
+    RETURN_IF_EXCEPTION(scope, void());
+    JSC::MarkedArgumentBuffer arguments;
+    arguments.append(callback);
+    arguments.append(specifierString);
+    if (arguments.hasOverflowed()) {
+        throwOutOfMemoryError(globalObject, scope);
+        return;
+    }
+    auto mockValue = JSC::profiledCall(globalObject, ProfilingReason::Other, factory, getCallData(factory), jsUndefined(), arguments);
+    RETURN_IF_EXCEPTION(scope, void());
+    auto* mock = asObject(mockValue);
 
-    JSModuleMock* mock = JSModuleMock::create(vm, globalObject->mockModule.mockModuleStructure.getInitializedOnMainThread(globalObject), callback);
-
-    auto getJSValue = [&]() -> JSValue {
-        auto scope = DECLARE_THROW_SCOPE(vm);
-        JSValue result = mock->executeOnce(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (result && result.isObject()) {
-            while (JSC::JSPromise* promise = dynamicDowncast<JSC::JSPromise>(result)) {
-                switch (promise->status()) {
-                case JSC::JSPromise::Status::Rejected: {
-                    result = promise->result();
-                    scope.throwException(globalObject, result);
-                    return {};
-                    break;
-                }
-                case JSC::JSPromise::Status::Fulfilled: {
-                    result = promise->result();
-                    break;
-                }
-                // TODO: blocking wait for promise
-                default: {
-                    break;
-                }
-                }
-            }
-        }
-
-        return result;
-    };
-
-    bool removeFromESM = false;
-    bool removeFromCJS = false;
-
-    auto specifierIdent = JSC::Identifier::fromString(vm, specifierString->value(globalObject));
-    RETURN_IF_EXCEPTION(scope, {});
+    auto specifierIdent = JSC::Identifier::fromString(vm, specifier);
+    bool needsEvaluation = false;
     if (auto* entry = globalObject->moduleLoader()->registryEntry(specifierIdent)) {
-        removeFromESM = true;
+        bool linked = false;
         if (auto* mod = entry->record()) {
-            // getModuleNamespace asserts the record has progressed past linking.
-            // A previous import that failed during link (e.g. unresolved binding)
-            // leaves the record at New/Unlinked; in that case there is no
-            // namespace to patch — drop the stale entry so the mock takes over
-            // on the next import.
-            bool linked = true;
+            linked = true;
             if (auto* cyclic = dynamicDowncast<JSC::CyclicModuleRecord>(mod))
                 linked = cyclic->status() >= JSC::CyclicModuleRecord::Status::Linked;
-            if (linked) {
-                {
-                    JSC::JSModuleNamespaceObject* moduleNamespaceObject = mod->getModuleNamespace(globalObject);
-                    RETURN_IF_EXCEPTION(scope, {});
-                    if (moduleNamespaceObject) {
-                        JSValue exportsValue = getJSValue();
-                        RETURN_IF_EXCEPTION(scope, {});
-                        auto* object = exportsValue.getObject();
-                        removeFromESM = false;
-
-                        if (object) {
-                            JSC::PropertyNameArrayBuilder names(vm, PropertyNameMode::Strings, PrivateSymbolMode::Exclude);
-                            JSObject::getOwnPropertyNames(object, globalObject, names, DontEnumPropertiesMode::Exclude);
-                            RETURN_IF_EXCEPTION(scope, {});
-
-                            for (auto& name : names) {
-                                // consistent with regular esm handling code
-                                auto topExceptionScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-                                JSValue value = object->get(globalObject, name);
-                                if (scope.exception()) [[unlikely]] {
-                                    (void)scope.tryClearException();
-                                    value = jsUndefined();
-                                }
-                                moduleNamespaceObject->overrideExportValue(globalObject, name, value);
-                                RETURN_IF_EXCEPTION(scope, {});
-                            }
-
-                        } else {
-                            // if it's not an object, I guess we just set the default export?
-                            moduleNamespaceObject->overrideExportValue(globalObject, vm.propertyNames->defaultKeyword, exportsValue);
-                            RETURN_IF_EXCEPTION(scope, {});
-                        }
-
-                        // TODO: do we need to handle intermediate loading state here?
-                        // entry->putDirect(vm, Identifier::fromString(vm, String("evaluated"_s)), jsBoolean(true), 0);
-                        // entry->putDirect(vm, Identifier::fromString(vm, String("state"_s)), jsNumber(JSC::JSModuleLoader::Status::Ready), 0);
-                    }
-                }
-            }
         }
+        if (linked)
+            needsEvaluation = true;
+        else
+            globalObject->moduleLoader()->removeEntry(specifierIdent);
     }
 
-    JSValue entryValue = globalObject->requireMap()->get(globalObject, specifierString);
-    RETURN_IF_EXCEPTION(scope, {});
-    if (entryValue) {
-        removeFromCJS = true;
-        if (auto* moduleObject = entryValue ? dynamicDowncast<Bun::JSCommonJSModule>(entryValue) : nullptr) {
-            JSValue exportsValue = getJSValue();
-            RETURN_IF_EXCEPTION(scope, {});
-
-            moduleObject->putDirect(vm, Bun::builtinNames(vm).exportsPublicName(), exportsValue, 0);
-            moduleObject->hasEvaluated = true;
-            removeFromCJS = false;
-        }
-    }
-
-    if (removeFromESM) {
-        globalObject->moduleLoader()->removeEntry(specifierIdent);
-    }
-
-    if (removeFromCJS) {
-        globalObject->requireMap()->remove(globalObject, specifierString);
-        RETURN_IF_EXCEPTION(scope, {});
+    auto* requireMap = globalObject->requireMap();
+    RETURN_IF_EXCEPTION(scope, void());
+    JSValue entryValue = requireMap->get(globalObject, specifierString);
+    RETURN_IF_EXCEPTION(scope, void());
+    if (dynamicDowncast<Bun::JSCommonJSModule>(entryValue))
+        needsEvaluation = true;
+    else {
+        requireMap->remove(globalObject, specifierString);
+        RETURN_IF_EXCEPTION(scope, void());
     }
 
     globalObject->onLoadPlugins.addModuleMock(vm, specifier, mock);
-
-    return JSValue::encode(jsUndefined());
+    globalObject->onLoadPlugins.mustDoExpensiveRelativeLookup |= requiresRelativeLookup;
+    if (needsEvaluation) {
+        JSC::profiledCall(globalObject, ProfilingReason::API, mock, getCallData(mock), jsUndefined(), ArgList());
+        RETURN_IF_EXCEPTION(scope, void());
+    }
 }
 
-template<typename Visitor>
-void JSModuleMock::visitChildrenImpl(JSCell* cell, Visitor& visitor)
+EncodedJSValue BunPlugin::OnLoad::run(JSC::JSGlobalObject* globalObject, const String& namespaceString, const String& path)
 {
-    JSModuleMock* mock = uncheckedDowncast<JSModuleMock>(cell);
-    ASSERT_GC_OBJECT_INHERITS(mock, info());
-    Base::visitChildren(mock, visitor);
-
-    visitor.append(mock->callbackFunctionOrCachedResult);
-}
-
-DEFINE_VISIT_CHILDREN(JSModuleMock);
-
-EncodedJSValue BunPlugin::OnLoad::run(JSC::JSGlobalObject* globalObject, BunString* namespaceString, BunString* path)
-{
-    Group* groupPtr = this->group(namespaceString ? namespaceString->toWTFString(BunString::ZeroCopy) : String());
+    Group* groupPtr = this->group(namespaceString);
     if (groupPtr == nullptr) {
         return JSValue::encode(jsUndefined());
     }
-    Group& group = *groupPtr;
-
-    auto pathString = path->toWTFString(BunString::ZeroCopy);
-
-    auto* function = group.find(globalObject, pathString);
+    auto* function = groupPtr->find(globalObject, path);
     if (!function) {
         return JSValue::encode(JSC::jsUndefined());
     }
@@ -745,7 +302,7 @@ EncodedJSValue BunPlugin::OnLoad::run(JSC::JSGlobalObject* globalObject, BunStri
     const auto& builtinNames = WebCore::builtinNames(vm);
     paramsObject->putDirect(
         vm, builtinNames.pathPublicName(),
-        jsString(vm, pathString));
+        jsString(vm, path));
     arguments.append(paramsObject);
 
     auto result = AsyncContextFrame::call(globalObject, function, JSC::jsUndefined(), arguments);
@@ -791,13 +348,14 @@ std::optional<String> BunPlugin::OnLoad::resolveVirtualModule(const String& path
     return virtualModules->contains(path) ? std::optional<String> { path } : std::nullopt;
 }
 
-EncodedJSValue BunPlugin::OnResolve::run(JSC::JSGlobalObject* globalObject, BunString* namespaceString, BunString* path, BunString* importer)
+EncodedJSValue BunPlugin::OnResolve::run(JSC::JSGlobalObject* globalObject, const String& namespaceString, const String& path, const String& importer)
 {
-    Group* groupPtr = this->group(namespaceString ? namespaceString->toWTFString(BunString::ZeroCopy) : String());
+    Group* groupPtr = this->group(namespaceString);
     if (groupPtr == nullptr) {
         return JSValue::encode(jsUndefined());
     }
-    Group& group = *groupPtr;
+    // Callbacks can clear or extend the registry during resolution.
+    Group group = *groupPtr;
     auto& filters = group.filters;
 
     if (filters.size() == 0) {
@@ -807,10 +365,8 @@ EncodedJSValue BunPlugin::OnResolve::run(JSC::JSGlobalObject* globalObject, BunS
     auto& callbacks = group.callbacks;
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    WTF::String pathString = path->toWTFString(BunString::ZeroCopy);
-
     for (size_t i = 0; i < filters.size(); i++) {
-        if (!filters[i].get()->match(globalObject, pathString, 0)) {
+        if (!filters[i].get()->match(globalObject, path, 0)) {
             continue;
         }
         auto* function = callbacks[i].get();
@@ -822,16 +378,12 @@ EncodedJSValue BunPlugin::OnResolve::run(JSC::JSGlobalObject* globalObject, BunS
 
         JSC::JSObject* paramsObject = JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), 2);
         const auto& builtinNames = WebCore::builtinNames(vm);
-        auto* pathJS = Bun::toJS(globalObject, *path);
-        RETURN_IF_EXCEPTION(scope, {});
         paramsObject->putDirect(
             vm, builtinNames.pathPublicName(),
-            pathJS);
-        auto* importerJS = Bun::toJS(globalObject, *importer);
-        RETURN_IF_EXCEPTION(scope, {});
+            jsString(vm, path));
         paramsObject->putDirect(
             vm, builtinNames.importerPublicName(),
-            importerJS);
+            jsString(vm, importer));
         arguments.append(paramsObject);
 
         auto result = AsyncContextFrame::call(globalObject, function, JSC::jsUndefined(), arguments);
@@ -848,9 +400,9 @@ EncodedJSValue BunPlugin::OnResolve::run(JSC::JSGlobalObject* globalObject, BunS
                 return {};
             }
             case JSPromise::Status::Rejected: {
-                promise->setFlags(static_cast<uint16_t>(JSC::JSPromise::Status::Fulfilled));
-                result = promise->result();
-                return JSValue::encode(result);
+                promise->markAsHandled();
+                scope.throwException(globalObject, promise->result());
+                return {};
             }
             case JSPromise::Status::Fulfilled: {
                 result = promise->result();
@@ -877,56 +429,223 @@ EncodedJSValue BunPlugin::OnResolve::run(JSC::JSGlobalObject* globalObject, BunS
 
 } // namespace Zig
 
-extern "C" JSC::EncodedJSValue Bun__runOnResolvePlugins(Zig::GlobalObject* globalObject, BunString* namespaceString, BunString* path, BunString* from, BunPluginTarget target)
+WTF::String Bun::Bindgen::Custom::bunBindgenPluginNamespace(
+    JSC::JSGlobalObject& globalObject,
+    const WTF::String& value,
+    WTF::ASCIILiteral)
 {
-    return globalObject->onResolvePlugins.run(globalObject, namespaceString, path, from);
+    if (!Zig::isValidNamespaceString(value)) {
+        auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
+        throwException(&globalObject, scope, createError(&globalObject, "namespace can only contain letters, numbers, dashes, or underscores"_s));
+        return {};
+    }
+    return value;
 }
 
-extern "C" JSC::EncodedJSValue Bun__runOnLoadPlugins(Zig::GlobalObject* globalObject, BunString* namespaceString, BunString* path, BunPluginTarget target)
+Bun::Bindgen::CppAny Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnLoadPluginNode(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnLoadPluginNode_Arguments& args)
 {
-    return globalObject->onLoadPlugins.run(globalObject, namespaceString, path);
+    Zig::appendPlugin(&context.globalObject, args.options, JSC::asObject(args.callback), defaultGlobalObject(&context.globalObject)->onLoadPlugins);
+    return args.bindingThis;
+}
+
+Bun::Bindgen::CppAny Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnLoadPluginBun(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnLoadPluginBun_Arguments& args)
+{
+    Zig::appendPlugin(&context.globalObject, args.options, JSC::asObject(args.callback), defaultGlobalObject(&context.globalObject)->onLoadPlugins);
+    return args.bindingThis;
+}
+
+Bun::Bindgen::CppAny Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnLoadPluginBrowser(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnLoadPluginBrowser_Arguments& args)
+{
+    Zig::appendPlugin(&context.globalObject, args.options, JSC::asObject(args.callback), defaultGlobalObject(&context.globalObject)->onLoadPlugins);
+    return args.bindingThis;
+}
+
+Bun::Bindgen::CppAny Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnResolvePluginNode(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnResolvePluginNode_Arguments& args)
+{
+    Zig::appendPlugin(&context.globalObject, args.options, JSC::asObject(args.callback), defaultGlobalObject(&context.globalObject)->onResolvePlugins);
+    return args.bindingThis;
+}
+
+Bun::Bindgen::CppAny Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnResolvePluginBun(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnResolvePluginBun_Arguments& args)
+{
+    Zig::appendPlugin(&context.globalObject, args.options, JSC::asObject(args.callback), defaultGlobalObject(&context.globalObject)->onResolvePlugins);
+    return args.bindingThis;
+}
+
+Bun::Bindgen::CppAny Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionAppendVirtualModule(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionAppendVirtualModule_Arguments& args)
+{
+    if (!args.moduleId.is_module_id()) {
+        auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+        throwException(&context.globalObject, scope, createError(&context.globalObject, "module() expects first argument to be a string for the module ID"_s));
+        return args.bindingThis;
+    }
+    Zig::appendVirtualModule(&context.globalObject, args.moduleId.module_id(), JSC::asObject(args.callback));
+    return args.bindingThis;
+}
+
+Bun::Bindgen::CppAny Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnResolvePluginBrowser(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionAppendOnResolvePluginBrowser_Arguments& args)
+{
+    Zig::appendPlugin(&context.globalObject, args.options, JSC::asObject(args.callback), defaultGlobalObject(&context.globalObject)->onResolvePlugins);
+    return args.bindingThis;
+}
+
+void Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_JSMock__jsModuleMock(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_JSMock__jsModuleMock_Arguments& args)
+{
+    RELEASE_ASSERT(context.callerSourceOrigin);
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    if (args.specifier.is_undefined_value()) {
+        scope.throwException(&context.globalObject, JSC::createTypeError(&context.globalObject, "mock(module, fn) requires a module and function"_s));
+        return;
+    }
+    if (!args.specifier.is_specifier()) {
+        scope.throwException(&context.globalObject, JSC::createTypeError(&context.globalObject, "mock(module, fn) requires a module name string"_s));
+        return;
+    }
+    const auto& specifier = args.specifier.specifier();
+    if (specifier.isEmpty()) {
+        scope.throwException(&context.globalObject, JSC::createTypeError(&context.globalObject, "mock(module, fn) requires a module and function"_s));
+        return;
+    }
+    scope.release();
+    Zig::registerModuleMock(
+        &context.globalObject,
+        specifier,
+        JSC::asObject(args.callback),
+        *context.callerSourceOrigin);
+}
+
+void Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_applyModuleMock(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_applyModuleMock_Arguments& args)
+{
+    auto* globalObject = defaultGlobalObject(&context.globalObject);
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto isCurrent = [&] {
+        auto* modules = globalObject->onLoadPlugins.virtualModules;
+        if (!modules)
+            return false;
+        auto entry = modules->find(args.specifier);
+        return entry != modules->end() && entry->value.isMock && entry->value.callback.get() == JSC::asObject(args.callback);
+    };
+    if (!isCurrent())
+        return;
+
+    auto identifier = JSC::Identifier::fromString(vm, args.specifier);
+    auto linkedRecord = [&]() -> JSC::AbstractModuleRecord* {
+        auto* entry = globalObject->moduleLoader()->registryEntry(identifier);
+        if (!entry)
+            return nullptr;
+        auto* record = entry->record();
+        if (auto* cyclic = dynamicDowncast<JSC::CyclicModuleRecord>(record)) {
+            if (cyclic->status() < JSC::CyclicModuleRecord::Status::Linked)
+                return nullptr;
+        }
+        return record;
+    };
+    JSC::Strong<JSC::AbstractModuleRecord> record(vm, linkedRecord());
+    auto* exports = JSC::asObject(args.exports);
+    JSC::PropertyNameArrayBuilder names(vm, JSC::PropertyNameMode::Strings, JSC::PrivateSymbolMode::Exclude);
+    JSC::MarkedArgumentBuffer values;
+    if (record) {
+        JSC::JSObject::getOwnPropertyNames(exports, globalObject, names, JSC::DontEnumPropertiesMode::Exclude);
+        RETURN_IF_EXCEPTION(scope, void());
+        if (!isCurrent())
+            return;
+        for (auto& name : names) {
+            auto value = exports->get(globalObject, name);
+            RETURN_IF_EXCEPTION(scope, void());
+            if (!isCurrent())
+                return;
+            values.append(value);
+            if (values.hasOverflowed()) {
+                throwOutOfMemoryError(globalObject, scope);
+                return;
+            }
+        }
+        if (linkedRecord() == record.get()) {
+            auto* moduleNamespace = record->getModuleNamespace(globalObject);
+            RETURN_IF_EXCEPTION(scope, void());
+            size_t index = 0;
+            for (auto& name : names) {
+                moduleNamespace->overrideExportValue(globalObject, name, values.at(index++));
+                RETURN_IF_EXCEPTION(scope, void());
+            }
+        }
+    }
+
+    auto* requireMap = globalObject->requireMap();
+    RETURN_IF_EXCEPTION(scope, void());
+    auto moduleValue = requireMap->get(globalObject, JSC::jsString(vm, args.specifier));
+    RETURN_IF_EXCEPTION(scope, void());
+    if (auto* module = dynamicDowncast<Bun::JSCommonJSModule>(moduleValue)) {
+        module->putDirect(vm, Bun::builtinNames(vm).exportsPublicName(), exports, 0);
+        module->hasEvaluated = true;
+    }
+}
+
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_ModuleLoader_runOnResolvePlugins(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_ModuleLoader_runOnResolvePlugins_Arguments& args)
+{
+    UNUSED_PARAM(args.target);
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    return JSC::JSValue::decode(globalObject->onResolvePlugins.run(globalObject, args.namespaceName, args.path, args.source));
+}
+
+std::optional<JSC::JSValue> Bun::Bindgen::Engine::bunBindgenEngine_ModuleLoader_runOnLoadPlugins(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_ModuleLoader_runOnLoadPlugins_Arguments& args)
+{
+    UNUSED_PARAM(args.target);
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto result = JSC::JSValue::decode(globalObject->onLoadPlugins.run(globalObject, args.namespaceName, args.path));
+    if (result.isUndefinedOrNull())
+        return std::nullopt;
+    return result;
 }
 
 namespace Bun {
 
-Structure* createModuleMockStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
+std::optional<JSC::JSValue> runVirtualModule(Zig::GlobalObject* globalObject, const WTF::String& specifier, bool& wasModuleMock)
 {
-    return Zig::JSModuleMock::createStructure(vm, globalObject, prototype);
-}
-
-JSC::JSValue runVirtualModule(Zig::GlobalObject* globalObject, BunString* specifier, bool& wasModuleMock)
-{
-    auto fallback = [&]() -> JSC::JSValue {
-        return JSValue::decode(Bun__runVirtualModule(globalObject, specifier));
+    auto fallback = [&]() -> std::optional<JSC::JSValue> {
+        return Bun::Bindgen::ZigExports::bunBindgenZig_ModuleLoader_runVirtualModule(globalObject, specifier);
     };
 
     if (!globalObject->onLoadPlugins.hasVirtualModules()) {
         return fallback();
     }
     auto& virtualModules = *globalObject->onLoadPlugins.virtualModules;
-    WTF::String specifierString = specifier->toWTFString(BunString::ZeroCopy);
 
-    if (auto virtualModuleFn = virtualModules.get(specifierString)) {
+    if (auto entry = virtualModules.find(specifier); entry != virtualModules.end()) {
         auto& vm = JSC::getVM(globalObject);
-        JSC::JSObject* function = virtualModuleFn.get();
+        JSC::Strong<JSC::JSObject> function = entry->value.callback;
+        wasModuleMock = entry->value.isMock;
         auto throwScope = DECLARE_THROW_SCOPE(vm);
 
-        JSValue result;
+        JSC::MarkedArgumentBuffer arguments;
+        JSC::CallData callData = JSC::getCallData(function.get());
+        RELEASE_ASSERT(callData.type != JSC::CallData::Type::None);
+        JSValue result = call(globalObject, function.get(), callData, JSC::jsUndefined(), arguments);
 
-        if (Zig::JSModuleMock* moduleMock = dynamicDowncast<Zig::JSModuleMock>(function)) {
-            wasModuleMock = true;
-            // module mock
-            result = moduleMock->executeOnce(globalObject);
-        } else {
-            // regular function
-            JSC::MarkedArgumentBuffer arguments;
-            JSC::CallData callData = JSC::getCallData(function);
-            RELEASE_ASSERT(callData.type != JSC::CallData::Type::None);
-
-            result = call(globalObject, function, callData, JSC::jsUndefined(), arguments);
-        }
-
-        RETURN_IF_EXCEPTION(throwScope, JSC::jsUndefined());
+        RETURN_IF_EXCEPTION(throwScope, std::nullopt);
 
         if (auto* promise = dynamicDowncast<JSPromise>(result)) {
             switch (promise->status()) {
@@ -954,21 +673,23 @@ JSC::JSValue runVirtualModule(Zig::GlobalObject* globalObject, BunString* specif
 
 } // namespace Bun
 
-BUN_DEFINE_HOST_FUNCTION(jsFunctionBunPluginClear, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
+std::optional<JSC::JSValue> Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionBunPlugin(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionBunPlugin_Arguments& args)
 {
-    Zig::GlobalObject* global = static_cast<Zig::GlobalObject*>(globalObject);
-    global->onLoadPlugins.fileNamespace.clear();
-    global->onResolvePlugins.fileNamespace.clear();
-    global->onLoadPlugins.groups.clear();
-    global->onResolvePlugins.namespaces.clear();
-
-    delete global->onLoadPlugins.virtualModules;
-    global->onLoadPlugins.virtualModules = nullptr;
-
-    return JSC::JSValue::encode(JSC::jsUndefined());
+    if (!args.setup) {
+        auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+        JSC::throwTypeError(&context.globalObject, scope, "plugin needs at least one argument (an object)"_s);
+        return std::nullopt;
+    }
+    return Zig::setupBunPlugin(&context.globalObject, JSC::asObject(args.setup->setup));
 }
 
-BUN_DEFINE_HOST_FUNCTION(jsFunctionBunPlugin, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callframe))
+void Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_jsFunctionBunPluginClear(
+    CppCallContext& context,
+    const BunBindgenCpp_RuntimeFunctions_jsFunctionBunPluginClear_Arguments&)
 {
-    return Bun::setupBunPlugin(globalObject, callframe, BunPluginTargetBun);
+    auto* global = defaultGlobalObject(&context.globalObject);
+    global->onLoadPlugins.clear();
+    global->onResolvePlugins.clear();
 }

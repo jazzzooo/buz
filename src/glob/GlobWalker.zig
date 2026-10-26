@@ -329,35 +329,22 @@ pub fn GlobWalker_(
         component_set_scratch: ArrayList(u32) = .empty,
 
         /// Array hashmap used as a set (values are the keys)
-        /// to store matched paths and prevent duplicates
-        ///
-        /// BunString is used so that we can call BunString.toJSArray()
-        /// on the result of `.keys()` to give the result back to JS
-        ///
-        /// The only type of string impl we use is ZigString since
-        /// all matched paths are UTF-8 (DirIterator converts them on
-        /// windows) and allocated on the arnea
-        ///
-        /// Multiple patterns are not supported so right now this is
-        /// only possible when running a pattern like:
-        ///
-        /// `foo/**/*`
+        /// to store matched paths and prevent duplicates. The paths are
+        /// UTF-8 (DirIterator converts them on windows) and allocated on
+        /// the arena; a sentinel-mode key slice includes its terminator.
         ///
         /// Use `.keys()` to get the matched paths
-        const MatchedMap = std.array_hash_map.Custom(BunString, void, struct {
-            pub fn hash(_: @This(), this: BunString) u32 {
-                bun.assert(this.tag == .ZigString);
-                const slice = this.byteSlice();
+        const MatchedMap = std.array_hash_map.Custom([]const u8, void, struct {
+            pub fn hash(_: @This(), this: []const u8) u32 {
                 if (comptime sentinel) {
-                    const slicez = slice[0 .. slice.len - 1 :0];
-                    return std.array_hash_map.hashString(slicez);
+                    return std.array_hash_map.hashString(this[0 .. this.len - 1]);
                 }
 
-                return std.array_hash_map.hashString(slice);
+                return std.array_hash_map.hashString(this);
             }
 
-            pub fn eql(_: @This(), this: BunString, other: BunString, _: usize) bool {
-                return this.eql(other);
+            pub fn eql(_: @This(), this: []const u8, other: []const u8, _: usize) bool {
+                return bun.strings.eqlLong(this, other, true);
             }
         }, true);
 
@@ -1540,26 +1527,26 @@ pub fn GlobWalker_(
             return idx;
         }
 
-        inline fn matchedPathToBunString(matched_path: MatchedPath) BunString {
+        inline fn matchedPathKey(matched_path: MatchedPath) []const u8 {
             if (comptime sentinel) {
-                return BunString.fromBytes(matched_path[0 .. matched_path.len + 1]);
+                return matched_path[0 .. matched_path.len + 1];
             }
-            return BunString.fromBytes(matched_path);
+            return matched_path;
         }
 
         fn prepareMatchedPathSymlink(this: *GlobWalker, symlink_full_path: []const u8) !?MatchedPath {
-            const result = try this.matchedPaths.getOrPut(this.arena.allocator(), BunString.fromBytes(symlink_full_path));
+            const result = try this.matchedPaths.getOrPut(this.arena.allocator(), symlink_full_path);
             if (result.found_existing) {
                 log("(dupe) prepared match: {s}", .{symlink_full_path});
                 return null;
             }
             if (comptime !sentinel) {
                 const slice = try this.arena.allocator().dupe(u8, symlink_full_path);
-                result.key_ptr.* = matchedPathToBunString(slice);
+                result.key_ptr.* = matchedPathKey(slice);
                 return slice;
             }
             const slicez = try this.arena.allocator().dupeSentinel(u8, symlink_full_path, 0);
-            result.key_ptr.* = matchedPathToBunString(slicez);
+            result.key_ptr.* = matchedPathKey(slicez);
             return slicez;
         }
 
@@ -1569,7 +1556,7 @@ pub fn GlobWalker_(
                 entry_name,
             };
             const name_matched_path = try this.join(subdir_parts);
-            const name = matchedPathToBunString(name_matched_path);
+            const name = matchedPathKey(name_matched_path);
             const result = try this.matchedPaths.getOrPutValue(this.arena.allocator(), name, {});
             if (result.found_existing) {
                 log("(dupe) prepared match: {s}", .{name_matched_path});
@@ -1845,9 +1832,6 @@ const bun = @import("bun");
 const BunString = bun.String;
 const CodepointIterator = bun.strings.UnsignedCodepointIterator;
 const isAllAscii = bun.strings.isAllASCII;
-
-const jsc = bun.jsc;
-const ZigString = bun.jsc.ZigString;
 
 const Cursor = CodepointIterator.Cursor;
 const Codepoint = CodepointIterator.Cursor.CodePointType;

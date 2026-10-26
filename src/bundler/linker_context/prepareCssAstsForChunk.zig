@@ -47,6 +47,8 @@ fn prepareCssAstsForChunkImpl(c: *LinkerContext, chunk: *Chunk, allocator: std.m
                     chunk.content.css.asts[i] = ast;
                 },
                 .external_path => |*p| {
+                    // Entries may share condition records allocated before this worker's preparation phase.
+                    entry.condition_import_records = bun.handleOom(entry.condition_import_records.clone(allocator));
                     var conditions: ?*bun.css.ImportConditions = null;
                     if (entry.conditions.len > 0) {
                         conditions = entry.conditions.mut(0);
@@ -299,7 +301,6 @@ fn wrapRulesWithConditions(
     }
 }
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 

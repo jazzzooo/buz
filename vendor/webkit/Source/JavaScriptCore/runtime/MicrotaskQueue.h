@@ -119,6 +119,15 @@ public:
     {
     }
 
+#if USE(BUN_JSC_ADDITIONS)
+    static QueuedTask createBunNativeTask(JSGlobalObject* globalObject, void* nativeContext)
+    {
+        return QueuedTask(globalObject, nativeContext);
+    }
+
+    JS_EXPORT_PRIVATE void discardBunNativeTask();
+#endif
+
     void setDispatcher(JSMicrotaskDispatcher* dispatcher)
     {
         m_dispatcher.setPointer(std::bit_cast<JSCell*>(std::bit_cast<uintptr_t>(dispatcher) | isJSMicrotaskDispatcherFlag));
@@ -136,8 +145,24 @@ public:
     // Typically holds JSPromise::Status or a nested InternalMicrotask value.
     uint8_t payload() const { return static_cast<uint8_t>(m_dispatcher.type() >> 8); }
     std::span<const JSValue, maxArguments> arguments() const { return std::span<const JSValue, maxArguments> { m_arguments, maxArguments }; }
+    void* nativeContext() const
+    {
+#if USE(BUN_JSC_ADDITIONS)
+        return m_nativeContext;
+#else
+        return nullptr;
+#endif
+    }
 
 private:
+#if USE(BUN_JSC_ADDITIONS)
+    QueuedTask(JSGlobalObject* globalObject, void* nativeContext)
+        : m_dispatcher(std::bit_cast<JSCell*>(globalObject), static_cast<uint16_t>(InternalMicrotask::BunRunNativeTask))
+        , m_nativeContext(nativeContext)
+    {
+    }
+#endif
+
     bool isJSMicrotaskDispatcher() const
     {
         return std::bit_cast<uintptr_t>(m_dispatcher.pointer()) & isJSMicrotaskDispatcherFlag;
@@ -146,6 +171,9 @@ private:
     static constexpr uintptr_t isJSMicrotaskDispatcherFlag = 0x1;
     CompactPointerTuple<JSCell*, uint16_t> m_dispatcher;
     JSValue m_arguments[maxArguments] { };
+#if USE(BUN_JSC_ADDITIONS)
+    void* m_nativeContext { nullptr };
+#endif
 };
 #if USE(BUN_JSC_ADDITIONS)
 static_assert(sizeof(QueuedTask) <= 48, "Size of QueuedTask is critical for performance");
@@ -183,6 +211,12 @@ public:
 
     void clear()
     {
+#if USE(BUN_JSC_ADDITIONS)
+        while (!m_queue.isEmpty()) {
+            auto task = dequeue();
+            task.discardBunNativeTask();
+        }
+#endif
         m_queue.clear();
         m_markedBefore = 0;
     }

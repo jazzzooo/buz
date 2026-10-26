@@ -124,7 +124,7 @@ ExceptionOr<size_t> CryptoKeyAES::getKeyLength(const CryptoAlgorithmParameters& 
 auto CryptoKeyAES::algorithm() const -> KeyAlgorithm
 {
     CryptoAesKeyAlgorithm result;
-    result.name = CryptoAlgorithmRegistry::singleton().name(algorithmIdentifier());
+    result.name = CryptoAlgorithmRegistry::name(algorithmIdentifier());
     result.length = m_key.size() * 8;
     return result;
 }

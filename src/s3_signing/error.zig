@@ -24,13 +24,7 @@ pub fn getSignErrorCodeAndMessage(err: anyerror) ErrorCodeAndMessage {
     };
 }
 
-pub const getJSSignError = @import("../runtime/webcore/s3/error_jsc.zig").getJSSignError;
-pub const throwSignError = @import("../runtime/webcore/s3/error_jsc.zig").throwSignError;
-
 pub const S3Error = struct {
     code: []const u8,
     message: []const u8,
-
-    pub const toJS = @import("../runtime/webcore/s3/error_jsc.zig").s3ErrorToJS;
-    pub const toJSWithAsyncStack = @import("../runtime/webcore/s3/error_jsc.zig").s3ErrorToJSWithAsyncStack;
 };

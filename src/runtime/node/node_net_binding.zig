@@ -3,32 +3,18 @@
 
 pub var autoSelectFamilyDefault: bool = true;
 
-pub fn getDefaultAutoSelectFamily(global: *jsc.JSGlobalObject) jsc.JSValue {
-    return jsc.JSFunction.create(global, "getDefaultAutoSelectFamily", (struct {
-        fn getter(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-            _ = globalThis;
-            _ = callframe;
-            return .jsBoolean(autoSelectFamilyDefault);
-        }
-    }).getter, 0, .{}).toJS();
+fn bindGetDefaultAutoSelectFamily(
+    _: bun.bindgen.CallContext(GetDefaultAutoSelectFamilySchema),
+    _: bun.bindgen.Args(GetDefaultAutoSelectFamilySchema),
+) bun.JSError!bool {
+    return autoSelectFamilyDefault;
 }
 
-pub fn setDefaultAutoSelectFamily(global: *jsc.JSGlobalObject) jsc.JSValue {
-    return jsc.JSFunction.create(global, "setDefaultAutoSelectFamily", (struct {
-        fn setter(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-            const arguments = callframe.arguments_old(1);
-            if (arguments.len < 1) {
-                return globalThis.throw("missing argument", .{});
-            }
-            const arg = arguments.slice()[0];
-            if (!arg.isBoolean()) {
-                return globalThis.throwInvalidArguments("autoSelectFamilyDefault", .{});
-            }
-            const value = arg.toBoolean();
-            autoSelectFamilyDefault = value;
-            return .jsBoolean(value);
-        }
-    }).setter, 1, .{}).toJS();
+fn bindSetDefaultAutoSelectFamily(
+    _: bun.bindgen.CallContext(SetDefaultAutoSelectFamilySchema),
+    args: bun.bindgen.Args(SetDefaultAutoSelectFamilySchema),
+) bun.JSError!void {
+    autoSelectFamilyDefault = args.value;
 }
 
 /// This is only used to provide the getDefaultAutoSelectFamilyAttemptTimeout and
@@ -40,67 +26,56 @@ pub fn setDefaultAutoSelectFamily(global: *jsc.JSGlobalObject) jsc.JSValue {
 /// need to store it as a field in the VirtualMachine instead of in a `threadlocal`.
 pub threadlocal var autoSelectFamilyAttemptTimeoutDefault: u32 = 500;
 
-pub fn getDefaultAutoSelectFamilyAttemptTimeout(global: *jsc.JSGlobalObject) jsc.JSValue {
-    return jsc.JSFunction.create(global, "getDefaultAutoSelectFamilyAttemptTimeout", (struct {
-        fn getter(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-            _ = globalThis;
-            _ = callframe;
-            return .jsNumber(autoSelectFamilyAttemptTimeoutDefault);
-        }
-    }).getter, 0, .{}).toJS();
+fn bindGetDefaultAutoSelectFamilyAttemptTimeout(
+    _: bun.bindgen.CallContext(GetDefaultAutoSelectFamilyAttemptTimeoutSchema),
+    _: bun.bindgen.Args(GetDefaultAutoSelectFamilyAttemptTimeoutSchema),
+) bun.JSError!u32 {
+    return autoSelectFamilyAttemptTimeoutDefault;
 }
 
-pub fn setDefaultAutoSelectFamilyAttemptTimeout(global: *jsc.JSGlobalObject) jsc.JSValue {
-    return jsc.JSFunction.create(global, "setDefaultAutoSelectFamilyAttemptTimeout", (struct {
-        fn setter(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-            const arguments = callframe.arguments_old(1);
-            if (arguments.len < 1) {
-                return globalThis.throw("missing argument", .{});
-            }
-            const arg = arguments.slice()[0];
-            var value = try validators.validateInt32(globalThis, arg, "value", .{}, 1, null);
-            if (value < 10) value = 10;
-            autoSelectFamilyAttemptTimeoutDefault = @intCast(value);
-            return .jsNumber(value);
-        }
-    }).setter, 1, .{}).toJS();
+fn bindSetDefaultAutoSelectFamilyAttemptTimeout(
+    _: bun.bindgen.CallContext(SetDefaultAutoSelectFamilyAttemptTimeoutSchema),
+    args: bun.bindgen.Args(SetDefaultAutoSelectFamilyAttemptTimeoutSchema),
+) bun.JSError!void {
+    var value = args.value;
+    if (value < 10) value = 10;
+    autoSelectFamilyAttemptTimeoutDefault = @intCast(value);
 }
 
-pub const SocketAddress = bun.jsc.Codegen.JSSocketAddress.getConstructor;
-
-pub const BlockList = jsc.Codegen.JSBlockList.getConstructor;
-
-pub fn newDetachedSocket(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const args = callframe.argumentsAsArray(1);
-    const is_ssl = args[0].toBoolean();
-
-    if (!is_ssl) {
-        const socket = bun.api.TCPSocket.new(.{
-            .socket = .detached,
-            .ref_count = .init(),
-            .protos = null,
-            .handlers = null,
-        });
-        return socket.getThisValue(globalThis);
-    } else {
-        const socket = bun.api.TLSSocket.new(.{
-            .socket = .detached,
-            .ref_count = .init(),
-            .protos = null,
-            .handlers = null,
-        });
-        return socket.getThisValue(globalThis);
-    }
+pub fn newDetachedSocket(
+    context: bun.bindgen.CallContext(NewDetachedSocketSchema),
+    args: bun.bindgen.Args(NewDetachedSocketSchema),
+) bun.JSError!bun.bindgen.Return(NewDetachedSocketSchema) {
+    return bun.api.NodeNetEngine.createDetached(context, args);
 }
 
-pub fn doConnect(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const prev, const opts = callframe.argumentsAsArray(2);
-    const maybe_tcp = prev.as(bun.api.TCPSocket);
-    const maybe_tls = prev.as(bun.api.TLSSocket);
-    return bun.api.Listener.connectInner(globalThis, maybe_tcp, maybe_tls, opts);
+pub fn doConnect(
+    context: bun.bindgen.CallContext(DoConnectSchema),
+    args: bun.bindgen.Args(DoConnectSchema),
+) bun.bindgen.CallError(DoConnectSchema)!void {
+    try bun.api.NodeNetEngine.reconnect(context, args);
 }
-
-const validators = @import("./util/validators.zig");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
+const NodeSocketBindings = bun.bindgen.Module("NodeSocket");
+const GetDefaultAutoSelectFamilySchema = NodeSocketBindings.function("getDefaultAutoSelectFamily");
+const SetDefaultAutoSelectFamilySchema = NodeSocketBindings.function("setDefaultAutoSelectFamily");
+const GetDefaultAutoSelectFamilyAttemptTimeoutSchema = NodeSocketBindings.function("getDefaultAutoSelectFamilyAttemptTimeout");
+const SetDefaultAutoSelectFamilyAttemptTimeoutSchema = NodeSocketBindings.function("setDefaultAutoSelectFamilyAttemptTimeout");
+const NewDetachedSocketSchema = NodeSocketBindings.function("newDetachedSocket");
+const DoConnectSchema = NodeSocketBindings.function("doConnect");
+const GetDefaultAutoSelectFamilyBinding = bun.bindgen.Fn(GetDefaultAutoSelectFamilySchema, bindGetDefaultAutoSelectFamily);
+const SetDefaultAutoSelectFamilyBinding = bun.bindgen.Fn(SetDefaultAutoSelectFamilySchema, bindSetDefaultAutoSelectFamily);
+const GetDefaultAutoSelectFamilyAttemptTimeoutBinding = bun.bindgen.Fn(GetDefaultAutoSelectFamilyAttemptTimeoutSchema, bindGetDefaultAutoSelectFamilyAttemptTimeout);
+const SetDefaultAutoSelectFamilyAttemptTimeoutBinding = bun.bindgen.Fn(SetDefaultAutoSelectFamilyAttemptTimeoutSchema, bindSetDefaultAutoSelectFamilyAttemptTimeout);
+const NewDetachedSocketBinding = bun.bindgen.Fn(NewDetachedSocketSchema, newDetachedSocket);
+const DoConnectBinding = bun.bindgen.Fn(DoConnectSchema, doConnect);
+
+comptime {
+    _ = GetDefaultAutoSelectFamilyBinding;
+    _ = SetDefaultAutoSelectFamilyBinding;
+    _ = GetDefaultAutoSelectFamilyAttemptTimeoutBinding;
+    _ = SetDefaultAutoSelectFamilyAttemptTimeoutBinding;
+    _ = NewDetachedSocketBinding;
+    _ = DoConnectBinding;
+}

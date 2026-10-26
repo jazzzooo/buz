@@ -4,15 +4,12 @@ pub const HeapProfilerConfig = struct {
     text_format: bool,
 };
 
-// C++ function declarations
-extern fn Bun__generateHeapProfile(vm: *jsc.VM) bun.String;
-extern fn Bun__generateHeapSnapshotV8(vm: *jsc.VM) bun.String;
-
-pub fn generateAndWriteProfile(io: std.Io, vm: *jsc.VM, config: HeapProfilerConfig) !void {
-    const profile_string = if (config.text_format)
-        Bun__generateHeapProfile(vm)
+pub fn generateAndWriteProfile(io: std.Io, global: *jsc.JSGlobalObject, config: HeapProfilerConfig) !void {
+    var result = if (config.text_format)
+        try bun.bindgen.Engine(GenerateHeapProfileShim).call(global, .{})
     else
-        Bun__generateHeapSnapshotV8(vm);
+        try bun.bindgen.Engine(GenerateHeapSnapshotV8Shim).call(global, .{});
+    const profile_string = result.takeBunString();
     defer profile_string.deref();
 
     if (profile_string.isEmpty()) {
@@ -20,7 +17,7 @@ pub fn generateAndWriteProfile(io: std.Io, vm: *jsc.VM, config: HeapProfilerConf
         return;
     }
 
-    const profile_slice = profile_string.toUTF8(bun.default_allocator);
+    const profile_slice = try profile_string.toUTF8(bun.default_allocator);
     defer profile_slice.deinit();
 
     const output_path = try buildOutputPath(config);
@@ -34,8 +31,8 @@ pub fn generateAndWriteProfile(io: std.Io, vm: *jsc.VM, config: HeapProfilerConf
         output_path;
 
     // Write the profile to disk using bun.sys.File.writeFile
-    const result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
-    if (result.asErr()) |err| {
+    const write_result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
+    if (write_result.asErr()) |err| {
         // If we got ENOENT, PERM, or ACCES, try creating the directory and retry
         const errno = err.getErrno();
         if (errno == .NOENT or errno == .PERM or errno == .ACCES) {
@@ -107,5 +104,8 @@ fn generateDefaultFilename(buf: *bun.PathBuffer, text_format: bool) ![]const u8 
 const std = @import("std");
 
 const bun = @import("bun");
-const Output = bun.Output;
 const jsc = bun.jsc;
+const Output = bun.Output;
+const HeapProfilingBindings = bun.bindgen.Module("heap_profiling");
+const GenerateHeapProfileShim = HeapProfilingBindings.engineShim("generateHeapProfile");
+const GenerateHeapSnapshotV8Shim = HeapProfilingBindings.engineShim("generateHeapSnapshotV8");

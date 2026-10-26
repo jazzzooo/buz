@@ -5,6 +5,7 @@ response: ?picohttp.Response = null,
 request_headers: Headers.Entry.List = .empty,
 response_headers: Headers.Entry.List = .empty,
 response_buffer: *MutableString,
+response_buffer_allocation: ResponseBufferAllocation = .http_thread,
 request_body: HTTPRequestBody = .{ .bytes = "" },
 allocator: std.mem.Allocator,
 request_header_buf: string = "",
@@ -73,7 +74,7 @@ pub fn clearData(this: *AsyncHTTP) void {
     this.request = null;
     this.response = null;
     this.client.unix_socket_path.deinit();
-    this.client.unix_socket_path = jsc.ZigString.Slice.empty;
+    this.client.unix_socket_path = bun.String.Slice.empty;
 }
 
 pub const State = enum(u32) {
@@ -85,12 +86,20 @@ pub const State = enum(u32) {
 };
 const AtomicState = std.atomic.Value(State);
 
+pub const ResponseBufferAllocation = enum {
+    http_thread,
+    /// Uses the process allocator so the receiving thread can resize the buffer after handoff.
+    transferable,
+};
+
 pub const Options = struct {
+    javascript_semantics: JavaScriptSemantics,
+    response_buffer_allocation: ResponseBufferAllocation = .http_thread,
     http_proxy: ?URL = null,
     proxy_headers: ?Headers = null,
     hostname: ?[]u8 = null,
     signals: ?Signals = null,
-    unix_socket_path: ?jsc.ZigString.Slice = null,
+    unix_socket_path: ?bun.String.Slice = null,
     disable_timeout: ?bool = null,
     verbose: ?HTTPVerboseLevel = null,
     disable_keepalive: ?bool = null,
@@ -122,6 +131,7 @@ const Preconnect = struct {
 pub fn preconnect(
     url: URL,
     is_url_owned: bool,
+    javascript_semantics: JavaScriptSemantics,
 ) void {
     if (!FeatureFlags.is_fetch_preconnect_supported) {
         if (is_url_owned) {
@@ -138,7 +148,9 @@ pub fn preconnect(
         .is_url_owned = is_url_owned,
     });
 
-    this.async_http = AsyncHTTP.init(bun.default_allocator, .GET, url, .{}, "", &this.response_buffer, "", HTTPClientResult.Callback.New(*Preconnect, Preconnect.onResult).init(this), .manual, .{});
+    this.async_http = AsyncHTTP.init(bun.default_allocator, .GET, url, .{}, "", &this.response_buffer, "", HTTPClientResult.Callback.New(*Preconnect, Preconnect.onResult).init(this), .manual, .{
+        .javascript_semantics = javascript_semantics,
+    });
     this.async_http.client.flags.is_preconnect_only = true;
 
     bun.http.http_thread.schedule(Batch.from(&this.async_http.task));
@@ -164,6 +176,7 @@ pub fn init(
         .request_header_buf = headers_buf,
         .request_body = .{ .bytes = request_body },
         .response_buffer = response_buffer,
+        .response_buffer_allocation = options.response_buffer_allocation,
         .result_callback = callback,
         .http_proxy = options.http_proxy,
         .signals = options.signals orelse .{},
@@ -172,6 +185,7 @@ pub fn init(
 
     this.client = .{
         .allocator = allocator,
+        .javascript_semantics = options.javascript_semantics,
         .method = method,
         .url = url,
         .header_entries = headers,
@@ -257,6 +271,7 @@ pub fn initSync(
     headers_buf: string,
     response_buffer: *MutableString,
     request_body: []const u8,
+    javascript_semantics: JavaScriptSemantics,
     http_proxy: ?URL,
     hostname: ?[]u8,
     redirect_type: FetchRedirect,
@@ -272,6 +287,7 @@ pub fn initSync(
         undefined,
         redirect_type,
         .{
+            .javascript_semantics = javascript_semantics,
             .http_proxy = http_proxy,
             .hostname = hostname,
         },
@@ -427,7 +443,12 @@ pub fn onStart(this: *AsyncHTTP) void {
 
     this.elapsed = bun.http.http_thread.timer.read();
     if (this.response_buffer.list.capacity == 0) {
-        this.response_buffer.allocator = bun.http.default_allocator;
+        this.response_buffer.allocator = switch (this.response_buffer_allocation) {
+            .http_thread => bun.http.default_allocator,
+            .transferable => bun.default_allocator,
+        };
+    } else if (this.response_buffer_allocation == .transferable) {
+        bun.safety.alloc.assertEq(this.response_buffer.allocator, bun.default_allocator);
     }
     this.client.start(this.request_body, this.response_buffer);
 }
@@ -455,15 +476,15 @@ const Encoding = @import("../http_types/Encoding.zig").Encoding;
 
 const PercentEncoding = @import("../url/url.zig").PercentEncoding;
 const URL = @import("../url/url.zig").URL;
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const MutableString = bun.MutableString;
 const assert = bun.assert;
-const jsc = bun.jsc;
 const picohttp = bun.picohttp;
-const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
+const SSLConfig = @import("../runtime/socket/SSLConfig.zig");
 
 const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const Batch = bun.BackgroundTaskGroup.Batch;

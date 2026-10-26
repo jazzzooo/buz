@@ -69,7 +69,11 @@ declare module "bun" {
   }
 }
 
-interface ReadableStream<R = any> extends Bun.__internal.LibEmptyOrNodeReadableStream<R> {}
+interface ReadableStream<R = any> extends Bun.__internal.LibEmptyOrNodeReadableStream<R> {
+  getReader(): ReadableStreamDefaultReader<R>;
+  getReader(options: { mode: "byob" }): ReadableStreamBYOBReader;
+  getReader(options?: { mode?: "byob" }): ReadableStreamDefaultReader<R> | ReadableStreamBYOBReader;
+}
 declare var ReadableStream: Bun.__internal.UseLibDomIfAvailable<
   "ReadableStream",
   {
@@ -734,7 +738,13 @@ interface ReadableStreamDirectController {
 
 declare var ReadableStreamDefaultController: {
   prototype: ReadableStreamDefaultController;
-  new (): ReadableStreamDefaultController;
+  new (
+    stream?: unknown,
+    underlyingSource?: unknown,
+    size?: unknown,
+    highWaterMark?: unknown,
+    isReadableStream?: (value: unknown) => boolean,
+  ): ReadableStreamDefaultController;
 };
 
 interface ReadableStreamDefaultReader<R = any> extends ReadableStreamGenericReader {
@@ -1750,13 +1760,21 @@ declare var PerformanceResourceTiming: Bun.__internal.UseLibDomIfAvailable<
 interface ReadableByteStreamController extends Bun.__internal.LibEmptyOrReadableByteStreamController {}
 declare var ReadableByteStreamController: Bun.__internal.UseLibDomIfAvailable<
   "ReadableByteStreamController",
-  { prototype: ReadableByteStreamController; new (): ReadableByteStreamController }
+  {
+    prototype: ReadableByteStreamController;
+    new (
+      stream?: unknown,
+      underlyingSource?: unknown,
+      highWaterMark?: unknown,
+      isReadableStream?: (value: unknown) => boolean,
+    ): ReadableByteStreamController;
+  }
 >;
 
 interface ReadableStreamBYOBReader extends Bun.__internal.LibEmptyOrReadableStreamBYOBReader {}
 declare var ReadableStreamBYOBReader: Bun.__internal.UseLibDomIfAvailable<
   "ReadableStreamBYOBReader",
-  { prototype: ReadableStreamBYOBReader; new (): ReadableStreamBYOBReader }
+  { prototype: ReadableStreamBYOBReader; new (stream?: ReadableStream): ReadableStreamBYOBReader }
 >;
 
 interface ReadableStreamBYOBRequest extends Bun.__internal.LibEmptyOrReadableStreamBYOBRequest {}

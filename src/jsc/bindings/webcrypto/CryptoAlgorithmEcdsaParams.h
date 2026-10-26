@@ -26,9 +26,6 @@
 #pragma once
 
 #include "CryptoAlgorithmParameters.h"
-#include <JavaScriptCore/JSObject.h>
-#include <JavaScriptCore/Strong.h>
-#include <variant>
 
 #if ENABLE(WEB_CRYPTO)
 
@@ -40,22 +37,11 @@ enum CryptoAlgorithmECDSAEncoding {
 };
 class CryptoAlgorithmEcdsaParams final : public CryptoAlgorithmParameters {
 public:
-    // FIXME: Consider merging hash and hashIdentifier.
-    std::variant<JSC::Strong<JSC::JSObject>, String> hash;
     CryptoAlgorithmIdentifier hashIdentifier;
     // WebCrypto default is IeeeP1363.
     CryptoAlgorithmECDSAEncoding encoding { CryptoAlgorithmECDSAEncoding::IeeeP1363 };
 
     Class parametersClass() const final { return Class::EcdsaParams; }
-
-    CryptoAlgorithmEcdsaParams isolatedCopy() const
-    {
-        CryptoAlgorithmEcdsaParams result;
-        result.identifier = identifier;
-        result.hashIdentifier = hashIdentifier;
-        result.encoding = encoding;
-        return result;
-    }
 };
 
 } // namespace WebCore

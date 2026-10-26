@@ -17,8 +17,8 @@ fn CronJobBase(comptime Self: type) type {
                 return bun.uws.Loop.get();
         }
 
-        pub fn eventLoop(_: *const Self) *jsc.EventLoop {
-            return jsc.VirtualMachine.get().eventLoop();
+        pub fn eventLoop(_: *const Self) jsc.EventLoopHandle {
+            return jsc.EventLoopHandle.init(jsc.VirtualMachine.get().eventLoop());
         }
 
         pub fn onReaderDone(this: *Self) void {
@@ -48,9 +48,8 @@ fn CronJobBase(comptime Self: type) type {
 // ============================================================================
 
 pub const CronRegisterJob = struct {
-    promise: jsc.JSPromise.Strong = .empty,
-    global: *jsc.JSGlobalObject,
-    poll: bun.Async.KeepAlive = .{},
+    completion: bun.bindgen.OwnedCompletion(RegisterSystemSchema),
+    io: std.Io,
 
     bun_exe: [:0]const u8,
     abs_path: [:0]const u8,
@@ -166,14 +165,16 @@ pub const CronRegisterJob = struct {
 
     fn finish(this: *CronRegisterJob) void {
         this.state = if (this.err_msg != null) .failed else .done;
-        this.poll.unref(jsc.VirtualMachine.get());
-        const ev = jsc.VirtualMachine.get().eventLoop();
-        ev.enter();
-        defer ev.exit();
         if (this.err_msg) |msg| {
-            const error_value: bun.JSError!jsc.JSValue = if (this.global.createErrorInstance("{s}", .{msg})) |err| err.toJS() else |err| err;
-            this.promise.rejectWithAsyncStack(this.global, error_value) catch {};
-        } else this.promise.resolve(this.global, .js_undefined) catch {};
+            const owned_message = bun.bindgen.ThreadSafeDOMString.fromUTF8(msg) catch {
+                this.completion.outOfMemory();
+                this.deinit();
+                return;
+            };
+            this.completion.fail(.operation_failed, owned_message);
+        } else {
+            this.completion.resolve({});
+        }
         this.deinit();
     }
 
@@ -240,7 +241,7 @@ pub const CronRegisterJob = struct {
             return;
         };
 
-        const tmp_path = makeTempPath(this.global.bunVM().io, "bun-cron-") catch {
+        const tmp_path = makeTempPath(this.io, "bun-cron-") catch {
             this.setErr("Out of memory", .{});
             this.finish();
             return;
@@ -295,7 +296,7 @@ pub const CronRegisterJob = struct {
             return;
         };
         defer bun.default_allocator.free(launch_agents_dir);
-        bun.FD.cwd().makePath(this.global.bunVM().io, u8, launch_agents_dir) catch {
+        bun.FD.cwd().makePath(this.io, u8, launch_agents_dir) catch {
             this.setErr("Failed to create ~/Library/LaunchAgents directory", .{});
             this.finish();
             return;
@@ -410,83 +411,71 @@ pub const CronRegisterJob = struct {
         this.spawnCmd(&argv, .ignore, .ignore);
     }
 
-    // -- JS entry point --
-
-    pub fn cronRegister(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const args = callframe.argumentsAsArray(3);
-
-        // In-process callback cron: Bun.cron(schedule, handler)
-        if (args[1].isCallable())
-            return CronJob.register(globalObject, args[0], args[1]);
-        if (args[0].isString() and args[2].isUndefined())
-            return globalObject.throwInvalidArguments("Bun.cron(schedule, handler) expects a function handler as the second argument", .{});
-
-        if (!args[0].isString()) return globalObject.throwInvalidArguments("Bun.cron() expects a string path as the first argument", .{});
-        if (!args[1].isString()) return globalObject.throwInvalidArguments("Bun.cron() expects a string schedule as the second argument", .{});
-        if (!args[2].isString()) return globalObject.throwInvalidArguments("Bun.cron() expects a string title as the third argument", .{});
-
-        const path_str = try args[0].toBunString(globalObject);
-        defer path_str.deref();
-        const schedule_str = try args[1].toBunString(globalObject);
-        defer schedule_str.deref();
-        const title_str = try args[2].toBunString(globalObject);
-        defer title_str.deref();
-
-        const path_slice = path_str.toUTF8(bun.default_allocator);
-        defer path_slice.deinit();
-        const schedule_slice = schedule_str.toUTF8(bun.default_allocator);
+    pub fn cronRegisterSystem(
+        context: bun.bindgen.CallContext(RegisterSystemSchema),
+        args: bun.bindgen.Args(RegisterSystemSchema),
+    ) bun.bindgen.CallError(RegisterSystemSchema)!void {
+        const globalThis = context.viewToken().globalObject();
+        const schedule_slice = try args.schedule.toUTF8(bun.default_allocator);
         defer schedule_slice.deinit();
-        const title_slice = title_str.toUTF8(bun.default_allocator);
+        const title_slice = try args.title.toUTF8(bun.default_allocator);
         defer title_slice.deinit();
 
-        // Validate title: only [a-zA-Z0-9_-]
-        if (!validateTitle(title_slice.slice()))
-            return globalObject.throwInvalidArguments("Cron title must contain only alphanumeric characters, hyphens, and underscores", .{});
+        if (!validateTitle(title_slice.slice())) return context.fail(.invalid_title, {});
 
-        // Parse and normalize cron schedule to numeric form for crontab/launchd/schtasks
-        const parsed = CronExpression.parse(schedule_slice.slice()) catch |e|
-            return globalObject.throwInvalidArguments("{s}", .{CronExpression.errorMessage(e)});
+        const parsed = CronExpression.parse(schedule_slice.slice()) catch |err|
+            return context.fail(.invalid_expression, try bun.bindgen.ThreadSafeDOMString.fromUTF8(CronExpression.errorMessage(err)));
         var fmt_buf: [512]u8 = undefined;
         const normalized_schedule = parsed.formatNumeric(&fmt_buf);
 
-        const abs_path = resolvePath(globalObject, callframe, path_slice.slice()) catch {
-            return globalObject.throwInvalidArguments("Failed to resolve path", .{});
+        var source_location = try context.callerSourceLocation().sourceLocation();
+        defer source_location.deinit();
+        const caller_utf8 = try source_location.source_url.toUTF8(bun.default_allocator);
+        defer caller_utf8.deinit();
+        const path_utf8 = try args.path.toUTF8(bun.default_allocator);
+        defer path_utf8.deinit();
+        const source_dir = std.fs.path.dirname(caller_utf8.slice()) orelse ".";
+        var resolved = globalThis.bunVM().transpiler.resolver.resolve(source_dir, path_utf8.slice(), .entry_point_run) catch
+            return context.fail(.path_resolve_failed, {});
+        const entry_path = resolved.path() orelse return context.fail(.path_resolve_failed, {});
+        var resolved_path = try bun.bindgen.DOMString.fromUTF8(entry_path.text);
+        defer resolved_path.deinit();
+        const resolved_path_utf8 = try resolved_path.toUTF8(bun.default_allocator);
+        defer resolved_path_utf8.deinit();
+        for (resolved_path_utf8.slice()) |byte| switch (byte) {
+            '\'' => return context.fail(.path_has_single_quote, {}),
+            '%' => return context.fail(.path_has_percent, {}),
+            else => {},
         };
 
-        // Validate path has no single quotes (shell escaping in crontab) or
-        // percent signs (cron interprets % as newline before the shell sees it)
-        for (abs_path) |c| {
-            if (c == '\'') {
-                bun.default_allocator.free(abs_path);
-                return globalObject.throwInvalidArguments("Path must not contain single quotes", .{});
-            }
-            if (c == '%') {
-                bun.default_allocator.free(abs_path);
-                return globalObject.throwInvalidArguments("Path must not contain percent signs (cron interprets % as newline)", .{});
-            }
-        }
-
-        const bun_exe = bun.selfExePath() catch {
-            bun.default_allocator.free(abs_path);
-            return globalObject.throw("Failed to get bun executable path", .{});
-        };
+        const bun_exe = bun.selfExePath() catch return context.fail(.executable_path_failed, {});
         if (bun.strings.indexOfAny(bun_exe, "'%") != null) {
-            bun.default_allocator.free(abs_path);
-            return globalObject.throwInvalidArguments("Bun executable path '{s}' contains characters (' or %) that cannot be safely embedded in a crontab entry", .{bun_exe});
+            const message = try std.fmt.allocPrint(
+                bun.default_allocator,
+                "Bun executable path '{s}' contains characters (' or %) that cannot be safely embedded in a crontab entry",
+                .{bun_exe},
+            );
+            defer bun.default_allocator.free(message);
+            return context.fail(.unsafe_executable_path, try bun.bindgen.ThreadSafeDOMString.fromUTF8(message));
         }
-        const job = bun.handleOom(bun.default_allocator.create(CronRegisterJob));
+
+        const abs_path = try bun.default_allocator.dupeSentinel(u8, resolved_path_utf8.slice(), 0);
+        errdefer bun.default_allocator.free(abs_path);
+        const schedule = try bun.default_allocator.dupeSentinel(u8, normalized_schedule, 0);
+        errdefer bun.default_allocator.free(schedule);
+        const title = try bun.default_allocator.dupeSentinel(u8, title_slice.slice(), 0);
+        errdefer bun.default_allocator.free(title);
+        const job = try bun.default_allocator.create(CronRegisterJob);
+        var completion = context.completion();
         job.* = .{
-            .global = globalObject,
+            .completion = completion.take(),
+            .io = globalThis.bunVM().io,
             .bun_exe = bun_exe,
             .abs_path = abs_path,
-            .schedule = bun.handleOom(bun.default_allocator.dupeSentinel(u8, normalized_schedule, 0)),
-            .title = bun.handleOom(bun.default_allocator.dupeSentinel(u8, title_slice.slice(), 0)),
+            .schedule = schedule,
+            .title = title,
             .parsed_cron = parsed,
-            .promise = jsc.JSPromise.Strong.init(globalObject),
         };
-
-        const promise_value = job.promise.value();
-        job.poll.ref(jsc.VirtualMachine.get());
 
         if (comptime bun.Environment.isMac)
             job.startMac()
@@ -494,8 +483,6 @@ pub const CronRegisterJob = struct {
             job.startWindows()
         else
             job.startLinux();
-
-        return promise_value;
     }
 
     // -- Windows --
@@ -521,7 +508,7 @@ pub const CronRegisterJob = struct {
         };
         defer bun.default_allocator.free(xml);
 
-        const xml_path = makeTempPath(this.global.bunVM().io, "bun-cron-xml-") catch {
+        const xml_path = makeTempPath(this.io, "bun-cron-xml-") catch {
             this.setErr("Out of memory", .{});
             this.finish();
             return;
@@ -550,9 +537,8 @@ pub const CronRegisterJob = struct {
 // ============================================================================
 
 pub const CronRemoveJob = struct {
-    promise: jsc.JSPromise.Strong = .empty,
-    global: *jsc.JSGlobalObject,
-    poll: bun.Async.KeepAlive = .{},
+    completion: bun.bindgen.OwnedCompletion(RemoveSchema),
+    io: std.Io,
     title: [:0]const u8,
 
     state: State = .reading_crontab,
@@ -663,14 +649,16 @@ pub const CronRemoveJob = struct {
 
     fn finish(this: *CronRemoveJob) void {
         this.state = if (this.err_msg != null) .failed else .done;
-        this.poll.unref(jsc.VirtualMachine.get());
-        const ev = jsc.VirtualMachine.get().eventLoop();
-        ev.enter();
-        defer ev.exit();
         if (this.err_msg) |msg| {
-            const error_value: bun.JSError!jsc.JSValue = if (this.global.createErrorInstance("{s}", .{msg})) |err| err.toJS() else |err| err;
-            this.promise.rejectWithAsyncStack(this.global, error_value) catch {};
-        } else this.promise.resolve(this.global, .js_undefined) catch {};
+            const owned_message = bun.bindgen.ThreadSafeDOMString.fromUTF8(msg) catch {
+                this.completion.outOfMemory();
+                this.deinit();
+                return;
+            };
+            this.completion.fail(.operation_failed, owned_message);
+        } else {
+            this.completion.resolve({});
+        }
         this.deinit();
     }
 
@@ -718,7 +706,7 @@ pub const CronRemoveJob = struct {
             return;
         };
 
-        const tmp_path = makeTempPath(this.global.bunVM().io, "bun-cron-rm-") catch {
+        const tmp_path = makeTempPath(this.io, "bun-cron-rm-") catch {
             this.setErr("Out of memory", .{});
             this.finish();
             return;
@@ -761,34 +749,41 @@ pub const CronRemoveJob = struct {
         this.spawnCmd(&argv, .ignore, .ignore);
     }
 
-    pub fn cronRemove(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const args = callframe.argumentsAsArray(1);
-        if (!args[0].isString()) return globalObject.throwInvalidArguments("Bun.cron.remove() expects a string title", .{});
-
-        const title_str = try args[0].toBunString(globalObject);
-        defer title_str.deref();
-        const title_slice = title_str.toUTF8(bun.default_allocator);
+    pub fn cronRemove(
+        context: bun.bindgen.CallContext(RemoveSchema),
+        args: bun.bindgen.Args(RemoveSchema),
+    ) bun.bindgen.CallError(RemoveSchema)!void {
+        const globalThis = context.viewToken().globalObject();
+        const title_slice = try args.title.toUTF8(bun.default_allocator);
         defer title_slice.deinit();
 
         if (!validateTitle(title_slice.slice()))
-            return globalObject.throwInvalidArguments("Cron title must contain only alphanumeric characters, hyphens, and underscores", .{});
+            return context.fail(.invalid_title, {});
 
-        const job = bun.handleOom(bun.default_allocator.create(CronRemoveJob));
+        const title = bun.default_allocator.dupeSentinel(u8, title_slice.slice(), 0) catch {
+            var completion = context.completion();
+            completion.outOfMemory();
+            return;
+        };
+        const job = bun.default_allocator.create(CronRemoveJob) catch {
+            bun.default_allocator.free(title);
+            var completion = context.completion();
+            completion.outOfMemory();
+            return;
+        };
+        var completion = context.completion();
         job.* = .{
-            .global = globalObject,
-            .title = bun.handleOom(bun.default_allocator.dupeSentinel(u8, title_slice.slice(), 0)),
-            .promise = jsc.JSPromise.Strong.init(globalObject),
+            .completion = completion.take(),
+            .io = globalThis.bunVM().io,
+            .title = title,
         };
 
-        const promise_value = job.promise.value();
-        job.poll.ref(jsc.VirtualMachine.get());
         if (comptime bun.Environment.isMac)
             job.startMac()
         else if (comptime bun.Environment.isWindows)
             job.startWindows()
         else
             job.startLinux();
-        return promise_value;
     }
 
     fn startWindows(this: *CronRemoveJob) void {
@@ -809,108 +804,171 @@ pub const CronRemoveJob = struct {
 // ============================================================================
 
 pub const CronJob = struct {
+    const BindingModule = bun.bindgen.Module("CronJob");
+    const CronJobSchema = BindingModule.class("CronJob");
+    const StrongWrapper = bun.bindgen.ClassWrapperHandle(CronJobSchema, .strong);
+    const DisposeSchema = CronJobSchema.member("dispose");
+    const CronSchema = CronJobSchema.member("cron");
+    const RefSchema = CronJobSchema.member("ref");
+    const StopSchema = CronJobSchema.member("stop");
+    const UnrefSchema = CronJobSchema.member("unref");
+    const Binding = bun.bindgen.Class(CronJobSchema, CronJob);
+    const OnPromiseResolveSchema = BindingModule.function("onPromiseResolve");
+    const OnPromiseRejectSchema = BindingModule.function("onPromiseReject");
+    const PromiseReaction = bun.bindgen.PromiseReaction(OnPromiseResolveSchema.args[1].ArgumentType, CronJob);
+    const OnPromiseResolveBinding = bun.bindgen.Fn(OnPromiseResolveSchema, bindOnPromiseResolve);
+    const OnPromiseRejectBinding = bun.bindgen.Fn(OnPromiseRejectSchema, bindOnPromiseReject);
+    const Timer = struct {
+        value: EventLoopTimer = .{ .tag = .CronJob, .next = .epoch },
+        owner: *CronJob,
+
+        pub fn destroy(timer: *@This()) void {
+            bun.assert(timer.value.in_heap == .none);
+            bun.destroy(timer);
+        }
+    };
+
     const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
     pub const ref = RefCount.ref;
     pub const deref = RefCount.deref;
+    pub const derefDeferred = RefCount.derefDeferred;
+    pub const destroyAfterDeferred = RefCount.destroyAfterDeferred;
 
-    pub const js = jsc.Codegen.JSCronJob;
-    pub const toJS = js.toJS;
-    pub const fromJS = js.fromJS;
-    pub const fromJSDirect = js.fromJSDirect;
+    const Scheduler = struct {
+        vm: *jsc.VirtualMachine,
+
+        fn fromFocused(vm: *jsc.VirtualMachine) Scheduler {
+            return .{ .vm = vm };
+        }
+
+        fn isRunning(scheduler: Scheduler) bool {
+            return scheduler.vm.scriptExecutionStatus() == .running;
+        }
+
+        fn updateTimer(scheduler: Scheduler, timer: *EventLoopTimer, next: *const bun.timespec) void {
+            scheduler.vm.timer.update(timer, next);
+        }
+
+        fn removeTimer(scheduler: Scheduler, timer: *EventLoopTimer) void {
+            if (timer.state == .ACTIVE) scheduler.vm.timer.remove(timer);
+        }
+
+        fn refEventLoop(scheduler: Scheduler, keep_alive: *bun.Async.KeepAlive) void {
+            keep_alive.ref(scheduler.vm);
+        }
+
+        fn unrefEventLoop(scheduler: Scheduler, keep_alive: *bun.Async.KeepAlive) void {
+            keep_alive.unref(scheduler.vm);
+        }
+
+        fn track(scheduler: Scheduler, job: *CronJob) bun.OOM!void {
+            try scheduler.vm.rareData().cron_jobs.append(bun.default_allocator, job);
+            job.ref();
+        }
+
+        fn untrack(scheduler: Scheduler, job: *CronJob) void {
+            const rare = scheduler.vm.rare_data orelse return;
+            if (std.mem.indexOfScalar(*CronJob, rare.cron_jobs.items, job)) |index| {
+                _ = rare.cron_jobs.swapRemove(index);
+                job.deref();
+            }
+        }
+    };
 
     ref_count: RefCount,
-    event_loop_timer: EventLoopTimer = .{ .tag = .CronJob, .next = .epoch },
-    global: *jsc.JSGlobalObject,
+    bindgen_state: bun.bindgen.ClassState = .{},
+    event_loop_timer: bun.bindgen.OwnedNative(Timer, .vm),
     parsed: CronExpression,
+    schedule: bun.bindgen.DOMString,
+    callback: bun.bindgen.Callback(CronCallbackSchema),
     poll_ref: bun.Async.KeepAlive = .{},
-    this_value: jsc.JSRef = jsc.JSRef.empty(),
+    wrapper: ?StrongWrapper = null,
+    pending_promise: bun.bindgen.PromiseRoot.Optional = .empty,
     stopped: bool = false,
     /// Last computed wall-clock fire target (ms epoch); floors the next search
     /// so monotonic-vs-wall skew can't recompute the same minute.
     last_next_ms: f64 = 0,
-    /// True while a ref() is held across an in-flight callback promise.
-    /// Released exactly once by either onPromiseResolve/Reject or
-    /// clearAllForVM(.teardown).
-    pending_ref: bool = false,
+    pending_callback: bool = false,
     /// True between onTimerFire's cb.call() and processing of its result.
     in_fire: bool = false,
 
-    /// Defer downgrading the JS wrapper to weak until any in-flight promise
-    /// has settled, so onPromiseReject can still read pendingPromise from
-    /// the wrapper and pass the real Promise to unhandledRejection.
-    fn maybeDowngrade(this: *CronJob) void {
-        if (this.stopped and !this.pending_ref and this.this_value != .finalized)
-            this.this_value.downgrade();
+    fn nativeTimer(this: *CronJob) *EventLoopTimer {
+        return &this.event_loop_timer.get().value;
     }
 
-    fn releasePendingRef(this: *CronJob) void {
-        if (this.pending_ref) {
-            this.pending_ref = false;
-            this.maybeDowngrade();
-            this.deref();
-        }
+    pub fn fromEventLoopTimer(timer_value: *EventLoopTimer) *CronJob {
+        const timer: *Timer = @fieldParentPtr("value", timer_value);
+        return timer.owner;
+    }
+
+    fn maybeReleaseWrapper(this: *CronJob) void {
+        if (this.stopped and !this.pending_callback) this.clearWrapper();
+    }
+
+    fn clearWrapper(this: *CronJob) void {
+        if (this.wrapper) |*wrapper| wrapper.deinit();
+        this.wrapper = null;
+    }
+
+    fn clearPendingCallback(this: *CronJob) void {
+        this.pending_callback = false;
+        this.pending_promise.clear();
+        this.maybeReleaseWrapper();
+    }
+
+    pub fn releasePromiseReactionRef(this: *CronJob) void {
+        this.clearPendingCallback();
+        this.deref();
     }
 
     /// Idempotent — every step checks its own state.
-    fn stopInternal(this: *CronJob, vm: *jsc.VirtualMachine) void {
+    fn stopInternal(this: *CronJob, scheduler: Scheduler) void {
         this.stopped = true;
-        if (this.event_loop_timer.state == .ACTIVE)
-            vm.timer.remove(&this.event_loop_timer);
-        this.poll_ref.unref(vm);
-        this.maybeDowngrade();
+        scheduler.removeTimer(this.nativeTimer());
+        scheduler.unrefEventLoop(&this.poll_ref);
+        this.maybeReleaseWrapper();
     }
 
     /// Runs the cleanup that selfStop deferred while in_fire was true.
-    fn finishDeferredStop(this: *CronJob, vm: *jsc.VirtualMachine) void {
-        this.stopInternal(vm);
-        this.removeFromList(vm);
+    fn finishDeferredStop(this: *CronJob, scheduler: Scheduler) void {
+        this.stopInternal(scheduler);
+        scheduler.untrack(this);
     }
 
-    fn selfStop(this: *CronJob, vm: *jsc.VirtualMachine) void {
+    fn selfStop(this: *CronJob, scheduler: Scheduler) void {
         // While the callback is on the stack or its promise is pending, defer
-        // list removal + downgrade to finishDeferredStop (called from
-        // scheduleNext after settle) so onPromiseReject can read pendingPromise
-        // and clearAllForVM(.teardown) can release pending_ref.
-        if (this.in_fire or this.pending_ref) {
+        // list removal + wrapper release to finishDeferredStop (called from
+        // scheduleNext after settle) so onPromiseReject can read the pending promise
+        // and VM teardown can clear the roots of an abandoned callback.
+        if (this.in_fire or this.pending_callback) {
             this.stopped = true;
-            this.poll_ref.unref(vm);
+            scheduler.unrefEventLoop(&this.poll_ref);
             return;
         }
-        this.stopInternal(vm);
-        this.removeFromList(vm);
+        this.stopInternal(scheduler);
+        scheduler.untrack(this);
     }
 
-    fn removeFromList(this: *CronJob, vm: *jsc.VirtualMachine) void {
-        if (vm.rare_data) |rare| {
-            if (std.mem.indexOfScalar(*CronJob, rare.cron_jobs.items, this)) |i| {
-                _ = rare.cron_jobs.swapRemove(i);
-                this.deref();
-            }
-        }
-    }
-
-    /// `.reload`: --hot — promises in flight will still settle on this VM, so
-    /// the pending ref is left for onPromiseResolve/Reject to balance.
-    /// `.teardown`: worker exit — the event loop is dying, settle never
-    /// happens, so release the pending ref here to avoid leaking the struct.
+    /// Teardown clears JS roots while the reaction retains its native owner
+    /// until settlement or finalization. Reload leaves pending callbacks live.
     pub fn clearAllForVM(vm: *jsc.VirtualMachine, comptime mode: enum { reload, teardown }) void {
         const rare = vm.rare_data orelse return;
+        const scheduler = Scheduler.fromFocused(vm);
         for (rare.cron_jobs.items) |job| {
-            job.stopInternal(vm);
-            if (mode == .teardown) job.releasePendingRef();
+            job.stopInternal(scheduler);
+            if (mode == .teardown) job.clearPendingCallback();
             job.deref();
         }
         rare.cron_jobs.clearRetainingCapacity();
     }
 
     fn deinit(this: *CronJob) void {
-        this.this_value.deinit();
+        this.event_loop_timer.deinit();
+        this.schedule.deinit();
+        this.callback.deinit();
+        this.clearWrapper();
+        this.pending_promise.deinit();
         bun.destroy(this);
-    }
-
-    pub fn finalize(this: *CronJob) void {
-        this.this_value.finalize();
-        this.deref();
     }
 
     fn computeNextTimespec(this: *CronJob) ?bun.timespec {
@@ -921,243 +979,270 @@ pub const CronJob = struct {
         // (clock skew / NTP step); floor next() at the prior target so it can't
         // recompute the same minute and double-fire.
         const from_ms = @max(now_ms, this.last_next_ms);
-        const next_ms = (this.parsed.next(this.global, from_ms) catch return null) orelse return null;
+        const next_ms = (this.parsed.next(from_ms) catch return null) orelse return null;
         this.last_next_ms = next_ms;
         const delta: i64 = @intFromFloat(@max(1.0, next_ms - now_ms));
         return bun.timespec.msFromNow(.force_real_time, delta);
     }
 
-    fn scheduleNext(this: *CronJob, vm: *jsc.VirtualMachine) void {
+    fn scheduleNext(this: *CronJob, scheduler: Scheduler) void {
         // Every path into here has just returned from user JS (the callback,
         // an uncaughtException handler, or an unhandledRejection handler). If
         // that JS called process.exit() / worker.terminate(), don't re-arm
         // the timer into a VM whose teardown now owns it.
-        if (this.stopped or vm.scriptExecutionStatus() != .running) {
+        if (this.stopped or !scheduler.isRunning()) {
             this.stopped = true;
-            return this.finishDeferredStop(vm);
+            return this.finishDeferredStop(scheduler);
         }
         const next_time = this.computeNextTimespec() orelse
-            return this.finishDeferredStop(vm);
-        vm.timer.update(&this.event_loop_timer, &next_time);
+            return this.finishDeferredStop(scheduler);
+        scheduler.updateTimer(this.nativeTimer(), &next_time);
     }
 
     pub fn onTimerFire(this: *CronJob, vm: *jsc.VirtualMachine) void {
-        this.event_loop_timer.state = .FIRED;
-        // scheduleNext → finishDeferredStop downgrades this_value and derefs the
+        const scheduler = Scheduler.fromFocused(vm);
+        this.nativeTimer().state = .FIRED;
+        // scheduleNext → finishDeferredStop releases the wrapper and derefs the
         // list entry; bracket-ref so that path can't drop the last ref mid-function.
         this.ref();
         defer this.deref();
 
         if (this.stopped) return;
-        if (vm.scriptExecutionStatus() != .running) {
-            this.selfStop(vm);
+        if (!scheduler.isRunning()) {
+            this.selfStop(scheduler);
             return;
         }
 
-        const js_this = this.this_value.tryGet() orelse {
-            this.selfStop(vm);
+        const wrapper = if (this.wrapper) |*value| value else {
+            this.selfStop(scheduler);
             return;
         };
-        const cb = js.callbackGetCached(js_this) orelse {
-            this.selfStop(vm);
+        var js_this = wrapper.toOwned() orelse {
+            this.selfStop(scheduler);
             return;
         };
-        if (cb.isUndefined()) {
-            this.selfStop(vm);
-            return;
-        }
-
+        defer js_this.deinit();
         vm.eventLoop().enter();
         defer vm.eventLoop().exit();
-
         this.in_fire = true;
-        const result = cb.call(this.global, js_this, &.{}) catch {
+        var invocation: @TypeOf(this.callback).Invocation = undefined;
+        this.callback.beginInvocation(&invocation);
+        defer invocation.deinit();
+        const result = invocation.call(.{
+            .bindingThis = js_this.operand(&invocation),
+        }) catch |failure| {
             this.in_fire = false;
-            if (this.global.tryTakeException()) |err| {
-                // terminate() arriving mid-callback leaves the TerminationException
-                // pending (tryClearException refuses to clear it) while JSC clears
-                // hasTerminationRequest on VMEntryScope exit. Reporting it would
-                // enter a DeferTermination scope and assert; match setTimeout's
-                // Bun__reportUnhandledError and drop it.
-                if (err.isTerminationException()) {
-                    this.selfStop(vm);
-                    return;
-                }
-                _ = vm.uncaughtException(vm.global, err, false);
-            }
-            this.scheduleNext(vm);
+            var thrown = invocation.takeThrownValue(failure) catch {
+                this.selfStop(scheduler);
+                return;
+            };
+            defer thrown.deinit();
+            _ = invocation.reportUncaughtException(thrown.operand(&invocation).asAny(), false);
+            this.scheduleNext(scheduler);
             return;
         };
         this.in_fire = false;
 
         // terminate() may have arrived while the callback was running; bail out
         // without touching the timer heap or JS state the teardown path owns.
-        if (vm.scriptExecutionStatus() != .running) {
-            this.selfStop(vm);
+        if (!scheduler.isRunning()) {
+            this.selfStop(scheduler);
             return;
         }
 
-        if (result.asAnyPromise()) |promise| {
-            switch (promise.status()) {
-                .pending => {
-                    this.ref();
-                    this.pending_ref = true;
-                    js.pendingPromiseSetCached(js_this, this.global, result);
-                    result.then(this.global, this, onPromiseResolve, onPromiseReject) catch {
-                        js.pendingPromiseSetCached(js_this, this.global, .js_undefined);
-                        this.releasePendingRef();
-                        this.scheduleNext(vm);
-                    };
-                    return;
-                },
-                .fulfilled => {},
-                .rejected => {
-                    promise.setHandled(this.global.vm());
-                    vm.unhandledRejection(vm.global, promise.result(this.global.vm()), result);
-                },
-            }
+        switch (result) {
+            .promise => |promise_value| {
+                const status = invocation.engineIn("promises", "promiseStatus").call(.{
+                    .promise = promise_value.operand(&invocation),
+                });
+                switch (status) {
+                    .pending => {
+                        this.pending_promise.set(promise_value.operand(&invocation).asPromise()) catch |err| {
+                            invocation.reportActiveException(err);
+                            this.scheduleNext(scheduler);
+                            return;
+                        };
+                        this.ref();
+                        this.pending_callback = true;
+                        PromiseReaction.attach(
+                            &invocation,
+                            promise_value.operand(&invocation).asPromise(),
+                            this,
+                            OnPromiseResolveBinding,
+                            OnPromiseRejectBinding,
+                        ) catch {
+                            this.pending_promise.clear();
+                            this.scheduleNext(scheduler);
+                            return;
+                        };
+                        return;
+                    },
+                    .fulfilled => {},
+                    .rejected => {
+                        invocation.engineIn("promises", "promiseSetHandled").call(.{ .promise = promise_value.operand(&invocation) });
+                        const reason = (invocation.engineIn("promises", "promiseResult").call(.{ .promise = promise_value.operand(&invocation) }) catch {
+                            this.selfStop(scheduler);
+                            return;
+                        }) orelse
+                            @panic("rejected promise has no result");
+                        invocation.reportUnhandledRejection(reason.operand(&invocation).asAny(), promise_value.operand(&invocation).asPromise());
+                    },
+                }
+            },
+            .ignored => {},
         }
 
-        this.scheduleNext(vm);
+        this.scheduleNext(scheduler);
     }
 
-    pub export const Bun__CronJob__onPromiseResolve = jsc.toJSHostFn(onPromiseResolve);
-    pub export const Bun__CronJob__onPromiseReject = jsc.toJSHostFn(onPromiseReject);
-
-    fn onPromiseResolve(_: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const args = callframe.arguments();
-        var this: *CronJob = args[args.len - 1].asPromisePtr(CronJob);
-        defer this.releasePendingRef();
-        const vm = this.global.bunVM();
-        if (this.this_value.tryGet()) |js_this|
-            js.pendingPromiseSetCached(js_this, this.global, .js_undefined);
-        this.scheduleNext(vm);
-        return .js_undefined;
+    fn bindOnPromiseResolve(
+        _: bun.bindgen.CallContext(OnPromiseResolveSchema),
+        args: bun.bindgen.Args(OnPromiseResolveSchema),
+    ) bun.JSError!bun.bindgen.Return(OnPromiseResolveSchema) {
+        const this = PromiseReaction.take(args.context) orelse return;
+        defer this.releasePromiseReactionRef();
+        this.pending_promise.clear();
+        this.scheduleNext(.fromFocused(jsc.VirtualMachine.get()));
     }
 
-    fn onPromiseReject(_: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        const args = callframe.arguments();
-        var this: *CronJob = args[args.len - 1].asPromisePtr(CronJob);
-        defer this.releasePendingRef();
-        const vm = this.global.bunVM();
-        const err = args[0];
-        var promise_value: jsc.JSValue = .js_undefined;
-        if (this.this_value.tryGet()) |js_this| {
-            promise_value = js.pendingPromiseGetCached(js_this) orelse .js_undefined;
-            js.pendingPromiseSetCached(js_this, this.global, .js_undefined);
-        }
-        vm.unhandledRejection(vm.global, err, promise_value);
-        this.scheduleNext(vm);
-        return .js_undefined;
+    fn bindOnPromiseReject(
+        context: bun.bindgen.CallContext(OnPromiseRejectSchema),
+        args: bun.bindgen.Args(OnPromiseRejectSchema),
+    ) bun.JSError!bun.bindgen.Return(OnPromiseRejectSchema) {
+        const this = PromiseReaction.take(args.context) orelse return;
+        defer this.releasePromiseReactionRef();
+        context.reportStoredUnhandledRejection(args.errorValue.operand(context).asAny(), &this.pending_promise);
+        this.scheduleNext(.fromFocused(jsc.VirtualMachine.get()));
     }
 
-    pub fn stop(this: *CronJob, _: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        this.selfStop(this.global.bunVM());
-        return callframe.this();
+    comptime {
+        _ = OnPromiseResolveBinding;
+        _ = OnPromiseRejectBinding;
     }
 
-    pub fn doRef(this: *CronJob, _: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        if (!this.stopped) this.poll_ref.ref(this.global.bunVM());
-        return callframe.this();
+    pub fn dispose(
+        this: *CronJob,
+        _: bun.bindgen.CallContext(DisposeSchema),
+        args: bun.bindgen.Args(DisposeSchema),
+    ) bun.JSError!bun.bindgen.Return(DisposeSchema) {
+        this.selfStop(.fromFocused(jsc.VirtualMachine.get()));
+        return args.bindingThis.toOwned();
     }
 
-    pub fn doUnref(this: *CronJob, _: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        this.poll_ref.unref(this.global.bunVM());
-        return callframe.this();
+    pub fn stop(
+        this: *CronJob,
+        _: bun.bindgen.CallContext(StopSchema),
+        args: bun.bindgen.Args(StopSchema),
+    ) bun.JSError!bun.bindgen.Return(StopSchema) {
+        this.selfStop(.fromFocused(jsc.VirtualMachine.get()));
+        return args.bindingThis.toOwned();
     }
 
-    pub fn getCron(_: *CronJob, _: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-        return .js_undefined; // unreachable — register() pre-populates the cache via cronSetCached
+    pub fn doRef(
+        this: *CronJob,
+        _: bun.bindgen.CallContext(RefSchema),
+        args: bun.bindgen.Args(RefSchema),
+    ) bun.JSError!bun.bindgen.Return(RefSchema) {
+        if (!this.stopped) this.poll_ref.ref(jsc.VirtualMachine.get());
+        return args.bindingThis.toOwned();
     }
 
-    pub fn register(globalObject: *jsc.JSGlobalObject, schedule_arg: jsc.JSValue, callback_arg: jsc.JSValue) bun.JSError!jsc.JSValue {
-        if (!schedule_arg.isString())
-            return globalObject.throwInvalidArguments("Bun.cron() expects a string cron expression", .{});
+    pub fn doUnref(
+        this: *CronJob,
+        _: bun.bindgen.CallContext(UnrefSchema),
+        args: bun.bindgen.Args(UnrefSchema),
+    ) bun.JSError!bun.bindgen.Return(UnrefSchema) {
+        this.poll_ref.unref(jsc.VirtualMachine.get());
+        return args.bindingThis.toOwned();
+    }
 
-        const schedule_str = try schedule_arg.toBunString(globalObject);
-        defer schedule_str.deref();
-        const schedule_slice = schedule_str.toUTF8(bun.default_allocator);
+    pub fn getCron(
+        this: *CronJob,
+        _: bun.bindgen.CallContext(CronSchema),
+        _: bun.bindgen.Args(CronSchema),
+    ) bun.JSError!bun.bindgen.DOMString {
+        return this.schedule.clone();
+    }
+
+    fn registerFromBinding(
+        context: anytype,
+        schedule: bun.bindgen.DOMStringView,
+        callback: bun.bindgen.CallbackView(CronCallbackSchema),
+    ) bun.bindgen.CallError(@TypeOf(context))!bun.bindgen.ClassRef(CronJobSchema) {
+        const globalThis = context.viewToken().globalObject();
+        var owned_schedule = schedule.toOwned();
+        defer owned_schedule.deinit();
+        const schedule_slice = try schedule.toUTF8(bun.default_allocator);
         defer schedule_slice.deinit();
 
         const parsed = CronExpression.parse(schedule_slice.slice()) catch |e|
-            return globalObject.throwInvalidArguments("{s}", .{CronExpression.errorMessage(e)});
+            return context.fail(.invalid_expression, try bun.bindgen.DOMString.fromUTF8(CronExpression.errorMessage(e)));
 
-        const vm = globalObject.bunVM();
-
-        const job = bun.new(CronJob, .{
+        var retained_callback = try callback.toOwned();
+        defer retained_callback.deinit();
+        const job = try bun.default_allocator.create(CronJob);
+        const timer = bun.default_allocator.create(Timer) catch |err| {
+            bun.default_allocator.destroy(job);
+            return err;
+        };
+        timer.* = .{ .owner = job };
+        job.* = .{
             .ref_count = .init(),
-            .global = globalObject,
+            .event_loop_timer = .init(timer),
             .parsed = parsed,
-        });
+            .schedule = owned_schedule.take(),
+            .callback = retained_callback.take(),
+        };
 
         const next_time = job.computeNextTimespec() orelse {
             job.deref();
-            return globalObject.throwInvalidArguments("Cron expression '{s}' has no future occurrences", .{schedule_slice.slice()});
+            const message = try std.fmt.allocPrint(bun.default_allocator, "Cron expression '{s}' has no future occurrences", .{schedule_slice.slice()});
+            defer bun.default_allocator.free(message);
+            return context.fail(.no_future_occurrences, try bun.bindgen.DOMString.fromUTF8(message));
         };
 
-        // The cron_jobs list exists so --hot reload and worker teardown can
-        // stop/release jobs. Main-thread VMs without --hot never enumerate it,
-        // so skip the list ref + append entirely.
-        if (vm.hot_reload == .hot or vm.worker != null) {
-            job.ref(); // owned by cron_jobs entry
-            bun.handleOom(vm.rareData().cron_jobs.append(bun.default_allocator, job));
-        }
+        var reference = try Binding.adoptResult(job, context);
+        errdefer reference.deinit();
+        const scheduler = Scheduler.fromFocused(globalThis.bunVM());
+        try scheduler.track(job);
+        job.wrapper = StrongWrapper.initRef(&reference);
+        scheduler.refEventLoop(&job.poll_ref);
+        scheduler.updateTimer(job.nativeTimer(), &next_time);
 
-        const js_value = job.toJS(globalObject);
-        job.this_value.setStrong(js_value, globalObject);
-        js.cronSetCached(js_value, globalObject, schedule_arg);
-        js.callbackSetCached(js_value, globalObject, callback_arg.withAsyncContextIfNeeded(globalObject));
-
-        job.poll_ref.ref(vm);
-        vm.timer.update(&job.event_loop_timer, &next_time);
-
-        return js_value;
+        return reference;
     }
 };
 
-// ============================================================================
-// Bun.cron object builder
-// ============================================================================
-
-pub fn getCronObject(globalThis: *jsc.JSGlobalObject, _: *jsc.JSObject) jsc.JSValue {
-    const cron_fn = jsc.JSFunction.create(globalThis, "cron", CronRegisterJob.cronRegister, 3, .{});
-    const cron_object = cron_fn.toObject();
-    const remove_fn = jsc.JSFunction.create(globalThis, "remove", CronRemoveJob.cronRemove, 1, .{});
-    const parse_fn = jsc.JSFunction.create(globalThis, "parse", cronParse, 1, .{});
-    cron_object.putDirect(globalThis, bun.String.static("remove"), remove_fn.toJS());
-    cron_object.putDirect(globalThis, bun.String.static("parse"), parse_fn.toJS());
-    return cron_fn.toJS();
+pub fn cronRegisterInProcess(
+    context: bun.bindgen.CallContext(RegisterInProcessSchema),
+    args: bun.bindgen.Args(RegisterInProcessSchema),
+) bun.bindgen.CallError(RegisterInProcessSchema)!bun.bindgen.Return(RegisterInProcessSchema) {
+    const expression = switch (args.expression) {
+        .expression => |value| value,
+        .invalid => return context.fail(.invalid_expression, try bun.bindgen.DOMString.fromUTF8("Bun.cron() expects a string cron expression")),
+    };
+    return CronJob.registerFromBinding(context, expression, args.handler);
 }
 
-pub fn cronParse(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const args = callframe.argumentsAsArray(2);
-
-    if (!args[0].isString())
-        return globalObject.throwInvalidArguments("Bun.cron.parse() expects a string cron expression as the first argument", .{});
-
-    const expr_str = try args[0].toBunString(globalObject);
-    defer expr_str.deref();
-    const expr_slice = expr_str.toUTF8(bun.default_allocator);
+pub fn cronParse(
+    context: bun.bindgen.CallContext(ParseSchema),
+    args: bun.bindgen.Args(ParseSchema),
+) bun.bindgen.CallError(ParseSchema)!bun.bindgen.Return(ParseSchema) {
+    const expr_slice = try args.expression.toUTF8(bun.default_allocator);
     defer expr_slice.deinit();
 
-    const parsed = CronExpression.parse(expr_slice.slice()) catch |e|
-        return globalObject.throwInvalidArguments("{s}", .{CronExpression.errorMessage(e)});
+    const parsed = CronExpression.parse(expr_slice.slice()) catch |err| {
+        const message = try bun.bindgen.DOMString.fromUTF8(CronExpression.errorMessage(err));
+        return context.fail(.invalid_expression, message);
+    };
 
-    const from_ms: f64 = if (args[1] != .zero and !args[1].isUndefined() and args[1] != .null) blk: {
-        if (args[1].isNumber()) {
-            break :blk try args[1].toNumber(globalObject);
-        } else if (args[1].jsType() == .JSDate) {
-            break :blk try args[1].toNumber(globalObject);
-        } else {
-            return globalObject.throwInvalidArguments("Bun.cron.parse() expects the second argument to be a Date or number (ms since epoch)", .{});
-        }
-    } else @as(f64, @floatFromInt(bun.timespec.realNow().ms()));
+    const from_ms = args.from orelse @as(f64, @floatFromInt(bun.timespec.realNow().ms()));
 
     if (std.math.isNan(from_ms) or std.math.isInf(from_ms))
-        return globalObject.throwInvalidArguments("Invalid date value", .{});
+        return context.fail(.invalid_date, {});
 
-    const next_ms = (try parsed.next(globalObject, from_ms)) orelse return .null;
-    return jsc.JSValue.fromDateNumber(globalObject, next_ms);
+    const next_ms = (parsed.next(from_ms) catch return context.fail(.invalid_date, {})) orelse return null;
+    return try context.engineIn("date_time", "dateInstanceFromNumber").call(.{ .value = next_ms });
 }
 
 // ============================================================================
@@ -1192,7 +1277,7 @@ fn spawnCmdGeneric(comptime Self: type, this: *Self, argv: anytype, stdin_opt: b
         .cwd = cwd,
         .argv0 = resolved_argv0,
         .windows = if (comptime bun.Environment.isWindows) .{
-            .loop = jsc.EventLoopHandle.init(jsc.VirtualMachine.get().eventLoop()),
+            .loop = jsc.VirtualMachine.get().parentEventLoop(),
         },
     };
 
@@ -1215,9 +1300,10 @@ fn spawnCmdGeneric(comptime Self: type, this: *Self, argv: anytype, stdin_opt: b
         this.finish();
         return;
     };
+    defer spawned.close();
 
     if (comptime bun.Environment.isPosix) {
-        if (spawned.stdout) |stdout| {
+        if (spawned.stdout.takeOwnedFd()) |stdout| {
             if (!spawned.memfds[1]) {
                 this.stdout_reader.setParent(this);
                 _ = bun.sys.setNonblocking(stdout);
@@ -1241,6 +1327,7 @@ fn spawnCmdGeneric(comptime Self: type, this: *Self, argv: anytype, stdin_opt: b
     }
     if (comptime bun.Environment.isWindows) {
         if (spawned.stderr == .buffer) {
+            this.stderr_reader.source = .{ .pipe = spawned.stderr.take().buffer };
             this.stderr_reader.parent = this;
             this.remaining_fds += 1;
             this.stderr_reader.startWithCurrentPipe().unwrap() catch {
@@ -1251,7 +1338,7 @@ fn spawnCmdGeneric(comptime Self: type, this: *Self, argv: anytype, stdin_opt: b
         }
     }
 
-    var process = spawned.toProcess(jsc.VirtualMachine.get().eventLoop(), false);
+    var process = spawned.toProcess(jsc.VirtualMachine.get().runtimeLoopHandle(), false);
     this.process = process;
     process.setExitHandler(this);
     switch (process.watchOrReap()) {
@@ -1306,18 +1393,6 @@ fn filterCrontab(content: []const u8, title: [:0]const u8, result: *std.array_li
             try result.append('\n');
         }
     }
-}
-
-fn resolvePath(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame, path: []const u8) ![:0]const u8 {
-    const vm = globalObject.bunVM();
-    const srcloc = callframe.getCallerSrcLoc(globalObject);
-    defer srcloc.str.deref();
-    const caller_utf8 = srcloc.str.toUTF8(bun.default_allocator);
-    defer caller_utf8.deinit();
-    const source_dir = std.fs.path.dirname(caller_utf8.slice()) orelse ".";
-    var resolved = vm.transpiler.resolver.resolve(source_dir, path, .entry_point_run) catch return error.ModuleNotFound;
-    const entry_path = resolved.path() orelse return error.ModuleNotFound;
-    return bun.default_allocator.dupeSentinel(u8, entry_path.text, 0);
 }
 
 /// XML-escape a string for safe embedding in plist XML.
@@ -1769,6 +1844,25 @@ const CronExpression = cron_parser.CronExpression;
 
 const bun = @import("bun");
 const jsc = bun.jsc;
+const CronJobBindings = bun.bindgen.Module("CronJob");
+const RegisterInProcessSchema = CronJobBindings.function("registerInProcess");
+const RegisterSystemSchema = CronJobBindings.function("registerSystem");
+const CronCallbackSchema = RegisterInProcessSchema.args[1].ArgumentType;
+const RemoveSchema = CronJobBindings.function("remove");
+const ParseSchema = CronJobBindings.function("parse");
+const RegisterInProcessBinding = bun.bindgen.Fn(RegisterInProcessSchema, cronRegisterInProcess);
+const RegisterSystemBinding = bun.bindgen.Fn(RegisterSystemSchema, CronRegisterJob.cronRegisterSystem);
+const RemoveBinding = bun.bindgen.Fn(RemoveSchema, CronRemoveJob.cronRemove);
+const ParseBinding = bun.bindgen.Fn(ParseSchema, cronParse);
+
+comptime {
+    _ = CronJob.Binding;
+    _ = RegisterInProcessBinding;
+    _ = RegisterSystemBinding;
+    _ = RemoveBinding;
+    _ = ParseBinding;
+}
+
 const OutputReader = bun.io.BufferedReader;
 const Process = bun.spawn.Process;
 const EventLoopTimer = bun.api.Timer.EventLoopTimer;

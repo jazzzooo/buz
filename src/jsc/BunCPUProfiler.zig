@@ -6,29 +6,22 @@ pub const CPUProfilerConfig = struct {
     interval: u32 = 1000,
 };
 
-// C++ function declarations
-extern fn Bun__startCPUProfiler(vm: *jsc.VM) void;
-extern fn Bun__stopCPUProfiler(vm: *jsc.VM, outJSON: ?*bun.String, outText: ?*bun.String) void;
-extern fn Bun__setSamplingInterval(intervalMicroseconds: c_int) void;
-
 pub fn setSamplingInterval(interval: u32) void {
-    Bun__setSamplingInterval(@intCast(interval));
+    bun.bindgen.Engine(SetCPUProfilerSamplingIntervalShim).call(.{ .intervalMicroseconds = @intCast(interval) });
 }
 
 pub fn startCPUProfiler(vm: *jsc.VM) void {
-    Bun__startCPUProfiler(vm);
+    bun.bindgen.Engine(StartCPUProfilerShim).call(.{ .vm = @ptrCast(vm) });
 }
 
 pub fn stopAndWriteProfile(io: std.Io, vm: *jsc.VM, config: CPUProfilerConfig) !void {
-    var json_string: bun.String = .empty;
-    var text_string: bun.String = .empty;
-
-    // Call the unified C++ function with pointers for requested formats
-    Bun__stopCPUProfiler(
-        vm,
-        if (config.json_format) &json_string else null,
-        if (config.md_format) &text_string else null,
-    );
+    var profiles = bun.bindgen.Engine(StopCPUProfilerShim).call(.{
+        .vm = @ptrCast(vm),
+        .includeJSON = config.json_format,
+        .includeText = config.md_format,
+    });
+    var json_string = if (profiles.json) |*json| json.takeBunString() else bun.String.empty;
+    var text_string = if (profiles.text) |*text| text.takeBunString() else bun.String.empty;
     defer json_string.deref();
     defer text_string.deref();
 
@@ -44,7 +37,7 @@ pub fn stopAndWriteProfile(io: std.Io, vm: *jsc.VM, config: CPUProfilerConfig) !
 }
 
 fn writeProfileToFile(io: std.Io, profile_string: bun.String, config: CPUProfilerConfig, is_md_format: bool) !void {
-    const profile_slice = profile_string.toUTF8(bun.default_allocator);
+    const profile_slice = try profile_string.toUTF8(bun.default_allocator);
     defer profile_slice.deinit();
 
     const output_path = try buildOutputPath(config, is_md_format);
@@ -134,3 +127,7 @@ const std = @import("std");
 
 const bun = @import("bun");
 const jsc = bun.jsc;
+const InspectorProfilerBindings = bun.bindgen.Module("InspectorProfiler");
+const SetCPUProfilerSamplingIntervalShim = InspectorProfilerBindings.engineShim("setCPUProfilerSamplingInterval");
+const StartCPUProfilerShim = InspectorProfilerBindings.engineShim("startCPUProfiler");
+const StopCPUProfilerShim = InspectorProfilerBindings.engineShim("stopCPUProfiler");

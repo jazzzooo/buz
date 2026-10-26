@@ -768,7 +768,7 @@ pub fn migrateNPMLockfile(
                         sliced.slice,
                         &sliced,
                         log,
-                        manager,
+                        Dependency.ParseContext.fromPackageManager(manager),
                     ) orelse {
                         return error.InvalidNPMLockfile;
                     };
@@ -837,7 +837,7 @@ pub fn migrateNPMLockfile(
                                     const dep_resolved: string = dep_resolved: {
                                         if (dep_pkg.get("resolved")) |resolved| {
                                             const dep_resolved = resolved.asString(this.allocator) orelse return error.InvalidNPMLockfile;
-                                            switch (Dependency.Version.Tag.infer(dep_resolved)) {
+                                            switch (Dependency.Version.Tag.infer(manager.javascript_semantics, dep_resolved)) {
                                                 .git, .github => |tag| {
                                                     const dep_resolved_str = try string_buf.append(dep_resolved);
                                                     const dep_resolved_sliced = dep_resolved_str.sliced(string_buf.bytes.items);
@@ -849,7 +849,7 @@ pub fn migrateNPMLockfile(
                                                         tag,
                                                         &dep_resolved_sliced,
                                                         log,
-                                                        manager,
+                                                        Dependency.ParseContext.fromPackageManager(manager),
                                                     ) orelse return error.InvalidNPMLockfile;
 
                                                     break :dep_resolved dep_resolved;

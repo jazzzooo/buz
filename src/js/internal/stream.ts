@@ -65,12 +65,12 @@ for (let i = 0; i < promiseKeys.length; i++) {
 Stream.Writable = require("internal/streams/writable");
 Stream.Duplex = require("internal/streams/duplex");
 Stream.Transform = require("internal/streams/transform");
-Stream.PassThrough = require("internal/streams/passthrough");
-Stream.duplexPair = require("internal/streams/duplexpair");
-Stream.pipeline = pipeline;
+Stream.PassThrough = require("internal/streams/passthrough") as unknown as typeof import("node:stream").PassThrough;
+Stream.duplexPair = require("internal/streams/duplexpair") as unknown as typeof import("node:stream").duplexPair;
+Stream.pipeline = pipeline as unknown as typeof import("node:stream").pipeline;
 const { addAbortSignal } = require("internal/streams/add-abort-signal");
 Stream.addAbortSignal = addAbortSignal;
-Stream.finished = eos;
+Stream.finished = eos as unknown as typeof import("node:stream").finished;
 Stream.destroy = destroyer;
 Stream.compose = compose;
 Stream.setDefaultHighWaterMark = setDefaultHighWaterMark;
@@ -107,7 +107,7 @@ Stream.Stream = Stream;
 Stream._isArrayBufferView = isArrayBufferView;
 Stream._isUint8Array = isUint8Array;
 Stream._uint8ArrayToBuffer = function _uint8ArrayToBuffer(chunk) {
-  return new $Buffer(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  return new $Buffer(chunk.buffer as ArrayBuffer, chunk.byteOffset, chunk.byteLength);
 };
 
 export default Stream;

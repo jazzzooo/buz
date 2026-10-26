@@ -6,6 +6,7 @@
 #include "config.h"
 #include "CallSitePrototype.h"
 #include "CallSite.h"
+#include "SchemaBindings.h"
 #include "helpers.h"
 
 #include <JavaScriptCore/JSGlobalObject.h>
@@ -15,72 +16,14 @@
 #include <JavaScriptCore/JSCInlines.h>
 #include <JavaScriptCore/ObjectConstructor.h>
 #include <JavaScriptCore/JSBoundFunction.h>
+#include <wtf/text/MakeString.h>
 using namespace JSC;
 
 namespace Zig {
 
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetThis);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetTypeName);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetFunction);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetFunctionName);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetMethodName);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetFileName);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetLineNumber);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetColumnNumber);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetEvalOrigin);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetScriptNameOrSourceURL);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncIsToplevel);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncIsEval);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncIsNative);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncIsConstructor);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncIsAsync);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncIsPromiseAll);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncGetPromiseIndex);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncToString);
-JSC_DECLARE_HOST_FUNCTION(callSiteProtoFuncToJSON);
-
-ALWAYS_INLINE static CallSite* getCallSite(JSGlobalObject* globalObject, JSC::JSValue thisValue)
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (auto* callSite = dynamicDowncast<CallSite>(thisValue)) {
-        return callSite;
-    }
-
-    throwTypeError(globalObject, scope, "CallSite operation called on non-CallSite object"_s);
-    return nullptr;
-}
-
-#define ENTER_PROTO_FUNC()                                                  \
-    auto& vm = JSC::getVM(globalObject);                                    \
-    auto scope = DECLARE_THROW_SCOPE(vm);                                   \
-    CallSite* callSite = getCallSite(globalObject, callFrame->thisValue()); \
-    RETURN_IF_EXCEPTION(scope, {});                                         \
-    (void)callSite;
-
-static const HashTableValue CallSitePrototypeTableValues[]
-    = {
-          { "getThis"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetThis, 0 } },
-          { "getTypeName"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetTypeName, 0 } },
-          { "getFunction"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetFunction, 0 } },
-          { "getFunctionName"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetFunctionName, 0 } },
-          { "getMethodName"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetMethodName, 0 } },
-          { "getFileName"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetFileName, 0 } },
-          { "getLineNumber"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetLineNumber, 0 } },
-          { "getColumnNumber"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetColumnNumber, 0 } },
-          { "getEvalOrigin"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetEvalOrigin, 0 } },
-          { "getScriptNameOrSourceURL"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetScriptNameOrSourceURL, 0 } },
-          { "isToplevel"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncIsToplevel, 0 } },
-          { "isEval"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncIsEval, 0 } },
-          { "isNative"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncIsNative, 0 } },
-          { "isConstructor"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncIsConstructor, 0 } },
-          { "isAsync"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncIsAsync, 0 } },
-          { "isPromiseAll"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncIsPromiseAll, 0 } },
-          { "getPromiseIndex"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncGetPromiseIndex, 0 } },
-          { "toString"_s, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::Function, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncToString, 0 } },
-          { "toJSON"_s, JSC::PropertyAttribute::Function | 0, NoIntrinsic, { HashTableValue::NativeFunctionType, callSiteProtoFuncToJSON, 0 } },
-      };
+#define BUN_BINDGEN_OBJECT_SURFACE_CallSitePrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_CallSitePrototype
 
 const JSC::ClassInfo CallSitePrototype::s_info = { "CallSite"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(CallSitePrototype) };
 
@@ -89,178 +32,175 @@ void CallSitePrototype::finishCreation(JSC::VM& vm, JSC::JSGlobalObject* globalO
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
 
-    reifyStaticProperties(vm, CallSite::info(), CallSitePrototypeTableValues, *this);
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+    bunBindgenObjectSurface_CallSitePrototype_install(vm, CallSite::info(), *this);
 }
 
-// TODO: doesn't recognize thisValue as global object
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetThis, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    ENTER_PROTO_FUNC();
-    return JSC::JSValue::encode(callSite->thisValue());
 }
 
-// TODO: doesn't get class name
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetTypeName, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+namespace Bun::Bindgen::Cpp {
+
+static Zig::CallSite* callSiteObject(JSC::JSValue value)
 {
-    ENTER_PROTO_FUNC();
-    return JSC::JSValue::encode(JSC::jsTypeStringForValue(globalObject, callSite->thisValue()));
+    auto* callSite = dynamicDowncast<Zig::CallSite>(value);
+    RELEASE_ASSERT(callSite);
+    return callSite;
 }
 
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetFunction, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+JSC::JSValue bunBindgenCpp_CallSite_getThis(CppCallContext& context, const BunBindgenCpp_CallSite_getThis_Arguments& args)
 {
-    ENTER_PROTO_FUNC();
-    return JSC::JSValue::encode(callSite->function());
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite ? callSite->thisValue() : JSC::jsUndefined();
 }
 
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetFunctionName, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+WTF::String bunBindgenCpp_CallSite_getTypeName(CppCallContext& context, const BunBindgenCpp_CallSite_getTypeName_Arguments& args)
 {
-    ENTER_PROTO_FUNC();
-    return JSC::JSValue::encode(callSite->functionName());
+    auto* callSite = callSiteObject(args.bindingThis);
+    if (!callSite)
+        return {};
+    return JSC::jsTypeStringForValue(&context.globalObject, callSite->thisValue())->value(&context.globalObject);
 }
 
-// TODO
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetMethodName, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+JSC::JSValue bunBindgenCpp_CallSite_getFunction(CppCallContext& context, const BunBindgenCpp_CallSite_getFunction_Arguments& args)
 {
-    return callSiteProtoFuncGetFunctionName(globalObject, callFrame);
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite ? callSite->function() : JSC::jsUndefined();
 }
 
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetFileName, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+WTF::String bunBindgenCpp_CallSite_getFunctionName(CppCallContext& context, const BunBindgenCpp_CallSite_getFunctionName_Arguments& args)
 {
-    ENTER_PROTO_FUNC();
-    return JSC::JSValue::encode(callSite->sourceURL());
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite ? callSite->functionName().toWTFString(&context.globalObject) : WTF::String {};
 }
 
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetLineNumber, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+WTF::String bunBindgenCpp_CallSite_getMethodName(CppCallContext& context, const BunBindgenCpp_CallSite_getMethodName_Arguments& args)
 {
-    ENTER_PROTO_FUNC();
-    // https://github.com/mozilla/source-map/blob/60adcb064bf033702d954d6d3f9bc3635dcb744b/lib/source-map-consumer.js#L484-L486
-    return JSC::JSValue::encode(jsNumber(std::max(callSite->lineNumber().oneBasedInt(), 1)));
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite ? callSite->functionName().toWTFString(&context.globalObject) : WTF::String {};
 }
 
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetColumnNumber, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+WTF::String bunBindgenCpp_CallSite_getFileName(CppCallContext& context, const BunBindgenCpp_CallSite_getFileName_Arguments& args)
 {
-    ENTER_PROTO_FUNC();
-    // https://github.com/mozilla/source-map/blob/60adcb064bf033702d954d6d3f9bc3635dcb744b/lib/source-map-consumer.js#L488-L489
-    return JSC::JSValue::encode(jsNumber(std::max(callSite->columnNumber().zeroBasedInt(), 0)));
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite ? callSite->sourceURL().toWTFString(&context.globalObject) : WTF::String {};
 }
 
-// TODO:
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetEvalOrigin, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+int32_t bunBindgenCpp_CallSite_getLineNumber(CppCallContext& context, const BunBindgenCpp_CallSite_getLineNumber_Arguments& args)
 {
-    return JSC::JSValue::encode(JSC::jsUndefined());
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite ? std::max(callSite->lineNumber().oneBasedInt(), 1) : 0;
 }
 
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetScriptNameOrSourceURL, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+int32_t bunBindgenCpp_CallSite_getColumnNumber(CppCallContext& context, const BunBindgenCpp_CallSite_getColumnNumber_Arguments& args)
 {
-    ENTER_PROTO_FUNC();
-    return JSC::JSValue::encode(callSite->sourceURL());
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite ? std::max(callSite->columnNumber().zeroBasedInt(), 0) : 0;
 }
 
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncIsToplevel, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void bunBindgenCpp_CallSite_getEvalOrigin(CppCallContext& context, const BunBindgenCpp_CallSite_getEvalOrigin_Arguments& args)
 {
-    ENTER_PROTO_FUNC();
+    (void)args.bindingThis;
+}
 
-    if (JSValue functionValue = callSite->function()) {
-        if (JSObject* fn = functionValue.getObject()) {
-            if (JSFunction* function = dynamicDowncast<JSFunction>(fn)) {
-                if (function->inherits<JSC::JSBoundFunction>()) {
-                    return JSC::JSValue::encode(JSC::jsBoolean(false));
-                }
+WTF::String bunBindgenCpp_CallSite_getScriptNameOrSourceURL(CppCallContext& context, const BunBindgenCpp_CallSite_getScriptNameOrSourceURL_Arguments& args)
+{
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite ? callSite->sourceURL().toWTFString(&context.globalObject) : WTF::String {};
+}
 
-                if (function->isHostFunction()) {
-                    return JSC::JSValue::encode(JSC::jsBoolean(true));
-                }
+bool bunBindgenCpp_CallSite_isToplevel(CppCallContext& context, const BunBindgenCpp_CallSite_isToplevel_Arguments& args)
+{
+    auto* callSite = callSiteObject(args.bindingThis);
+    if (!callSite)
+        return false;
 
-                if (auto* executable = function->jsExecutable()) {
-                    return JSValue::encode(jsBoolean(executable->isProgramExecutable() || executable->isModuleProgramExecutable()));
-                }
-            } else if (dynamicDowncast<InternalFunction>(functionValue)) {
-                return JSC::JSValue::encode(JSC::jsBoolean(true));
+    if (JSC::JSValue functionValue = callSite->function()) {
+        if (JSC::JSObject* functionObject = functionValue.getObject()) {
+            if (JSC::JSFunction* function = dynamicDowncast<JSC::JSFunction>(functionObject)) {
+                if (function->inherits<JSC::JSBoundFunction>())
+                    return false;
+                if (function->isHostFunction())
+                    return true;
+                if (auto* executable = function->jsExecutable())
+                    return executable->isProgramExecutable() || executable->isModuleProgramExecutable();
+            } else if (dynamicDowncast<JSC::InternalFunction>(functionValue)) {
+                return true;
             }
         }
     }
 
     JSC::JSValue thisValue = callSite->thisValue();
-
-    // This is what v8 does (JSStackFrame::IsToplevel in messages.cc):
-    if (thisValue.isUndefinedOrNull()) {
-        return JSC::JSValue::encode(JSC::jsBoolean(true));
-    }
-
+    if (thisValue.isUndefinedOrNull())
+        return true;
     JSC::JSObject* thisObject = thisValue.getObject();
-    if (thisObject && thisObject->isGlobalObject()) {
-        return JSC::JSValue::encode(JSC::jsBoolean(true));
+    return thisObject && thisObject->isGlobalObject();
+}
+
+bool bunBindgenCpp_CallSite_isEval(CppCallContext& context, const BunBindgenCpp_CallSite_isEval_Arguments& args)
+{
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite && callSite->isEval();
+}
+
+bool bunBindgenCpp_CallSite_isNative(CppCallContext& context, const BunBindgenCpp_CallSite_isNative_Arguments& args)
+{
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite && callSite->isNative();
+}
+
+bool bunBindgenCpp_CallSite_isConstructor(CppCallContext& context, const BunBindgenCpp_CallSite_isConstructor_Arguments& args)
+{
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite && callSite->isConstructor();
+}
+
+bool bunBindgenCpp_CallSite_isAsync(CppCallContext& context, const BunBindgenCpp_CallSite_isAsync_Arguments& args)
+{
+    auto* callSite = callSiteObject(args.bindingThis);
+    return callSite && callSite->isAsync();
+}
+
+bool bunBindgenCpp_CallSite_isPromiseAll(CppCallContext& context, const BunBindgenCpp_CallSite_isPromiseAll_Arguments& args)
+{
+    (void)args.bindingThis;
+    return false;
+}
+
+std::optional<int32_t> bunBindgenCpp_CallSite_getPromiseIndex(CppCallContext& context, const BunBindgenCpp_CallSite_getPromiseIndex_Arguments& args)
+{
+    (void)args.bindingThis;
+    return std::nullopt;
+}
+
+WTF::String bunBindgenCpp_CallSite_toString(CppCallContext& context, const BunBindgenCpp_CallSite_toString_Arguments& args)
+{
+    auto* callSite = callSiteObject(args.bindingThis);
+    if (!callSite)
+        return {};
+    auto* globalObject = &context.globalObject;
+    auto& vm = JSC::getVM(globalObject);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    WTF::StringBuilder builder(OverflowPolicy::RecordOverflow);
+    callSite->formatAsString(vm, globalObject, builder);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (builder.hasOverflowed()) {
+        throwOutOfMemoryError(globalObject, scope);
+        return {};
     }
-
-    return JSC::JSValue::encode(JSC::jsBoolean(false));
+    auto result = tryMakeString(StringView(builder));
+    if (result.isNull())
+        throwOutOfMemoryError(globalObject, scope);
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncIsEval, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+CallSiteJSONDictionaryResult bunBindgenCpp_CallSite_toJSON(CppCallContext& context, const BunBindgenCpp_CallSite_toJSON_Arguments& args)
 {
-    ENTER_PROTO_FUNC();
-
-    bool isEval = callSite->isEval();
-    return JSC::JSValue::encode(JSC::jsBoolean(isEval));
-}
-
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncIsNative, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    ENTER_PROTO_FUNC();
-
-    bool isNative = callSite->isNative();
-    return JSC::JSValue::encode(JSC::jsBoolean(isNative));
-}
-
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncIsConstructor, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    ENTER_PROTO_FUNC();
-
-    bool isConstructor = callSite->isConstructor();
-    return JSC::JSValue::encode(JSC::jsBoolean(isConstructor));
-}
-
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncIsAsync, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    ENTER_PROTO_FUNC();
-
-    bool isAsync = callSite->isAsync();
-    return JSC::JSValue::encode(JSC::jsBoolean(isAsync));
-}
-
-// TODO:
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncIsPromiseAll, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    ENTER_PROTO_FUNC();
-
-    return JSC::JSValue::encode(JSC::jsBoolean(false));
-}
-
-// TODO:
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncGetPromiseIndex, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    ENTER_PROTO_FUNC();
-
-    return JSC::JSValue::encode(JSC::jsNull());
-}
-
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncToString, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    ENTER_PROTO_FUNC();
-    WTF::StringBuilder sb;
-    callSite->formatAsString(vm, globalObject, sb);
-    return JSC::JSValue::encode(jsString(vm, sb.toString()));
-}
-
-JSC_DEFINE_HOST_FUNCTION(callSiteProtoFuncToJSON, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    ENTER_PROTO_FUNC();
-    JSObject* obj = JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), 4);
-    obj->putDirect(vm, JSC::Identifier::fromString(vm, "sourceURL"_s), callSite->sourceURL());
-    obj->putDirect(vm, JSC::Identifier::fromString(vm, "lineNumber"_s), jsNumber(callSite->lineNumber().oneBasedInt()));
-    obj->putDirect(vm, JSC::Identifier::fromString(vm, "columnNumber"_s), jsNumber(callSite->columnNumber().zeroBasedInt()));
-    obj->putDirect(vm, JSC::Identifier::fromString(vm, "functionName"_s), callSite->functionName());
-    return JSC::JSValue::encode(obj);
+    auto* callSite = callSiteObject(args.bindingThis);
+    return {
+        .sourceURL = callSite->sourceURL().toWTFString(&context.globalObject),
+        .lineNumber = callSite->lineNumber().oneBasedInt(),
+        .columnNumber = callSite->columnNumber().zeroBasedInt(),
+        .functionName = callSite->functionName().toWTFString(&context.globalObject),
+    };
 }
 
 }

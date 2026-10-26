@@ -1,5 +1,5 @@
 const { Duplex } = require("node:stream");
-const upgradeDuplexToTLS = $newZigFunction("runtime/socket/socket.zig", "jsUpgradeDuplexToTLS", 2);
+const upgradeDuplexToTLS = $bindgenFn("NodeSocket.schema.zig", "upgradeDuplexToTLS");
 
 interface NativeHandle {
   resume(): void;
@@ -14,7 +14,7 @@ interface UpgradeContextType {
   server: Http2SecureServer;
   rawSocket: import("node:net").Socket;
   nativeHandle: NativeHandle | null;
-  events: [(...args: any[]) => void, ...Function[]] | null;
+  events: [(...args: any[]) => void, ...((...args: any[]) => void)[]] | null;
 }
 
 interface Http2SecureServer {
@@ -28,7 +28,9 @@ interface Http2SecureServer {
   emit(event: string, ...args: any[]): boolean;
 }
 
-interface TLSProxySocket {
+type NodeDuplex = import("node:stream").Duplex;
+
+interface TLSProxySocket extends NodeDuplex {
   _ctx: UpgradeContextType;
   _writeCallback: ((err?: Error | null) => void) | null;
   alpnProtocol: string | null;
@@ -41,11 +43,6 @@ interface TLSProxySocket {
   secureConnecting: boolean;
   _secureEstablished: boolean;
   authorizationError?: string;
-  push(chunk: Buffer | null): boolean;
-  destroy(err?: Error): this;
-  emit(event: string, ...args: any[]): boolean;
-  resume(): void;
-  readonly destroyed: boolean;
 }
 
 /**
@@ -83,7 +80,7 @@ function tlsSocketRead(this: TLSProxySocket) {
 // _write: called when the H2 session writes outbound frames.
 // Forward to the native TLS handle for encryption, then back to rawSocket.
 // Mirrors net.ts Socket.prototype._write which calls socket.$write().
-function tlsSocketWrite(this: TLSProxySocket, chunk: Buffer, encoding: string, callback: (err?: Error) => void) {
+function tlsSocketWrite(this: TLSProxySocket, chunk: Buffer, encoding: string, callback: (err?: Error | null) => void) {
   const h = this._ctx.nativeHandle;
   if (!h) {
     callback(new Error("Socket is closed"));
@@ -326,7 +323,7 @@ function upgradeRawSocketToH2(
   // (e.g. UNABLE_TO_GET_ISSUER_CERT for the server's own self-signed cert) are
   // spurious and must be ignored.
   tlsSocket._requestCert = server._requestCert || false;
-  tlsSocket._rejectUnauthorized = server._requestCert ? server._rejectUnauthorized : false;
+  tlsSocket._rejectUnauthorized = server._requestCert ? (server._rejectUnauthorized ?? false) : false;
 
   // socket: callbacks — bind to tlsSocket since Zig calls them with native handle as `this`
   let handle: NativeHandle, events: UpgradeContextType["events"];
@@ -380,10 +377,10 @@ function upgradeRawSocketToH2(
   // Wire up the raw TCP socket to feed encrypted data into the TLS layer.
   // events[0..3] are native event handlers returned by upgradeDuplexToTLS that
   // the Zig TLS engine expects to receive data/end/drain/close through.
-  rawSocket.on("data", events[0]);
-  rawSocket.on("end", events[1]);
-  rawSocket.on("drain", events[2]);
-  rawSocket.on("close", events[3]);
+  rawSocket.on("data", events![0]);
+  rawSocket.on("end", events![1]);
+  rawSocket.on("drain", events![2]);
+  rawSocket.on("close", events![3]);
 
   // When the TLS socket closes (e.g. H2 session destroyed), clean up the raw socket
   // listeners to prevent memory leaks and stale callback references.

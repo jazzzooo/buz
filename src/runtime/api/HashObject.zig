@@ -1,13 +1,11 @@
-const HashObject = @This();
-
-pub const wyhash = hashWrap(std.hash.Wyhash);
-pub const adler32 = hashWrap(struct {
+pub const wyhash = hashBinding("wyhash", std.hash.Wyhash);
+pub const adler32 = hashBinding("adler32", struct {
     pub fn hash(bytes: []const u8) u32 {
         return bun.libdeflate.libdeflate_adler32(1, bytes.ptr, bytes.len);
     }
 });
 /// Use hardware-accelerated CRC32 from zlib
-pub const crc32 = hashWrap(struct {
+pub const crc32 = hashBinding("crc32", struct {
     pub fn hash(seed: u32, bytes: []const u8) u32 {
         // zlib takes a 32-bit length, so chunk large inputs to avoid truncation.
         var crc: bun.zlib.uLong = seed;
@@ -22,115 +20,80 @@ pub const crc32 = hashWrap(struct {
         return @intCast(crc);
     }
 });
-pub const cityHash32 = hashWrap(std.hash.CityHash32);
-pub const cityHash64 = hashWrap(std.hash.CityHash64);
-pub const xxHash32 = hashWrap(struct {
+pub const cityHash32 = hashBinding("cityHash32", std.hash.CityHash32);
+pub const cityHash64 = hashBinding("cityHash64", std.hash.CityHash64);
+pub const xxHash32 = hashBinding("xxHash32", struct {
     pub fn hash(seed: u32, bytes: []const u8) u32 {
         // sidestep .hash taking in anytype breaking ArgTuple
         // downstream by forcing a type signature on the input
         return std.hash.XxHash32.hash(seed, bytes);
     }
 });
-pub const xxHash64 = hashWrap(struct {
+pub const xxHash64 = hashBinding("xxHash64", struct {
     pub fn hash(seed: u64, bytes: []const u8) u64 {
         // sidestep .hash taking in anytype breaking ArgTuple
         // downstream by forcing a type signature on the input
         return std.hash.XxHash64.hash(seed, bytes);
     }
 });
-pub const xxHash3 = hashWrap(struct {
+pub const xxHash3 = hashBinding("xxHash3", struct {
     pub fn hash(seed: u64, bytes: []const u8) u64 {
         return bun.highway.xxHash3(seed, bytes);
     }
 });
-pub const murmur32v2 = hashWrap(std.hash.murmur.Murmur2_32);
-pub const murmur32v3 = hashWrap(std.hash.murmur.Murmur3_32);
-pub const murmur64v2 = hashWrap(std.hash.murmur.Murmur2_64);
-pub const rapidhash = hashWrap(@import("../../hash/rapidhash.zig"));
+pub const murmur32v2 = hashBinding("murmur32v2", std.hash.murmur.Murmur2_32);
+pub const murmur32v3 = hashBinding("murmur32v3", std.hash.murmur.Murmur3_32);
+pub const murmur64v2 = hashBinding("murmur64v2", std.hash.murmur.Murmur2_64);
+pub const rapidhash = hashBinding("rapidhash", @import("../../hash/rapidhash.zig"));
 
-pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const function = jsc.JSFunction.create(globalThis, "hash", wyhash, 1, .{});
-    const function_object = function.toObject();
-    const fns = comptime .{
-        "wyhash",
-        "adler32",
-        "crc32",
-        "cityHash32",
-        "cityHash64",
-        "xxHash32",
-        "xxHash64",
-        "xxHash3",
-        "murmur32v2",
-        "murmur32v3",
-        "murmur64v2",
-        "rapidhash",
-    };
-    inline for (fns) |name| {
-        const value = jsc.JSFunction.create(globalThis, name, @field(HashObject, name), 1, .{});
-        function_object.putDirect(globalThis, comptime ZigString.static(name), value.toJS());
-    }
-
-    return function.toJS();
+comptime {
+    _ = wyhash;
+    _ = adler32;
+    _ = crc32;
+    _ = cityHash32;
+    _ = cityHash64;
+    _ = xxHash32;
+    _ = xxHash64;
+    _ = xxHash3;
+    _ = murmur32v2;
+    _ = murmur32v3;
+    _ = murmur64v2;
+    _ = rapidhash;
 }
 
-fn hashWrap(comptime Hasher_: anytype) jsc.JSHostFnZig {
-    return struct {
+fn hashBinding(comptime name: []const u8, comptime Hasher_: anytype) type {
+    const Schema = HashObjectBindings.function(name);
+    return bun.bindgen.Fn(Schema, struct {
         const Hasher = Hasher_;
-        pub fn hash(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-            const arguments = callframe.arguments_old(2).slice();
-            var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-            defer args.deinit();
-
+        pub fn hash(
+            _: bun.bindgen.CallContext(Schema),
+            args: bun.bindgen.Args(Schema),
+        ) bun.bindgen.CallError(Schema)!bun.bindgen.Return(Schema) {
             var input: []const u8 = "";
-            var input_slice = ZigString.Slice.empty;
+            var input_slice = bun.String.Slice.empty;
             defer input_slice.deinit();
-            if (args.nextEat()) |arg| {
-                if (arg.as(jsc.WebCore.Blob)) |blob| {
-                    // TODO: files
-                    input = blob.sharedView();
-                } else {
-                    switch (arg.jsTypeLoose()) {
-                        .ArrayBuffer,
-                        .Int8Array,
-                        .Uint8Array,
-                        .Uint8ClampedArray,
-                        .Int16Array,
-                        .Uint16Array,
-                        .Int32Array,
-                        .Uint32Array,
-                        .Float16Array,
-                        .Float32Array,
-                        .Float64Array,
-                        .BigInt64Array,
-                        .BigUint64Array,
-                        .DataView,
-                        => {
-                            var array_buffer = arg.asArrayBuffer(globalThis) orelse {
-                                return globalThis.throwInvalidArguments("ArrayBuffer conversion error", .{});
-                            };
-                            input = array_buffer.byteSlice();
-                        },
-                        else => {
-                            input_slice = try arg.toSlice(globalThis, bun.default_allocator);
-                            input = input_slice.slice();
-                        },
-                    }
-                }
+            if (args.input) |input_ref| {
+                input = switch (input_ref) {
+                    .blob => |blob| blob.get().sharedView(),
+                    .buffer => |buffer| buffer.unsafePtr("The generated binding frame owns the input byte lease; the synchronous hash consumes these bytes before dispatch returns"),
+                    .string => |string| string: {
+                        input_slice = try string.toUTF8(bun.default_allocator);
+                        break :string input_slice.slice();
+                    },
+                };
             }
 
             // std.hash has inconsistent interfaces
             //
             const Function = if (@hasDecl(Hasher, "hashWithSeed")) Hasher.hashWithSeed else Hasher.hash;
-            var function_args: std.meta.ArgsTuple(@TypeOf(Function)) = undefined;
-            if (comptime std.meta.fieldNames(std.meta.ArgsTuple(@TypeOf(Function))).len == 1) {
-                return jsc.JSValue.jsNumber(Function(input));
-            } else {
-                var seed: u64 = 0;
-                if (args.nextEat()) |arg| {
-                    if (arg.isNumber() or arg.isBigInt()) {
-                        seed = arg.toUInt64NoTruncate();
-                    }
-                }
+            const value = if (comptime std.meta.fieldNames(std.meta.ArgsTuple(@TypeOf(Function))).len == 1)
+                Function(input)
+            else value: {
+                var function_args: std.meta.ArgsTuple(@TypeOf(Function)) = undefined;
+                const seed: u64 = if (args.seed) |seed| switch (seed) {
+                    .value => |number| number,
+                    .invalid => 0,
+                } else 0;
                 if (comptime bun.trait.isNumber(@TypeOf(function_args[0]))) {
                     function_args[0] = @as(@TypeOf(function_args[0]), @truncate(seed));
                     function_args[1] = input;
@@ -139,21 +102,15 @@ fn hashWrap(comptime Hasher_: anytype) jsc.JSHostFnZig {
                     function_args[1] = @as(@TypeOf(function_args[1]), @truncate(seed));
                 }
 
-                const value = @call(.auto, Function, function_args);
+                break :value @call(.auto, Function, function_args);
+            };
 
-                if (@TypeOf(value) == u32) {
-                    return jsc.JSValue.jsNumber(@as(u32, @bitCast(value)));
-                }
-                return jsc.JSValue.fromUInt64NoTruncate(globalThis, value);
-            }
+            return value;
         }
-    }.hash;
+    }.hash);
 }
 
 const bun = @import("bun");
 const std = @import("std");
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
+const HashObjectBindings = bun.bindgen.Module("HashObject");

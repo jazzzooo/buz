@@ -31,10 +31,11 @@
 #include <JavaScriptCore/JSCell.h>
 #include <JavaScriptCore/SlotVisitorInlines.h>
 #include <JavaScriptCore/StrongInlines.h>
+#include <wtf/DoublyLinkedList.h>
 
 namespace WebCore {
 
-class WEBCORE_EXPORT DOMGuardedObject : public RefCounted<DOMGuardedObject>, public ActiveDOMCallback {
+class WEBCORE_EXPORT DOMGuardedObject : public RefCounted<DOMGuardedObject>, public ActiveDOMCallback, public WTF::DoublyLinkedListNode<DOMGuardedObject> {
 public:
     ~DOMGuardedObject();
 
@@ -57,13 +58,18 @@ protected:
     DOMGuardedObject(JSDOMGlobalObject&, JSC::JSCell&);
     DOMGuardedObject(JSDOMGlobalObject&, JSC::JSCell&, DoNotRegisterWithGlobalObjectTag);
 
-    void contextDestroyed();
+    void contextDestroyed(ScriptExecutionContext&) override;
     bool isEmpty() const { return !m_guarded; }
 
     JSC::Weak<JSC::JSCell> m_guarded;
     JSC::Weak<JSDOMGlobalObject> m_globalObject;
 
 private:
+    friend class WTF::DoublyLinkedListNode<DOMGuardedObject>;
+    DOMGuardedObject* m_prev { nullptr };
+    DOMGuardedObject* m_next { nullptr };
+    bool m_registeredWithGlobalObject { false };
+
     void removeFromGlobalObject();
 };
 

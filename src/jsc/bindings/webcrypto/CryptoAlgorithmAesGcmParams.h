@@ -25,7 +25,6 @@
 
 #pragma once
 
-#include "BufferSource.h"
 #include "CryptoAlgorithmParameters.h"
 #include <wtf/Vector.h>
 
@@ -35,50 +34,21 @@ namespace WebCore {
 
 class CryptoAlgorithmAesGcmParams final : public CryptoAlgorithmParameters {
 public:
-    BufferSource iv;
-    // Use additionalDataVector() instead of additionalData. The label will be gone once additionalDataVector() is called.
-    mutable std::optional<BufferSource::VariantType> additionalData;
-    mutable std::optional<uint8_t> tagLength;
+    Vector<uint8_t> iv;
+    Vector<uint8_t> additionalData;
+    std::optional<uint8_t> tagLength;
 
     Class parametersClass() const final { return Class::AesGcmParams; }
 
     const Vector<uint8_t>& ivVector() const
     {
-        if (!m_ivVector.isEmpty() || !iv.length())
-            return m_ivVector;
-
-        m_ivVector.append(std::span { iv.data(), iv.length() });
-        return m_ivVector;
+        return iv;
     }
 
     const Vector<uint8_t>& additionalDataVector() const
     {
-        if (!m_additionalDataVector.isEmpty() || !additionalData)
-            return m_additionalDataVector;
-
-        BufferSource additionalDataBuffer = WTF::move(*additionalData);
-        additionalData = std::nullopt;
-        if (!additionalDataBuffer.length())
-            return m_additionalDataVector;
-
-        m_additionalDataVector.append(std::span { additionalDataBuffer.data(), additionalDataBuffer.length() });
-        return m_additionalDataVector;
+        return additionalData;
     }
-
-    CryptoAlgorithmAesGcmParams isolatedCopy() const
-    {
-        CryptoAlgorithmAesGcmParams result;
-        result.identifier = identifier;
-        result.m_ivVector = ivVector();
-        result.m_additionalDataVector = additionalDataVector();
-        result.tagLength = tagLength;
-
-        return result;
-    }
-
-private:
-    mutable Vector<uint8_t> m_ivVector;
-    mutable Vector<uint8_t> m_additionalDataVector;
 };
 
 } // namespace WebCore

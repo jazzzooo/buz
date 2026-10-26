@@ -64,37 +64,19 @@ pub const Decompressor = union(enum) {
 
         switch (this.*) {
             .zlib => |reader| {
-                bun.assert(reader.zlib.avail_in == 0);
-                reader.zlib.next_in = buffer.ptr;
-                reader.zlib.avail_in = @as(u32, @truncate(buffer.len));
-
-                const initial = body_out_str.list.items.len;
-                body_out_str.list.expandToCapacity();
-                if (body_out_str.list.capacity == initial) {
-                    try body_out_str.list.ensureUnusedCapacity(body_out_str.allocator, 4096);
-                    body_out_str.list.expandToCapacity();
-                }
-                reader.list = body_out_str.list;
-                reader.zlib.next_out = @ptrCast(&body_out_str.list.items[initial]);
-                reader.zlib.avail_out = @as(u32, @truncate(body_out_str.list.capacity - initial));
-                // we reset the total out so we can track how much we decompressed this time
-                reader.zlib.total_out = @truncate(initial);
+                reader.updateBuffers(buffer, &body_out_str.list, body_out_str.allocator);
             },
             .brotli => |reader| {
                 reader.input = buffer;
                 reader.total_in = 0;
-
-                const initial = body_out_str.list.items.len;
-                reader.list = body_out_str.list;
-                reader.total_out = @truncate(initial);
+                reader.list = &body_out_str.list;
+                reader.list_allocator = body_out_str.allocator;
             },
             .zstd => |reader| {
                 reader.input = buffer;
                 reader.total_in = 0;
-
-                const initial = body_out_str.list.items.len;
-                reader.list = body_out_str.list;
-                reader.total_out = @truncate(initial);
+                reader.list = &body_out_str.list;
+                reader.list_allocator = body_out_str.allocator;
             },
             else => @panic("Invalid encoding. This code should not be reachable"),
         }

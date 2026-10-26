@@ -1,19 +1,15 @@
 #pragma once
 #include "root.h"
+#include "SchemaBindingsEnumerations.h"
 
 #include "ExceptionOr.h"
+#include <optional>
 #include <wtf/RefCounted.h>
 #include <wtf/text/WTFString.h>
 
 namespace WebCore {
 
-enum class CookieSameSite : uint8_t {
-    Strict,
-    Lax,
-    None
-};
-
-JSC::JSValue toJS(JSC::JSGlobalObject*, CookieSameSite);
+using CookieSameSite = Bun::Bindgen::CookieSameSite;
 
 struct CookieInit {
     String name = String();
@@ -21,45 +17,32 @@ struct CookieInit {
     String domain = String();
     String path = "/"_s;
 
-    int64_t expires = emptyExpiresAtValue;
+    std::optional<int64_t> expires;
     bool secure = false;
-    CookieSameSite sameSite = CookieSameSite::Lax;
+    CookieSameSite sameSite = CookieSameSite::lax;
     bool httpOnly = false;
-    double maxAge = std::numeric_limits<double>::quiet_NaN();
+    std::optional<double> maxAge;
     bool partitioned = false;
-    static constexpr int64_t emptyExpiresAtValue = std::numeric_limits<int64_t>::min();
-
-    static std::optional<CookieInit> fromJS(JSC::VM& vm, JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSValue value);
-    static std::optional<CookieInit> fromJS(JSC::VM& vm, JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSValue input, String name, String cookieValue);
 };
 
 class Cookie : public RefCounted<Cookie> {
+    WTF_MAKE_NONCOPYABLE(Cookie);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(Cookie);
+
 public:
     ~Cookie();
-    static constexpr int64_t emptyExpiresAtValue = std::numeric_limits<int64_t>::min();
     static ExceptionOr<Ref<Cookie>> create(const String& name, const String& value,
         const String& domain, const String& path,
-        int64_t expires, bool secure, CookieSameSite sameSite,
-        bool httpOnly, double maxAge, bool partitioned);
+        std::optional<int64_t> expires, bool secure, CookieSameSite sameSite,
+        bool httpOnly, std::optional<double> maxAge, bool partitioned);
 
     static ExceptionOr<Ref<Cookie>> create(const CookieInit& init)
     {
-        if (!isValidCookieName(init.name)) {
-            return Exception { TypeError, "Invalid cookie name: contains invalid characters"_s };
-        }
-        if (!isValidCookiePath(init.path)) {
-            return Exception { TypeError, "Invalid cookie path: contains invalid characters"_s };
-        }
-        if (!isValidCookieDomain(init.domain)) {
-            return Exception { TypeError, "Invalid cookie domain: contains invalid characters"_s };
-        }
-
         return create(init.name, init.value, init.domain, init.path, init.expires, init.secure, init.sameSite, init.httpOnly, init.maxAge, init.partitioned);
     }
 
     static ExceptionOr<Ref<Cookie>> parse(StringView cookieString);
-
-    static String serialize(JSC::VM& vm, const std::span<const Ref<Cookie>> cookies);
+    ExceptionOr<Ref<Cookie>> clone() const;
 
     const String& name() const { return m_name; }
 
@@ -86,9 +69,14 @@ public:
         return {};
     }
 
-    int64_t expires() const { return m_expires; }
-    void setExpires(int64_t ms) { m_expires = ms; }
-    bool hasExpiry() const { return m_expires != emptyExpiresAtValue; }
+    std::optional<int64_t> expires() const { return m_expires; }
+    ExceptionOr<void> setExpires(std::optional<int64_t> ms)
+    {
+        if (ms && !isValidExpiration(*ms))
+            return Exception { RangeError, "Invalid cookie expiration date"_s };
+        m_expires = ms;
+        return {};
+    }
 
     bool secure() const { return m_secure; }
     void setSecure(bool secure) { m_secure = secure; }
@@ -99,39 +87,37 @@ public:
     bool httpOnly() const { return m_httpOnly; }
     void setHttpOnly(bool httpOnly) { m_httpOnly = httpOnly; }
 
-    double maxAge() const { return m_maxAge; }
-    void setMaxAge(double maxAge) { m_maxAge = maxAge; }
+    std::optional<double> maxAge() const { return m_maxAge; }
+    void setMaxAge(std::optional<double> maxAge) { m_maxAge = maxAge; }
 
     bool partitioned() const { return m_partitioned; }
     void setPartitioned(bool partitioned) { m_partitioned = partitioned; }
 
     bool isExpired() const;
 
-    void appendTo(JSC::VM& vm, StringBuilder& builder) const;
-    String toString(JSC::VM& vm) const;
-    JSC::JSValue toJSON(JSC::VM& vm, JSC::JSGlobalObject*) const;
+    ExceptionOr<String> toString() const;
     size_t memoryCost() const;
 
     static bool isValidCookieName(const String& name);
-    static bool isValidCookieValue(const String& value); // values are uri component encoded, so this isn't needed
+    static bool isValidExpiration(double milliseconds);
     static bool isValidCookiePath(const String& path);
     static bool isValidCookieDomain(const String& domain);
 
 private:
     Cookie(const String& name, const String& value,
         const String& domain, const String& path,
-        int64_t expires, bool secure, CookieSameSite sameSite,
-        bool httpOnly, double maxAge, bool partitioned);
+        std::optional<int64_t> expires, bool secure, CookieSameSite sameSite,
+        bool httpOnly, std::optional<double> maxAge, bool partitioned);
 
     String m_name;
     String m_value;
     String m_domain;
     String m_path;
-    int64_t m_expires = Cookie::emptyExpiresAtValue;
+    std::optional<int64_t> m_expires;
     bool m_secure = false;
-    CookieSameSite m_sameSite = CookieSameSite::Lax;
+    CookieSameSite m_sameSite = CookieSameSite::lax;
     bool m_httpOnly = false;
-    double m_maxAge = 0;
+    std::optional<double> m_maxAge;
     bool m_partitioned = false;
 };
 

@@ -12,13 +12,13 @@ pub const DefaultTrustedCommand = struct {
 };
 
 pub const UntrustedCommand = struct {
-    pub fn exec(ctx: Command.Context, pm: *PackageManager, args: []const [:0]const u8) !void {
+    pub fn exec(ctx: Context, pm: *PackageManager, args: []const [:0]const u8) !void {
         _ = args;
         Output.prettyError("<r><b>bun pm untrusted <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n\n", .{});
         Output.flush();
 
-        const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
-        PackageManagerCommand.handleLoadLockfileErrors(load_lockfile, pm);
+        const load_lockfile = pm.lockfile.loadFromCwd(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), ctx.allocator, ctx.log, true);
+        handleLockfileLoadErrors(load_lockfile, pm);
         try pm.updateLockfileIfNeeded(load_lockfile);
 
         const packages = pm.lockfile.packages.slice();
@@ -158,14 +158,14 @@ pub const TrustCommand = struct {
         }
     }
 
-    pub fn exec(ctx: Command.Context, pm: *PackageManager, args: []const [:0]const u8) !void {
+    pub fn exec(ctx: Context, pm: *PackageManager, args: []const [:0]const u8) !void {
         Output.prettyError("<r><b>bun pm trust <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n", .{});
         Output.flush();
 
         if (args.len == 2) errorExpectedArgs();
 
-        const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
-        PackageManagerCommand.handleLoadLockfileErrors(load_lockfile, pm);
+        const load_lockfile = pm.lockfile.loadFromCwd(pm, bun.install.Dependency.ParseContext.fromPackageManager(pm), ctx.allocator, ctx.log, true);
+        handleLockfileLoadErrors(load_lockfile, pm);
         try pm.updateLockfileIfNeeded(load_lockfile);
 
         var packages_to_trust: std.ArrayListUnmanaged(string) = .empty;
@@ -445,8 +445,8 @@ pub const TrustCommand = struct {
 const string = []const u8;
 
 const std = @import("std");
-const Command = @import("./cli.zig").Command;
-const PackageManagerCommand = @import("./package_manager_command.zig").PackageManagerCommand;
+const Context = @import("../options_types/Context.zig").Context;
+const handleLockfileLoadErrors = @import("./lockfile_load_result.zig").handleErrors;
 
 const Install = @import("../install/install.zig");
 const DependencyID = Install.DependencyID;

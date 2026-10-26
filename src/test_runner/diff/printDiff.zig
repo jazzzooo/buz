@@ -55,35 +55,35 @@ pub fn printDiffMain(arena: std.mem.Allocator, not: bool, received_slice: []cons
 
     var dmp = DMPUsize.default;
     dmp.config.diff_timeout = 200;
-    const linesToChars = bun.handleOom(DMP.diffLinesToChars(arena, expected_slice, received_slice));
-    const charDiffs = bun.handleOom(dmp.diff(arena, linesToChars.chars_1, linesToChars.chars_2, false));
-    const diffs = bun.handleOom(DMP.diffCharsToLines(arena, &charDiffs, linesToChars.line_array.items));
+    const linesToChars = DMP.diffLinesToChars(arena, expected_slice, received_slice) catch return error.WriteFailed;
+    const charDiffs = dmp.diff(arena, linesToChars.chars_1, linesToChars.chars_2, false) catch return error.WriteFailed;
+    const diffs = DMP.diffCharsToLines(arena, &charDiffs, linesToChars.line_array.items) catch return error.WriteFailed;
 
     var diff_segments = std.array_list.Managed(DiffSegment).init(arena);
     for (diffs.items) |diff| {
         if (diff.operation == .delete) {
-            bun.handleOom(diff_segments.append(DiffSegment{
+            diff_segments.append(DiffSegment{
                 .removed = diff.text,
                 .inserted = "",
                 .mode = .removed,
-            }));
+            }) catch return error.WriteFailed;
         } else if (diff.operation == .insert) {
             if (diff_segments.items.len > 0 and diff_segments.items[diff_segments.items.len - 1].mode == .removed) {
                 diff_segments.items[diff_segments.items.len - 1].inserted = diff.text;
                 diff_segments.items[diff_segments.items.len - 1].mode = .modified;
             } else {
-                bun.handleOom(diff_segments.append(DiffSegment{
+                diff_segments.append(DiffSegment{
                     .removed = "",
                     .inserted = diff.text,
                     .mode = .inserted,
-                }));
+                }) catch return error.WriteFailed;
             }
         } else if (diff.operation == .equal) {
-            bun.handleOom(diff_segments.append(DiffSegment{
+            diff_segments.append(DiffSegment{
                 .removed = diff.text,
                 .inserted = diff.text,
                 .mode = .equal,
-            }));
+            }) catch return error.WriteFailed;
         }
     }
 
@@ -102,15 +102,15 @@ pub fn printDiffMain(arena: std.mem.Allocator, not: bool, received_slice: []cons
             if (diff_segment.mode == .equal) {
                 var split = std.mem.splitScalar(u8, diff_segment.removed, '\n');
                 while (split.next()) |line| {
-                    bun.handleOom(new_diff_segments.append(DiffSegment{
+                    new_diff_segments.append(DiffSegment{
                         .removed = line,
                         .inserted = line,
                         .mode = .equal,
                         .skip = true,
-                    }));
+                    }) catch return error.WriteFailed;
                 }
             } else {
-                bun.handleOom(new_diff_segments.append(diff_segment));
+                new_diff_segments.append(diff_segment) catch return error.WriteFailed;
             }
         }
 
@@ -418,8 +418,8 @@ fn printModifiedSegment(
         return printModifiedSegmentWithoutDiffdiff(writer, config, segment, modified_style);
     }
 
-    var char_diff = bun.handleOom(DMP.default.diff(arena, segment.removed, segment.inserted, true));
-    bun.handleOom(DMP.diffCleanupSemantic(arena, &char_diff));
+    var char_diff = DMP.default.diff(arena, segment.removed, segment.inserted, true) catch return error.WriteFailed;
+    DMP.diffCleanupSemantic(arena, &char_diff) catch return error.WriteFailed;
 
     var deleted_highlighted_length: usize = 0;
     var inserted_highlighted_length: usize = 0;

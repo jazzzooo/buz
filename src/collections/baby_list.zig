@@ -27,6 +27,7 @@ pub fn BabyList(comptime Type: type) type {
         pub const empty: Self = .{};
 
         pub fn initCapacity(allocator: std.mem.Allocator, len: usize) OOM!Self {
+            if (len > std.math.maxInt(u32)) return error.OutOfMemory;
             var this = initWithBuffer(try allocator.alloc(Type, len));
             this.allocator.set(allocator);
             return this;
@@ -125,6 +126,7 @@ pub fn BabyList(comptime Type: type) type {
 
         /// Copies all elements of `items` into new memory. Creates shallow copies.
         pub fn fromSlice(allocator: std.mem.Allocator, items: []const Type) OOM!Self {
+            if (items.len > std.math.maxInt(u32)) return error.OutOfMemory;
             const allocated = try allocator.alloc(Type, items.len);
             bun.copy(Type, allocated, items);
 
@@ -140,7 +142,9 @@ pub fn BabyList(comptime Type: type) type {
         /// list instead.
         pub fn deinit(this: *Self, allocator: std.mem.Allocator) void {
             this.assertOwned();
-            this.listManaged(allocator).deinit();
+            this.allocator.assertEq(allocator);
+            var list_ = this.list();
+            list_.deinit(allocator);
             this.* = undefined;
         }
 
@@ -209,19 +213,26 @@ pub fn BabyList(comptime Type: type) type {
             this: *Self,
             allocator: std.mem.Allocator,
             new_capacity: usize,
-        ) !void {
-            if ((comptime safety_checks) and new_capacity > this.cap) this.assertOwned();
-            var list_ = this.listManaged(allocator);
-            try list_.ensureTotalCapacity(new_capacity);
-            this.update(list_);
+        ) OOM!void {
+            if (new_capacity > std.math.maxInt(u32)) return error.OutOfMemory;
+            this.allocator.set(allocator);
+            if (new_capacity <= this.cap) return;
+            const capacity = @min(std.ArrayList(Type).growCapacity(new_capacity), std.math.maxInt(u32));
+            try this.ensureTotalCapacityPrecise(allocator, capacity);
         }
 
         pub fn ensureTotalCapacityPrecise(
             this: *Self,
             allocator: std.mem.Allocator,
             new_capacity: usize,
-        ) !void {
+        ) OOM!void {
+            if (new_capacity > std.math.maxInt(u32)) return error.OutOfMemory;
             if ((comptime safety_checks) and new_capacity > this.cap) this.assertOwned();
+            if (@sizeOf(Type) == 0) {
+                this.allocator.set(allocator);
+                this.cap = @max(this.cap, @as(u32, @intCast(new_capacity)));
+                return;
+            }
             var list_ = this.listManaged(allocator);
             try list_.ensureTotalCapacityPrecise(new_capacity);
             this.update(list_);
@@ -232,10 +243,8 @@ pub fn BabyList(comptime Type: type) type {
             allocator: std.mem.Allocator,
             count: usize,
         ) OOM!void {
-            if ((comptime safety_checks) and count > this.cap - this.len) this.assertOwned();
-            var list_ = this.listManaged(allocator);
-            try list_.ensureUnusedCapacity(count);
-            this.update(list_);
+            if (count > std.math.maxInt(u32) - this.len) return error.OutOfMemory;
+            try this.ensureTotalCapacity(allocator, @as(usize, this.len) + count);
         }
 
         pub fn shrinkAndFree(this: *Self, allocator: std.mem.Allocator, new_len: usize) void {
@@ -255,10 +264,8 @@ pub fn BabyList(comptime Type: type) type {
         }
 
         pub fn append(this: *Self, allocator: std.mem.Allocator, value: Type) OOM!void {
-            if ((comptime safety_checks) and this.len == this.cap) this.assertOwned();
-            var list_ = this.listManaged(allocator);
-            try list_.append(value);
-            this.update(list_);
+            try this.ensureUnusedCapacity(allocator, 1);
+            this.appendAssumeCapacity(value);
         }
 
         pub fn appendAssumeCapacity(this: *Self, value: Type) void {
@@ -267,11 +274,9 @@ pub fn BabyList(comptime Type: type) type {
             this.len += 1;
         }
 
-        pub fn appendSlice(this: *Self, allocator: std.mem.Allocator, vals: []const Type) !void {
-            if ((comptime safety_checks) and this.cap - this.len < vals.len) this.assertOwned();
-            var list_ = this.listManaged(allocator);
-            try list_.appendSlice(vals);
-            this.update(list_);
+        pub fn appendSlice(this: *Self, allocator: std.mem.Allocator, vals: []const Type) OOM!void {
+            try this.ensureUnusedCapacity(allocator, vals.len);
+            this.appendSliceAssumeCapacity(vals);
         }
 
         pub fn appendSliceAssumeCapacity(this: *Self, values: []const Type) void {
@@ -301,9 +306,9 @@ pub fn BabyList(comptime Type: type) type {
         }
 
         pub fn insert(this: *Self, allocator: std.mem.Allocator, index: usize, val: Type) OOM!void {
-            if ((comptime safety_checks) and this.len == this.cap) this.assertOwned();
+            try this.ensureUnusedCapacity(allocator, 1);
             var list_ = this.listManaged(allocator);
-            try list_.insert(index, val);
+            list_.insertAssumeCapacity(index, val);
             this.update(list_);
         }
 
@@ -313,9 +318,9 @@ pub fn BabyList(comptime Type: type) type {
             index: usize,
             vals: []const Type,
         ) OOM!void {
-            if ((comptime safety_checks) and this.cap - this.len < vals.len) this.assertOwned();
+            try this.ensureUnusedCapacity(allocator, vals.len);
             var list_ = this.listManaged(allocator);
-            try list_.insertSlice(index, vals);
+            @memcpy(list_.addManyAtAssumeCapacity(index, vals.len), vals);
             this.update(list_);
         }
 
@@ -326,13 +331,17 @@ pub fn BabyList(comptime Type: type) type {
             len_: usize,
             new_items: []const Type,
         ) OOM!void {
+            bun.assert(start <= this.len and len_ <= this.len - start);
+            if (new_items.len > len_) try this.ensureUnusedCapacity(allocator, new_items.len - len_);
             var list_ = this.listManaged(allocator);
-            try list_.replaceRange(start, len_, new_items);
+            list_.replaceRangeAssumeCapacity(start, len_, new_items);
+            this.update(list_);
         }
 
         pub fn clone(this: Self, allocator: std.mem.Allocator) OOM!Self {
-            var copy = try this.list().clone(allocator);
-            return .moveFromList(&copy);
+            var copy = try Self.initCapacity(allocator, this.cap);
+            copy.appendSliceAssumeCapacity(this.slice());
+            return copy;
         }
 
         pub fn unusedCapacitySlice(this: Self) []Type {
@@ -358,14 +367,10 @@ pub fn BabyList(comptime Type: type) type {
             allocator: std.mem.Allocator,
             additional: usize,
         ) OOM![]Type {
-            if ((comptime safety_checks) and additional > this.cap - this.len) this.assertOwned();
-            var list_ = this.listManaged(allocator);
-            try list_.ensureUnusedCapacity(additional);
-            const prev_len = list_.items.len;
-            list_.items.len += additional;
-            const writable = list_.items[prev_len..];
-            this.update(list_);
-            return writable;
+            try this.ensureUnusedCapacity(allocator, additional);
+            const previous_len = this.len;
+            this.len += @intCast(additional);
+            return this.ptr[previous_len..this.len];
         }
 
         pub fn allocatedSlice(this: Self) []Type {
@@ -383,29 +388,38 @@ pub fn BabyList(comptime Type: type) type {
             comptime fmt: []const u8,
             args: anytype,
         ) OOM!void {
-            if ((comptime safety_checks) and this.len == this.cap) this.assertOwned();
-            var list_ = this.listManaged(allocator);
-            var unmanaged: std.ArrayList(u8) = .{ .items = list_.items, .capacity = list_.capacity };
-            list_ = .init(allocator);
-            var allocating = std.Io.Writer.Allocating.fromArrayList(allocator, &unmanaged);
-            defer {
-                unmanaged = allocating.toArrayList();
-                list_.items = unmanaged.items;
-                list_.capacity = unmanaged.capacity;
-                this.update(list_);
-            }
-            allocating.writer.print(fmt, args) catch return error.OutOfMemory;
+            if (comptime Type != u8) @compileError("Unsupported for type " ++ @typeName(Type));
+            var writer: AppendWriter = .{ .list = this, .allocator = allocator };
+            writer.interface.print(fmt, args) catch return error.OutOfMemory;
         }
+
+        const AppendWriter = struct {
+            list: *Self,
+            allocator: std.mem.Allocator,
+            interface: std.Io.Writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+
+            fn drain(interface: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+                const writer: *@This() = @fieldParentPtr("interface", interface);
+                const pattern = data[data.len - 1];
+                var count = std.math.mul(usize, pattern.len, splat) catch return error.WriteFailed;
+                for (data[0 .. data.len - 1]) |bytes| {
+                    count = std.math.add(usize, count, bytes.len) catch return error.WriteFailed;
+                }
+                writer.list.ensureUnusedCapacity(writer.allocator, count) catch return error.WriteFailed;
+                for (data[0 .. data.len - 1]) |bytes| writer.list.appendSliceAssumeCapacity(bytes);
+                if (pattern.len > 0) for (0..splat) |_| {
+                    writer.list.appendSliceAssumeCapacity(pattern);
+                };
+                return count;
+            }
+        };
 
         /// This method is available only for `BabyList(u8)`.
         pub fn write(this: *Self, allocator: std.mem.Allocator, str: []const u8) OOM!u32 {
-            if ((comptime safety_checks) and this.cap - this.len < str.len) this.assertOwned();
             if (comptime Type != u8)
                 @compileError("Unsupported for type " ++ @typeName(Type));
             const initial = this.len;
-            var list_ = this.listManaged(allocator);
-            try list_.appendSlice(str);
-            this.update(list_);
+            try this.appendSlice(allocator, str);
             return this.len - initial;
         }
 
@@ -414,11 +428,13 @@ pub fn BabyList(comptime Type: type) type {
             if ((comptime safety_checks) and str.len > 0) this.assertOwned();
             if (comptime Type != u8)
                 @compileError("Unsupported for type " ++ @typeName(Type));
-            const initial = this.len;
-            const old = this.listManaged(allocator);
-            const new = try strings.allocateLatin1IntoUTF8WithList(old, old.items.len, str);
-            this.update(new);
-            return this.len - initial;
+            if (str.len > std.math.maxInt(u32) - this.len) return error.OutOfMemory;
+            const length = strings.elementLengthLatin1IntoUTF8(str);
+            try this.ensureUnusedCapacity(allocator, length);
+            const written = bun.simdutf.convert.latin1.to.utf8(str, this.unusedCapacitySlice());
+            bun.assert(written == length);
+            this.len += @intCast(written);
+            return @intCast(written);
         }
 
         /// This method is available only for `BabyList(u8)`. Invalid characters are replaced with
@@ -428,27 +444,13 @@ pub fn BabyList(comptime Type: type) type {
             if (comptime Type != u8)
                 @compileError("Unsupported for type " ++ @typeName(Type));
 
-            const initial_len = this.len;
-
-            var list_ = this.listManaged(allocator);
-            {
-                defer this.update(list_);
-
-                // Maximum UTF-16 length is 3 times the UTF-8 length + 2
-                const length_estimate = if (list_.unusedCapacitySlice().len <= (str.len * 3 + 2))
-                    // This length is an estimate. `str` isn't validated and might contain invalid
-                    // sequences. If it does simdutf will assume they require 2 characters instead
-                    // of 3.
-                    bun.simdutf.length.utf8.from.utf16.le(str)
-                else
-                    str.len;
-
-                try list_.ensureUnusedCapacity(length_estimate);
-
-                try strings.convertUTF16ToUTF8Append(&list_, str);
-            }
-
-            return this.len - initial_len;
+            if (str.len > std.math.maxInt(u32) - this.len) return error.OutOfMemory;
+            const length = strings.elementLengthUTF16IntoUTF8WithReplacement(str);
+            try this.ensureUnusedCapacity(allocator, length);
+            const encoded = strings.copyUTF16IntoUTF8WithBufferImpl(this.unusedCapacitySlice(), str, length, false);
+            bun.assert(encoded.read == str.len and encoded.written == length);
+            this.len += encoded.written;
+            return encoded.written;
         }
 
         /// This method is available only for `BabyList(u8)`.
@@ -599,6 +601,41 @@ pub fn BabyList(comptime Type: type) type {
 }
 
 pub const ByteList = BabyList(u8);
+
+test "BabyList range replacement publishes storage and rejects unrepresentable growth" {
+    const allocator = std.testing.allocator;
+    var list = try ByteList.fromSlice(allocator, "abc");
+    defer list.deinit(allocator);
+
+    try ByteList.replaceRange(allocator, &list, 1, 1, "replacement");
+    try std.testing.expectEqualStrings("areplacementc", list.slice());
+    try ByteList.replaceRange(allocator, &list, 1, 11, "");
+    try std.testing.expectEqualStrings("ac", list.slice());
+
+    const pointer = list.ptr;
+    const capacity = list.cap;
+    try std.testing.expectError(error.OutOfMemory, list.ensureUnusedCapacity(allocator, std.math.maxInt(usize)));
+    try std.testing.expectError(error.OutOfMemory, list.ensureTotalCapacity(allocator, @as(usize, std.math.maxInt(u32)) + 1));
+    try std.testing.expect(list.ptr == pointer);
+    try std.testing.expectEqual(capacity, list.cap);
+    try std.testing.expectEqualStrings("ac", list.slice());
+}
+
+test "ByteList formatting and Unicode writes preserve prefixes and replace lone surrogates" {
+    const allocator = std.testing.allocator;
+    var list = try ByteList.fromSlice(allocator, "prefix:");
+    defer list.deinit(allocator);
+    try list.appendFmt(allocator, "{s: >5}:{d}", .{ "x", 42 });
+    try std.testing.expectEqualStrings("prefix:    x:42", list.slice());
+    try std.testing.expectEqual(@as(u32, 2), try list.writeLatin1(allocator, "\xe9"));
+    try std.testing.expectEqualStrings("prefix:    x:42\xc3\xa9", list.slice());
+
+    list.clearRetainingCapacity();
+    const input = [_]u16{ 0xd800, 'a', 0xd83d, 0xde00, 0xdc00 };
+    const expected = "\xef\xbf\xbda\xf0\x9f\x98\x80\xef\xbf\xbd";
+    try std.testing.expectEqual(@as(u32, expected.len), try list.writeUTF16(allocator, &input));
+    try std.testing.expectEqualStrings(expected, list.slice());
+}
 
 pub const OffsetByteList = struct {
     const Self = @This();

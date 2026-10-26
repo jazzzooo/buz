@@ -38,10 +38,11 @@
 #include <wtf/HashSet.h>
 #include <wtf/Lock.h>
 #include "FetchHeaders.h"
+#include "SchemaBindings.h"
 #include "WebSocketErrorCode.h"
 
 namespace WebCore {
-class JSBlob;
+class BlobImpl;
 }
 
 namespace uWS {
@@ -54,24 +55,17 @@ class ArrayBuffer;
 class ArrayBufferView;
 }
 
-extern "C" void Bun__WebSocket__freeSSLConfig(void* sslConfig);
-
 namespace WebCore {
 
 class Blob;
 
-// Move-only owning handle for the Zig heap-allocated SSLConfig returned by
-// Bun__WebSocket__parseSSLConfig. The SSLConfig holds duped cert/key/CA
-// strings, so every exception / early-return path between parsing and the
-// Zig upgrade client taking ownership must free it. Wrapping the raw `void*`
-// in this RAII type lets normal C++ destruction handle all of those paths
-// without ad-hoc scope guards or manual frees at each call site.
+// The Zig SSLConfig owns duplicated strings until the upgrade client takes it.
 class WebSocketSSLConfigPtr {
     WTF_MAKE_NONCOPYABLE(WebSocketSSLConfigPtr);
 
 public:
     WebSocketSSLConfigPtr() = default;
-    explicit WebSocketSSLConfigPtr(void* ptr)
+    explicit WebSocketSSLConfigPtr(Bun::WebSocketSSLConfigNative* ptr)
         : m_ptr(ptr)
     {
     }
@@ -93,18 +87,29 @@ public:
 
     // Transfer ownership out to the Zig upgrade client; after this the
     // destructor is a no-op.
-    void* release() { return std::exchange(m_ptr, nullptr); }
+    Bun::WebSocketSSLConfigNative* release() { return std::exchange(m_ptr, nullptr); }
 
 private:
     void reset()
     {
         if (m_ptr) {
-            Bun__WebSocket__freeSSLConfig(m_ptr);
+            Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketSSLConfigDestroy(m_ptr);
             m_ptr = nullptr;
         }
     }
 
-    void* m_ptr { nullptr };
+    Bun::WebSocketSSLConfigNative* m_ptr { nullptr };
+};
+
+struct WebSocketConstructorOptions {
+    bool hasOptions { false };
+    Vector<String> protocols;
+    int rejectUnauthorized { -1 };
+    WebSocketSSLConfigPtr sslConfig;
+    std::optional<FetchHeaders::Init> headers;
+    bool offerPerMessageDeflate { true };
+    String proxyUrl;
+    std::optional<FetchHeaders::Init> proxyHeaders;
 };
 
 class WebSocket final : public RefCounted<WebSocket>, public EventTargetWithInlineData, public ContextDestructionObserver {
@@ -163,19 +168,22 @@ public:
     ExceptionOr<void> send(const String& message);
     ExceptionOr<void> send(JSC::ArrayBuffer&);
     ExceptionOr<void> send(JSC::ArrayBufferView&);
-    ExceptionOr<void> send(JSBlob*);
+    ExceptionOr<void> send(std::span<const uint8_t>);
+    ExceptionOr<void> send(BlobImpl*);
 
     ExceptionOr<void> ping();
     ExceptionOr<void> ping(const String& message);
     ExceptionOr<void> ping(JSC::ArrayBuffer&);
     ExceptionOr<void> ping(JSC::ArrayBufferView&);
-    ExceptionOr<void> ping(JSBlob*);
+    ExceptionOr<void> ping(std::span<const uint8_t>);
+    ExceptionOr<void> ping(BlobImpl*);
 
     ExceptionOr<void> pong();
     ExceptionOr<void> pong(const String& message);
     ExceptionOr<void> pong(JSC::ArrayBuffer&);
     ExceptionOr<void> pong(JSC::ArrayBufferView&);
-    ExceptionOr<void> pong(JSBlob*);
+    ExceptionOr<void> pong(std::span<const uint8_t>);
+    ExceptionOr<void> pong(BlobImpl*);
 
     ExceptionOr<void> close(std::optional<unsigned short> code, const String& reason);
     ExceptionOr<void> terminate();
@@ -197,10 +205,11 @@ public:
     using RefCounted::deref;
     using RefCounted::ref;
     void didConnect();
-    void disablePendingActivity();
+    void clearUpgradeClient() { m_upgradeClient.http = nullptr; }
+    void releaseConnectionActivity();
     void didClose(unsigned unhandledBufferedAmount, unsigned short code, const String& reason);
-    void didConnect(us_socket_t* socket, char* bufferedData, size_t bufferedDataSize, const PerMessageDeflateParams* deflate_params, void* customSSLCtx);
-    void didConnectWithTunnel(void* tunnel, char* bufferedData, size_t bufferedDataSize, const PerMessageDeflateParams* deflate_params);
+    void didConnect(us_socket_t* socket, std::span<const uint8_t> bufferedData, const PerMessageDeflateParams* deflate_params, ssl_ctx_st* customSSLCtx);
+    void didConnectWithTunnel(Bun::WebSocketProxyTunnelNative* tunnel, std::span<const uint8_t> bufferedData, const PerMessageDeflateParams* deflate_params);
     void didFailWithErrorCode(Bun::WebSocketErrorCode code);
 
     void didReceiveMessage(String&& message);
@@ -288,15 +297,23 @@ public:
     size_t memoryCost() const;
 
 private:
+    void dispatchCloseEvent(bool wasClean, unsigned short code, const String& reason);
     typedef union AnyWebSocket {
-        WebSocketClient* client;
-        WebSocketClientTLS* clientSSL;
+        Bun::WebSocketClientNative* client;
+        Bun::WebSocketClientTLSNative* clientSSL;
     } AnyWebSocket;
+    typedef union AnyUpgradeClient {
+        Bun::WebSocketHTTPClientNative* http;
+        Bun::WebSocketHTTPSClientNative* https;
+    } AnyUpgradeClient;
     enum ConnectedWebSocketKind {
         None,
         Client,
         ClientSSL,
     };
+
+    bool usesTLSUpgradeClient() const { return m_connectionType == ConnectionType::TLS || m_connectionType == ConnectionType::ProxyTLS; }
+    bool hasUpgradeClient() const { return usesTLSUpgradeClient() ? m_upgradeClient.https != nullptr : m_upgradeClient.http != nullptr; }
 
     std::atomic<bool> m_hasPendingActivity { true };
 
@@ -313,8 +330,9 @@ private:
     void didStartClosingHandshake();
     void failConnectingWebSocket();
 
+    ExceptionOr<void> sendBinary(std::span<const uint8_t>, Opcode);
     void sendWebSocketString(const String& message, const Opcode opcode);
-    void sendWebSocketData(const char* data, size_t length, const Opcode opcode);
+    void sendWebSocketData(std::span<const uint8_t>, const Opcode opcode);
     void setExtensionsFromDeflateParams(const PerMessageDeflateParams* deflate_params);
 
     enum class BinaryType { Blob,
@@ -334,7 +352,7 @@ private:
     BinaryType m_binaryType { BinaryType::NodeBuffer };
     String m_subprotocol;
     String m_extensions;
-    void* m_upgradeClient { nullptr };
+    AnyUpgradeClient m_upgradeClient { nullptr };
     ConnectionType m_connectionType { ConnectionType::Plain };
     bool m_rejectUnauthorized { false };
     // Default matches pre-existing behavior: advertise permessage-deflate in the upgrade

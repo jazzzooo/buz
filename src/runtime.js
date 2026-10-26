@@ -104,8 +104,10 @@ var __moduleCache;
 // When you do know the module is CJS
 export var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
 
-export var __name = (target, name) => {
-  Object.defineProperty(target, "name", {
+export var __name = (target, name, preserveStaticName = false) => {
+  // Class methods are installed before static initialization and may replace the initial name property.
+  if (preserveStaticName && typeof __getOwnPropDesc(target, "name")?.value !== "string") return target;
+  __defProp(target, "name", {
     value: name,
     enumerable: false,
     configurable: true,
@@ -274,7 +276,7 @@ export var __decorateElement = (array, flags, name, decorators, target, extra) =
             },
         name,
       ));
-  k ? p && k < 4 && __name(extra, (k > 2 ? "set " : k > 1 ? "get " : "") + name) : __name(target, name);
+  k ? p && k < 4 && __name(extra, (k > 2 ? "set " : k > 1 ? "get " : "") + name) : __name(target, name, true);
 
   for (var i = decorators.length - 1; i >= 0; i--) {
     ctx = __decoratorContext(k, name, (done = {}), array[3], extraInitializers);

@@ -1,12 +1,10 @@
 #pragma once
 
 #include "root.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/InternalFunction.h>
 
 namespace Bun {
-
-JSC_DECLARE_HOST_FUNCTION(callHTTPParser);
-JSC_DECLARE_HOST_FUNCTION(constructHTTPParser);
 
 class JSHTTPParserConstructor final : public JSC::InternalFunction {
 public:
@@ -35,7 +33,7 @@ public:
 
 private:
     JSHTTPParserConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, callHTTPParser, constructHTTPParser)
+        : Base(vm, structure, bun_bindgen_host_NodeHTTP_httpParserConstructorCall, bun_bindgen_host_NodeHTTP_httpParserConstructorConstruct)
     {
     }
 

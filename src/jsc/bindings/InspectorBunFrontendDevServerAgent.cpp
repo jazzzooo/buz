@@ -1,4 +1,5 @@
 #include "InspectorBunFrontendDevServerAgent.h"
+#include "SchemaBindings.h"
 
 #include <JavaScriptCore/InspectorFrontendRouter.h>
 #include <JavaScriptCore/InspectorBackendDispatcher.h>
@@ -15,8 +16,6 @@
 
 namespace Inspector {
 
-extern "C" void Bun__InspectorBunFrontendDevServerAgent__setEnabled(Inspector::InspectorBunFrontendDevServerAgent*);
-
 WTF_MAKE_TZONE_ALLOCATED_IMPL(InspectorBunFrontendDevServerAgent);
 
 InspectorBunFrontendDevServerAgent::InspectorBunFrontendDevServerAgent(JSC::JSGlobalObject& globalObject)
@@ -29,7 +28,11 @@ InspectorBunFrontendDevServerAgent::InspectorBunFrontendDevServerAgent(JSC::JSGl
     UNUSED_PARAM(globalObject);
 }
 
-InspectorBunFrontendDevServerAgent::~InspectorBunFrontendDevServerAgent() = default;
+InspectorBunFrontendDevServerAgent::~InspectorBunFrontendDevServerAgent()
+{
+    if (m_enabled)
+        Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorBunFrontendDevServerAgent(this, false);
+}
 
 void InspectorBunFrontendDevServerAgent::didCreateFrontendAndBackend()
 {
@@ -37,8 +40,7 @@ void InspectorBunFrontendDevServerAgent::didCreateFrontendAndBackend()
 
 void InspectorBunFrontendDevServerAgent::willDestroyFrontendAndBackend(DisconnectReason)
 {
-    m_frontendDispatcher = nullptr;
-    m_enabled = false;
+    disable();
 }
 
 Protocol::ErrorStringOr<void> InspectorBunFrontendDevServerAgent::enable()
@@ -47,7 +49,7 @@ Protocol::ErrorStringOr<void> InspectorBunFrontendDevServerAgent::enable()
         return {};
 
     m_enabled = true;
-    Bun__InspectorBunFrontendDevServerAgent__setEnabled(this);
+    Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorBunFrontendDevServerAgent(this, true);
     return {};
 }
 
@@ -57,7 +59,7 @@ Protocol::ErrorStringOr<void> InspectorBunFrontendDevServerAgent::disable()
         return {};
 
     m_enabled = false;
-    Bun__InspectorBunFrontendDevServerAgent__setEnabled(nullptr);
+    Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorBunFrontendDevServerAgent(this, false);
     return {};
 }
 
@@ -133,64 +135,64 @@ void InspectorBunFrontendDevServerAgent::consoleLog(int devServerId, char kind, 
     m_frontendDispatcher->consoleLog(devServerId, kind, data);
 }
 
-// C API implementations for Zig
-extern "C" {
-
-void InspectorBunFrontendDevServerAgent__notifyClientConnected(InspectorBunFrontendDevServerAgent* agent, int devServerId, int connectionId)
-{
-    agent->clientConnected(devServerId, connectionId);
-}
-
-void InspectorBunFrontendDevServerAgent__notifyClientDisconnected(InspectorBunFrontendDevServerAgent* agent, int devServerId, int connectionId)
-{
-    agent->clientDisconnected(devServerId, connectionId);
-}
-
-void InspectorBunFrontendDevServerAgent__notifyBundleStart(InspectorBunFrontendDevServerAgent* agent, int devServerId, BunString* triggerFiles, size_t triggerFilesLen)
-{
-    // Create a JSON array for the triggerFiles
-    Ref<JSON::ArrayOf<String>> files = JSON::ArrayOf<String>::create();
-    for (size_t i = 0; i < triggerFilesLen; i++) {
-        files->addItem(triggerFiles[i].transferToWTFString());
-    }
-
-    agent->bundleStart(devServerId, WTF::move(files));
-}
-
-void InspectorBunFrontendDevServerAgent__notifyBundleComplete(InspectorBunFrontendDevServerAgent* agent, int devServerId, double durationMs)
-{
-    agent->bundleComplete(devServerId, durationMs);
-}
-
-void InspectorBunFrontendDevServerAgent__notifyBundleFailed(InspectorBunFrontendDevServerAgent* agent, int devServerId, BunString* buildErrorsPayloadBase64)
-{
-    agent->bundleFailed(devServerId, buildErrorsPayloadBase64->transferToWTFString());
-}
-
-void InspectorBunFrontendDevServerAgent__notifyClientNavigated(InspectorBunFrontendDevServerAgent* agent, int devServerId, int connectionId, BunString* url, int routeBundleId)
-{
-    std::optional<int> optionalRouteBundleId;
-    if (routeBundleId > -1) {
-        optionalRouteBundleId = { routeBundleId };
-    }
-
-    agent->clientNavigated(devServerId, connectionId, url->toWTFString(), optionalRouteBundleId);
-}
-
-void InspectorBunFrontendDevServerAgent__notifyClientErrorReported(InspectorBunFrontendDevServerAgent* agent, int devServerId, BunString* clientErrorPayloadBase64)
-{
-    agent->clientErrorReported(devServerId, clientErrorPayloadBase64->toWTFString());
-}
-
-void InspectorBunFrontendDevServerAgent__notifyGraphUpdate(InspectorBunFrontendDevServerAgent* agent, int devServerId, BunString* visualizerPayloadBase64)
-{
-    agent->graphUpdate(devServerId, visualizerPayloadBase64->toWTFString());
-}
-
-void InspectorBunFrontendDevServerAgent__notifyConsoleLog(InspectorBunFrontendDevServerAgent* agent, int devServerId, char kind, BunString* data)
-{
-    agent->consoleLog(devServerId, kind, data->toWTFString());
-}
-}
-
 } // namespace Inspector
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerClientConnected(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerClientConnected_Arguments& args)
+{
+    args.agent->clientConnected(args.devServerId, args.connectionId);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerClientDisconnected(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerClientDisconnected_Arguments& args)
+{
+    args.agent->clientDisconnected(args.devServerId, args.connectionId);
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerBundleStart_Return Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerBundleStart(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerBundleStart_Arguments& args)
+{
+    auto files = JSON::ArrayOf<WTF::String>::create();
+    for (const auto& file : args.triggerFiles) {
+        files->addItem(file);
+    }
+
+    args.agent->bundleStart(args.devServerId, WTF::move(files));
+    return {};
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerBundleComplete(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerBundleComplete_Arguments& args)
+{
+    args.agent->bundleComplete(args.devServerId, args.durationMs);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerBundleFailed(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerBundleFailed_Arguments& args)
+{
+    args.agent->bundleFailed(args.devServerId, args.payload);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerClientNavigated(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerClientNavigated_Arguments& args)
+{
+    args.agent->clientNavigated(args.devServerId, args.connectionId, args.url, args.routeBundleId);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerClientErrorReported(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerClientErrorReported_Arguments& args)
+{
+    args.agent->clientErrorReported(args.devServerId, args.payload);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerGraphUpdate(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerGraphUpdate_Arguments& args)
+{
+    args.agent->graphUpdate(args.devServerId, args.payload);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorDevServerConsoleLog(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorDevServerConsoleLog_Arguments& args)
+{
+    args.agent->consoleLog(args.devServerId, static_cast<char>(args.kind), args.data);
+}

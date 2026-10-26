@@ -7,13 +7,12 @@ pub const deref = RefCount.deref;
 /// ParsedSourceMap can be acquired by different threads via the thread-safe
 /// source map store (SavedSourceMap), so the reference count must be thread-safe.
 ref_count: RefCount,
+allocator: std.mem.Allocator = bun.default_allocator,
 
 input_line_count: usize = 0,
 mappings: Mapping.List = .{},
-/// Set when this map's mappings are backed by an InternalSourceMap blob (e.g.
-/// embedded in a `bun build --compile` executable) instead of a materialized
-/// `Mapping.List`. The blob's bytes are borrowed (they live in the standalone
-/// module graph's section), so `deinit` does not free them.
+/// Standalone blobs borrow the module graph's storage; other blobs are owned
+/// by this map and freed with `allocator`.
 internal: ?InternalSourceMap = null,
 
 /// If this is empty, this implies that the source code is a single file
@@ -21,72 +20,18 @@ internal: ?InternalSourceMap = null,
 /// loaded without transpilation but with external sources. This array
 /// maps `source_index` to the correct filename.
 external_source_names: []const []const u8 = &.{},
-/// In order to load source contents from a source-map after the fact,
-/// a handle to the underlying source provider is stored. Within this pointer,
-/// a flag is stored if it is known to be an inline or external source map.
-///
-/// Source contents are large, we don't preserve them in memory. This has
-/// the downside of repeatedly re-decoding sourcemaps if multiple errors
-/// are emitted (specifically with Bun.inspect / unhandled; the ones that
-/// rely on source contents)
-underlying_provider: SourceContentPtr = .none,
+/// Input data is retained; individual source contents are decoded on demand.
+source_content: SourceContent = .none,
 
-is_standalone_module_graph: bool = false,
+pub const SourceContent = union(enum) {
+    none,
+    input: Input,
+    standalone_module_graph: *bun.StandaloneModuleGraph.SerializedSourceMap.Loaded,
 
-const SourceProviderKind = enum(u2) { zig, bake, dev_server };
-const AnySourceProvider = union(enum) {
-    zig: *SourceProviderMap,
-    bake: *BakeSourceProvider,
-    dev_server: *DevServerSourceProvider,
-
-    pub fn ptr(this: AnySourceProvider) *anyopaque {
-        return switch (this) {
-            .zig => @ptrCast(this.zig),
-            .bake => @ptrCast(this.bake),
-            .dev_server => @ptrCast(this.dev_server),
-        };
-    }
-
-    pub fn getSourceMap(
-        this: AnySourceProvider,
-        source_filename: []const u8,
+    pub const Input = struct {
+        data: *SourceMap.SourceMapInput,
         load_hint: SourceMapLoadHint,
-        result: ParseUrlResultHint,
-    ) ?SourceMap.ParseUrl {
-        return switch (this) {
-            .zig => this.zig.getSourceMap(source_filename, load_hint, result),
-            .bake => this.bake.getSourceMap(source_filename, load_hint, result),
-            .dev_server => this.dev_server.getSourceMap(source_filename, load_hint, result),
-        };
-    }
-};
-
-pub const SourceContentPtr = packed struct(u64) {
-    load_hint: SourceMapLoadHint,
-    kind: SourceProviderKind,
-    data: u60,
-
-    pub const none: SourceContentPtr = .{ .load_hint = .none, .kind = .zig, .data = 0 };
-
-    pub fn fromProvider(p: *SourceProviderMap) SourceContentPtr {
-        return .{ .load_hint = .none, .data = @intCast(@intFromPtr(p)), .kind = .zig };
-    }
-
-    pub fn fromBakeProvider(p: *BakeSourceProvider) SourceContentPtr {
-        return .{ .load_hint = .none, .data = @intCast(@intFromPtr(p)), .kind = .bake };
-    }
-
-    pub fn fromDevServerProvider(p: *DevServerSourceProvider) SourceContentPtr {
-        return .{ .load_hint = .none, .data = @intCast(@intFromPtr(p)), .kind = .dev_server };
-    }
-
-    pub fn provider(sc: SourceContentPtr) ?AnySourceProvider {
-        switch (sc.kind) {
-            .zig => return .{ .zig = @ptrFromInt(sc.data) },
-            .bake => return .{ .bake = @ptrFromInt(sc.data) },
-            .dev_server => return .{ .dev_server = @ptrFromInt(sc.data) },
-        }
-    }
+    };
 };
 
 pub fn isExternal(psm: *ParsedSourceMap) bool {
@@ -103,37 +48,44 @@ pub fn internalCursor(this: *const ParsedSourceMap) ?InternalSourceMap.Cursor {
 }
 
 fn deinit(this: *ParsedSourceMap) void {
-    const allocator = bun.default_allocator;
+    const allocator = this.allocator;
 
-    if (this.internal) |ism| {
-        if (!this.is_standalone_module_graph) ism.deinit();
+    if (this.source_content == .standalone_module_graph) {
+        this.source_content.standalone_module_graph.deinit();
+    } else {
+        if (this.source_content == .input) this.source_content.input.data.deref();
+        if (this.internal) |ism| allocator.free(@constCast(ism.data[0..ism.totalLen()]));
+        if (this.external_source_names.len > 0) {
+            for (this.external_source_names) |name|
+                allocator.free(name);
+            allocator.free(this.external_source_names);
+        }
     }
     this.mappings.deinit(allocator);
 
-    if (this.external_source_names.len > 0) {
-        for (this.external_source_names) |name|
-            allocator.free(name);
-        allocator.free(this.external_source_names);
-    }
-
-    bun.destroy(this);
+    allocator.destroy(this);
 }
 
 pub fn standaloneModuleGraphData(this: *ParsedSourceMap) *bun.StandaloneModuleGraph.SerializedSourceMap.Loaded {
-    bun.assert(this.is_standalone_module_graph);
-    return @ptrFromInt(this.underlying_provider.data);
+    return switch (this.source_content) {
+        .standalone_module_graph => |data| data,
+        else => @panic("source map is not backed by a standalone module graph"),
+    };
 }
 
 pub fn memoryCost(this: *const ParsedSourceMap) usize {
     const mappings_cost = if (this.internal) |ism| ism.memoryCost() else this.mappings.memoryCost();
-    return @sizeOf(ParsedSourceMap) + mappings_cost + this.external_source_names.len * @sizeOf([]const u8);
+    var bytes = @sizeOf(ParsedSourceMap) + mappings_cost + this.external_source_names.len * @sizeOf([]const u8);
+    for (this.external_source_names) |name| bytes += name.len;
+    if (this.source_content == .input) bytes += this.source_content.input.data.memoryCost();
+    return bytes;
 }
 
 pub fn writeVLQs(map: *const ParsedSourceMap, writer: anytype) !void {
     if (map.internal) |ism| {
         var buf = bun.MutableString.initEmpty(bun.default_allocator);
         defer buf.deinit();
-        ism.appendVLQTo(&buf);
+        try ism.appendVLQTo(&buf);
         try writer.writeAll(buf.list.items);
         return;
     }
@@ -168,24 +120,12 @@ pub fn writeVLQs(map: *const ParsedSourceMap, writer: anytype) !void {
     }
 }
 
-pub fn formatVLQs(map: *const ParsedSourceMap) std.fmt.Alt(*const ParsedSourceMap, formatVLQsImpl) {
-    return .{ .data = map };
-}
-
-fn formatVLQsImpl(map: *const ParsedSourceMap, w: *std.Io.Writer) !void {
-    try map.writeVLQs(w);
-}
-
 const std = @import("std");
 
 const SourceMap = @import("./sourcemap.zig");
-const BakeSourceProvider = SourceMap.BakeSourceProvider;
-const DevServerSourceProvider = SourceMap.DevServerSourceProvider;
 const InternalSourceMap = SourceMap.InternalSourceMap;
 const Mapping = SourceMap.Mapping;
-const ParseUrlResultHint = SourceMap.ParseUrlResultHint;
 const SourceMapLoadHint = SourceMap.SourceMapLoadHint;
-const SourceProviderMap = SourceMap.SourceProviderMap;
 const VLQ = SourceMap.VLQ;
 
 const bun = @import("bun");

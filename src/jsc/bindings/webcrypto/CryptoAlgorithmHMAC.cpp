@@ -57,54 +57,44 @@ CryptoAlgorithmIdentifier CryptoAlgorithmHMAC::identifier() const
     return s_identifier;
 }
 
-void CryptoAlgorithmHMAC::sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&& key, Vector<uint8_t>&& data, VectorCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext& context, WorkQueue& workQueue)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithmHMAC::sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&& key, Vector<uint8_t>&& data)
 {
-    dispatchOperationInWorkQueue(workQueue, context, WTF::move(callback), WTF::move(exceptionCallback),
-        [key = WTF::move(key), data = WTF::move(data)] {
-            return platformSign(downcast<CryptoKeyHMAC>(key.get()), data);
-        });
+    return platformSign(downcast<CryptoKeyHMAC>(key.get()), data);
 }
 
-void CryptoAlgorithmHMAC::verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&& key, Vector<uint8_t>&& signature, Vector<uint8_t>&& data, BoolCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext& context, WorkQueue& workQueue)
+ExceptionOr<bool> CryptoAlgorithmHMAC::verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&& key, Vector<uint8_t>&& signature, Vector<uint8_t>&& data)
 {
-    dispatchOperationInWorkQueue(workQueue, context, WTF::move(callback), WTF::move(exceptionCallback),
-        [key = WTF::move(key), signature = WTF::move(signature), data = WTF::move(data)] {
-            return platformVerify(downcast<CryptoKeyHMAC>(key.get()), signature, data);
-        });
+    return platformVerify(downcast<CryptoKeyHMAC>(key.get()), signature, data);
 }
 
-void CryptoAlgorithmHMAC::generateKey(const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages, KeyOrKeyPairCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&)
+ExceptionOr<KeyOrKeyPair> CryptoAlgorithmHMAC::generateKey(const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages)
 {
     const auto& hmacParameters = downcast<CryptoAlgorithmHmacKeyParams>(parameters);
 
     if (usagesAreInvalidForCryptoAlgorithmHMAC(usages)) {
-        exceptionCallback(SyntaxError, ""_s);
-        return;
+        return Exception { SyntaxError, ""_s };
     }
 
     if (hmacParameters.length && !hmacParameters.length.value()) {
-        exceptionCallback(OperationError, ""_s);
-        return;
+        return Exception { OperationError, ""_s };
     }
 
     auto result = CryptoKeyHMAC::generate(hmacParameters.length.value_or(0), hmacParameters.hashIdentifier, extractable, usages);
     if (!result) {
-        exceptionCallback(OperationError, ""_s);
-        return;
+        return Exception { OperationError, ""_s };
     }
 
-    callback(WTF::move(result));
+    return KeyOrKeyPair { WTF::move(result) };
 }
 
-void CryptoAlgorithmHMAC::importKey(CryptoKeyFormat format, KeyData&& data, const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages, KeyCallback&& callback, ExceptionCallback&& exceptionCallback)
+ExceptionOr<Ref<CryptoKey>> CryptoAlgorithmHMAC::importKey(CryptoKeyFormat format, KeyData&& data, const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages)
 {
     using namespace CryptoAlgorithmHMACInternal;
 
     const auto& hmacParameters = downcast<CryptoAlgorithmHmacKeyParams>(parameters);
 
     if (usagesAreInvalidForCryptoAlgorithmHMAC(usages)) {
-        exceptionCallback(SyntaxError, ""_s);
-        return;
+        return Exception { SyntaxError, ""_s };
     }
 
     RefPtr<CryptoKeyHMAC> result;
@@ -138,25 +128,22 @@ void CryptoAlgorithmHMAC::importKey(CryptoKeyFormat format, KeyData&& data, cons
         break;
     }
     default:
-        exceptionCallback(NotSupportedError, ""_s);
-        return;
+        return Exception { NotSupportedError, ""_s };
     }
     if (!result) {
-        exceptionCallback(DataError, ""_s);
-        return;
+        return Exception { DataError, ""_s };
     }
 
-    callback(*result);
+    return Ref<CryptoKey> { *result };
 }
 
-void CryptoAlgorithmHMAC::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key, KeyDataCallback&& callback, ExceptionCallback&& exceptionCallback)
+ExceptionOr<KeyData> CryptoAlgorithmHMAC::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key)
 {
     using namespace CryptoAlgorithmHMACInternal;
     const auto& hmacKey = downcast<CryptoKeyHMAC>(key.get());
 
     if (hmacKey.key().isEmpty()) {
-        exceptionCallback(OperationError, ""_s);
-        return;
+        return Exception { OperationError, ""_s };
     }
 
     KeyData result;
@@ -193,11 +180,10 @@ void CryptoAlgorithmHMAC::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key
         break;
     }
     default:
-        exceptionCallback(NotSupportedError, ""_s);
-        return;
+        return Exception { NotSupportedError, ""_s };
     }
 
-    callback(format, WTF::move(result));
+    return WTF::move(result);
 }
 
 ExceptionOr<size_t> CryptoAlgorithmHMAC::getKeyLength(const CryptoAlgorithmParameters& parameters)

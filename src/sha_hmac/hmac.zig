@@ -1,4 +1,4 @@
-pub fn generate(key: []const u8, data: []const u8, algorithm: bun.jsc.API.Bun.Crypto.EVP.Algorithm, out: *[boring.EVP_MAX_MD_SIZE]u8) ?[]const u8 {
+pub fn generate(key: []const u8, data: []const u8, algorithm: EVP.Algorithm, out: *[boring.EVP_MAX_MD_SIZE]u8) ?[]const u8 {
     var outlen: c_uint = boring.EVP_MAX_MD_SIZE;
     if (boring.HMAC(
         algorithm.md() orelse bun.Output.panic("Expected BoringSSL algorithm for HMAC", .{}),
@@ -17,3 +17,4 @@ pub fn generate(key: []const u8, data: []const u8, algorithm: bun.jsc.API.Bun.Cr
 
 const bun = @import("bun");
 const boring = bun.BoringSSL.c;
+const EVP = @import("../crypto/EVP.zig");

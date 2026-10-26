@@ -27,7 +27,7 @@ declare namespace Internal {
 
 const kNopLinesToCollapse = 5;
 
-const { myersDiff } = $zig("node_assert_binding.zig", "generate") as typeof Internal;
+const myersDiff = $bindgenFn<typeof Internal.myersDiff>("node_assert_binding.schema.zig", "myersDiff");
 
 function printSimpleMyersDiff(diff: Diff[]) {
   let message = "";

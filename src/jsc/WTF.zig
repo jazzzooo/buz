@@ -1,78 +1,70 @@
 pub const WTF = struct {
-    extern fn WTF__parseDouble(bytes: [*]const u8, length: usize, counted: *usize) f64;
-
-    extern fn WTF__numberOfProcessorCores() c_int;
-
     /// On Linux, this is min(sysconf(_SC_NPROCESSORS_ONLN), sched_getaffinity count, cgroup cpu.max quota).
     /// Result is cached after the first call.
     pub fn numberOfProcessorCores() u32 {
-        jsc.markBinding(@src());
-        return @intCast(@max(1, WTF__numberOfProcessorCores()));
+        return @intCast(@max(1, bun.bindgen.Engine(NumberOfProcessorCoresShim).call(.{})));
     }
 
-    extern fn WTF__releaseFastMallocFreeMemoryForThisThread() void;
+    pub fn releaseFastMallocFreeMemory() void {
+        bun.bindgen.Engine(ReleaseFastMallocFreeMemoryShim).call(.{});
+    }
 
     pub fn releaseFastMallocFreeMemoryForThisThread() void {
-        jsc.markBinding(@src());
-        WTF__releaseFastMallocFreeMemoryForThisThread();
+        bun.bindgen.Engine(ReleaseFastMallocFreeMemoryForThisThreadShim).call(.{});
     }
 
-    extern fn WTF__prepareForThreadExit() void;
-
     pub fn prepareForThreadExit() void {
-        jsc.markBinding(@src());
-        WTF__prepareForThreadExit();
+        bun.bindgen.Engine(PrepareForThreadExitShim).call(.{});
     }
 
     pub fn parseDouble(buf: []const u8) !f64 {
-        jsc.markBinding(@src());
-
         if (buf.len == 0)
             return error.InvalidCharacter;
 
-        var count: usize = 0;
-        const res = WTF__parseDouble(buf.ptr, buf.len, &count);
-
-        if (count == 0)
-            return error.InvalidCharacter;
-        return res;
+        return bun.bindgen.Engine(ParseDoubleShim).call(.{ .bytes = bun.bindgen.BytesOperand.fromSlice(buf) }) orelse error.InvalidCharacter;
     }
-
-    extern fn WTF__parseES5Date(bytes: [*]const u8, length: usize) f64;
 
     // 2000-01-01T00:00:00.000Z -> 946684800000 (ms)
     pub fn parseES5Date(buf: []const u8) !f64 {
-        jsc.markBinding(@src());
-
         if (buf.len == 0)
             return error.InvalidDate;
 
-        const ms = WTF__parseES5Date(buf.ptr, buf.len);
+        const ms = bun.bindgen.Engine(ParseES5DateShim).call(.{ .bytes = bun.bindgen.BytesOperand.fromSlice(buf) });
         if (std.math.isFinite(ms))
             return ms;
 
         return error.InvalidDate;
     }
 
-    extern fn Bun__writeHTTPDate(buffer: *[32]u8, length: usize, timestampMs: u64) c_int;
-
     pub fn writeHTTPDate(buffer: *[32]u8, timestampMs: u64) []u8 {
         if (timestampMs == 0) {
             return buffer[0..0];
         }
 
-        const res = Bun__writeHTTPDate(buffer, 32, timestampMs);
+        const res = bun.bindgen.Engine(WriteHTTPDateShim).call(.{
+            .output = buffer[0..],
+            .timestampMs = timestampMs,
+        });
         if (res < 1) {
             return buffer[0..0];
         }
 
         return buffer[0..@intCast(res)];
     }
-
-    pub const StringBuilder = @import("./StringBuilder.zig");
 };
 
 const std = @import("std");
 
 const bun = @import("bun");
 const jsc = bun.jsc;
+const WTFThreadingBindings = bun.bindgen.Module("wtf_threading");
+const NumericConversionBindings = bun.bindgen.Module("numeric_conversions");
+const DateTimeBindings = bun.bindgen.Module("date_time");
+const SystemResourceBindings = bun.bindgen.Module("system_resources");
+const NumberOfProcessorCoresShim = SystemResourceBindings.engineShim("numberOfProcessorCores");
+const ReleaseFastMallocFreeMemoryShim = WTFThreadingBindings.engineShim("releaseFastMallocFreeMemory");
+const ReleaseFastMallocFreeMemoryForThisThreadShim = WTFThreadingBindings.engineShim("releaseFastMallocFreeMemoryForThisThread");
+const PrepareForThreadExitShim = WTFThreadingBindings.engineShim("prepareForThreadExit");
+const ParseES5DateShim = DateTimeBindings.engineShim("parseES5Date");
+const ParseDoubleShim = NumericConversionBindings.engineShim("parseDouble");
+const WriteHTTPDateShim = DateTimeBindings.engineShim("writeHTTPDate");

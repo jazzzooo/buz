@@ -1,4 +1,5 @@
 #include "ProcessBindingHTTPParser.h"
+#include "SchemaBindings.h"
 #include "ZigGlobalObject.h"
 #include "llhttp/llhttp.h"
 
@@ -50,18 +51,12 @@ static JSValue ProcessBindingHTTPParser_ConnectionsList(VM& vm, JSObject* bindin
     return globalObject->m_JSConnectionsListClassStructure.constructor(lexicalGlobalObject);
 }
 
-/* Source for ProcessBindingHTTPParser.lut.h
-@begin processBindingHTTPParserTable
-    methods                     ProcessBindingHTTPParser_methods            PropertyCallback
-    allMethods                  ProcessBindingHTTPParser_allMethods         PropertyCallback
-    HTTPParser                  ProcessBindingHTTPParser_HTTPParser         PropertyCallback
-    ConnectionsList             ProcessBindingHTTPParser_ConnectionsList    PropertyCallback
-@end
-*/
 
-#include "ProcessBindingHTTPParser.lut.h"
+#define BUN_BINDGEN_OBJECT_SURFACE_ProcessBindingHTTPParser
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_ProcessBindingHTTPParser
 
-const ClassInfo ProcessBindingHTTPParser::s_info = { "ProcessBindingHTTPParser"_s, &Base::s_info, &processBindingHTTPParserTable, nullptr, CREATE_METHOD_TABLE(ProcessBindingHTTPParser) };
+const ClassInfo ProcessBindingHTTPParser::s_info = { "ProcessBindingHTTPParser"_s, &Base::s_info, &bunBindgenObjectSurface_ProcessBindingHTTPParserTable, nullptr, CREATE_METHOD_TABLE(ProcessBindingHTTPParser) };
 
 ProcessBindingHTTPParser* ProcessBindingHTTPParser::create(VM& vm, Structure* structure)
 {
@@ -80,5 +75,20 @@ void ProcessBindingHTTPParser::finishCreation(VM& vm)
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
 }
+
+#define BUN_DEFINE_LAZY_SURFACE_FUNCTION(Module, Function, Callback)                                      \
+    JSC::JSValue Bindgen::Cpp::bunBindgenCpp_##Module##_##Function(                                      \
+        Bindgen::CppCallContext& context,                                                               \
+        const Bindgen::Cpp::BunBindgenCpp_##Module##_##Function##_Arguments& args)                       \
+    {                                                                                                   \
+        return Callback(context.globalObject.vm(), JSC::asObject(args.bindingThis));                     \
+    }
+
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(ProcessBindingStubs, ProcessBindingHTTPParser_methods, ProcessBindingHTTPParser_methods)
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(ProcessBindingStubs, ProcessBindingHTTPParser_allMethods, ProcessBindingHTTPParser_allMethods)
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(ProcessBindingStubs, ProcessBindingHTTPParser_HTTPParser, ProcessBindingHTTPParser_HTTPParser)
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(ProcessBindingStubs, ProcessBindingHTTPParser_ConnectionsList, ProcessBindingHTTPParser_ConnectionsList)
+
+#undef BUN_DEFINE_LAZY_SURFACE_FUNCTION
 
 } // namespace Bun

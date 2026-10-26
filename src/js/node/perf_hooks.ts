@@ -1,7 +1,7 @@
 // Hardcoded module "node:perf_hooks"
 const { throwNotImplemented } = require("internal/shared");
 
-const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp", "jsFunction_createHistogram", 3) as (
+const cppCreateHistogram = $bindgenFn("PerformanceHistogram.schema.zig", "createHistogram") as (
   min: number,
   max: number,
   figures: number,
@@ -116,32 +116,32 @@ $toClass(PerformanceResourceTiming, "PerformanceResourceTiming", PerformanceEntr
 export default {
   performance: {
     mark(_) {
-      return performance.mark(...arguments);
+      return (performance.mark as any).$apply(performance, arguments);
     },
     measure(_) {
-      return performance.measure(...arguments);
+      return (performance.measure as any).$apply(performance, arguments);
     },
     clearMarks(_) {
-      return performance.clearMarks(...arguments);
+      return (performance.clearMarks as any).$apply(performance, arguments);
     },
     clearMeasures(_) {
-      return performance.clearMeasures(...arguments);
+      return (performance.clearMeasures as any).$apply(performance, arguments);
     },
     getEntries(_) {
-      return performance.getEntries(...arguments);
+      return (performance.getEntries as any).$apply(performance, arguments);
     },
     getEntriesByName(_) {
-      return performance.getEntriesByName(...arguments);
+      return (performance.getEntriesByName as any).$apply(performance, arguments);
     },
     getEntriesByType(_) {
-      return performance.getEntriesByType(...arguments);
+      return (performance.getEntriesByType as any).$apply(performance, arguments);
     },
     setResourceTimingBufferSize(_) {
-      return performance.setResourceTimingBufferSize(...arguments);
+      return (performance.setResourceTimingBufferSize as any).$apply(performance, arguments);
     },
     timeOrigin: performance.timeOrigin,
     toJSON(_) {
-      return performance.toJSON(...arguments);
+      return (performance.toJSON as any).$apply(performance, arguments);
     },
     onresourcetimingbufferfull: performance.onresourcetimingbufferfull,
     nodeTiming: createPerformanceNodeTiming(),

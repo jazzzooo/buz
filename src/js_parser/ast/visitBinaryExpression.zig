@@ -64,12 +64,13 @@ pub fn CreateBinaryExpressionVisitor(
             pub fn visitRightAndFinish(
                 v: *BinaryExpressionVisitor,
                 p: *P,
-            ) Expr {
+            ) anyerror!Expr {
                 var e_ = v.e;
                 const is_call_target = @as(Expr.Tag, p.call_target) == .e_binary and e_ == p.call_target.e_binary;
                 // const is_stmt_expr = @as(Expr.Tag, p.stmt_expr_value) == .e_binary and expr.data.e_binary == p.stmt_expr_value.e_binary;
                 const was_anonymous_named_expr = e_.right.isAnonymousNamed();
                 const prev_decorator_class_name = p.decorator_class_name;
+                errdefer p.decorator_class_name = prev_decorator_class_name;
 
                 // Propagate name for anonymous decorated class expressions in assignments
                 if (e_.op == .bin_assign and was_anonymous_named_expr and
@@ -86,11 +87,11 @@ pub fn CreateBinaryExpressionVisitor(
                         if (side_effects.ok and side_effects.value) {
                             // "true || dead"
                             const old = p.is_control_flow_dead;
+                            defer p.is_control_flow_dead = old;
                             p.is_control_flow_dead = true;
-                            e_.right = p.visitExpr(e_.right);
-                            p.is_control_flow_dead = old;
+                            e_.right = try p.visitExpr(e_.right);
                         } else {
-                            e_.right = p.visitExpr(e_.right);
+                            e_.right = try p.visitExpr(e_.right);
                         }
                     },
                     .bin_logical_and => {
@@ -98,11 +99,11 @@ pub fn CreateBinaryExpressionVisitor(
                         if (side_effects.ok and !side_effects.value) {
                             // "false && dead"
                             const old = p.is_control_flow_dead;
+                            defer p.is_control_flow_dead = old;
                             p.is_control_flow_dead = true;
-                            e_.right = p.visitExpr(e_.right);
-                            p.is_control_flow_dead = old;
+                            e_.right = try p.visitExpr(e_.right);
                         } else {
-                            e_.right = p.visitExpr(e_.right);
+                            e_.right = try p.visitExpr(e_.right);
                         }
                     },
                     .bin_nullish_coalescing => {
@@ -110,15 +111,15 @@ pub fn CreateBinaryExpressionVisitor(
                         if (side_effects.ok and !side_effects.value) {
                             // "notNullOrUndefined ?? dead"
                             const old = p.is_control_flow_dead;
+                            defer p.is_control_flow_dead = old;
                             p.is_control_flow_dead = true;
-                            e_.right = p.visitExpr(e_.right);
-                            p.is_control_flow_dead = old;
+                            e_.right = try p.visitExpr(e_.right);
                         } else {
-                            e_.right = p.visitExpr(e_.right);
+                            e_.right = try p.visitExpr(e_.right);
                         }
                     },
                     else => {
-                        e_.right = p.visitExpr(e_.right);
+                        e_.right = try p.visitExpr(e_.right);
                     },
                 }
                 p.decorator_class_name = prev_decorator_class_name;
@@ -376,10 +377,13 @@ pub fn CreateBinaryExpressionVisitor(
                     .bin_pow => {
                         if (p.should_fold_typescript_constant_expressions) {
                             if (Expr.extractNumericValues(e_.left.data, e_.right.data)) |vals| {
-                                return p.newExpr(E.Number{ .value = if (comptime Environment.isNative)
-                                    jsc.math.pow(vals[0], vals[1])
-                                else
-                                    std.math.pow(f64, vals[0], vals[1]) }, v.loc);
+                                if (comptime Environment.isNative) {
+                                    if (p.options.javascript_semantics) |semantics| {
+                                        return p.newExpr(E.Number{ .value = semantics.pow(vals[0], vals[1]) }, v.loc);
+                                    }
+                                } else {
+                                    return p.newExpr(E.Number{ .value = std.math.pow(f64, vals[0], vals[1]) }, v.loc);
+                                }
                             }
                         }
                     },
@@ -536,7 +540,7 @@ pub fn CreateBinaryExpressionVisitor(
                 return Expr{ .loc = v.loc, .data = .{ .e_binary = e_ } };
             }
 
-            pub fn checkAndPrepare(v: *BinaryExpressionVisitor, p: *P) ?Expr {
+            pub fn checkAndPrepare(v: *BinaryExpressionVisitor, p: *P) anyerror!?Expr {
                 var e_ = v.e;
                 switch (e_.left.data) {
                     // Special-case private identifiers
@@ -544,17 +548,17 @@ pub fn CreateBinaryExpressionVisitor(
                         if (e_.op == .bin_in) {
                             var private = _private;
                             const name = p.loadNameFromRef(private.ref);
-                            const result = p.findSymbol(e_.left.loc, name) catch unreachable;
+                            const result = try p.findSymbol(e_.left.loc, name);
                             private.ref = result.ref;
 
                             // Unlike regular identifiers, there are no unbound private identifiers
                             const kind: Symbol.Kind = p.symbols.items[result.ref.innerIndex()].kind;
                             if (!Symbol.isKindPrivate(kind)) {
                                 const r = logger.Range{ .loc = e_.left.loc, .len = @as(i32, @intCast(name.len)) };
-                                p.log.addRangeErrorFmt(p.source, r, p.allocator, "Private name \"{s}\" must be declared in an enclosing class", .{name}) catch unreachable;
+                                try p.log.addRangeErrorFmt(p.source, r, p.allocator, "Private name \"{s}\" must be declared in an enclosing class", .{name});
                             }
 
-                            e_.right = p.visitExpr(e_.right);
+                            e_.right = try p.visitExpr(e_.right);
                             e_.left = .{ .data = .{ .e_private_identifier = private }, .loc = e_.left.loc };
 
                             // privateSymbolNeedsToBeLowered
@@ -582,7 +586,6 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 

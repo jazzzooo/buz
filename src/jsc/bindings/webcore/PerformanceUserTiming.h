@@ -28,8 +28,9 @@
 #include "ExceptionOr.h"
 #include "PerformanceMark.h"
 #include "PerformanceMeasure.h"
-#include <wtf/HashMap.h>
-#include <wtf/text/StringHash.h>
+#include "PerformanceEntryHistory.h"
+#include <memory>
+#include <wtf/FastMalloc.h>
 
 namespace JSC {
 class JSGlobalObject;
@@ -39,26 +40,30 @@ namespace WebCore {
 
 class Performance;
 
-using PerformanceEntryMap = HashMap<String, Vector<RefPtr<PerformanceEntry>>>;
-
 class PerformanceUserTiming {
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(PerformanceUserTiming);
 
 public:
+    static std::unique_ptr<PerformanceUserTiming> tryCreate(Performance& performance)
+    {
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(PerformanceUserTiming)).getValue(allocation))
+            return nullptr;
+        return std::unique_ptr<PerformanceUserTiming> { new (NotNull, allocation) PerformanceUserTiming(performance) };
+    }
+
     explicit PerformanceUserTiming(Performance&);
 
-    ExceptionOr<Ref<PerformanceMark>> mark(JSC::JSGlobalObject&, const String& markName, std::optional<PerformanceMarkOptions>&&);
+    ExceptionOr<Ref<PerformanceMark>> createMark(JSC::JSGlobalObject&, const String& markName, std::optional<PerformanceMarkOptions>&&);
     void clearMarks(const String& markName);
 
     using StartOrMeasureOptions = std::variant<String, PerformanceMeasureOptions>;
-    ExceptionOr<Ref<PerformanceMeasure>> measure(JSC::JSGlobalObject&, const String& measureName, std::optional<StartOrMeasureOptions>&&, const String& endMark);
+    ExceptionOr<Ref<PerformanceMeasure>> createMeasure(JSC::JSGlobalObject&, const String& measureName, std::optional<StartOrMeasureOptions>&&, const String& endMark);
+    bool recordEntry(PerformanceEntry&);
     void clearMeasures(const String& measureName);
 
-    Vector<RefPtr<PerformanceEntry>> getMarks() const;
-    Vector<RefPtr<PerformanceEntry>> getMeasures() const;
-
-    Vector<RefPtr<PerformanceEntry>> getMarks(const String& name) const;
-    Vector<RefPtr<PerformanceEntry>> getMeasures(const String& name) const;
+    bool tryAppendMarks(Vector<RefPtr<PerformanceEntry>>&, const String& name = String {}) const;
+    bool tryAppendMeasures(Vector<RefPtr<PerformanceEntry>>&, const String& name = String {}) const;
 
     static bool isRestrictedMarkName(const String& markName);
 
@@ -69,14 +74,12 @@ private:
     ExceptionOr<double> convertMarkToTimestamp(const String& markName) const;
     ExceptionOr<double> convertMarkToTimestamp(double) const;
 
-    ExceptionOr<Ref<PerformanceMeasure>> measure(const String& measureName, const String& startMark, const String& endMark);
-    ExceptionOr<Ref<PerformanceMeasure>> measure(JSC::JSGlobalObject&, const String& measureName, const PerformanceMeasureOptions&);
+    ExceptionOr<Ref<PerformanceMeasure>> createMeasure(const String& measureName, const String& startMark, const String& endMark);
+    ExceptionOr<Ref<PerformanceMeasure>> createMeasure(JSC::JSGlobalObject&, const String& measureName, const PerformanceMeasureOptions&);
 
     Performance& m_performance;
-    PerformanceEntryMap m_marksMap;
-    int64_t m_markCounter { 0 };
-    PerformanceEntryMap m_measuresMap;
-    int64_t m_measureCounter { 0 };
+    PerformanceEntryHistory m_marks;
+    PerformanceEntryHistory m_measures;
 };
 
 }

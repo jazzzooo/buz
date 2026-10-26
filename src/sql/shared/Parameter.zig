@@ -1,0 +1,17 @@
+pub const Parameter = union(enum) {
+    null_value,
+    boolean: bool,
+    int16: i16,
+    uint16: u16,
+    int32: i32,
+    uint32: u32,
+    int64: i64,
+    uint64: u64,
+    float32: f32,
+    float64: f64,
+    date: f64,
+    time: f64,
+    text: []const u8,
+    bytes: []const u8,
+    int32_array: []const u8,
+};

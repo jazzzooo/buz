@@ -31,55 +31,44 @@
 #include "ExceptionOr.h"
 #include "URLDecomposition.h"
 #include <wtf/URL.h>
-#include <wtf/WeakPtr.h>
+#include <wtf/RefPtr.h>
 
 namespace WebCore {
 
-class Blob;
-class ScriptExecutionContext;
-class URLRegistrable;
 class URLSearchParams;
 
-class DOMURL final : public RefCounted<DOMURL>, public CanMakeWeakPtr<DOMURL>, public URLDecomposition {
+class DOMURL final : public RefCounted<DOMURL>, public URLDecomposition {
 public:
     static ExceptionOr<Ref<DOMURL>> create(const String& url, const String& base);
     static ExceptionOr<Ref<DOMURL>> create(const String& url);
+    static ExceptionOr<Ref<DOMURL>> createFromFileSystemPath(StringView);
     WEBCORE_EXPORT ~DOMURL();
 
-    static RefPtr<DOMURL> parse(const String& url, const String& base);
-    static bool canParse(const String& url, const String& base);
+    static ExceptionOr<RefPtr<DOMURL>> parse(const String& url, const String& base);
+    static ExceptionOr<bool> canParse(const String& url, const String& base);
 
-    const URL& href() const { return m_url; }
+    ExceptionOr<URL> href() const;
     ExceptionOr<void> setHref(const String&);
 
-    URLSearchParams& searchParams();
-
-    const String& toJSON() const { return m_url.string(); }
-
-    static String createObjectURL(ScriptExecutionContext&, Blob&);
-    static void revokeObjectURL(ScriptExecutionContext&, const String&);
-
-    static String createPublicURL(ScriptExecutionContext&, URLRegistrable&);
+    ExceptionOr<Ref<URLSearchParams>> searchParams();
 
     size_t memoryCost() const
     {
         return sizeof(DOMURL) + m_url.string().sizeInBytes();
     }
-    size_t memoryCostForGC() const
-    {
-        return sizeof(DOMURL) + static_cast<size_t>(m_initialURLCostForGC);
-    }
 
 private:
+    static ExceptionOr<Ref<DOMURL>> createResolved(URL&&);
     static ExceptionOr<Ref<DOMURL>> create(const String& url, const URL& base);
-    DOMURL(URL&& completeURL);
+    explicit DOMURL(URL&&);
+    ExceptionOr<void> commitURL(URL&&);
 
-    URL fullURL() const final { return m_url; }
-    void setFullURL(const URL& fullURL) final { setHref(fullURL.string()); }
+    ExceptionOr<URL> fullURL() const final { return href(); }
+    URL urlForQueryReplacement() const final { return m_url; }
+    ExceptionOr<void> setFullURL(const URL&) final;
 
-    URL m_url;
+    mutable URL m_url;
     RefPtr<URLSearchParams> m_searchParams;
-    uint16_t m_initialURLCostForGC { 0 };
 };
 
 } // namespace WebCore

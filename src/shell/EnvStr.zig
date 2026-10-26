@@ -115,5 +115,4 @@ pub const EnvStr = packed struct(u128) {
 
 const bun = @import("bun");
 
-const interpreter = @import("./interpreter.zig");
-const RefCountedStr = interpreter.RefCountedStr;
+const RefCountedStr = @import("./RefCountedStr.zig");

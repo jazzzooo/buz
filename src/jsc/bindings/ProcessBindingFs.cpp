@@ -1,5 +1,6 @@
 
 #include "ProcessBindingFs.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/ObjectConstructor.h>
 #include "ZigGlobalObject.h"
 
@@ -11,16 +12,19 @@ static WTF::String makeNotImplementedError(const ASCIILiteral name)
     return makeString("process.binding('fs')."_s, name, " is not implemented in Bun. If that breaks something, please file an issue and include a reproducible code sample."_s);
 }
 
-#define PROCESS_BINDING_NOT_IMPLEMENTED(str)                                                                                   \
-    JSC_DEFINE_HOST_FUNCTION(ProcessBinding_Fs_##str, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame * callFrame)) \
-    {                                                                                                                          \
-        {                                                                                                                      \
-            auto& vm = JSC::getVM(lexicalGlobalObject);                                                                        \
-            auto throwScope = DECLARE_THROW_SCOPE(vm);                                                                         \
-            auto message = makeNotImplementedError(#str##_s);                                                                  \
-            throwScope.throwException(lexicalGlobalObject, createError(lexicalGlobalObject, message));                         \
-            return {};                                                                                                         \
-        }                                                                                                                      \
+namespace Bindgen::Cpp {
+
+static void throwFsBindingNotImplemented(CppCallContext& context, ASCIILiteral name)
+{
+    auto* globalObject = &context.globalObject;
+    auto throwScope = DECLARE_THROW_SCOPE(globalObject->vm());
+    throwScope.throwException(globalObject, createError(globalObject, makeNotImplementedError(name)));
+}
+
+#define PROCESS_BINDING_NOT_IMPLEMENTED(str)                                                                                                                     \
+    void bunBindgenCpp_ProcessBindingStubs_fs_##str(CppCallContext& context, const BunBindgenCpp_ProcessBindingStubs_fs_##str##_Arguments&)                       \
+    {                                                                                                                                                            \
+        throwFsBindingNotImplemented(context, #str##_s);                                                                                                         \
     }
 
 PROCESS_BINDING_NOT_IMPLEMENTED(access)
@@ -111,6 +115,10 @@ PROCESS_BINDING_NOT_IMPLEMENTED(writeFileUtf8)
 
 PROCESS_BINDING_NOT_IMPLEMENTED(writeString)
 
+#undef PROCESS_BINDING_NOT_IMPLEMENTED
+
+}
+
 static JSValue ProcessBindingFs_statValues(VM& vm, JSObject* object)
 {
     auto* globalObject = object->globalObject();
@@ -135,62 +143,11 @@ static JSValue ProcessBindingFs_bigintStatFsValues(VM& vm, JSObject* object)
     return JSC::JSBigInt64Array::create(globalObject, globalObject->m_typedArrayBigInt64.get(globalObject), 7);
 }
 
-/* Source for ProcessBindingFs.lut.h
-@begin processBindingFsTable
-    access                          ProcessBinding_Fs_access                        Function 1
-    bigintStatFsValues              ProcessBindingFs_bigintStatFsValues             PropertyCallback
-    bigintStatValues                ProcessBindingFs_bigintStatValues               PropertyCallback
-    chmod                           ProcessBinding_Fs_chmod                         Function 1
-    chown                           ProcessBinding_Fs_chown                         Function 1
-    close                           ProcessBinding_Fs_close                         Function 1
-    copyFile                        ProcessBinding_Fs_copyFile                      Function 1
-    cpSyncCheckPaths                ProcessBinding_Fs_cpSyncCheckPaths              Function 1
-    existsSync                      ProcessBinding_Fs_existsSync                    Function 1
-    fchmod                          ProcessBinding_Fs_fchmod                        Function 1
-    fchown                          ProcessBinding_Fs_fchown                        Function 1
-    fdatasync                       ProcessBinding_Fs_fdatasync                     Function 1
-    fstat                           ProcessBinding_Fs_fstat                         Function 1
-    fsync                           ProcessBinding_Fs_fsync                         Function 1
-    ftruncate                       ProcessBinding_Fs_ftruncate                     Function 1
-    futimes                         ProcessBinding_Fs_futimes                       Function 1
-    getFormatOfExtensionlessFile    ProcessBinding_Fs_getFormatOfExtensionlessFile  Function 1
-    internalModuleStat              ProcessBinding_Fs_internalModuleStat            Function 1
-    kFsStatsFieldsNumber            18                                              ConstantInteger
-    lchown                          ProcessBinding_Fs_lchown                        Function 1
-    legacyMainResolve               ProcessBinding_Fs_legacyMainResolve             Function 1
-    link                            ProcessBinding_Fs_link                          Function 1
-    lstat                           ProcessBinding_Fs_lstat                         Function 1
-    lutimes                         ProcessBinding_Fs_lutimes                       Function 1
-    mkdir                           ProcessBinding_Fs_mkdir                         Function 1
-    mkdtemp                         ProcessBinding_Fs_mkdtemp                       Function 1
-    open                            ProcessBinding_Fs_open                          Function 1
-    openFileHandle                  ProcessBinding_Fs_openFileHandle                Function 1
-    read                            ProcessBinding_Fs_read                          Function 1
-    readBuffers                     ProcessBinding_Fs_readBuffers                   Function 1
-    readdir                         ProcessBinding_Fs_readdir                       Function 1
-    readFileUtf8                    ProcessBinding_Fs_readFileUtf8                  Function 1
-    readlink                        ProcessBinding_Fs_readlink                      Function 1
-    realpath                        ProcessBinding_Fs_realpath                      Function 1
-    rename                          ProcessBinding_Fs_rename                        Function 1
-    rmdir                           ProcessBinding_Fs_rmdir                         Function 1
-    rmSync                          ProcessBinding_Fs_rmSync                        Function 1
-    stat                            ProcessBinding_Fs_stat                          Function 1
-    statfs                          ProcessBinding_Fs_statfs                        Function 1
-    statFsValues                    ProcessBindingFs_statFsValues                   PropertyCallback
-    statValues                      ProcessBindingFs_statValues                     PropertyCallback
-    StatWatcher                     ProcessBinding_Fs_StatWatcher                   Function 1
-    symlink                         ProcessBinding_Fs_symlink                       Function 1
-    unlink                          ProcessBinding_Fs_unlink                        Function 1
-    utimes                          ProcessBinding_Fs_utimes                        Function 1
-    writeBuffer                     ProcessBinding_Fs_writeBuffer                   Function 1
-    writeBuffers                    ProcessBinding_Fs_writeBuffers                  Function 1
-    writeFileUtf8                   ProcessBinding_Fs_writeFileUtf8                 Function 1
-    writeString                     ProcessBinding_Fs_writeString                   Function 1
-@end
-*/
-#include "ProcessBindingFs.lut.h"
+#define BUN_BINDGEN_OBJECT_SURFACE_ProcessBindingFs
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_ProcessBindingFs
 
-const ClassInfo ProcessBindingFs::s_info = { "ProcessBindingFs"_s, &Base::s_info, &processBindingFsTable, nullptr, CREATE_METHOD_TABLE(ProcessBindingFs) };
+const ClassInfo ProcessBindingFs::s_info = { "ProcessBindingFs"_s, &Base::s_info, &bunBindgenObjectSurface_ProcessBindingFsTable, nullptr, CREATE_METHOD_TABLE(ProcessBindingFs) };
 
 ProcessBindingFs* ProcessBindingFs::create(VM& vm, Structure* structure)
 {
@@ -206,11 +163,23 @@ Structure* ProcessBindingFs::createStructure(VM& vm, JSGlobalObject* globalObjec
 
 void ProcessBindingFs::finishCreation(JSC::VM& vm)
 {
-    auto scope = DECLARE_THROW_SCOPE(vm);
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
 }
 
-} // namespace Bun
+#define BUN_DEFINE_LAZY_SURFACE_FUNCTION(Module, Function, Callback)                                      \
+    JSC::JSValue Bindgen::Cpp::bunBindgenCpp_##Module##_##Function(                                      \
+        Bindgen::CppCallContext& context,                                                               \
+        const Bindgen::Cpp::BunBindgenCpp_##Module##_##Function##_Arguments& args)                       \
+    {                                                                                                   \
+        return Callback(context.globalObject.vm(), JSC::asObject(args.bindingThis));                     \
+    }
 
-#undef PROCESS_BINDING_NOT_IMPLEMENTED
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(ProcessBindingStubs, ProcessBindingFs_bigintStatFsValues, ProcessBindingFs_bigintStatFsValues)
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(ProcessBindingStubs, ProcessBindingFs_bigintStatValues, ProcessBindingFs_bigintStatValues)
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(ProcessBindingStubs, ProcessBindingFs_statFsValues, ProcessBindingFs_statFsValues)
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(ProcessBindingStubs, ProcessBindingFs_statValues, ProcessBindingFs_statValues)
+
+#undef BUN_DEFINE_LAZY_SURFACE_FUNCTION
+
+} // namespace Bun

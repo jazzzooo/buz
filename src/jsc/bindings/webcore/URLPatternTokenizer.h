@@ -71,9 +71,9 @@ private:
     void getNextCodePoint();
     void seekNextCodePoint(size_t index);
 
-    void addToken(TokenType currentType, size_t nextPosition, size_t valuePosition, size_t valueLength);
-    void addToken(TokenType currentType, size_t nextPosition, size_t valuePosition);
-    void addToken(TokenType currentType);
+    ExceptionOr<void> addToken(TokenType currentType, size_t nextPosition, size_t valuePosition, size_t valueLength);
+    ExceptionOr<void> addToken(TokenType currentType, size_t nextPosition, size_t valuePosition);
+    ExceptionOr<void> addToken(TokenType currentType);
 
     ExceptionOr<void> processTokenizingError(size_t nextPosition, size_t valuePosition, const String&);
 };

@@ -347,6 +347,31 @@ pub const InitCommand = struct {
         private: bool = true,
     };
 
+    pub fn printHelp() void {
+        const intro_text =
+            \\<b>Usage<r>: <b><green>bun init<r> <cyan>[flags]<r> <blue>[\<folder\>]<r>
+            \\  Initialize a Bun project in the current directory.
+            \\  Creates a package.json, tsconfig.json, and bunfig.toml if they don't exist.
+            \\
+            \\<b>Flags<r>:
+            \\      <cyan>--help<r>             Print this menu
+            \\  <cyan>-y, --yes<r>              Accept all default options
+            \\  <cyan>-m, --minimal<r>          Only initialize type definitions
+            \\  <cyan>-r, --react<r>            Initialize a React project
+            \\      <cyan>--react=tailwind<r>   Initialize a React project with TailwindCSS
+            \\      <cyan>--react=shadcn<r>     Initialize a React project with @shadcn/ui and TailwindCSS
+            \\
+            \\<b>Examples:<r>
+            \\  <b><green>bun init<r>
+            \\  <b><green>bun init<r> <cyan>--yes<r>
+            \\  <b><green>bun init<r> <cyan>--react<r>
+            \\  <b><green>bun init<r> <cyan>--react=tailwind<r> <blue>my-app<r>
+        ;
+
+        Output.pretty(intro_text ++ "\n", .{});
+        Output.flush();
+    }
+
     pub fn exec(alloc: std.mem.Allocator, io: std.Io, init_args: [][:0]const u8) !void {
         // --minimal is a special preset to create only empty package.json + tsconfig.json
         var minimal = false;
@@ -360,7 +385,7 @@ pub const InitCommand = struct {
             const arg = bun.span(arg_);
             if (parse_flags and arg.len > 0 and arg[0] == '-') {
                 if (strings.eqlComptime(arg, "--help") or strings.eqlComptime(arg, "-h")) {
-                    CLI.Command.Tag.printHelp(.InitCommand, true);
+                    printHelp();
                     Global.exit(0);
                 } else if (strings.eqlComptime(arg, "-m") or strings.eqlComptime(arg, "--minimal")) {
                     minimal = true;
@@ -451,6 +476,7 @@ pub const InitCommand = struct {
             process_package_json: {
                 const source = &logger.Source.initPathString("package.json", package_json_contents.list.items);
                 var log = logger.Log.init(alloc);
+                defer log.deinit();
                 var package_json_expr = JSON.parsePackageJSONUTF8(source, &log, alloc) catch {
                     package_json_file = null;
                     break :process_package_json;
@@ -1228,11 +1254,10 @@ const Template = enum {
 const string = []const u8;
 const stringZ = [:0]const u8;
 
-const CLI = @import("./cli.zig");
 const Fs = @import("../resolver/fs.zig");
 const options = @import("../bundler/options.zig");
 const std = @import("std");
-const initializeStore = @import("./create_command.zig").initializeStore;
+const initializeStore = @import("./create/ASTStore.zig").initialize;
 
 const bun = @import("bun");
 const Environment = bun.Environment;

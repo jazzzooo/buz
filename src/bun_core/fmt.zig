@@ -499,76 +499,88 @@ pub const HostFormatter = struct {
 };
 
 /// Format a string to an ECMAScript identifier.
-/// Unlike the string_mutable.zig version, this always allocate/copy
 pub fn fmtIdentifier(name: string) FormatValidIdentifier {
     return FormatValidIdentifier{ .name = name };
 }
 
 /// Format a string to an ECMAScript identifier.
-/// Different implementation than string_mutable because string_mutable may avoid allocating
-/// This will always allocate
 pub const FormatValidIdentifier = struct {
     name: string,
-    pub fn format(self: FormatValidIdentifier, writer: *std.Io.Writer) !void {
+
+    const Plan = union(enum) { borrowed: string, normalize_from: usize };
+
+    fn plan(self: FormatValidIdentifier) Plan {
         var iterator = strings.CodepointIterator.init(self.name);
         var cursor = strings.CodepointIterator.Cursor{};
+        if (!iterator.next(&cursor)) return .{ .borrowed = "_" };
+        if (!js_lexer.isIdentifierStart(cursor.c) or cursor.width != 1) return .{ .normalize_from = 0 };
+        while (iterator.next(&cursor)) {
+            if (!js_lexer.isIdentifierContinue(cursor.c) or cursor.width != 1) {
+                return .{ .normalize_from = cursor.i };
+            }
+        }
+        const tables = @import("../js_parser/lexer_tables.zig");
+        if (tables.Keywords.has(self.name) or
+            strings.eqlComptime(self.name, "await") or
+            strings.eqlComptime(self.name, "eval") or
+            strings.eqlComptime(self.name, "arguments")) return .{ .normalize_from = 0 };
+        return .{ .borrowed = tables.StrictModeReservedWordsRemap.get(self.name) orelse self.name };
+    }
 
-        var has_needed_gap = false;
+    pub fn borrowed(self: FormatValidIdentifier) ?string {
+        return switch (self.plan()) {
+            .borrowed => |name| name,
+            .normalize_from => null,
+        };
+    }
+
+    pub fn format(self: FormatValidIdentifier, writer: *std.Io.Writer) !void {
+        const start = switch (self.plan()) {
+            .borrowed => |name| return writer.writeAll(name),
+            .normalize_from => |start| start,
+        };
+        try writer.writeAll(if (start == 0) "_" else self.name[0..start]);
+        const suffix = self.name[start..];
+        var iterator = strings.CodepointIterator.init(suffix);
+        var cursor = strings.CodepointIterator.Cursor{};
         var needs_gap = false;
-        var start_i: usize = 0;
-
-        if (!iterator.next(&cursor)) {
-            try writer.writeAll("_");
-            return;
-        }
-
-        // Common case: no gap necessary. No allocation necessary.
-        needs_gap = !js_lexer.isIdentifierStart(cursor.c);
-        if (!needs_gap) {
-            // Are there any non-alphanumeric chars at all?
-            while (iterator.next(&cursor)) {
-                if (!js_lexer.isIdentifierContinue(cursor.c) or cursor.width > 1) {
-                    needs_gap = true;
-                    start_i = cursor.i;
-                    break;
+        while (iterator.next(&cursor)) {
+            if (js_lexer.isIdentifierContinue(cursor.c) and cursor.width == 1) {
+                if (needs_gap) {
+                    try writer.writeAll("_");
+                    needs_gap = false;
                 }
+                try writer.writeAll(suffix[cursor.i .. cursor.i + cursor.width]);
+            } else {
+                needs_gap = true;
             }
         }
-
         if (needs_gap) {
-            needs_gap = false;
-            if (start_i > 0) try writer.writeAll(self.name[0..start_i]);
-            var slice = self.name[start_i..];
-            iterator = strings.CodepointIterator.init(slice);
-            cursor = strings.CodepointIterator.Cursor{};
-
-            while (iterator.next(&cursor)) {
-                if (js_lexer.isIdentifierContinue(cursor.c) and cursor.width == 1) {
-                    if (needs_gap) {
-                        try writer.writeAll("_");
-                        needs_gap = false;
-                        has_needed_gap = true;
-                    }
-                    try writer.writeAll(slice[cursor.i .. cursor.i + @as(u32, cursor.width)]);
-                } else if (!needs_gap) {
-                    needs_gap = true;
-                    // skip the code point, replace it with a single _
-                }
-            }
-
-            // If it ends with an emoji
-            if (needs_gap) {
-                try writer.writeAll("_");
-                needs_gap = false;
-                has_needed_gap = true;
-            }
-
-            return;
+            try writer.writeAll("_");
         }
-
-        try writer.writeAll(self.name);
     }
 };
+
+test "generated identifiers are valid ASCII binding names" {
+    const cases = [_]struct { input: []const u8, expected: []const u8 }{
+        .{ .input = "", .expected = "_" },
+        .{ .input = "hello", .expected = "hello" },
+        .{ .input = "1entry", .expected = "_1entry" },
+        .{ .input = "a-b", .expected = "a_b" },
+        .{ .input = "class", .expected = "_class" },
+        .{ .input = "await", .expected = "_await" },
+        .{ .input = "eval", .expected = "_eval" },
+        .{ .input = "arguments", .expected = "_arguments" },
+        .{ .input = "let", .expected = "_let" },
+        .{ .input = "é", .expected = "__" },
+    };
+    for (cases) |case| {
+        const result = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{fmtIdentifier(case.input)});
+        defer std.testing.allocator.free(result);
+        try std.testing.expectEqualStrings(case.expected, result);
+        try std.testing.expect(js_lexer.isIdentifier(result));
+    }
+}
 
 // Formats a string to be safe to output in a Github action.
 // - Encodes "\n" as "%0A" to support multi-line strings.
@@ -621,7 +633,7 @@ pub const GithubActionFormatter = struct {
     }
 };
 
-pub fn githubAction(self: string) strings.GithubActionFormatter {
+pub fn githubAction(self: string) GithubActionFormatter {
     return GithubActionFormatter{
         .text = self,
     };
@@ -691,10 +703,6 @@ pub fn EnumTagListFormatter(comptime Enum: type, comptime Separator: @EnumLitera
 
 pub fn enumTagList(comptime Enum: type, comptime separator: @EnumLiteral()) EnumTagListFormatter(Enum, separator) {
     return EnumTagListFormatter(Enum, separator){};
-}
-
-pub fn formatIp(address: bun.api.socket.SocketAddress, into: []u8) ![]const u8 {
-    return address.formatIp(into);
 }
 
 // https://lemire.me/blog/2021/06/03/computing-the-number-of-digits-of-an-integer-even-faster/
@@ -982,7 +990,6 @@ fn FormatSlice(comptime T: type, comptime delim: []const u8) type {
     };
 }
 
-/// Uses WebKit's double formatter
 pub fn double(number: f64) FormatDouble {
     return .{ .number = number };
 }
@@ -991,8 +998,7 @@ pub const FormatDouble = struct {
     number: f64,
 
     pub fn dtoa(buf: *[124]u8, number: f64) []const u8 {
-        const len = bun.cpp.WTF__dtoa(&buf.ptr[0], number);
-        return buf[0..len];
+        return JavaScriptNumberFormat.format(buf, number);
     }
 
     pub fn dtoaWithNegativeZero(buf: *[124]u8, number: f64) []const u8 {
@@ -1000,8 +1006,7 @@ pub const FormatDouble = struct {
             return "-0";
         }
 
-        const len = bun.cpp.WTF__dtoa(&buf.ptr[0], number);
-        return buf[0..len];
+        return JavaScriptNumberFormat.format(buf, number);
     }
 
     pub fn format(self: @This(), writer: *std.Io.Writer) !void {
@@ -1045,8 +1050,8 @@ fn escapePowershellImpl(str: []const u8, writer: *std.Io.Writer) !void {
     try writer.writeAll(remain);
 }
 
-// js_bindings (fmtString for highlighter.test.ts) lives in src/jsc/fmt_jsc.zig
-// alongside fmt_jsc.bind.ts; bun_core/ stays JSC-free.
+// fmtString for highlighter.test.ts lives in src/jsc/fmt_jsc.zig;
+// bun_core/ stays JSC-free.
 
 // Equivalent to ERR_OUT_OF_RANGE from
 fn NewOutOfRangeFormatter(comptime T: type) type {
@@ -1165,3 +1170,4 @@ const strings = bun.strings;
 
 const std = @import("std");
 const fmt = std.fmt;
+const JavaScriptNumberFormat = @import("./JavaScriptNumberFormat.zig");

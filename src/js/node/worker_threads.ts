@@ -17,20 +17,13 @@ const {
   // node:worker_threads instance instead of the Web Worker instance.
   Worker: new (...args: [...ConstructorParameters<typeof globalThis.Worker>, nodeWorker: Worker]) => WebWorker;
 };
-const SHARE_ENV = Symbol("nodejs.worker_threads.SHARE_ENV");
+const SHARE_ENV = Symbol.for("nodejs.worker_threads.SHARE_ENV");
 
 const isMainThread = Bun.isMainThread;
-const {
-  0: _workerData,
-  1: _threadId,
-  2: _receiveMessageOnPort,
-  3: environmentData,
-} = $cpp("Worker.cpp", "createNodeWorkerThreadsBinding") as [
-  unknown,
-  number,
-  (port: unknown) => unknown,
-  Map<unknown, unknown>,
-];
+const _workerData = $bindgenFn("WebCoreFunctions.schema.zig", "initializeWorkerData")();
+const _threadId = $bindgenFn("WebCoreFunctions.schema.zig", "workerThreadId")();
+const _receiveMessageOnPort = $bindgenFn("WebCoreFunctions.schema.zig", "jsReceiveMessageOnPort");
+const environmentData = $bindgenFn("WebCoreFunctions.schema.zig", "workerEnvironmentData")();
 
 type NodeWorkerOptions = import("node:worker_threads").WorkerOptions;
 
@@ -51,7 +44,7 @@ function injectFakeEmitter(Class) {
 
   function wrapped(run, listener) {
     const callback = function (event) {
-      return listener(run(event));
+      return run === null ? listener.$call(this) : listener.$call(this, run(event));
     };
     listener[wrappedListener] = callback;
     return callback;
@@ -59,6 +52,8 @@ function injectFakeEmitter(Class) {
 
   function functionForEventType(event, listener) {
     switch (event) {
+      case "close":
+        return wrapped(null, listener);
       case "error":
       case "messageerror": {
         return wrapped(errorEventHandler, listener);
@@ -120,11 +115,7 @@ let resourceLimits = {};
 let workerData = _workerData;
 let threadId = _threadId;
 function receiveMessageOnPort(port: MessagePort) {
-  let res = _receiveMessageOnPort(port);
-  if (!res) return undefined;
-  return {
-    message: res,
-  };
+  return _receiveMessageOnPort(port);
 }
 
 // TODO: parent port emulation is not complete
@@ -135,7 +126,7 @@ function fakeParentPort() {
       return self.onmessage;
     },
     set(value) {
-      self.onmessage = value;
+      (self as any).onmessage = value;
     },
   });
 
@@ -148,10 +139,9 @@ function fakeParentPort() {
     },
   });
 
-  const postMessage = $newCppFunction("ZigGlobalObject.cpp", "jsFunctionPostMessage", 1);
   Object.defineProperty(fake, "postMessage", {
     value(...args: [any, any]) {
-      return postMessage.$apply(null, args);
+      return self.postMessage.$apply(self, args);
     },
   });
 
@@ -312,7 +302,7 @@ class Worker extends EventEmitter {
     });
   }
 
-  terminate(callback: unknown) {
+  terminate(callback?: unknown) {
     if (typeof callback === "function") {
       process.emitWarning(
         "Passing a callback to worker.terminate() is deprecated. It returns a Promise instead.",
@@ -323,8 +313,8 @@ class Worker extends EventEmitter {
     }
 
     const onExitPromise = this.#onExitPromise;
-    if (onExitPromise) {
-      return $isPromise(onExitPromise) ? onExitPromise : Promise.$resolve(onExitPromise);
+    if (onExitPromise !== undefined) {
+      return $isPromise(onExitPromise) ? onExitPromise : Promise.$resolve(undefined);
     }
 
     const { resolve, promise } = Promise.withResolvers();
@@ -337,7 +327,7 @@ class Worker extends EventEmitter {
     );
     this.#worker.terminate();
 
-    return (this.#onExitPromise = promise);
+    return (this.#onExitPromise = promise as Promise<number>);
   }
 
   postMessage(...args: [any, any]) {
@@ -345,7 +335,7 @@ class Worker extends EventEmitter {
   }
 
   getHeapSnapshot(options: unknown) {
-    const stringPromise = this.#worker.getHeapSnapshot(options);
+    const stringPromise = (this.#worker as any).getHeapSnapshot(options);
     return stringPromise.then(s => new HeapSnapshotStream(s));
   }
 
@@ -360,7 +350,7 @@ class Worker extends EventEmitter {
     // if not the message is the actual error
     if (event.message !== "") {
       error = new Error(event.message, { cause: event });
-      const stack = event?.stack;
+      const stack = (event as any)?.stack;
       if (stack) {
         error.stack = stack;
       }

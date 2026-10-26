@@ -242,9 +242,9 @@ pub const DebugLogs = struct {
         };
     }
 
-    pub fn deinit(d: DebugLogs) void {
+    pub fn deinit(d: *DebugLogs) void {
         d.notes.deinit();
-        // d.indent.deinit();
+        d.indent.deinit();
     }
 
     pub fn increaseIndent(d: *DebugLogs) void {
@@ -363,8 +363,8 @@ var bin_folders = std.ArrayList(string).initBuffer(&bin_folders_buffer);
 var bin_folders_lock: std.Io.Mutex = .init;
 
 pub const AnyResolveWatcher = struct {
-    context: *anyopaque,
-    callback: *const (fn (*anyopaque, dir_path: string, dir_fd: FD) void) = undefined,
+    context: bun.bindgen.NativeCallbackContext(.vm),
+    callback: *const (fn (bun.bindgen.NativeCallbackContext(.vm), dir_path: string, dir_fd: FD) void) = undefined,
 
     pub fn watch(this: @This(), dir_path: string, fd: FD) void {
         return this.callback(this.context, dir_path, fd);
@@ -375,12 +375,12 @@ pub fn ResolveWatcher(comptime Context: type, comptime onWatch: anytype) type {
     return struct {
         pub fn init(context: Context) AnyResolveWatcher {
             return AnyResolveWatcher{
-                .context = context,
+                .context = .init(context),
                 .callback = watch,
             };
         }
-        pub fn watch(this: *anyopaque, dir_path: string, fd: FD) void {
-            onWatch(bun.cast(Context, this), dir_path, fd);
+        pub fn watch(this: bun.bindgen.NativeCallbackContext(.vm), dir_path: string, fd: FD) void {
+            onWatch(this.get(Context), dir_path, fd);
         }
     };
 }
@@ -411,6 +411,8 @@ pub const Resolver = struct {
     generation: bun.Generation = 0,
 
     package_manager: ?*PackageManager = null,
+    package_manager_event_loop: ?RuntimeLoop = null,
+    javascript_semantics: JavaScriptSemantics,
     onWakePackageManager: PackageManager.WakeHandler = .{},
     env_loader: ?*DotEnv.Loader = null,
     store_fd: bool = false,
@@ -473,6 +475,13 @@ pub const Resolver = struct {
     /// When this is null, it is as if it is set to `&.{ path.dirname(referrer) }`.
     custom_dir_paths: ?[]const bun.String = null,
 
+    pub fn dependencyParseContext(this: *Resolver) Dependency.ParseContext {
+        if (this.package_manager) |package_manager| {
+            return Dependency.ParseContext.fromPackageManager(package_manager);
+        }
+        return .{ .javascript_semantics = this.javascript_semantics };
+    }
+
     pub fn ensurePackageManager(this: *Resolver) !*PackageManager {
         package_manager_init_mutex.lockUncancelable(this.io);
         defer package_manager_init_mutex.unlock(this.io);
@@ -488,11 +497,13 @@ pub const Resolver = struct {
             bun.default_allocator,
 
             this.io,
+            this.package_manager_event_loop orelse return error.PackageManagerRuntimeUnavailable,
+            this.javascript_semantics,
             .{},
             this.env_loader.?,
         );
         bun.HTTPThread.init(this.io, &.{});
-        pm.onWake = this.onWakePackageManager;
+        pm.setWakeHandler(this.onWakePackageManager);
         this.package_manager = pm;
         return pm;
     }
@@ -522,10 +533,12 @@ pub const Resolver = struct {
         log: *logger.Log,
         _fs: *Fs.FileSystem,
         opts: options.BundleOptions,
+        javascript_semantics: JavaScriptSemantics,
     ) ThisResolver {
         return ThisResolver{
             .allocator = allocator,
             .io = io,
+            .javascript_semantics = javascript_semantics,
             .dir_cache = DirInfo.HashMap.init(io, bun.default_allocator),
             .mutex = &resolver_mutex,
             .caches = CacheSet.init(allocator),
@@ -539,8 +552,9 @@ pub const Resolver = struct {
     }
 
     pub fn deinit(r: *ThisResolver) void {
-        for (r.dir_cache.values()) |*di| di.deinit();
-        r.dir_cache.deinit();
+        r.caches.fs.deinit();
+        if (r.debug_logs) |*logs| logs.deinit();
+        r.debug_logs = null;
     }
 
     pub fn isExternalPattern(r: *ThisResolver, import_path: string) bool {
@@ -657,7 +671,7 @@ pub const Resolver = struct {
         if (r.opts.mark_builtins_as_external) {
             if (strings.hasPrefixComptime(import_path, "node:") or
                 strings.hasPrefixComptime(import_path, "bun:") or
-                bun.jsc.ModuleLoader.HardcodedModule.Alias.has(import_path, r.opts.target, .{ .rewrite_jest_for_tests = r.opts.rewrite_jest_for_tests }))
+                HardcodedModule.Alias.has(import_path, r.opts.target, .{ .rewrite_jest_for_tests = r.opts.rewrite_jest_for_tests }))
             {
                 return .{
                     .success = Result{
@@ -1201,7 +1215,7 @@ pub const Resolver = struct {
             if (r.custom_dir_paths) |custom_paths| {
                 @branchHint(.unlikely);
                 for (custom_paths) |custom_path| {
-                    const custom_utf8 = custom_path.toUTF8WithoutRef(bun.default_allocator);
+                    const custom_utf8 = custom_path.toUTF8WithoutRef(bun.default_allocator) catch |err| return .{ .failure = err };
                     defer custom_utf8.deinit();
                     switch (r.checkRelativePath(custom_utf8.slice(), import_path, kind, global_cache)) {
                         .success => |res| return .{ .success = res },
@@ -1237,7 +1251,7 @@ pub const Resolver = struct {
 
                 if (had_node_prefix) {
                     // Module resolution fails automatically for unknown node builtins
-                    if (!bun.jsc.ModuleLoader.HardcodedModule.Alias.has(import_path_without_node_prefix, .node, .{})) {
+                    if (!HardcodedModule.Alias.has(import_path_without_node_prefix, .node, .{})) {
                         return .{ .not_found = {} };
                     }
 
@@ -1295,7 +1309,7 @@ pub const Resolver = struct {
             if (r.custom_dir_paths) |custom_paths| {
                 @branchHint(.unlikely);
                 for (custom_paths) |custom_path| {
-                    const custom_utf8 = custom_path.toUTF8WithoutRef(bun.default_allocator);
+                    const custom_utf8 = custom_path.toUTF8WithoutRef(bun.default_allocator) catch |err| return .{ .failure = err };
                     defer custom_utf8.deinit();
                     switch (r.checkPackagePath(custom_utf8.slice(), import_path, kind, global_cache)) {
                         .success => |res| return .{ .success = res },
@@ -1933,7 +1947,7 @@ pub const Resolver = struct {
                                 esm.version,
                                 &sliced_string,
                                 r.log,
-                                manager,
+                                Dependency.ParseContext.fromPackageManager(manager),
                             ) orelse break :load_module_from_cache;
                         }
 
@@ -1999,7 +2013,6 @@ pub const Resolver = struct {
                                         .{
                                             .root_request_id = 0,
                                         },
-                                        null,
                                     ) catch |enqueue_download_err| return .{ .failure = enqueue_download_err };
 
                                 return .{
@@ -2203,7 +2216,11 @@ pub const Resolver = struct {
 
         // We must initialize it as empty so that the result index is correct.
         // This is important so that browser_scope has a valid index.
-        const dir_info_ptr = r.dir_cache.put(&dir_cache_info_result, .{}) catch unreachable;
+        const dir_info_ptr = try r.dir_cache.put(&dir_cache_info_result, .{});
+        errdefer {
+            _ = r.dir_cache.remove(dir_entries_option.entries.dir);
+            dir_info_ptr.deinit();
+        }
 
         // `dir_path` is a slice into the threadlocal `bufs(.path_in_global_disk_cache)` buffer,
         // which gets overwritten on the next auto-install resolution. `dirInfoUncached` stores
@@ -2541,23 +2558,23 @@ pub const Resolver = struct {
     ) !?*PackageJSON {
         var pkg: PackageJSON = undefined;
         if (!r.care_about_scripts) {
-            pkg = PackageJSON.parse(
+            pkg = (try PackageJSON.parse(
                 r,
                 file,
                 dirname_fd,
                 package_id,
                 .ignore_scripts,
                 if (allow_dependencies) .local else .none,
-            ) orelse return null;
+            )) orelse return null;
         } else {
-            pkg = PackageJSON.parse(
+            pkg = (try PackageJSON.parse(
                 r,
                 file,
                 dirname_fd,
                 package_id,
                 .include_scripts,
                 if (allow_dependencies) .local else .none,
-            ) orelse return null;
+            )) orelse return null;
         }
 
         return PackageJSON.new(pkg);
@@ -2898,6 +2915,10 @@ pub const Resolver = struct {
             // We must initialize it as empty so that the result index is correct.
             // This is important so that browser_scope has a valid index.
             const dir_info_ptr = try r.dir_cache.put(&queue_top.result, DirInfo{});
+            errdefer {
+                _ = r.dir_cache.remove(dir_path);
+                dir_info_ptr.deinit();
+            }
 
             try r.dirInfoUncached(
                 dir_info_ptr,
@@ -2975,12 +2996,11 @@ pub const Resolver = struct {
         const TSConfigMatch = struct {
             prefix: string,
             suffix: string,
+            capture: string,
             original_paths: []string,
         };
 
-        var longest_match: TSConfigMatch = undefined;
-        var longest_match_prefix_length: i32 = -1;
-        var longest_match_suffix_length: i32 = -1;
+        var longest_match: ?TSConfigMatch = null;
 
         var iter = tsconfig.paths.iterator();
         while (iter.next()) |entry| {
@@ -2995,28 +3015,32 @@ pub const Resolver = struct {
                 // prefix length, pick the one with the longest suffix. This second edge
                 // case isn't handled by the TypeScript compiler, but we handle it
                 // because we want the output to always be deterministic
-                if (strings.startsWith(path, prefix) and
-                    strings.endsWith(path, suffix) and
-                    (prefix.len > longest_match_prefix_length or
-                        (prefix.len == longest_match_prefix_length and suffix.len > longest_match_suffix_length)))
-                {
-                    longest_match_prefix_length = @as(i32, @intCast(prefix.len));
-                    longest_match_suffix_length = @as(i32, @intCast(suffix.len));
-                    longest_match = TSConfigMatch{ .prefix = prefix, .suffix = suffix, .original_paths = original_paths };
+                if (!strings.startsWith(path, prefix)) continue;
+                const remainder = path[prefix.len..];
+                if (!strings.endsWith(remainder, suffix)) continue;
+                if (longest_match) |previous| {
+                    if (prefix.len < previous.prefix.len or
+                        (prefix.len == previous.prefix.len and suffix.len <= previous.suffix.len)) continue;
                 }
+                longest_match = .{
+                    .prefix = prefix,
+                    .suffix = suffix,
+                    .capture = remainder[0 .. remainder.len - suffix.len],
+                    .original_paths = original_paths,
+                };
             }
         }
 
         // If there is at least one match, only consider the one with the longest
         // prefix. This matches the behavior of the TypeScript compiler.
-        if (longest_match_prefix_length != -1) {
+        if (longest_match) |match| {
             if (r.debug_logs) |*debug| {
-                debug.addNoteFmt("Found a fuzzy match for \"{s}*{s}\" in \"paths\"", .{ longest_match.prefix, longest_match.suffix });
+                debug.addNoteFmt("Found a fuzzy match for \"{s}*{s}\" in \"paths\"", .{ match.prefix, match.suffix });
             }
 
-            for (longest_match.original_paths) |original_path| {
+            for (match.original_paths) |original_path| {
                 // Swap out the "*" in the original path for whatever the "*" matched
-                const matched_text = path[longest_match.prefix.len .. path.len - longest_match.suffix.len];
+                const matched_text = match.capture;
 
                 const total_length: ?u32 = strings.indexOfChar(original_path, '*');
                 var prefix_parts = [_]string{ abs_base_url, original_path[0 .. total_length orelse original_path.len] };
@@ -3040,7 +3064,7 @@ pub const Resolver = struct {
                 var parts = [_]string{
                     prefix,
                     if (matched_text_with_suffix_len > 0) std.mem.trimStart(u8, matched_text_with_suffix[0..matched_text_with_suffix_len], "/") else "",
-                    std.mem.trimStart(u8, longest_match.suffix, "/"),
+                    std.mem.trimStart(u8, match.suffix, "/"),
                 };
                 const absolute_original_path = r.fs.absBufChecked(
                     &parts,
@@ -3102,7 +3126,7 @@ pub const Resolver = struct {
             //     }
             //
             if (r.opts.mark_builtins_as_external or r.opts.target.isBun()) {
-                if (jsc.ModuleLoader.HardcodedModule.Alias.get(esm_resolution.path, r.opts.target, .{})) |alias| {
+                if (HardcodedModule.Alias.get(esm_resolution.path, r.opts.target, .{})) |alias| {
                     return .{
                         .success = .{
                             .path_pair = .{ .primary = bun.fs.Path.init(alias.path) },
@@ -3369,9 +3393,6 @@ pub const Resolver = struct {
             return null;
         };
     }
-
-    // nodeModulePathsForJS / Resolver__propForRequireMainPaths: see src/jsc/resolver_jsc.zig
-    // (no Zig callers; exported to C++ only)
 
     pub fn loadAsIndex(r: *ThisResolver, dir_info: *DirInfo, extension_order: []const string) ?MatchResult {
         // Try the "index" file with extensions
@@ -4017,10 +4038,10 @@ pub const Resolver = struct {
             if (entries.getComptimeQuery("package.json")) |lookup| {
                 const entry = lookup.entry;
                 if (entry.kind(rfs, r.store_fd) == .file) {
-                    info.package_json = if (r.usePackageManager() and !info.hasNodeModules() and !info.isNodeModules())
-                        r.parsePackageJSON(path, if (FeatureFlags.store_file_descriptors) fd else .invalid, package_id, true) catch null
+                    info.package_json = (if (r.usePackageManager() and !info.hasNodeModules() and !info.isNodeModules())
+                        r.parsePackageJSON(path, if (FeatureFlags.store_file_descriptors) fd else .invalid, package_id, true)
                     else
-                        r.parsePackageJSON(path, if (FeatureFlags.store_file_descriptors) fd else .invalid, null, false) catch null;
+                        r.parsePackageJSON(path, if (FeatureFlags.store_file_descriptors) fd else .invalid, null, false)) catch return error.OutOfMemory;
 
                     if (info.package_json) |pkg| {
                         if (pkg.browser_map.count() > 0) {
@@ -4074,6 +4095,7 @@ pub const Resolver = struct {
                     tsconfigpath,
                     if (FeatureFlags.store_file_descriptors) fd else .zero,
                 ) catch |err| brk: {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
                     const pretty = tsconfigpath;
                     if (err == error.ENOENT or err == error.FileNotFound) {
                         r.log.addErrorFmt(null, logger.Loc.Empty, r.allocator, "Cannot find tsconfig file {f}", .{bun.fmt.QuotedFormatter{ .text = pretty }}) catch {};
@@ -4091,6 +4113,7 @@ pub const Resolver = struct {
                         const ts_dir_name = Dirname.dirname(current.abs_path);
                         const abs_path = ResolvePath.joinAbsStringBuf(ts_dir_name, bufs(.tsconfig_path_abs), &[_]string{ ts_dir_name, current.extends }, .auto);
                         const parent_config_maybe = r.parseTSConfig(abs_path, bun.invalid_fd) catch |err| {
+                            if (err == error.OutOfMemory) return error.OutOfMemory;
                             r.log.addDebugFmt(null, logger.Loc.Empty, r.allocator, "{s} loading tsconfig.json extends {f}", .{
                                 @errorName(err),
                                 bun.fmt.QuotedFormatter{
@@ -4223,6 +4246,8 @@ const CacheSet = cache.Set;
 
 const Install = @import("../install/install.zig");
 const PackageManager = @import("../install/install.zig").PackageManager;
+const RuntimeLoop = @import("../event_loop/RuntimeLoop.zig").RuntimeLoop;
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 
 const Fs = @import("./fs.zig");
 const Path = Fs.Path;
@@ -4243,7 +4268,7 @@ const Semver = bun.Semver;
 const allocators = bun.allocators;
 const assert = bun.assert;
 const default_allocator = bun.default_allocator;
-const jsc = bun.jsc;
+const HardcodedModule = @import("../resolve_builtins/HardcodedModule.zig").HardcodedModule;
 const strings = bun.strings;
 
 const logger = bun.logger;

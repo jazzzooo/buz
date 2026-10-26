@@ -65,6 +65,7 @@ pub const PackCommand = struct {
         var lockfile: Lockfile = undefined;
         const load_from_disk_result = lockfile.loadFromCwd(
             manager,
+            bun.install.Dependency.ParseContext.fromPackageManager(manager),
             manager.allocator,
             manager.log,
             false,
@@ -1284,6 +1285,7 @@ pub const PackCommand = struct {
                 },
             }
         };
+        defer this_transpiler.feature_flags.deinit();
 
         const abs_workspace_path: string = strings.withoutTrailingSlash(strings.withoutSuffixComptime(abs_package_json_path, "package.json"));
         try manager.env.map.put("npm_command", "pack");
@@ -2647,189 +2649,6 @@ pub const PackCommand = struct {
     }
 };
 
-pub const bindings = struct {
-    const jsc = bun.jsc;
-    const JSValue = jsc.JSValue;
-    const JSGlobalObject = jsc.JSGlobalObject;
-    const CallFrame = jsc.CallFrame;
-    const ZigString = jsc.ZigString;
-    const String = bun.String;
-    const JSArray = jsc.JSArray;
-    const JSObject = jsc.JSObject;
-
-    pub fn jsReadTarball(global: *JSGlobalObject, callFrame: *CallFrame) bun.JSError!JSValue {
-        const args = callFrame.arguments_old(1).slice();
-        if (args.len < 1 or !args[0].isString()) {
-            return global.throw("expected tarball path string argument", .{});
-        }
-
-        const tarball_path_str = try args[0].toBunString(global);
-        defer tarball_path_str.deref();
-
-        const tarball_path = tarball_path_str.toUTF8(bun.default_allocator);
-        defer tarball_path.deinit();
-
-        const tarball_file = File.from(std.Io.Dir.cwd().openFile(global.bunVM().io, tarball_path.slice(), .{}) catch |err| {
-            return global.throw("failed to open tarball file \"{s}\": {s}", .{ tarball_path.slice(), @errorName(err) });
-        });
-        defer tarball_file.close();
-
-        const tarball = tarball_file.readToEnd(bun.default_allocator).unwrap() catch |err| {
-            return global.throw("failed to read tarball contents \"{s}\": {s}", .{ tarball_path.slice(), @errorName(err) });
-        };
-        defer bun.default_allocator.free(tarball);
-
-        var sha1_digest: sha.SHA1.Digest = undefined;
-        var sha1 = sha.SHA1.init();
-        defer sha1.deinit();
-        sha1.update(tarball);
-        sha1.final(&sha1_digest);
-        const shasum_str = bun.handleOom(String.createFormat("{s}", .{std.fmt.bytesToHex(sha1_digest, .lower)}));
-
-        var sha512_digest: sha.SHA512.Digest = undefined;
-        var sha512 = sha.SHA512.init();
-        defer sha512.deinit();
-        sha512.update(tarball);
-        sha512.final(&sha512_digest);
-        var base64_buf: [std.base64.standard.Encoder.calcSize(sha.SHA512.digest)]u8 = undefined;
-        const encode_count = bun.simdutf.base64.encode(&sha512_digest, &base64_buf, false);
-        const integrity_value = try String.createUTF8ForJS(global, base64_buf[0..encode_count]);
-
-        const EntryInfo = struct {
-            pathname: String,
-            kind: String,
-            perm: bun.Mode,
-            size: ?usize = null,
-            contents: ?String = null,
-        };
-        var entries_info = std.array_list.Managed(EntryInfo).init(bun.default_allocator);
-        defer entries_info.deinit();
-
-        const archive = Archive.readNew();
-
-        switch (archive.readSupportFormatTar()) {
-            .failed, .fatal, .warn => {
-                return global.throw("failed to support tar: {s}", .{archive.errorString()});
-            },
-            else => {},
-        }
-        switch (archive.readSupportFormatGnutar()) {
-            .failed, .fatal, .warn => {
-                return global.throw("failed to support gnutar: {s}", .{archive.errorString()});
-            },
-            else => {},
-        }
-        switch (archive.readSupportFilterGzip()) {
-            .failed, .fatal, .warn => {
-                return global.throw("failed to support gzip compression: {s}", .{archive.errorString()});
-            },
-            else => {},
-        }
-
-        switch (archive.readSetOptions("read_concatenated_archives")) {
-            .failed, .fatal, .warn => {
-                return global.throw("failed to set read_concatenated_archives option: {s}", .{archive.errorString()});
-            },
-            else => {},
-        }
-
-        switch (archive.readOpenMemory(tarball)) {
-            .failed, .fatal, .warn => {
-                return global.throw("failed to open archive in memory: {s}", .{archive.errorString()});
-            },
-            else => {},
-        }
-
-        var archive_entry: *Archive.Entry = undefined;
-        var header_status = archive.readNextHeader(&archive_entry);
-
-        var read_buf = std.array_list.Managed(u8).init(bun.default_allocator);
-        defer read_buf.deinit();
-
-        while (header_status != .eof) : (header_status = archive.readNextHeader(&archive_entry)) {
-            switch (header_status) {
-                .eof => unreachable,
-                .retry => continue,
-                .failed, .fatal => {
-                    return global.throw("failed to read archive header: {s}", .{Archive.errorString(@ptrCast(archive))});
-                },
-                else => {
-                    const pathname_string = if (bun.Environment.isWindows) blk: {
-                        const pathname_w = archive_entry.pathnameW();
-                        const list = std.array_list.Managed(u8).init(bun.default_allocator);
-                        var result = bun.handleOom(bun.strings.toUTF8ListWithType(list, pathname_w));
-                        defer result.deinit();
-                        break :blk String.cloneUTF8(result.items);
-                    } else String.cloneUTF8(archive_entry.pathname());
-
-                    const kind = bun.sys.kindFromMode(archive_entry.filetype());
-                    const perm = archive_entry.perm();
-
-                    var entry_info: EntryInfo = .{
-                        .pathname = pathname_string,
-                        .kind = String.static(@tagName(kind)),
-                        .perm = perm,
-                    };
-
-                    if (kind == .file) {
-                        const size: usize = @intCast(archive_entry.size());
-                        bun.handleOom(read_buf.resize(size));
-                        defer read_buf.clearRetainingCapacity();
-
-                        const read = archive.readData(read_buf.items);
-                        if (read < 0) {
-                            const pathname_utf8 = pathname_string.toUTF8(bun.default_allocator);
-                            defer pathname_utf8.deinit();
-                            return global.throw("failed to read archive entry \"{s}\": {s}", .{
-                                pathname_utf8.slice(),
-                                Archive.errorString(@ptrCast(archive)),
-                            });
-                        }
-                        read_buf.items.len = @intCast(read);
-                        entry_info.contents = String.cloneUTF8(read_buf.items);
-                    }
-
-                    bun.handleOom(entries_info.append(entry_info));
-                },
-            }
-        }
-
-        switch (archive.readClose()) {
-            .failed, .fatal, .warn => {
-                return global.throw("failed to close read archive: {s}", .{archive.errorString()});
-            },
-            else => {},
-        }
-        switch (archive.readFree()) {
-            .failed, .fatal, .warn => {
-                return global.throw("failed to close read archive: {s}", .{archive.errorString()});
-            },
-            else => {},
-        }
-
-        const entries = try JSArray.createEmpty(global, entries_info.items.len);
-
-        for (entries_info.items, 0..) |entry, i| {
-            const obj = jsc.JSObject.createEmpty(global, 0);
-            obj.putDirect(global, "pathname", try entry.pathname.toJS(global));
-            obj.putDirect(global, "kind", try entry.kind.toJS(global));
-            obj.putDirect(global, "perm", JSValue.jsNumber(entry.perm));
-            if (entry.contents) |contents| {
-                obj.putDirect(global, "contents", try contents.toJS(global));
-            }
-            try entries.putDirectIndex(global, @intCast(i), obj.toJS());
-        }
-
-        const result = jsc.JSObject.createEmpty(global, 4);
-        result.putDirect(global, "entries", entries.toJS());
-        result.putDirect(global, "size", JSValue.jsNumber(tarball.len));
-        result.putDirect(global, "shasum", try shasum_str.toJS(global));
-        result.putDirect(global, "integrity", integrity_value);
-
-        return result.toJS();
-    }
-};
-
 const string = []const u8;
 const stringZ = [:0]const u8;
 
@@ -2857,8 +2676,10 @@ const strings = bun.strings;
 const CowString = bun.ptr.CowString;
 const File = bun.sys.File;
 
-const Command = bun.cli.Command;
-const Publish = bun.cli.PublishCommand;
+const Command = struct {
+    const Context = @import("../options_types/Context.zig").Context;
+};
+const Publish = @import("./publish_command.zig").PublishCommand;
 
 const Install = bun.install;
 const Dependency = Install.Dependency;

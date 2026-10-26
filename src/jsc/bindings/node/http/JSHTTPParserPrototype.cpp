@@ -3,353 +3,243 @@
 #include "JSConnectionsList.h"
 #include "ZigGlobalObject.h"
 #include "JSDOMExceptionHandling.h"
+#include "SchemaBindings.h"
 #include <wtf/MathExtras.h>
 
 namespace Bun {
 
 using namespace JSC;
 
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_close);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_free);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_remove);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_execute);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_finish);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_initialize);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_pause);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_resume);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_consume);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_unconsume);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_getCurrentBuffer);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_duration);
-JSC_DECLARE_HOST_FUNCTION(jsHTTPParser_headersCompleted);
-
 const ClassInfo JSHTTPParserPrototype::s_info = { "HTTPParser"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSHTTPParserPrototype) };
 
-static const HashTableValue JSHTTPParserPrototypeTableValues[] = {
-    { "close"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_close, 0 } },
-    { "free"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_free, 0 } },
-    { "remove"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_remove, 0 } },
-    { "execute"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_execute, 0 } },
-    { "finish"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_finish, 0 } },
-    { "initialize"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_initialize, 0 } },
-    { "pause"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_pause, 0 } },
-    { "resume"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_resume, 0 } },
-    { "consume"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_consume, 0 } },
-    { "unconsume"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_unconsume, 0 } },
-    { "getCurrentBuffer"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_getCurrentBuffer, 0 } },
-    { "duration"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_duration, 0 } },
-    { "headersCompleted"_s, static_cast<unsigned>(PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsHTTPParser_headersCompleted, 0 } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_JSHTTPParserPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSHTTPParserPrototype
 
 void JSHTTPParserPrototype::finishCreation(VM& vm)
 {
     Base::finishCreation(vm);
-    reifyStaticProperties(vm, info(), JSHTTPParserPrototypeTableValues, *this);
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+    bunBindgenObjectSurface_JSHTTPParserPrototype_install(vm, info(), *this);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_close, (JSGlobalObject * globalObject, CallFrame* callFrame))
+static JSHTTPParser* httpParser(JSC::JSValue value)
 {
+    auto* parser = dynamicDowncast<JSHTTPParser>(value);
+    RELEASE_ASSERT(parser);
+    return parser;
+}
+
+static JSConnectionsList* connectionsList(const std::optional<std::optional<JSC::JSValue>>& value)
+{
+    auto candidate = value.value_or(std::nullopt);
+    if (!candidate)
+        return nullptr;
+    auto* connections = dynamicDowncast<JSConnectionsList>(*candidate);
+    RELEASE_ASSERT(connections);
+    return connections;
+}
+
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserClose(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserClose_Arguments& args)
+{
+    httpParser(args.bindingThis)->freeImpl();
+}
+
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserFree(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserFree_Arguments& args)
+{
+    if (!httpParser(args.bindingThis)->impl())
+        return;
+}
+
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserRemove(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserRemove_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "close"_s);
-        return {};
-    }
+    auto* parser = httpParser(args.bindingThis);
+    if (!parser->impl())
+        return;
 
-    parser->freeImpl();
-
-    return JSValue::encode(jsUndefined());
+    parser->impl()->remove(globalObject, parser);
+    RETURN_IF_EXCEPTION(scope, void());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_free, (JSGlobalObject * globalObject, CallFrame* callFrame))
+Bun::Bindgen::NodeHTTPParserExecuteResult Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserExecute(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserExecute_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "free"_s);
-        return {};
-    }
-
+    auto* parser = httpParser(args.bindingThis);
+    Bun::Bindgen::NodeHTTPParserExecuteResult output;
     if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
+        output.set_undefined_value(true);
+        return output;
     }
 
-    // TODO: TODO!
-    // parser->emitTraceEventDestroy();
-    // parser->emitDestroy();
-
-    return JSValue::encode(jsUndefined());
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_remove, (JSGlobalObject * globalObject, CallFrame* callFrame))
-{
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    JSValue thisValue = callFrame->thisValue();
-
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(thisValue);
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "remove"_s);
-        return {};
-    }
-
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    RELEASE_AND_RETURN(scope, JSValue::encode(parser->impl()->remove(globalObject, parser)));
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_execute, (JSGlobalObject * globalObject, CallFrame* callFrame))
-{
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "execute"_s);
-        return {};
-    }
-
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    JSValue bufferValue = callFrame->argument(0);
-
-    if (auto* buffer = dynamicDowncast<JSArrayBufferView>(bufferValue)) {
-        if (buffer->isDetached()) {
-            throwTypeError(globalObject, scope, "Buffer is detached"_s);
-            return {};
-        }
-
-        JSValue result = parser->impl()->execute(globalObject, reinterpret_cast<const char*>(buffer->vector()), buffer->byteLength());
+    if (args.buffer) {
+        const auto& buffer = *args.buffer;
+        JSValue result = parser->impl()->execute(globalObject, reinterpret_cast<const char*>(buffer.unsafePtr("The entry frame keeps the input leased through HTTP parsing and reentrant callbacks"_s)), buffer.size());
         RETURN_IF_EXCEPTION(scope, {});
 
         if (!result.isEmpty()) {
-            return JSValue::encode(result);
+            if (result.isNumber()) {
+                output.set_bytes_read(static_cast<uint64_t>(result.asNumber()));
+            } else {
+                RELEASE_ASSERT(dynamicDowncast<ErrorInstance>(result));
+                output.set_error(result);
+            }
+            return output;
         }
     }
 
-    return JSValue::encode(jsUndefined());
+    output.set_undefined_value(true);
+    return output;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_finish, (JSGlobalObject * globalObject, CallFrame* callFrame))
+Bun::Bindgen::NodeHTTPParserFinishResult Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserFinish(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserFinish_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "finish"_s);
-        return {};
-    }
-
+    auto* parser = httpParser(args.bindingThis);
+    Bun::Bindgen::NodeHTTPParserFinishResult output;
     if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
+        output.set_undefined_value(true);
+        return output;
     }
 
     JSValue result = parser->impl()->execute(globalObject, nullptr, 0);
     RETURN_IF_EXCEPTION(scope, {});
 
     if (!result.isEmpty()) {
-        return JSValue::encode(result);
+        RELEASE_ASSERT(dynamicDowncast<ErrorInstance>(result));
+        output.set_error(result);
+        return output;
     }
 
-    return JSValue::encode(jsUndefined());
+    output.set_undefined_value(true);
+    return output;
 }
 
-extern "C" size_t BUN_DEFAULT_MAX_HTTP_HEADER_SIZE;
-
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_initialize, (JSGlobalObject * globalObject, CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserInitialize(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserInitialize_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    uint64_t maxHttpHeaderSize = 0;
-    uint32_t lenientFlags = kLenientNone;
-    JSConnectionsList* connections = nullptr;
-
-    JSValue thisValue = callFrame->thisValue();
-    JSValue typeValue = callFrame->argument(0);
-    JSValue maxHttpHeaderSizeValue = callFrame->argument(2);
-    JSValue lenientFlagsValue = callFrame->argument(3);
-    JSValue connectionsListValue = callFrame->argument(4);
-
-    if (callFrame->argumentCount() > 2) {
-        if (maxHttpHeaderSizeValue.isNumber()) {
-            maxHttpHeaderSize = truncateDoubleToUint64(maxHttpHeaderSizeValue.asNumber());
-        }
-    }
+    uint64_t maxHttpHeaderSize = args.maxHttpHeaderSize && args.maxHttpHeaderSize->is_number()
+        ? truncateDoubleToUint64(args.maxHttpHeaderSize->number())
+        : 0;
 
     if (maxHttpHeaderSize == 0) {
-        maxHttpHeaderSize = BUN_DEFAULT_MAX_HTTP_HEADER_SIZE;
+        maxHttpHeaderSize = Bindgen::ZigExports::bunBindgenZig_NodeHTTP_defaultMaxHTTPHeaderSize();
     }
 
-    if (callFrame->argumentCount() > 3) {
-        if (lenientFlagsValue.isInt32()) {
-            lenientFlags = lenientFlagsValue.asInt32();
-        }
-    }
+    uint32_t lenientFlags = args.lenientFlags.value_or(std::nullopt).value_or(kLenientNone);
+    JSConnectionsList* connections = connectionsList(args.connectionsList);
+    llhttp_type_t type = static_cast<llhttp_type_t>(args.parserType.value_or(0));
 
-    if (callFrame->argumentCount() > 4) {
-        if (!connectionsListValue.isUndefinedOrNull()) {
-            connections = dynamicDowncast<JSConnectionsList>(connectionsListValue);
-            if (!connections) {
-                return JSValue::encode(jsUndefined());
-            }
-        }
-    }
+    auto* parser = httpParser(args.bindingThis);
+    if (!parser->impl())
+        return;
 
-    llhttp_type_t type = static_cast<llhttp_type_t>(typeValue.toInt32(globalObject));
-    RETURN_IF_EXCEPTION(scope, {});
-
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(thisValue);
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "initialize"_s);
-        return {};
-    }
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    RELEASE_AND_RETURN(scope, JSValue::encode(parser->impl()->initialize(globalObject, parser, type, maxHttpHeaderSize, lenientFlags, connections)));
+    parser->impl()->initialize(globalObject, parser, type, maxHttpHeaderSize, lenientFlags, connections);
+    RETURN_IF_EXCEPTION(scope, void());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_pause, (JSGlobalObject * globalObject, CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserPause(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserPause_Arguments& args)
 {
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* parser = httpParser(args.bindingThis);
+    if (!parser->impl())
+        return;
 
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "pause"_s);
-        return {};
-    }
-
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    return JSValue::encode(parser->impl()->pause());
+    parser->impl()->pause();
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_resume, (JSGlobalObject * globalObject, CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserResume(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserResume_Arguments& args)
 {
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* parser = httpParser(args.bindingThis);
+    if (!parser->impl())
+        return;
 
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "resume"_s);
-        return {};
-    }
-
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    return JSValue::encode(parser->impl()->resume());
+    parser->impl()->resume();
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_consume, (JSGlobalObject * globalObject, CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserConsume(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserConsume_Arguments& args)
 {
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "consume"_s);
-        return {};
-    }
-
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    // TODO: TODO!
-
-    return JSValue::encode(jsUndefined());
+    if (!httpParser(args.bindingThis)->impl())
+        return;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_unconsume, (JSGlobalObject * globalObject, CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserUnconsume(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserUnconsume_Arguments& args)
 {
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "unconsume"_s);
-        return {};
-    }
-
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    // TODO: TODO!
-
-    return JSValue::encode(jsUndefined());
+    if (!httpParser(args.bindingThis)->impl())
+        return;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_getCurrentBuffer, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
+std::optional<Bun::Bindgen::CppBytes> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserGetCurrentBuffer(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserGetCurrentBuffer_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     VM& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*lexicalGlobalObject, scope, "HTTPParser"_s, "getCurrentBuffer"_s);
-        return {};
-    }
+    auto* parser = httpParser(args.bindingThis);
+    if (!parser->impl())
+        return std::nullopt;
 
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
+    WTF::Vector<uint8_t> result;
+    if (!result.tryAppend(parser->impl()->getCurrentBuffer())) {
+        throwOutOfMemoryError(lexicalGlobalObject, scope);
+        return std::nullopt;
     }
-
-    RELEASE_AND_RETURN(scope, JSValue::encode(parser->impl()->getCurrentBuffer(lexicalGlobalObject)));
+    scope.release();
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_duration, (JSGlobalObject * globalObject, CallFrame* callFrame))
+std::optional<double> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserDuration(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserDuration_Arguments& args)
 {
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* parser = httpParser(args.bindingThis);
+    if (!parser->impl())
+        return std::nullopt;
 
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "duration"_s);
-        return {};
-    }
-
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    return JSValue::encode(parser->impl()->duration());
+    return parser->impl()->duration();
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsHTTPParser_headersCompleted, (JSGlobalObject * globalObject, CallFrame* callFrame))
+std::optional<bool> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserHeadersCompleted(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserHeadersCompleted_Arguments& args)
 {
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* parser = httpParser(args.bindingThis);
+    if (!parser->impl())
+        return std::nullopt;
 
-    JSHTTPParser* parser = dynamicDowncast<JSHTTPParser>(callFrame->thisValue());
-    if (!parser) {
-        throwThisTypeError(*globalObject, scope, "HTTPParser"_s, "headersCompleted"_s);
-        return {};
-    }
-
-    if (!parser->impl()) {
-        return JSValue::encode(jsUndefined());
-    }
-
-    return JSValue::encode(jsBoolean(parser->impl()->headersCompleted()));
+    return parser->impl()->headersCompleted();
 }
 
 } // namespace Bun

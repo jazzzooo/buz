@@ -15,7 +15,7 @@ export function require(this: JSCommonJSModule, _: string) {
 // overridableRequire can be overridden by setting `Module.prototype.require`
 $overriddenName = "require";
 $visibility = "Private";
-export function overridableRequire(this: JSCommonJSModule, originalId: string, options: { paths?: string[] } = {}) {
+export function overridableRequire(this: JSCommonJSModule, originalId: string, options?: { paths?: string[] }) {
   const id = $resolveSync(originalId, this.filename, false, false, options ? options.paths : undefined);
   if (id.startsWith("node:")) {
     if (id !== originalId) {
@@ -60,8 +60,10 @@ export function overridableRequire(this: JSCommonJSModule, originalId: string, o
     }
   }
 
-  if (id.endsWith(".node")) {
-    return $internalRequire(id, this);
+  const queryIndex = id.indexOf("?");
+  const filename = queryIndex === -1 ? id : id.substring(0, queryIndex);
+  if (filename.endsWith(".node") && (queryIndex === -1 || id.substring(queryIndex) !== "?raw")) {
+    return $internalRequire(id, this, filename);
   }
 
   if (id === "bun:test") {
@@ -144,7 +146,7 @@ $visibility = "Private";
 export function requireResolve(
   this: string | { filename?: string; id?: string },
   id: string,
-  options: { paths?: string[] } = {},
+  options?: { paths?: string[] },
 ) {
   return $resolveSync(
     id,
@@ -156,159 +158,20 @@ export function requireResolve(
 }
 
 $visibility = "Private";
-export function internalRequire(id: string, parent: JSCommonJSModule) {
+export function internalRequire(id: string, parent: JSCommonJSModule, filename: string) {
   $assert($requireMap.$get(id) === undefined, "Module " + JSON.stringify(id) + " should not be in the map");
-  $assert(id.endsWith(".node"));
+  $assert(filename.endsWith(".node"));
 
   const module = $createCommonJSModule(id, {}, true, parent);
-  process.dlopen(module, id);
+  process.dlopen(module, filename);
   $requireMap.$set(id, module);
   return module.exports;
 }
 
 $visibility = "Private";
 export function loadEsmIntoCjs(resolvedSpecifier: string) {
-  // The JSC module loader pipeline is now pure C++. $esmLoadSync sets a VM
-  // flag that makes the loader's internal promise reactions run immediately
-  // (instead of queueing microtasks) whenever the upstream promise is already
-  // settled. Because Bun resolves and reads source code synchronously, the
-  // entire fetch → parse → link → evaluate chain completes within this call
-  // for any module graph that does not use top-level await.
   return $esmLoadSync(resolvedSpecifier);
 }
-
-/* Legacy implementation removed: relied on the old JS-side JSModuleLoader
- * (Loader.registry JSMap, $setStateToMax, parseModule, etc.) which no longer
- * exists after the upstream module-loader rewrite.
-function loadEsmIntoCjs__dead(resolvedSpecifier: string) {
-  var loader = Loader;
-  var queue = $createFIFO();
-  let key = resolvedSpecifier;
-  const registry = loader.registry;
-
-  while (key) {
-    // we need to explicitly check because state could be $ModuleFetch
-    // it will throw this error if we do not:
-    //    $throwTypeError("Requested module is already fetched.");
-    let entry = registry.$get(key)!,
-      moduleRecordPromise,
-      state = 0,
-      // entry.fetch is a Promise<SourceCode>
-      // SourceCode is not a string, it's a JSC::SourceCode object
-      fetch: Promise<JSCSourceCodeObject> | undefined;
-
-    if (entry) {
-      ({ state, fetch } = entry);
-    }
-
-    if (
-      !entry ||
-      // if we need to fetch it
-      (state <= $ModuleFetch &&
-        // either:
-        // - we've never fetched it
-        // - a fetch is in progress
-        (!$isPromise(fetch) ||
-          ($getPromiseInternalField(fetch, $promiseFieldFlags) & $promiseStateMask) === $promiseStatePending))
-    ) {
-      // force it to be no longer pending
-      $fulfillModuleSync(key);
-
-      entry = registry.$get(key)!;
-
-      // the state can transition here
-      // https://github.com/oven-sh/bun/issues/8965
-      if (entry) {
-        ({ state = 0, fetch } = entry);
-      }
-    }
-
-    if (state < $ModuleLink && $isPromise(fetch)) {
-      // This will probably never happen, but just in case
-      if (($getPromiseInternalField(fetch, $promiseFieldFlags) & $promiseStateMask) === $promiseStatePending) {
-        registry.$delete(resolvedSpecifier);
-
-        throw new TypeError(`require() async module "${key}" is unsupported. use "await import()" instead.`);
-      }
-
-      // this pulls it out of the promise without delaying by a tick
-      // the promise is already fulfilled by $fulfillModuleSync
-      const sourceCodeObject = $getPromiseInternalField(fetch, $promiseFieldReactionsOrResult);
-      moduleRecordPromise = loader.parseModule(key, sourceCodeObject);
-    }
-    let mod = entry?.module;
-
-    if (moduleRecordPromise && $isPromise(moduleRecordPromise)) {
-      let reactionsOrResult = $getPromiseInternalField(moduleRecordPromise, $promiseFieldReactionsOrResult);
-      let flags = $getPromiseInternalField(moduleRecordPromise, $promiseFieldFlags);
-      let state = flags & $promiseStateMask;
-      // this branch should never happen, but just to be safe
-      if (state === $promiseStatePending || (reactionsOrResult && $isPromise(reactionsOrResult))) {
-        registry.$delete(resolvedSpecifier);
-
-        throw new TypeError(`require() async module "${key}" is unsupported. use "await import()" instead.`);
-      } else if (state === $promiseStateRejected) {
-        if (!reactionsOrResult?.message) {
-          throw new TypeError(
-            `${
-              reactionsOrResult + "" ? reactionsOrResult : "An error occurred"
-            } occurred while parsing module \"${key}\"`,
-          );
-        }
-
-        throw reactionsOrResult;
-      }
-      entry.module = mod = reactionsOrResult;
-    } else if (moduleRecordPromise && !mod) {
-      entry.module = mod = moduleRecordPromise as LoaderModule;
-    }
-
-    // This is very similar to "requestInstantiate" in ModuleLoader.js in JavaScriptCore.
-    $setStateToMax(entry, $ModuleLink);
-    const dependenciesMap = mod.dependenciesMap;
-    const requestedModules = loader.requestedModules(mod);
-    const dependencies = $newArrayWithSize<string>(requestedModules.length);
-    for (var i = 0, length = requestedModules.length; i < length; ++i) {
-      const depName = requestedModules[i];
-      // optimization: if it starts with a slash then it's an absolute path
-      // we don't need to run the resolver a 2nd time
-      const depKey = depName[0] === "/" ? depName : loader.resolve(depName, key);
-      const depEntry = loader.ensureRegistered(depKey);
-
-      if (depEntry.state < $ModuleLink) {
-        queue.push(depKey);
-      }
-
-      $putByValDirect(dependencies, i, depEntry);
-      dependenciesMap.$set(depName, depEntry);
-    }
-
-    entry.dependencies = dependencies;
-    // All dependencies resolved, set instantiate and satisfy field directly.
-    entry.instantiate = Promise.$resolve(entry);
-    entry.satisfy = Promise.$resolve(entry);
-    entry.isSatisfied = true;
-
-    key = queue.shift();
-    while (key && (registry.$get(key)?.state ?? $ModuleFetch) >= $ModuleLink) {
-      key = queue.shift();
-    }
-  }
-
-  var linkAndEvaluateResult = loader.linkAndEvaluateModule(resolvedSpecifier, undefined);
-  if (linkAndEvaluateResult && $isPromise(linkAndEvaluateResult)) {
-    registry.$delete(resolvedSpecifier);
-
-    // if you use top-level await, or any dependencies use top-level await, then we throw here
-    // this means the module will still actually load eventually, but that's okay.
-    throw new TypeError(
-      `require() async module \"${resolvedSpecifier}\" is unsupported. use "await import()" instead.`,
-    );
-  }
-
-  return registry.$get(resolvedSpecifier);
-}
-*/
 
 $visibility = "Private";
 export function requireESM(this, resolved: string) {

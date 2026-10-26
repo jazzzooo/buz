@@ -12,8 +12,6 @@ const {
 } = require("internal/validators");
 const util = require("node:util");
 
-const vm = $cpp("NodeVM.cpp", "Bun::createNodeVMBinding");
-
 const ObjectFreeze = Object.freeze;
 const ObjectDefineProperty = Object.defineProperty;
 const ArrayPrototypeMap = Array.prototype.map;
@@ -38,20 +36,21 @@ const kNoError = Symbol("kNoError");
 
 const kEmptyObject = Object.freeze(Object.create(null));
 
-const {
-  Script,
-  Module: ModuleNative,
-  createContext,
-  isContext,
-  compileFunction,
-  isModuleNamespaceObject,
-  kUnlinked,
-  kLinked,
-  kEvaluated,
-  kErrored,
-  DONT_CONTEXTIFY,
-  USE_MAIN_CONTEXT_DEFAULT_LOADER,
-} = vm;
+const Script = $bindgenFn("NodeVM.schema.zig", "scriptConstructor")();
+const ModuleNative = $bindgenFn("NodeVM.schema.zig", "moduleConstructor")();
+const createContextNative = $bindgenFn("NodeVM.schema.zig", "createContext");
+function createContext() {
+  return createContextNative.$apply(undefined, arguments);
+}
+const isContext = $bindgenFn("NodeVM.schema.zig", "isContext");
+const compileFunction = $bindgenFn("NodeVM.schema.zig", "compileFunction");
+const isModuleNamespaceObject = $bindgenFn("NodeVM.schema.zig", "isModuleNamespaceObject");
+const kUnlinked = $bindgenFn("NodeVM.schema.zig", "unlinkedStatus")();
+const kLinked = $bindgenFn("NodeVM.schema.zig", "linkedStatus")();
+const kEvaluated = $bindgenFn("NodeVM.schema.zig", "evaluatedStatus")();
+const kErrored = $bindgenFn("NodeVM.schema.zig", "erroredStatus")();
+const DONT_CONTEXTIFY = $bindgenFn("NodeVM.schema.zig", "dontContextify")();
+const USE_MAIN_CONTEXT_DEFAULT_LOADER = $bindgenFn("NodeVM.schema.zig", "useMainContextDefaultLoader")();
 
 function runInContext(code, context, options) {
   validateContext(context);
@@ -75,7 +74,6 @@ function runInNewContext(code, context, options) {
   if (typeof options === "string") {
     options = { filename: options };
   }
-  context = createContext(context, options);
   return createScript(code, options).runInNewContext(context, options);
 }
 

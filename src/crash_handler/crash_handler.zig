@@ -22,6 +22,11 @@
 /// This is useful for testing as a crash in here will not 'panicked during a panic'.
 pub const enable = true;
 
+comptime {
+    _ = @import("../debugger_sys/NativeStack.zig").dumpBtjsTrace;
+    _ = @import("../debugger_sys/NativeStack.zig").freeBtjsTrace;
+}
+
 /// Overridable with BUN_CRASH_REPORT_URL environment variable.
 const default_report_base_url = "https://bun.report";
 
@@ -62,8 +67,8 @@ const EmergencyWriter = struct {
     }
 };
 
-threadlocal var inside_native_plugin: ?[*:0]const u8 = null;
-threadlocal var unsupported_uv_function: ?[*:0]const u8 = null;
+threadlocal var inside_native_plugin: ?[]const u8 = null;
+threadlocal var unsupported_uv_function: ?[]const u8 = null;
 
 /// This can be set by various parts of the codebase to indicate a broader
 /// action being taken. It is printed when a crash happens, which can help
@@ -1018,8 +1023,13 @@ pub fn handleSegfaultWindows(info: *windows.EXCEPTION_POINTERS) callconv(.winapi
 
 extern "c" fn gnu_get_libc_version() ?[*:0]const u8;
 
-// Only populated after JSC::VM::tryCreate
-export var Bun__reported_memory_size: usize = 0;
+var machine_memory_size = std.atomic.Value(usize).init(0);
+
+fn bindSetMachineMemorySize(
+    args: bun.bindgen.Args(SetMachineMemorySizeSchema),
+) bun.bindgen.Return(SetMachineMemorySizeSchema) {
+    machine_memory_size.store(args.size, .monotonic);
+}
 
 pub fn printMetadata(writer: anytype) !void {
     if (comptime bun.Environment.isDebug) {
@@ -1036,21 +1046,21 @@ pub fn printMetadata(writer: anytype) !void {
 
     try writer.writeAll(metadata_version_line);
     {
-        const platform = bun.analytics.GenerateHeader.GeneratePlatform.forOS();
+        const platform = bun.Platform.forOS();
         const cpu_features = CPUFeatures.get();
         if (bun.Environment.isGlibc) {
             const version = gnu_get_libc_version() orelse "";
-            const kernel_version = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
+            const kernel_version = bun.Platform.kernelVersion();
             if (platform.os == .wsl) {
                 try writer.print("WSL Kernel v{d}.{d}.{d} | glibc v{s}\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch, std.mem.sliceTo(version, 0) });
             } else {
                 try writer.print("Linux Kernel v{d}.{d}.{d} | glibc v{s}\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch, std.mem.sliceTo(version, 0) });
             }
         } else if (bun.Environment.isLinux and bun.Environment.isMusl) {
-            const kernel_version = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
+            const kernel_version = bun.Platform.kernelVersion();
             try writer.print("Linux Kernel v{d}.{d}.{d} | musl\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch });
         } else if (bun.Environment.isAndroid) {
-            const kernel_version = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
+            const kernel_version = bun.Platform.kernelVersion();
             try writer.print("Android Kernel v{d}.{d}.{d} | bionic\n", .{ kernel_version.major, kernel_version.minor, kernel_version.patch });
         } else if (bun.Environment.isFreeBSD) {
             try writer.print("FreeBSD Kernel v{s}\n", .{platform.version});
@@ -1114,8 +1124,9 @@ pub fn printMetadata(writer: anytype) !void {
             page_faults,
         });
 
-        if (Bun__reported_memory_size > 0) {
-            try writer.print(" | Machine: {B:<3.2}", .{Bun__reported_memory_size});
+        const memory_size = machine_memory_size.load(.monotonic);
+        if (memory_size > 0) {
+            try writer.print(" | Machine: {B:<3.2}", .{memory_size});
         }
 
         try writer.writeAll("\n");
@@ -1718,8 +1729,6 @@ inline fn handleErrorReturnTraceExtra(err: anyerror, maybe_trace: ?*std.builtin.
 pub inline fn handleErrorReturnTrace(err: anyerror, maybe_trace: ?*std.builtin.StackTrace) void {
     handleErrorReturnTraceExtra(err, maybe_trace, false);
 }
-extern "c" fn WTF__DumpStackTrace(ptr: [*]usize, count: usize) void;
-
 /// Version of the standard library dumpStackTrace that has some fallbacks for
 /// cases where such logic fails to run.
 pub fn dumpStackTrace(trace: std.debug.StackTrace, limits: WriteStackTraceLimits) void {
@@ -1760,7 +1769,11 @@ fn dumpTrace(trace: std.debug.StackTrace, limits: WriteStackTraceLimits) void {
         .linux => {
             // In non-debug builds, use WTF's stack trace printer and return early
             if (!bun.Environment.isDebug) {
-                WTF__DumpStackTrace(trace.return_addresses.ptr, trace.return_addresses.len);
+                bun.bindgen.Engine(DumpStackTraceSchema).call(.{
+                    .addresses = @as([]const u64, @ptrCast(trace.return_addresses)),
+                }) catch {
+                    for (trace.return_addresses) |address| stderr.print("0x{x}\n", .{address}) catch break;
+                };
                 return;
             }
             // Otherwise fall through to llvm-symbolizer for debug builds
@@ -1844,7 +1857,7 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: std.d
         .stdout = .inherit,
         .stderr = .inherit,
         .windows = if (bun.Environment.isWindows) .{
-            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(crash_io, null, null)),
+            .loop = (try MiniEventLoop.initGlobal(crash_io, null, null)).parentEventLoop(),
         },
     }) catch |err| {
         stderr.print("Failed to invoke command: {f}\n", .{bun.fmt.fmtSlice(argv.items, " ")}) catch {};
@@ -1944,8 +1957,6 @@ pub const StoredTrace = struct {
         }
     }
 };
-
-pub const js_bindings = @import("../runtime/api/crash_handler_jsc.zig").js_bindings;
 
 const OnBeforeCrash = fn (opaque_ptr: *anyopaque) void;
 
@@ -2284,50 +2295,144 @@ fn printLineFromFileAnyOs(out_stream: anytype, tty_config: std.Io.Terminal, sour
     try out_stream.writeByte('\n');
 }
 
-export fn CrashHandler__setInsideNativePlugin(name: ?[*:0]const u8) callconv(.c) void {
-    inside_native_plugin = name;
-}
-
-export fn CrashHandler__unsupportedUVFunction(name: ?[*:0]const u8) callconv(.c) void {
+fn bindUnsupportedUVFunction(args: bun.bindgen.Args(UnsupportedUVFunctionSchema)) noreturn {
+    const name = args.name.unsafePtr("the non-returning native call keeps the caller's function-name bytes alive through fatal crash reporting");
     bun.analytics.Features.unsupported_uv_function += 1;
     unsupported_uv_function = name;
     if (bun.feature_flag.BUN_INTERNAL_SUPPRESS_CRASH_ON_UV_STUB.get()) {
         suppressReporting();
     }
-    std.debug.panic("unsupported uv function: {s}", .{name.?});
+    std.debug.panic("unsupported uv function: {s}", .{name});
 }
 
-export fn Bun__crashHandler(message_ptr: [*]u8, message_len: usize) noreturn {
-    crashHandler(.{ .panic = message_ptr[0..message_len] }, null, @returnAddress());
+fn bindPanic(args: bun.bindgen.Args(PanicSchema)) noreturn {
+    const message = args.message.unsafePtr("the non-returning native call keeps the caller's message bytes alive through panic reporting");
+    Output.panic("{s}", .{message});
 }
 
-export fn CrashHandler__setDlOpenAction(action: ?[*:0]const u8) void {
-    if (action) |str| {
-        bun.debugAssert(current_action == null);
-        current_action = .{ .dlopen = std.mem.sliceTo(str, 0) };
-    } else {
-        bun.debugAssert(current_action != null and current_action.? == .dlopen);
-        current_action = null;
+fn bindCrash(args: bun.bindgen.Args(CrashSchema)) noreturn {
+    const message = args.message.unsafePtr("the non-returning native call keeps the caller's message bytes alive through fatal crash reporting");
+    crashHandler(.{ .panic = message }, null, @returnAddress());
+}
+
+const CrashScope = struct {
+    const Kind = enum { native_plugin, dlopen };
+
+    kind: Kind,
+    label: []u8,
+    origin_thread: std.Thread.Id,
+    previous_native_plugin: ?[]const u8,
+    previous_action: ?Action,
+    installed: bool = false,
+
+    fn create(kind: Kind, label_view: anytype) bun.OOM!*bun.bindgen.ExternalBytesOwnerHandle {
+        const scope = try bun.default_allocator.create(CrashScope);
+        const label = bun.default_allocator.alloc(u8, label_view.length()) catch |err| {
+            bun.default_allocator.destroy(scope);
+            return err;
+        };
+        scope.* = .{
+            .kind = kind,
+            .label = label,
+            .origin_thread = std.Thread.getCurrentId(),
+            .previous_native_plugin = inside_native_plugin,
+            .previous_action = current_action,
+        };
+        bun.assert(label_view.read(0, label));
+
+        const owner = try bun.bindgen.adoptExternalBytesOwnerWithLength(
+            if (label.len == 0) null else label.ptr,
+            label.len,
+            scope,
+            release,
+        );
+        switch (kind) {
+            .native_plugin => inside_native_plugin = label,
+            .dlopen => current_action = .{ .dlopen = label },
+        }
+        scope.installed = true;
+        return owner;
     }
+
+    fn release(context: ?*anyopaque, data: [*c]u8, len: usize) callconv(.c) void {
+        const scope: *CrashScope = @ptrCast(@alignCast(context.?));
+        bun.assert(scope.origin_thread == std.Thread.getCurrentId());
+        bun.assert(scope.label.len == len);
+        bun.assert(if (len == 0) data == null else data == scope.label.ptr);
+
+        if (scope.installed) switch (scope.kind) {
+            .native_plugin => {
+                const current = inside_native_plugin orelse @panic("native-plugin crash scope is not active");
+                bun.assert(sameSlice(current, scope.label));
+                inside_native_plugin = scope.previous_native_plugin;
+            },
+            .dlopen => {
+                const action = current_action orelse @panic("dlopen crash scope is not active");
+                switch (action) {
+                    .dlopen => |label| bun.assert(sameSlice(label, scope.label)),
+                    else => @panic("dlopen crash scope was replaced"),
+                }
+                current_action = scope.previous_action;
+            },
+        };
+
+        bun.default_allocator.free(scope.label);
+        bun.default_allocator.destroy(scope);
+    }
+
+    fn sameSlice(left: []const u8, right: []const u8) bool {
+        return left.len == right.len and (left.len == 0 or left.ptr == right.ptr);
+    }
+};
+
+fn bindBeginNativePlugin(
+    args: bun.bindgen.Args(BeginNativePluginSchema),
+) bun.OOM!bun.bindgen.Return(BeginNativePluginSchema) {
+    return bun.bindgen.Return(BeginNativePluginSchema).initNative(
+        try CrashScope.create(.native_plugin, args.name),
+    );
 }
 
-pub fn fixDeadCodeElimination() void {
-    std.mem.doNotOptimizeAway(&CrashHandler__unsupportedUVFunction);
+fn bindBeginDlopen(
+    args: bun.bindgen.Args(BeginDlopenSchema),
+) bun.OOM!bun.bindgen.Return(BeginDlopenSchema) {
+    return bun.bindgen.Return(BeginDlopenSchema).initNative(
+        try CrashScope.create(.dlopen, args.action),
+    );
 }
+
+const CrashHandlerBindings = bun.bindgen.Module("CrashHandlerBindings");
+const PanicSchema = CrashHandlerBindings.nativeExport("panic");
+const CrashSchema = CrashHandlerBindings.nativeExport("crash");
+const UnsupportedUVFunctionSchema = CrashHandlerBindings.nativeExport("unsupportedUVFunction");
+const DumpStackTraceSchema = CrashHandlerBindings.engineShim("dumpStackTrace");
+const PanicBinding = bun.bindgen.Fn(PanicSchema, bindPanic);
+const CrashBinding = bun.bindgen.Fn(CrashSchema, bindCrash);
+const UnsupportedUVFunctionBinding = bun.bindgen.Fn(UnsupportedUVFunctionSchema, bindUnsupportedUVFunction);
+const SetMachineMemorySizeSchema = CrashHandlerBindings.nativeExport("crashHandlerSetMachineMemorySize");
+const BeginNativePluginSchema = CrashHandlerBindings.nativeExport("crashHandlerBeginNativePlugin");
+const BeginDlopenSchema = CrashHandlerBindings.nativeExport("crashHandlerBeginDlopen");
+const SetMachineMemorySizeBinding = bun.bindgen.Fn(SetMachineMemorySizeSchema, bindSetMachineMemorySize);
+const BeginNativePluginBinding = bun.bindgen.Fn(BeginNativePluginSchema, bindBeginNativePlugin);
+const BeginDlopenBinding = bun.bindgen.Fn(BeginDlopenSchema, bindBeginDlopen);
+
 comptime {
-    _ = &Bun__crashHandler;
-    if (!bun.Environment.isWindows) {
-        std.mem.doNotOptimizeAway(&CrashHandler__unsupportedUVFunction);
-    }
+    _ = PanicBinding;
+    _ = CrashBinding;
+    _ = UnsupportedUVFunctionBinding;
+    _ = SetMachineMemorySizeBinding;
+    _ = BeginNativePluginBinding;
+    _ = BeginDlopenBinding;
 }
 
-const CPUFeatures = @import("./CPUFeatures.zig");
+pub const CPUFeatures = @import("./CPUFeatures.zig");
 const builtin = @import("builtin");
 const std = @import("std");
 const windows = std.os.windows;
 
 const SourceMap = @import("../sourcemap/sourcemap.zig");
 const VLQ = SourceMap.VLQ;
+const MiniEventLoop = @import("../event_loop/MiniEventLoop.zig");
 
 const bun = @import("bun");
 const Global = bun.Global;

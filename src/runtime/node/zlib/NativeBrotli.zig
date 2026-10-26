@@ -1,121 +1,65 @@
-const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
-pub const ref = RefCount.ref;
-pub const deref = RefCount.deref;
-
-pub const js = jsc.Codegen.JSNativeBrotli;
-pub const toJS = js.toJS;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
-
-const impl = CompressionStream(@This());
-pub const write = impl.write;
-pub const runFromJSThread = impl.runFromJSThread;
-pub const writeSync = impl.writeSync;
-pub const reset = impl.reset;
-pub const close = impl.close;
-pub const setOnError = impl.setOnError;
-pub const getOnError = impl.getOnError;
-pub const finalize = impl.finalize;
-
-ref_count: RefCount,
-globalThis: *jsc.JSGlobalObject,
 stream: Context = .{},
-write_result: ?[*]u32 = null,
-poll_ref: CountedKeepAlive = .{},
-this_value: jsc.Strong.Optional = .empty,
-write_in_progress: bool = false,
-pending_close: bool = false,
-pending_reset: bool = false,
-closed: bool = false,
-task: jsc.BackgroundTask = .{ .callback = undefined },
+active: bool = false,
 
-pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*@This() {
-    const arguments = callframe.argumentsUndef(1).ptr;
-
-    var mode = arguments[0];
-    if (!mode.isNumber()) {
-        return globalThis.throwInvalidArgumentTypeValue("mode", "number", mode);
-    }
-    const mode_double = mode.asNumber();
-    if (@mod(mode_double, 1.0) != 0.0) {
-        return globalThis.throwInvalidArgumentTypeValue("mode", "integer", mode);
-    }
-    const mode_int: i64 = @intFromFloat(mode_double);
-    if (mode_int < 8 or mode_int > 9) {
-        return globalThis.throwRangeError(mode_int, .{ .field_name = "mode", .min = 8, .max = 9 });
-    }
-
-    const ptr = bun.new(@This(), .{
-        .ref_count = .init(),
-        .globalThis = globalThis,
-    });
-    ptr.stream.mode = @fromBackingInt(@intCast(mode_int));
-    return ptr;
+pub fn create(mode: i32) @This() {
+    var backend: @This() = .{};
+    backend.stream.mode = @fromBackingInt(@intCast(mode));
+    return backend;
 }
 
 pub fn estimatedSize(this: *const @This()) usize {
     const encoder_state_size: usize = 5143; // @sizeOf(@cImport(@cInclude("brotli/encode.h")).BrotliEncoderStateStruct)
     const decoder_state_size: usize = 855; // @sizeOf(@cImport(@cInclude("brotli/decode.h")).BrotliDecoderStateStruct)
-    return @sizeOf(@This()) + switch (this.stream.mode) {
+    return switch (this.stream.mode) {
         .BROTLI_ENCODE => encoder_state_size,
         .BROTLI_DECODE => decoder_state_size,
         else => 0,
     };
 }
 
-pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const arguments = callframe.argumentsUndef(3).slice();
-    const this_value = callframe.this();
-    if (arguments.len != 3) {
-        return globalThis.ERR(.MISSING_ARGS, "init(params, writeResult, writeCallback)", .{}).throw();
-    }
-
-    // this does not get gc'd because it is stored in the JS object's `this._writeState`. and the JS object is tied to the native handle as `_handle[owner_symbol]`.
-    const writeResult = arguments[1].asArrayBuffer(globalThis).?.asU32().ptr;
-    const writeCallback = try validators.validateFunction(globalThis, "writeCallback", arguments[2]);
-
-    this.write_result = writeResult;
-
-    js.writeCallbackSetCached(this_value, globalThis, writeCallback.withAsyncContextIfNeeded(globalThis));
-
+pub fn initFromBindgen(this: *@This(), args: anytype) bun.OOM!?Error {
     var err = this.stream.init();
-    if (err.isError()) {
-        impl.emitError(this, globalThis, this_value, err);
-        return .false;
-    }
+    if (err.isError()) return err;
+    this.active = true;
 
-    const params_ = arguments[0].asArrayBuffer(globalThis).?.asU32();
-
-    for (params_, 0..) |d, i| {
-        // (d == -1) {
+    for (0..args.params.length() / @sizeOf(u32)) |i| {
+        var d: u32 = undefined;
+        if (!args.params.read(i * @sizeOf(u32), std.mem.asBytes(&d))) unreachable;
         if (d == std.math.maxInt(u32)) {
             continue;
         }
         err = this.stream.setParams(@intCast(i), d);
         if (err.isError()) {
-            // try impl.emitError(this, globalThis, this_value, err); //XXX: onerror isn't set yet
-            this.stream.close();
-            return .false;
+            this.stream.deinitState();
+            this.active = false;
+            return err;
         }
     }
-    return .true;
+    return null;
 }
 
-pub fn params(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn paramsFromBindgen(this: *@This(), _: anytype) ?Error {
     _ = this;
-    _ = globalThis;
-    _ = callframe;
-    // intentionally left empty
-    return .js_undefined;
+    return null;
 }
 
-fn deinit(this: *@This()) void {
-    this.this_value.deinit();
-    this.poll_ref.deinit();
-    switch (this.stream.mode) {
-        .BROTLI_ENCODE, .BROTLI_DECODE => this.stream.close(),
-        else => {},
-    }
+pub fn reset(this: *@This()) Error {
+    const err = this.stream.reset();
+    this.active = !err.isError();
+    return err;
+}
+
+pub fn close(this: *@This()) void {
+    if (this.active) this.stream.close();
+    this.active = false;
+}
+
+pub fn deinit(this: *@This()) void {
+    this.close();
+}
+
+pub fn destroy(this: *@This()) void {
+    this.deinit();
     bun.destroy(this);
 }
 
@@ -124,10 +68,11 @@ const Context = struct {
     const Op = bun.brotli.c.BrotliEncoder.Operation;
 
     mode: bun.zlib.NodeMode = .NONE,
-    state: ?*anyopaque = null,
-
-    next_in: ?[*]const u8 = null,
-    next_out: ?[*]u8 = null,
+    state: union(enum) {
+        none,
+        encoder: bindgen.OwnedNativeWithDestructor(c.BrotliEncoder, destroyEncoder, .any),
+        decoder: bindgen.OwnedNativeWithDestructor(c.BrotliDecoder, destroyDecoder, .any),
+    } = .none,
     avail_in: usize = 0,
     avail_out: usize = 0,
 
@@ -135,27 +80,47 @@ const Context = struct {
 
     last_result: extern union { e: c_int, d: c.BrotliDecoderResult } = .{ .e = 0 },
     error_: c.BrotliDecoderErrorCode2 = .NO_ERROR,
+    allocation_failed: bool = false,
+
+    fn destroyEncoder(state: *c.BrotliEncoder) void {
+        c.BrotliEncoderDestroyInstance(state);
+    }
+
+    fn destroyDecoder(state: *c.BrotliDecoder) void {
+        c.BrotliDecoderDestroyInstance(state);
+    }
+
+    fn allocate(opaque_context: ?*anyopaque, len: usize) callconv(.c) ?*anyopaque {
+        const this: *Context = @ptrCast(@alignCast(opaque_context.?));
+        const result = bun.brotli.BrotliAllocator.alloc(null, len);
+        if (result == null) this.allocation_failed = true;
+        return result;
+    }
 
     pub fn init(this: *Context) Error {
+        this.deinitState();
+        this.allocation_failed = false;
+        this.error_ = .NO_ERROR;
+        this.last_result = .{ .e = 0 };
         switch (this.mode) {
             .BROTLI_ENCODE => {
-                const alloc = &bun.brotli.BrotliAllocator.alloc;
+                const alloc = &allocate;
                 const free = &bun.brotli.BrotliAllocator.free;
-                const state = c.BrotliEncoderCreateInstance(alloc, free, null);
+                const state = c.BrotliEncoderCreateInstance(alloc, free, this);
                 if (state == null) {
-                    return Error.init("Could not initialize Brotli instance", -1, "ERR_ZLIB_INITIALIZATION_FAILED");
+                    return Error.out_of_memory;
                 }
-                this.state = @ptrCast(state.?);
+                this.state = .{ .encoder = .init(state.?) };
                 return Error.ok;
             },
             .BROTLI_DECODE => {
-                const alloc = &bun.brotli.BrotliAllocator.alloc;
+                const alloc = &allocate;
                 const free = &bun.brotli.BrotliAllocator.free;
-                const state = c.BrotliDecoderCreateInstance(alloc, free, null);
+                const state = c.BrotliDecoderCreateInstance(alloc, free, this);
                 if (state == null) {
-                    return Error.init("Could not initialize Brotli instance", -1, "ERR_ZLIB_INITIALIZATION_FAILED");
+                    return Error.out_of_memory;
                 }
-                this.state = @ptrCast(state.?);
+                this.state = .{ .decoder = .init(state.?) };
                 return Error.ok;
             },
             else => unreachable,
@@ -163,15 +128,18 @@ const Context = struct {
     }
 
     pub fn setParams(this: *Context, key: c_uint, value: u32) Error {
+        this.allocation_failed = false;
         switch (this.mode) {
             .BROTLI_ENCODE => {
-                if (c.BrotliEncoderSetParameter(@ptrCast(this.state), key, value) == 0) {
+                if (c.BrotliEncoderSetParameter(this.state.encoder.get(), key, value) == 0) {
+                    if (this.allocation_failed) return Error.out_of_memory;
                     return Error.init("Setting parameter failed", -1, "ERR_BROTLI_PARAM_SET_FAILED");
                 }
                 return Error.ok;
             },
             .BROTLI_DECODE => {
-                if (c.BrotliDecoderSetParameter(@ptrCast(this.state), key, value) == 0) {
+                if (c.BrotliDecoderSetParameter(this.state.decoder.get(), key, value) == 0) {
+                    if (this.allocation_failed) return Error.out_of_memory;
                     return Error.init("Setting parameter failed", -1, "ERR_BROTLI_PARAM_SET_FAILED");
                 }
                 return Error.ok;
@@ -181,47 +149,34 @@ const Context = struct {
     }
 
     pub fn reset(this: *Context) Error {
-        if (this.state != null) {
-            this.deinitState();
-        }
         return this.init();
     }
 
     /// Frees the Brotli encoder/decoder state without changing mode.
     /// Use close() for full cleanup that also sets mode to NONE.
     fn deinitState(this: *Context) void {
-        switch (this.mode) {
-            .BROTLI_ENCODE => c.BrotliEncoderDestroyInstance(@ptrCast(@alignCast(this.state))),
-            .BROTLI_DECODE => c.BrotliDecoderDestroyInstance(@ptrCast(@alignCast(this.state))),
-            else => unreachable,
+        switch (this.state) {
+            .none => {},
+            inline else => |*state| state.deinit(),
         }
-        this.state = null;
+        this.state = .none;
     }
 
-    pub fn setBuffers(this: *Context, in: ?[]const u8, out: ?[]u8) void {
-        this.next_in = if (in) |p| p.ptr else null;
-        this.next_out = if (out) |p| p.ptr else null;
+    pub fn process(this: *Context, in: ?[]const u8, out: ?[]u8, flush: c_int) void {
+        var next_in: ?[*]const u8 = if (in) |p| p.ptr else null;
+        var next_out: ?[*]u8 = if (out) |p| p.ptr else null;
         this.avail_in = if (in) |p| p.len else 0;
         this.avail_out = if (out) |p| p.len else 0;
-    }
-
-    pub fn setFlush(this: *Context, flush: c_int) void {
         this.flush = @fromBackingInt(@intCast(flush));
-    }
-
-    pub fn doWork(this: *Context) void {
+        this.allocation_failed = false;
         switch (this.mode) {
             .BROTLI_ENCODE => {
-                var next_in = this.next_in;
-                this.last_result.e = c.BrotliEncoderCompressStream(@ptrCast(this.state), this.flush, &this.avail_in, &next_in, &this.avail_out, &this.next_out, null);
-                this.next_in.? += @intFromPtr(next_in.?) - @intFromPtr(this.next_in.?);
+                this.last_result.e = c.BrotliEncoderCompressStream(this.state.encoder.get(), this.flush, &this.avail_in, &next_in, &this.avail_out, &next_out, null);
             },
             .BROTLI_DECODE => {
-                var next_in = this.next_in;
-                this.last_result.d = c.BrotliDecoderDecompressStream(@ptrCast(this.state), &this.avail_in, &next_in, &this.avail_out, &this.next_out, null);
-                this.next_in.? += @intFromPtr(next_in.?) - @intFromPtr(this.next_in.?);
+                this.last_result.d = c.BrotliDecoderDecompressStream(this.state.decoder.get(), &this.avail_in, &next_in, &this.avail_out, &next_out, null);
                 if (this.last_result.d == .err) {
-                    this.error_ = c.BrotliDecoderGetErrorCode(@ptrCast(this.state));
+                    this.error_ = c.BrotliDecoderGetErrorCode(this.state.decoder.get());
                 }
             },
             else => unreachable,
@@ -237,12 +192,15 @@ const Context = struct {
         switch (this.mode) {
             .BROTLI_ENCODE => {
                 if (this.last_result.e == 0) {
+                    if (this.allocation_failed) return Error.out_of_memory;
                     return Error.init("Compression failed", -1, "ERR_BROTLI_COMPRESSION_FAILED");
                 }
                 return Error.ok;
             },
             .BROTLI_DECODE => {
                 if (this.error_ != .NO_ERROR) {
+                    if (this.allocation_failed) return Error.out_of_memory;
+                    if (bun.brotli.isAllocationError(@backingInt(this.error_))) return Error.out_of_memory;
                     return Error.init("Decompression failed", @backingInt(this.error_), code_for_error(this.error_));
                 } else if (this.flush == .finish and this.last_result.d == .needs_more_input) {
                     return Error.init("unexpected end of file", @backingInt(bun.zlib.ReturnCode.BufError), "Z_BUF_ERROR");
@@ -272,11 +230,17 @@ const Context = struct {
 };
 
 const std = @import("std");
-const validators = @import("../util/validators.zig");
-
-const CompressionStream = @import("../node_zlib_binding.zig").CompressionStream;
-const CountedKeepAlive = @import("../node_zlib_binding.zig").CountedKeepAlive;
+const CompressionJSBinding = @import("../node_zlib_binding.zig").CompressionJSBinding;
 const Error = @import("../node_zlib_binding.zig").Error;
 
 const bun = @import("bun");
-const jsc = bun.jsc;
+const bindgen = bun.bindgen;
+
+const NativeCompressionModule = bindgen.Module("NativeCompression");
+const ClassSchema = NativeCompressionModule.class("NativeBrotli");
+pub const JSBinding = CompressionJSBinding(@This(), ClassSchema);
+pub const JSClass = bindgen.Class(ClassSchema, JSBinding);
+
+comptime {
+    _ = JSClass;
+}

@@ -24,6 +24,7 @@
  */
 
 export function initializeTransformStreamDefaultController(this) {
+  $putByIdDirectPrivate(this, "transformControllerBrand", false);
   return this;
 }
 

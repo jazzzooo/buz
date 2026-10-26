@@ -1,1294 +1,390 @@
-// blocking, but off the main thread
-pub const CopyFile = struct {
-    destination_file_store: Store.File,
-    source_file_store: Store.File,
-    store: ?*Store = null,
-    source_store: ?*Store = null,
-    offset: SizeType = 0,
-    size: SizeType = 0,
-    max_length: SizeType = Blob.max_size,
-    destination_fd: bun.FD = bun.invalid_fd,
-    source_fd: bun.FD = bun.invalid_fd,
+pub const CopyFileResult = @import("./write_file.zig").WriteFileResultType;
 
-    system_error: ?SystemError = null,
-    schedule_error: ?anyerror = null,
+pub const CopyFileCompletion = struct {
+    context: *anyopaque,
+    callback: *const fn (*anyopaque, CopyFileResult) void,
 
-    read_len: SizeType = 0,
-    read_off: SizeType = 0,
-
-    globalThis: *JSGlobalObject,
-
-    mkdirp_if_not_exists: bool = false,
-    destination_mode: ?bun.Mode = null,
-
-    pub const ResultType = anyerror!SizeType;
-
-    pub const Callback = *const fn (ctx: *anyopaque, len: ResultType) void;
-
-    pub fn create(
-        allocator: std.mem.Allocator,
-        store: *Store,
-        source_store: *Store,
-        off: SizeType,
-        max_len: SizeType,
-        globalThis: *JSGlobalObject,
-        mkdirp_if_not_exists: bool,
-        destination_mode: ?bun.Mode,
-    ) *CopyFilePromiseTask {
-        const read_file = bun.new(CopyFile, CopyFile{
-            .store = store,
-            .source_store = source_store,
-            .offset = off,
-            .max_length = max_len,
-            .globalThis = globalThis,
-            .destination_file_store = store.data.file,
-            .source_file_store = source_store.data.file,
-            .mkdirp_if_not_exists = mkdirp_if_not_exists,
-            .destination_mode = destination_mode,
-        });
-        store.ref();
-        source_store.ref();
-        return CopyFilePromiseTask.createOnJSThread(allocator, globalThis, read_file);
+    pub fn init(comptime Context: type, context: *Context, comptime callback: *const fn (*Context, CopyFileResult) void) CopyFileCompletion {
+        const Adapter = struct {
+            fn run(opaque_context: *anyopaque, result: CopyFileResult) void {
+                callback(@ptrCast(@alignCast(opaque_context)), result);
+            }
+        };
+        return .{ .context = context, .callback = Adapter.run };
     }
 
-    const linux = std.os.linux;
-    const darwin = std.posix.system;
+    pub fn complete(this: CopyFileCompletion, result: CopyFileResult) void {
+        this.callback(this.context, result);
+    }
+};
 
-    pub fn deinit(this: *CopyFile) void {
-        if (this.source_file_store.pathlike == .path) {
-            if (this.source_file_store.pathlike.path == .string and this.system_error == null) {
-                bun.default_allocator.free(@constCast(this.source_file_store.pathlike.path.slice()));
+pub const CopyFile = struct {
+    source: StoreRange.Owned,
+    destination: StoreRange.Owned,
+    plan: CopyPlan,
+    source_fd: bun.FD = .invalid,
+    destination_fd: bun.FD = .invalid,
+    source_regular: bool = false,
+    source_socket: bool = false,
+    destination_regular: bool = false,
+    destination_append: bool = false,
+    kernel_copy: bool = false,
+    skip_remaining: u64 = 0,
+    buffer: []u8 = &.{},
+    chunk: ?CopyPlan.Chunk = null,
+    loaded: usize = 0,
+    sent: usize = 0,
+    stage: enum { reading, writing } = .reading,
+    failure: ?Failure = null,
+    cancelled: std.atomic.Value(bool) = .init(false),
+    source_io: FileIO.AsyncIO(@This(), "source_io") = .{},
+    destination_io: FileIO.AsyncIO(@This(), "destination_io") = .{},
+    delivery: ?bun.WorkTaskContext = null,
+    completion: CopyFileCompletion,
+    mkdirp_if_not_exists: bool,
+    destination_mode: ?bun.Mode,
+
+    const Failure = bun.io.Failure;
+
+    pub fn create(destination: StoreRange, source: StoreRange, completion: CopyFileCompletion, mkdirp: bool, mode: ?bun.Mode) bun.OOM!*CopyFile {
+        const this = try bun.default_allocator.create(CopyFile);
+        this.* = .{
+            .source = .init(source),
+            .destination = .init(destination),
+            .plan = .init(source, destination),
+            .completion = completion,
+            .mkdirp_if_not_exists = mkdirp,
+            .destination_mode = mode,
+        };
+        this.prepareDescriptor(.source);
+        if (this.failure == null) this.prepareDescriptor(.destination);
+        return this;
+    }
+
+    const Which = enum { source, destination };
+
+    fn pathlike(this: *const CopyFile, comptime which: Which) @import("../../node/types.zig").PathOrFileDescriptor {
+        return @field(this, @tagName(which)).storePtr().data.file.pathlike;
+    }
+
+    fn fdPointer(this: *CopyFile, comptime which: Which) *bun.FD {
+        return &@field(this, @tagName(which) ++ "_fd");
+    }
+
+    fn prepareDescriptor(this: *CopyFile, comptime which: Which) void {
+        const path = this.pathlike(which);
+        if (path != .fd) return;
+        switch (FileIO.duplicate(path.fd)) {
+            .result => |fd| this.fdPointer(which).* = fd,
+            .err => |err| this.setError(err, which),
+        }
+    }
+
+    fn setError(this: *CopyFile, err: bun.sys.Error, comptime which: Which) void {
+        if (this.failure == null) this.failure = .fromSystem(err.withPathLike(this.pathlike(which)));
+    }
+
+    fn consumeIOFailure(this: *CopyFile, comptime which: Which) void {
+        const failure = @field(this, @tagName(which) ++ "_io").takeError() orelse return;
+        switch (failure) {
+            .system => |err| this.setError(err, which),
+            .out_of_memory, .concurrency_unavailable => if (this.failure == null) {
+                this.failure = failure;
+            },
+        }
+    }
+
+    pub fn setFileOpenerError(this: *CopyFile, err: bun.sys.Error) void {
+        this.setError(err, .destination);
+    }
+
+    fn open(this: *CopyFile, comptime which: Which) bool {
+        const fd = this.fdPointer(which);
+        if (fd.isValid()) return true;
+        var path_buffer: bun.PathBuffer = undefined;
+        var path_string = this.pathlike(which).path;
+        const path = path_string.sliceZ(&path_buffer);
+        const flags = bun.O.CLOEXEC | bun.O.NONBLOCK | (if (which == .source) bun.O.RDONLY else bun.O.WRONLY | bun.O.CREAT);
+        while (!this.isCancelled()) {
+            switch (bun.sys.open(path, flags, this.destination_mode orelse NodeFSCore.default_permission)) {
+                .result => |opened| {
+                    fd.* = opened;
+                    return true;
+                },
+                .err => |err| {
+                    if (comptime which == .destination) {
+                        switch (FileIO.mkdirIfNotExists(this, err, path, path_string.slice())) {
+                            .@"continue" => continue,
+                            .fail => return false,
+                            .no => {},
+                        }
+                    }
+                    this.setError(err, which);
+                    return false;
+                },
             }
         }
-        this.store.?.deref();
-
-        bun.destroy(this);
+        return false;
     }
 
-    pub fn reject(this: *CopyFile, promise: *jsc.JSPromise) bun.JSTerminated!void {
-        const globalThis = this.globalThis;
-        var system_error: SystemError = this.system_error orelse SystemError{ .message = .empty };
-        if (this.source_file_store.pathlike == .path and system_error.path.isEmpty()) {
-            system_error.path = bun.String.cloneUTF8(this.source_file_store.pathlike.path.slice());
-        }
-
-        if (system_error.message.isEmpty()) {
-            system_error.message = bun.String.static("Failed to copy file");
-        }
-
-        const instance: bun.JSError!jsc.JSValue = if (system_error.toErrorInstanceWithAsyncStack(this.globalThis, promise)) |err| err.toJS() else |err| err;
-        try promise.reject(globalThis, instance);
+    pub fn run(this: *CopyFile, delivery: bun.WorkTaskContext) void {
+        this.delivery = delivery;
+        if (this.failure != null or this.isCancelled() or !this.prepare()) return this.onFinish();
+        this.update();
     }
 
-    pub fn then(this: *CopyFile, promise: *jsc.JSPromise) bun.JSTerminated!void {
-        defer this.deinit();
-        this.source_store.?.deref();
-
-        if (this.schedule_error) |err| {
-            const value: bun.JSError!jsc.JSValue = if (this.globalThis.createErrorInstance(
-                "Failed to start background file copy: {s}",
-                .{@errorName(err)},
-            )) |instance| instance.toJS() else |js_err| js_err;
-            try promise.rejectWithAsyncStack(this.globalThis, value);
-            return;
+    fn prepare(this: *CopyFile) bool {
+        if (!this.open(.source)) return false;
+        const source_stat = switch (bun.sys.fstat(this.source_fd)) {
+            .result => |value| value,
+            .err => |err| {
+                this.setError(err, .source);
+                return false;
+            },
+        };
+        if (bun.S.ISDIR(@intCast(source_stat.mode))) {
+            this.setError(bun.sys.Error.fromCode(.ISDIR, .fstat), .source);
+            return false;
         }
-
-        if (this.system_error != null) {
-            try this.reject(promise);
-            return;
+        if (!this.open(.destination)) return false;
+        const destination_stat = switch (bun.sys.fstat(this.destination_fd)) {
+            .result => |value| value,
+            .err => |err| {
+                this.setError(err, .destination);
+                return false;
+            },
+        };
+        if (bun.S.ISDIR(@intCast(destination_stat.mode))) {
+            this.setError(bun.sys.Error.fromCode(.ISDIR, .fstat), .destination);
+            return false;
         }
+        this.source_regular = bun.isRegularFile(source_stat.mode);
+        this.source_socket = std.posix.S.ISSOCK(@intCast(source_stat.mode));
+        this.destination_regular = bun.isRegularFile(destination_stat.mode);
+        if (this.destination_regular) {
+            this.destination_append = switch (FileIO.isAppend(this.destination_fd)) {
+                .result => |value| value,
+                .err => |err| {
+                    this.setError(err, .destination);
+                    return false;
+                },
+            };
+            if (this.destination_append) this.plan.destination_offset = @intCast(@max(destination_stat.size, 0));
+        }
+        if (this.source_regular and this.destination_regular and
+            source_stat.dev == destination_stat.dev and source_stat.ino == destination_stat.ino)
+        {
+            this.plan.setSameFile(@intCast(@max(source_stat.size, 0)));
+        }
+        this.kernel_copy = Environment.isLinux and this.source_regular and this.destination_regular and
+            !this.destination_append and !this.plan.in_place and bun.canUseCopyFileRangeSyscall();
+        if (!this.source_regular) this.skip_remaining = this.source.offset;
+        return true;
+    }
 
-        try promise.resolve(this.globalThis, .jsNumberFromUint64(this.read_len));
+    pub fn requestCancel(this: *CopyFile) void {
+        this.cancelled.store(true, .release);
+        this.source_io.requestCancel();
+        this.destination_io.requestCancel();
+    }
+
+    fn isCancelled(this: *const CopyFile) bool {
+        return this.cancelled.load(.acquire) or this.source_io.isCancelled() or this.destination_io.isCancelled();
     }
 
     pub fn onScheduleError(this: *CopyFile, err: anyerror) void {
-        this.schedule_error = err;
+        if (this.failure == null) this.failure = if (err == error.OutOfMemory) .out_of_memory else .concurrency_unavailable;
     }
 
-    pub fn run(this: *CopyFile) void {
-        this.runAsync();
+    fn copyKernelChunk(this: *CopyFile) bool {
+        if (comptime !Environment.isLinux) return false;
+        const chunk = this.plan.next(16 * 1024 * 1024) orelse return false;
+        var source_offset: std.os.linux.off_t = @intCast(chunk.source_offset);
+        var destination_offset: std.os.linux.off_t = @intCast(chunk.destination_offset);
+        const result = std.os.linux.copy_file_range(this.source_fd.native(), &source_offset, this.destination_fd.native(), &destination_offset, chunk.length, 0);
+        switch (bun.sys.getErrno(result)) {
+            .SUCCESS => {
+                if (result > 0) {
+                    this.plan.advance(result);
+                    return true;
+                }
+            },
+            .INTR => return true,
+            .NOSYS, .XDEV, .OPNOTSUPP, .INVAL, .BADF => {},
+            else => |err| {
+                this.setError(bun.sys.Error.fromCode(err, .copy_file_range), .source);
+                return false;
+            },
+        }
+        this.kernel_copy = false;
+        return false;
     }
 
-    pub fn doClose(this: *CopyFile) void {
-        const close_input = this.destination_file_store.pathlike != .fd and this.destination_fd != bun.invalid_fd;
-        const close_output = this.source_file_store.pathlike != .fd and this.source_fd != bun.invalid_fd;
+    pub fn update(this: *CopyFile) void {
+        this.consumeIOFailure(.source);
+        this.consumeIOFailure(.destination);
+        copying: while (!this.isCancelled() and this.failure == null) {
+            switch (this.stage) {
+                .reading => {
+                    if (this.plan.written == this.plan.limit) break;
+                    if (this.kernel_copy) {
+                        if (this.copyKernelChunk()) continue;
+                        if (this.failure != null) break;
+                    }
+                    if (this.buffer.len == 0) {
+                        this.buffer = bun.default_allocator.alloc(u8, 64 * 1024) catch {
+                            this.failure = .out_of_memory;
+                            break;
+                        };
+                    }
+                    if (this.chunk == null) {
+                        this.chunk = if (this.skip_remaining > 0) .{
+                            .source_offset = 0,
+                            .destination_offset = 0,
+                            .length = @intCast(@min(this.skip_remaining, this.buffer.len)),
+                        } else this.plan.next(this.buffer.len).?;
+                        this.loaded = 0;
+                        this.sent = 0;
+                    }
+                    if (!this.source_regular and bun.isReadable(this.source_fd) == .not_ready) {
+                        if (this.source_io.wait(this.source_fd, .readable)) return;
+                        break;
+                    }
+                    const chunk = this.chunk.?;
+                    const buffer = this.buffer[this.loaded..chunk.length];
+                    const result = if (this.source_regular)
+                        bun.sys.pread(this.source_fd, buffer, @intCast(chunk.source_offset + this.loaded))
+                    else if (this.source_socket)
+                        bun.sys.recvNonBlock(this.source_fd, buffer)
+                    else
+                        bun.sys.read(this.source_fd, buffer);
+                    const amount = switch (result) {
+                        .result => |value| value,
+                        .err => |err| {
+                            if (err.getErrno() == .AGAIN and !this.source_regular) {
+                                if (this.source_io.wait(this.source_fd, .readable)) return;
+                            } else this.setError(err, .source);
+                            break :copying;
+                        },
+                    };
+                    if (amount == 0) {
+                        if (this.plan.backward) this.setError(bun.sys.Error.fromCode(.IO, .read), .source);
+                        break;
+                    }
+                    if (this.skip_remaining > 0) {
+                        this.skip_remaining -= amount;
+                        this.chunk = null;
+                        continue;
+                    }
+                    this.loaded += amount;
+                    if (this.plan.backward and this.loaded < chunk.length) continue;
+                    this.stage = .writing;
+                },
+                .writing => {
+                    if (!this.destination_regular and bun.isWritable(this.destination_fd) == .not_ready) {
+                        if (this.destination_io.wait(this.destination_fd, .writable)) return;
+                        break;
+                    }
+                    const buffer = this.buffer[this.sent..this.loaded];
+                    const result = if (this.destination_regular and !this.destination_append)
+                        bun.sys.pwrite(this.destination_fd, buffer, @intCast(this.chunk.?.destination_offset + this.sent))
+                    else
+                        bun.sys.write(this.destination_fd, buffer);
+                    const amount = switch (result) {
+                        .result => |value| value,
+                        .err => |err| {
+                            if (err.getErrno() == .AGAIN and !this.destination_regular) {
+                                if (this.destination_io.wait(this.destination_fd, .writable)) return;
+                            } else this.setError(err, .destination);
+                            break :copying;
+                        },
+                    };
+                    if (amount == 0) {
+                        this.setError(bun.sys.Error.fromCode(.IO, .write), .destination);
+                        break;
+                    }
+                    this.sent += amount;
+                    this.plan.advance(amount);
+                    if (this.sent == this.loaded) {
+                        this.chunk = null;
+                        this.stage = .reading;
+                    }
+                },
+            }
+        }
+        this.onFinish();
+    }
 
-        // Apply destination mode using fchmod before closing (for POSIX platforms)
-        // This ensures mode is applied even when overwriting existing files, since
-        // open()'s mode argument only affects newly created files.
-        // On macOS clonefile path, chmod is called separately after clonefile.
-        // On Windows, this is handled via async uv_fs_chmod.
-        if (comptime !Environment.isWindows) {
+    pub fn onFinish(this: *CopyFile) void {
+        this.consumeIOFailure(.source);
+        this.consumeIOFailure(.destination);
+        if (this.source_io.finish()) return;
+        if (this.destination_io.finish()) return;
+        if (!this.isCancelled() and this.failure == null and this.destination_fd.isValid()) {
+            if (this.destination_regular and this.pathlike(.destination) == .path and this.destination.offset == 0) {
+                switch (bun.sys.ftruncate(this.destination_fd, @intCast(this.plan.written))) {
+                    .result => {},
+                    .err => |err| this.setError(err, .destination),
+                }
+            }
             if (this.destination_mode) |mode| {
-                if (this.destination_fd != bun.invalid_fd and this.system_error == null) {
-                    switch (bun.sys.fchmod(this.destination_fd, mode)) {
-                        .err => |err| {
-                            this.system_error = err.toSystemError();
-                        },
-                        .result => {},
-                    }
-                }
-            }
-        }
-
-        if (close_input and close_output) {
-            this.doCloseFile(.both);
-        } else if (close_input) {
-            this.doCloseFile(.destination);
-        } else if (close_output) {
-            this.doCloseFile(.source);
-        }
-    }
-
-    const posix = std.posix;
-
-    pub fn doCloseFile(this: *CopyFile, comptime which: IOWhich) void {
-        switch (which) {
-            .both => {
-                this.destination_fd.close();
-                this.source_fd.close();
-            },
-            .destination => {
-                this.destination_fd.close();
-            },
-            .source => {
-                this.source_fd.close();
-            },
-        }
-    }
-
-    const O = bun.O;
-    const open_destination_flags = O.CLOEXEC | O.CREAT | O.WRONLY | O.TRUNC;
-    const open_source_flags = O.CLOEXEC | O.RDONLY;
-
-    pub fn doOpenFile(this: *CopyFile, comptime which: IOWhich) !void {
-        var path_buf1: bun.PathBuffer = undefined;
-        // open source file first
-        // if it fails, we don't want the extra destination file hanging out
-        if (which == .both or which == .source) {
-            this.source_fd = switch (bun.sys.open(
-                this.source_file_store.pathlike.path.sliceZ(&path_buf1),
-                open_source_flags,
-                0,
-            )) {
-                .result => |result| switch (result.makeLibUVOwnedForSyscall(.open, .close_on_fail)) {
-                    .result => |result_fd| result_fd,
-                    .err => |errno| {
-                        this.system_error = errno.toSystemError();
-                        return bun.errnoToZigErr(errno.errno);
-                    },
-                },
-                .err => |errno| {
-                    this.system_error = errno.toSystemError();
-                    return bun.errnoToZigErr(errno.errno);
-                },
-            };
-        }
-
-        if (which == .both or which == .destination) {
-            while (true) {
-                const dest = this.destination_file_store.pathlike.path.sliceZ(&path_buf1);
-                const mode = this.destination_mode orelse jsc.Node.fs.default_permission;
-                this.destination_fd = switch (bun.sys.open(
-                    dest,
-                    open_destination_flags,
-                    mode,
-                )) {
-                    .result => |result| switch (result.makeLibUVOwnedForSyscall(.open, .close_on_fail)) {
-                        .result => |result_fd| result_fd,
-                        .err => |errno| {
-                            this.system_error = errno.toSystemError();
-                            return bun.errnoToZigErr(errno.errno);
-                        },
-                    },
-                    .err => |errno| {
-                        switch (Blob.mkdirIfNotExists(this, errno, dest, dest)) {
-                            .@"continue" => continue,
-                            .fail => {
-                                if (which == .both) {
-                                    this.source_fd.close();
-                                    this.source_fd = .invalid;
-                                }
-                                return bun.errnoToZigErr(errno.errno);
-                            },
-                            .no => {},
-                        }
-
-                        if (which == .both) {
-                            this.source_fd.close();
-                            this.source_fd = .invalid;
-                        }
-
-                        this.system_error = errno.withPath(this.destination_file_store.pathlike.path.slice()).toSystemError();
-                        return bun.errnoToZigErr(errno.errno);
-                    },
+                if (this.failure == null) switch (bun.sys.fchmod(this.destination_fd, mode)) {
+                    .result => {},
+                    .err => |err| this.setError(err, .destination),
                 };
-                break;
             }
+        }
+        this.close(.source);
+        this.close(.destination);
+        const delivery = this.delivery.?;
+        this.delivery = null;
+        delivery.finish();
+    }
+
+    fn close(this: *CopyFile, comptime which: Which) void {
+        const fd = this.fdPointer(which);
+        if (fd.isValid()) {
+            const owned = fd.*;
+            fd.* = .invalid;
+            if (owned.closeAllowingStandardIo(null)) |err| this.setError(err, which);
         }
     }
 
-    const TryWith = enum {
-        sendfile,
-        copy_file_range,
-        splice,
-
-        pub const tag = std.EnumMap(TryWith, bun.sys.Tag).init(.{
-            .sendfile = .sendfile,
-            .copy_file_range = .copy_file_range,
-            .splice = .splice,
-        });
-    };
-
-    pub fn doCopyFileRange(
-        this: *CopyFile,
-        comptime use: TryWith,
-        comptime clear_append_if_invalid: bool,
-    ) anyerror!void {
-        this.read_off += this.offset;
-
-        var remain = @as(usize, this.max_length);
-        const unknown_size = remain == Blob.max_size or remain == 0;
-        if (unknown_size) {
-            // sometimes stat lies
-            // let's give it 4096 and see how it goes
-            remain = 4096;
-        }
-
-        var total_written: usize = 0;
-        const src_fd = this.source_fd;
-        const dest_fd = this.destination_fd;
-
-        defer {
-            this.read_len = @as(SizeType, @truncate(total_written));
-        }
-
-        var has_unset_append = false;
-
-        // If they can't use copy_file_range, they probably also can't
-        // use sendfile() or splice()
-        if (!bun.canUseCopyFileRangeSyscall()) {
-            switch (jsc.Node.fs.NodeFS.copyFileUsingReadWriteLoop("", "", src_fd, dest_fd, if (unknown_size) 0 else remain, &total_written)) {
-                .err => |err| {
-                    this.system_error = err.toSystemError();
-                    return bun.errnoToZigErr(err.errno);
-                },
-                .result => {
-                    _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(total_written)));
-                    return;
-                },
-            }
-        }
-
-        while (true) {
-            // TODO: this should use non-blocking I/O.
-            const written = switch (comptime use) {
-                .copy_file_range => linux.copy_file_range(src_fd.cast(), null, dest_fd.cast(), null, remain, 0),
-                .sendfile => linux.sendfile(dest_fd.cast(), src_fd.cast(), null, remain),
-                .splice => bun.linux.splice(src_fd.cast(), null, dest_fd.cast(), null, remain, 0),
-            };
-
-            switch (bun.sys.getErrno(written)) {
-                .SUCCESS => {},
-
-                // XDEV: cross-device copy not supported
-                // NOSYS: syscall not available
-                // OPNOTSUPP: filesystem doesn't support this operation
-                .NOSYS, .XDEV, .OPNOTSUPP => {
-                    // TODO: this should use non-blocking I/O.
-                    switch (jsc.Node.fs.NodeFS.copyFileUsingReadWriteLoop("", "", src_fd, dest_fd, if (unknown_size) 0 else remain, &total_written)) {
-                        .err => |err| {
-                            this.system_error = err.toSystemError();
-                            return bun.errnoToZigErr(err.errno);
-                        },
-                        .result => {
-                            _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(total_written)));
-                            return;
-                        },
-                    }
-                },
-
-                // EINVAL: eCryptfs and other filesystems may not support copy_file_range.
-                // Also returned when the file descriptor is incompatible with the syscall.
-                .INVAL => {
-                    if (comptime clear_append_if_invalid) {
-                        if (!has_unset_append) {
-                            // https://kylelaker.com/2018/08/31/stdout-oappend.html
-                            // make() can set STDOUT / STDERR to O_APPEND
-                            // this messes up sendfile()
-                            has_unset_append = true;
-                            const flags = linux.fcntl(dest_fd.cast(), linux.F.GETFL, @as(c_int, 0));
-                            if ((flags & O.APPEND) != 0) {
-                                _ = linux.fcntl(dest_fd.cast(), linux.F.SETFL, flags ^ O.APPEND);
-                                continue;
-                            }
-                        }
-                    }
-
-                    // If the Linux machine doesn't support
-                    // copy_file_range or the file descriptor is
-                    // incompatible with the chosen syscall, fall back
-                    // to a read/write loop
-                    if (total_written == 0) {
-                        // TODO: this should use non-blocking I/O.
-                        switch (jsc.Node.fs.NodeFS.copyFileUsingReadWriteLoop("", "", src_fd, dest_fd, if (unknown_size) 0 else remain, &total_written)) {
-                            .err => |err| {
-                                this.system_error = err.toSystemError();
-                                return bun.errnoToZigErr(err.errno);
-                            },
-                            .result => {
-                                _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(total_written)));
-                                return;
-                            },
-                        }
-                    }
-
-                    this.system_error = (bun.sys.Error{
-                        .errno = @as(bun.sys.Error.Int, @intCast(@backingInt(linux.E.INVAL))),
-                        .syscall = TryWith.tag.get(use).?,
-                    }).toSystemError();
-                    return bun.errnoToZigErr(linux.E.INVAL);
-                },
-                else => |errno| {
-                    this.system_error = (bun.sys.Error{
-                        .errno = @as(bun.sys.Error.Int, @intCast(@backingInt(errno))),
-                        .syscall = TryWith.tag.get(use).?,
-                    }).toSystemError();
-                    return bun.errnoToZigErr(errno);
-                },
-            }
-
-            // wrote zero bytes means EOF
-            remain -|= @intCast(written);
-            total_written += @intCast(written);
-            if (written == 0 or remain == 0) break;
-        }
-    }
-
-    pub fn doFCopyFileWithReadWriteLoopFallback(this: *CopyFile) anyerror!void {
-        switch (bun.sys.fcopyfile(this.source_fd, this.destination_fd, posix.system.COPYFILE{ .DATA = true })) {
-            .err => |errno| {
-                switch (errno.getErrno()) {
-                    // If the file type doesn't support seeking, it may return EBADF
-                    // Example case:
-                    //
-                    // bun test bun-write.test | xargs echo
-                    //
-                    .BADF => {
-                        var total_written: u64 = 0;
-
-                        // TODO: this should use non-blocking I/O.
-                        switch (jsc.Node.fs.NodeFS.copyFileUsingReadWriteLoop("", "", this.source_fd, this.destination_fd, 0, &total_written)) {
-                            .err => |err| {
-                                this.system_error = err.toSystemError();
-                                return bun.errnoToZigErr(err.errno);
-                            },
-                            .result => {},
-                        }
-                    },
-                    else => {
-                        this.system_error = errno.toSystemError();
-
-                        return bun.errnoToZigErr(errno.errno);
-                    },
-                }
+    pub fn then(this: *CopyFile) void {
+        const completion = this.completion;
+        const result: CopyFileResult = if (this.failure) |failure| switch (failure) {
+            .out_of_memory => .out_of_memory,
+            .concurrency_unavailable => .concurrency_unavailable,
+            .system => |err| result: {
+                const payload = bun.bindgen.SystemError.fromSysError(err) catch break :result .out_of_memory;
+                break :result .{ .system_error = payload };
             },
-            .result => {},
-        }
+        } else .{ .written = @intCast(this.plan.written) };
+        this.deinitUnscheduled();
+        completion.complete(result);
     }
 
-    pub fn doClonefile(this: *CopyFile) anyerror!void {
-        var source_buf: bun.PathBuffer = undefined;
-        var dest_buf: bun.PathBuffer = undefined;
-
-        while (true) {
-            const dest = this.destination_file_store.pathlike.path.sliceZ(
-                &dest_buf,
-            );
-            switch (bun.sys.clonefile(
-                this.source_file_store.pathlike.path.sliceZ(&source_buf),
-                dest,
-            )) {
-                .err => |errno| {
-                    switch (Blob.mkdirIfNotExists(this, errno, dest, this.destination_file_store.pathlike.path.slice())) {
-                        .@"continue" => continue,
-                        .fail => {},
-                        .no => {},
-                    }
-                    this.system_error = errno.toSystemError();
-                    return bun.errnoToZigErr(errno.errno);
-                },
-                .result => {},
-            }
-            break;
-        }
+    pub fn discard(this: *CopyFile) void {
+        const completion = this.completion;
+        this.deinitUnscheduled();
+        completion.complete(.cancelled);
     }
 
-    pub fn runAsync(this: *CopyFile) void {
-        if (Environment.isWindows) return; //why
-        // defer task.onFinish();
-
-        var stat_: ?bun.Stat = null;
-
-        if (this.destination_file_store.pathlike == .fd) {
-            this.destination_fd = this.destination_file_store.pathlike.fd;
-        }
-
-        if (this.source_file_store.pathlike == .fd) {
-            this.source_fd = this.source_file_store.pathlike.fd;
-        }
-
-        // Do we need to open both files?
-        if (this.destination_fd == bun.invalid_fd and this.source_fd == bun.invalid_fd) {
-
-            // First, we attempt to clonefile() on macOS
-            // This is the fastest way to copy a file.
-            if (comptime Environment.isMac) {
-                if (this.offset == 0 and this.source_file_store.pathlike == .path and this.destination_file_store.pathlike == .path) {
-                    do_clonefile: {
-                        var path_buf: bun.PathBuffer = undefined;
-
-                        // stat the output file, make sure it:
-                        // 1. Exists
-                        switch (bun.sys.stat(this.source_file_store.pathlike.path.sliceZ(&path_buf))) {
-                            .result => |result| {
-                                stat_ = result;
-
-                                if (posix.S.ISDIR(@intCast(result.mode))) {
-                                    this.system_error = unsupported_directory_error;
-                                    return;
-                                }
-
-                                if (!posix.S.ISREG(@intCast(result.mode)))
-                                    break :do_clonefile;
-                            },
-                            .err => |err| {
-                                // If we can't stat it, we also can't copy it.
-                                this.system_error = err.toSystemError();
-                                return;
-                            },
-                        }
-
-                        if (this.doClonefile()) {
-                            if (this.max_length != Blob.max_size and this.max_length < @as(SizeType, @intCast(stat_.?.size))) {
-                                // If this fails...well, there's not much we can do about it.
-                                _ = bun.c.truncate(
-                                    this.destination_file_store.pathlike.path.sliceZ(&path_buf),
-                                    @as(std.posix.off_t, @intCast(this.max_length)),
-                                );
-                                this.read_len = @as(SizeType, @intCast(this.max_length));
-                            } else {
-                                this.read_len = @as(SizeType, @intCast(stat_.?.size));
-                            }
-                            // Apply destination mode if specified (clonefile copies source permissions)
-                            if (this.destination_mode) |mode| {
-                                switch (bun.sys.chmod(this.destination_file_store.pathlike.path.sliceZ(&path_buf), mode)) {
-                                    .err => |err| {
-                                        this.system_error = err.toSystemError();
-                                        return;
-                                    },
-                                    .result => {},
-                                }
-                            }
-                            return;
-                        } else |_| {
-
-                            // this may still fail, in which case we just continue trying with fcopyfile
-                            // it can fail when the input file already exists
-                            // or if the output is not a directory
-                            // or if it's a network volume
-                            this.system_error = null;
-                        }
-                    }
-                }
-            }
-
-            this.doOpenFile(.both) catch return;
-            // Do we need to open only one file?
-        } else if (this.destination_fd == bun.invalid_fd) {
-            this.source_fd = this.source_file_store.pathlike.fd;
-
-            this.doOpenFile(.destination) catch return;
-            // Do we need to open only one file?
-        } else if (this.source_fd == bun.invalid_fd) {
-            this.destination_fd = this.destination_file_store.pathlike.fd;
-
-            this.doOpenFile(.source) catch return;
-        }
-
-        if (this.system_error != null) {
-            return;
-        }
-
-        assert(this.destination_fd.isValid());
-        assert(this.source_fd.isValid());
-
-        if (this.destination_file_store.pathlike == .fd) {}
-
-        const stat: bun.Stat = stat_ orelse switch (bun.sys.fstat(this.source_fd)) {
-            .result => |result| result,
-            .err => |err| {
-                this.doClose();
-                this.system_error = err.toSystemError();
-                return;
-            },
-        };
-
-        if (posix.S.ISDIR(@intCast(stat.mode))) {
-            this.system_error = unsupported_directory_error;
-            this.doClose();
-            return;
-        }
-
-        if (stat.size != 0) {
-            this.max_length = @max(@min(@as(SizeType, @intCast(stat.size)), this.max_length), this.offset) - this.offset;
-            if (this.max_length == 0) {
-                this.doClose();
-                return;
-            }
-
-            if (bun.sys.preallocate_supported and
-                posix.S.ISREG(@intCast(stat.mode)) and
-                this.max_length > bun.sys.preallocate_length and
-                this.max_length != Blob.max_size)
-            {
-                bun.sys.preallocate_file(this.destination_fd.cast(), 0, this.max_length) catch {};
-            }
-        }
-
-        if (comptime Environment.isLinux) {
-
-            // Bun.write(Bun.file("a"), Bun.file("b"))
-            if (posix.S.ISREG(@intCast(stat.mode)) and (posix.S.ISREG(this.destination_file_store.mode) or this.destination_file_store.mode == 0)) {
-                if (this.destination_file_store.is_atty orelse false) {
-                    this.doCopyFileRange(.copy_file_range, true) catch {};
-                } else {
-                    this.doCopyFileRange(.copy_file_range, false) catch {};
-                }
-
-                this.doClose();
-                return;
-            }
-
-            // $ bun run foo.js | bun run bar.js
-            if (posix.S.ISFIFO(@intCast(stat.mode)) and posix.S.ISFIFO(this.destination_file_store.mode)) {
-                if (this.destination_file_store.is_atty orelse false) {
-                    this.doCopyFileRange(.splice, true) catch {};
-                } else {
-                    this.doCopyFileRange(.splice, false) catch {};
-                }
-
-                this.doClose();
-                return;
-            }
-
-            if (posix.S.ISREG(@intCast(stat.mode)) or posix.S.ISCHR(@intCast(stat.mode)) or posix.S.ISSOCK(@intCast(stat.mode))) {
-                if (this.destination_file_store.is_atty orelse false) {
-                    this.doCopyFileRange(.sendfile, true) catch {};
-                } else {
-                    this.doCopyFileRange(.sendfile, false) catch {};
-                }
-
-                this.doClose();
-                return;
-            }
-
-            this.system_error = unsupported_non_regular_file_error;
-            this.doClose();
-            return;
-        }
-
-        if (comptime Environment.isMac) {
-            this.doFCopyFileWithReadWriteLoopFallback() catch {
-                this.doClose();
-
-                return;
-            };
-            if (stat.size != 0 and @as(SizeType, @intCast(stat.size)) > this.max_length) {
-                _ = darwin.ftruncate(this.destination_fd.cast(), @as(std.posix.off_t, @intCast(this.max_length)));
-            }
-
-            this.doClose();
-        } else if (comptime Environment.isFreeBSD) {
-            var total_written: u64 = 0;
-            switch (jsc.Node.fs.NodeFS.copyFileUsingReadWriteLoop("", "", this.source_fd, this.destination_fd, 0, &total_written)) {
-                .err => |err| {
-                    this.system_error = err.toSystemError();
-                    this.doClose();
-                    return;
-                },
-                .result => {},
-            }
-            if (stat.size != 0 and @as(SizeType, @intCast(stat.size)) > this.max_length) {
-                _ = bun.sys.ftruncate(this.destination_fd, @intCast(this.max_length));
-                this.read_len = @truncate(@min(total_written, @as(u64, this.max_length)));
-            } else {
-                this.read_len = @truncate(total_written);
-            }
-            this.doClose();
-        } else {
-            @compileError("TODO: implement copyfile");
-        }
-    }
-};
-
-pub const CopyFileWindows = struct {
-    destination_file_store: *Store,
-    source_file_store: *Store,
-
-    io_request: libuv.fs_t = std.mem.zeroes(libuv.fs_t),
-    promise: jsc.JSPromise.Strong = .{},
-    mkdirp_if_not_exists: bool = false,
-    destination_mode: ?bun.Mode = null,
-    event_loop: *jsc.EventLoop,
-
-    size: Blob.SizeType = Blob.max_size,
-
-    /// Bytes written, stored for use after async chmod completes
-    written_bytes: usize = 0,
-
-    /// For mkdirp
-    err: ?bun.sys.Error = null,
-
-    /// When we are unable to get the original file path, we do a read-write loop that uses libuv.
-    read_write_loop: ReadWriteLoop = .{},
-
-    pub const ReadWriteLoop = struct {
-        source_fd: bun.FD = bun.invalid_fd,
-        must_close_source_fd: bool = false,
-        destination_fd: bun.FD = bun.invalid_fd,
-        must_close_destination_fd: bool = false,
-        written: usize = 0,
-        read_buf: std.array_list.Managed(u8) = std.array_list.Managed(u8).init(bun.default_allocator),
-        uv_buf: libuv.uv_buf_t = .{ .base = undefined, .len = 0 },
-
-        pub fn start(read_write_loop: *ReadWriteLoop, this: *CopyFileWindows) bun.sys.Maybe(void) {
-            bun.handleOom(read_write_loop.read_buf.ensureTotalCapacityPrecise(64 * 1024));
-
-            return read(read_write_loop, this);
-        }
-
-        pub fn read(read_write_loop: *ReadWriteLoop, this: *CopyFileWindows) bun.sys.Maybe(void) {
-            read_write_loop.read_buf.items.len = 0;
-            read_write_loop.uv_buf = libuv.uv_buf_t.init(read_write_loop.read_buf.allocatedSlice());
-            const loop = this.event_loop.virtual_machine.event_loop_handle.?;
-
-            // This io_request is used for both reading and writing.
-            // For now, we don't start reading the next chunk until
-            // we've finished writing all the previous chunks.
-            this.io_request.data = @ptrCast(this);
-
-            const rc = libuv.uv_fs_read(
-                loop,
-                &this.io_request,
-                read_write_loop.source_fd.uv(),
-                @ptrCast(&read_write_loop.uv_buf),
-                1,
-                -1,
-                &onRead,
-            );
-
-            if (rc.toError(.read)) |err| {
-                return .{ .err = err };
-            }
-
-            return .success;
-        }
-
-        fn onRead(req: *libuv.fs_t) callconv(.c) void {
-            var this: *CopyFileWindows = @fieldParentPtr("io_request", req);
-            bun.assert(req.data == @as(?*anyopaque, @ptrCast(this)));
-
-            const source_fd = this.read_write_loop.source_fd;
-            const destination_fd = this.read_write_loop.destination_fd;
-            const read_buf = &this.read_write_loop.read_buf.items;
-
-            const event_loop = this.event_loop;
-
-            const rc = req.result;
-
-            bun.sys.syslog("uv_fs_read({f}, {d}) = {d}", .{ source_fd, read_buf.len, rc.int() });
-            if (rc.toError(.read)) |err| {
-                this.err = err;
-                this.onReadWriteLoopComplete();
-                return;
-            }
-
-            read_buf.len = @intCast(rc.int());
-            this.read_write_loop.uv_buf = libuv.uv_buf_t.init(read_buf.*);
-
-            if (rc.int() == 0) {
-                // Handle EOF. We can't read any more.
-                this.onReadWriteLoopComplete();
-                return;
-            }
-
-            // Re-use the fs request.
-            req.deinit();
-            const rc2 = libuv.uv_fs_write(
-                event_loop.virtual_machine.event_loop_handle.?,
-                &this.io_request,
-                destination_fd.uv(),
-                @ptrCast(&this.read_write_loop.uv_buf),
-                1,
-                -1,
-                &onWrite,
-            );
-            req.data = @ptrCast(this);
-
-            if (rc2.toError(.write)) |err| {
-                this.err = err;
-                this.onReadWriteLoopComplete();
-                return;
-            }
-        }
-
-        fn onWrite(req: *libuv.fs_t) callconv(.c) void {
-            var this: *CopyFileWindows = @fieldParentPtr("io_request", req);
-            bun.assert(req.data == @as(?*anyopaque, @ptrCast(this)));
-            const buf = &this.read_write_loop.read_buf.items;
-
-            const destination_fd = this.read_write_loop.destination_fd;
-
-            const rc = req.result;
-
-            bun.sys.syslog("uv_fs_write({f}, {d}) = {d}", .{ destination_fd, buf.len, rc.int() });
-
-            if (rc.toError(.write)) |err| {
-                this.err = err;
-                this.onReadWriteLoopComplete();
-                return;
-            }
-
-            const wrote: u32 = @intCast(rc.int());
-
-            this.read_write_loop.written += wrote;
-
-            if (wrote < buf.len) {
-                if (wrote == 0) {
-                    // Handle EOF. We can't write any more.
-                    this.onReadWriteLoopComplete();
-                    return;
-                }
-
-                // Re-use the fs request.
-                req.deinit();
-                req.data = @ptrCast(this);
-
-                this.read_write_loop.uv_buf = libuv.uv_buf_t.init(this.read_write_loop.uv_buf.slice()[wrote..]);
-                const rc2 = libuv.uv_fs_write(
-                    this.event_loop.virtual_machine.event_loop_handle.?,
-                    &this.io_request,
-                    destination_fd.uv(),
-                    @ptrCast(&this.read_write_loop.uv_buf),
-                    1,
-                    -1,
-                    &onWrite,
-                );
-
-                if (rc2.toError(.write)) |err| {
-                    this.err = err;
-                    this.onReadWriteLoopComplete();
-                    return;
-                }
-
-                return;
-            }
-
-            req.deinit();
-            switch (this.read_write_loop.read(this)) {
-                .err => |err| {
-                    this.err = err;
-                    this.onReadWriteLoopComplete();
-                },
-                .result => {},
-            }
-        }
-
-        pub fn close(this: *ReadWriteLoop) void {
-            if (this.must_close_source_fd) {
-                if (this.source_fd.makeLibUVOwned()) |fd| {
-                    bun.Async.Closer.close(
-                        fd,
-                        bun.Async.Loop.get(),
-                    );
-                } else |_| {
-                    this.source_fd.close();
-                }
-                this.must_close_source_fd = false;
-                this.source_fd = bun.invalid_fd;
-            }
-
-            if (this.must_close_destination_fd) {
-                if (this.destination_fd.makeLibUVOwned()) |fd| {
-                    bun.Async.Closer.close(
-                        fd,
-                        bun.Async.Loop.get(),
-                    );
-                } else |_| {
-                    this.destination_fd.close();
-                }
-                this.must_close_destination_fd = false;
-                this.destination_fd = bun.invalid_fd;
-            }
-
-            this.read_buf.clearAndFree();
-        }
-    };
-
-    pub fn onReadWriteLoopComplete(this: *CopyFileWindows) void {
-        this.event_loop.unrefConcurrently();
-
-        if (this.err) |err| {
-            this.err = null;
-            this.throw(err);
-            return;
-        }
-
-        this.onComplete(this.read_write_loop.written);
-    }
-
-    pub const new = bun.TrivialNew(@This());
-
-    pub fn init(
-        destination_file_store: *Store,
-        source_file_store: *Store,
-        event_loop: *jsc.EventLoop,
-        mkdirp_if_not_exists: bool,
-        size_: Blob.SizeType,
-        destination_mode: ?bun.Mode,
-    ) jsc.JSValue {
-        destination_file_store.ref();
-        source_file_store.ref();
-        const result = CopyFileWindows.new(.{
-            .destination_file_store = destination_file_store,
-            .source_file_store = source_file_store,
-            .promise = jsc.JSPromise.Strong.init(event_loop.global),
-            .io_request = std.mem.zeroes(libuv.fs_t),
-            .event_loop = event_loop,
-            .mkdirp_if_not_exists = mkdirp_if_not_exists,
-            .destination_mode = destination_mode,
-            .size = size_,
-        });
-        const promise = result.promise.value();
-
-        // On error, this function might free the CopyFileWindows struct.
-        // So we can no longer reference it beyond this point.
-        result.copyfile();
-
-        return promise;
-    }
-
-    fn preparePathlike(pathlike: *jsc.Node.PathOrFileDescriptor, must_close: *bool, is_reading: bool) bun.sys.Maybe(bun.FD) {
-        if (pathlike.* == .path) {
-            const fd = switch (bun.sys.openatWindowsT(
-                u8,
-                bun.invalid_fd,
-                pathlike.path.slice(),
-                if (is_reading)
-                    bun.O.RDONLY
-                else
-                    bun.O.WRONLY | bun.O.CREAT,
-                0,
-            )) {
-                .result => |result| result.makeLibUVOwned() catch {
-                    result.close();
-                    return .{
-                        .err = .{
-                            .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EMFILE))),
-                            .syscall = .open,
-                            .path = pathlike.path.slice(),
-                        },
-                    };
-                },
-                .err => |err| {
-                    return .{
-                        .err = err,
-                    };
-                },
-            };
-            must_close.* = true;
-            return .{ .result = fd };
-        } else {
-            // We assume that this is already a uv-casted file descriptor.
-            return .{ .result = pathlike.fd };
-        }
-    }
-
-    fn prepareReadWriteLoop(this: *CopyFileWindows) void {
-        // Open the destination first, so that if we need to call
-        // mkdirp(), we don't spend extra time opening the file handle for
-        // the source.
-        this.read_write_loop.destination_fd = switch (preparePathlike(&this.destination_file_store.data.file.pathlike, &this.read_write_loop.must_close_destination_fd, false)) {
-            .result => |fd| fd,
-            .err => |err| {
-                if (this.mkdirp_if_not_exists and err.getErrno() == .NOENT) {
-                    if (this.destinationParent()) |parent| {
-                        this.mkdirp(parent);
-                        return;
-                    }
-                }
-
-                this.throw(err);
-                return;
-            },
-        };
-
-        this.read_write_loop.source_fd = switch (preparePathlike(&this.source_file_store.data.file.pathlike, &this.read_write_loop.must_close_source_fd, true)) {
-            .result => |fd| fd,
-            .err => |err| {
-                this.throw(err);
-                return;
-            },
-        };
-
-        switch (this.read_write_loop.start(this)) {
-            .err => |err| {
-                this.throw(err);
-                return;
-            },
-            .result => {
-                this.event_loop.refConcurrently();
-            },
-        }
-    }
-
-    fn copyfile(this: *CopyFileWindows) void {
-        // This is for making it easier for us to test this code path
-        if (bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_UV_FS_COPYFILE.get()) {
-            this.prepareReadWriteLoop();
-            return;
-        }
-
-        var pathbuf1: bun.PathBuffer = undefined;
-        var pathbuf2: bun.PathBuffer = undefined;
-        var destination_file_store = &this.destination_file_store.data.file;
-        var source_file_store = &this.source_file_store.data.file;
-
-        const new_path: [:0]const u8 = brk: {
-            switch (destination_file_store.pathlike) {
-                .path => {
-                    break :brk destination_file_store.pathlike.path.sliceZ(&pathbuf1);
-                },
-                .fd => |fd| {
-                    switch (bun.sys.File.from(fd).kind()) {
-                        .err => |err| {
-                            this.throw(err);
-                            return;
-                        },
-                        .result => |kind| {
-                            switch (kind) {
-                                .directory => {
-                                    this.throw(bun.sys.Error.fromCode(.ISDIR, .open));
-                                    return;
-                                },
-                                .character_device => {
-                                    this.prepareReadWriteLoop();
-                                    return;
-                                },
-                                else => {
-                                    const out = bun.getFdPath(fd, &pathbuf1) catch {
-                                        // This case can happen when either:
-                                        // - NUL device
-                                        // - Pipe. `cat foo.txt | bun bar.ts`
-                                        this.prepareReadWriteLoop();
-                                        return;
-                                    };
-                                    pathbuf1[out.len] = 0;
-                                    break :brk pathbuf1[0..out.len :0];
-                                },
-                            }
-                        },
-                    }
-                },
-            }
-        };
-        const old_path: [:0]const u8 = brk: {
-            switch (source_file_store.pathlike) {
-                .path => {
-                    break :brk source_file_store.pathlike.path.sliceZ(&pathbuf2);
-                },
-                .fd => |fd| {
-                    switch (bun.sys.File.from(fd).kind()) {
-                        .err => |err| {
-                            this.throw(err);
-                            return;
-                        },
-                        .result => |kind| {
-                            switch (kind) {
-                                .directory => {
-                                    this.throw(bun.sys.Error.fromCode(.ISDIR, .open));
-                                    return;
-                                },
-                                .character_device => {
-                                    this.prepareReadWriteLoop();
-                                    return;
-                                },
-                                else => {
-                                    const out = bun.getFdPath(fd, &pathbuf2) catch {
-                                        // This case can happen when either:
-                                        // - NUL device
-                                        // - Pipe. `cat foo.txt | bun bar.ts`
-                                        this.prepareReadWriteLoop();
-                                        return;
-                                    };
-                                    pathbuf2[out.len] = 0;
-                                    break :brk pathbuf2[0..out.len :0];
-                                },
-                            }
-                        },
-                    }
-                },
-            }
-        };
-        const loop = this.event_loop.virtual_machine.event_loop_handle.?;
-        this.io_request.data = @ptrCast(this);
-
-        const rc = libuv.uv_fs_copyfile(
-            loop,
-            &this.io_request,
-            old_path,
-            new_path,
-            0,
-            &onCopyFile,
-        );
-
-        if (rc.errno()) |errno| {
-            this.throw(.{
-                // #6336
-                .errno = if (errno == @backingInt(bun.sys.SystemErrno.EPERM))
-                    @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.ENOENT)))
-                else
-                    errno,
-                .syscall = .copyfile,
-                .path = old_path,
-            });
-            return;
-        }
-        this.event_loop.refConcurrently();
-    }
-
-    pub fn throw(this: *CopyFileWindows, err: bun.sys.Error) void {
-        const globalThis = this.event_loop.global;
-        const promise = this.promise.swap();
-        const err_instance = err.toJSWithAsyncStack(globalThis, promise);
-
-        var event_loop = this.event_loop;
-        event_loop.enter();
-        defer event_loop.exit();
-        this.deinit();
-        promise.reject(globalThis, err_instance) catch {}; // TODO: properly propagate exception upwards
-    }
-
-    fn onCopyFile(req: *libuv.fs_t) callconv(.c) void {
-        var this: *CopyFileWindows = @fieldParentPtr("io_request", req);
-        bun.assert(req.data == @as(?*anyopaque, @ptrCast(this)));
-
-        var event_loop = this.event_loop;
-        event_loop.unrefConcurrently();
-        const rc = req.result;
-
-        bun.sys.syslog("uv_fs_copyfile() = {f}", .{rc});
-        if (rc.errEnum()) |errno| {
-            if (this.mkdirp_if_not_exists and errno == .NOENT) {
-                if (this.destinationParent()) |parent| {
-                    req.deinit();
-                    this.mkdirp(parent);
-                    return;
-                }
-            }
-            var err = bun.sys.Error.fromCode(
-                // #6336
-                if (errno == .PERM) .NOENT else errno,
-
-                .copyfile,
-            );
-            const destination = &this.destination_file_store.data.file;
-
-            // we don't really know which one it is
-            if (destination.pathlike == .path) {
-                err = err.withPath(destination.pathlike.path.slice());
-            } else if (destination.pathlike == .fd) {
-                err = err.withFd(destination.pathlike.fd);
-            }
-
-            this.throw(err);
-            return;
-        }
-
-        this.onComplete(req.statbuf.size);
-    }
-
-    pub fn onComplete(this: *CopyFileWindows, written_actual: usize) void {
-        var written = written_actual;
-        if (written != @as(@TypeOf(written), @intCast(this.size)) and this.size != Blob.max_size) {
-            this.truncate();
-            written = @intCast(this.size);
-        }
-
-        // Apply destination mode if specified (async)
-        if (this.destination_mode) |mode| {
-            if (this.destination_file_store.data.file.pathlike == .path) {
-                this.written_bytes = written;
-                var pathbuf: bun.PathBuffer = undefined;
-                const path = this.destination_file_store.data.file.pathlike.path.sliceZ(&pathbuf);
-                const loop = this.event_loop.virtual_machine.event_loop_handle.?;
-                this.io_request.deinit();
-                this.io_request = std.mem.zeroes(libuv.fs_t);
-                this.io_request.data = @ptrCast(this);
-
-                const rc = libuv.uv_fs_chmod(
-                    loop,
-                    &this.io_request,
-                    path,
-                    @intCast(mode),
-                    &onChmod,
-                );
-
-                if (rc.errno()) |errno| {
-                    // chmod failed to start - reject the promise to report the error
-                    var err = bun.sys.Error.fromCode(@fromBackingInt(@intCast(errno)), .chmod);
-                    const destination = &this.destination_file_store.data.file;
-                    if (destination.pathlike == .path) {
-                        err = err.withPath(destination.pathlike.path.slice());
-                    }
-                    this.throw(err);
-                    return;
-                }
-                this.event_loop.refConcurrently();
-                return;
-            }
-        }
-
-        this.resolvePromise(written);
-    }
-
-    fn onChmod(req: *libuv.fs_t) callconv(.c) void {
-        var this: *CopyFileWindows = @fieldParentPtr("io_request", req);
-        bun.assert(req.data == @as(?*anyopaque, @ptrCast(this)));
-
-        var event_loop = this.event_loop;
-        event_loop.unrefConcurrently();
-
-        const rc = req.result;
-        if (rc.errEnum()) |errno| {
-            var err = bun.sys.Error.fromCode(errno, .chmod);
-            const destination = &this.destination_file_store.data.file;
-            if (destination.pathlike == .path) {
-                err = err.withPath(destination.pathlike.path.slice());
-            }
-            this.throw(err);
-            return;
-        }
-
-        this.resolvePromise(this.written_bytes);
-    }
-
-    fn resolvePromise(this: *CopyFileWindows, written: usize) void {
-        const globalThis = this.event_loop.global;
-        const promise = this.promise.swap();
-        var event_loop = this.event_loop;
-        event_loop.enter();
-        defer event_loop.exit();
-
-        this.deinit();
-        promise.resolve(globalThis, jsc.JSValue.jsNumberFromUint64(written)) catch {}; // TODO: properly propagate exception upwards
-    }
-
-    fn truncate(this: *CopyFileWindows) void {
-        // TODO: optimize this
-        @branchHint(.cold);
-
-        var node_fs: jsc.Node.fs.NodeFS = .{};
-        _ = node_fs.truncate(
-            .{
-                .path = this.destination_file_store.data.file.pathlike,
-                .len = @intCast(this.size),
-            },
-            .sync,
-        );
-    }
-
-    pub fn deinit(this: *CopyFileWindows) void {
-        this.read_write_loop.close();
-        this.destination_file_store.deref();
-        this.source_file_store.deref();
-        this.promise.deinit();
-        this.io_request.deinit();
+    pub fn deinitUnscheduled(this: *CopyFile) void {
+        bun.assert(this.delivery == null);
+        this.close(.source);
+        this.close(.destination);
+        this.source.deinit();
+        this.destination.deinit();
+        bun.default_allocator.free(this.buffer);
         bun.destroy(this);
     }
-
-    fn destinationParent(this: *const CopyFileWindows) ?[]const u8 {
-        const destination = &this.destination_file_store.data.file;
-        if (destination.pathlike != .path) return null;
-        return std.fs.path.dirnameWindows(destination.pathlike.path.slice());
-    }
-
-    fn mkdirp(this: *CopyFileWindows, parent: []const u8) void {
-        bun.sys.syslog("mkdirp", .{});
-        this.mkdirp_if_not_exists = false;
-
-        this.event_loop.refConcurrently();
-        jsc.Node.fs.Async.AsyncMkdirp.new(.{
-            .completion = @ptrCast(&onMkdirpCompleteConcurrent),
-            .completion_ctx = this,
-            .path = parent,
-        }).schedule(&this.event_loop.virtual_machine.background_tasks);
-    }
-
-    fn onMkdirpComplete(this: *CopyFileWindows) void {
-        this.event_loop.unrefConcurrently();
-
-        if (bun.take(&this.err)) |err| {
-            this.throw(err);
-            var err2 = err;
-            err2.deinit();
-            return;
-        }
-
-        this.copyfile();
-    }
-
-    fn onMkdirpCompleteConcurrent(this: *CopyFileWindows, err_: bun.sys.Maybe(void)) void {
-        bun.sys.syslog("mkdirp complete", .{});
-        assert(this.err == null);
-        this.err = if (err_ == .err) err_.err else null;
-        this.event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.create(jsc.ManagedTask.New(CopyFileWindows, onMkdirpComplete).init(this)));
-    }
 };
-
-pub const IOWhich = enum {
-    source,
-    destination,
-    both,
-};
-
-const unsupported_directory_error = SystemError{
-    .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EISDIR))),
-    .message = bun.String.static("That doesn't work on folders"),
-    .syscall = bun.String.static("fstat"),
-};
-const unsupported_non_regular_file_error = SystemError{
-    .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.ENOTSUP))),
-    .message = bun.String.static("Non-regular files aren't supported yet"),
-    .syscall = bun.String.static("fstat"),
-};
-
-pub const CopyFilePromiseTask = jsc.ConcurrentPromiseTask(CopyFile);
 
 const std = @import("std");
-
 const bun = @import("bun");
 const Environment = bun.Environment;
-const assert = bun.assert;
-const webcore = bun.webcore;
-const libuv = bun.windows.libuv;
-
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-const SystemError = jsc.SystemError;
-
-const Blob = webcore.Blob;
-const SizeType = Blob.SizeType;
-const Store = Blob.Store;
+const FileIO = @import("./FileIO.zig");
+const CopyPlan = @import("./CopyPlan.zig");
+const StoreRange = @import("./StoreRange.zig");
+const NodeFSCore = @import("../../node/NodeFSCore.zig");

@@ -18,158 +18,216 @@
 #ifndef UWS_WEBSOCKETEXTENSIONS_H
 #define UWS_WEBSOCKETEXTENSIONS_H
 
-/* There is a new, huge bug scenario that needs to be fixed:
- * pub/sub does not support being in DEDICATED_COMPRESSOR-mode while having
- * some clients downgraded to SHARED_COMPRESSOR - we cannot allow the client to
- * demand a downgrade to SHARED_COMPRESSOR (yet) until we fix that scenario in pub/sub */
-// #define UWS_ALLOW_SHARED_AND_DEDICATED_COMPRESSOR_MIX
-
-/* We forbid negotiating 8 windowBits since Zlib has a bug with this */
-// #define UWS_ALLOW_8_WINDOW_BITS
-
-#include <climits>
-#include <cctype>
-#include <string>
+#include "HttpHeaderSyntax.h"
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <charconv>
+#include <cstring>
+#include <limits>
+#include <optional>
 #include <string_view>
-#include <tuple>
 
 namespace uWS {
 
-enum ExtensionTokens {
-    /* Standard permessage-deflate tokens */
-    TOK_PERMESSAGE_DEFLATE = 1838,
-    TOK_SERVER_NO_CONTEXT_TAKEOVER = 2807,
-    TOK_CLIENT_NO_CONTEXT_TAKEOVER = 2783,
-    TOK_SERVER_MAX_WINDOW_BITS = 2372,
-    TOK_CLIENT_MAX_WINDOW_BITS = 2348,
-    /* Non-standard alias for Safari */
-    TOK_X_WEBKIT_DEFLATE_FRAME = 2149,
-    TOK_NO_CONTEXT_TAKEOVER = 2049,
-    TOK_MAX_WINDOW_BITS = 1614
-
+struct ExtensionOffer {
+    enum class Kind { Unsupported, PerMessageDeflate, WebKitDeflateFrame };
+    Kind kind = Kind::Unsupported;
+    bool valid = true;
+    bool serverNoContextTakeover = false;
+    bool clientNoContextTakeover = false;
+    std::optional<unsigned int> serverMaxWindowBits;
+    bool clientMaxWindowBitsOffered = false;
+    std::optional<unsigned int> clientMaxWindowBits;
+    bool noContextTakeover = false;
+    std::optional<unsigned int> maxWindowBits;
 };
 
 struct ExtensionsParser {
 private:
-    int *lastInteger = nullptr;
+    std::string_view input;
+    size_t position = 0;
+    bool invalidSyntax = false;
+    bool sawOffer = false;
 
-public:
-    /* Standard */
-    bool perMessageDeflate = false;
-    bool serverNoContextTakeover = false;
-    bool clientNoContextTakeover = false;
-    int serverMaxWindowBits = 0;
-    int clientMaxWindowBits = 0;
+    struct ParameterValue {
+        bool present = false;
+        std::optional<unsigned int> windowBits;
+    };
 
-    /* Non-standard Safari */
-    bool xWebKitDeflateFrame = false;
-    bool noContextTakeover = false;
-    int maxWindowBits = 0;
-
-    int getToken(const char *&in, const char *stop) {
-        while (in != stop && !isalnum(*in)) {
-            in++;
-        }
-
-        /* Don't care more than this for now */
-        static_assert(SHRT_MIN > INT_MIN, "Integer overflow fix is invalid for this platform, report this as a bug!");
-
-        int hashedToken = 0;
-        while (in != stop && (isalnum(*in) || *in == '-' || *in == '_')) {
-            if (isdigit(*in)) {
-                /* This check is a quick and incorrect fix for integer overflow
-                 * in oss-fuzz but we don't care as it doesn't matter either way */
-                if (hashedToken > SHRT_MIN && hashedToken < SHRT_MAX) {
-                    hashedToken = hashedToken * 10 - (*in - '0');
-                }
-            } else {
-                hashedToken += *in;
-            }
-            in++;
-        }
-        return hashedToken;
+    void skipWhitespace() {
+        while (position < input.length() && (input[position] == ' ' || input[position] == '\t')) position++;
     }
 
-    ExtensionsParser(const char *data, size_t length) {
-        const char *stop = data + length;
-        int token = 1;
+    std::string_view token() {
+        size_t start = position;
+        while (position < input.length() && HttpHeaderSyntax::isTokenByte(static_cast<unsigned char>(input[position]))) position++;
+        return input.substr(start, position - start);
+    }
 
-        /* Ignore anything before permessage-deflate or x-webkit-deflate-frame */
-        for (; token && token != TOK_PERMESSAGE_DEFLATE && token != TOK_X_WEBKIT_DEFLATE_FRAME; token = getToken(data, stop));
-
-        /* What protocol are we going to use? */
-        perMessageDeflate = (token == TOK_PERMESSAGE_DEFLATE);
-        xWebKitDeflateFrame = (token == TOK_X_WEBKIT_DEFLATE_FRAME);
-
-        while ((token = getToken(data, stop))) {
-            switch (token) {
-            case TOK_X_WEBKIT_DEFLATE_FRAME:
-                /* Duplicates not allowed/supported */
-                return;
-            case TOK_NO_CONTEXT_TAKEOVER:
-                noContextTakeover = true;
-                break;
-            case TOK_MAX_WINDOW_BITS:
-                maxWindowBits = 1;
-                lastInteger = &maxWindowBits;
-                break;
-            case TOK_PERMESSAGE_DEFLATE:
-                /* Duplicates not allowed/supported */
-                return;
-            case TOK_SERVER_NO_CONTEXT_TAKEOVER:
-                serverNoContextTakeover = true;
-                break;
-            case TOK_CLIENT_NO_CONTEXT_TAKEOVER:
-                clientNoContextTakeover = true;
-                break;
-            case TOK_SERVER_MAX_WINDOW_BITS:
-                serverMaxWindowBits = 1;
-                lastInteger = &serverMaxWindowBits;
-                break;
-            case TOK_CLIENT_MAX_WINDOW_BITS:
-                clientMaxWindowBits = 1;
-                lastInteger = &clientMaxWindowBits;
-                break;
-            default:
-                if (token < 0 && lastInteger) {
-                    *lastInteger = -token;
-                }
+    bool value(ParameterValue &out) {
+        out.present = true;
+        bool quoted = position < input.length() && input[position] == '"';
+        if (quoted) position++;
+        unsigned int digits = 0;
+        unsigned int number = 0;
+        bool decimal = true;
+        bool terminated = !quoted;
+        while (position < input.length()) {
+            unsigned char byte = static_cast<unsigned char>(input[position]);
+            if (quoted && byte == '"') {
+                position++;
+                terminated = true;
                 break;
             }
+            if (!quoted && !HttpHeaderSyntax::isTokenByte(byte)) break;
+            position++;
+            if (quoted && byte == '\\') {
+                if (position == input.length()) return false;
+                byte = static_cast<unsigned char>(input[position++]);
+            }
+            if (!HttpHeaderSyntax::isTokenByte(byte)) return false;
+            if (digits >= 2 || byte < '0' || byte > '9' || (digits == 0 && byte == '0')) decimal = false;
+            if (decimal) number = number * 10 + byte - '0';
+            if (digits < 3) digits++;
+        }
+        if (!terminated || digits == 0) return false;
+        if (decimal && number >= 8 && number <= 15) out.windowBits = number;
+        return true;
+    }
+
+    static void parameter(ExtensionOffer &offer, std::string_view name, const ParameterValue &value) {
+        if (offer.kind == ExtensionOffer::Kind::PerMessageDeflate) {
+            if (name == "server_no_context_takeover") {
+                if (offer.serverNoContextTakeover || value.present) offer.valid = false;
+                offer.serverNoContextTakeover = true;
+            } else if (name == "client_no_context_takeover") {
+                if (offer.clientNoContextTakeover || value.present) offer.valid = false;
+                offer.clientNoContextTakeover = true;
+            } else if (name == "server_max_window_bits") {
+                if (offer.serverMaxWindowBits || !value.windowBits) offer.valid = false;
+                offer.serverMaxWindowBits = value.windowBits;
+            } else if (name == "client_max_window_bits") {
+                if (offer.clientMaxWindowBitsOffered || (value.present && !value.windowBits)) offer.valid = false;
+                offer.clientMaxWindowBitsOffered = true;
+                offer.clientMaxWindowBits = value.windowBits;
+            } else {
+                offer.valid = false;
+            }
+        } else if (offer.kind == ExtensionOffer::Kind::WebKitDeflateFrame) {
+            if (name == "no_context_takeover") {
+                if (offer.noContextTakeover || value.present) offer.valid = false;
+                offer.noContextTakeover = true;
+            } else if (name == "max_window_bits") {
+                if (offer.maxWindowBits || !value.windowBits) offer.valid = false;
+                offer.maxWindowBits = value.windowBits;
+            } else {
+                offer.valid = false;
+            }
+        }
+    }
+
+public:
+    explicit ExtensionsParser(std::string_view input) : input(input) {}
+
+    bool malformed() const { return invalidSyntax; }
+
+    bool next(ExtensionOffer &offer) {
+        if (invalidSyntax) return false;
+        skipWhitespace();
+        while (position < input.length() && input[position] == ',') {
+            position++;
+            skipWhitespace();
+        }
+        if (position == input.length()) {
+            if (!sawOffer && !input.empty()) invalidSyntax = true;
+            return false;
+        }
+        auto name = token();
+        if (name.empty()) { invalidSyntax = true; return false; }
+        sawOffer = true;
+        offer = {};
+        if (name == "permessage-deflate") offer.kind = ExtensionOffer::Kind::PerMessageDeflate;
+        else if (name == "x-webkit-deflate-frame") offer.kind = ExtensionOffer::Kind::WebKitDeflateFrame;
+        for (;;) {
+            skipWhitespace();
+            if (position == input.length()) return true;
+            if (input[position] == ',') { position++; return true; }
+            if (input[position++] != ';') { invalidSyntax = true; return false; }
+            skipWhitespace();
+            auto parameterName = token();
+            if (parameterName.empty()) { invalidSyntax = true; return false; }
+            skipWhitespace();
+            ParameterValue parameterValue;
+            if (position < input.length() && input[position] == '=') {
+                position++;
+                skipWhitespace();
+                if (!value(parameterValue)) { invalidSyntax = true; return false; }
+            }
+            parameter(offer, parameterName, parameterValue);
         }
     }
 };
 
-/* Takes what we (the server) wants, returns what we got */
-static inline std::tuple<bool, int, int, std::string_view> negotiateCompression(bool wantCompression, int wantedCompressionWindow, int wantedInflationWindow, std::string_view offer) {
+struct ExtensionResponse {
+private:
+    static constexpr size_t integerCapacity = std::numeric_limits<int>::digits10 + 2;
+    static constexpr size_t capacity = std::max(
+        sizeof("x-webkit-deflate-frame") - 1 + std::max(sizeof("; no_context_takeover") - 1, sizeof("; max_window_bits=") - 1 + integerCapacity),
+        sizeof("permessage-deflate") - 1
+            + std::max(sizeof("; client_no_context_takeover") - 1, sizeof("; client_max_window_bits=") - 1 + integerCapacity)
+            + sizeof("; server_no_context_takeover") - 1
+            + sizeof("; server_max_window_bits=") - 1 + integerCapacity);
+    std::array<char, capacity> bytes{};
+    size_t length = 0;
 
-    /* If we don't want compression then we are done here */
-    if (!wantCompression) {
-        return {false, 0, 0, ""};
+public:
+    void append(std::string_view value) {
+        assert(value.length() <= bytes.size() - length);
+        memcpy(bytes.data() + length, value.data(), value.length());
+        length += value.length();
     }
 
-    ExtensionsParser ep(offer.data(), offer.length());
+    void appendInteger(std::string_view prefix, int value) {
+        append(prefix);
+        char digits[integerCapacity];
+        auto result = std::to_chars(digits, digits + sizeof(digits), value);
+        assert(result.ec == std::errc());
+        append({digits, static_cast<size_t>(result.ptr - digits)});
+    }
 
-    static thread_local std::string response;
-    response = "";
+    std::string_view view() const {
+        return {bytes.data(), length};
+    }
+};
 
+struct CompressionNegotiation {
+    enum class Status { Declined, Accepted, InvalidHeader };
+    Status status = Status::Declined;
+    int compressionWindow = 0;
+    int inflationWindow = 0;
+    ExtensionResponse response{};
+};
+
+static inline CompressionNegotiation negotiateCompressionOffer(int wantedCompressionWindow, int wantedInflationWindow, const ExtensionOffer &ep) {
+    if (!ep.valid || ep.kind == ExtensionOffer::Kind::Unsupported) return {};
+    if ((wantedCompressionWindow != 0 && wantedCompressionWindow < 8) || wantedCompressionWindow > 15 ||
+        (wantedInflationWindow != 0 && wantedInflationWindow < 8) || wantedInflationWindow > 15) return {};
+#ifndef UWS_ALLOW_8_WINDOW_BITS
+    if (wantedCompressionWindow == 8) return {};
+#endif
+    ExtensionResponse response;
     int compressionWindow = wantedCompressionWindow;
     int inflationWindow = wantedInflationWindow;
-    bool compression = false;
 
-    if (ep.xWebKitDeflateFrame) {
-        /* We now have compression */
-        compression = true;
-        response = "x-webkit-deflate-frame";
+    if (ep.kind == ExtensionOffer::Kind::WebKitDeflateFrame) {
+        response.append("x-webkit-deflate-frame");
 
         /* If the other peer has DEMANDED us no sliding window,
          * we cannot compress with anything other than shared compressor */
         if (ep.noContextTakeover) {
-            /* We must fail here right now (fix pub/sub) */
 #ifndef UWS_ALLOW_SHARED_AND_DEDICATED_COMPRESSOR_MIX
-            if (wantedCompressionWindow != 0) {
-                return {false, 0, 0, ""};
-            }
+            if (wantedCompressionWindow != 0) return {};
 #endif
 
             compressionWindow = 0;
@@ -177,78 +235,75 @@ static inline std::tuple<bool, int, int, std::string_view> negotiateCompression(
 
         /* If the other peer has DEMANDED us to use a limited sliding window,
          * we have to limit out compression sliding window */
-        if (ep.maxWindowBits && ep.maxWindowBits < compressionWindow) {
-            compressionWindow = ep.maxWindowBits;
+        if (ep.maxWindowBits) {
+            if (compressionWindow == 0 && *ep.maxWindowBits < 15) return {};
+            if (compressionWindow != 0) compressionWindow = std::min(compressionWindow, static_cast<int>(*ep.maxWindowBits));
 #ifndef UWS_ALLOW_8_WINDOW_BITS
-            /* We cannot really deny this, so we have to disable compression in this case */
-            if (compressionWindow == 8) {
-                return {false, 0, 0, ""};
-            }
+            if (compressionWindow == 8) return {};
 #endif
         }
 
         /* We decide our own inflation sliding window (and their compression sliding window) */
         if (wantedInflationWindow < 15) {
             if (!wantedInflationWindow) {
-                response += "; no_context_takeover";
+                response.append("; no_context_takeover");
             } else {
-                response += "; max_window_bits=" + std::to_string(wantedInflationWindow);
+                response.appendInteger("; max_window_bits=", wantedInflationWindow);
             }
         }
-    } else if (ep.perMessageDeflate) {
-        /* We now have compression */
-        compression = true;
-        response = "permessage-deflate";
+    } else {
+        response.append("permessage-deflate");
 
         if (ep.clientNoContextTakeover) {
             inflationWindow = 0;
-        } else if (ep.clientMaxWindowBits && ep.clientMaxWindowBits != 1) {
-            inflationWindow = std::min<int>(ep.clientMaxWindowBits, inflationWindow);
+        } else if (ep.clientMaxWindowBits) {
+            inflationWindow = std::min(inflationWindow, static_cast<int>(*ep.clientMaxWindowBits));
         }
 
         /* Whatever we have now, write */
         if (inflationWindow < 15) {
-            if (!inflationWindow || !ep.clientMaxWindowBits) {
-                response += "; client_no_context_takeover";
+            if (!inflationWindow || !ep.clientMaxWindowBitsOffered) {
+                response.append("; client_no_context_takeover");
                 inflationWindow = 0;
             } else {
-                response += "; client_max_window_bits=" + std::to_string(inflationWindow);
+                response.appendInteger("; client_max_window_bits=", inflationWindow);
             }
         }
 
-        /* This block basically lets the client lower it */
         if (ep.serverNoContextTakeover) {
-        /* This is an important (temporary) fix since we haven't allowed
-         * these two modes to mix, and pub/sub will not handle this case (yet) */
-#ifdef UWS_ALLOW_SHARED_AND_DEDICATED_COMPRESSOR_MIX
+#ifndef UWS_ALLOW_SHARED_AND_DEDICATED_COMPRESSOR_MIX
+            if (wantedCompressionWindow != 0) return {};
+#endif
             compressionWindow = 0;
-#endif
-        } else if (ep.serverMaxWindowBits) {
-            compressionWindow = std::min<int>(ep.serverMaxWindowBits, compressionWindow);
+        }
+        if (ep.serverMaxWindowBits) {
+            if (compressionWindow == 0 && *ep.serverMaxWindowBits < 15) return {};
+            if (compressionWindow != 0) compressionWindow = std::min(compressionWindow, static_cast<int>(*ep.serverMaxWindowBits));
 #ifndef UWS_ALLOW_8_WINDOW_BITS
-            /* Zlib cannot do windowBits=8, memLevel=1 so we raise it up to 9 minimum */
-            if (compressionWindow == 8) {
-                compressionWindow = 9;
-            }
+            if (compressionWindow == 8) return {};
 #endif
         }
 
-        /* Whatever we have now, write */
-        if (compressionWindow < 15) {
-            if (!compressionWindow) {
-                response += "; server_no_context_takeover";
-            } else {
-                response += "; server_max_window_bits=" + std::to_string(compressionWindow);
-            }
+        if (compressionWindow == 0) response.append("; server_no_context_takeover");
+        if (ep.serverMaxWindowBits || (compressionWindow > 0 && compressionWindow < 15)) {
+            response.appendInteger("; server_max_window_bits=", compressionWindow == 0 ? 15 : compressionWindow);
         }
     }
 
-    /* A final sanity check (this check does not actually catch too high values!) */
-    if ((compressionWindow && compressionWindow < 8) || compressionWindow > 15 || (inflationWindow && inflationWindow < 8) || inflationWindow > 15) {
-        return {false, 0, 0, ""};
-    }
+    return {CompressionNegotiation::Status::Accepted, compressionWindow, inflationWindow, response};
+}
 
-    return {compression, compressionWindow, inflationWindow, response};
+static inline CompressionNegotiation negotiateCompression(bool wantCompression, int wantedCompressionWindow, int wantedInflationWindow, std::string_view header) {
+    ExtensionsParser parser(header);
+    ExtensionOffer offer;
+    CompressionNegotiation selected;
+    while (parser.next(offer)) {
+        if (wantCompression && selected.status != CompressionNegotiation::Status::Accepted) {
+            selected = negotiateCompressionOffer(wantedCompressionWindow, wantedInflationWindow, offer);
+        }
+    }
+    if (parser.malformed()) return {CompressionNegotiation::Status::InvalidHeader};
+    return selected;
 }
 
 }

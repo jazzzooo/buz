@@ -103,7 +103,7 @@ class CallTracker {
         context.track(thisArg, argList);
         return fn.$apply(thisArg, argList);
       },
-    });
+    } as ProxyHandler<any>);
     this.#callChecks.add(context);
     this.#trackedFunctions.set(tracked, context);
     return tracked;

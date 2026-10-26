@@ -1,332 +1,219 @@
-pub fn writeFormatCredentials(credentials: *S3Credentials, options: bun.S3.MultiPartUploadOptions, acl: ?bun.S3.ACL, comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
-    try writer.writeAll("\n");
-
-    {
-        const Writer = @TypeOf(writer);
-
-        formatter.indent += 1;
-        defer formatter.indent -|= 1;
-
-        const endpoint = if (credentials.endpoint.len > 0) credentials.endpoint else (if (credentials.virtual_hosted_style) "https://<bucket>.s3.<region>.amazonaws.com" else "https://s3.<region>.amazonaws.com");
-
-        try formatter.writeIndent(Writer, writer);
-        try writer.writeAll(comptime bun.Output.prettyFmt("<r>endpoint<d>:<r> \"", enable_ansi_colors));
-        try writer.print(comptime bun.Output.prettyFmt("<r><b>{s}<r>\"", enable_ansi_colors), .{endpoint});
-        try formatter.printComma(Writer, writer, enable_ansi_colors);
-        try writer.writeAll("\n");
-
-        const region = if (credentials.region.len > 0) credentials.region else S3Credentials.guessRegion(credentials.endpoint);
-        try formatter.writeIndent(Writer, writer);
-        try writer.writeAll(comptime bun.Output.prettyFmt("<r>region<d>:<r> \"", enable_ansi_colors));
-        try writer.print(comptime bun.Output.prettyFmt("<r><b>{s}<r>\"", enable_ansi_colors), .{region});
-        try formatter.printComma(Writer, writer, enable_ansi_colors);
-        try writer.writeAll("\n");
-
-        // PS: We don't want to print the credentials if they are empty just signal that they are there without revealing them
-        if (credentials.accessKeyId.len > 0) {
-            try formatter.writeIndent(Writer, writer);
-            try writer.writeAll(comptime bun.Output.prettyFmt("<r>accessKeyId<d>:<r> \"<r><b>[REDACTED]<r>\"", enable_ansi_colors));
-            try formatter.printComma(Writer, writer, enable_ansi_colors);
-
-            try writer.writeAll("\n");
-        }
-
-        if (credentials.secretAccessKey.len > 0) {
-            try formatter.writeIndent(Writer, writer);
-            try writer.writeAll(comptime bun.Output.prettyFmt("<r>secretAccessKey<d>:<r> \"<r><b>[REDACTED]<r>\"", enable_ansi_colors));
-            try formatter.printComma(Writer, writer, enable_ansi_colors);
-
-            try writer.writeAll("\n");
-        }
-
-        if (credentials.sessionToken.len > 0) {
-            try formatter.writeIndent(Writer, writer);
-            try writer.writeAll(comptime bun.Output.prettyFmt("<r>sessionToken<d>:<r> \"<r><b>[REDACTED]<r>\"", enable_ansi_colors));
-            try formatter.printComma(Writer, writer, enable_ansi_colors);
-
-            try writer.writeAll("\n");
-        }
-
-        if (acl) |acl_value| {
-            try formatter.writeIndent(Writer, writer);
-            try writer.writeAll(comptime bun.Output.prettyFmt("<r>acl<d>:<r> ", enable_ansi_colors));
-            try writer.print(comptime bun.Output.prettyFmt("<r><b>{s}<r>\"", enable_ansi_colors), .{acl_value.toString()});
-            try formatter.printComma(Writer, writer, enable_ansi_colors);
-
-            try writer.writeAll("\n");
-        }
-
-        try formatter.writeIndent(Writer, writer);
-        try writer.writeAll(comptime bun.Output.prettyFmt("<r>partSize<d>:<r> ", enable_ansi_colors));
-        try formatter.printAs(.Double, Writer, writer, jsc.JSValue.jsNumber(options.partSize), .NumberObject, enable_ansi_colors);
-        try formatter.printComma(Writer, writer, enable_ansi_colors);
-
-        try writer.writeAll("\n");
-
-        try formatter.writeIndent(Writer, writer);
-        try writer.writeAll(comptime bun.Output.prettyFmt("<r>queueSize<d>:<r> ", enable_ansi_colors));
-        try formatter.printAs(.Double, Writer, writer, jsc.JSValue.jsNumber(options.queueSize), .NumberObject, enable_ansi_colors);
-        try formatter.printComma(Writer, writer, enable_ansi_colors);
-        try writer.writeAll("\n");
-
-        try formatter.writeIndent(Writer, writer);
-        try writer.writeAll(comptime bun.Output.prettyFmt("<r>retry<d>:<r> ", enable_ansi_colors));
-        try formatter.printAs(.Double, Writer, writer, jsc.JSValue.jsNumber(options.retry), .NumberObject, enable_ansi_colors);
-        try writer.writeAll("\n");
-    }
-}
-
 pub const S3Client = struct {
-    const log = bun.Output.scoped(.S3Client, .visible);
-    pub const js = jsc.Codegen.JSS3Client;
-    pub const toJS = js.toJS;
-    pub const fromJS = js.fromJS;
-    pub const fromJSDirect = js.fromJSDirect;
+    pub const Handle = S3ClientClass.Handle;
 
-    pub const new = bun.TrivialNew(@This());
-    credentials: *S3Credentials,
+    pub fn inspectCustom(_: *S3Client, context: bindgen.CallContext(S3ClientInspectSchema), args: bindgen.Args(S3ClientInspectSchema)) bun.JSError!bindgen.DOMString {
+        return Engine.inspect(context, args);
+    }
+
+    pub fn create(options: *const bun.S3.S3CredentialsWithOptions) bun.OOM!*S3Client {
+        const client = try bun.default_allocator.create(S3Client);
+        errdefer bun.default_allocator.destroy(client);
+        client.* = .{
+            .credentials = .adopt(try options.credentials.dupe()),
+            .options = options.options,
+            .acl = options.acl,
+            .storage_class = options.storage_class,
+            .request_payer = options.request_payer,
+        };
+        return client;
+    }
+
+    pub fn default(context: anytype) bun.JSError!bindgen.ClassRef(S3ClientClassSchema) {
+        return Engine.default(context);
+    }
+
+    bindgen_state: bindgen.ClassState = .{},
+    credentials: bindgen.RefNative(S3Credentials, .vm),
     options: bun.S3.MultiPartUploadOptions = .{},
     acl: ?bun.S3.ACL = null,
     storage_class: ?bun.S3.StorageClass = null,
     request_payer: bool = false,
 
-    pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*@This() {
-        const arguments = callframe.arguments_old(1).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-        var aws_options = try S3Credentials.getCredentialsWithOptions(globalThis.bunVM().transpiler.env.getS3Credentials(), .{}, args.nextEat(), null, null, false, globalThis);
-        defer aws_options.deinit();
-        return S3Client.new(.{
-            .credentials = aws_options.credentials.dupe(),
-            .options = aws_options.options,
-            .acl = aws_options.acl,
-            .storage_class = aws_options.storage_class,
-            .request_payer = aws_options.request_payer,
-        });
+    pub fn construct(
+        context: bindgen.CallContext(S3ClientConstructorSchema),
+        args: bindgen.Args(S3ClientConstructorSchema),
+    ) bindgen.CallError(S3ClientConstructorSchema)!*S3Client {
+        return Engine.construct(context, args);
     }
 
-    pub fn writeFormat(this: *@This(), comptime Formatter: type, formatter: *Formatter, writer: anytype, comptime enable_ansi_colors: bool) !void {
-        try writer.writeAll(comptime bun.Output.prettyFmt("<r>S3Client<r>", enable_ansi_colors));
-        // detect virtual host style bucket name
-        const bucket_name = if (this.credentials.virtual_hosted_style and this.credentials.endpoint.len > 0) S3Credentials.guessBucket(this.credentials.endpoint) orelse this.credentials.bucket else this.credentials.bucket;
-        if (bucket_name.len > 0) {
-            try writer.print(
-                comptime bun.Output.prettyFmt(" (<green>\"{s}\"<r>)<r> {{", enable_ansi_colors),
-                .{
-                    bucket_name,
-                },
-            );
-        } else {
-            try writer.writeAll(" {");
-        }
-
-        try writeFormatCredentials(this.credentials, this.options, this.acl, Formatter, formatter, writer, enable_ansi_colors);
-        try formatter.writeIndent(@TypeOf(writer), writer);
-        try writer.writeAll("}");
-        formatter.resetLine();
-    }
-    pub fn file(ptr: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const arguments = callframe.arguments_old(2).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-        const path: jsc.Node.PathLike = try jsc.Node.PathLike.fromJS(globalThis, &args) orelse {
-            if (args.len() == 0) {
-                return globalThis.ERR(.MISSING_ARGS, "Expected a path ", .{}).throw();
-            }
-            return globalThis.throwInvalidArguments("Expected a path", .{});
-        };
-        errdefer path.deinit();
-        const options = args.nextEat();
-        var blob = Blob.new(try S3File.constructS3FileWithS3CredentialsAndOptions(globalThis, path, options, ptr.credentials, ptr.options, ptr.acl, ptr.storage_class, ptr.request_payer));
-        return blob.toJS(globalThis);
-    }
-
-    pub fn presign(ptr: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const arguments = callframe.arguments_old(2).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-        const path: jsc.Node.PathLike = try jsc.Node.PathLike.fromJS(globalThis, &args) orelse {
-            if (args.len() == 0) {
-                return globalThis.ERR(.MISSING_ARGS, "Expected a path to presign", .{}).throw();
-            }
-            return globalThis.throwInvalidArguments("Expected a path to presign", .{});
-        };
-        errdefer path.deinit();
-
-        const options = args.nextEat();
-        var blob = try S3File.constructS3FileWithS3CredentialsAndOptions(globalThis, path, options, ptr.credentials, ptr.options, ptr.acl, ptr.storage_class, ptr.request_payer);
-        defer blob.detach();
-        return S3File.getPresignUrlFrom(&blob, globalThis, options);
-    }
-
-    pub fn exists(ptr: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const arguments = callframe.arguments_old(2).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-        const path: jsc.Node.PathLike = try jsc.Node.PathLike.fromJS(globalThis, &args) orelse {
-            if (args.len() == 0) {
-                return globalThis.ERR(.MISSING_ARGS, "Expected a path to check if it exists", .{}).throw();
-            }
-            return globalThis.throwInvalidArguments("Expected a path to check if it exists", .{});
-        };
-        errdefer path.deinit();
-        const options = args.nextEat();
-        var blob = try S3File.constructS3FileWithS3CredentialsAndOptions(globalThis, path, options, ptr.credentials, ptr.options, ptr.acl, ptr.storage_class, ptr.request_payer);
-        defer blob.detach();
-        return S3File.S3BlobStatTask.exists(globalThis, &blob);
-    }
-
-    pub fn size(ptr: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const arguments = callframe.arguments_old(2).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-        const path: jsc.Node.PathLike = try jsc.Node.PathLike.fromJS(globalThis, &args) orelse {
-            if (args.len() == 0) {
-                return globalThis.ERR(.MISSING_ARGS, "Expected a path to check the size of", .{}).throw();
-            }
-            return globalThis.throwInvalidArguments("Expected a path to check the size of", .{});
-        };
-        errdefer path.deinit();
-        const options = args.nextEat();
-        var blob = try S3File.constructS3FileWithS3CredentialsAndOptions(globalThis, path, options, ptr.credentials, ptr.options, ptr.acl, ptr.storage_class, ptr.request_payer);
-        defer blob.detach();
-        return S3File.S3BlobStatTask.size(globalThis, &blob);
-    }
-
-    pub fn stat(ptr: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const arguments = callframe.arguments_old(2).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-        const path: jsc.Node.PathLike = try jsc.Node.PathLike.fromJS(globalThis, &args) orelse {
-            if (args.len() == 0) {
-                return globalThis.ERR(.MISSING_ARGS, "Expected a path to check the stat of", .{}).throw();
-            }
-            return globalThis.throwInvalidArguments("Expected a path to check the stat of", .{});
-        };
-        errdefer path.deinit();
-        const options = args.nextEat();
-        var blob = try S3File.constructS3FileWithS3CredentialsAndOptions(globalThis, path, options, ptr.credentials, ptr.options, ptr.acl, ptr.storage_class, ptr.request_payer);
-        defer blob.detach();
-        return S3File.S3BlobStatTask.stat(globalThis, &blob);
-    }
-
-    pub fn write(ptr: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const arguments = callframe.arguments_old(3).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-        const path: jsc.Node.PathLike = try jsc.Node.PathLike.fromJS(globalThis, &args) orelse {
-            return globalThis.ERR(.MISSING_ARGS, "Expected a path to write to", .{}).throw();
-        };
-        errdefer path.deinit();
-        const data = args.nextEat() orelse {
-            return globalThis.ERR(.MISSING_ARGS, "Expected a Blob-y thing to write", .{}).throw();
-        };
-
-        const options = args.nextEat();
-        var blob = try S3File.constructS3FileWithS3CredentialsAndOptions(globalThis, path, options, ptr.credentials, ptr.options, ptr.acl, ptr.storage_class, ptr.request_payer);
-        defer blob.detach();
-        var blob_internal: PathOrBlob = .{ .blob = blob };
-        return Blob.writeFileInternal(globalThis, &blob_internal, data, .{
-            .mkdirp_if_not_exists = false,
-            .extra_options = options,
-        });
-    }
-
-    pub fn listObjects(ptr: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const args = callframe.argumentsAsArray(2);
-
-        const object_keys = args[0];
-        const options = args[1];
-
-        var blob = try S3File.constructS3FileWithS3CredentialsAndOptions(globalThis, .{ .string = bun.PathString.empty }, options, ptr.credentials, ptr.options, null, null, ptr.request_payer);
-
-        defer blob.detach();
-        return blob.store.?.data.s3.listObjects(blob.store.?, globalThis, object_keys, options);
-    }
-
-    pub fn unlink(ptr: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const arguments = callframe.arguments_old(2).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-        const path: jsc.Node.PathLike = try jsc.Node.PathLike.fromJS(globalThis, &args) orelse {
-            return globalThis.ERR(.MISSING_ARGS, "Expected a path to unlink", .{}).throw();
-        };
-        errdefer path.deinit();
-        const options = args.nextEat();
-        var blob = try S3File.constructS3FileWithS3CredentialsAndOptions(globalThis, path, options, ptr.credentials, ptr.options, ptr.acl, ptr.storage_class, ptr.request_payer);
-        defer blob.detach();
-        return blob.store.?.data.s3.unlink(blob.store.?, globalThis, options);
-    }
-
-    pub fn deinit(this: *@This()) void {
-        this.credentials.deref();
+    fn deinit(this: *@This()) void {
+        this.credentials.deinit();
         bun.destroy(this);
     }
 
-    pub fn finalize(
-        this: *@This(),
-    ) void {
+    pub fn destroy(this: *@This()) void {
         this.deinit();
     }
 
-    // Static methods
-
-    pub fn staticWrite(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        return S3File.write(globalThis, callframe);
+    pub fn toBindingRef(this: *@This(), context: anytype) bun.JSError!bindgen.ClassRef(S3ClientClassSchema) {
+        return S3ClientClass.adoptResult(this, context);
     }
 
-    pub fn staticPresign(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        return S3File.presign(globalThis, callframe);
+    pub fn bindDelete(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientDeleteSchema),
+        args: bindgen.Args(S3ClientDeleteSchema),
+    ) bindgen.CallError(S3ClientDeleteSchema)!void {
+        return Engine.call(.instance, .delete, this, context, args);
     }
 
-    pub fn staticExists(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        return S3File.exists(globalThis, callframe);
+    pub fn bindExists(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientExistsSchema),
+        args: bindgen.Args(S3ClientExistsSchema),
+    ) bindgen.CallError(S3ClientExistsSchema)!void {
+        return Engine.call(.instance, .exists, this, context, args);
     }
 
-    pub fn staticSize(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        return S3File.size(globalThis, callframe);
+    pub fn bindFile(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientFileSchema),
+        args: bindgen.Args(S3ClientFileSchema),
+    ) bindgen.CallError(S3ClientFileSchema)!bindgen.Return(S3ClientFileSchema) {
+        return Engine.call(.instance, .file, this, context, args);
     }
 
-    pub fn staticUnlink(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        return S3File.unlink(globalThis, callframe);
+    pub fn bindListObjects(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientListSchema),
+        args: bindgen.Args(S3ClientListSchema),
+    ) bindgen.CallError(S3ClientListSchema)!void {
+        return Engine.call(.instance, .list, this, context, args);
     }
 
-    pub fn staticFile(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const arguments = callframe.arguments_old(2).slice();
-        var args = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments);
-        defer args.deinit();
-
-        const path = (try jsc.Node.PathLike.fromJS(globalThis, &args)) orelse {
-            return globalThis.throwInvalidArguments("Expected file path string", .{});
-        };
-
-        return try S3File.constructInternalJS(globalThis, path, args.nextEat());
-    }
-    pub fn staticStat(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        return S3File.stat(globalThis, callframe);
+    pub fn bindPresign(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientPresignSchema),
+        args: bindgen.Args(S3ClientPresignSchema),
+    ) bindgen.CallError(S3ClientPresignSchema)!bindgen.DOMString {
+        return Engine.call(.instance, .presign, this, context, args);
     }
 
-    pub fn staticListObjects(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const args = callframe.argumentsAsArray(2);
-        const object_keys = args[0];
-        const options = args[1];
+    pub fn bindSize(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientSizeSchema),
+        args: bindgen.Args(S3ClientSizeSchema),
+    ) bindgen.CallError(S3ClientSizeSchema)!void {
+        return Engine.call(.instance, .size, this, context, args);
+    }
 
-        // get credentials from env
-        const existing_credentials = globalThis.bunVM().transpiler.env.getS3Credentials();
+    pub fn bindStat(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientStatSchema),
+        args: bindgen.Args(S3ClientStatSchema),
+    ) bindgen.CallError(S3ClientStatSchema)!void {
+        return Engine.call(.instance, .stat, this, context, args);
+    }
 
-        var blob = try S3File.constructS3FileWithS3Credentials(globalThis, .{ .string = bun.PathString.empty }, options, existing_credentials);
+    pub fn bindUnlink(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientUnlinkSchema),
+        args: bindgen.Args(S3ClientUnlinkSchema),
+    ) bindgen.CallError(S3ClientUnlinkSchema)!void {
+        return Engine.call(.instance, .delete, this, context, args);
+    }
 
-        defer blob.detach();
-        return blob.store.?.data.s3.listObjects(blob.store.?, globalThis, object_keys, options);
+    pub fn bindWrite(
+        this: *S3Client,
+        context: bindgen.CallContext(S3ClientWriteSchema),
+        args: bindgen.Args(S3ClientWriteSchema),
+    ) bindgen.CallError(S3ClientWriteSchema)!void {
+        return Engine.call(.instance, .write, this, context, args);
+    }
+
+    pub fn bindStaticDelete(
+        context: bindgen.CallContext(S3ClientStaticDeleteSchema),
+        args: bindgen.Args(S3ClientStaticDeleteSchema),
+    ) bindgen.CallError(S3ClientStaticDeleteSchema)!void {
+        return Engine.call(.static, .delete, null, context, args);
+    }
+
+    pub fn bindStaticExists(
+        context: bindgen.CallContext(S3ClientStaticExistsSchema),
+        args: bindgen.Args(S3ClientStaticExistsSchema),
+    ) bindgen.CallError(S3ClientStaticExistsSchema)!void {
+        return Engine.call(.static, .exists, null, context, args);
+    }
+
+    pub fn bindStaticFile(
+        context: bindgen.CallContext(S3ClientStaticFileSchema),
+        args: bindgen.Args(S3ClientStaticFileSchema),
+    ) bindgen.CallError(S3ClientStaticFileSchema)!bindgen.Return(S3ClientStaticFileSchema) {
+        return Engine.call(.static, .file, null, context, args);
+    }
+
+    pub fn bindStaticListObjects(
+        context: bindgen.CallContext(S3ClientStaticListSchema),
+        args: bindgen.Args(S3ClientStaticListSchema),
+    ) bindgen.CallError(S3ClientStaticListSchema)!void {
+        return Engine.call(.static, .list, null, context, args);
+    }
+
+    pub fn bindStaticPresign(
+        context: bindgen.CallContext(S3ClientStaticPresignSchema),
+        args: bindgen.Args(S3ClientStaticPresignSchema),
+    ) bindgen.CallError(S3ClientStaticPresignSchema)!bindgen.DOMString {
+        return Engine.call(.static, .presign, null, context, args);
+    }
+
+    pub fn bindStaticSize(
+        context: bindgen.CallContext(S3ClientStaticSizeSchema),
+        args: bindgen.Args(S3ClientStaticSizeSchema),
+    ) bindgen.CallError(S3ClientStaticSizeSchema)!void {
+        return Engine.call(.static, .size, null, context, args);
+    }
+
+    pub fn bindStaticStat(
+        context: bindgen.CallContext(S3ClientStaticStatSchema),
+        args: bindgen.Args(S3ClientStaticStatSchema),
+    ) bindgen.CallError(S3ClientStaticStatSchema)!void {
+        return Engine.call(.static, .stat, null, context, args);
+    }
+
+    pub fn bindStaticUnlink(
+        context: bindgen.CallContext(S3ClientStaticUnlinkSchema),
+        args: bindgen.Args(S3ClientStaticUnlinkSchema),
+    ) bindgen.CallError(S3ClientStaticUnlinkSchema)!void {
+        return Engine.call(.static, .delete, null, context, args);
+    }
+
+    pub fn bindStaticWrite(
+        context: bindgen.CallContext(S3ClientStaticWriteSchema),
+        args: bindgen.Args(S3ClientStaticWriteSchema),
+    ) bindgen.CallError(S3ClientStaticWriteSchema)!void {
+        return Engine.call(.static, .write, null, context, args);
     }
 };
 
-const S3File = @import("./S3File.zig");
-
+const Engine = @import("./S3ClientEngine.zig");
 const bun = @import("bun");
+const bindgen = bun.bindgen;
 const S3Credentials = bun.S3.S3Credentials;
 
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;
-const Blob = jsc.WebCore.Blob;
-const PathOrBlob = jsc.Node.PathOrBlob;
+const S3ClientBindings = bindgen.Module("S3Client");
+const S3ClientClassSchema = S3ClientBindings.class("S3Client");
+pub const S3ClientClass = bindgen.Class(S3ClientClassSchema, S3Client);
+const S3ClientConstructorSchema = S3ClientClassSchema.constructor();
+const S3ClientInspectSchema = S3ClientClassSchema.member("inspectCustom");
+const S3ClientDeleteSchema = S3ClientClassSchema.memberKind("delete", .method);
+const S3ClientExistsSchema = S3ClientClassSchema.memberKind("exists", .method);
+const S3ClientFileSchema = S3ClientClassSchema.memberKind("file", .method);
+const S3ClientListSchema = S3ClientClassSchema.memberKind("list", .method);
+const S3ClientPresignSchema = S3ClientClassSchema.memberKind("presign", .method);
+const S3ClientSizeSchema = S3ClientClassSchema.memberKind("size", .method);
+const S3ClientStatSchema = S3ClientClassSchema.memberKind("stat", .method);
+const S3ClientUnlinkSchema = S3ClientClassSchema.memberKind("unlink", .method);
+const S3ClientWriteSchema = S3ClientClassSchema.memberKind("write", .method);
+const S3ClientStaticDeleteSchema = S3ClientClassSchema.memberKind("delete", .static_method);
+const S3ClientStaticExistsSchema = S3ClientClassSchema.memberKind("exists", .static_method);
+const S3ClientStaticFileSchema = S3ClientClassSchema.memberKind("file", .static_method);
+const S3ClientStaticListSchema = S3ClientClassSchema.memberKind("list", .static_method);
+const S3ClientStaticPresignSchema = S3ClientClassSchema.memberKind("presign", .static_method);
+const S3ClientStaticSizeSchema = S3ClientClassSchema.memberKind("size", .static_method);
+const S3ClientStaticStatSchema = S3ClientClassSchema.memberKind("stat", .static_method);
+const S3ClientStaticUnlinkSchema = S3ClientClassSchema.memberKind("unlink", .static_method);
+const S3ClientStaticWriteSchema = S3ClientClassSchema.memberKind("write", .static_method);
+
+comptime {
+    _ = S3ClientClass;
+}

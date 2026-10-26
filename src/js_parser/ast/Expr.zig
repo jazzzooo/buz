@@ -50,22 +50,29 @@ pub fn unwrapInlined(expr: Expr) Expr {
     return expr;
 }
 
-pub fn fromBlob(
-    blob: *const jsc.WebCore.Blob,
+pub fn fromBytes(
+    bytes: []const u8,
+    content_type: []const u8,
     allocator: std.mem.Allocator,
     mime_type_: ?MimeType,
     log: *logger.Log,
     loc: logger.Loc,
 ) !Expr {
-    const bytes = blob.sharedView();
-
-    const mime_type = mime_type_ orelse MimeType.init(blob.content_type, null, null);
+    const mime_type = mime_type_ orelse MimeType.init(content_type);
 
     if (mime_type.category == .json) {
-        const source = &logger.Source.initPathString("fetch.json", bytes);
-        var out_expr = JSONParser.parseForMacro(source, log, allocator) catch {
+        const contents = try allocator.dupe(u8, bytes);
+        errdefer allocator.free(contents);
+        const source = &logger.Source.initPathString("fetch.json", contents);
+        var temp_log = logger.Log.init(allocator);
+        defer temp_log.deinit();
+        temp_log.level = log.level;
+        var out_expr = JSONParser.parseForMacro(source, &temp_log, allocator) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            try temp_log.appendTo(log);
             return error.MacroFailed;
         };
+        try temp_log.appendTo(log);
         out_expr.loc = loc;
 
         switch (out_expr.data) {
@@ -82,20 +89,21 @@ pub fn fromBlob(
     }
 
     if (mime_type.category.isTextLike()) {
-        var output = MutableString.initEmpty(allocator);
-        try JSPrinter.quoteForJSON(bytes, &output, true);
-        var list = output.toOwnedSlice();
-        // remove the quotes
-        if (list.len > 0) {
-            list = list[1 .. list.len - 1];
-        }
-        return Expr.init(E.String, E.String.init(list), loc);
+        const text = try strings.toUTF16AllocForReal(allocator, bytes, false, false);
+        return Expr.init(E.String, E.String.init(text), loc);
     }
+
+    const groups = (std.math.add(usize, bytes.len, 2) catch return error.OutOfMemory) / 3;
+    const size = std.math.mul(usize, groups, 4) catch return error.OutOfMemory;
+    const allocation_size = std.math.add(usize, size, "data:;base64,".len) catch return error.OutOfMemory;
+    const buf = try allocator.alloc(u8, allocation_size);
+    const encoded = std.base64.url_safe.Encoder.encode(buf["data:;base64,".len..], bytes);
+    buf[0.."data:;base64,".len].* = "data:;base64,".*;
 
     return Expr.init(
         E.String,
         E.String{
-            .data = try jsc.ZigString.init(bytes).toBase64DataURL(allocator),
+            .data = buf[0 .. "data:;base64,".len + encoded.len],
         },
         loc,
     );
@@ -133,8 +141,6 @@ pub fn hasAnyPropertyNamed(expr: *const Expr, comptime names: []const string) bo
 
     return false;
 }
-
-pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").exprToJS;
 
 pub inline fn isArray(this: *const Expr) bool {
     return this.data == .e_array;
@@ -620,10 +626,10 @@ pub fn extractNumericValuesInSafeRange(left: Expr.Data, right: Expr.Data) ?[2]f6
         return .{ l_value, r_value };
     }
 
-    if (l_value > bun.jsc.MAX_SAFE_INTEGER or r_value > bun.jsc.MAX_SAFE_INTEGER) {
+    if (l_value > max_safe_integer or r_value > max_safe_integer) {
         return null;
     }
-    if (l_value < bun.jsc.MIN_SAFE_INTEGER or r_value < bun.jsc.MIN_SAFE_INTEGER) {
+    if (l_value < min_safe_integer or r_value < min_safe_integer) {
         return null;
     }
 
@@ -865,9 +871,7 @@ pub fn allocate(allocator: std.mem.Allocator, comptime Type: type, st: Type, loc
             return Expr{
                 .loc = loc,
                 .data = Data{
-                    .e_commonjs_export_identifier = .{
-                        .ref = st.ref,
-                    },
+                    .e_commonjs_export_identifier = st,
                 },
             };
         },
@@ -1244,10 +1248,7 @@ pub fn init(comptime Type: type, st: Type, loc: logger.Loc) Expr {
             return Expr{
                 .loc = loc,
                 .data = Data{
-                    .e_commonjs_export_identifier = .{
-                        .ref = st.ref,
-                        .base = st.base,
-                    },
+                    .e_commonjs_export_identifier = st,
                 },
             };
         },
@@ -2223,7 +2224,6 @@ pub const Data = union(Tag) {
             .e_reg_exp => |el| {
                 const item = bun.create(allocator, E.RegExp, .{
                     .value = el.value,
-                    .flags_offset = el.flags_offset,
                 });
                 return .{ .e_reg_exp = item };
             },
@@ -2420,8 +2420,6 @@ pub const Data = union(Tag) {
             .e_inlined_enum,
             => true,
             .e_string => |str| str.next == null,
-            .e_array => |array| array.was_originally_macro,
-            .e_object => |object| object.was_originally_macro,
             else => false,
         };
     }
@@ -2605,7 +2603,7 @@ pub const Data = union(Tag) {
         return @as(Expr.Tag, data).typeof();
     }
 
-    pub fn toNumber(data: Expr.Data) ?f64 {
+    pub fn toNumber(data: Expr.Data, javascript_semantics: ?JavaScriptSemantics) ?f64 {
         return switch (data) {
             .e_null => 0,
             .e_undefined => std.math.nan(f64),
@@ -2614,7 +2612,7 @@ pub const Data = union(Tag) {
                 if (!str.isUTF8()) return null;
 
                 // +'1' => 1
-                return stringToEquivalentNumberValue(str.slice8());
+                return stringToEquivalentNumberValue(str.slice8(), javascript_semantics);
             },
             .e_boolean, .e_branch_boolean => |b| @as(f64, if (b.value) 1.0 else 0.0),
             .e_number => data.e_number.value,
@@ -2625,7 +2623,7 @@ pub const Data = union(Tag) {
                     if (!str.isUTF8()) return null;
 
                     // +'1' => 1
-                    return stringToEquivalentNumberValue(str.slice8());
+                    return stringToEquivalentNumberValue(str.slice8(), javascript_semantics);
                 },
                 else => null,
             },
@@ -2877,8 +2875,6 @@ pub const Data = union(Tag) {
         return Equality.unknown;
     }
 
-    pub const toJS = @import("../../js_parser_jsc/expr_jsc.zig").dataToJS;
-
     pub const Store = struct {
         const StoreType = NewStore(&.{
             E.NameOfSymbol,
@@ -2966,31 +2962,33 @@ pub const Data = union(Tag) {
     }
 };
 
-fn stringToEquivalentNumberValue(str: []const u8) f64 {
+fn stringToEquivalentNumberValue(str: []const u8, javascript_semantics: ?JavaScriptSemantics) ?f64 {
     // +"" -> 0
     if (str.len == 0) return 0;
     if (!bun.strings.isAllASCII(str))
         return std.math.nan(f64);
-    return bun.cpp.JSC__jsToNumber(str.ptr, str.len);
+    const semantics = javascript_semantics orelse return null;
+    return semantics.stringToNumber(str);
 }
 
 const string = []const u8;
 const stringZ = [:0]const u8;
 
-const JSPrinter = @import("../../js_printer/js_printer.zig");
 const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
 const JSONParser = bun.json;
-const MutableString = bun.MutableString;
 const OOM = bun.OOM;
 const default_allocator = bun.default_allocator;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 const writeAnyToHasher = bun.writeAnyToHasher;
 const MimeType = bun.http.MimeType;
+
+const JavaScriptSemantics = @import("../../bun_core/JavaScriptSemantics.zig");
+const max_safe_integer = 9_007_199_254_740_991;
+const min_safe_integer = -max_safe_integer;
 
 const js_ast = bun.ast;
 const ASTMemoryAllocator = js_ast.ASTMemoryAllocator;

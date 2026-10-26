@@ -18,6 +18,8 @@
 #ifndef UWS_WEBSOCKETHANDSHAKE_H
 #define UWS_WEBSOCKETHANDSHAKE_H
 
+#include "HttpHeaderSyntax.h"
+#include <array>
 #include <cstdint>
 #include <cstddef>
 
@@ -113,7 +115,14 @@ struct WebSocketHandshake {
     }
 
 public:
-    static inline void generate(const char input[24], char output[28]) {
+    static inline bool generate(std::string_view key, std::array<char, 28> &output) {
+        key = HttpHeaderSyntax::trimOptionalWhitespace(key);
+        if (key.length() != 24 || key[22] != '=' || key[23] != '=') return false;
+        for (unsigned char byte : key.substr(0, 22)) {
+            if (!((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+                  (byte >= '0' && byte <= '9') || byte == '+' || byte == '/')) return false;
+        }
+        const char *input = key.data();
         uint32_t b_output[5] = {
             0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0
         };
@@ -136,7 +145,8 @@ public:
             bytes[1] = (char) ((tmp >> 16) & 0xff);
             bytes[0] = (char) ((tmp >> 24) & 0xff);
         }
-        base64((unsigned char *) b_output, output);
+        base64((unsigned char *) b_output, output.data());
+        return true;
     }
 };
 

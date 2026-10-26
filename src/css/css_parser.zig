@@ -89,7 +89,7 @@ pub const ImportInfo = css_printer.ImportInfo;
 pub const PropertyHandlerContext = context.PropertyHandlerContext;
 pub const DeclarationHandler = declaration.DeclarationHandler;
 
-pub const Maybe = bun.jsc.Node.Maybe;
+pub const Outcome = bun.Outcome;
 // TODO: Remove existing Error defined here and replace it with these
 pub const Err = errors_.Err;
 pub const PrinterErrorKind = errors_.PrinterErrorKind;
@@ -277,11 +277,11 @@ pub const Error = Err(ParserError);
 
 pub fn Result(comptime T: type) type {
     @setEvalBranchQuota(1_000_000);
-    return Maybe(T, ParseError(ParserError));
+    return Outcome(T, ParseError(ParserError));
 }
 
 pub fn PrintResult(comptime T: type) type {
-    return Maybe(T, PrinterError);
+    return Outcome(T, PrinterError);
 }
 
 pub fn todo(comptime fmt: []const u8, args: anytype) noreturn {
@@ -403,7 +403,7 @@ pub fn DeriveParse(comptime T: type) type {
                 .result => |v| v,
                 .err => |e| return .{ .err = e },
             };
-            if (Map.getCaseInsensitiveWithEql(ident, bun.strings.eqlComptimeIgnoreLen)) |matched| {
+            if (Map.getCaseInsensitiveASCII(ident)) |matched| {
                 inline for (enum_info.field_names, enum_info.field_values) |field_name, field_value| {
                     if (field_value == @backingInt(matched)) {
                         if (comptime is_union_enum) return .{ .result = @unionInit(T, field_name, void) };
@@ -528,7 +528,7 @@ pub fn DeriveParse(comptime T: type) type {
                 // Multiple fields declared before the payload fields, use tryParse
                 const state = input.state();
                 if (input.tryParse(Parser.expectIdent, .{}).asValue()) |ident| {
-                    if (Map.getCaseInsensitiveWithEql(ident, bun.strings.eqlComptimeIgnoreLen)) |matched| {
+                    if (Map.getCaseInsensitiveASCII(ident)) |matched| {
                         inline for (void_field_names, void_field_values) |field_name, field_value| {
                             if (field_value == @backingInt(matched)) {
                                 if (comptime is_union_enum) return .{ .result = @unionInit(T, field_name, {}) };
@@ -577,7 +577,7 @@ pub fn DeriveParse(comptime T: type) type {
                     .result => |v| v,
                     .err => |e| return .{ .err = e },
                 };
-                if (Map.getCaseInsensitiveWithEql(ident, bun.strings.eqlComptimeIgnoreLen)) |matched| {
+                if (Map.getCaseInsensitiveASCII(ident)) |matched| {
                     inline for (void_field_names, void_field_values) |field_name, field_value| {
                         if (field_value == @backingInt(matched)) {
                             if (comptime is_union_enum) return .{ .result = @unionInit(T, field_name, {}) };
@@ -696,7 +696,7 @@ pub const enum_property_util = struct {
         };
 
         const Map = comptime bun.ComptimeEnumMap(T);
-        if (Map.getASCIIICaseInsensitive(ident)) |x| return .{ .result = x };
+        if (Map.getCaseInsensitiveASCII(ident)) |x| return .{ .result = x };
         // inline for (std.meta.fields(T)) |field| {
         //     if (bun.strings.eqlCaseInsensitiveASCIIICheckLength(ident, field.name)) return .{ .result = @enumFromInt(field.value) };
         // }
@@ -909,7 +909,7 @@ fn parse_custom_at_rule_without_block(
     options: *const ParserOptions,
     at_rule_parser: *T,
     is_nested: bool,
-) Maybe(CssRule(T.CustomAtRuleParser.AtRule), void) {
+) Outcome(CssRule(T.CustomAtRuleParser.AtRule), void) {
     return switch (T.CustomAtRuleParser.ruleWithoutBlock(at_rule_parser, prelude, start, options, is_nested)) {
         .result => |v| .{ .result = CssRule(T.CustomAtRuleParser.AtRule){ .custom = v } },
         .err => |e| .{ .err = e },
@@ -1142,7 +1142,7 @@ pub const DefaultAtRuleParser = struct {
             return .{ .err = input.newError(BasicParseErrorKind.at_rule_body_invalid) };
         }
 
-        pub fn ruleWithoutBlock(_: *This, _: CustomAtRuleParser.Prelude, _: *const ParserState, _: *const ParserOptions, _: bool) Maybe(CustomAtRuleParser.AtRule, void) {
+        pub fn ruleWithoutBlock(_: *This, _: CustomAtRuleParser.Prelude, _: *const ParserState, _: *const ParserOptions, _: bool) Outcome(CustomAtRuleParser.AtRule, void) {
             return .{ .err = {} };
         }
 
@@ -1201,7 +1201,7 @@ pub const BundlerAtRuleParser = struct {
                     tailwind,
                 };
                 const Map = comptime bun.ComptimeEnumMap(PreludeNames);
-                if (Map.getASCIIICaseInsensitive(name)) |prelude| return switch (prelude) {
+                if (Map.getCaseInsensitiveASCII(name)) |prelude| return switch (prelude) {
                     .tailwind => {
                         const loc_ = input.currentSourceLocation();
                         const loc = css_rules.Location{
@@ -1229,7 +1229,7 @@ pub const BundlerAtRuleParser = struct {
             return .{ .err = input.newError(BasicParseErrorKind.at_rule_body_invalid) };
         }
 
-        pub fn ruleWithoutBlock(_: *This, prelude: CustomAtRuleParser.Prelude, _: *const ParserState, _: *const ParserOptions, _: bool) Maybe(CustomAtRuleParser.AtRule, void) {
+        pub fn ruleWithoutBlock(_: *This, prelude: CustomAtRuleParser.Prelude, _: *const ParserState, _: *const ParserOptions, _: bool) Outcome(CustomAtRuleParser.AtRule, void) {
             if (comptime ENABLE_TAILWIND_PARSING) {
                 return switch (prelude) {
                     .tailwind => |v| return .{ .result = v },
@@ -1400,7 +1400,7 @@ pub fn ValidAtRuleParser(comptime T: type) void {
     // This is only called when `parse_prelude` returned `WithoutBlock`, and
     // either the `;` semicolon indeed follows the prelude, or parser is at
     // the end of the input.
-    // fn ruleWithoutBlock(this: *T, allocator: Allocator, prelude: T.AtRuleParser.Prelude, state: *const ParserState) Maybe(T.AtRuleParser.AtRule, void)
+    // fn ruleWithoutBlock(this: *T, allocator: Allocator, prelude: T.AtRuleParser.Prelude, state: *const ParserState) Outcome(T.AtRuleParser.AtRule, void)
     _ = T.AtRuleParser.ruleWithoutBlock;
 
     // Parse the content of a `{ /* ... */ }` block for the body of the at-rule.
@@ -1518,7 +1518,7 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
                 };
                 const Map = comptime bun.ComptimeEnumMap(PreludeEnum);
 
-                if (Map.getASCIIICaseInsensitive(name)) |prelude| {
+                if (Map.getCaseInsensitiveASCII(name)) |prelude| {
                     switch (prelude) {
                         .import => {
                             if (@backingInt(this.state) > @backingInt(State.imports)) {
@@ -1632,7 +1632,7 @@ pub fn TopLevelRuleParser(comptime AtRuleParserT: type) type {
                 return NestedRuleParser(AtRuleParserT).AtRuleParser.parseBlock(&nested_parser, prelude, start, input);
             }
 
-            pub fn ruleWithoutBlock(this: *This, prelude: AtRuleParser.Prelude, start: *const ParserState) Maybe(AtRuleParser.AtRule, void) {
+            pub fn ruleWithoutBlock(this: *This, prelude: AtRuleParser.Prelude, start: *const ParserState) Outcome(AtRuleParser.AtRule, void) {
                 const loc_ = start.sourceLocation();
                 const loc = css_rules.Location{
                     .source_index = this.options.source_index,
@@ -1838,7 +1838,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         nest,
                     };
                     const Map = comptime bun.ComptimeEnumMap(PreludeEnum);
-                    if (Map.getASCIIICaseInsensitive(name)) |kind| switch (kind) {
+                    if (Map.getCaseInsensitiveASCII(name)) |kind| switch (kind) {
                         .media => {
                             const media = switch (MediaList.parse(input)) {
                                 .err => |e| return .{ .err = e },
@@ -2330,7 +2330,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                 }
             }
 
-            pub fn ruleWithoutBlock(this: *This, prelude: AtRuleParser.Prelude, start: *const ParserState) Maybe(AtRuleParser.AtRule, void) {
+            pub fn ruleWithoutBlock(this: *This, prelude: AtRuleParser.Prelude, start: *const ParserState) Outcome(AtRuleParser.AtRule, void) {
                 const loc = this.getLoc(start);
                 switch (prelude) {
                     .layer => {
@@ -2904,7 +2904,7 @@ pub fn StyleSheet(comptime AtRule: type) type {
         }
 
         /// Minify and transform the style sheet for the provided browser targets.
-        pub fn minify(this: *@This(), allocator: Allocator, options: MinifyOptions, extra: *const StylesheetExtra) Maybe(void, Err(MinifyErrorKind)) {
+        pub fn minify(this: *@This(), allocator: Allocator, options: MinifyOptions, extra: *const StylesheetExtra) Outcome(void, Err(MinifyErrorKind)) {
             const ctx = PropertyHandlerContext.new(allocator, options.targets, &options.unused_symbols);
             var handler = declaration.DeclarationHandler.default();
             var important_handler = declaration.DeclarationHandler.default();
@@ -3046,12 +3046,12 @@ pub fn StyleSheet(comptime AtRule: type) type {
             };
         }
 
-        pub fn parse(allocator: Allocator, code: []const u8, options: ParserOptions, import_records: ?*bun.BabyList(ImportRecord), source_index: SrcIndex) Maybe(struct { This, StylesheetExtra }, Err(ParserError)) {
+        pub fn parse(allocator: Allocator, code: []const u8, options: ParserOptions, import_records: ?*bun.BabyList(ImportRecord), source_index: SrcIndex) Outcome(struct { This, StylesheetExtra }, Err(ParserError)) {
             var default_at_rule_parser = DefaultAtRuleParser{};
             return parseWith(allocator, code, options, DefaultAtRuleParser, &default_at_rule_parser, import_records, source_index);
         }
 
-        pub fn parseBundler(allocator: Allocator, code: []const u8, options: ParserOptions, import_records: *bun.BabyList(ImportRecord), source_index: SrcIndex) Maybe(struct { This, StylesheetExtra }, Err(ParserError)) {
+        pub fn parseBundler(allocator: Allocator, code: []const u8, options: ParserOptions, import_records: *bun.BabyList(ImportRecord), source_index: SrcIndex) Outcome(struct { This, StylesheetExtra }, Err(ParserError)) {
             var at_rule_parser = BundlerAtRuleParser{
                 .import_records = import_records,
                 .allocator = allocator,
@@ -3070,7 +3070,7 @@ pub fn StyleSheet(comptime AtRule: type) type {
             at_rule_parser: *P,
             import_records: ?*bun.BabyList(ImportRecord),
             source_index: SrcIndex,
-        ) Maybe(struct { This, StylesheetExtra }, Err(ParserError)) {
+        ) Outcome(struct { This, StylesheetExtra }, Err(ParserError)) {
             var composes: ComposesMap = .empty;
             var parser_extra = ParserExtra{
                 .local_scope = .{},
@@ -3155,7 +3155,7 @@ pub const StyleAttribute = struct {
     declarations: DeclarationBlock,
     sources: ArrayList([]const u8),
 
-    pub fn parse(allocator: Allocator, code: []const u8, options: ParserOptions, import_records: *bun.BabyList(ImportRecord), source_index: SrcIndex) Maybe(StyleAttribute, Err(ParserError)) {
+    pub fn parse(allocator: Allocator, code: []const u8, options: ParserOptions, import_records: *bun.BabyList(ImportRecord), source_index: SrcIndex) Outcome(StyleAttribute, Err(ParserError)) {
         var parser_extra = ParserExtra{
             .local_scope = .{},
             .symbols = .{},
@@ -4383,7 +4383,7 @@ pub const nth = struct {
         return .{ .err = input.newUnexpectedTokenError(tok.*) };
     }
 
-    fn parse_n_dash_digits(allocator: Allocator, str: []const u8) Maybe(i32, void) {
+    fn parse_n_dash_digits(allocator: Allocator, str: []const u8) Outcome(i32, void) {
         const bytes = str;
         if (bytes.len >= 3 and
             bun.strings.eqlCaseInsensitiveASCIIICheckLength(bytes[0..2], "n-") and
@@ -4400,7 +4400,7 @@ pub const nth = struct {
         }
     }
 
-    fn parse_number_saturate(allocator: Allocator, string: []const u8) Maybe(i32, void) {
+    fn parse_number_saturate(allocator: Allocator, string: []const u8) Outcome(i32, void) {
         var input = ParserInput.new(allocator, string);
         var parser = Parser.new(
             &input,
@@ -4527,11 +4527,11 @@ const Tokenizer = struct {
 
     /// TODO: fix this, remove the additional shit I added
     /// return error if it is eof
-    pub inline fn next(this: *Tokenizer) Maybe(Token, void) {
+    pub inline fn next(this: *Tokenizer) Outcome(Token, void) {
         return this.nextImpl();
     }
 
-    pub fn nextImpl(this: *Tokenizer) Maybe(Token, void) {
+    pub fn nextImpl(this: *Tokenizer) Outcome(Token, void) {
         if (this.isEof()) return .{ .err = {} };
 
         // todo_stuff.match_byte;

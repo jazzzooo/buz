@@ -58,6 +58,12 @@ void InspectorAuditAgent::didCreateFrontendAndBackend()
 
 void InspectorAuditAgent::willDestroyFrontendAndBackend(DisconnectReason)
 {
+    discardValues();
+}
+
+void InspectorAuditAgent::discardValues()
+{
+    m_injectedWebInspectorAuditValue.clear();
 }
 
 Protocol::ErrorStringOr<void> InspectorAuditAgent::setup(std::optional<Protocol::Runtime::ExecutionContextId>&& executionContextId)

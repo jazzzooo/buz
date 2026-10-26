@@ -60,7 +60,7 @@ pub fn ParseSuffix(
                 const name = p.lexer.identifier;
                 const name_loc = p.lexer.loc();
                 try p.lexer.next();
-                const ref = p.storeNameInRef(name) catch unreachable;
+                const ref = try p.storeNameInRef(name);
                 left.* = p.newExpr(E.Index{
                     .target = target,
                     .index = p.newExpr(
@@ -171,7 +171,7 @@ pub fn ParseSuffix(
                         const name = p.lexer.identifier;
                         const name_loc = p.lexer.loc();
                         try p.lexer.next();
-                        const ref = p.storeNameInRef(name) catch unreachable;
+                        const ref = try p.storeNameInRef(name);
                         left.* = p.newExpr(E.Index{
                             .target = left.*,
                             .index = p.newExpr(
@@ -210,10 +210,10 @@ pub fn ParseSuffix(
         }
         fn t_no_substitution_template_literal(p: *P, _: Level, _: *?OptionalChain, old_optional_chain: ?OptionalChain, left: *Expr) anyerror!Continuation {
             if (old_optional_chain != null) {
-                p.log.addRangeError(p.source, p.lexer.range(), "Template literals cannot have an optional chain as a tag") catch unreachable;
+                try p.log.addRangeError(p.source, p.lexer.range(), "Template literals cannot have an optional chain as a tag");
             }
             // p.markSyntaxFeature(compat.TemplateLiteral, p.lexer.Range());
-            const head = p.lexer.rawTemplateContents();
+            const head = try p.lexer.rawTemplateContents();
             try p.lexer.next();
 
             left.* = p.newExpr(E.Template{
@@ -224,10 +224,10 @@ pub fn ParseSuffix(
         }
         fn t_template_head(p: *P, _: Level, _: *?OptionalChain, old_optional_chain: ?OptionalChain, left: *Expr) anyerror!Continuation {
             if (old_optional_chain != null) {
-                p.log.addRangeError(p.source, p.lexer.range(), "Template literals cannot have an optional chain as a tag") catch unreachable;
+                try p.log.addRangeError(p.source, p.lexer.range(), "Template literals cannot have an optional chain as a tag");
             }
             // p.markSyntaxFeature(compat.TemplateLiteral, p.lexer.Range());
-            const head = p.lexer.rawTemplateContents();
+            const head = try p.lexer.rawTemplateContents();
             const partsGroup = try p.parseTemplateParts(true);
             const tag = left.*;
             left.* = p.newExpr(E.Template{
@@ -530,7 +530,7 @@ pub fn ParseSuffix(
             // TypeScript allows type arguments to be specified with angle brackets
             // inside an expression. Unlike in other languages, this unfortunately
             // appears to require backtracking to parse.
-            if (is_typescript_enabled and p.trySkipTypeScriptTypeArgumentsWithBacktracking()) {
+            if (is_typescript_enabled and try p.trySkipTypeScriptTypeArgumentsWithBacktracking()) {
                 optional_chain.* = old_optional_chain;
                 return .next;
             }
@@ -570,7 +570,7 @@ pub fn ParseSuffix(
             // TypeScript allows type arguments to be specified with angle brackets
             // inside an expression. Unlike in other languages, this unfortunately
             // appears to require backtracking to parse.
-            if (is_typescript_enabled and p.trySkipTypeScriptTypeArgumentsWithBacktracking()) {
+            if (is_typescript_enabled and try p.trySkipTypeScriptTypeArgumentsWithBacktracking()) {
                 optional_chain.* = old_optional_chain;
                 return .next;
             }

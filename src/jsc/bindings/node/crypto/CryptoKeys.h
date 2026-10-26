@@ -1,11 +1,35 @@
 #pragma once
 
-#include "root.h"
+#include "ncrypto.h"
+
+namespace Bun::Bindgen {
+struct NodeCryptoPrivateKeyExportOptions;
+struct NodeCryptoPublicKeyExportOptions;
+struct NodeCryptoAsymmetricKeyDetailsResult;
+}
+
+namespace JSC {
+class JSGlobalObject;
+class ThrowScope;
+}
 
 namespace Bun {
 
-JSC_DECLARE_HOST_FUNCTION(jsCreateSecretKey);
-JSC_DECLARE_HOST_FUNCTION(jsCreatePublicKey);
-JSC_DECLARE_HOST_FUNCTION(jsCreatePrivateKey);
+class KeyObject;
 
-} // namespace Bun
+bool parseNodeCryptoPublicKeyExportOptions(
+    JSC::JSGlobalObject&,
+    const Bindgen::NodeCryptoPublicKeyExportOptions&,
+    const KeyObject&,
+    ncrypto::EVPKeyPointer::PublicKeyEncodingConfig&);
+bool parseNodeCryptoPrivateKeyExportOptions(
+    JSC::JSGlobalObject&,
+    const Bindgen::NodeCryptoPrivateKeyExportOptions&,
+    const KeyObject&,
+    ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig&);
+Bindgen::NodeCryptoAsymmetricKeyDetailsResult nodeCryptoAsymmetricKeyDetails(
+    JSC::JSGlobalObject&,
+    JSC::ThrowScope&,
+    KeyObject&);
+
+}

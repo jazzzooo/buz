@@ -1,17 +1,15 @@
 #pragma once
 
 #include "BunClientData.h"
-#include "_NativeModule.h"
 
 using namespace JSC;
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionIsError,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::CallFrame* callframe));
+namespace Bun::NodeUtilTypes {
 
-namespace Zig {
+bool isNativeError(JSC::JSValue) noexcept;
+bool isAnyArrayBuffer(JSC::JSValue) noexcept;
+bool isBoxedPrimitive(JSC::JSValue) noexcept;
+bool isArrayBufferView(JSC::JSValue) noexcept;
+bool isTypedArray(JSC::JSValue) noexcept;
 
-// Hardcoded module "node:util/types"
-DEFINE_NATIVE_MODULE_NOINLINE(NodeUtilTypes);
-
-} // namespace Zig
+}

@@ -619,9 +619,276 @@ const JSONBuilder = struct {
     }
 };
 
-// Security scanner subprocess entry point - uses IPC protocol for communication
-// Note: scanner-entry.ts must be in JavaScriptSources.txt for the build
-// scanner-entry.d.ts is NOT included in the build (type definitions only)
+pub const SecurityScanSubprocess = struct {
+    manager: *PackageManager,
+    code: []const u8,
+    json_data: []const u8,
+    process: ?*bun.spawn.Process = null,
+    ipc_reader: bun.io.BufferedReader = bun.io.BufferedReader.init(@This()),
+    ipc_data: std.ArrayList(u8),
+    has_process_exited: bool = false,
+    has_received_ipc: bool = false,
+    exit_status: ?bun.spawn.Status = null,
+    remaining_fds: i8 = 0,
+    json_writer: JSONWriter = .{},
+
+    pub const new = bun.TrivialNew(@This());
+
+    pub fn spawn(this: *SecurityScanSubprocess) !void {
+        this.ipc_data = .empty;
+        this.ipc_reader.setParent(this);
+
+        const ipc_output_fds = switch (bun.sys.pipe()) {
+            .err => return error.IPCPipeFailed,
+            .result => |fds| fds,
+        };
+
+        const exec_path = try bun.selfExePath();
+        var argv = [_]?[*:0]const u8{
+            try this.manager.allocator.dupeSentinel(u8, exec_path, 0),
+            "--no-install",
+            "-e",
+            try this.manager.allocator.dupeSentinel(u8, this.code, 0),
+            null,
+        };
+        defer {
+            this.manager.allocator.free(bun.span(argv[0].?));
+            this.manager.allocator.free(bun.span(argv[3].?));
+        }
+
+        if (comptime bun.Environment.isWindows) {
+            try this.spawnWindows(&argv, ipc_output_fds);
+        } else {
+            try this.spawnPosix(&argv, ipc_output_fds);
+        }
+    }
+
+    fn spawnPosix(this: *SecurityScanSubprocess, argv: *[5]?[*:0]const u8, ipc_output_fds: [2]bun.FD) !void {
+        const extra_fds = [_]bun.spawn.SpawnOptions.Stdio{
+            .{ .pipe = ipc_output_fds[1] },
+            .buffer,
+        };
+        const spawn_options = bun.spawn.SpawnOptions{
+            .stdout = .inherit,
+            .stderr = .inherit,
+            .stdin = .inherit,
+            .cwd = FileSystem.instance.top_level_dir,
+            .extra_fds = &extra_fds,
+        };
+
+        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(@constCast(bun.environ.ptr)))).unwrap();
+        defer spawned.close();
+
+        _ = ipc_output_fds[1].closeAllowingStandardIo(null);
+        _ = bun.sys.setNonblocking(ipc_output_fds[0]);
+        this.ipc_reader.flags.nonblocking = true;
+        this.ipc_reader.flags.socket = false;
+        try this.finishSpawn(&spawned, ipc_output_fds[0], &spawned.extra_pipes.items[1]);
+    }
+
+    fn spawnWindows(this: *SecurityScanSubprocess, argv: *[5]?[*:0]const u8, ipc_output_fds: [2]bun.FD) !void {
+        const uv = bun.windows.libuv;
+        var json_fds: [2]uv.uv_file = undefined;
+        if (uv.uv_pipe(&json_fds, 0, uv.UV_NONBLOCK_PIPE).errEnum()) |err| {
+            ipc_output_fds[0].close();
+            ipc_output_fds[1].close();
+            return bun.errnoToZigErr(err);
+        }
+        var child_read_fd: ?bun.FD = bun.FD.fromUV(json_fds[0]);
+        var parent_write_fd: ?bun.FD = bun.FD.fromUV(json_fds[1]);
+        errdefer {
+            if (child_read_fd) |fd| fd.close();
+            if (parent_write_fd) |fd| fd.close();
+        }
+
+        const pipe = try bun.default_allocator.create(uv.Pipe);
+        pipe.* = std.mem.zeroes(uv.Pipe);
+        var pipe_initialized = false;
+        var owns_pipe = true;
+        defer if (owns_pipe) {
+            if (pipe_initialized) pipe.closeAndDestroy() else bun.default_allocator.destroy(pipe);
+        };
+        try pipe.init(this.loop(), false).unwrap();
+        pipe_initialized = true;
+        try pipe.open(parent_write_fd.?).unwrap();
+        parent_write_fd = null;
+        var json_result: JSONWriter.StdioResult = .{ .buffer = pipe };
+        owns_pipe = false;
+        defer json_result.deinit();
+
+        const extra_fds = [_]bun.spawn.SpawnOptions.Stdio{
+            .{ .pipe = ipc_output_fds[1] },
+            .{ .pipe = child_read_fd.? },
+        };
+        const spawn_options = bun.spawn.SpawnOptions{
+            .stdout = .inherit,
+            .stderr = .inherit,
+            .stdin = .inherit,
+            .cwd = FileSystem.instance.top_level_dir,
+            .extra_fds = &extra_fds,
+            .windows = .{
+                .loop = this.manager.event_loop.parentEventLoop(),
+            },
+        };
+
+        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(@constCast(bun.environ.ptr)))).unwrap();
+        defer spawned.close();
+
+        _ = ipc_output_fds[1].closeAllowingStandardIo(null);
+        _ = child_read_fd.?.closeAllowingStandardIo(null);
+        child_read_fd = null;
+        this.ipc_reader.flags.nonblocking = true;
+        try this.finishSpawn(&spawned, ipc_output_fds[0], &json_result);
+    }
+
+    fn finishSpawn(this: *SecurityScanSubprocess, spawned: anytype, ipc_read_fd: bun.FD, json_stdio_result: *JSONWriter.StdioResult) !void {
+        this.remaining_fds = 2;
+        errdefer {
+            if (comptime bun.Environment.isWindows) this.ipc_reader.closeImpl(false);
+            this.ipc_reader.deinit();
+            this.json_writer.deinit();
+            if (this.process) |process| {
+                this.process = null;
+                process.detach();
+                process.deref();
+            }
+            this.remaining_fds = 0;
+        }
+        try this.ipc_reader.start(ipc_read_fd, true).unwrap();
+
+        const process = spawned.toProcess(this.manager.event_loop.runtimeLoopHandle(), false);
+        this.process = process;
+        process.setExitHandler(this);
+
+        this.json_writer.init(this, json_stdio_result);
+        switch (this.json_writer.start()) {
+            .err => |err| {
+                Output.errGeneric("Failed to start security scanner JSON pipe writer: {f}", .{err});
+                return error.JSONPipeWriterFailed;
+            },
+            .result => {},
+        }
+
+        switch (process.watchOrReap()) {
+            .err => return error.ProcessWatchFailed,
+            .result => {},
+        }
+    }
+
+    pub fn deinit(this: *SecurityScanSubprocess) void {
+        this.json_writer.deinit();
+    }
+
+    pub fn isDone(this: *SecurityScanSubprocess) bool {
+        return this.has_process_exited and this.remaining_fds == 0;
+    }
+
+    pub fn eventLoop(this: *const SecurityScanSubprocess) *RuntimeLoop {
+        return &this.manager.event_loop;
+    }
+
+    pub fn loop(this: *const SecurityScanSubprocess) *bun.Async.Loop {
+        if (comptime bun.Environment.isWindows) return this.manager.event_loop.loop().uv_loop;
+        return this.manager.event_loop.loop();
+    }
+
+    pub fn onReaderDone(this: *SecurityScanSubprocess) void {
+        this.has_received_ipc = true;
+        this.remaining_fds -= 1;
+    }
+
+    pub fn onReaderError(this: *SecurityScanSubprocess, err: bun.sys.Error) void {
+        Output.errGeneric("Failed to read security scanner IPC: {f}", .{err});
+        this.has_received_ipc = true;
+        this.remaining_fds -= 1;
+    }
+
+    pub fn onReadChunk(this: *SecurityScanSubprocess, chunk: []const u8, _: bun.io.ReadState) bool {
+        bun.handleOom(this.ipc_data.appendSlice(this.manager.allocator, chunk));
+        return true;
+    }
+
+    pub fn onProcessExit(this: *SecurityScanSubprocess, _: *bun.spawn.Process, status: bun.spawn.Status, _: *const bun.spawn.Rusage) void {
+        this.has_process_exited = true;
+        this.exit_status = status;
+        if (!this.has_received_ipc) {
+            this.ipc_reader.deinit();
+            this.remaining_fds -= 1;
+        }
+    }
+
+    pub const JSONWriter = struct {
+        writer: IOWriter = .{},
+        parent: *SecurityScanSubprocess = undefined,
+        stdio_result: StdioResult = .unavailable,
+        buffer: []const u8 = "",
+        closed: bool = false,
+
+        pub const StdioResult = bun.spawn.process.SpawnProcessResult.StdioResult;
+        pub const IOWriter = bun.io.BufferedWriter(@This(), struct {
+            pub const onWritable = null;
+            pub const getBuffer = JSONWriter.getBuffer;
+            pub const onClose = JSONWriter.onClose;
+            pub const onError = JSONWriter.onError;
+            pub const onWrite = JSONWriter.onWrite;
+        });
+        pub const Poll = IOWriter;
+
+        pub fn init(this: *JSONWriter, parent: *SecurityScanSubprocess, result: *StdioResult) void {
+            this.* = .{
+                .parent = parent,
+                .stdio_result = result.take(),
+                .buffer = parent.json_data,
+            };
+            this.writer.setParent(this);
+        }
+
+        pub fn start(this: *JSONWriter) bun.sys.Maybe(void) {
+            if (comptime bun.Environment.isWindows) {
+                this.writer.setPipe(this.stdio_result.take().buffer);
+                return this.writer.startWithCurrentPipe();
+            }
+            const result = this.writer.start(this.stdio_result.owned_fd, .{});
+            if (result == .result) _ = this.stdio_result.take();
+            return result;
+        }
+
+        pub fn deinit(this: *JSONWriter) void {
+            this.stdio_result.deinit();
+            this.writer.close();
+        }
+
+        pub fn getBuffer(this: *JSONWriter) []const u8 {
+            return this.buffer;
+        }
+
+        pub fn onWrite(this: *JSONWriter, amount: usize, status: bun.io.WriteStatus) void {
+            this.buffer = this.buffer[@min(amount, this.buffer.len)..];
+            if (status == .end_of_file or this.buffer.len == 0) this.writer.close();
+        }
+
+        pub fn onError(_: *JSONWriter, err: bun.sys.Error) void {
+            Output.errGeneric("Failed to write security scanner JSON: {f}", .{err});
+        }
+
+        pub fn onClose(this: *JSONWriter) void {
+            if (this.closed) return;
+            this.closed = true;
+            this.parent.remaining_fds -= 1;
+        }
+
+        pub fn eventLoop(this: *JSONWriter) *RuntimeLoop {
+            return &this.parent.manager.event_loop;
+        }
+
+        pub fn loop(this: *JSONWriter) *bun.Async.Loop {
+            return this.parent.loop();
+        }
+    };
+
+    pub const StaticPipeWriter = JSONWriter;
+};
+
 const scanner_entry_source = @embedFile("./scanner-entry.ts");
 
 fn attemptSecurityScan(manager: *PackageManager, security_scanner: []const u8, scan_all: bool, command_ctx: bun.cli.Command.Context, original_cwd: []const u8) !ScanAttemptResult {
@@ -697,6 +964,7 @@ fn attemptSecurityScanWithRetry(manager: *PackageManager, security_scanner: []co
             p.detach();
             p.deref();
         }
+        scanner.deinit();
         bun.destroy(scanner);
     }
 
@@ -713,461 +981,218 @@ fn attemptSecurityScanWithRetry(manager: *PackageManager, security_scanner: []co
     manager.sleepUntil(&closure, &@TypeOf(closure).isDone);
 
     const packages_scanned = collector.dedupe.count();
-    return try scanner.handleResults(&collector.package_paths, start_time, packages_scanned, security_scanner, security_scanner_pkg_id, command_ctx, original_cwd, is_retry);
+    return try handleResults(scanner, &collector.package_paths, start_time, packages_scanned, security_scanner, security_scanner_pkg_id, command_ctx, original_cwd, is_retry);
 }
 
-pub const SecurityScanSubprocess = struct {
-    manager: *PackageManager,
-    code: []const u8,
-    json_data: []const u8,
-    process: ?*bun.spawn.Process = null,
-    ipc_reader: bun.io.BufferedReader = bun.io.BufferedReader.init(@This()),
-    ipc_data: std.ArrayList(u8),
-    has_process_exited: bool = false,
-    has_received_ipc: bool = false,
-    exit_status: ?bun.spawn.Status = null,
-    remaining_fds: i8 = 0,
-    json_writer: ?*StaticPipeWriter = null,
+fn handleResults(this: *SecurityScanSubprocess, package_paths: *std.array_hash_map.Auto(PackageID, PackagePath), start_time: i64, packages_scanned: usize, security_scanner: []const u8, security_scanner_pkg_id: ?PackageID, command_ctx: bun.cli.Command.Context, original_cwd: []const u8, is_retry: bool) !ScanAttemptResult {
+    _ = command_ctx; // Reserved for future use
+    _ = original_cwd; // Reserved for future use
+    defer this.ipc_data.deinit(this.manager.allocator);
 
-    pub const new = bun.TrivialNew(@This());
-    pub const StaticPipeWriter = jsc.Subprocess.NewStaticPipeWriter(@This());
+    if (this.exit_status == null) {
+        Output.errGeneric("Security scanner terminated without an exit status. This is a bug in Bun.", .{});
+        return error.SecurityScannerProcessFailedWithoutExitStatus;
+    }
 
-    pub fn spawn(this: *SecurityScanSubprocess) !void {
-        this.ipc_data = .empty;
-        this.ipc_reader.setParent(this);
+    const status = this.exit_status.?;
 
-        // Two extra pipes for communicating with the scanner subprocess:
-        // - fd 3: child writes JSON response, parent reads
-        // - fd 4: parent writes packages JSON, child reads until EOF
-        //
-        // We can't inline the packages JSON into the code string because it can exceed
-        // command-line length limits (>1MB), and we can't use stdin because scanners
-        // may need stdin for their own setup (e.g. interactive prompts).
-
-        // fd 3 output pipe: bun.sys.pipe() + .pipe (inherit_fd) on both platforms.
-        const ipc_output_fds = switch (bun.sys.pipe()) {
-            .err => return error.IPCPipeFailed,
-            .result => |fds| fds,
-        };
-
-        const exec_path = try bun.selfExePath();
-
-        var argv = [_]?[*:0]const u8{
-            try this.manager.allocator.dupeSentinel(u8, exec_path, 0),
-            "--no-install",
-            "-e",
-            try this.manager.allocator.dupeSentinel(u8, this.code, 0),
-            null,
-        };
-        defer {
-            this.manager.allocator.free(bun.span(argv[0].?));
-            this.manager.allocator.free(bun.span(argv[3].?));
+    if (this.ipc_data.items.len == 0) {
+        switch (status) {
+            .exited => |exit| {
+                Output.errGeneric("Security scanner exited with code {d} without sending data", .{exit.code});
+            },
+            .signaled => |sig| {
+                Output.errGeneric("Security scanner terminated by signal {s} without sending data", .{@tagName(sig)});
+            },
+            else => {
+                Output.errGeneric("Security scanner terminated abnormally without sending data", .{});
+            },
         }
+        return error.NoSecurityScanData;
+    }
 
-        if (comptime Environment.isWindows) {
-            try this.spawnWindows(&argv, ipc_output_fds);
+    const json_source = logger.Source{
+        .contents = this.ipc_data.items,
+        .path = bun.fs.Path.init("ipc-message.json"),
+    };
+
+    var temp_log = logger.Log.init(this.manager.allocator);
+    defer temp_log.deinit();
+
+    const json_expr = bun.json.parseUTF8(&json_source, &temp_log, this.manager.allocator) catch |err| {
+        Output.errGeneric("Security scanner sent invalid JSON: {s}", .{@errorName(err)});
+        if (this.ipc_data.items.len < 1000) {
+            Output.errGeneric("Response: {s}", .{this.ipc_data.items});
+        }
+        return error.InvalidIPCMessage;
+    };
+
+    if (json_expr.data != .e_object) {
+        Output.errGeneric("Security scanner IPC message must be a JSON object", .{});
+        return error.InvalidIPCFormat;
+    }
+
+    const obj = json_expr.data.e_object;
+    const type_expr = obj.get("type") orelse {
+        Output.errGeneric("Security scanner IPC message missing 'type' field", .{});
+        return error.MissingIPCType;
+    };
+
+    const type_str = type_expr.asString(this.manager.allocator) orelse {
+        Output.errGeneric("Security scanner IPC 'type' must be a string", .{});
+        return error.InvalidIPCType;
+    };
+
+    if (std.mem.eql(u8, type_str, "error")) {
+        const code_expr = obj.get("code") orelse {
+            Output.errGeneric("Security scanner error missing 'code' field", .{});
+            return error.MissingErrorCode;
+        };
+
+        const code_str = code_expr.asString(this.manager.allocator) orelse {
+            Output.errGeneric("Security scanner error 'code' must be a string", .{});
+            return error.InvalidErrorCode;
+        };
+
+        const error_code = std.meta.stringToEnum(enum {
+            MODULE_NOT_FOUND,
+            INVALID_VERSION,
+            SCAN_FAILED,
+        }, code_str);
+
+        switch (error_code orelse {
+            Output.errGeneric("Unknown security scanner error code: {s}", .{code_str});
+            return error.UnknownErrorCode;
+        }) {
+            .MODULE_NOT_FOUND => {
+                // If this is a retry after partial install, we need to handle it differently
+                // The scanner might have been installed but the lockfile wasn't updated
+                if (is_retry) {
+                    // Check if the scanner is an npm package name (not a file path)
+                    const is_package_name = bun.resolver.isPackagePath(security_scanner);
+
+                    if (is_package_name) {
+                        // For npm packages, after install they should be resolvable
+                        // If not, there was a real problem with the installation
+                        Output.errGeneric("Security scanner '{s}' could not be found after installation attempt.\n  <d>If this is a local file, please check that the file exists and the path is correct.<r>", .{security_scanner});
+                        return error.SecurityScannerNotFound;
+                    } else {
+                        // For local files, the error is expected - they can't be installed
+                        Output.errGeneric("Security scanner '{s}' is configured in bunfig.toml but the file could not be found.\n  <d>Please check that the file exists and the path is correct.<r>", .{security_scanner});
+                        return error.SecurityScannerNotFound;
+                    }
+                }
+
+                // First attempt - only try to install if we have a package ID
+                if (security_scanner_pkg_id) |pkg_id| {
+                    return ScanAttemptResult{ .needs_install = pkg_id };
+                } else {
+                    // No package ID means it's not in dependencies
+                    const is_package_name = bun.resolver.isPackagePath(security_scanner);
+
+                    if (is_package_name) {
+                        Output.errGeneric("Security scanner '{s}' is configured in bunfig.toml but is not installed.\n  <d>To install it, run: bun add --dev {s}<r>", .{ security_scanner, security_scanner });
+                    } else {
+                        Output.errGeneric("Security scanner '{s}' is configured in bunfig.toml but the file could not be found.\n  <d>Please check that the file exists and the path is correct.<r>", .{security_scanner});
+                    }
+                    return error.SecurityScannerNotInDependencies;
+                }
+            },
+            .INVALID_VERSION => {
+                if (obj.get("message")) |msg| {
+                    if (msg.asString(this.manager.allocator)) |msg_str| {
+                        Output.errGeneric("Security scanner error: {s}", .{msg_str});
+                    }
+                }
+                return error.InvalidScannerVersion;
+            },
+            .SCAN_FAILED => {
+                if (obj.get("message")) |msg| {
+                    if (msg.asString(this.manager.allocator)) |msg_str| {
+                        Output.errGeneric("Security scanner failed: {s}", .{msg_str});
+                    }
+                }
+                return error.ScannerFailed;
+            },
+        }
+    } else if (!std.mem.eql(u8, type_str, "result")) {
+        Output.errGeneric("Unknown security scanner message type: {s}", .{type_str});
+        return error.UnknownMessageType;
+    }
+
+    // if we got here then we got a result message so we can continue like normal
+    const duration: i64 = @intCast(@divFloor(bun.awakeNanoseconds(this.manager.io), std.time.ns_per_ms) - start_time);
+
+    if (this.manager.options.log_level == .verbose) {
+        switch (status) {
+            .exited => |exit| {
+                if (exit.code == 0) {
+                    Output.prettyErrorln("<d>[SecurityProvider]<r> Completed with exit code {d} [{d}ms]", .{ exit.code, duration });
+                } else {
+                    Output.prettyErrorln("<d>[SecurityProvider]<r> Failed with exit code {d} [{d}ms]", .{ exit.code, duration });
+                }
+            },
+            .signaled => |sig| {
+                Output.prettyErrorln("<d>[SecurityProvider]<r> Terminated by signal {s} [{d}ms]", .{ @tagName(sig), duration });
+            },
+            else => {
+                Output.prettyErrorln("<d>[SecurityProvider]<r> Completed with unknown status [{d}ms]", .{duration});
+            },
+        }
+    } else if (this.manager.options.log_level != .silent and duration >= 1000) {
+        const maybeHourglass = if (Output.enable_ansi_colors_stderr) "⏳" else "";
+        if (packages_scanned == 1) {
+            Output.prettyErrorln("<d>{s}[{s}] Scanning 1 package took {d}ms<r>", .{ maybeHourglass, security_scanner, duration });
         } else {
-            try this.spawnPosix(&argv, ipc_output_fds);
+            Output.prettyErrorln("<d>{s}[{s}] Scanning {d} packages took {d}ms<r>", .{ maybeHourglass, security_scanner, packages_scanned, duration });
         }
     }
 
-    /// Posix fd 4: .buffer stdio creates a nonblocking socketpair inside the
-    /// spawn machinery. The child's end is dup'd to fd 4 and closed in the
-    /// parent by spawn's to_close_at_end list (process.zig:1460). The parent's
-    /// end comes back via spawned.extra_pipes.
-    fn spawnPosix(this: *SecurityScanSubprocess, argv: *[5]?[*:0]const u8, ipc_output_fds: [2]bun.FD) !void {
-        const extra_fds = [_]bun.spawn.SpawnOptions.Stdio{
-            .{ .pipe = ipc_output_fds[1] }, // fd 3: child inherits write end
-            .buffer, // fd 4: socketpair, parent's end in extra_pipes
-        };
+    const advisories_expr = obj.get("advisories") orelse {
+        Output.errGeneric("Security scanner result missing 'advisories' field", .{});
+        return error.MissingAdvisoriesField;
+    };
 
-        const spawn_options = bun.spawn.SpawnOptions{
-            .stdout = .inherit,
-            .stderr = .inherit,
-            .stdin = .inherit,
-            .cwd = FileSystem.instance.top_level_dir,
-            .extra_fds = &extra_fds,
-        };
+    const advisories = try parseSecurityAdvisoriesFromExpr(this.manager, advisories_expr, package_paths);
 
-        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(@constCast(bun.environ.ptr)))).unwrap();
-        defer spawned.extra_pipes.deinit();
-
-        ipc_output_fds[1].close();
-
-        _ = bun.sys.setNonblocking(ipc_output_fds[0]);
-        this.ipc_reader.flags.nonblocking = true;
-        this.ipc_reader.flags.socket = false;
-
-        try this.finishSpawn(&spawned, ipc_output_fds[0], spawned.extra_pipes.items[1].fd());
-    }
-
-    /// Windows fd 4: .buffer stdio for extra_fds sets UV_OVERLAPPED_PIPE on the
-    /// child's handle (process.zig:1702), which breaks sync reads in the child.
-    /// Instead, create the pipe ourselves with asymmetric flags so only the
-    /// parent's write end is overlapped. Child inherits the non-overlapped read
-    /// end via .pipe (inherit_fd); parent wraps the overlapped write end in a
-    /// uv.Pipe for IOCP-based async writes.
-    fn spawnWindows(this: *SecurityScanSubprocess, argv: *[5]?[*:0]const u8, ipc_output_fds: [2]bun.FD) !void {
-        const uv = bun.windows.libuv;
-
-        var json_fds: [2]uv.uv_file = undefined;
-        if (uv.uv_pipe(&json_fds, 0, uv.UV_NONBLOCK_PIPE).errEnum()) |e| {
-            ipc_output_fds[0].close();
-            ipc_output_fds[1].close();
-            return bun.errnoToZigErr(e);
-        }
-        // Track ownership with optionals: null means the fd has been transferred
-        // or closed, so the errdefer skips it. Prevents double-close on error paths
-        // after pipe.open() takes ownership or after the explicit closes below.
-        var child_read_fd: ?bun.FD = bun.FD.fromUV(json_fds[0]);
-        var parent_write_fd: ?bun.FD = bun.FD.fromUV(json_fds[1]);
-        errdefer {
-            if (child_read_fd) |fd| fd.close();
-            if (parent_write_fd) |fd| fd.close();
-        }
-
-        const pipe = bun.new(uv.Pipe, std.mem.zeroes(uv.Pipe));
-        errdefer pipe.closeAndDestroy();
-        try pipe.init(this.loop(), false).unwrap();
-        try pipe.open(parent_write_fd.?).unwrap();
-        parent_write_fd = null; // pipe owns it now
-
-        const extra_fds = [_]bun.spawn.SpawnOptions.Stdio{
-            .{ .pipe = ipc_output_fds[1] }, // fd 3: child inherits write end
-            .{ .pipe = child_read_fd.? }, // fd 4: child inherits non-overlapped read end
-        };
-
-        const spawn_options = bun.spawn.SpawnOptions{
-            .stdout = .inherit,
-            .stderr = .inherit,
-            .stdin = .inherit,
-            .cwd = FileSystem.instance.top_level_dir,
-            .extra_fds = &extra_fds,
-            .windows = .{
-                .loop = jsc.EventLoopHandle.init(&this.manager.event_loop),
-            },
-        };
-
-        var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(argv), @ptrCast(@constCast(bun.environ.ptr)))).unwrap();
-        defer spawned.extra_pipes.deinit();
-
-        ipc_output_fds[1].close();
-        child_read_fd.?.close();
-        child_read_fd = null;
-
-        this.ipc_reader.flags.nonblocking = true;
-
-        try this.finishSpawn(&spawned, ipc_output_fds[0], .{ .buffer = pipe });
-    }
-
-    /// Common post-spawn setup: start the fd 3 reader, attach the process,
-    /// start the fd 4 JSON writer, and begin watching for exit.
-    fn finishSpawn(
-        this: *SecurityScanSubprocess,
-        spawned: anytype,
-        ipc_read_fd: bun.FD,
-        json_stdio_result: jsc.Subprocess.StdioResult,
-    ) !void {
-        // Allocate the blob copy before registering any event loop callbacks. If
-        // this fails, nothing is registered yet and the caller's defer can safely
-        // destroy the struct.
-        const json_data_copy = try this.manager.allocator.dupe(u8, this.json_data);
-        const json_source = jsc.Subprocess.Source{
-            .blob = jsc.WebCore.Blob.Any.fromOwnedSlice(this.manager.allocator, json_data_copy),
-        };
-
-        // 2 = ipc_reader (fd 3) + json_writer (fd 4). Both must complete before
-        // isDone() returns true, otherwise we risk freeing this struct while
-        // StaticPipeWriter still holds a pointer to it (child crash case).
-        this.remaining_fds = 2;
-        try this.ipc_reader.start(ipc_read_fd, true).unwrap();
-
-        var process = spawned.toProcess(&this.manager.event_loop, false);
-        this.process = process;
-        process.setExitHandler(this);
-
-        this.json_writer = StaticPipeWriter.create(&this.manager.event_loop, this, json_stdio_result, json_source);
-        errdefer if (this.json_writer) |writer| {
-            writer.source.detach();
-            writer.deref();
-            this.json_writer = null;
-        };
-
-        switch (this.json_writer.?.start()) {
-            .err => |err| {
-                Output.errGeneric("Failed to start security scanner JSON pipe writer: {f}", .{err});
-                return error.JSONPipeWriterFailed;
-            },
-            .result => {},
-        }
-
-        switch (process.watchOrReap()) {
-            .err => return error.ProcessWatchFailed,
-            .result => {},
-        }
-    }
-
-    pub fn onCloseIO(this: *SecurityScanSubprocess, _: jsc.Subprocess.StdioKind) void {
-        if (this.json_writer) |writer| {
-            writer.source.detach();
-            writer.deref();
-            this.json_writer = null;
-            this.remaining_fds -= 1;
-        }
-    }
-
-    pub fn isDone(this: *SecurityScanSubprocess) bool {
-        return this.has_process_exited and this.remaining_fds == 0;
-    }
-
-    pub fn eventLoop(this: *const SecurityScanSubprocess) *jsc.AnyEventLoop {
-        return &this.manager.event_loop;
-    }
-
-    pub fn loop(this: *const SecurityScanSubprocess) *bun.Async.Loop {
-        if (comptime bun.Environment.isWindows) {
-            return this.manager.event_loop.loop().uv_loop;
-        }
-        return this.manager.event_loop.loop();
-    }
-
-    pub fn onReaderDone(this: *SecurityScanSubprocess) void {
-        this.has_received_ipc = true;
-        this.remaining_fds -= 1;
-    }
-
-    pub fn onReaderError(this: *SecurityScanSubprocess, err: bun.sys.Error) void {
-        Output.errGeneric("Failed to read security scanner IPC: {f}", .{err});
-        this.has_received_ipc = true;
-        this.remaining_fds -= 1;
-    }
-
-    pub fn onReadChunk(this: *SecurityScanSubprocess, chunk: []const u8, hasMore: bun.io.ReadState) bool {
-        _ = hasMore;
-        bun.handleOom(this.ipc_data.appendSlice(this.manager.allocator, chunk));
-        return true;
-    }
-
-    pub fn onProcessExit(this: *SecurityScanSubprocess, _: *bun.spawn.Process, status: bun.spawn.Status, _: *const bun.spawn.Rusage) void {
-        this.has_process_exited = true;
-        this.exit_status = status;
-
-        if (!this.has_received_ipc) {
-            this.ipc_reader.deinit();
-            this.remaining_fds -= 1;
-        }
-    }
-
-    pub fn handleResults(this: *SecurityScanSubprocess, package_paths: *std.array_hash_map.Auto(PackageID, PackagePath), start_time: i64, packages_scanned: usize, security_scanner: []const u8, security_scanner_pkg_id: ?PackageID, command_ctx: bun.cli.Command.Context, original_cwd: []const u8, is_retry: bool) !ScanAttemptResult {
-        _ = command_ctx; // Reserved for future use
-        _ = original_cwd; // Reserved for future use
-        defer this.ipc_data.deinit(this.manager.allocator);
-
-        if (this.exit_status == null) {
-            Output.errGeneric("Security scanner terminated without an exit status. This is a bug in Bun.", .{});
-            return error.SecurityScannerProcessFailedWithoutExitStatus;
-        }
-
-        const status = this.exit_status.?;
-
-        if (this.ipc_data.items.len == 0) {
-            switch (status) {
-                .exited => |exit| {
-                    Output.errGeneric("Security scanner exited with code {d} without sending data", .{exit.code});
-                },
-                .signaled => |sig| {
-                    Output.errGeneric("Security scanner terminated by signal {s} without sending data", .{@tagName(sig)});
-                },
-                else => {
-                    Output.errGeneric("Security scanner terminated abnormally without sending data", .{});
-                },
-            }
-            return error.NoSecurityScanData;
-        }
-
-        const json_source = logger.Source{
-            .contents = this.ipc_data.items,
-            .path = bun.fs.Path.init("ipc-message.json"),
-        };
-
-        var temp_log = logger.Log.init(this.manager.allocator);
-        defer temp_log.deinit();
-
-        const json_expr = bun.json.parseUTF8(&json_source, &temp_log, this.manager.allocator) catch |err| {
-            Output.errGeneric("Security scanner sent invalid JSON: {s}", .{@errorName(err)});
-            if (this.ipc_data.items.len < 1000) {
-                Output.errGeneric("Response: {s}", .{this.ipc_data.items});
-            }
-            return error.InvalidIPCMessage;
-        };
-
-        if (json_expr.data != .e_object) {
-            Output.errGeneric("Security scanner IPC message must be a JSON object", .{});
-            return error.InvalidIPCFormat;
-        }
-
-        const obj = json_expr.data.e_object;
-        const type_expr = obj.get("type") orelse {
-            Output.errGeneric("Security scanner IPC message missing 'type' field", .{});
-            return error.MissingIPCType;
-        };
-
-        const type_str = type_expr.asString(this.manager.allocator) orelse {
-            Output.errGeneric("Security scanner IPC 'type' must be a string", .{});
-            return error.InvalidIPCType;
-        };
-
-        if (std.mem.eql(u8, type_str, "error")) {
-            const code_expr = obj.get("code") orelse {
-                Output.errGeneric("Security scanner error missing 'code' field", .{});
-                return error.MissingErrorCode;
-            };
-
-            const code_str = code_expr.asString(this.manager.allocator) orelse {
-                Output.errGeneric("Security scanner error 'code' must be a string", .{});
-                return error.InvalidErrorCode;
-            };
-
-            const error_code = std.meta.stringToEnum(enum {
-                MODULE_NOT_FOUND,
-                INVALID_VERSION,
-                SCAN_FAILED,
-            }, code_str);
-
-            switch (error_code orelse {
-                Output.errGeneric("Unknown security scanner error code: {s}", .{code_str});
-                return error.UnknownErrorCode;
-            }) {
-                .MODULE_NOT_FOUND => {
-                    // If this is a retry after partial install, we need to handle it differently
-                    // The scanner might have been installed but the lockfile wasn't updated
-                    if (is_retry) {
-                        // Check if the scanner is an npm package name (not a file path)
-                        const is_package_name = bun.resolver.isPackagePath(security_scanner);
-
-                        if (is_package_name) {
-                            // For npm packages, after install they should be resolvable
-                            // If not, there was a real problem with the installation
-                            Output.errGeneric("Security scanner '{s}' could not be found after installation attempt.\n  <d>If this is a local file, please check that the file exists and the path is correct.<r>", .{security_scanner});
-                            return error.SecurityScannerNotFound;
-                        } else {
-                            // For local files, the error is expected - they can't be installed
-                            Output.errGeneric("Security scanner '{s}' is configured in bunfig.toml but the file could not be found.\n  <d>Please check that the file exists and the path is correct.<r>", .{security_scanner});
-                            return error.SecurityScannerNotFound;
-                        }
-                    }
-
-                    // First attempt - only try to install if we have a package ID
-                    if (security_scanner_pkg_id) |pkg_id| {
-                        return ScanAttemptResult{ .needs_install = pkg_id };
-                    } else {
-                        // No package ID means it's not in dependencies
-                        const is_package_name = bun.resolver.isPackagePath(security_scanner);
-
-                        if (is_package_name) {
-                            Output.errGeneric("Security scanner '{s}' is configured in bunfig.toml but is not installed.\n  <d>To install it, run: bun add --dev {s}<r>", .{ security_scanner, security_scanner });
-                        } else {
-                            Output.errGeneric("Security scanner '{s}' is configured in bunfig.toml but the file could not be found.\n  <d>Please check that the file exists and the path is correct.<r>", .{security_scanner});
-                        }
-                        return error.SecurityScannerNotInDependencies;
-                    }
-                },
-                .INVALID_VERSION => {
-                    if (obj.get("message")) |msg| {
-                        if (msg.asString(this.manager.allocator)) |msg_str| {
-                            Output.errGeneric("Security scanner error: {s}", .{msg_str});
-                        }
-                    }
-                    return error.InvalidScannerVersion;
-                },
-                .SCAN_FAILED => {
-                    if (obj.get("message")) |msg| {
-                        if (msg.asString(this.manager.allocator)) |msg_str| {
-                            Output.errGeneric("Security scanner failed: {s}", .{msg_str});
-                        }
-                    }
-                    return error.ScannerFailed;
-                },
-            }
-        } else if (!std.mem.eql(u8, type_str, "result")) {
-            Output.errGeneric("Unknown security scanner message type: {s}", .{type_str});
-            return error.UnknownMessageType;
-        }
-
-        // if we got here then we got a result message so we can continue like normal
-        const duration: i64 = @intCast(@divFloor(bun.awakeNanoseconds(this.manager.io), std.time.ns_per_ms) - start_time);
-
-        if (this.manager.options.log_level == .verbose) {
-            switch (status) {
-                .exited => |exit| {
-                    if (exit.code == 0) {
-                        Output.prettyErrorln("<d>[SecurityProvider]<r> Completed with exit code {d} [{d}ms]", .{ exit.code, duration });
-                    } else {
-                        Output.prettyErrorln("<d>[SecurityProvider]<r> Failed with exit code {d} [{d}ms]", .{ exit.code, duration });
-                    }
-                },
-                .signaled => |sig| {
-                    Output.prettyErrorln("<d>[SecurityProvider]<r> Terminated by signal {s} [{d}ms]", .{ @tagName(sig), duration });
-                },
-                else => {
-                    Output.prettyErrorln("<d>[SecurityProvider]<r> Completed with unknown status [{d}ms]", .{duration});
-                },
-            }
-        } else if (this.manager.options.log_level != .silent and duration >= 1000) {
-            const maybeHourglass = if (Output.enable_ansi_colors_stderr) "⏳" else "";
-            if (packages_scanned == 1) {
-                Output.prettyErrorln("<d>{s}[{s}] Scanning 1 package took {d}ms<r>", .{ maybeHourglass, security_scanner, duration });
-            } else {
-                Output.prettyErrorln("<d>{s}[{s}] Scanning {d} packages took {d}ms<r>", .{ maybeHourglass, security_scanner, packages_scanned, duration });
-            }
-        }
-
-        const advisories_expr = obj.get("advisories") orelse {
-            Output.errGeneric("Security scanner result missing 'advisories' field", .{});
-            return error.MissingAdvisoriesField;
-        };
-
-        const advisories = try parseSecurityAdvisoriesFromExpr(this.manager, advisories_expr, package_paths);
-
-        if (!status.isOK()) {
-            switch (status) {
-                .exited => |exited| {
-                    if (exited.code != 0) {
-                        Output.errGeneric("Security scanner failed with exit code: {d}", .{exited.code});
-                        return error.SecurityScannerFailed;
-                    }
-                },
-                .signaled => |signal| {
-                    Output.errGeneric("Security scanner was terminated by signal: {s}", .{@tagName(signal)});
-                    return error.SecurityScannerTerminated;
-                },
-                else => {
-                    Output.errGeneric("Security scanner failed", .{});
+    if (!status.isOK()) {
+        switch (status) {
+            .exited => |exited| {
+                if (exited.code != 0) {
+                    Output.errGeneric("Security scanner failed with exit code: {d}", .{exited.code});
                     return error.SecurityScannerFailed;
-                },
-            }
+                }
+            },
+            .signaled => |signal| {
+                Output.errGeneric("Security scanner was terminated by signal: {s}", .{@tagName(signal)});
+                return error.SecurityScannerTerminated;
+            },
+            else => {
+                Output.errGeneric("Security scanner failed", .{});
+                return error.SecurityScannerFailed;
+            },
         }
-
-        var fatal_count: usize = 0;
-        var warn_count: usize = 0;
-        for (advisories) |advisory| {
-            switch (advisory.level) {
-                .fatal => fatal_count += 1,
-                .warn => warn_count += 1,
-            }
-        }
-
-        return ScanAttemptResult{ .success = SecurityScanResults{
-            .advisories = advisories,
-            .fatal_count = fatal_count,
-            .warn_count = warn_count,
-            .packages_scanned = packages_scanned,
-            .duration_ms = duration,
-            .security_scanner = security_scanner,
-            .allocator = this.manager.allocator,
-        } };
     }
-};
+
+    var fatal_count: usize = 0;
+    var warn_count: usize = 0;
+    for (advisories) |advisory| {
+        switch (advisory.level) {
+            .fatal => fatal_count += 1,
+            .warn => warn_count += 1,
+        }
+    }
+
+    return ScanAttemptResult{ .success = SecurityScanResults{
+        .advisories = advisories,
+        .fatal_count = fatal_count,
+        .warn_count = warn_count,
+        .packages_scanned = packages_scanned,
+        .duration_ms = duration,
+        .security_scanner = security_scanner,
+        .allocator = this.manager.allocator,
+    } };
+}
 
 fn parseSecurityAdvisoriesFromExpr(manager: *PackageManager, advisories_expr: bun.js_parser.Expr, package_paths: *std.array_hash_map.Auto(PackageID, PackagePath)) ![]SecurityAdvisory {
     var advisories_list: std.ArrayList(SecurityAdvisory) = .empty;
@@ -1276,14 +1301,13 @@ const IsolatedInstall = @import("../isolated_install.zig");
 const std = @import("std");
 
 const bun = @import("bun");
-const Environment = bun.Environment;
 const Output = bun.Output;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const FileSystem = bun.fs.FileSystem;
 
 const DependencyID = bun.install.DependencyID;
 const PackageID = bun.install.PackageID;
 const PackageManager = bun.install.PackageManager;
+const RuntimeLoop = @import("../../event_loop/RuntimeLoop.zig").RuntimeLoop;
 const invalid_dependency_id = bun.install.invalid_dependency_id;
 const invalid_package_id = bun.install.invalid_package_id;

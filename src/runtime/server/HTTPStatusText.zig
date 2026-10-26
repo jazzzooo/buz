@@ -1,3 +1,7 @@
+pub fn format(code: u16, buffer: *[6]u8) []const u8 {
+    return get(code) orelse (std.fmt.bufPrint(buffer, "{d} ", .{code}) catch unreachable);
+}
+
 pub fn get(code: u16) ?[]const u8 {
     return switch (code) {
         100 => "100 Continue",
@@ -66,3 +70,5 @@ pub fn get(code: u16) ?[]const u8 {
         else => null,
     };
 }
+
+const std = @import("std");

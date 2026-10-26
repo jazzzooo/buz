@@ -18,10 +18,6 @@ onBeforeDeinit: ?*const Callback = null,
 pub const Hash = u32;
 pub const Map = std.HashMap(Hash, *RefString, bun.IdentityContext(Hash), 80);
 
-pub fn toJS(this: *RefString, global: *jsc.JSGlobalObject) jsc.JSValue {
-    return bun.String.init(this.impl).toJS(global);
-}
-
 pub const Callback = fn (ctx: *anyopaque, str: *RefString) void;
 
 pub fn computeHash(input: []const u8) u32 {
@@ -59,4 +55,3 @@ pub fn deinit(this: *RefString) void {
 const std = @import("std");
 
 const bun = @import("bun");
-const jsc = bun.jsc;

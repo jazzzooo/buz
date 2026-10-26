@@ -51,7 +51,7 @@ pub const Parsed = struct {
     }
 };
 
-pub fn parseAlloc(allocator: std.mem.Allocator, input: string) !Parsed {
+pub fn parseAlloc(allocator: std.mem.Allocator, input: string) (std.mem.Allocator.Error || error{DecodingError})!Parsed {
     const query_start = std.mem.indexOfScalar(u8, input, '?') orelse input.len;
     const encoded_pathname = input[0..query_start];
     const query_string = input[query_start..];
@@ -63,14 +63,17 @@ pub fn parseAlloc(allocator: std.mem.Allocator, input: string) !Parsed {
     defer output.deinit();
 
     var needs_redirect = false;
-    var decoded_len: usize = try PercentEncoding.decodeFaultTolerant(&output.writer, encoded_pathname, &needs_redirect, true);
+    var decoded_len: usize = PercentEncoding.decodeFaultTolerant(&output.writer, encoded_pathname, &needs_redirect, true) catch |err| switch (err) {
+        error.DecodingError => return error.DecodingError,
+        error.WriteFailed => return error.OutOfMemory,
+    };
     bun.assert(decoded_len == output.written().len);
 
     if (decoded_len == 0) {
-        try output.writer.writeByte('/');
+        output.writer.writeByte('/') catch return error.OutOfMemory;
         decoded_len = 1;
     }
-    try output.writer.writeAll(query_string);
+    output.writer.writeAll(query_string) catch return error.OutOfMemory;
 
     const owned = try output.toOwnedSlice();
     return .{

@@ -25,37 +25,13 @@
 
 #pragma once
 
+#include "SchemaBindingsEnumerations.h"
+
 #if ENABLE(WEB_CRYPTO)
 
 namespace WebCore {
 
-enum class CryptoAlgorithmIdentifier : uint8_t {
-    None = 0,
-    RSAES_PKCS1_v1_5 = 1,
-    RSASSA_PKCS1_v1_5,
-    RSA_PSS,
-    RSA_OAEP,
-    ECDSA,
-    ECDH,
-    AES_CTR,
-    AES_CBC,
-    AES_GCM,
-    AES_CFB,
-    AES_KW,
-    HMAC,
-    SHA_1,
-    SHA_224,
-    SHA_256,
-    SHA_384,
-    SHA_512,
-    SHA3_256,
-    SHA3_384,
-    SHA3_512,
-    HKDF,
-    PBKDF2,
-    Ed25519,
-    X25519
-};
+using CryptoAlgorithmIdentifier = Bun::Bindgen::WebCryptoAlgorithmIdentifier;
 
 } // namespace WebCore
 

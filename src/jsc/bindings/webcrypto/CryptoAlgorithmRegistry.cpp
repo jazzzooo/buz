@@ -28,75 +28,72 @@
 
 #if ENABLE(WEB_CRYPTO)
 
-#include "CryptoAlgorithm.h"
-#include <wtf/NeverDestroyed.h>
+#include "CryptoAlgorithmAES_CBC.h"
+#include "CryptoAlgorithmAES_CFB.h"
+#include "CryptoAlgorithmAES_CTR.h"
+#include "CryptoAlgorithmAES_GCM.h"
+#include "CryptoAlgorithmAES_KW.h"
+#include "CryptoAlgorithmECDH.h"
+#include "CryptoAlgorithmECDSA.h"
+#include "CryptoAlgorithmHKDF.h"
+#include "CryptoAlgorithmHMAC.h"
+#include "CryptoAlgorithmPBKDF2.h"
+#include "CryptoAlgorithmRSAES_PKCS1_v1_5.h"
+#include "CryptoAlgorithmRSASSA_PKCS1_v1_5.h"
+#include "CryptoAlgorithmRSA_OAEP.h"
+#include "CryptoAlgorithmRSA_PSS.h"
+#include "CryptoAlgorithmEd25519.h"
+#include "CryptoAlgorithmX25519.h"
 
 namespace WebCore {
 
-CryptoAlgorithmRegistry& CryptoAlgorithmRegistry::singleton()
-{
-    static LazyNeverDestroyed<CryptoAlgorithmRegistry> registry;
-    static std::once_flag onceKey;
-    std::call_once(onceKey, [&] {
-        registry.construct();
-    });
-    return registry;
-}
-
-CryptoAlgorithmRegistry::CryptoAlgorithmRegistry()
-{
-    platformRegisterAlgorithms();
-}
-
-std::optional<CryptoAlgorithmIdentifier> CryptoAlgorithmRegistry::identifier(const String& name)
-{
-    if (name.isEmpty())
-        return std::nullopt;
-
-    Locker locker { m_lock };
-
-    // FIXME: How is it helpful to call isolatedCopy on the argument to find?
-    auto identifier = m_identifiers.find(name.isolatedCopy());
-    if (identifier == m_identifiers.end())
-        return std::nullopt;
-
-    return identifier->value;
-}
-
 String CryptoAlgorithmRegistry::name(CryptoAlgorithmIdentifier identifier)
 {
-    Locker locker { m_lock };
-
-    auto contructor = m_constructors.find(static_cast<unsigned>(identifier));
-    if (contructor == m_constructors.end())
-        return {};
-
-    return contructor->value.first.isolatedCopy();
+    if (identifier == CryptoAlgorithmIdentifier::None) return {};
+    auto name = Bun::Bindgen::enumerationName(identifier);
+    return String::fromUTF8(std::span { name.data(), name.size() });
 }
 
 RefPtr<CryptoAlgorithm> CryptoAlgorithmRegistry::create(CryptoAlgorithmIdentifier identifier)
 {
-    Locker locker { m_lock };
-
-    auto contructor = m_constructors.find(static_cast<unsigned>(identifier));
-    if (contructor == m_constructors.end())
+    switch (identifier) {
+    case CryptoAlgorithmIdentifier::AES_CBC:
+        return CryptoAlgorithmAES_CBC::create();
+    case CryptoAlgorithmIdentifier::AES_CFB:
+        return CryptoAlgorithmAES_CFB::create();
+    case CryptoAlgorithmIdentifier::AES_CTR:
+        return CryptoAlgorithmAES_CTR::create();
+    case CryptoAlgorithmIdentifier::AES_GCM:
+        return CryptoAlgorithmAES_GCM::create();
+    case CryptoAlgorithmIdentifier::AES_KW:
+        return CryptoAlgorithmAES_KW::create();
+    case CryptoAlgorithmIdentifier::ECDH:
+        return CryptoAlgorithmECDH::create();
+    case CryptoAlgorithmIdentifier::ECDSA:
+        return CryptoAlgorithmECDSA::create();
+    case CryptoAlgorithmIdentifier::HKDF:
+        return CryptoAlgorithmHKDF::create();
+    case CryptoAlgorithmIdentifier::HMAC:
+        return CryptoAlgorithmHMAC::create();
+    case CryptoAlgorithmIdentifier::PBKDF2:
+        return CryptoAlgorithmPBKDF2::create();
+    case CryptoAlgorithmIdentifier::RSAES_PKCS1_v1_5:
+        return CryptoAlgorithmRSAES_PKCS1_v1_5::create();
+    case CryptoAlgorithmIdentifier::RSASSA_PKCS1_v1_5:
+        return CryptoAlgorithmRSASSA_PKCS1_v1_5::create();
+    case CryptoAlgorithmIdentifier::RSA_OAEP:
+        return CryptoAlgorithmRSA_OAEP::create();
+    case CryptoAlgorithmIdentifier::RSA_PSS:
+        return CryptoAlgorithmRSA_PSS::create();
+    case CryptoAlgorithmIdentifier::Ed25519:
+        return CryptoAlgorithmEd25519::create();
+    case CryptoAlgorithmIdentifier::X25519:
+        return CryptoAlgorithmX25519::create();
+    default:
         return nullptr;
-
-    return contructor->value.second();
+    }
 }
 
-void CryptoAlgorithmRegistry::registerAlgorithm(const String& name, CryptoAlgorithmIdentifier identifier, CryptoAlgorithmConstructor constructor)
-{
-    Locker locker { m_lock };
-
-    ASSERT(!m_identifiers.contains(name));
-    // hashs can contains 2 names (SHA-256 and SHA256)
-    // ASSERT(!m_constructors.contains(static_cast<unsigned>(identifier)));
-
-    m_identifiers.add(name, identifier);
-    m_constructors.add(static_cast<unsigned>(identifier), std::make_pair(name, constructor));
 }
 
-} // namespace WebCore
-
-#endif // ENABLE(WEB_CRYPTO)
+#endif

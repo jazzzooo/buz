@@ -147,7 +147,8 @@ pub fn ParseFn(
             try p.lexer.expect(T.t_open_paren);
 
             // Await and yield are not allowed in function arguments
-            var old_fn_or_arrow_data = std.mem.toBytes(p.fn_or_arrow_data_parse);
+            const old_fn_or_arrow_data = p.fn_or_arrow_data_parse;
+            errdefer p.fn_or_arrow_data_parse = old_fn_or_arrow_data;
 
             p.fn_or_arrow_data_parse.allow_await = if (opts.allow_await == .allow_expr)
                 AwaitOrYield.forbid_all
@@ -169,6 +170,7 @@ pub fn ParseFn(
             var rest_arg: bool = false;
             var arg_has_decorators: bool = false;
             var args = List(G.Arg).empty;
+            errdefer args.deinit(p.allocator);
             while (p.lexer.token != T.t_close_paren) {
                 // Skip over "this" type annotations
                 if (is_typescript_enabled and p.lexer.token == T.t_this) {
@@ -261,7 +263,7 @@ pub fn ParseFn(
                 }
 
                 var parseStmtOpts = ParseStatementOptions{};
-                p.declareBinding(.hoisted, &arg, &parseStmtOpts) catch unreachable;
+                try p.declareBinding(.hoisted, &arg, &parseStmtOpts);
 
                 var default_value: ?ExprNodeIndex = null;
                 if (!func.flags.contains(.has_rest_arg) and p.lexer.token == .t_equals) {
@@ -270,7 +272,7 @@ pub fn ParseFn(
                     default_value = try p.parseExpr(.comma);
                 }
 
-                args.append(p.allocator, G.Arg{
+                try args.append(p.allocator, G.Arg{
                     .ts_decorators = ExprNodeList.fromOwnedSlice(ts_decorators),
                     .binding = arg,
                     .default = default_value,
@@ -278,7 +280,7 @@ pub fn ParseFn(
                     // We need to track this because it affects code generation
                     .is_typescript_ctor_field = is_typescript_ctor_field,
                     .ts_metadata = ts_metadata,
-                }) catch unreachable;
+                });
 
                 if (p.lexer.token != .t_comma) {
                     break;
@@ -308,12 +310,12 @@ pub fn ParseFn(
             // this if it wasn't already declared above because arguments are allowed to
             // be called "arguments", in which case the real "arguments" is inaccessible.
             if (!p.current_scope.members.contains("arguments")) {
-                func.arguments_ref = p.declareSymbolMaybeGenerated(.arguments, func.open_parens_loc, arguments_str, false) catch unreachable;
+                func.arguments_ref = try p.declareSymbolMaybeGenerated(.arguments, func.open_parens_loc, arguments_str, false);
                 p.symbols.items[func.arguments_ref.?.innerIndex()].must_not_be_renamed = true;
             }
 
             try p.lexer.expect(.t_close_paren);
-            p.fn_or_arrow_data_parse = std.mem.bytesToValue(@TypeOf(p.fn_or_arrow_data_parse), &old_fn_or_arrow_data);
+            p.fn_or_arrow_data_parse = old_fn_or_arrow_data;
 
             p.fn_or_arrow_data_parse.has_argument_decorators = arg_has_decorators;
 
@@ -360,7 +362,7 @@ pub fn ParseFn(
 
             var name: ?js_ast.LocRef = null;
 
-            _ = p.pushScopeForParsePass(.function_args, loc) catch unreachable;
+            _ = try p.pushScopeForParsePass(.function_args, loc);
 
             // The name is optional
             if (p.lexer.token == .t_identifier) {
@@ -391,7 +393,7 @@ pub fn ParseFn(
             });
             p.fn_or_arrow_data_parse.has_argument_decorators = false;
 
-            p.validateFunctionName(func, .expr);
+            try p.validateFunctionName(func, .expr);
             p.popScope();
 
             return p.newExpr(js_ast.E.Function{
@@ -404,6 +406,10 @@ pub fn ParseFn(
             const oldAllowIn = p.allow_in;
             p.fn_or_arrow_data_parse = data.*;
             p.allow_in = true;
+            defer {
+                p.allow_in = oldAllowIn;
+                p.fn_or_arrow_data_parse = oldFnOrArrowData;
+            }
 
             const loc = p.lexer.loc();
             var pushedScopeForFunctionBody = false;
@@ -419,8 +425,6 @@ pub fn ParseFn(
 
             if (pushedScopeForFunctionBody) p.popScope();
 
-            p.allow_in = oldAllowIn;
-            p.fn_or_arrow_data_parse = oldFnOrArrowData;
             return G.FnBody{ .loc = loc, .stmts = stmts };
         }
 
@@ -454,11 +458,11 @@ pub fn ParseFn(
             _ = try p.pushScopeForParsePass(Scope.Kind.function_body, arrow_loc);
             defer p.popScope();
 
-            var old_fn_or_arrow_data = std.mem.toBytes(p.fn_or_arrow_data_parse);
+            const old_fn_or_arrow_data = p.fn_or_arrow_data_parse;
+            defer p.fn_or_arrow_data_parse = old_fn_or_arrow_data;
 
             p.fn_or_arrow_data_parse = data.*;
             const expr = try p.parseExpr(Level.comma);
-            p.fn_or_arrow_data_parse = std.mem.bytesToValue(@TypeOf(p.fn_or_arrow_data_parse), &old_fn_or_arrow_data);
 
             var stmts = try p.allocator.alloc(Stmt, 1);
             stmts[0] = p.s(S.Return{ .value = expr }, expr.loc);

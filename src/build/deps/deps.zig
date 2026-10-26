@@ -40,6 +40,8 @@ pub const Group = struct {
 pub const Dep = struct {
     name: []const u8,
     in_tree: bool = false,
+    /// Optimization may change without selecting release feature flags or disabling assertions.
+    debug_optimize: enum { debug, safe } = .debug,
     groups: []const Group,
 };
 
@@ -64,6 +66,7 @@ pub const all = [_]Dep{
     @import("mimalloc.zig").dep,
     @import("sqlite.zig").dep,
     @import("tinycc.zig").dep,
+    @import("libffi.zig").dep,
     @import("boringssl.zig").dep,
     @import("lsquic.zig").dep,
 };
@@ -279,9 +282,10 @@ pub const bun_c_flags_release: []const []const u8 = &.{
     "-DLAZY_LOAD_SQLITE=0",
 };
 
-pub const bun_includes: []const Include = &.{ .{ .repo = "packages" }, .{ .repo = "packages/bun-usockets" }, .{ .repo = "packages/bun-usockets/src" }, .{ .repo = "src/jsc/bindings" }, .{ .repo = "src/jsc/bindings/webcore" }, .{ .repo = "src/jsc/bindings/webcrypto" }, .{ .repo = "src/jsc/bindings/node/crypto" }, .{ .repo = "src/jsc/bindings/node/http" }, .{ .repo = "src/jsc/bindings/sqlite" }, .{ .repo = "src/jsc/bindings/v8" }, .{ .repo = "src/jsc/modules" }, .{ .repo = "src/js/builtins" }, .{ .repo = "src/napi" }, .{ .repo = "src/uws_sys" }, .codegen, .{ .repo = "vendor" }, .{ .dep = .{ "picohttpparser", "" } }, .{ .dep = .{ "zlib", "" } }, .{ .repo = "src/jsc/bindings/libuv" }, .builddir, .{ .nodejs = "include" }, .{ .nodejs = "include/node" }, .{ .gen = .{ "zlib", "" } }, .{ .dep = .{ "zstd", "lib" } }, .{ .dep = .{ "brotli", "c/include" } }, .{ .dep = .{ "libdeflate", "" } }, .{ .dep = .{ "libarchive", "libarchive" } }, .{ .dep = .{ "libjpeg-turbo", "src" } }, .{ .gen = .{ "libjpeg-turbo", "" } }, .{ .dep = .{ "libspng", "spng" } }, .{ .dep = .{ "libwebp", "src" } }, .{ .dep = .{ "cares", "include" } }, .{ .gen = .{ "cares", "" } }, .{ .dep = .{ "hdrhistogram", "include" } }, .{ .dep = .{ "highway", "" } }, .{ .dep = .{ "highway", "hwy" } }, .{ .dep = .{ "lshpack", "" } }, .{ .dep = .{ "lsqpack", "" } }, .{ .dep = .{ "mimalloc", "include" } }, .{ .dep = .{ "boringssl", "include" } }, .{ .dep = .{ "lsquic", "include" } }, .webkit };
+pub const bun_includes: []const Include = &.{ .{ .repo = "packages" }, .{ .repo = "packages/bun-usockets" }, .{ .repo = "packages/bun-usockets/src" }, .{ .repo = "src/jsc/bindings" }, .{ .repo = "src/jsc/bindings/webcore" }, .{ .repo = "src/jsc/bindings/webcrypto" }, .{ .repo = "src/jsc/bindings/node/crypto" }, .{ .repo = "src/jsc/bindings/node/http" }, .{ .repo = "src/jsc/bindings/sqlite" }, .{ .repo = "src/jsc/bindings/v8" }, .{ .repo = "src/runtime/webview" }, .{ .repo = "src/jsc/modules" }, .{ .repo = "src/js/builtins" }, .{ .repo = "src/napi" }, .{ .repo = "src/uws_sys" }, .{ .repo = "src/highway_sys" }, .{ .repo = "src/image_sys" }, .codegen, .{ .repo = "vendor" }, .{ .dep = .{ "picohttpparser", "" } }, .{ .dep = .{ "zlib", "" } }, .{ .repo = "src/jsc/bindings/libuv" }, .builddir, .{ .nodejs = "include" }, .{ .nodejs = "include/node" }, .{ .gen = .{ "zlib", "" } }, .{ .dep = .{ "zstd", "lib" } }, .{ .dep = .{ "brotli", "c/include" } }, .{ .dep = .{ "libdeflate", "" } }, .{ .dep = .{ "libarchive", "libarchive" } }, .{ .dep = .{ "libjpeg-turbo", "src" } }, .{ .gen = .{ "libjpeg-turbo", "" } }, .{ .dep = .{ "libspng", "spng" } }, .{ .dep = .{ "libwebp", "src" } }, .{ .dep = .{ "cares", "include" } }, .{ .gen = .{ "cares", "" } }, .{ .dep = .{ "hdrhistogram", "include" } }, .{ .dep = .{ "highway", "" } }, .{ .dep = .{ "highway", "hwy" } }, .{ .dep = .{ "lshpack", "" } }, .{ .dep = .{ "lsqpack", "" } }, .{ .dep = .{ "mimalloc", "include" } }, .{ .dep = .{ "boringssl", "include" } }, .{ .dep = .{ "lsquic", "include" } }, .{ .gen = .{ "libffi", "" } }, .webkit };
 
 pub const bun_c_includes: []const Include = &.{
+    .codegen,
     .{ .repo = "packages/bun-usockets/src" },
     .{ .repo = "src/jsc/bindings" },
     .{ .repo = "src/jsc/bindings/libuv" },

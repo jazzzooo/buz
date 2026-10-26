@@ -8,8 +8,7 @@ var stdout_stream: Source.StreamType = undefined;
 var application_io: Source.IoType = undefined;
 var stdout_stream_set = false;
 
-// Track which stdio descriptors are TTYs (0=stdin, 1=stdout, 2=stderr)
-pub export var bun_stdio_tty: [3]i32 = .{ 0, 0, 0 };
+pub var stdio_is_tty: [3]bool = .{ false, false, false };
 
 pub var terminal_size: std.posix.winsize = .{
     .row = 0,
@@ -140,110 +139,21 @@ pub const Source = struct {
         return colorDepth() != .none;
     }
 
-    const WindowsStdio = struct {
-        const w = bun.windows;
-
-        /// At program start, we snapshot the console modes of standard in, out, and err
-        /// so that we can restore them at program exit if they change. Restoration is
-        /// best-effort, and may not be applied if the process is killed abruptly.
-        pub var console_mode = [3]?u32{ null, null, null };
-        pub var console_codepage = @as(u32, 0);
-        pub var console_output_codepage = @as(u32, 0);
-
-        pub export fn Bun__restoreWindowsStdio() callconv(.c) void {
-            restore();
-        }
-        comptime {
-            if (Environment.isWindows) {
-                _ = &Bun__restoreWindowsStdio;
-            }
-        }
-
-        pub fn restore() void {
-            const peb = std.os.windows.peb();
-            const stdout = peb.ProcessParameters.hStdOutput;
-            const stderr = peb.ProcessParameters.hStdError;
-            const stdin = peb.ProcessParameters.hStdInput;
-
-            const handles = &.{ &stdin, &stdout, &stderr };
-            inline for (console_mode, handles) |mode, handle| {
-                if (mode) |m| {
-                    _ = c.SetConsoleMode(handle.*, m);
-                }
-            }
-
-            if (console_output_codepage != 0)
-                _ = c.SetConsoleOutputCP(console_output_codepage);
-
-            if (console_codepage != 0)
-                _ = c.SetConsoleCP(console_codepage);
-        }
-
-        pub fn init() void {
-            w.libuv.uv_disable_stdio_inheritance();
-
-            const stdin = std.Io.File.stdin().handle;
-            const stdout = std.Io.File.stdout().handle;
-            const stderr = std.Io.File.stderr().handle;
-
-            const fd_internals = @import("../sys/fd.zig");
-            const INVALID_HANDLE_VALUE = std.os.windows.INVALID_HANDLE_VALUE;
-            fd_internals.windows_cached_stderr = if (stderr != INVALID_HANDLE_VALUE) .fromSystem(stderr) else .invalid;
-            fd_internals.windows_cached_stdout = if (stdout != INVALID_HANDLE_VALUE) .fromSystem(stdout) else .invalid;
-            fd_internals.windows_cached_stdin = if (stdin != INVALID_HANDLE_VALUE) .fromSystem(stdin) else .invalid;
-            if (Environment.isDebug) fd_internals.windows_cached_fd_set = true;
-
-            // https://learn.microsoft.com/en-us/windows/console/setconsoleoutputcp
-            const CP_UTF8 = 65001;
-            console_output_codepage = c.GetConsoleOutputCP();
-            _ = c.SetConsoleOutputCP(CP_UTF8);
-
-            console_codepage = c.GetConsoleCP();
-            _ = c.SetConsoleCP(CP_UTF8);
-
-            var mode: w.DWORD = undefined;
-            if (c.GetConsoleMode(stdin, &mode) != 0) {
-                console_mode[0] = mode;
-                bun_stdio_tty[0] = 1;
-                // There are no flags to set on standard in, but just in case something
-                // later modifies the mode, we can still reset it at the end of program run
-                //
-                // In the past, Bun would set ENABLE_VIRTUAL_TERMINAL_INPUT, which was not
-                // intentionally set for any purpose, and instead only caused problems.
-            }
-
-            if (c.GetConsoleMode(stdout, &mode) != 0) {
-                console_mode[1] = mode;
-            }
-
-            if (c.GetConsoleMode(stderr, &mode) != 0) {
-                console_mode[2] = mode;
-            }
-        }
-    };
-
     pub const Stdio = struct {
-        extern "c" var bun_is_stdio_null: [3]i32;
-
         pub fn isStderrNull() bool {
-            return bun_is_stdio_null[2] == 1;
+            return ProcessStdio.wasMissing(2);
         }
 
         pub fn isStdoutNull() bool {
-            return bun_is_stdio_null[1] == 1;
+            return ProcessStdio.wasMissing(1);
         }
 
         pub fn isStdinNull() bool {
-            return bun_is_stdio_null[0] == 1;
+            return ProcessStdio.wasMissing(0);
         }
 
-        pub extern "c" fn bun_initialize_process() void;
         pub fn init(io: IoType) void {
-            bun_initialize_process();
-
-            if (Environment.isWindows) {
-                WindowsStdio.init();
-            }
+            ProcessStdio.init();
 
             const stdout_file = std.Io.File.stdout();
             const stderr_file = std.Io.File.stderr();
@@ -254,9 +164,9 @@ pub const Source = struct {
 
             const stdout_terminal = std.Io.Terminal.Mode.detect(io, stdout_file, false, false) catch .no_color;
             const stderr_terminal = std.Io.Terminal.Mode.detect(io, stderr_file, false, false) catch .no_color;
-            bun_stdio_tty[0] = @intFromBool(stdin_file.isTty(io) catch false);
-            bun_stdio_tty[1] = @intFromBool(stdout_terminal != .no_color);
-            bun_stdio_tty[2] = @intFromBool(stderr_terminal != .no_color);
+            stdio_is_tty[0] = stdin_file.isTty(io) catch false;
+            stdio_is_tty[1] = stdout_terminal != .no_color;
+            stdio_is_tty[2] = stderr_terminal != .no_color;
 
             Source.setInit(io, stdout, stderr);
             buffered_stdin = .init(stdin, &stdin_buffer);
@@ -266,15 +176,7 @@ pub const Source = struct {
             }
         }
 
-        pub extern "c" fn bun_restore_stdio() void;
-        pub fn restore() void {
-            if (comptime !Environment.isNative) return;
-            if (Environment.isWindows) {
-                WindowsStdio.restore();
-            } else {
-                bun_restore_stdio();
-            }
-        }
+        pub const restore = ProcessStdio.restore;
     };
 
     pub const ColorDepth = enum(u8) {
@@ -406,12 +308,12 @@ pub const Source = struct {
         if (!stdout_stream_set) {
             stdout_stream_set = true;
             if (comptime Environment.isNative) {
-                const is_stdout_tty = bun_stdio_tty[1] != 0;
+                const is_stdout_tty = stdio_is_tty[1];
                 if (is_stdout_tty) {
                     stdout_descriptor_type = OutputStreamDescriptor.terminal;
                 }
 
-                const is_stderr_tty = bun_stdio_tty[2] != 0;
+                const is_stderr_tty = stdio_is_tty[2];
                 if (is_stderr_tty) {
                     stderr_descriptor_type = OutputStreamDescriptor.terminal;
                 }
@@ -454,11 +356,11 @@ pub var stderr_descriptor_type = OutputStreamDescriptor.unknown;
 pub var stdout_descriptor_type = OutputStreamDescriptor.unknown;
 
 pub inline fn isStdoutTTY() bool {
-    return bun_stdio_tty[1] != 0;
+    return stdio_is_tty[1];
 }
 
 pub inline fn isStdinTTY() bool {
-    return bun_stdio_tty[0] != 0;
+    return stdio_is_tty[0];
 }
 
 pub fn isGithubAction() bool {
@@ -1251,7 +1153,7 @@ pub inline fn err(error_name: anytype, comptime fmt: []const u8, args: anytype) 
         }
 
         // other zig strings we shall treat as dynamic
-        if (comptime bun.trait.isZigString(T)) {
+        if (comptime bun.trait.isByteSliceLike(T)) {
             break :display_name .{ error_name, false };
         }
 
@@ -1395,6 +1297,8 @@ const std = @import("std");
 const SystemTimer = @import("../perf/system_timer.zig").Timer;
 
 const bun = @import("bun");
+const ProcessStdio = @import("./ProcessStdio.zig");
+
 const ComptimeStringMap = bun.ComptimeStringMap;
 const Global = bun.Global;
 const c = bun.c;

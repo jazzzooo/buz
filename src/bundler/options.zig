@@ -1,6 +1,7 @@
 /// This file is mostly the API schema but with all the options normalized.
 /// Normalization is necessary because most fields in the API schema are optional
 const std = @import("std");
+const BakeCore = @import("../bake/BakeCore.zig");
 
 pub const defines = @import("./defines.zig");
 pub const Define = defines.Define;
@@ -86,7 +87,7 @@ pub const ExternalModules = struct {
     };
 
     pub fn isNodeBuiltin(str: string) bool {
-        return bun.jsc.ModuleLoader.HardcodedModule.Alias.has(str, .node, .{});
+        return HardcodedModule.Alias.has(str, .node, .{});
     }
 
     const default_wildcard_patterns = &[_]WildcardPattern{
@@ -329,8 +330,6 @@ pub const Target = enum {
         .{ "node", .node },
     });
 
-    pub const fromJS = @import("../bundler_jsc/options_jsc.zig").targetFromJS;
-
     pub fn toAPI(this: Target) api.Target {
         return switch (this) {
             .node => .node,
@@ -368,7 +367,7 @@ pub const Target = enum {
         };
     }
 
-    pub fn bakeGraph(target: Target) bun.bake.Graph {
+    pub fn bakeGraph(target: Target) BakeCore.Graph {
         return switch (target) {
             .browser => .client,
             .bake_server_components_ssr => .ssr,
@@ -500,7 +499,7 @@ pub const WindowsOptions = @import("../options_types/BundleEnums.zig").WindowsOp
 // The max integer value in this enum can only be appended to.
 // It has dependencies in several places:
 // - bun-native-bundler-plugin-api/bundler_plugin.h
-// - src/jsc/bindings/headers-handwritten.h
+// - src/bindgen/archetypes.schema.zig
 pub const Loader = enum(u8) {
     jsx = 0,
     js = 1,
@@ -542,6 +541,14 @@ pub const Loader = enum(u8) {
 
     pub fn isCSS(this: Loader) bool {
         return this == .css;
+    }
+
+    pub fn importAttributeType(this: Loader) string {
+        return switch (this) {
+            .bunsh => "sh",
+            .sqlite_embedded => "sqlite",
+            else => @tagName(this),
+        };
     }
 
     pub fn shouldCopyForBundling(this: Loader) bool {
@@ -632,8 +639,6 @@ pub const Loader = enum(u8) {
     pub inline fn stdinName(this: Loader) string {
         return stdin_name.get(this);
     }
-
-    pub const fromJS = @import("../bundler_jsc/options_jsc.zig").loaderFromJS;
 
     pub const names = bun.ComptimeStringMap(Loader, .{
         .{ "js", .js },
@@ -847,132 +852,6 @@ pub const Loader = enum(u8) {
         }
     }
 };
-
-pub fn normalizeSpecifier(
-    jsc_vm: *bun.jsc.VirtualMachine,
-    slice_: string,
-) struct { string, string, string } {
-    var slice = slice_;
-    if (slice.len == 0) return .{ slice, slice, "" };
-
-    if (strings.hasPrefix(slice, jsc_vm.origin.host)) {
-        slice = slice[jsc_vm.origin.host.len..];
-    }
-
-    if (jsc_vm.origin.path.len > 1) {
-        if (strings.hasPrefix(slice, jsc_vm.origin.path)) {
-            slice = slice[jsc_vm.origin.path.len..];
-        }
-    }
-
-    const specifier = slice;
-    var query: []const u8 = "";
-
-    if (strings.indexOfChar(slice, '?')) |i| {
-        query = slice[i..];
-        slice = slice[0..i];
-    }
-
-    return .{ slice, specifier, query };
-}
-
-const GetLoaderAndVirtualSourceErr = error{BlobNotFound};
-const LoaderResult = struct {
-    loader: ?Loader,
-    virtual_source: ?*logger.Source,
-    path: Fs.Path,
-    is_main: bool,
-    specifier: string,
-    /// NOTE: This is always `null` for non-js-like loaders since it's not
-    /// needed for them.
-    package_json: ?*const PackageJSON,
-};
-
-pub fn getLoaderAndVirtualSource(
-    specifier_str: string,
-    jsc_vm: *jsc.VirtualMachine,
-    virtual_source_to_use: *?logger.Source,
-    blob_to_deinit: *?jsc.WebCore.Blob,
-    type_attribute_str: ?string,
-) GetLoaderAndVirtualSourceErr!LoaderResult {
-    const normalized_file_path_from_specifier, const specifier, const query = normalizeSpecifier(
-        jsc_vm,
-        specifier_str,
-    );
-    var path = Fs.Path.init(normalized_file_path_from_specifier);
-
-    var loader: ?Loader = path.loader(&jsc_vm.transpiler.options.loaders);
-    var virtual_source: ?*logger.Source = null;
-
-    if (jsc_vm.module_loader.eval_source) |eval_source| {
-        if (strings.endsWithComptime(specifier, bun.pathLiteral("/[eval]"))) {
-            virtual_source = eval_source;
-            loader = .tsx;
-        }
-        if (strings.endsWithComptime(specifier, bun.pathLiteral("/[stdin]"))) {
-            virtual_source = eval_source;
-            loader = .tsx;
-        }
-    }
-
-    if (jsc.WebCore.ObjectURLRegistry.isBlobURL(specifier)) {
-        if (jsc.WebCore.ObjectURLRegistry.singleton().resolveAndDupe(jsc_vm.io, specifier["blob:".len..])) |blob| {
-            blob_to_deinit.* = blob;
-            loader = blob.getLoader(jsc_vm);
-
-            // "file:" loader makes no sense for blobs
-            // so let's default to tsx.
-            if (blob.getFileName()) |filename| {
-                const current_path = Fs.Path.init(filename);
-
-                // Only treat it as a file if is a Bun.file()
-                if (blob.needsToReadFile()) {
-                    path = current_path;
-                }
-            }
-
-            if (!blob.needsToReadFile()) {
-                virtual_source_to_use.* = logger.Source{
-                    .path = path,
-                    .contents = blob.sharedView(),
-                };
-                virtual_source = &virtual_source_to_use.*.?;
-            }
-        } else {
-            return error.BlobNotFound;
-        }
-    }
-
-    if (strings.eqlComptime(query, "?raw")) {
-        loader = .text;
-    }
-    if (type_attribute_str) |attr_str| if (bun.options.Loader.fromString(attr_str)) |attr_loader| {
-        loader = attr_loader;
-    };
-
-    const is_main = strings.eqlLong(specifier, jsc_vm.main, true);
-
-    const dir = std.fs.path.dirname(path.text);
-    // NOTE: we cannot trust `path.isFile()` since it's not always correct
-    // NOTE: assume we may need a package.json when no loader is specified
-    const is_js_like = if (loader) |l| l.isJavaScriptLike() else true;
-    const package_json: ?*const PackageJSON = if (is_js_like and dir != null and std.fs.path.isAbsolute(dir.?))
-        if (jsc_vm.transpiler.resolver.readDirInfo(dir.?) catch null) |dir_info|
-            dir_info.package_json orelse dir_info.enclosing_package_json
-        else
-            null
-    else
-        null;
-
-    return .{
-        .loader = loader,
-        .virtual_source = virtual_source,
-        .path = path,
-        .is_main = is_main,
-        .specifier = specifier,
-        .package_json = package_json,
-    };
-}
 
 const default_loaders_posix = .{
     .{ ".jsx", .jsx },
@@ -1188,30 +1067,15 @@ pub const JSX = struct {
             return str;
         }
 
-        pub fn setImportSource(pragma: *Pragma, allocator: std.mem.Allocator) void {
-            strings.concatIfNeeded(
-                allocator,
-                &pragma.import_source.development,
-                &[_]string{
-                    pragma.package_name,
-                    "/jsx-dev-runtime",
-                },
-                &.{
-                    Defaults.ImportSourceDev,
-                },
-            ) catch unreachable;
-
-            strings.concatIfNeeded(
-                allocator,
-                &pragma.import_source.production,
-                &[_]string{
-                    pragma.package_name,
-                    "/jsx-runtime",
-                },
-                &.{
-                    Defaults.ImportSource,
-                },
-            ) catch unreachable;
+        pub fn setImportSource(pragma: *Pragma, allocator: std.mem.Allocator) bun.OOM!void {
+            if (strings.eqlComptime(pragma.package_name, "react")) {
+                pragma.import_source = .{};
+                return;
+            }
+            const development = try std.fmt.allocPrint(allocator, "{s}/jsx-dev-runtime", .{pragma.package_name});
+            errdefer allocator.free(development);
+            const production = try std.fmt.allocPrint(allocator, "{s}/jsx-runtime", .{pragma.package_name});
+            pragma.import_source = .{ .development = development, .production = production };
         }
 
         pub fn setProduction(pragma: *Pragma, is_production: bool) void {
@@ -1230,25 +1094,15 @@ pub const JSX = struct {
         // saves an allocation for the majority case
         pub fn memberListToComponentsIfDifferent(allocator: std.mem.Allocator, original: []const string, new: string) ![]const string {
             var splitter = std.mem.splitScalar(u8, new, '.');
-            const count = strings.countChar(new, '.') + 1;
-
-            var needs_alloc = false;
-            var current_i: usize = 0;
+            var count: usize = 0;
+            var equal = true;
             while (splitter.next()) |str| {
                 if (str.len == 0) continue;
-                if (current_i >= original.len) {
-                    needs_alloc = true;
-                    break;
-                }
-
-                if (!strings.eql(original[current_i], str)) {
-                    needs_alloc = true;
-                    break;
-                }
-                current_i += 1;
+                if (count >= original.len or !strings.eql(original[count], str)) equal = false;
+                count += 1;
             }
 
-            if (!needs_alloc) {
+            if (equal and count == original.len) {
                 return original;
             }
 
@@ -1261,7 +1115,7 @@ pub const JSX = struct {
                 out[i] = str;
                 i += 1;
             }
-            return out[0..i];
+            return out;
         }
 
         pub fn fromApi(jsx: api.Jsx, allocator: std.mem.Allocator) !Pragma {
@@ -1280,7 +1134,7 @@ pub const JSX = struct {
 
             if (jsx.import_source.len > 0) {
                 pragma.package_name = jsx.import_source;
-                pragma.setImportSource(allocator);
+                try pragma.setImportSource(allocator);
                 pragma.classic_import_source = pragma.package_name;
             }
 
@@ -1345,7 +1199,7 @@ pub fn definesFromTransformOptions(
             &user_defines,
             defines.UserDefinesArray,
             &environment_defines,
-            framework.toAPI().defaults,
+            framework.defaultsToAPI(),
             framework.behavior,
             framework.prefix,
             allocator,
@@ -1405,7 +1259,8 @@ pub fn definesFromTransformOptions(
         }
     }
 
-    const resolved_defines = try defines.DefineData.fromInput(user_defines, drop, log, allocator);
+    var resolved_defines = try defines.DefineData.fromInput(user_defines, drop, log, allocator);
+    defer resolved_defines.deinit();
 
     const drop_debugger = for (drop) |item| {
         if (strings.eqlComptime(item, "debugger")) break true;
@@ -1577,6 +1432,8 @@ pub const PackagesOption = enum {
 
 /// BundleOptions is used when ResolveMode is not set to "disable".
 /// BundleOptions is effectively webpack + babel
+pub const FeatureSet = @import("./FeatureSet.zig");
+
 pub const BundleOptions = struct {
     footer: string = "",
     banner: string = "",
@@ -1584,7 +1441,7 @@ pub const BundleOptions = struct {
     drop: []const []const u8 = &.{},
     /// Set of enabled feature flags for dead-code elimination via `import { feature } from "bun:bundle"`.
     /// Initialized once from the CLI --feature flags.
-    bundler_feature_flags: *const bun.StringSet = &Runtime.Features.empty_bundler_feature_flags,
+    bundler_feature_flags: FeatureSet.View = .empty,
     loaders: Loader.HashTable,
     resolve_dir: string = "/",
     jsx: JSX.Pragma = JSX.Pragma{},
@@ -1687,7 +1544,7 @@ pub const BundleOptions = struct {
     /// Set when bake.DevServer is bundling.
     dev_server: ?*bun.bake.DevServer = null,
     /// Set when Bake is bundling. Affects module resolution.
-    framework: ?*bun.bake.Framework = null,
+    framework: ?*Framework = null,
 
     serve_plugins: ?[]const []const u8 = null,
     bunfig_path: string = "",
@@ -1783,13 +1640,8 @@ pub const BundleOptions = struct {
         this.defines_loaded = true;
     }
 
-    pub fn deinit(this: *BundleOptions, allocator: std.mem.Allocator) void {
-        this.define.deinit();
-        // Free bundler_feature_flags if it was allocated (not the static empty set)
-        if (this.bundler_feature_flags != &Runtime.Features.empty_bundler_feature_flags) {
-            @constCast(this.bundler_feature_flags).deinit();
-            allocator.destroy(@constCast(this.bundler_feature_flags));
-        }
+    pub fn deinit(this: *BundleOptions) void {
+        if (this.defines_loaded) this.define.deinit();
     }
 
     pub fn loader(this: *const BundleOptions, ext: string) Loader {
@@ -1876,6 +1728,7 @@ pub const BundleOptions = struct {
         fs: *Fs.FileSystem,
         log: *logger.Log,
         transform: api.TransformOptions,
+        features: FeatureSet.View,
     ) !BundleOptions {
         var opts: BundleOptions = BundleOptions{
             .log = log,
@@ -1891,7 +1744,7 @@ pub const BundleOptions = struct {
             .transform_options = transform,
             .css_chunking = false,
             .drop = transform.drop,
-            .bundler_feature_flags = Runtime.Features.initBundlerFeatureFlags(allocator, transform.feature_flags),
+            .bundler_feature_flags = features,
         };
 
         analytics.Features.define += @as(usize, @intFromBool(transform.define != null));
@@ -2129,14 +1982,9 @@ pub const Env = struct {
         }
     }
 
-    pub fn toAPI(this: *const Env) api.LoadedEnvConfig {
-        var slice = this.defaults.slice();
-
-        return api.LoadedEnvConfig{
-            .dotenv = this.behavior,
-            .prefix = this.prefix,
-            .defaults = .{ .keys = slice.items(.key), .values = slice.items(.value) },
-        };
+    pub fn defaultsToAPI(this: *const Env) api.StringMap {
+        const slice = this.defaults.slice();
+        return .{ .keys = slice.items(.key), .values = slice.items(.value) };
     }
 
     // For reading from package.json
@@ -2150,80 +1998,6 @@ pub const Env = struct {
         }
 
         try this.defaults.append(this.allocator, .{ .key = key, .value = value });
-    }
-};
-
-pub const EntryPoint = struct {
-    path: string = "",
-    env: Env = Env{},
-    kind: Kind = Kind.disabled,
-
-    pub fn isEnabled(this: *const EntryPoint) bool {
-        return this.kind != .disabled and this.path.len > 0;
-    }
-
-    pub const Kind = enum {
-        client,
-        server,
-        fallback,
-        disabled,
-
-        pub fn toAPI(this: Kind) api.FrameworkEntryPointType {
-            return switch (this) {
-                .client => .client,
-                .server => .server,
-                .fallback => .fallback,
-                else => unreachable,
-            };
-        }
-    };
-
-    pub fn toAPI(this: *const EntryPoint, allocator: std.mem.Allocator, toplevel_path: string, kind: Kind) !?api.FrameworkEntryPoint {
-        if (this.kind == .disabled)
-            return null;
-
-        return api.FrameworkEntryPoint{ .kind = kind.toAPI(), .env = this.env.toAPI(), .path = try this.normalizedPath(allocator, toplevel_path) };
-    }
-
-    fn normalizedPath(this: *const EntryPoint, allocator: std.mem.Allocator, toplevel_path: string) !string {
-        bun.assert(std.fs.path.isAbsolute(this.path));
-        var str = this.path;
-        if (strings.indexOf(str, toplevel_path)) |top| {
-            str = str[top + toplevel_path.len ..];
-        }
-
-        // if it *was* a node_module path, we don't do any allocation, we just keep it as a package path
-        if (strings.indexOf(str, "node_modules" ++ std.fs.path.sep_str)) |node_module_i| {
-            return str[node_module_i + "node_modules".len + 1 ..];
-            // otherwise, we allocate a new string and copy the path into it with a leading "./"
-
-        } else {
-            var out = try allocator.alloc(u8, str.len + 2);
-            out[0] = '.';
-            out[1] = '/';
-            bun.copy(u8, out[2..], str);
-            return out;
-        }
-    }
-
-    pub fn fromAPI(
-        this: *EntryPoint,
-        framework_entry_point: api.FrameworkEntryPointMessage,
-        allocator: std.mem.Allocator,
-        kind: Kind,
-    ) !void {
-        this.path = framework_entry_point.path orelse "";
-        this.kind = kind;
-
-        if (this.path.len == 0) {
-            this.kind = .disabled;
-            return;
-        }
-
-        if (framework_entry_point.env) |env| {
-            this.env.allocator = allocator;
-            try this.env.setFromAPI(env);
-        }
     }
 };
 
@@ -2243,15 +2017,6 @@ pub const RouteConfig = struct {
     // maybe like CBOR
     extensions: []const string = &[_]string{},
     routes_enabled: bool = false,
-
-    pub fn toAPI(this: *const RouteConfig) api.LoadedRouteConfig {
-        return .{
-            .asset_prefix = this.asset_prefix_path,
-            .dir = if (this.routes_enabled) this.dir else "",
-            .extensions = this.extensions,
-            .static_dir = if (this.static_dir_enabled) this.static_dir else "",
-        };
-    }
 
     pub const DefaultDir = "pages";
     pub const DefaultStaticDir: string = "public";
@@ -2469,18 +2234,19 @@ const Fs = @import("../resolver/fs.zig");
 const resolver = @import("../resolver/resolver.zig");
 const Runtime = @import("../js_parser/runtime.zig").Runtime;
 const URL = @import("../url/url.zig").URL;
+const Framework = @import("../bake/Framework.zig");
 
 const MacroRemap = @import("../resolver/package_json.zig").MacroMap;
 const PackageJSON = @import("../resolver/package_json.zig").PackageJSON;
 const ConditionsMap = @import("../resolver/package_json.zig").ESModule.ConditionsMap;
 
 const bun = @import("bun");
+const HardcodedModule = @import("../resolve_builtins/HardcodedModule.zig").HardcodedModule;
 const Environment = bun.Environment;
 const Global = bun.Global;
 const Output = bun.Output;
 const analytics = bun.analytics;
 const assert = bun.assert;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 const api = bun.schema.api;

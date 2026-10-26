@@ -36,7 +36,6 @@ class CryptoKeyRSA;
 
 class CryptoAlgorithmRSA_OAEP final : public CryptoAlgorithm {
 public:
-    static constexpr ASCIILiteral s_name = "RSA-OAEP"_s;
     static constexpr CryptoAlgorithmIdentifier s_identifier = CryptoAlgorithmIdentifier::RSA_OAEP;
     static Ref<CryptoAlgorithm> create();
 
@@ -47,11 +46,11 @@ private:
     CryptoAlgorithmRSA_OAEP() = default;
     CryptoAlgorithmIdentifier identifier() const final;
 
-    void encrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&) final;
-    void decrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&) final;
-    void generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyOrKeyPairCallback&&, ExceptionCallback&&, ScriptExecutionContext&) final;
-    void importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyCallback&&, ExceptionCallback&&) final;
-    void exportKey(CryptoKeyFormat, Ref<CryptoKey>&&, KeyDataCallback&&, ExceptionCallback&&) final;
+    ExceptionOr<Vector<uint8_t>> encrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&) final;
+    ExceptionOr<Vector<uint8_t>> decrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&) final;
+    ExceptionOr<KeyOrKeyPair> generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap) final;
+    ExceptionOr<Ref<CryptoKey>> importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap) final;
+    ExceptionOr<KeyData> exportKey(CryptoKeyFormat, Ref<CryptoKey>&&) final;
 
     static ExceptionOr<Vector<uint8_t>> platformEncrypt(const CryptoAlgorithmRsaOaepParams&, const CryptoKeyRSA&, const Vector<uint8_t>&);
     static ExceptionOr<Vector<uint8_t>> platformDecrypt(const CryptoAlgorithmRsaOaepParams&, const CryptoKeyRSA&, const Vector<uint8_t>&);

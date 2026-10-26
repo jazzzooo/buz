@@ -41,7 +41,8 @@ pub const BuildCommand = struct {
             }
         }
 
-        var this_transpiler = try transpiler.Transpiler.init(allocator, ctx.io, log, ctx.args, null);
+        var this_transpiler = try transpiler.Transpiler.init(allocator, ctx.io, log, ctx.args, ctx.transpiler_capabilities, null);
+        defer this_transpiler.feature_flags.deinit();
         if (fetcher) |fetch| {
             this_transpiler.options.entry_points = fetch.entry_points;
             this_transpiler.resolver.opts.entry_points = fetch.entry_points;
@@ -82,7 +83,6 @@ pub const BuildCommand = struct {
         this_transpiler.options.banner = ctx.bundler_options.banner;
         this_transpiler.options.footer = ctx.bundler_options.footer;
         this_transpiler.options.drop = ctx.args.drop;
-        this_transpiler.options.bundler_feature_flags = Runtime.Features.initBundlerFeatureFlags(allocator, ctx.args.feature_flags);
 
         this_transpiler.options.allow_unresolved = if (ctx.bundler_options.allow_unresolved) |a| options.AllowUnresolved.fromStrings(a) else .all;
         this_transpiler.options.css_chunking = ctx.bundler_options.css_chunking;
@@ -260,7 +260,8 @@ pub const BuildCommand = struct {
 
         var client_transpiler: transpiler.Transpiler = undefined;
         if (this_transpiler.options.server_components) {
-            client_transpiler = try transpiler.Transpiler.init(allocator, ctx.io, log, ctx.args, null);
+            client_transpiler = try transpiler.Transpiler.init(allocator, ctx.io, log, ctx.args, ctx.transpiler_capabilities, null);
+            client_transpiler.feature_flags.deinit();
             client_transpiler.options = this_transpiler.options;
             client_transpiler.options.target = .browser;
             client_transpiler.options.server_components = true;
@@ -269,25 +270,29 @@ pub const BuildCommand = struct {
             this_transpiler.options.react_fast_refresh = false;
             this_transpiler.options.minify_syntax = true;
             client_transpiler.options.minify_syntax = true;
+            var client_user_defines: ?options.defines.UserDefines = null;
+            defer if (client_user_defines) |*definitions| definitions.deinit();
+            if (ctx.args.define) |input_defines| {
+                var raw_defines = try options.stringHashMapFromArrays(
+                    options.defines.RawDefines,
+                    allocator,
+                    input_defines.keys.len,
+                    input_defines.keys,
+                    input_defines.values,
+                );
+                defer raw_defines.deinit(allocator);
+                client_user_defines = try options.Define.Data.fromInput(raw_defines, ctx.args.drop, log, allocator);
+            }
             client_transpiler.options.define = try options.Define.init(
                 allocator,
-                if (ctx.args.define) |user_defines|
-                    try options.Define.Data.fromInput(try options.stringHashMapFromArrays(
-                        options.defines.RawDefines,
-                        allocator,
-                        user_defines.keys.len + 4,
-                        user_defines.keys,
-                        user_defines.values,
-                    ), ctx.args.drop, log, allocator)
-                else
-                    null,
+                client_user_defines,
                 null,
                 this_transpiler.options.define.drop_debugger,
                 this_transpiler.options.dead_code_elimination and this_transpiler.options.minify_syntax,
             );
 
-            try bun.bake.addImportMetaDefines(allocator, this_transpiler.options.define, .development, .server);
-            try bun.bake.addImportMetaDefines(allocator, client_transpiler.options.define, .development, .client);
+            try BakeCore.addImportMetaDefines(this_transpiler.options.define, .development, .server);
+            try BakeCore.addImportMetaDefines(client_transpiler.options.define, .development, .client);
 
             this_transpiler.resolver.opts = this_transpiler.options;
             this_transpiler.resolver.env_loader = this_transpiler.env;
@@ -302,6 +307,10 @@ pub const BuildCommand = struct {
         var input_code_length: u64 = 0;
         var build_watcher: ?*BuildWatchSession = null;
         const watch_requested = ctx.debug.hot_reload == .watch;
+        var build_watch_attachment: BuildWatchSession.Attachment = .{
+            .factory = ctx.engine_capabilities.build_watch,
+            .session = &build_watcher,
+        };
 
         const output_files: []options.OutputFile = brk: {
             if (ctx.bundler_options.transform_only) {
@@ -341,17 +350,15 @@ pub const BuildCommand = struct {
             const build_result = BundleV2.generateFromCLI(
                 &this_transpiler,
                 allocator,
-                bun.jsc.AnyEventLoop.init(
-                    ctx.io,
-                    ctx.allocator,
-                    bun.cli.Cli.pinnedThreads().backgroundExecutor(),
-                ),
-                watch_requested,
+                this_transpiler.engine_capabilities.bytecode_generator,
+                if (watch_requested) .{
+                    .context = .init(&build_watch_attachment),
+                    .attach_fn = BuildWatchSession.Attachment.attach,
+                } else null,
                 &reachable_file_count,
                 &minify_duration,
                 &input_code_length,
                 fetcher,
-                &build_watcher,
             ) catch |err| {
                 if (log.msgs.items.len > 0) {
                     try log.print(Output.errorWriter());
@@ -524,6 +531,7 @@ pub const BuildCommand = struct {
                     compile_target,
                     allocator,
                     ctx.io,
+                    ctx.transpiler_capabilities.javascript_semantics,
                     output_files,
                     root_dir,
                     this_transpiler.options.public_path,
@@ -573,16 +581,10 @@ pub const BuildCommand = struct {
                             // so use map_basename (not a path with directory components)
                             // to avoid writing to a doubled directory path.
                             var pathbuf: bun.PathBuffer = undefined;
-                            switch (bun.jsc.Node.fs.NodeFS.writeFileWithPathBuffer(
+                            switch (NodeFSCore.writeFileWithPathBuffer(
                                 &pathbuf,
                                 .{
-                                    .data = .{ .buffer = .{
-                                        .buffer = .{
-                                            .ptr = @constCast(sourcemap_bytes.ptr),
-                                            .len = @as(u32, @truncate(sourcemap_bytes.len)),
-                                            .byte_len = @as(u32, @truncate(sourcemap_bytes.len)),
-                                        },
-                                    } },
+                                    .data = .{ .buffer = NodeTypes.NodeBuffer.borrow(sourcemap_bytes) },
                                     .encoding = .buffer,
                                     .dirfd = .fromStdDir(root_dir),
                                     .file = .{ .path = .{
@@ -720,10 +722,11 @@ pub const BuildCommand = struct {
 
 fn exitOrWatch(io: std.Io, code: u8, watcher: ?*BuildWatchSession, watch_requested: bool) noreturn {
     if (watcher) |active| {
+        const clear_screen = active.clear_screen;
         const outcome = active.waitForReload(io);
         active.deinit();
         switch (outcome) {
-            .reload => bun.reloadProcess(bun.default_allocator, BuildWatcher.clear_screen, false),
+            .reload => bun.reloadProcess(bun.default_allocator, clear_screen, false),
             .failed => Global.exit(1),
             .waiting => unreachable,
         }
@@ -807,14 +810,13 @@ fn printSummary(bundled_end: i128, minify_duration: u64, minified: bool, input_c
 const string = []const u8;
 
 const MetafileBuilder = @import("../bundler/linker_context/MetafileBuilder.zig");
+const BakeCore = @import("../bake/BakeCore.zig");
 const fs = @import("../resolver/fs.zig");
 const options = @import("../bundler/options.zig");
 const resolve_path = @import("../paths/resolve_path.zig");
 const std = @import("std");
 const BundleV2 = @import("../bundler/bundle_v2.zig").BundleV2;
-const BuildWatchSession = @import("../bundler/bundle_v2.zig").BuildWatchSession;
-const BuildWatcher = @import("../bundler/bundle_v2.zig").Watcher;
-const Command = @import("./cli.zig").Command;
+const Command = bun.cli.Command;
 const Runtime = @import("../js_parser/runtime.zig").Runtime;
 
 const bun = @import("bun");
@@ -823,3 +825,6 @@ const Output = bun.Output;
 const default_allocator = bun.default_allocator;
 const strings = bun.strings;
 const transpiler = bun.transpiler;
+const BuildWatchSession = @import("./BuildWatchSession.zig");
+const NodeFSCore = @import("../runtime/node/NodeFSCore.zig");
+const NodeTypes = @import("../runtime/node/types.zig");

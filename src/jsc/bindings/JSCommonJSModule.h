@@ -3,7 +3,7 @@
 
 #include "JavaScriptCore/JSGlobalObject.h"
 #include "JavaScriptCore/JSString.h"
-#include "headers-handwritten.h"
+#include "ResolvedSource.h"
 #include "wtf/NakedPtr.h"
 #include "BunClientData.h"
 
@@ -20,10 +20,6 @@ class AbstractModuleRecord;
 namespace Bun {
 
 using namespace JSC;
-
-JSC_DECLARE_HOST_FUNCTION(jsFunctionCreateCommonJSModule);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionEvaluateCommonJSModule);
-JSC_DECLARE_HOST_FUNCTION(functionJSCommonJSModule_compile);
 
 void populateESMExports(
     JSC::JSGlobalObject* globalObject,

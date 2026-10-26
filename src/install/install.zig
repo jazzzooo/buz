@@ -250,7 +250,6 @@ pub const TextLockfile = @import("./lockfile/bun.lock.zig");
 pub const Bin = @import("./bin.zig").Bin;
 pub const FolderResolution = @import("./resolvers/folder_resolver.zig").FolderResolution;
 pub const LifecycleScriptSubprocess = @import("./lifecycle_script_runner.zig").LifecycleScriptSubprocess;
-pub const SecurityScanSubprocess = @import("./PackageManager/security_scanner.zig").SecurityScanSubprocess;
 pub const PackageInstall = @import("./PackageInstall.zig").PackageInstall;
 pub const Repository = @import("./repository.zig").Repository;
 pub const Resolution = @import("./resolution.zig").Resolution;
@@ -289,3 +288,4 @@ const default_allocator = bun.default_allocator;
 
 const Semver = bun.Semver;
 const String = Semver.String;
+pub const SecurityScanner = @import("./PackageManager/security_scanner.zig");

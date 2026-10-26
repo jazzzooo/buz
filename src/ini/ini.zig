@@ -576,9 +576,6 @@ pub const Parser = struct {
     }
 };
 
-/// Used in JS tests, see `internal-for-testing.ts` and shell tests.
-pub const IniTestingAPIs = @import("../install_jsc/ini_jsc.zig").IniTestingAPIs;
-
 pub const ToStringFormatter = struct {
     d: js_ast.Expr.Data,
 
@@ -679,7 +676,7 @@ pub const ConfigIterator = struct {
         ) OOM!?[]const u8 {
             if (this.optname.isBase64Encoded()) {
                 if (this.value.len == 0) return "";
-                return bun.base64.decodeAlloc(allocator, this.value) catch |err| switch (err) {
+                return bun.base64.decodeAllocNode(allocator, this.value) catch |err| switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
                     error.DecodingFailed => {
                         try log.addErrorFmtOpts(
@@ -1048,7 +1045,7 @@ pub fn loadNpmrc(
             source,
         ) catch |err| switch (err) {
             error.OutOfMemory => |oom| return oom,
-            error.InvalidRegExp, error.UnexpectedExpr => patterns: {
+            error.UnexpectedExpr => patterns: {
                 log.reset();
                 break :patterns null;
             },
@@ -1063,7 +1060,7 @@ pub fn loadNpmrc(
             source,
         ) catch |err| switch (err) {
             error.OutOfMemory => |oom| return oom,
-            error.InvalidRegExp, error.UnexpectedExpr => patterns: {
+            error.UnexpectedExpr => patterns: {
                 log.reset();
                 break :patterns null;
             },

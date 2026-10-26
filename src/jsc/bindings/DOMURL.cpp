@@ -26,143 +26,164 @@
 #include "config.h"
 #include "DOMURL.h"
 
-#include "ActiveDOMObject.h"
-// #include "Blob.h"
-// #include "BlobURL.h"
-// #include "MemoryCache.h"
-// #include "PublicURLManager.h"
-// #include "ResourceRequest.h"
-#include "ScriptExecutionContext.h"
-// #include "SecurityOrigin.h"
 #include "URLSearchParams.h"
-#include <wtf/MainThread.h>
-
-class URLRegistrable {
-public:
-};
-
-class Blob {
-public:
-};
+#include "FormURLEncoding.h"
+#include <array>
+#include <new>
+#include <wtf/text/MakeString.h>
 
 namespace WebCore {
 
-static inline String redact(const String& input)
+static std::array<StringView, 3> redactedURLParts(const String& input)
 {
     if (input.contains('@'))
-        return "<redacted>"_s;
+        return { "<redacted>"_s, ""_s, ""_s };
 
-    return makeString('"', input, '"');
+    return { "\""_s, input, "\""_s };
 }
 
-inline DOMURL::DOMURL(URL&& completeURL)
-    : m_url(WTF::move(completeURL))
-    , m_initialURLCostForGC(static_cast<uint16_t>(std::min<size_t>(m_url.string().impl()->costDuringGC(), std::numeric_limits<uint16_t>::max())))
+static Exception invalidURLError(const String& input, const String* base = nullptr)
+{
+    const auto url = redactedURLParts(input);
+    String message;
+    if (base) {
+        const auto baseURL = redactedURLParts(*base);
+        message = tryMakeString(url[0], url[1], url[2], " cannot be parsed as a URL against "_s, baseURL[0], baseURL[1], baseURL[2]);
+    } else {
+        message = tryMakeString(url[0], url[1], url[2], " cannot be parsed as a URL."_s);
+    }
+    if (message.isNull())
+        return Exception { OutOfMemoryError };
+    return Exception { InvalidURLError, WTF::move(message) };
+}
+
+DOMURL::DOMURL(URL&& url)
+    : m_url(WTF::move(url))
 {
     ASSERT(m_url.isValid());
 }
 
+ExceptionOr<Ref<DOMURL>> DOMURL::createResolved(URL&& url)
+{
+    void* storage;
+    if (!WTF::tryFastMalloc(sizeof(DOMURL)).getValue(storage))
+        return Exception { OutOfMemoryError };
+    auto* object = new (NotNull, storage) DOMURL(WTF::move(url));
+    return adoptRef(*object);
+}
+
 ExceptionOr<Ref<DOMURL>> DOMURL::create(const String& url)
 {
-    URL completeURL { url };
-    if (!completeURL.isValid())
-        return Exception { InvalidURLError, makeString(redact(url), " cannot be parsed as a URL."_s) };
-    return adoptRef(*new DOMURL(WTF::move(completeURL)));
+    return create(url, URL { });
 }
 
 ExceptionOr<Ref<DOMURL>> DOMURL::create(const String& url, const URL& base)
 {
     ASSERT(base.isValid() || base.isNull());
-    URL completeURL { base, url };
+    WTF::URL completeURL { base, url };
     if (!completeURL.isValid())
-        return Exception { InvalidURLError, makeString(redact(url), " cannot be parsed as a URL."_s) };
-    return adoptRef(*new DOMURL(WTF::move(completeURL)));
+        return invalidURLError(url);
+    return createResolved(WTF::move(completeURL));
 }
 
 ExceptionOr<Ref<DOMURL>> DOMURL::create(const String& url, const String& base)
 {
-    URL baseURL { base };
-    if (!base.isNull() && !baseURL.isValid())
-        return Exception { InvalidURLError, makeString(redact(url), " cannot be parsed as a URL against "_s, redact(base)) };
+    if (base.isNull())
+        return create(url);
+    WTF::URL baseURL { base };
+    if (!baseURL.isValid())
+        return invalidURLError(url, &base);
     return create(url, baseURL);
 }
 
 DOMURL::~DOMURL() = default;
 
-static URL parseInternal(const String& url, const String& base)
+ExceptionOr<Ref<DOMURL>> DOMURL::createFromFileSystemPath(StringView path)
 {
-    URL baseURL { base };
-    if (!base.isNull() && !baseURL.isValid())
-        return {};
-    return { baseURL, url };
+    auto url = URL::fileURLWithFileSystemPath(path);
+    if (!url.isValid())
+        return invalidURLError(url.string());
+    return createResolved(WTF::move(url));
 }
 
-RefPtr<DOMURL> DOMURL::parse(const String& url, const String& base)
+static URL parseInternal(const String& url, const String& base)
+{
+    if (base.isNull())
+        return URL(url);
+    URL baseURL(base);
+    if (!baseURL.isValid())
+        return { };
+    return URL(baseURL, url);
+}
+
+ExceptionOr<RefPtr<DOMURL>> DOMURL::parse(const String& url, const String& base)
 {
     auto completeURL = parseInternal(url, base);
     if (!completeURL.isValid())
-        return {};
-    return adoptRef(*new DOMURL(WTF::move(completeURL)));
+        return RefPtr<DOMURL> {};
+    auto result = createResolved(WTF::move(completeURL));
+    if (result.hasException())
+        return result.releaseException();
+    return RefPtr<DOMURL> { result.releaseReturnValue() };
 }
 
-bool DOMURL::canParse(const String& url, const String& base)
+ExceptionOr<bool> DOMURL::canParse(const String& url, const String& base)
 {
-    return parseInternal(url, base).isValid();
+    auto result = parseInternal(url, base);
+    return result.isValid();
 }
 
 ExceptionOr<void> DOMURL::setHref(const String& url)
 {
-    URL completeURL { URL {}, url };
-    if (!completeURL.isValid()) {
+    WTF::URL completeURL { url };
+    if (!completeURL.isValid())
+        return invalidURLError(url);
+    return commitURL(WTF::move(completeURL));
+}
 
-        return Exception { InvalidURLError, makeString(redact(url), " cannot be parsed as a URL."_s) };
+ExceptionOr<void> DOMURL::setFullURL(const URL& url)
+{
+    if (!url.isValid())
+        return { };
+    return commitURL(URL(url));
+}
+
+ExceptionOr<void> DOMURL::commitURL(URL&& url)
+{
+    RELEASE_ASSERT(url.isValid());
+    if (m_searchParams && (m_searchParams->m_queryDirty || url.query() != m_url.query())) {
+        auto pairs = FormURLEncoding::parse(url.query());
+        if (pairs.hasException())
+            return pairs.releaseException();
+        m_searchParams->m_pairs = pairs.releaseReturnValue();
+        m_searchParams->m_queryDirty = false;
     }
-    m_url = WTF::move(completeURL);
-    if (m_searchParams)
-        m_searchParams->updateFromAssociatedURL();
+    m_url = WTF::move(url);
     return {};
 }
 
-String DOMURL::createObjectURL(ScriptExecutionContext& scriptExecutionContext, Blob& blob)
+ExceptionOr<URL> DOMURL::href() const
 {
-    UNUSED_PARAM(blob);
-    UNUSED_PARAM(scriptExecutionContext);
-    return String();
-    // return createPublicURL(scriptExecutionContext, blob);
+    if (!m_searchParams || !m_searchParams->m_queryDirty)
+        return URL(m_url);
+    auto serialized = m_searchParams->toString();
+    if (serialized.hasException())
+        return serialized.releaseException();
+    const auto query = serialized.releaseReturnValue();
+    m_url.setQuery(query.isEmpty() ? StringView { } : StringView(query));
+    m_searchParams->m_queryDirty = false;
+    return URL(m_url);
 }
 
-String DOMURL::createPublicURL(ScriptExecutionContext& scriptExecutionContext, URLRegistrable& registrable)
+ExceptionOr<Ref<URLSearchParams>> DOMURL::searchParams()
 {
-    // URL publicURL = BlobURL::createPublicURL(scriptExecutionContext.securityOrigin());
-    // if (publicURL.isEmpty())
-    //     return String();
-
-    // scriptExecutionContext.publicURLManager().registerURL(publicURL, registrable);
-
-    // return publicURL.string();
-    UNUSED_PARAM(scriptExecutionContext);
-    UNUSED_PARAM(registrable);
-    return String();
-}
-
-URLSearchParams& DOMURL::searchParams()
-{
-    if (!m_searchParams)
-        m_searchParams = URLSearchParams::create(search(), this);
-    return *m_searchParams;
-}
-
-void DOMURL::revokeObjectURL(ScriptExecutionContext& scriptExecutionContext, const String& urlString)
-{
-    // URL url { urlString };
-    // ResourceRequest request(url);
-    // request.setDomainForCachePartition(scriptExecutionContext.domainForCachePartition());
-
-    // MemoryCache::removeRequestFromSessionCaches(scriptExecutionContext, request);
-
-    // scriptExecutionContext.publicURLManager().revoke(url);
-    UNUSED_PARAM(scriptExecutionContext);
-    UNUSED_PARAM(urlString);
+    if (!m_searchParams) {
+        auto created = URLSearchParams::createFromQuery(m_url.query());
+        if (created.hasException())
+            return created.releaseException();
+        m_searchParams = created.releaseReturnValue();
+    }
+    return Ref { *m_searchParams };
 }
 
 } // namespace WebCore

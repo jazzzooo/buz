@@ -213,7 +213,7 @@ pub fn ParseStmt(
                                 else => {},
                             }
 
-                            break :default_name_getter createDefaultName(p, defaultLoc) catch unreachable;
+                            break :default_name_getter try createDefaultName(p, defaultLoc);
                         };
                         p.has_export_default = true;
                         p.has_es_module_syntax = true;
@@ -258,7 +258,7 @@ pub fn ParseStmt(
                                         else => {},
                                     }
 
-                                    break :default_name_getter createDefaultName(p, defaultLoc) catch unreachable;
+                                    break :default_name_getter try createDefaultName(p, defaultLoc);
                                 };
                                 p.has_export_default = true;
                                 return p.s(S.ExportDefault{ .default_name = default_name, .value = js_ast.StmtOrExpr{ .stmt = stmt } }, loc);
@@ -275,7 +275,7 @@ pub fn ParseStmt(
                     p.has_export_default = true;
                     return p.s(
                         S.ExportDefault{
-                            .default_name = p.defaultNameForExpr(expr, defaultLoc),
+                            .default_name = try p.defaultNameForExpr(expr, defaultLoc),
                             .value = js_ast.StmtOrExpr{
                                 .expr = expr,
                             },
@@ -368,15 +368,15 @@ pub fn ParseStmt(
                         }
 
                         const import_record_index = p.addImportRecord(.stmt, parsedPath.loc, parsedPath.text);
-                        const namespace_ref = p.storeNameInRef(
-                            std.fmt.allocPrint(
+                        const namespace_ref = try p.storeNameInRef(
+                            try std.fmt.allocPrint(
                                 p.allocator,
                                 "import_{f}",
                                 .{
                                     fs.fmtIdentifier(parsedPath.text),
                                 },
-                            ) catch |err| bun.handleOom(err),
-                        ) catch |err| bun.handleOom(err);
+                            ),
+                        );
 
                         if (comptime track_symbol_usage_during_parse_pass) {
                             // In the scan pass, we need _some_ way of knowing *not* to mark as unused

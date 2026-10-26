@@ -1,4 +1,4 @@
-const default_extensions = &[_][]const u8{
+pub const default_extensions = &[_][]const u8{
     "tsx",
     "jsx",
     "ts",
@@ -7,547 +7,420 @@ const default_extensions = &[_][]const u8{
     "js",
 };
 
-const OwnedArena = struct {
-    state: *bun.ArenaAllocator,
+pub const OwnedRouteConfig = struct {
+    dir: bindgen.OwnedBytes,
+    asset_prefix_path: bindgen.OwnedBytes,
+    extensions: bindgen.OwnedNativeSlice(bindgen.OwnedBytes, .any),
 
-    fn init(backing_allocator: std.mem.Allocator) !OwnedArena {
-        const state = try backing_allocator.create(bun.ArenaAllocator);
-        state.* = bun.ArenaAllocator.init(backing_allocator);
-        return .{ .state = state };
+    pub fn deinit(this: *OwnedRouteConfig) void {
+        this.dir.deinit();
+        this.asset_prefix_path.deinit();
+        this.extensions.deinit();
     }
 
-    fn allocator(this: *const OwnedArena) std.mem.Allocator {
-        return this.state.allocator();
-    }
-
-    fn deinit(this: *OwnedArena) void {
-        const backing_allocator = this.state.child_allocator;
-        this.state.deinit();
-        backing_allocator.destroy(this.state);
-        this.* = undefined;
-    }
-};
-
-const OwnedRouteConfig = struct {
-    arena: OwnedArena,
-    value: Options.RouteConfig = .{},
-
-    fn init(backing_allocator: std.mem.Allocator) !OwnedRouteConfig {
-        return .{ .arena = try .init(backing_allocator) };
-    }
-
-    fn allocator(this: *const OwnedRouteConfig) std.mem.Allocator {
-        return this.arena.allocator();
-    }
-
-    fn deinit(this: *OwnedRouteConfig) void {
-        this.arena.deinit();
-        this.* = undefined;
+    fn copyToArena(this: *const OwnedRouteConfig, allocator: std.mem.Allocator) bun.OOM!Options.RouteConfig {
+        const source = this.extensions.slice();
+        const extensions = try allocator.alloc([]const u8, source.len);
+        for (source, extensions) |*extension, *target| target.* = try allocator.dupe(u8, extension.slice());
+        return .{
+            .dir = try allocator.dupe(u8, this.dir.slice()),
+            .asset_prefix_path = try allocator.dupe(u8, this.asset_prefix_path.slice()),
+            .extensions = if (extensions.len > 0) extensions else default_extensions,
+        };
     }
 };
 
-const RouteSnapshot = struct {
-    arena: OwnedArena,
-    router: ?Router = null,
+pub const RouteSnapshot = struct {
+    entries: bindgen.OwnedNativeSlice(Entry, .any),
+    static_keys: bindgen.OwnedNativeSlice(StaticKey, .any),
+    index: ?usize,
+    dynamic_start: usize,
 
-    fn init(backing_allocator: std.mem.Allocator) !RouteSnapshot {
-        return .{ .arena = try .init(backing_allocator) };
-    }
+    const Entry = struct {
+        name: bindgen.OwnedBytes,
+        match_name: bindgen.OwnedBytes,
+        file_path: bindgen.OwnedBytes,
+        basename: bindgen.OwnedBytes,
 
-    fn allocator(this: *const RouteSnapshot) std.mem.Allocator {
-        return this.arena.allocator();
-    }
+        fn copy(route: *const Router.Route) bun.OOM!Entry {
+            var name = try bindgen.OwnedBytes.fromSlice(route.name);
+            errdefer name.deinit();
+            var match_name = try bindgen.OwnedBytes.fromSlice(route.match_name.slice());
+            errdefer match_name.deinit();
+            var file_path = try bindgen.OwnedBytes.fromSlice(route.abs_path.slice());
+            errdefer file_path.deinit();
+            return .{ .name = name, .match_name = match_name, .file_path = file_path, .basename = try bindgen.OwnedBytes.fromSlice(route.basename) };
+        }
 
-    fn load(
-        this: *RouteSnapshot,
+        pub fn deinit(this: *Entry) void {
+            this.name.deinit();
+            this.match_name.deinit();
+            this.file_path.deinit();
+            this.basename.deinit();
+        }
+
+        fn result(this: *const Entry, url: URLPath, params: *Router.Param.List) Router.Match {
+            return .{ .name = this.name.slice(), .path = this.file_path.slice(), .file_path = this.file_path.slice(), .basename = this.basename.slice(), .pathname = url.pathname, .query_string = url.query_string, .params = params };
+        }
+    };
+
+    const StaticKey = struct {
+        name: bindgen.OwnedBytes,
+        entry_index: usize,
+
+        pub fn deinit(this: *StaticKey) void {
+            this.name.deinit();
+        }
+
+        fn lessThan(_: void, a: StaticKey, b: StaticKey) bool {
+            return std.mem.lessThan(u8, a.name.slice(), b.name.slice());
+        }
+    };
+
+    pub fn load(
+        scratch: std.mem.Allocator,
         fs: *Fs.FileSystem,
-        config: Options.RouteConfig,
+        owned_config: *const OwnedRouteConfig,
         log: *Log.Log,
         resolver: *Resolver,
         root_dir_info: *const DirInfo,
-    ) !void {
-        bun.assert(this.router == null);
-        var router = try Router.init(fs, this.allocator(), config);
-        errdefer router.deinit();
+    ) !*RouteSnapshot {
+        const config = try owned_config.copyToArena(scratch);
+        var router = try Router.init(fs, scratch, config);
+        defer router.deinit();
         try router.loadRoutes(log, root_dir_info, Resolver, resolver, config.dir);
-        this.router = router;
+        const routes = router.routes.list.items(.route);
+        var entries = try bindgen.OwnedNativeSlice(Entry, .any).Builder.init(routes.len);
+        errdefer entries.deinit();
+        var route_indices = std.AutoHashMap(*Router.Route, usize).init(scratch);
+        defer route_indices.deinit();
+        var index: ?usize = null;
+        for (routes, 0..) |route, i| {
+            entries.appendOwned(try Entry.copy(route));
+            try route_indices.put(route, i);
+            if (router.routes.index == route) index = i;
+        }
+        var keys = try bindgen.OwnedNativeSlice(StaticKey, .any).Builder.init(router.routes.static.count());
+        errdefer keys.deinit();
+        var iter = router.routes.static.iterator();
+        while (iter.next()) |item| {
+            keys.appendOwned(.{ .name = try bindgen.OwnedBytes.fromSlice(item.key_ptr.*), .entry_index = route_indices.get(item.value_ptr.*).? });
+        }
+        std.sort.pdq(StaticKey, keys.slice(), {}, StaticKey.lessThan);
+        const snapshot = try bun.default_allocator.create(RouteSnapshot);
+        snapshot.* = .{ .entries = entries.finish(), .static_keys = keys.finish(), .index = index, .dynamic_start = routes.len - router.routes.dynamic.len };
+        return snapshot;
     }
 
-    fn get(this: *RouteSnapshot) *Router {
-        return if (this.router) |*router| router else unreachable;
+    pub fn match(this: *const RouteSnapshot, url: URLPath, params: *Router.Param.List, allocator: std.mem.Allocator) bun.OOM!?Router.Match {
+        const path = std.mem.trimStart(u8, Router.Routes.normalizeMatchPath(url.path), "/");
+        const entries = this.entries.slice();
+        if (path.len == 0) return if (this.index) |i| entries[i].result(url, params) else null;
+        const keys = this.static_keys.slice();
+        var lo: usize = 0;
+        var hi = keys.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            switch (std.mem.order(u8, path, keys[mid].name.slice())) {
+                .lt => hi = mid,
+                .gt => lo = mid + 1,
+                .eq => return entries[keys[mid].entry_index].result(url, params),
+            }
+        }
+        for (entries[this.dynamic_start..]) |*entry| {
+            if (try Router.Pattern.match(path, entry.name.slice()[1..], entry.match_name.slice(), allocator, *Router.Param.List, params, true))
+                return entry.result(url, params);
+        }
+        return null;
     }
 
-    fn deinit(this: *RouteSnapshot) void {
-        if (this.router) |*router| router.deinit();
-        this.arena.deinit();
-        this.* = undefined;
+    pub fn destroy(this: *RouteSnapshot) void {
+        this.entries.deinit();
+        this.static_keys.deinit();
+        bun.default_allocator.destroy(this);
+    }
+};
+
+pub const RouteMetadata = struct {
+    ref_count: RefCount = .init(),
+    base_dir: bindgen.OwnedBytes,
+    origin: bindgen.OwnedBytes,
+    asset_prefix: bindgen.OwnedBytes,
+
+    const RefCount = bun.ptr.ThreadSafeRefCount(RouteMetadata, "ref_count", destroy, .{});
+    pub const ref = RefCount.ref;
+    pub const deref = RefCount.deref;
+    pub const Ref = bindgen.RefNative(RouteMetadata, .any);
+
+    pub fn create(base_dir: []const u8, origin: []const u8, asset_prefix: []const u8) bun.OOM!Ref {
+        var owned_base_dir = try bindgen.OwnedBytes.fromSlice(base_dir);
+        errdefer owned_base_dir.deinit();
+        var owned_origin = try bindgen.OwnedBytes.fromSlice(origin);
+        errdefer owned_origin.deinit();
+        var owned_asset_prefix = try bindgen.OwnedBytes.fromSlice(asset_prefix);
+        errdefer owned_asset_prefix.deinit();
+        const metadata = try bun.default_allocator.create(RouteMetadata);
+        metadata.* = .{
+            .base_dir = owned_base_dir,
+            .origin = owned_origin,
+            .asset_prefix = owned_asset_prefix,
+        };
+        return .adopt(metadata);
+    }
+
+    fn destroy(this: *RouteMetadata) void {
+        this.base_dir.deinit();
+        this.origin.deinit();
+        this.asset_prefix.deinit();
+        bun.default_allocator.destroy(this);
     }
 };
 
 pub const FileSystemRouter = struct {
-    origin: ?*jsc.RefString = null,
-    base_dir: ?*jsc.RefString = null,
-    asset_prefix: ?*jsc.RefString = null,
+    bindgen_state: bindgen.ClassState = .{},
+    metadata: RouteMetadata.Ref,
     config: OwnedRouteConfig,
-    snapshot: RouteSnapshot,
+    snapshot: FileSystemRouterSnapshot,
 
-    pub const js = jsc.Codegen.JSFileSystemRouter;
-    pub const toJS = js.toJS;
-    pub const fromJS = js.fromJS;
-    pub const fromJSDirect = js.fromJSDirect;
+    pub const getConstructor = FileSystemRouterClass.constructor;
 
-    pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*FileSystemRouter {
-        const argument_ = callframe.arguments_old(1);
-        if (argument_.len == 0) {
-            return globalThis.throwInvalidArguments("Expected object", .{});
-        }
-
-        const argument = argument_.ptr[0];
-        if (argument.isEmptyOrUndefinedOrNull() or !argument.isObject()) {
-            return globalThis.throwInvalidArguments("Expected object", .{});
-        }
-        var vm = globalThis.bunVM();
-
-        var root_dir_path: ZigString.Slice = ZigString.Slice.fromUTF8NeverFree(vm.transpiler.fs.top_level_dir);
-        defer root_dir_path.deinit();
-        var origin_str: ZigString.Slice = .{};
-        defer origin_str.deinit();
-
-        var out_buf: [bun.MAX_PATH_BYTES * 2]u8 = undefined;
-        if (try argument.get(globalThis, "style")) |style_val| {
-            if (!(try style_val.getZigString(globalThis)).eqlComptime("nextjs")) {
-                return globalThis.throwInvalidArguments("Only 'nextjs' style is currently implemented", .{});
-            }
-        } else {
-            return globalThis.throwInvalidArguments("Expected 'style' option (ex: \"style\": \"nextjs\")", .{});
-        }
-
-        if (try argument.get(globalThis, "dir")) |dir| {
-            if (!dir.isString()) {
-                return globalThis.throwInvalidArguments("Expected dir to be a string", .{});
-            }
-            var root_dir_path_ = try dir.toSlice(globalThis, globalThis.allocator());
-            defer root_dir_path_.deinit();
-            if (!(root_dir_path_.len == 0 or strings.eqlComptime(root_dir_path_.slice(), "."))) {
-                // resolve relative path if needed
-                const path = root_dir_path_.slice();
-                if (bun.path.Platform.isAbsolute(.auto, path)) {
-                    root_dir_path = root_dir_path_;
-                    root_dir_path_ = .empty;
-                } else {
-                    var parts = [_][]const u8{path};
-                    root_dir_path = jsc.ZigString.Slice.fromUTF8NeverFree(bun.path.joinAbsStringBuf(Fs.FileSystem.instance.top_level_dir, &out_buf, &parts, .auto));
-                }
-            }
-        } else {
-            // dir is not optional
-            return globalThis.throwInvalidArguments("Expected dir to be a string", .{});
-        }
-        var config = OwnedRouteConfig.init(globalThis.allocator()) catch unreachable;
-        errdefer config.deinit();
-        const config_allocator = config.allocator();
-
-        var extensions = std.array_list.Managed(string).init(config_allocator);
-        if (try argument.get(globalThis, "fileExtensions")) |file_extensions| {
-            if (!file_extensions.jsType().isArray()) {
-                return globalThis.throwInvalidArguments("Expected fileExtensions to be an Array", .{});
-            }
-
-            var iter = try file_extensions.arrayIterator(globalThis);
-            extensions.ensureTotalCapacityPrecise(iter.len) catch unreachable;
-            while (try iter.next()) |val| {
-                if (!val.isString()) {
-                    return globalThis.throwInvalidArguments("Expected fileExtensions to be an Array of strings", .{});
-                }
-                if (try val.getLength(globalThis) == 0) continue;
-                extensions.appendAssumeCapacity((try val.toUTF8Bytes(globalThis, config_allocator))[1..]);
-            }
-        }
-
-        var asset_prefix_path: string = "";
-        if (try argument.getOptional(globalThis, "assetPrefix", jsc.JSValue)) |asset_prefix| {
-            if (!asset_prefix.isString()) {
-                return globalThis.throwInvalidArguments("Expected assetPrefix to be a string", .{});
-            }
-
-            asset_prefix_path = try asset_prefix.toUTF8Bytes(globalThis, config_allocator);
-        }
-
-        if (try argument.get(globalThis, "origin")) |origin| {
-            if (!origin.isString()) {
-                return globalThis.throwInvalidArguments("Expected origin to be a string", .{});
-            }
-            origin_str = try origin.toSlice(globalThis, globalThis.allocator());
-        }
-
-        const path_to_use = (root_dir_path.cloneWithTrailingSlash(config_allocator) catch unreachable).slice();
-        config.value = .{
-            .dir = path_to_use,
-            .extensions = if (extensions.items.len > 0) extensions.items else default_extensions,
-            .asset_prefix_path = asset_prefix_path,
-        };
-
-        var snapshot = RouteSnapshot.init(globalThis.allocator()) catch unreachable;
-        errdefer snapshot.deinit();
-
-        const orig_log = vm.transpiler.resolver.log;
-        var log = Log.Log.init(snapshot.allocator());
-        vm.transpiler.resolver.log = &log;
-        defer vm.transpiler.resolver.log = orig_log;
-
-        const root_dir_info = vm.transpiler.resolver.readDirInfo(config.value.dir) catch {
-            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
-            // Capture the error union so cleanup runs even if toJS itself fails.
-            const err_value = log.toJS(globalThis, globalThis.allocator(), "reading root directory");
-            return globalThis.throwValue(try err_value);
-        } orelse {
-            return globalThis.throw("Unable to find directory: {s}", .{root_dir_path.slice()});
-        };
-
-        snapshot.load(vm.transpiler.fs, config.value, &log, &vm.transpiler.resolver, root_dir_info) catch {
-            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
-            // Capture the error union so cleanup runs even if toJS itself fails.
-            const err_value = log.toJS(globalThis, globalThis.allocator(), "loading routes");
-            return globalThis.throwValue(try err_value);
-        };
-
-        if (log.errors + log.warnings > 0) {
-            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
-            // Capture the error union so cleanup runs even if toJS itself fails.
-            const err_value = log.toJS(globalThis, globalThis.allocator(), "loading routes");
-            return globalThis.throwValue(try err_value);
-        }
-
-        const fs_router = globalThis.allocator().create(FileSystemRouter) catch unreachable;
-        fs_router.* = .{
-            .origin = if (origin_str.len > 0) vm.refCountedString(origin_str.slice(), null, true) else null,
-            .base_dir = vm.refCountedString(if (root_dir_info.abs_real_path.len > 0)
-                root_dir_info.abs_real_path
-            else
-                root_dir_info.abs_path, null, true),
-            .asset_prefix = if (config.value.asset_prefix_path.len > 0) vm.refCountedString(config.value.asset_prefix_path, null, true) else null,
-            .config = config,
-            .snapshot = snapshot,
-        };
-
-        return fs_router;
+    pub fn construct(
+        context: bindgen.CallContext(FileSystemRouterConstructorSchema),
+        args: bindgen.Args(FileSystemRouterConstructorSchema),
+    ) bindgen.CallError(FileSystemRouterConstructorSchema)!*FileSystemRouter {
+        return bun.api.FileSystemRouterEngine.constructFromContext(context, args);
     }
 
-    const win32_normalize_bufs = bun.ThreadlocalBuffers(struct {
-        buf: if (Environment.isWindows) [bun.MAX_PATH_BYTES * 2]u8 else void = undefined,
-    });
-    pub fn bustDirCacheRecursive(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject, inputPath: []const u8) void {
-        var vm = globalThis.bunVM();
-        var path = inputPath;
-        if (comptime Environment.isWindows) {
-            var fba = std.heap.FixedBufferAllocator.init(&win32_normalize_bufs.get().buf);
-            path = std.fs.path.resolveWindows(fba.allocator(), &.{path}) catch return;
-        }
-
-        const root_dir_info = vm.transpiler.resolver.readDirInfo(path) catch {
-            return;
-        };
-
-        if (root_dir_info) |dir| {
-            if (dir.getEntriesConst()) |entries| {
-                var iter = entries.data.iterator();
-                outer: while (iter.next()) |entry_ptr| {
-                    const entry = entry_ptr.value_ptr.*;
-                    if (entry.base()[0] == '.') {
-                        continue :outer;
-                    }
-                    if (entry.kind(&vm.transpiler.fs.fs, false) == .dir) {
-                        inline for (Router.banned_dirs) |banned_dir| {
-                            if (strings.eqlComptime(entry.base(), comptime banned_dir)) {
-                                continue :outer;
-                            }
-                        }
-
-                        var abs_parts_con = [_]string{ entry.dir, entry.base() };
-                        const full_path = vm.transpiler.fs.abs(&abs_parts_con);
-
-                        _ = vm.transpiler.resolver.bustDirCache(strings.withoutTrailingSlashWindowsPath(full_path));
-                        bustDirCacheRecursive(this, globalThis, full_path);
-                    }
-                }
-            }
-        }
-
-        _ = vm.transpiler.resolver.bustDirCache(path);
+    pub fn reload(
+        this: *FileSystemRouter,
+        context: bindgen.CallContext(FileSystemRouterReloadSchema),
+        args: bindgen.Args(FileSystemRouterReloadSchema),
+    ) bun.JSError!bindgen.Return(FileSystemRouterReloadSchema) {
+        return bun.api.FileSystemRouterEngine.reloadFromContext(context, FileSystemRouterReloadInput{
+            .router = this,
+            .args = args,
+        });
     }
 
-    pub fn bustDirCache(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject) void {
-        bustDirCacheRecursive(this, globalThis, strings.withoutTrailingSlashWindowsPath(this.config.value.dir));
-    }
+    pub fn match(
+        this: *FileSystemRouter,
+        context: bindgen.CallContext(FileSystemRouterMatchSchema),
+        args: bindgen.Args(FileSystemRouterMatchSchema),
+    ) bindgen.CallError(FileSystemRouterMatchSchema)!bindgen.Return(FileSystemRouterMatchSchema) {
+        const allocator = bun.default_allocator;
+        const input = args.input orelse return context.fail(.invalid_input, {});
+        var extracted_path = bindgen.DOMString.empty();
+        defer extracted_path.deinit();
 
-    pub fn reload(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const this_value = callframe.this();
-        var vm = globalThis.bunVM();
-
-        var snapshot = RouteSnapshot.init(globalThis.allocator()) catch unreachable;
-        errdefer snapshot.deinit();
-
-        const orig_log = vm.transpiler.resolver.log;
-        var log = Log.Log.init(snapshot.allocator());
-        vm.transpiler.resolver.log = &log;
-        defer vm.transpiler.resolver.log = orig_log;
-
-        bustDirCache(this, globalThis);
-
-        const root_dir_info = vm.transpiler.resolver.readDirInfo(this.config.value.dir) catch {
-            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
-            // Capture the error union so cleanup runs even if toJS itself fails.
-            const err_value = log.toJS(globalThis, globalThis.allocator(), "reading root directory");
-            return globalThis.throwValue(try err_value);
-        } orelse {
-            return globalThis.throw("Unable to find directory: {s}", .{this.config.value.dir});
-        };
-
-        snapshot.load(vm.transpiler.fs, this.config.value, &log, &vm.transpiler.resolver, root_dir_info) catch {
-            // Build the JS error before freeing the arena: `log` is backed by the arena allocator.
-            // Capture the error union so cleanup runs even if toJS itself fails.
-            const err_value = log.toJS(globalThis, globalThis.allocator(), "loading routes");
-            return globalThis.throwValue(try err_value);
-        };
-
-        var old_snapshot = this.snapshot;
-        this.snapshot = snapshot;
-        js.routesSetCached(this_value, globalThis, jsc.JSValue.zero);
-        old_snapshot.deinit();
-        return this_value;
-    }
-
-    pub fn match(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        const argument_ = callframe.arguments_old(2);
-        if (argument_.len == 0) {
-            return globalThis.throwInvalidArguments("Expected string, Request or Response", .{});
-        }
-
-        const argument = argument_.ptr[0];
-        if (argument.isEmptyOrUndefinedOrNull() or !argument.isCell()) {
-            return globalThis.throwInvalidArguments("Expected string, Request or Response", .{});
-        }
-
-        var path: ZigString.Slice = brk: {
-            if (argument.isString()) {
-                break :brk try (try argument.toSlice(globalThis, globalThis.allocator())).cloneIfBorrowed(globalThis.allocator());
-            }
-
-            if (argument.isCell()) {
-                if (argument.as(jsc.WebCore.Request)) |req| {
-                    req.ensureURL() catch unreachable;
-                    break :brk req.url.toUTF8(globalThis.allocator());
-                }
-
-                if (argument.as(jsc.WebCore.Response)) |resp| {
-                    break :brk resp.getUTF8Url(globalThis.allocator());
-                }
-            }
-
-            return globalThis.throwInvalidArguments("Expected string, Request or Response", .{});
+        var path: bun.String.Slice = switch (input) {
+            .string => |path_string| try path_string.toUTF8(allocator),
+            .request => |request| request_path: {
+                extracted_path = try bun.api.FileSystemRouterEngine.requestPath(request);
+                break :request_path try extracted_path.toUTF8(allocator);
+            },
+            .response => |response| response_path: {
+                extracted_path = try bun.api.FileSystemRouterEngine.responsePath(response);
+                break :response_path try extracted_path.toUTF8(allocator);
+            },
+            .invalid => return context.fail(.invalid_input, {}),
         };
         defer path.deinit();
 
-        if (path.len == 0 or (path.len == 1 and path.ptr[0] == '/')) {
-            path.deinit();
-            path = ZigString.Slice.fromUTF8NeverFree("/");
-        }
-
         if (strings.hasPrefixComptime(path.slice(), "http://") or strings.hasPrefixComptime(path.slice(), "https://") or strings.hasPrefixComptime(path.slice(), "file://")) {
-            const prev_path = path;
-            defer prev_path.deinit();
-            path = try .initDupe(globalThis.allocator(), URL.parse(path.slice()).pathname);
+            const pathname = try bun.String.Slice.initDupe(allocator, URL.parse(path.slice()).pathname);
+            path.deinit();
+            path = pathname;
         }
 
-        var parsed = URLPath.parseAlloc(globalThis.allocator(), path.slice()) catch |err| {
-            return globalThis.throw("{s} parsing path: {s}", .{ @errorName(err), path.slice() });
+        if (path.length() == 0) {
+            path.deinit();
+            path = bun.String.Slice.fromUTF8NeverFree("/");
+        }
+        if (path.slice()[0] != '/') return null;
+
+        var parsed = URLPath.parseAlloc(allocator, path.slice()) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.DecodingError => {
+                const message = try std.fmt.allocPrint(allocator, "DecodingError parsing path: {s}", .{path.slice()});
+                defer allocator.free(message);
+                return context.fail(.invalid_path, try bindgen.DOMString.fromUTF8(message));
+            },
         };
-        defer parsed.deinit(globalThis.allocator());
+        defer parsed.deinit(allocator);
         var params = Router.Param.List{};
-        defer params.deinit(globalThis.allocator());
-        const route = this.snapshot.get().routes.matchPageWithAllocator(
-            "",
+        defer params.deinit(allocator);
+        const route = (try this.snapshot.get().match(
             parsed.value,
             &params,
-            globalThis.allocator(),
-        ) orelse {
-            return JSValue.jsNull();
+            allocator,
+        )) orelse {
+            return null;
         };
 
         if (parsed.takeOwned()) |owned| {
             path.deinit();
-            path = ZigString.Slice.init(globalThis.allocator(), owned);
+            path = bun.String.Slice.init(allocator, owned);
         }
 
         const pathname_backing = path;
         path = .empty;
 
-        var result = MatchedRoute.init(
-            globalThis.allocator(),
+        const result = try MatchedRoute.init(
             route,
             pathname_backing,
-            this.origin,
-            this.asset_prefix,
-            this.base_dir.?,
-        ) catch unreachable;
-        return result.toJS(globalThis);
-    }
-
-    pub fn getOrigin(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject) JSValue {
-        if (this.origin) |origin| {
-            return jsc.ZigString.init(origin.slice()).withEncoding().toJS(globalThis);
-        }
-
-        return JSValue.jsNull();
-    }
-
-    pub fn getRoutes(this: *FileSystemRouter, globalThis: *jsc.JSGlobalObject) bun.JSError!JSValue {
-        const paths = this.snapshot.get().getEntryPoints();
-        const names = this.snapshot.get().getNames();
-        var name_strings = try bun.default_allocator.alloc(ZigString, names.len * 2);
-        defer bun.default_allocator.free(name_strings);
-        var paths_strings = name_strings[names.len..];
-        for (names, 0..) |name, i| {
-            name_strings[i] = ZigString.init(name).withEncoding();
-            paths_strings[i] = ZigString.init(paths[i]).withEncoding();
-        }
-        return jsc.JSValue.fromEntries(
-            globalThis,
-            name_strings.ptr,
-            paths_strings.ptr,
-            names.len,
-            true,
+            this.metadata,
         );
+        return try MatchedRouteClass.adoptResult(result, context);
     }
 
-    pub fn getStyle(_: *FileSystemRouter, globalThis: *jsc.JSGlobalObject) bun.JSError!JSValue {
-        return bun.String.static("nextjs").toJS(globalThis);
-    }
-
-    pub fn finalize(
+    pub fn getOrigin(
         this: *FileSystemRouter,
-    ) callconv(.c) void {
-        if (this.asset_prefix) |prefix| {
-            prefix.deref();
-        }
+        _: bindgen.CallContext(FileSystemRouterOriginSchema),
+        _: bindgen.Args(FileSystemRouterOriginSchema),
+    ) bun.JSError!?bindgen.DOMString {
+        const origin = this.metadata.get().origin.slice();
+        return if (origin.len > 0) try bindgen.DOMString.fromUTF8(origin) else null;
+    }
 
-        if (this.origin) |prefix| {
-            prefix.deref();
+    pub fn getRoutes(
+        this: *FileSystemRouter,
+        _: bindgen.CallContext(FileSystemRouterRoutesSchema),
+        _: bindgen.Args(FileSystemRouterRoutesSchema),
+    ) bun.JSError!bindgen.Return(FileSystemRouterRoutesSchema) {
+        const Record = bindgen.Return(FileSystemRouterRoutesSchema);
+        const routes = this.snapshot.get().entries.slice();
+        var result = try Record.Builder.init(routes.len);
+        errdefer result.deinit();
+        for (routes) |*route| {
+            var key = try bindgen.DOMString.fromUTF8(route.name.slice());
+            errdefer key.deinit();
+            result.appendOwned(.{ .key = key, .value = try bindgen.DOMString.fromUTF8(route.file_path.slice()) });
         }
+        return result.finish();
+    }
 
-        if (this.base_dir) |dir| {
-            dir.deref();
-        }
+    pub fn getStyle(
+        _: *FileSystemRouter,
+        _: bindgen.CallContext(FileSystemRouterStyleSchema),
+        _: bindgen.Args(FileSystemRouterStyleSchema),
+    ) bun.JSError!bindgen.DOMString {
+        return bindgen.DOMString.fromUTF8("nextjs");
+    }
 
+    pub fn destroy(this: *FileSystemRouter) void {
+        this.metadata.deinit();
         this.snapshot.deinit();
         this.config.deinit();
+        bun.default_allocator.destroy(this);
+    }
+};
+
+pub const FileSystemRouterReloadInput = struct {
+    router: *FileSystemRouter,
+    args: bindgen.Args(FileSystemRouterReloadSchema),
+};
+
+const OwnedRouteParam = struct {
+    name: bindgen.OwnedBytes,
+    value: bindgen.OwnedBytes,
+
+    pub fn deinit(this: *OwnedRouteParam) void {
+        this.name.deinit();
+        this.value.deinit();
+    }
+
+    fn copyAll(source: *const Router.Param.List) bun.OOM!MatchedRouteParams {
+        var values = try MatchedRouteParams.Builder.init(source.len);
+        errdefer values.deinit();
+        for (source.items(.name), source.items(.value)) |name, value| {
+            var owned_name = try bindgen.OwnedBytes.fromSlice(name);
+            errdefer owned_name.deinit();
+            values.appendOwned(.{
+                .name = owned_name,
+                .value = try bindgen.OwnedBytes.fromSlice(value),
+            });
+        }
+        return values.finish();
     }
 };
 
 pub const MatchedRoute = struct {
-    route: *const Router.Match,
-    route_holder: Router.Match = undefined,
-    query_string_map: ?QueryStringMap = null,
-    param_map: ?QueryStringMap = null,
-    params_list_holder: Router.Param.List = .{},
-    pathname_backing: ZigString.Slice = .empty,
-    allocator: std.mem.Allocator,
-    origin: ?*jsc.RefString = null,
-    asset_prefix: ?*jsc.RefString = null,
-    base_dir: ?*jsc.RefString = null,
+    bindgen_state: bindgen.ClassState = .{},
+    name: bindgen.OwnedBytes,
+    file_path: bindgen.OwnedBytes,
+    pathname: bindgen.OwnedBytes,
+    query_string: bindgen.OwnedBytes,
+    params: MatchedRouteParams,
+    metadata: RouteMetadata.Ref,
 
-    pub const js = jsc.Codegen.JSMatchedRoute;
-    pub const toJS = js.toJS;
-    pub const fromJS = js.fromJS;
-    pub const fromJSDirect = js.fromJSDirect;
-
-    pub fn getName(this: *MatchedRoute, globalThis: *jsc.JSGlobalObject) JSValue {
-        return ZigString.init(this.route.name).withEncoding().toJS(globalThis);
+    pub fn getName(
+        this: *MatchedRoute,
+        _: bindgen.CallContext(MatchedRouteNameSchema),
+        _: bindgen.Args(MatchedRouteNameSchema),
+    ) bun.JSError!bindgen.DOMString {
+        return bindgen.DOMString.fromUTF8(this.name.slice());
     }
 
     pub fn init(
-        allocator: std.mem.Allocator,
         match: Router.Match,
-        pathname_backing: ZigString.Slice,
-        origin: ?*jsc.RefString,
-        asset_prefix: ?*jsc.RefString,
-        base_dir: *jsc.RefString,
+        pathname_backing: bun.String.Slice,
+        metadata: RouteMetadata.Ref,
     ) !*MatchedRoute {
-        errdefer pathname_backing.deinit();
-        var params_list = try match.params.clone(allocator);
-        errdefer params_list.deinit(allocator);
+        defer pathname_backing.deinit();
 
-        var route = try allocator.create(MatchedRoute);
+        var name = try bindgen.OwnedBytes.fromSlice(match.name);
+        errdefer name.deinit();
+        var file_path = try bindgen.OwnedBytes.fromSlice(match.file_path);
+        errdefer file_path.deinit();
+        var pathname = try bindgen.OwnedBytes.fromSlice(match.pathname);
+        errdefer pathname.deinit();
+        var query_string = try bindgen.OwnedBytes.fromSlice(match.query_string);
+        errdefer query_string.deinit();
+        var params = try OwnedRouteParam.copyAll(match.params);
+        errdefer params.deinit();
 
-        route.* = MatchedRoute{
-            .route_holder = match,
-            .route = undefined,
-            .pathname_backing = pathname_backing,
-            .allocator = allocator,
-            .asset_prefix = asset_prefix,
-            .origin = origin,
-            .base_dir = base_dir,
+        const route = try bun.default_allocator.create(MatchedRoute);
+        route.* = .{
+            .name = name,
+            .file_path = file_path,
+            .pathname = pathname,
+            .query_string = query_string,
+            .params = params,
+            .metadata = metadata.clone(),
         };
-        base_dir.ref();
-        route.params_list_holder = params_list;
-        route.route = &route.route_holder;
-        route.route_holder.params = &route.params_list_holder;
-        if (origin) |o| {
-            o.ref();
-        }
-
-        if (asset_prefix) |prefix| {
-            prefix.ref();
-        }
-
         return route;
     }
 
     pub fn deinit(this: *MatchedRoute) void {
-        if (this.query_string_map) |*map| {
-            map.deinit();
-        }
-        if (this.param_map) |*map| {
-            map.deinit();
-        }
-        this.params_list_holder.deinit(this.allocator);
-        this.params_list_holder = .{};
-        this.pathname_backing.deinit();
-        this.pathname_backing = .empty;
+        this.params.deinit();
+        this.name.deinit();
+        this.file_path.deinit();
+        this.pathname.deinit();
+        this.query_string.deinit();
 
-        if (this.origin) |o| {
-            o.deref();
-        }
+        this.metadata.deinit();
 
-        if (this.asset_prefix) |prefix| {
-            prefix.deref();
-        }
-
-        if (this.base_dir) |base|
-            base.deref();
-
-        this.allocator.destroy(this);
+        bun.default_allocator.destroy(this);
     }
 
     pub fn getFilePath(
         this: *MatchedRoute,
-        globalThis: *jsc.JSGlobalObject,
-    ) JSValue {
-        return ZigString.init(this.route.file_path)
-            .withEncoding()
-            .toJS(globalThis);
+        _: bindgen.CallContext(MatchedRouteFilePathSchema),
+        _: bindgen.Args(MatchedRouteFilePathSchema),
+    ) bun.JSError!bindgen.DOMString {
+        return bindgen.DOMString.fromUTF8(this.file_path.slice());
     }
 
-    pub fn finalize(
-        this: *MatchedRoute,
-    ) callconv(.c) void {
+    pub fn destroy(this: *MatchedRoute, _: bindgen.SweepContext) void {
         this.deinit();
     }
 
-    pub fn getPathname(this: *MatchedRoute, globalThis: *jsc.JSGlobalObject) JSValue {
-        return ZigString.init(this.route.pathname)
-            .withEncoding()
-            .toJS(globalThis);
+    pub fn getPathname(
+        this: *MatchedRoute,
+        _: bindgen.CallContext(MatchedRoutePathnameSchema),
+        _: bindgen.Args(MatchedRoutePathnameSchema),
+    ) bun.JSError!bindgen.DOMString {
+        return bindgen.DOMString.fromUTF8(this.pathname.slice());
     }
 
     const KindEnum = struct {
@@ -557,120 +430,115 @@ pub const MatchedRoute = struct {
         pub const dynamic = "dynamic";
 
         // this is kinda stupid it should maybe just store it
-        pub fn init(name: string) ZigString {
+        pub fn init(name: string) []const u8 {
             if (strings.contains(name, "[[...")) {
-                return ZigString.init(optional_catch_all);
+                return optional_catch_all;
             } else if (strings.contains(name, "[...")) {
-                return ZigString.init(catch_all);
+                return catch_all;
             } else if (strings.contains(name, "[")) {
-                return ZigString.init(dynamic);
+                return dynamic;
             } else {
-                return ZigString.init(exact);
+                return exact;
             }
         }
     };
 
-    pub fn getKind(this: *MatchedRoute, globalThis: *jsc.JSGlobalObject) JSValue {
-        return KindEnum.init(this.route.name).toJS(globalThis);
+    pub fn getKind(
+        this: *MatchedRoute,
+        _: bindgen.CallContext(MatchedRouteKindSchema),
+        _: bindgen.Args(MatchedRouteKindSchema),
+    ) bun.JSError!bindgen.DOMString {
+        return bindgen.DOMString.fromLatin1(KindEnum.init(this.name.slice()));
     }
 
-    pub fn createQueryObject(ctx: *jsc.JSGlobalObject, map: *QueryStringMap) JSValue {
-        const QueryObjectCreator = struct {
-            query: *QueryStringMap,
-            pub fn create(this: *@This(), obj: *JSObject, global: *JSGlobalObject) bun.JSError!void {
-                var value_refs_buffer: [256 * @sizeOf(ZigString)]u8 align(@alignOf(ZigString)) = undefined;
-                var value_refs_allocator: std.heap.BufferFirstAllocator = .init(&value_refs_buffer, global.allocator());
-                const allocator = value_refs_allocator.allocator();
-                var value_refs: std.ArrayListUnmanaged(ZigString) = .empty;
-                defer value_refs.deinit(allocator);
+    fn queryEntry(comptime Schema: type, name: []const u8, values: anytype, value_count: usize) bun.OOM!bindgen.Return(Schema).Entry {
+        const Entry = bindgen.Return(Schema).Entry;
+        const QueryValue = @FieldType(Entry, "value");
+        var value_iter = values;
 
-                var iter = this.query.iter();
-                while (iter.next()) |entry| {
-                    const entry_name = entry.name;
-                    const str = ZigString.init(entry_name).withEncoding();
+        var key = try bindgen.DOMString.fromUTF8(name);
+        errdefer key.deinit();
 
-                    try value_refs.resize(allocator, entry.value_count);
-                    var values = entry.values;
-                    for (value_refs.items) |*value_ref| {
-                        value_ref.* = ZigString.init(values.next().?).withEncoding();
-                    }
-                    try obj.putDirectStringOrStringArray(global, &str, value_refs.items);
-                }
-            }
+        if (value_count == 1) {
+            return .{
+                .key = key,
+                .value = .{ .text = try bindgen.DOMString.fromUTF8(value_iter.next().?) },
+            };
+        }
+
+        const Strings = @FieldType(QueryValue, "values");
+        const allocator = bun.default_allocator;
+        const slices = try allocator.alloc([]const u8, value_count);
+        defer allocator.free(slices);
+        for (slices) |*slice| slice.* = value_iter.next().?;
+        return .{
+            .key = key,
+            .value = .{ .values = try Strings.fromUTF8Slices(slices) },
         };
+    }
 
-        var creator = QueryObjectCreator{ .query = map };
-
-        const value = JSObject.createWithInitializer(QueryObjectCreator, &creator, ctx, map.getNameCount()).toJS();
-
-        return value;
+    fn queryRecord(comptime Schema: type, map: ?*QueryStringMap) bun.OOM!bindgen.Return(Schema) {
+        const Record = bindgen.Return(Schema);
+        const query = map orelse return Record.fromOwnedSlice(&[_]Record.Entry{});
+        var result = try Record.Builder.init(query.getNameCount());
+        errdefer result.deinit();
+        var iter = query.iter();
+        while (iter.next()) |entry| {
+            result.appendOwned(try queryEntry(Schema, entry.name, entry.values, entry.value_count));
+        }
+        return result.finish();
     }
 
     pub fn getScriptSrc(
         this: *MatchedRoute,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        var buf: bun.PathBuffer = undefined;
-        var writer = std.Io.Writer.fixed(&buf);
-        jsc.API.Bun.getPublicPathWithAssetPrefix(
-            this.route.file_path,
-            if (this.base_dir) |base_dir| base_dir.slice() else jsc.VirtualMachine.get().transpiler.fs.top_level_dir,
-            if (this.origin) |origin| URL.parse(origin.slice()) else URL{},
-            if (this.asset_prefix) |prefix| prefix.slice() else "",
-            &writer,
-            .posix,
-        );
-        return ZigString.init(buf[0..writer.end])
-            .withEncoding()
-            .toJS(globalThis);
+        context: bindgen.CallContext(MatchedRouteScriptSrcSchema),
+        _: bindgen.Args(MatchedRouteScriptSrcSchema),
+    ) bun.JSError!bindgen.DOMString {
+        _ = context;
+        return bun.api.FileSystemRouterEngine.scriptSrc(this);
+    }
+
+    pub fn getSrc(
+        this: *MatchedRoute,
+        context: bindgen.CallContext(MatchedRouteSrcSchema),
+        _: bindgen.Args(MatchedRouteSrcSchema),
+    ) bun.JSError!bindgen.DOMString {
+        _ = context;
+        return bun.api.FileSystemRouterEngine.scriptSrc(this);
     }
 
     pub fn getParams(
         this: *MatchedRoute,
-        globalThis: *jsc.JSGlobalObject,
-    ) bun.JSError!jsc.JSValue {
-        if (this.route.params.len == 0)
-            return jsc.JSObject.createEmpty(globalThis, 0).toJS();
-
-        if (this.param_map == null) {
-            this.param_map = try QueryStringMap.initWithParams(
-                globalThis.allocator(),
-                "",
-                this.route.params,
-            );
-        }
-
-        return createQueryObject(globalThis, &this.param_map.?);
+        _: bindgen.CallContext(MatchedRouteParamsSchema),
+        _: bindgen.Args(MatchedRouteParamsSchema),
+    ) bun.JSError!bindgen.Return(MatchedRouteParamsSchema) {
+        var map = (try this.queryMap("")) orelse return queryRecord(MatchedRouteParamsSchema, null);
+        defer map.deinit();
+        return queryRecord(MatchedRouteParamsSchema, &map);
     }
 
     pub fn getQuery(
         this: *MatchedRoute,
-        globalThis: *jsc.JSGlobalObject,
-    ) bun.JSError!jsc.JSValue {
-        if (this.route.query_string.len == 0 and this.route.params.len == 0) {
-            return jsc.JSObject.createEmpty(globalThis, 0).toJS();
-        } else if (this.route.query_string.len == 0) {
-            return this.getParams(globalThis);
-        }
+        _: bindgen.CallContext(MatchedRouteQuerySchema),
+        _: bindgen.Args(MatchedRouteQuerySchema),
+    ) bun.JSError!bindgen.Return(MatchedRouteQuerySchema) {
+        var map = (try this.queryMap(this.query_string.slice())) orelse
+            return queryRecord(MatchedRouteQuerySchema, null);
+        defer map.deinit();
+        return queryRecord(MatchedRouteQuerySchema, &map);
+    }
 
-        if (this.query_string_map == null) {
-            if (this.route.params.len > 0) {
-                this.query_string_map = try QueryStringMap.initWithParams(
-                    globalThis.allocator(),
-                    this.route.query_string,
-                    this.route.params,
-                );
-            } else {
-                this.query_string_map = try QueryStringMap.init(globalThis.allocator(), this.route.query_string);
-            }
+    fn queryMap(this: *const MatchedRoute, query: []const u8) bun.OOM!?QueryStringMap {
+        const allocator = bun.default_allocator;
+        const entries = this.params.slice();
+        if (entries.len == 0) return QueryStringMap.init(allocator, query);
+        var params: Router.Param.List = .{};
+        defer params.deinit(allocator);
+        try params.ensureTotalCapacity(allocator, entries.len);
+        for (entries) |*entry| {
+            params.appendAssumeCapacity(.{ .name = entry.name.slice(), .value = entry.value.slice() });
         }
-
-        // If it's still null, the query string has no names.
-        if (this.query_string_map) |*map| {
-            return createQueryObject(globalThis, map);
-        }
-
-        return jsc.JSObject.createEmpty(globalThis, 0).toJS();
+        return QueryStringMap.initWithParams(allocator, query, &params);
     }
 };
 
@@ -688,16 +556,39 @@ const QueryStringMap = @import("../../url/url.zig").QueryStringMap;
 const URL = @import("../../url/url.zig").URL;
 
 const bun = @import("bun");
-const Environment = bun.Environment;
 const Log = bun.logger;
-const Transpiler = bun.transpiler;
 const strings = bun.strings;
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSObject = jsc.JSObject;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
+const bindgen = bun.bindgen;
 
-const WebCore = jsc.WebCore;
-const Request = WebCore.Request;
+const FileSystemRouterSnapshot = bindgen.OwnedNative(RouteSnapshot, .any);
+
+const FileSystemRouterBindingModule = bindgen.Module("FileSystemRouter");
+const FileSystemRouterSchema = FileSystemRouterBindingModule.class("FileSystemRouter");
+const FileSystemRouterConstructorSchema = FileSystemRouterSchema.constructor();
+const FileSystemRouterMatchSchema = FileSystemRouterSchema.member("match");
+const FileSystemRouterOriginSchema = FileSystemRouterSchema.member("origin");
+const FileSystemRouterReloadSchema = FileSystemRouterSchema.member("reload");
+const FileSystemRouterRoutesSchema = FileSystemRouterSchema.member("routes");
+const FileSystemRouterStyleSchema = FileSystemRouterSchema.member("style");
+const FileSystemRouterClass = bindgen.Class(FileSystemRouterSchema, FileSystemRouter);
+pub const FileSystemRouterRoutesSlot = FileSystemRouterClass.CachedSlotInvalidator("routes");
+
+const MatchedRouteParams = bindgen.OwnedNativeSlice(OwnedRouteParam, .any);
+
+const MatchedRouteBindingModule = bindgen.Module("MatchedRoute");
+const MatchedRouteSchema = MatchedRouteBindingModule.class("MatchedRoute");
+const MatchedRouteFilePathSchema = MatchedRouteSchema.member("filePath");
+const MatchedRouteKindSchema = MatchedRouteSchema.member("kind");
+const MatchedRouteNameSchema = MatchedRouteSchema.member("name");
+const MatchedRouteParamsSchema = MatchedRouteSchema.member("params");
+const MatchedRoutePathnameSchema = MatchedRouteSchema.member("pathname");
+const MatchedRouteQuerySchema = MatchedRouteSchema.member("query");
+const MatchedRouteScriptSrcSchema = MatchedRouteSchema.member("scriptSrc");
+const MatchedRouteSrcSchema = MatchedRouteSchema.member("src");
+const MatchedRouteClass = bindgen.Class(MatchedRouteSchema, MatchedRoute);
+
+comptime {
+    _ = FileSystemRouterClass;
+    _ = MatchedRouteClass;
+}

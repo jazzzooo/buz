@@ -59,8 +59,6 @@ typedef WebCore::EvpPKeyPtr PlatformRSAKeyContainer;
 namespace WebCore {
 
 class CryptoKeyRSAComponents;
-class PromiseWrapper;
-class ScriptExecutionContext;
 
 struct CryptoKeyPair;
 struct JsonWebKey;
@@ -78,9 +76,7 @@ public:
 
     size_t keySizeInBits() const;
 
-    using KeyPairCallback = Function<void(CryptoKeyPair&&)>;
-    using VoidCallback = Function<void()>;
-    static void generatePair(CryptoAlgorithmIdentifier, CryptoAlgorithmIdentifier hash, bool hasHash, unsigned modulusLength, const Vector<uint8_t>& publicExponent, bool extractable, CryptoKeyUsageBitmap, KeyPairCallback&&, VoidCallback&& failureCallback, ScriptExecutionContext*);
+    static ExceptionOr<CryptoKeyPair> generatePair(CryptoAlgorithmIdentifier, CryptoAlgorithmIdentifier hash, bool hasHash, unsigned modulusLength, const Vector<uint8_t>& publicExponent, bool extractable, CryptoKeyUsageBitmap);
     static RefPtr<CryptoKeyRSA> importJwk(CryptoAlgorithmIdentifier, std::optional<CryptoAlgorithmIdentifier> hash, JsonWebKey&&, bool extractable, CryptoKeyUsageBitmap);
     static RefPtr<CryptoKeyRSA> importSpki(CryptoAlgorithmIdentifier, std::optional<CryptoAlgorithmIdentifier> hash, Vector<uint8_t>&&, bool extractable, CryptoKeyUsageBitmap);
     static RefPtr<CryptoKeyRSA> importPkcs8(CryptoAlgorithmIdentifier, std::optional<CryptoAlgorithmIdentifier> hash, Vector<uint8_t>&&, bool extractable, CryptoKeyUsageBitmap);

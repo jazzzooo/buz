@@ -4,9 +4,37 @@ command: []const u8,
 args: Args,
 meta: Meta = .{},
 
+pub const Argument = union(enum) {
+    bytes: []const u8,
+    text: Slice,
+    blob: @import("../webcore/blob/SharedBytes.zig"),
+
+    pub fn slice(this: *const Argument) []const u8 {
+        return switch (this.*) {
+            .bytes => |bytes| bytes,
+            inline .text, .blob => |*value| value.slice(),
+        };
+    }
+
+    pub fn byteLength(this: *const Argument) usize {
+        return this.slice().len;
+    }
+
+    pub fn deinit(this: *const Argument) void {
+        switch (this.*) {
+            .bytes => {},
+            .text => |*text| text.deinit(),
+            .blob => |value| {
+                var owned = value;
+                owned.deinit();
+            },
+        }
+    }
+};
+
 pub const Args = union(enum) {
     slices: []const Slice,
-    args: []const node.BlobOrStringOrBuffer,
+    args: []const Argument,
     raw: []const []const u8,
 
     pub fn len(this: *const @This()) usize {
@@ -17,8 +45,8 @@ pub const Args = union(enum) {
 };
 
 pub fn write(this: *const Command, writer: anytype) !void {
-    // Serialize as RESP array format directly
-    try writer.print("*{d}\r\n", .{1 + this.args.len()});
+    const count = std.math.add(usize, this.args.len(), 1) catch return error.WriteFailed;
+    try writer.print("*{d}\r\n", .{count});
     try writer.print("${d}\r\n{s}\r\n", .{ this.command.len, this.command });
 
     switch (this.args) {
@@ -39,22 +67,39 @@ pub fn format(this: Command, writer: *std.Io.Writer) !void {
     try this.write(writer);
 }
 
-pub fn byteLength(this: *const Command) usize {
-    return std.fmt.count("{f}", .{this.*});
+fn addBulkStringLength(total: *usize, length: usize) bun.OOM!void {
+    total.* = std.math.add(usize, total.*, std.fmt.count("${d}\r\n\r\n", .{length})) catch return error.OutOfMemory;
+    total.* = std.math.add(usize, total.*, length) catch return error.OutOfMemory;
 }
 
-pub fn serialize(this: *const Command, allocator: std.mem.Allocator) ![]u8 {
-    var buf = try std.Io.Writer.Allocating.initCapacity(allocator, this.byteLength());
-    errdefer buf.deinit();
-    this.write(&buf.writer) catch return error.OutOfMemory;
-    return try buf.toOwnedSlice();
+pub fn byteLength(this: *const Command) bun.OOM!usize {
+    const count = std.math.add(usize, this.args.len(), 1) catch return error.OutOfMemory;
+    var total = std.fmt.count("*{d}\r\n", .{count});
+    try addBulkStringLength(&total, this.command.len);
+    switch (this.args) {
+        inline .slices, .args => |args| {
+            for (args) |*arg| try addBulkStringLength(&total, arg.byteLength());
+        },
+        .raw => |args| {
+            for (args) |arg| try addBulkStringLength(&total, arg.len);
+        },
+    }
+    return total;
+}
+
+pub fn serialize(this: *const Command, allocator: std.mem.Allocator) bun.OOM![]u8 {
+    const buffer = try allocator.alloc(u8, try this.byteLength());
+    var writer: std.Io.Writer = .fixed(buffer);
+    this.write(&writer) catch @panic("Valkey command exceeded its serialized size");
+    bun.assert(writer.end == buffer.len);
+    return buffer;
 }
 
 /// Command stored in offline queue when disconnected
 pub const Entry = struct {
     serialized_data: []u8, // Pre-serialized RESP protocol bytes
     meta: Meta = .{},
-    promise: Promise,
+    completion: Completion.ResponseCompletions.Owned,
 
     pub const Queue = bun.LinearFifo(Entry, .Dynamic);
 
@@ -66,20 +111,15 @@ pub const Entry = struct {
     pub fn create(
         allocator: std.mem.Allocator,
         command: *const Command,
-        promise: Promise,
+        completion: Completion.ResponseCompletions.Owned,
     ) !Entry {
         return Entry{
             .serialized_data = try command.serialize(allocator),
-            .meta = command.meta, // TODO(markovejnovic): We should be calling .check against command here but due
-            // to a hack introduced to let SUBSCRIBE work, we are not doing that for now.
-            .promise = promise,
+            .meta = command.meta,
+            .completion = completion,
         };
     }
 };
-
-pub fn deinit(_: *Command) void {
-    // no-op
-}
 
 pub const Meta = packed struct(u8) {
     return_as_bool: bool = false,
@@ -114,57 +154,15 @@ pub const Meta = packed struct(u8) {
     }
 };
 
-/// Promise for a Valkey command
-pub const Promise = struct {
+pub const InFlight = struct {
     meta: Meta,
-    promise: jsc.JSPromise.Strong,
+    completion: Completion.ResponseCompletions.Owned,
 
-    pub fn create(globalObject: *jsc.JSGlobalObject, meta: Meta) Promise {
-        const promise = jsc.JSPromise.Strong.init(globalObject);
-        return Promise{
-            .meta = meta,
-            .promise = promise,
-        };
-    }
-
-    pub fn resolve(self: *Promise, globalObject: *jsc.JSGlobalObject, value: *protocol.RESPValue) bun.JSTerminated!void {
-        const options = protocol.RESPValue.ToJSOptions{
-            .return_as_buffer = self.meta.return_as_buffer,
-        };
-
-        const js_value = value.toJSWithOptions(globalObject, options) catch |err| {
-            try self.reject(globalObject, globalObject.takeError(err));
-            return;
-        };
-        try self.promise.resolve(globalObject, js_value);
-    }
-
-    pub fn reject(self: *Promise, globalObject: *jsc.JSGlobalObject, jsvalue: JSError!jsc.JSValue) bun.JSTerminated!void {
-        try self.promise.reject(globalObject, jsvalue);
-    }
-
-    pub fn deinit(self: *Promise) void {
-        self.promise.deinit();
-    }
+    pub const Queue = bun.LinearFifo(InFlight, .Dynamic);
 };
 
-// Command+Promise pair for tracking which command corresponds to which promise
-pub const PromisePair = struct {
-    meta: Meta,
-    promise: Promise,
-
-    pub const Queue = bun.LinearFifo(PromisePair, .Dynamic);
-
-    pub fn rejectCommand(self: *PromisePair, globalObject: *jsc.JSGlobalObject, jsvalue: jsc.JSValue) bun.JSTerminated!void {
-        try self.promise.reject(globalObject, jsvalue);
-    }
-};
-
-const protocol = @import("../../valkey/valkey_protocol.zig");
+const Completion = @import("./ValkeyCompletion.zig");
 const std = @import("std");
 
 const bun = @import("bun");
-const JSError = bun.JSError;
-const jsc = bun.jsc;
-const node = bun.api.node;
-const Slice = jsc.ZigString.Slice;
+const Slice = bun.String.Slice;

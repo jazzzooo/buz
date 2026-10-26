@@ -24,11 +24,10 @@
  */
 
 export function initializeReadableStreamDefaultReader(this, stream) {
-  if (!$isReadableStream(stream)) throw new TypeError("ReadableStreamDefaultReader needs a ReadableStream");
   if ($isReadableStreamLocked(stream)) throw new TypeError("ReadableStream is locked");
 
-  $readableStreamReaderGenericInitialize(this, stream);
   $putByIdDirectPrivate(this, "readRequests", $createFIFO());
+  $readableStreamReaderGenericInitialize(this, stream);
 
   return this;
 }
@@ -42,7 +41,7 @@ export function cancel(this, reason) {
   return $readableStreamReaderGenericCancel(this, reason);
 }
 
-export function readMany(this: ReadableStreamDefaultReader): ReadableStreamDefaultReadManyResult<any> {
+export function readMany(this: ReadableStreamDefaultReader): Bun.ReadableStreamDefaultReadManyResult<any> {
   if (!$isReadableStreamDefaultReader(this))
     throw new TypeError("ReadableStreamDefaultReader.readMany() should not be called directly");
 
@@ -103,6 +102,7 @@ export function readMany(this: ReadableStreamDefaultReader): ReadableStreamDefau
       }
     }
 
+    $resetQueue(queue);
     if (state !== $streamClosed) {
       if ($getByIdDirectPrivate(controller, "closeRequested")) {
         $readableStreamCloseIfPossible($getByIdDirectPrivate(controller, "controlledReadableStream"));
@@ -112,8 +112,6 @@ export function readMany(this: ReadableStreamDefaultReader): ReadableStreamDefau
         $readableByteStreamControllerCallPullIfNeeded(controller);
       }
     }
-    $resetQueue($getByIdDirectPrivate(controller, "queue"));
-
     return { value: outValues, size, done: false };
   }
 
@@ -126,8 +124,11 @@ export function readMany(this: ReadableStreamDefaultReader): ReadableStreamDefau
     var controller = $getByIdDirectPrivate(stream, "readableStreamController");
 
     var queue = $getByIdDirectPrivate(controller, "queue");
-    var value = [resultValue].concat(queue.content.toArray(false));
-    var length = value.length;
+    const queuedValues = queue.content.toArray(false);
+    const length = queuedValues.length + 1;
+    const value = $newArrayWithSize(length);
+    $putByValDirect(value, 0, resultValue);
+    for (var i = 1; i < length; i++) $putByValDirect(value, i, queuedValues[i - 1]);
 
     if ($isReadableByteStreamController(controller)) {
       for (var i = 0; i < length; i++) {
@@ -144,6 +145,7 @@ export function readMany(this: ReadableStreamDefaultReader): ReadableStreamDefau
     }
 
     var size = queue.size;
+    $resetQueue(queue);
     if ($getByIdDirectPrivate(controller, "closeRequested")) {
       $readableStreamCloseIfPossible($getByIdDirectPrivate(controller, "controlledReadableStream"));
     } else if ($isReadableStreamDefaultController(controller)) {
@@ -151,8 +153,6 @@ export function readMany(this: ReadableStreamDefaultReader): ReadableStreamDefau
     } else if ($isReadableByteStreamController(controller)) {
       $readableByteStreamControllerCallPullIfNeeded(controller);
     }
-
-    $resetQueue($getByIdDirectPrivate(controller, "queue"));
 
     return { value: value, size: size, done: false };
   };
@@ -163,7 +163,7 @@ export function readMany(this: ReadableStreamDefaultReader): ReadableStreamDefau
 
   var pullResult = controller.$pull(controller);
   if (pullResult && $isPromise(pullResult)) {
-    return pullResult.then(onPullMany) as any;
+    return pullResult.$then(onPullMany) as any;
   }
 
   return onPullMany(pullResult);

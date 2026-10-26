@@ -98,6 +98,10 @@ pub const HTMLRewriter = opaque {
             this.lol_html_rewriter_builder_free();
         }
 
+        pub fn destroy(this: *HTMLRewriter.Builder) void {
+            this.deinit();
+        }
+
         extern fn lol_html_rewriter_builder_add_document_content_handlers(
             builder: *HTMLRewriter.Builder,
             doctype_handler: ?DirectiveFunctionType(DocType),
@@ -595,7 +599,7 @@ pub const HTMLString = extern struct {
         return this.ptr[0..this.len];
     }
 
-    fn deinit_external(_: [*]u8, ptr: *anyopaque, len: u32) callconv(.c) void {
+    fn deinit_external(_: [*]u8, ptr: *u8, len: usize) void {
         auto_disable();
         lol_html_str_free(.{ .ptr = @as([*]const u8, @ptrCast(ptr)), .len = len });
     }
@@ -603,13 +607,11 @@ pub const HTMLString = extern struct {
     pub fn toString(this: HTMLString) bun.String {
         const bytes = this.slice();
         if (bytes.len > 0 and bun.strings.isAllASCII(bytes)) {
-            return bun.String.createExternal([*]u8, bytes, true, @constCast(bytes.ptr), &deinit_external);
+            return bun.String.createExternal(.latin1, [*]u8, bytes, @constCast(bytes.ptr), &deinit_external);
         }
         defer this.deinit();
         return bun.String.cloneUTF8(bytes);
     }
-
-    pub const toJS = @import("../runtime/api/lolhtml_jsc.zig").htmlStringToJS;
 };
 
 pub const EndTag = opaque {
@@ -686,6 +688,10 @@ pub const Attribute = opaque {
         pub fn deinit(this: *Iterator) void {
             auto_disable();
             lol_html_attributes_iterator_free(this);
+        }
+
+        pub fn destroy(this: *Iterator) void {
+            this.deinit();
         }
     };
 };

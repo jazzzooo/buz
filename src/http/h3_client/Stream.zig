@@ -6,8 +6,6 @@
 
 const Stream = @This();
 
-pub const new = bun.TrivialNew(@This());
-
 session: *ClientSession,
 client: ?*HTTPClient,
 qstream: ?*quic.Stream = null,
@@ -21,7 +19,7 @@ body_buffer: std.ArrayListUnmanaged(u8) = .empty,
 status_code: u16 = 0,
 
 pending_body: []const u8 = "",
-request_body_done: bool = false,
+request_state: enum { headers, body, done } = .headers,
 is_streaming_body: bool = false,
 headers_delivered: bool = false,
 

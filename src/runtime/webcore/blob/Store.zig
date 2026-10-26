@@ -1,13 +1,14 @@
 const Store = @This();
 
+pub const Timestamp = u52;
+pub const uninitialized_timestamp = std.math.maxInt(Timestamp);
+
 data: Data,
 
 mime_type: MimeType = .none,
 ref_count: std.atomic.Value(u32) = .init(1),
 is_all_ascii: ?bool = null,
 allocator: std.mem.Allocator,
-
-pub const new = bun.TrivialNew(@This());
 
 pub fn memoryCost(this: *const Store) usize {
     return if (this.hasOneRef()) @sizeOf(@This()) + switch (this.data) {
@@ -19,7 +20,7 @@ pub fn memoryCost(this: *const Store) usize {
 
 pub fn getPath(this: *const Store) ?[]const u8 {
     return switch (this.data) {
-        .bytes => |*bytes| if (bytes.stored_name.len > 0) bytes.stored_name.slice() else null,
+        .bytes => |*bytes| bytes.fileName(),
         .file => |*file| if (file.pathlike == .path) file.pathlike.path.slice() else null,
         .s3 => |*s3| s3.pathlike.slice(),
     };
@@ -28,11 +29,11 @@ pub fn getPath(this: *const Store) ?[]const u8 {
 pub fn size(this: *const Store) SizeType {
     return switch (this.data) {
         .bytes => this.data.bytes.len,
-        .s3, .file => Blob.max_size,
+        .s3, .file => BlobSize.max_size,
     };
 }
 
-pub const Map = std.HashMap(u64, *jsc.WebCore.Blob.Store, bun.IdentityContext(u64), 80);
+pub const Map = std.HashMap(u64, *Store, bun.IdentityContext(u64), 80);
 
 pub const Data = union(enum) {
     bytes: Bytes,
@@ -49,28 +50,18 @@ pub fn hasOneRef(this: *const Store) bool {
     return this.ref_count.load(.monotonic) == 1;
 }
 
-/// Caller is responsible for derefing the Store.
-pub fn toAnyBlob(this: *Store) ?Blob.Any {
-    if (this.hasOneRef()) {
-        if (this.data == .bytes) {
-            return .{ .InternalBlob = this.data.bytes.toInternalBlob() };
-        }
-    }
-
-    return null;
-}
-
-pub fn external(ptr: ?*anyopaque, _: ?*anyopaque, _: usize) callconv(.c) void {
+pub fn external(ptr: ?*anyopaque, _: ?*u8, _: usize) void {
     if (ptr == null) return;
     var this = bun.cast(*Store, ptr);
     this.deref();
 }
 pub fn initS3WithReferencedCredentials(pathlike: node.PathLike, mime_type: ?MimeType, credentials: *bun.S3.S3Credentials, allocator: std.mem.Allocator) !*Store {
     var path = pathlike;
-    // this actually protects/refs the pathlike
-    path.toThreadSafe();
+    errdefer path.deinit();
+    try path.toThreadSafe();
 
-    const store = Blob.Store.new(.{
+    const store = try bun.default_allocator.create(Store);
+    store.* = .{
         .data = .{
             .s3 = S3.initWithReferencedCredentials(
                 path,
@@ -90,18 +81,20 @@ pub fn initS3WithReferencedCredentials(pathlike: node.PathLike, mime_type: ?Mime
         },
         .allocator = allocator,
         .ref_count = std.atomic.Value(u32).init(1),
-    });
+    };
     return store;
 }
 
 pub fn initS3(pathlike: node.PathLike, mime_type: ?MimeType, credentials: bun.S3.S3Credentials, allocator: std.mem.Allocator) !*Store {
     var path = pathlike;
-    // this actually protects/refs the pathlike
-    path.toThreadSafe();
+    errdefer path.deinit();
+    try path.toThreadSafe();
 
-    const store = Blob.Store.new(.{
+    const store = try bun.default_allocator.create(Store);
+    errdefer bun.default_allocator.destroy(store);
+    store.* = .{
         .data = .{
-            .s3 = S3.init(
+            .s3 = try S3.init(
                 path,
                 mime_type orelse brk: {
                     const sliced = path.slice();
@@ -119,11 +112,17 @@ pub fn initS3(pathlike: node.PathLike, mime_type: ?MimeType, credentials: bun.S3
         },
         .allocator = allocator,
         .ref_count = std.atomic.Value(u32).init(1),
-    });
+    };
     return store;
 }
-pub fn initFile(pathlike: jsc.Node.PathOrFileDescriptor, mime_type: ?MimeType, allocator: std.mem.Allocator) !*Store {
-    const store = Blob.Store.new(.{
+/// Consumes the path, including on failure; file descriptors remain borrowed.
+pub fn initFile(pathlike: node.PathOrFileDescriptor, mime_type: ?MimeType, allocator: std.mem.Allocator) bun.OOM!*Store {
+    const store = bun.default_allocator.create(Store) catch |err| {
+        var file = File.init(pathlike, mime_type);
+        file.deinit(allocator);
+        return err;
+    };
+    store.* = .{
         .data = .{
             .file = File.init(
                 pathlike,
@@ -145,30 +144,81 @@ pub fn initFile(pathlike: jsc.Node.PathOrFileDescriptor, mime_type: ?MimeType, a
         },
         .allocator = allocator,
         .ref_count = std.atomic.Value(u32).init(1),
-    });
+    };
     return store;
 }
 
-/// Takes ownership of `bytes`, which must have been allocated with `allocator`.
-pub fn init(bytes: []u8, allocator: std.mem.Allocator) *Store {
-    const store = Blob.Store.new(.{
+pub fn initStdio(fd: bun.FD, is_atty: bool) bun.OOM!*Store {
+    const store = try initFile(.{ .fd = fd }, null, bun.default_allocator);
+    store.data.file.is_atty = is_atty;
+    switch (bun.sys.fstat(fd)) {
+        .result => |stat| store.data.file.mode = @intCast(stat.mode),
+        .err => {},
+    }
+    return store;
+}
+
+/// Consumes `bytes`, including on failure; they must come from `allocator`.
+pub fn init(bytes: []u8, allocator: std.mem.Allocator) bun.OOM!*Store {
+    errdefer allocator.free(bytes);
+    const store = try bun.default_allocator.create(Store);
+    errdefer bun.destroy(store);
+    store.* = .{
         .data = .{
-            .bytes = Bytes.init(bytes, allocator),
+            .bytes = try Bytes.init(bytes, allocator),
         },
         .allocator = allocator,
         .ref_count = .init(1),
-    });
+    };
     return store;
 }
 
-pub fn sharedView(this: Store) []u8 {
+pub fn initByteResource(resource: *bun.bindgen.OwnedByteResource) bun.OOM!*Store {
+    const store = try bun.default_allocator.create(Store);
+    errdefer bun.destroy(store);
+    store.* = .{
+        .data = .{
+            .bytes = try Bytes.initByteResource(resource),
+        },
+        .allocator = bun.default_allocator,
+        .ref_count = .init(1),
+    };
+    return store;
+}
+
+pub fn initExecutable(bytes: bun.StandaloneModuleGraph.ExecutableFileBytes) bun.OOM!*Store {
+    const len = std.math.cast(SizeType, bytes.contents.len) orelse return error.OutOfMemory;
+    const store = try bun.default_allocator.create(Store);
+    store.* = .{
+        .data = .{ .bytes = .{ .backing = .{ .executable = bytes }, .len = len } },
+        .allocator = bun.default_allocator,
+    };
+    return store;
+}
+
+pub fn initByteList(bytes: *bun.bindgen.OwnedByteList) bun.OOM!*Store {
+    const len = std.math.cast(SizeType, bytes.length()) orelse return error.OutOfMemory;
+    _ = std.math.cast(SizeType, bytes.capacity()) orelse return error.OutOfMemory;
+    const store = try bun.default_allocator.create(Store);
+    const list = bytes.takeManaged();
+    store.* = .{
+        .data = .{ .bytes = .{
+            .backing = .{ .allocation = .fromManaged(list) },
+            .len = len,
+        } },
+        .allocator = list.allocator,
+    };
+    return store;
+}
+
+pub fn sharedView(this: Store) []const u8 {
     if (this.data == .bytes)
         return this.data.bytes.slice();
 
     return &[_]u8{};
 }
 
-pub fn deref(this: *Blob.Store) void {
+pub fn deref(this: *Store) void {
     const old = this.ref_count.fetchSub(1, .monotonic);
     assert(old >= 1);
     if (old == 1) {
@@ -176,22 +226,14 @@ pub fn deref(this: *Blob.Store) void {
     }
 }
 
-pub fn deinit(this: *Blob.Store) void {
+pub fn deinit(this: *Store) void {
     const allocator = this.allocator;
 
     switch (this.data) {
         .bytes => |*bytes| {
             bytes.deinit();
         },
-        .file => |file| {
-            if (file.pathlike == .path) {
-                if (file.pathlike.path == .string) {
-                    allocator.free(@constCast(file.pathlike.path.slice()));
-                } else {
-                    file.pathlike.path.deinit();
-                }
-            }
-        },
+        .file => |*file| file.deinit(allocator),
         .s3 => |*s3| {
             s3.deinit(allocator);
         },
@@ -206,72 +248,81 @@ pub const SerializeTag = enum(u8) {
     empty = 2,
 };
 
+pub const SerializedFileDescriptor = if (bun.Environment.isWindows) u64 else i32;
+
 pub fn serialize(this: *Store, comptime Writer: type, writer: Writer) !void {
     switch (this.data) {
         .file => |file| {
-            const pathlike_tag: jsc.Node.PathOrFileDescriptor.SerializeTag = if (file.pathlike == .fd) .fd else .path;
+            const pathlike_tag: node.PathOrFileDescriptor.SerializeTag = if (file.pathlike == .fd) .fd else .path;
             try writer.writeInt(u8, @backingInt(pathlike_tag), .little);
 
             switch (file.pathlike) {
                 .fd => |fd| {
-                    try writer.writeStruct(fd, .little);
+                    try writer.writeInt(SerializedFileDescriptor, @bitCast(fd), .little);
                 },
                 .path => |path| {
                     const path_slice = path.slice();
-                    try writer.writeInt(u32, @as(u32, @truncate(path_slice.len)), .little);
+                    const path_length = std.math.cast(u32, path_slice.len) orelse return error.OutOfMemory;
+                    try writer.writeInt(u32, path_length, .little);
                     try writer.writeAll(path_slice);
                 },
             }
         },
         .s3 => |s3| {
-            const pathlike_tag: jsc.Node.PathOrFileDescriptor.SerializeTag = .path;
+            const pathlike_tag: node.PathOrFileDescriptor.SerializeTag = .path;
             try writer.writeInt(u8, @backingInt(pathlike_tag), .little);
 
             const path_slice = s3.pathlike.slice();
-            try writer.writeInt(u32, @as(u32, @truncate(path_slice.len)), .little);
+            const path_length = std.math.cast(u32, path_slice.len) orelse return error.OutOfMemory;
+            try writer.writeInt(u32, path_length, .little);
             try writer.writeAll(path_slice);
         },
-        .bytes => |bytes| {
-            const slice = bytes.slice();
-            try writer.writeInt(u32, @truncate(slice.len), .little);
-            try writer.writeAll(slice);
-
-            try writer.writeInt(u32, @truncate(bytes.stored_name.slice().len), .little);
-            try writer.writeAll(bytes.stored_name.slice());
-        },
+        .bytes => |*bytes| try serializeBytes(bytes, bytes.slice(), Writer, writer),
     }
 }
 
-pub fn fromArrayList(list: std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !*Blob.Store {
-    return try Blob.Store.init(list.items, allocator);
+pub fn serializeByteView(this: *Store, bytes: []const u8, comptime Writer: type, writer: Writer) !void {
+    const store_bytes = switch (this.data) {
+        .bytes => |*value| value,
+        else => unreachable,
+    };
+    try serializeBytes(store_bytes, bytes, Writer, writer);
+}
+
+fn serializeBytes(store_bytes: *const Bytes, bytes: []const u8, comptime Writer: type, writer: Writer) !void {
+    const length = std.math.cast(u32, bytes.len) orelse return error.OutOfMemory;
+    try writer.writeInt(u32, length, .little);
+    try writer.writeAll(bytes);
+
+    const stored_name = store_bytes.fileName() orelse "";
+    const name_length = std.math.cast(u32, stored_name.len) orelse return error.OutOfMemory;
+    try writer.writeInt(u32, name_length, .little);
+    try writer.writeAll(stored_name);
 }
 
 /// A blob store that references a file on disk.
 pub const File = struct {
-    pathlike: jsc.Node.PathOrFileDescriptor,
+    pathlike: node.PathOrFileDescriptor,
     mime_type: MimeType = MimeType.other,
     is_atty: ?bool = null,
     mode: bun.Mode = 0,
     seekable: ?bool = null,
-    max_size: SizeType = Blob.max_size,
+    max_size: SizeType = BlobSize.max_size,
     // milliseconds since ECMAScript epoch
-    last_modified: jsc.JSTimeType = jsc.init_timestamp,
+    last_modified: Timestamp = uninitialized_timestamp,
 
-    pub fn unlink(this: *const File, globalThis: *JSGlobalObject) bun.JSError!JSValue {
-        return switch (this.pathlike) {
-            .path => |path_like| jsc.Node.fs.Async.unlink.create(globalThis, undefined, .{
-                .path = .{
-                    .encoded_slice = switch (path_like) {
-                        .encoded_slice => |slice| try slice.toOwned(bun.default_allocator),
-                        else => try jsc.ZigString.fromUTF8(path_like.slice()).toSliceClone(bun.default_allocator),
-                    },
-                },
-            }, globalThis.bunVM()),
-            .fd => jsc.JSPromise.resolvedPromiseValue(globalThis, globalThis.createInvalidArgs("Is not possible to unlink a file descriptor", .{})),
-        };
-    }
-    pub fn init(pathlike: jsc.Node.PathOrFileDescriptor, mime_type: ?MimeType) File {
+    pub fn init(pathlike: node.PathOrFileDescriptor, mime_type: ?MimeType) File {
         return .{ .pathlike = pathlike, .mime_type = mime_type orelse MimeType.other };
+    }
+
+    pub fn deinit(this: *File, allocator: std.mem.Allocator) void {
+        if (this.pathlike == .path) {
+            if (this.pathlike.path == .string) {
+                allocator.free(@constCast(this.pathlike.path.slice()));
+            } else {
+                this.pathlike.path.deinit();
+            }
+        }
     }
 };
 
@@ -290,15 +341,11 @@ pub const S3 = struct {
         return this.credentials.?;
     }
 
-    pub fn getCredentialsWithOptions(this: *const @This(), options: ?JSValue, globalObject: *JSGlobalObject) bun.JSError!bun.S3.S3CredentialsWithOptions {
-        return S3Credentials.getCredentialsWithOptions(this.getCredentials().*, this.options, options, this.acl, this.storage_class, this.request_payer, globalObject);
-    }
-
     pub fn path(this: *@This()) []const u8 {
         var path_name = bun.URL.parse(this.pathlike.slice()).s3Path();
         // normalize start and ending
         if (strings.endsWith(path_name, "/")) {
-            path_name = path_name[0..path_name.len];
+            path_name = path_name[0 .. path_name.len - 1];
         } else if (strings.endsWith(path_name, "\\")) {
             path_name = path_name[0 .. path_name.len - 1];
         }
@@ -310,112 +357,6 @@ pub const S3 = struct {
         return path_name;
     }
 
-    pub fn unlink(this: *@This(), store: *Store, globalThis: *JSGlobalObject, extra_options: ?JSValue) bun.JSError!JSValue {
-        const Wrapper = struct {
-            promise: jsc.JSPromise.Strong,
-            store: *Store,
-            global: *JSGlobalObject,
-
-            pub const new = bun.TrivialNew(@This());
-
-            pub fn resolve(result: bun.S3.S3DeleteResult, opaque_self: *anyopaque) bun.JSTerminated!void {
-                const self: *@This() = @ptrCast(@alignCast(opaque_self));
-                defer self.deinit();
-                const globalObject = self.global;
-                switch (result) {
-                    .success => {
-                        try self.promise.resolve(globalObject, .true);
-                    },
-                    .not_found, .failure => |err| {
-                        try self.promise.reject(globalObject, err.toJSWithAsyncStack(globalObject, self.store.getPath(), self.promise.get()));
-                    },
-                }
-            }
-
-            fn deinit(wrap: *@This()) void {
-                wrap.store.deref();
-                wrap.promise.deinit();
-                bun.destroy(wrap);
-            }
-        };
-        const promise = jsc.JSPromise.Strong.init(globalThis);
-        const value = promise.value();
-        const proxy_url = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
-        const proxy = if (proxy_url) |url| url.href else null;
-        var aws_options = try this.getCredentialsWithOptions(extra_options, globalThis);
-        defer aws_options.deinit();
-        store.ref();
-
-        try bun.S3.delete(&aws_options.credentials, this.path(), @ptrCast(&Wrapper.resolve), Wrapper.new(.{
-            .promise = promise,
-            .store = store, // store is needed in case of not found error
-            .global = globalThis,
-        }), proxy, aws_options.request_payer);
-
-        return value;
-    }
-
-    pub fn listObjects(this: *@This(), store: *Store, globalThis: *JSGlobalObject, listOptions: JSValue, extra_options: ?JSValue) bun.JSError!JSValue {
-        if (!listOptions.isEmptyOrUndefinedOrNull() and !listOptions.isObject()) {
-            return globalThis.throwInvalidArguments("S3Client.listObjects() needs a S3ListObjectsOption as it's first argument", .{});
-        }
-
-        const Wrapper = struct {
-            promise: jsc.JSPromise.Strong,
-            store: *Store,
-            resolvedlistOptions: bun.S3.S3ListObjectsOptions,
-            global: *JSGlobalObject,
-
-            pub fn resolve(result: bun.S3.S3ListObjectsResult, opaque_self: *anyopaque) bun.JSTerminated!void {
-                const self: *@This() = @ptrCast(@alignCast(opaque_self));
-                defer self.deinit();
-                const globalObject = self.global;
-
-                switch (result) {
-                    .success => |list_result| {
-                        defer list_result.deinit();
-                        const list_result_js = list_result.toJS(globalObject) catch return self.promise.reject(globalObject, error.JSError);
-                        try self.promise.resolve(globalObject, list_result_js);
-                    },
-
-                    inline .not_found, .failure => |err| {
-                        try self.promise.reject(globalObject, err.toJSWithAsyncStack(globalObject, self.store.getPath(), self.promise.get()));
-                    },
-                }
-            }
-
-            fn deinit(self: *@This()) void {
-                self.store.deref();
-                self.promise.deinit();
-                self.resolvedlistOptions.deinit();
-                self.destroy();
-            }
-
-            pub inline fn destroy(self: *@This()) void {
-                bun.destroy(self);
-            }
-        };
-
-        const promise = jsc.JSPromise.Strong.init(globalThis);
-        const value = promise.value();
-        const proxy_url = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
-        const proxy = if (proxy_url) |url| url.href else null;
-        var aws_options = try this.getCredentialsWithOptions(extra_options, globalThis);
-        defer aws_options.deinit();
-
-        const options = try bun.S3.getListObjectsOptionsFromJS(globalThis, listOptions);
-        store.ref();
-
-        try bun.S3.listObjects(&aws_options.credentials, options, @ptrCast(&Wrapper.resolve), bun.new(Wrapper, .{
-            .promise = promise,
-            .store = store, // store is needed in case of not found error
-            .resolvedlistOptions = options,
-            .global = globalThis,
-        }), proxy);
-
-        return value;
-    }
-
     pub fn initWithReferencedCredentials(pathlike: node.PathLike, mime_type: ?MimeType, credentials: *S3Credentials) S3 {
         credentials.ref();
         return .{
@@ -424,9 +365,9 @@ pub const S3 = struct {
             .mime_type = mime_type orelse MimeType.other,
         };
     }
-    pub fn init(pathlike: node.PathLike, mime_type: ?MimeType, credentials: S3Credentials) S3 {
+    pub fn init(pathlike: node.PathLike, mime_type: ?MimeType, credentials: S3Credentials) bun.OOM!S3 {
         return .{
-            .credentials = credentials.dupe(),
+            .credentials = try credentials.dupe(),
             .pathlike = pathlike,
             .mime_type = mime_type orelse MimeType.other,
         };
@@ -454,82 +395,96 @@ pub const S3 = struct {
 };
 
 pub const Bytes = struct {
-    ptr: ?[*]u8 = undefined,
+    backing: Backing,
     len: SizeType = 0,
-    cap: SizeType = 0,
-    allocator: std.mem.Allocator,
 
-    /// Used by standalone module graph and the File constructor
-    stored_name: bun.PathString = bun.PathString.empty,
+    stored_name: bun.bindgen.OwnedByteList = .init(bun.default_allocator),
+
+    pub const Backing = union(enum) {
+        allocation: bun.bindgen.OwnedByteList,
+        resource: bun.bindgen.OwnedByteResource,
+        executable: bun.StandaloneModuleGraph.ExecutableFileBytes,
+    };
+
+    fn sizeType(value: usize) bun.OOM!SizeType {
+        return std.math.cast(SizeType, value) orelse error.OutOfMemory;
+    }
 
     /// Takes ownership of `bytes`, which must have been allocated with
     /// `allocator`.
-    pub fn init(bytes: []u8, allocator: std.mem.Allocator) Bytes {
+    pub fn init(bytes: []u8, allocator: std.mem.Allocator) bun.OOM!Bytes {
+        const len = try sizeType(bytes.len);
         return .{
-            .ptr = bytes.ptr,
-            .len = @as(SizeType, @truncate(bytes.len)),
-            .cap = @as(SizeType, @truncate(bytes.len)),
-            .allocator = allocator,
+            .backing = .{ .allocation = .fromOwnedSlice(allocator, bytes) },
+            .len = len,
         };
     }
-    pub fn initEmptyWithName(name: bun.PathString, allocator: std.mem.Allocator) Bytes {
+
+    pub fn initCapacity(bytes: []u8, len: usize, allocator: std.mem.Allocator) bun.OOM!Bytes {
+        bun.assert(len <= bytes.len);
+        _ = try sizeType(bytes.len);
         return .{
-            .ptr = null,
+            .backing = .{ .allocation = .fromManaged(.{
+                .items = bytes[0..len],
+                .capacity = bytes.len,
+                .allocator = allocator,
+            }) },
+            .len = try sizeType(len),
+        };
+    }
+
+    pub fn initByteResource(resource: *bun.bindgen.OwnedByteResource) bun.OOM!Bytes {
+        const len = resource.length();
+        const representable_len = try sizeType(len);
+        return .{
+            .backing = .{ .resource = resource.take() },
+            .len = representable_len,
+        };
+    }
+
+    pub fn initEmptyWithName(name: []u8, allocator: std.mem.Allocator) Bytes {
+        return .{
+            .backing = .{ .allocation = .init(allocator) },
             .len = 0,
-            .cap = 0,
-            .allocator = allocator,
-            .stored_name = name,
+            .stored_name = .fromOwnedSlice(allocator, name),
         };
     }
 
-    pub fn fromArrayList(list: std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !*Bytes {
-        return Bytes.init(list.items, allocator);
+    pub fn slice(this: *const Bytes) []const u8 {
+        return switch (this.backing) {
+            .allocation => |*allocation| allocation.slice()[0..this.len],
+            .resource => |*resource| resource.slice()[0..this.len],
+            .executable => |bytes| bytes.contents[0..this.len],
+        };
     }
 
-    pub fn toInternalBlob(this: *Bytes) Blob.Internal {
-        const ptr = this.ptr orelse return .{
-            .bytes = std.array_list.Managed(u8){
-                .items = &.{},
-                .capacity = 0,
-                .allocator = this.allocator,
-            },
+    pub fn fileName(this: *const Bytes) ?[]const u8 {
+        if (this.stored_name.length() > 0) return this.stored_name.slice();
+        return switch (this.backing) {
+            .executable => |bytes| bytes.name,
+            .allocation, .resource => null,
         };
+    }
 
-        const result: Blob.Internal = .{
-            .bytes = .{
-                .items = ptr[0..this.len],
-                .capacity = this.cap,
-                .allocator = this.allocator,
-            },
+    pub fn takeManaged(this: *Bytes) ?std.array_list.Managed(u8) {
+        var result = switch (this.backing) {
+            .allocation => |*allocation| allocation.takeManaged(),
+            .resource, .executable => return null,
         };
-
-        this.allocator = bun.default_allocator;
+        result.items = result.items[0..this.len];
         this.len = 0;
-        this.cap = 0;
         return result;
-    }
-    pub fn slice(this: Bytes) []u8 {
-        if (this.ptr) |ptr| {
-            return ptr[0..this.len];
-        }
-        return "";
-    }
-
-    pub fn allocatedSlice(this: Bytes) []u8 {
-        if (this.ptr) |ptr| {
-            return ptr[0..this.cap];
-        }
-        return "";
     }
 
     pub fn deinit(this: *Bytes) void {
-        bun.default_allocator.free(this.stored_name.slice());
-        if (this.ptr) |ptr| {
-            this.allocator.free(ptr[0..this.cap]);
+        this.stored_name.deinit();
+        switch (this.backing) {
+            .allocation => |*allocation| allocation.deinit(),
+            .resource => |*resource| resource.deinit(),
+            .executable => {},
         }
-        this.ptr = null;
+        this.backing = .{ .allocation = .init(bun.default_allocator) };
         this.len = 0;
-        this.cap = 0;
     }
 };
 
@@ -538,13 +493,7 @@ const std = @import("std");
 const bun = @import("bun");
 const assert = bun.assert;
 const strings = bun.strings;
-const webcore = bun.webcore;
 const MimeType = bun.http.MimeType;
-const node = bun.api.node;
-
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-
-const Blob = webcore.Blob;
-const SizeType = Blob.SizeType;
+const node = @import("../../node/PathLike.zig");
+const BlobSize = @import("../BlobSize.zig");
+const SizeType = BlobSize.SizeType;

@@ -48,3 +48,10 @@ public:
     {
     }
 };
+
+namespace Bun::Bindgen::TypePredicates {
+
+bool isCallableOrAsyncContext(JSC::JSValue) noexcept;
+bool isAsyncContextWrappable(JSC::JSValue) noexcept;
+
+}

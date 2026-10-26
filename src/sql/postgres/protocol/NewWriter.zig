@@ -23,11 +23,13 @@ pub fn NewWriterWrap(
             context: WrappedWriter,
 
             pub fn write(this: LengthWriter) AnyPostgresError!void {
-                try this.context.pwrite(&Int32(this.context.offset() - this.index), this.index);
+                const size = std.math.cast(u31, this.context.offset() - this.index) orelse return error.Overflow;
+                try this.context.pwrite(&Int32(size), this.index);
             }
 
             pub fn writeExcludingSelf(this: LengthWriter) AnyPostgresError!void {
-                try this.context.pwrite(&Int32(this.context.offset() -| (this.index + 4)), this.index);
+                const size = std.math.cast(u31, this.context.offset() - this.index - 4) orelse return error.Overflow;
+                try this.context.pwrite(&Int32(size), this.index);
             }
         };
 
@@ -42,6 +44,10 @@ pub fn NewWriterWrap(
 
         pub inline fn offset(this: @This()) usize {
             return offsetFn(this.wrapped);
+        }
+
+        pub fn truncate(this: @This(), end: usize) void {
+            this.wrapped.truncate(end);
         }
 
         pub inline fn pwrite(this: @This(), data: []const u8, i: usize) AnyPostgresError!void {
@@ -99,7 +105,7 @@ pub fn NewWriterWrap(
                 return;
             }
 
-            var sliced = value.toUTF8(bun.default_allocator);
+            var sliced = try value.toUTF8(bun.default_allocator);
             defer sliced.deinit();
             const slice = sliced.slice();
 

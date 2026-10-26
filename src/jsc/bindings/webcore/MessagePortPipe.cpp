@@ -1,21 +1,101 @@
 #include "config.h"
-#include "MessagePort.h"
-
-// When the verification harness reverts src/ to origin/main, this file and
-// MessagePortPipe.h survive as new untracked files but MessagePort.h /
-// TransferredMessagePort.h revert to their identifier-based predecessors.
-// The body below references symbols that only exist on the pipe-backed
-// MessagePort.h (dispatchOneMessage, the struct TransferredMessagePort), so
-// compile it only when that header is present.
-#if BUN_MESSAGEPORT_USES_PIPE
-
 #include "MessagePortPipe.h"
-#include "ScriptExecutionContext.h"
+#include <limits>
 #include <wtf/Locker.h>
 
 namespace WebCore {
 
-MessagePortPipe::~MessagePortPipe() = default;
+RefPtr<MessagePortContext> MessagePortContext::tryCreate(ScriptExecutionContext& context)
+{
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(MessagePortContext)).getValue(allocation))
+        return nullptr;
+    Ref result = adoptRef(*new (NotNull, allocation) MessagePortContext);
+    result->attach(context);
+    return result;
+}
+
+MessagePortContext::~MessagePortContext()
+{
+    ASSERT(!context());
+    ASSERT(!m_head);
+}
+
+void MessagePortContext::add(Registration& registration)
+{
+    RELEASE_ASSERT(context() && context()->isContextThread());
+    Locker locker { m_lock };
+    RELEASE_ASSERT(!registration.owner);
+    registration.owner = this;
+    registration.next = m_head;
+    if (m_head)
+        m_head->previous = &registration;
+    m_head = &registration;
+}
+
+void MessagePortContext::removeLocked(Registration& registration)
+{
+    if (!registration.owner)
+        return;
+    RELEASE_ASSERT(registration.owner == this);
+    if (registration.previous)
+        registration.previous->next = registration.next;
+    else
+        m_head = registration.next;
+    if (registration.next)
+        registration.next->previous = registration.previous;
+    registration.owner = nullptr;
+    registration.previous = nullptr;
+    registration.next = nullptr;
+}
+
+void MessagePortContext::remove(Registration& registration)
+{
+    Locker locker { m_lock };
+    removeLocked(registration);
+}
+
+void MessagePortContext::contextClosed() noexcept
+{
+    while (true) {
+        RefPtr<MessagePortPipe> pipe;
+        uint8_t side;
+        {
+            Locker locker { m_lock };
+            if (!m_head)
+                return;
+            auto& registration = *m_head;
+            pipe = registration.pipe.get();
+            side = registration.side;
+            removeLocked(registration);
+        }
+        if (pipe)
+            pipe->close(side);
+    }
+}
+
+RefPtr<MessagePortPipe> MessagePortPipe::tryCreate()
+{
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(MessagePortPipe)).getValue(allocation))
+        return nullptr;
+    Ref pipe = adoptRef(*new (NotNull, allocation) MessagePortPipe);
+    for (uint8_t side = 0; side < 2; ++side) {
+        pipe->m_sides[side].registration.pipe = pipe.get();
+        pipe->m_sides[side].registration.side = side;
+    }
+    return pipe;
+}
+
+MessagePortPipe::~MessagePortPipe()
+{
+    for (uint8_t side = 0; side < 2; ++side)
+        detachContext(side);
+    for (auto& side : m_sides) {
+        Locker locker { side.lock };
+        ASSERT(!side.first && !side.last && !side.reserved);
+    }
+}
 
 // Defined here (not in TransferredMessagePort.h) to break the header cycle
 // MessagePortPipe.h → MessageWithMessagePorts.h → TransferredMessagePort.h.
@@ -39,222 +119,240 @@ TransferredMessagePort& TransferredMessagePort::operator=(TransferredMessagePort
     return *this;
 }
 
-void MessagePortPipe::send(uint8_t fromSide, MessageWithMessagePorts&& message)
+MessagePortPipe::PreparedSend::PreparedSend(Ref<MessagePortPipe>&& pipe, uint8_t side, std::unique_ptr<MessageNode>&& node)
+    : m_pipe(WTF::move(pipe))
+    , m_node(WTF::move(node))
+    , m_side(side)
+{
+}
+
+MessagePortPipe::PreparedSend::PreparedSend(PreparedSend&& other) noexcept
+    : m_pipe(WTF::move(other.m_pipe))
+    , m_node(WTF::move(other.m_node))
+    , m_side(other.m_side)
+    , m_consumed(std::exchange(other.m_consumed, true))
+{
+}
+
+MessagePortPipe::PreparedSend::~PreparedSend()
+{
+    if (m_pipe) {
+        auto& side = m_pipe->m_sides[m_side];
+        Locker locker { side.lock };
+        ASSERT(side.reserved);
+        --side.reserved;
+    }
+}
+
+Bun::Bindgen::NativeAllocationResult<MessagePortPipe::PreparedSend> MessagePortPipe::tryPrepareSend(uint8_t fromSide)
 {
     ASSERT(fromSide < 2);
-    auto& dst = m_sides[1 - fromSide];
+    const uint8_t destination = 1 - fromSide;
+    auto& side = m_sides[destination];
+    if (side.state.load(std::memory_order_acquire) & (Closed | Abandoned))
+        return PreparedSend {};
 
-    ScriptExecutionContextIdentifier wakeCtx = 0;
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(MessageNode)).getValue(allocation))
+        return Bun::Bindgen::nativeAllocationFailure();
+    std::unique_ptr<MessageNode> node { new (NotNull, allocation) MessageNode };
+    {
+        Locker locker { side.lock };
+        const uint64_t state = side.state.load(std::memory_order_relaxed);
+        if (state & (Closed | Abandoned))
+            return PreparedSend {};
+        constexpr uint64_t maximumCount = std::numeric_limits<uint64_t>::max() >> QueuedShift;
+        if (queuedCount(state) + side.reserved >= maximumCount)
+            return Bun::Bindgen::nativeAllocationFailure();
+        ++side.reserved;
+    }
+    return PreparedSend { Ref { *this }, destination, WTF::move(node) };
+}
+
+void MessagePortPipe::PreparedSend::commit(MessageWithMessagePorts&& message)
+{
+    RELEASE_ASSERT(!m_consumed);
+    m_consumed = true;
+    if (!m_pipe)
+        return;
+
+    Ref pipe = m_pipe.releaseNonNull();
+    auto node = WTF::move(m_node);
+    node->message = WTF::move(message);
+    auto& dst = pipe->m_sides[m_side];
+
+    RefPtr<Wakeup> wakeup;
     {
         Locker locker { dst.lock };
+        ASSERT(dst.reserved);
+        --dst.reserved;
         uint64_t s = dst.state.load(std::memory_order_relaxed);
-        if (s & Closed)
+        if (s & (Closed | Abandoned))
             return;
 
-        dst.inbox.append(WTF::move(message));
+        if (dst.last)
+            dst.last->next = node.get();
+        else
+            dst.first = node.get();
+        dst.last = node.release();
 
-        uint64_t ns = s + QueuedOne;
-        if ((s & Attached) && !(s & DrainScheduled)) {
-            ns |= DrainScheduled;
-            wakeCtx = dst.ctxId;
-        }
-        dst.state.store(ns, std::memory_order_release);
+        wakeup = dst.wakeup;
+        dst.state.store(s + QueuedOne, std::memory_order_release);
     }
 
-    if (wakeCtx)
-        scheduleDrain(1 - fromSide, wakeCtx);
-}
-
-void MessagePortPipe::scheduleDrain(uint8_t side, ScriptExecutionContextIdentifier ctxId)
-{
-    // The posted task holds a strong ref to the pipe so it can't be destroyed
-    // while a wakeup is in flight. The task captures the ctxId it was posted
-    // to so drainAndDispatch can detect if the side moved to a different
-    // context before the task ran.
-    bool posted = ScriptExecutionContext::postTaskTo(ctxId, [pipe = Ref { *this }, side, ctxId](ScriptExecutionContext&) {
-        pipe->drainAndDispatch(side, ctxId);
-    });
-    if (!posted) {
-        // Context already torn down. Drop DrainScheduled so a future
-        // attach() to a new context can reschedule.
-        Locker locker { m_sides[side].lock };
-        m_sides[side].state.fetch_and(~uint64_t(DrainScheduled), std::memory_order_acq_rel);
-    }
-}
-
-void MessagePortPipe::drainAndDispatch(uint8_t side, ScriptExecutionContextIdentifier expectedCtx)
-{
-    // Mirrors Node's MessagePort::OnMessage (src/node_messaging.cc): one
-    // drain task processes the whole inbox in a loop, draining microtasks
-    // between each delivery so queueMicrotask/Promise callbacks observe
-    // messages one at a time, but without a separate posted task per
-    // message. The per-invocation limit is max(initial queue size, 1000)
-    // — enough to amortize the uv_async-style reschedule cost, capped so a
-    // fast sender can't starve the event loop indefinitely.
-    //
-    // Messages are popped one at a time under the lock, so if the handler
-    // transfers this port (pipe->detach clears `s.port`/`Attached`) the
-    // remaining inbox stays buffered for the new owner.
-    auto& s = m_sides[side];
-
-    RefPtr<MessagePort> port;
-    size_t limit;
-    {
-        Locker locker { s.lock };
-        // This task was posted to `expectedCtx` (and is running there). If
-        // the side has since been detached and re-attached to a different
-        // context, s.port now belongs to a different thread — dispatching
-        // from here would be cross-thread JS. Leave everything alone: the
-        // new owner's attach() has (or will have) scheduled its own drain.
-        if (s.ctxId != expectedCtx)
-            return;
-        port = s.port.get();
-        uint64_t st = s.state.load(std::memory_order_relaxed);
-        if (!port || s.inbox.isEmpty()) {
-            s.state.store(st & ~DrainScheduled, std::memory_order_release);
-            return;
-        }
-        limit = std::max<size_t>(s.inbox.size(), 1000);
-    }
-
-    auto* context = port->scriptExecutionContext();
-    if (!context || !context->globalObject()) {
-        Locker locker { s.lock };
-        s.state.fetch_and(~uint64_t(DrainScheduled), std::memory_order_acq_rel);
-        return;
-    }
-    auto* globalObject = defaultGlobalObject(context->globalObject());
-
-    ScriptExecutionContextIdentifier rescheduleCtx = 0;
-    while (true) {
-        std::optional<MessageWithMessagePorts> message;
-        {
-            Locker locker { s.lock };
-            // Re-check each iteration: the handler (or a concurrent thread)
-            // may have closed or transferred this port. A same-context
-            // detach+re-attach restores ctxId but installs a different
-            // MessagePort, so compare port identity too — dispatching to
-            // the stale (now m_isDetached) `port` would silently drop.
-            // The new owner's attach() scheduled its own drain; leave the
-            // inbox for that.
-            if (s.ctxId != expectedCtx || s.port.get() != port)
-                break;
-            uint64_t st = s.state.load(std::memory_order_relaxed);
-            if (!(st & Attached) || s.inbox.isEmpty()) {
-                s.state.store(st & ~DrainScheduled, std::memory_order_release);
-                break;
-            }
-            if (limit-- == 0) {
-                // Yield to the rest of the event loop; DrainScheduled stays
-                // set so concurrent sends don't double-schedule.
-                rescheduleCtx = s.ctxId;
-                break;
-            }
-            message = s.inbox.takeFirst();
-            s.state.store(st - QueuedOne, std::memory_order_release);
-        }
-
-        port->dispatchOneMessage(*context, WTF::move(*message));
-
-        // Node's MakeCallback wraps each emit in an InternalCallbackScope,
-        // which drains nextTick + microtasks on exit; match that so
-        // queueMicrotask(cb) inside onmessage runs before the next message.
-        if (globalObject->drainMicrotasks())
-            break; // termination pending
-    }
-
-    if (rescheduleCtx)
-        scheduleDrain(side, rescheduleCtx);
+    if (wakeup)
+        wakeup->notify();
 }
 
 std::optional<MessageWithMessagePorts> MessagePortPipe::takeOne(uint8_t side)
 {
     ASSERT(side < 2);
     auto& s = m_sides[side];
-    Locker locker { s.lock };
-    if (s.inbox.isEmpty())
-        return std::nullopt;
-    s.state.fetch_sub(QueuedOne, std::memory_order_acq_rel);
-    return s.inbox.takeFirst();
+    std::unique_ptr<MessageNode> node;
+    {
+        Locker locker { s.lock };
+        if ((s.state.load(std::memory_order_relaxed) & (Closed | Abandoned)) || !s.first)
+            return std::nullopt;
+        node.reset(s.first);
+        s.first = node->next;
+        if (!s.first)
+            s.last = nullptr;
+        s.state.fetch_sub(QueuedOne, std::memory_order_acq_rel);
+    }
+    return WTF::move(node->message);
 }
 
-void MessagePortPipe::attach(uint8_t side, ScriptExecutionContextIdentifier ctxId, ThreadSafeWeakPtr<MessagePort> port)
+void MessagePortPipe::attach(uint8_t side, Ref<Wakeup>&& wakeup, Ref<MessagePortContext>&& context)
 {
     ASSERT(side < 2);
     auto& s = m_sides[side];
-    ScriptExecutionContextIdentifier wakeCtx = 0;
+    RefPtr<Wakeup> pendingWakeup;
     {
         Locker locker { s.lock };
-        s.ctxId = ctxId;
-        s.port = WTF::move(port);
         uint64_t st = s.state.load(std::memory_order_relaxed);
-        uint64_t ns = (st | Attached) & ~Closed;
-        if (queuedCount(st) > 0 && !(st & DrainScheduled)) {
-            ns |= DrainScheduled;
-            wakeCtx = ctxId;
-        }
-        s.state.store(ns, std::memory_order_release);
+        if (st & (Closed | Abandoned))
+            return;
+        ASSERT(!s.wakeup);
+        ASSERT(!s.context);
+        context->add(s.registration);
+        s.context = WTF::move(context);
+        s.wakeup = WTF::move(wakeup);
+        if (queuedCount(st) || !isOtherSideOpen(side))
+            pendingWakeup = s.wakeup;
     }
-    if (wakeCtx)
-        scheduleDrain(side, wakeCtx);
+    if (pendingWakeup)
+        pendingWakeup->notify();
 }
 
 void MessagePortPipe::detach(uint8_t side)
 {
     ASSERT(side < 2);
     auto& s = m_sides[side];
-    Locker locker { s.lock };
-    s.ctxId = 0;
-    s.port = nullptr;
-    // Drop Attached and DrainScheduled. A drain task already in flight on
-    // the old context can't be recalled, but it captured the old ctxId and
-    // drainAndDispatch()'s s.ctxId != expectedCtx check makes it a no-op —
-    // even if a new owner attach()es to a different context before it runs.
-    // Messages remain queued for the next owner.
-    s.state.fetch_and(~uint64_t(Attached | DrainScheduled), std::memory_order_acq_rel);
+    RefPtr<Wakeup> wakeup;
+    {
+        Locker locker { s.lock };
+        wakeup = std::exchange(s.wakeup, nullptr);
+    }
+    detachContext(side);
+}
+
+void MessagePortPipe::detachContext(uint8_t side)
+{
+    auto& s = m_sides[side];
+    RefPtr<MessagePortContext> context;
+    {
+        Locker locker { s.lock };
+        context = std::exchange(s.context, nullptr);
+    }
+    if (context)
+        context->remove(s.registration);
+}
+
+void MessagePortPipe::finishClose(uint8_t side)
+{
+    detachContext(side);
+    RefPtr<Wakeup> peerWakeup;
+    auto& peer = m_sides[1 - side];
+    {
+        Locker locker { peer.lock };
+        peerWakeup = peer.wakeup;
+    }
+    if (peerWakeup)
+        peerWakeup->notify();
 }
 
 void MessagePortPipe::close(uint8_t side)
 {
+    disposeEndpoint(side, Closed);
+}
+
+void MessagePortPipe::abandon(uint8_t side)
+{
+    disposeEndpoint(side, Abandoned);
+}
+
+void MessagePortPipe::disposeEndpoint(uint8_t side, State reason)
+{
     ASSERT(side < 2);
 
-    // Dropped messages can carry TransferredMessagePorts, whose destructor
-    // calls close() on their pipe. Letting those destruct naturally recurses
-    // (close -> ~Deque -> ~TransferredMessagePort -> close -> ...), so a long
-    // chain of nested transferred ports overflows the native stack. Drain the
-    // cascade iteratively instead: steal transferred pipes from each batch of
-    // dropped messages into a stack-local worklist and close them in a loop.
-    Vector<std::pair<RefPtr<MessagePortPipe>, uint8_t>> worklist;
-    worklist.append({ this, side });
-
-    while (!worklist.isEmpty()) {
-        auto [pipe, sd] = worklist.takeLast();
-        auto& s = pipe->m_sides[sd];
-
-        Deque<MessageWithMessagePorts> dropped;
+    // Claim each side once under its lock. Its embedded node retains the pipe
+    // until cleanup consumes it, avoiding both allocation and recursive close.
+    Side* worklist = nullptr;
+    const auto enqueue = [&](MessagePortPipe& pipe, uint8_t sd, State reason) {
+        ASSERT(sd < 2);
+        auto& pending = pipe.m_sides[sd];
+        bool promoted = false;
         {
-            Locker locker { s.lock };
-            s.ctxId = 0;
-            s.port = nullptr;
-            // Closed is terminal; queued messages are dropped.
-            s.state.store(Closed, std::memory_order_release);
-            dropped = std::exchange(s.inbox, {});
-        }
-
-        // Harvest transferred pipes before `dropped` destructs so their
-        // ~TransferredMessagePort sees pipe == nullptr and is a no-op.
-        for (auto& message : dropped) {
-            for (auto& tp : message.transferredPorts) {
-                if (auto p = std::exchange(tp.pipe, nullptr))
-                    worklist.append({ WTF::move(p), tp.side });
+            Locker locker { pending.lock };
+            const auto state = pending.state.load(std::memory_order_relaxed);
+            if (state & Closed)
+                return;
+            if (state & Abandoned) {
+                if (reason == Abandoned)
+                    return;
+                pending.state.store(state | Closed, std::memory_order_release);
+                promoted = true;
+            } else {
+                pipe.ref();
+                pending.closeOwner = &pipe;
+                pending.closeNext = worklist;
+                worklist = &pending;
+                pending.state.store(reason, std::memory_order_release);
             }
         }
-        // `dropped` (and the RefPtr in the structured binding) destruct
-        // outside the lock; they may hold the last ref to pipes whose
-        // destructors also take locks.
+        // Abandonment cleanup may already own the embedded worklist node.
+        if (promoted)
+            pipe.finishClose(sd);
+    };
+    enqueue(*this, side, reason);
+
+    while (worklist) {
+        auto& s = *worklist;
+        worklist = std::exchange(s.closeNext, nullptr);
+        Ref pipe = adoptRef(*std::exchange(s.closeOwner, nullptr));
+
+        MessageNode* dropped;
+        RefPtr<Wakeup> wakeup;
+        {
+            Locker locker { s.lock };
+            wakeup = WTF::move(s.wakeup);
+            dropped = std::exchange(s.first, nullptr);
+            s.last = nullptr;
+        }
+
+        while (dropped) {
+            std::unique_ptr<MessageNode> message { dropped };
+            dropped = message->next;
+            for (auto& tp : message->message.transferredPorts) {
+                if (auto p = std::exchange(tp.pipe, nullptr))
+                    enqueue(*p, tp.side, Closed);
+            }
+        }
+
+        if (s.state.load(std::memory_order_acquire) & Closed) {
+            pipe->finishClose(&s == &pipe->m_sides[0] ? 0 : 1);
+        }
     }
 }
 
 } // namespace WebCore
-
-#endif // BUN_MESSAGEPORT_USES_PIPE

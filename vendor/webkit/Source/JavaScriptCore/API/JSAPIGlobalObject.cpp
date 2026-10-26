@@ -48,6 +48,7 @@ const GlobalObjectMethodTable* JSAPIGlobalObject::globalObjectMethodTable()
         nullptr, // moduleLoaderFetch
         nullptr, // moduleLoaderCreateImportMetaProperties
         nullptr, // moduleLoaderEvaluate
+        nullptr, // moduleLoaderAnalyzeTranspiledModule
         &promiseRejectionTracker,
         &reportUncaughtExceptionAtEventLoop,
         &currentScriptExecutionOwner,

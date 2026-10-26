@@ -89,7 +89,7 @@ pub fn runAsCoordinator(
     const workers = try allocator.alloc(Worker, K);
 
     var coord = Coordinator{
-        .vm = vm,
+        .runtime = .{ .vm = vm },
         .start_time = ctx.start_time,
         .reporter = reporter,
         .files = sorted,
@@ -129,7 +129,18 @@ pub fn runAsCoordinator(
 
     if (ctx.test_options.reporters.junit) {
         if (ctx.test_options.reporter_outfile) |outfile| {
-            aggregate.mergeJUnitFragments(&coord, outfile, reporter.summary());
+            const crashed_files = try arena.allocator().alloc([]const u8, coord.crashed_files.items.len);
+            for (crashed_files, coord.crashed_files.items) |*path, index| {
+                path.* = try coord.relPath(arena.allocator(), index);
+            }
+            aggregate.mergeJUnitFragments(
+                ctx.io,
+                coord.start_time,
+                coord.junit_fragments.items,
+                crashed_files,
+                outfile,
+                reporter.summary().expectations,
+            );
         }
     }
     if (coverage_opts.enabled) {
@@ -314,7 +325,10 @@ pub fn runAsWorker(
         cmds: WorkerCommands,
 
         pub fn begin(self: *@This()) void {
-            if (!self.cmds.channel.adopt(self.vm, .fromUV(3))) {
+            if (!self.cmds.channel.adopt(
+                if (comptime Environment.isWindows) {} else self.vm.rareData().testParallelIPCGroup(self.vm, @TypeOf(self.cmds.channel).socketVTable()),
+                .fromUV(3),
+            )) {
                 Output.prettyErrorln("<red>error<r>: test worker failed to adopt IPC fd", .{});
                 bun.Global.exit(1);
             }
@@ -440,12 +454,48 @@ pub fn workerEmitTestDone(file_idx: u32, formatted_line: []const u8) void {
 }
 
 const Frame = @import("./Frame.zig");
-const Worker = @import("./Worker.zig");
 const aggregate = @import("./aggregate.zig");
 const std = @import("std");
 const Channel = @import("./Channel.zig").Channel;
 const Command = @import("../../cli.zig").Command;
-const Coordinator = @import("./Coordinator.zig").Coordinator;
+const CoordinatorRuntime = struct {
+    vm: *jsc.VirtualMachine,
+
+    pub fn runtimeLoopHandle(this: *@This()) bun.RuntimeLoopHandle {
+        return this.vm.runtimeLoopHandle();
+    }
+
+    pub fn parentEventLoop(this: *@This()) bun.ParentEventLoop {
+        return this.vm.parentEventLoop();
+    }
+
+    pub fn asyncLoop(this: *@This()) *bun.Async.Loop {
+        return this.vm.uvLoop();
+    }
+
+    pub fn io(this: *@This()) std.Io {
+        return this.vm.io;
+    }
+
+    pub fn ipcSocketGroup(this: *@This(), vtable: *const bun.uws.SocketGroup.VTable) *bun.uws.SocketGroup {
+        return this.vm.rareData().testParallelIPCGroup(this.vm, vtable);
+    }
+
+    pub fn tick(this: *@This()) void {
+        this.vm.eventLoop().tick();
+    }
+
+    pub fn tickWithTimeout(this: *@This(), timeout: *bun.timespec) void {
+        this.vm.eventLoop().usocketsLoop().tickWithTimeout(timeout);
+    }
+
+    pub fn autoTick(this: *@This()) void {
+        this.vm.eventLoop().autoTick();
+    }
+};
+
+const Coordinator = @import("./Coordinator.zig").Coordinator(CoordinatorRuntime, CommandLineReporter);
+const Worker = Coordinator.Worker;
 
 const test_command = @import("../../test_command.zig");
 const CommandLineReporter = test_command.CommandLineReporter;

@@ -26,9 +26,12 @@
 "use strict";
 
 const { URL, URLSearchParams } = globalThis;
-const [domainToASCII, domainToUnicode] = $cpp("NodeURL.cpp", "Bun::createNodeURLBinding");
+const domainToASCII = $bindgenFn("NodeURL.schema.zig", "domainToASCII");
+const domainToUnicode = $bindgenFn("NodeURL.schema.zig", "domainToUnicode");
 const { urlToHttpOptions } = require("internal/url");
 const { validateString } = require("internal/validators");
+
+type Url = any;
 
 function Url() {
   this.protocol = null;
@@ -155,7 +158,8 @@ Url.prototype.parse = function parse(url: string, parseQueryString?: boolean, sl
           break;
         case Char.HASH:
           hasHash = true;
-        // Fall through
+          split = true;
+          break;
         case Char.QUESTION_MARK:
           split = true;
           break;
@@ -416,9 +420,7 @@ Url.prototype.parse = function parse(url: string, parseQueryString?: boolean, sl
 
   // to support http.request
   if (this.pathname || this.search) {
-    var p = this.pathname || "";
-    var s = this.search || "";
-    this.path = p + s;
+    this.path = (this.pathname || "") + (this.search || "");
   }
 
   // finally, reconstruct the href based on what has been validated.
@@ -461,7 +463,7 @@ function getHostname(self, rest, hostname: string, url) {
 }
 
 // format a parsed object into a url string
-declare function urlFormat(urlObject: string | URL | Url): string;
+function urlFormat(urlObject: string | URL | Url): string;
 function urlFormat(urlObject: unknown) {
   /*
    * ensure it's an object, and not a string url.
@@ -477,9 +479,9 @@ function urlFormat(urlObject: unknown) {
   }
 
   if (!(urlObject instanceof Url)) {
-    return Url.prototype.format.$call(urlObject);
+    return (Url.prototype as any).format.$call(urlObject);
   }
-  return urlObject.format();
+  return (urlObject as Url).format();
 }
 
 Url.prototype.format = function format() {
@@ -860,9 +862,9 @@ Url.prototype.resolveObject = function resolveObject(relative) {
 
 Url.prototype.parseHost = function parseHost() {
   var host = this.host;
-  var port = portPattern.exec(host);
-  if (port) {
-    port = port[0];
+  var portMatch = portPattern.exec(host);
+  if (portMatch) {
+    const port = portMatch[0];
     if (port !== ":") {
       this.port = port.slice(1);
     }

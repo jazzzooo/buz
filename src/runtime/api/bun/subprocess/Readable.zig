@@ -1,195 +1,265 @@
-pub const Readable = union(enum) {
-    fd: bun.FD,
-    memfd: bun.FD,
-    pipe: *PipeReader,
-    inherit: void,
-    ignore: void,
-    closed: void,
-    /// Eventually we will implement Readables created from blobs and array buffers.
-    /// When we do that, `buffer` will be borrowed from those objects.
-    ///
-    /// When a buffered `pipe` finishes reading from its file descriptor,
-    /// the owning `Readable` will be convered into this variant and the pipe's
-    /// buffer will be taken as an owned `CowString`.
-    buffer: CowString,
+pub fn WithIntegration(comptime Integration: type, comptime PipeReader: type) type {
+    const Stdio = Integration.Stdio;
+    return union(enum) {
+        const Readable = @This();
 
-    pub fn memoryCost(this: *const Readable) usize {
-        return switch (this.*) {
-            .pipe => @sizeOf(PipeReader) + this.pipe.memoryCost(),
-            .buffer => this.buffer.length(),
-            else => 0,
+        fd: bun.FD,
+        memfd: bun.FD,
+        pipe: *PipeReader,
+        inherit: void,
+        ignore: void,
+        closed: void,
+        buffer: CowString,
+
+        pub const BufferedBytes = union(enum) {
+            bytes: bindgen.OwnedBytes,
+            unavailable,
+            err: bun.sys.Error,
         };
-    }
 
-    pub fn hasPendingActivity(this: *const Readable) bool {
-        return switch (this.*) {
-            .pipe => this.pipe.hasPendingActivity(),
-            else => false,
-        };
-    }
-
-    pub fn ref(this: *Readable) void {
-        switch (this.*) {
-            .pipe => {
-                this.pipe.updateRef(true);
-            },
-            else => {},
+        fn copyAndFreeDefaultBytes(bytes: []u8) bun.OOM!bindgen.OwnedBytes {
+            defer if (bytes.len > 0) bun.default_allocator.free(bytes);
+            return bindgen.OwnedBytes.fromSlice(bytes);
         }
-    }
 
-    pub fn unref(this: *Readable) void {
-        switch (this.*) {
-            .pipe => {
-                this.pipe.updateRef(false);
-            },
-            else => {},
+        pub fn memoryCost(this: *const Readable) usize {
+            return switch (this.*) {
+                .pipe => @sizeOf(PipeReader) + this.pipe.memoryCost(),
+                .buffer => this.buffer.length(),
+                else => 0,
+            };
         }
-    }
 
-    pub fn init(stdio: Stdio, event_loop: *jsc.EventLoop, process: *Subprocess, result: StdioResult, allocator: std.mem.Allocator, max_size: ?*MaxBuf, is_sync: bool) Readable {
-        _ = allocator; // autofix
-        _ = is_sync; // autofix
-        Subprocess.assertStdioResult(result);
+        pub fn hasPendingActivity(this: *const Readable) bool {
+            return switch (this.*) {
+                .pipe => this.pipe.hasPendingActivity(),
+                else => false,
+            };
+        }
 
-        if (comptime Environment.isPosix) {
-            if (stdio == .pipe) {
-                _ = bun.sys.setNonblocking(result.?);
+        pub fn ref(this: *Readable) void {
+            switch (this.*) {
+                .pipe => {
+                    this.pipe.updateRef(true);
+                },
+                else => {},
             }
         }
 
-        return switch (stdio) {
-            .inherit => Readable{ .inherit = {} },
-            .ignore, .ipc, .path => Readable{ .ignore = {} },
-            .fd => |fd| if (Environment.isPosix) Readable{ .fd = result.? } else Readable{ .fd = fd },
-            .memfd => if (Environment.isPosix) Readable{ .memfd = stdio.memfd } else Readable{ .ignore = {} },
-            .dup2 => |dup2| if (Environment.isPosix) Output.panic("TODO: implement dup2 support in Stdio readable", .{}) else Readable{ .fd = dup2.out.toFd() },
-            .pipe => Readable{ .pipe = PipeReader.create(event_loop, process, result, max_size) },
-            .array_buffer, .blob => Output.panic("TODO: implement ArrayBuffer & Blob support in Stdio readable", .{}),
-            .capture => Output.panic("TODO: implement capture support in Stdio readable", .{}),
-            .readable_stream => Readable{ .ignore = {} }, // ReadableStream is handled separately
-        };
-    }
-
-    pub fn onClose(this: *Readable, _: ?bun.sys.Error) void {
-        this.* = .closed;
-    }
-
-    pub fn onReady(_: *Readable, _: ?jsc.WebCore.Blob.SizeType, _: ?jsc.WebCore.Blob.SizeType) void {}
-
-    pub fn onStart(_: *Readable) void {}
-
-    pub fn close(this: *Readable) void {
-        switch (this.*) {
-            .memfd => |fd| {
-                this.* = .{ .closed = {} };
-                fd.close();
-            },
-            .fd => {
-                this.* = .{ .closed = {} };
-            },
-            .pipe => {
-                this.pipe.close();
-            },
-            else => {},
+        pub fn unref(this: *Readable) void {
+            switch (this.*) {
+                .pipe => {
+                    this.pipe.updateRef(false);
+                },
+                else => {},
+            }
         }
-    }
 
-    pub fn finalize(this: *Readable) void {
-        switch (this.*) {
-            .memfd => |fd| {
-                this.* = .{ .closed = {} };
-                fd.close();
-            },
-            .fd => {
-                this.* = .{ .closed = {} };
-            },
-            .pipe => |pipe| {
-                defer pipe.detach();
-                this.* = .{ .closed = {} };
-            },
-            .buffer => |*buf| {
-                buf.deinit(bun.default_allocator);
-            },
-            else => {},
-        }
-    }
+        pub fn init(stdio: *Stdio, event_loop: Integration.LoopHandle, process: Integration.ProcessHandle, result: *StdioResult, _: std.mem.Allocator, max_size: ?*MaxBuf, _: bool) bun.OOM!Readable {
+            Integration.assertStdioResult(result.*);
 
-    pub fn toJS(this: *Readable, globalThis: *jsc.JSGlobalObject, exited: bool) bun.JSError!JSValue {
-        _ = exited; // autofix
-        switch (this.*) {
-            // should only be reachable when the entire output is buffered.
-            .memfd => return this.toBufferedValue(globalThis),
-
-            .fd => |fd| {
-                return fd.toJS(globalThis);
-            },
-            .pipe => |pipe| {
-                defer pipe.detach();
-                this.* = .{ .closed = {} };
-                return pipe.toJS(globalThis);
-            },
-            .buffer => |*buffer| {
-                defer this.* = .{ .closed = {} };
-
-                if (buffer.length() == 0) {
-                    return jsc.WebCore.ReadableStream.empty(globalThis);
+            if (comptime Environment.isPosix) {
+                if (stdio.* == .pipe) {
+                    _ = bun.sys.setNonblocking(result.owned_fd);
                 }
+            }
 
-                const own = try buffer.takeSlice(bun.default_allocator);
-                return jsc.WebCore.ReadableStream.fromOwnedSlice(globalThis, own, 0);
-            },
-            else => {
-                return .js_undefined;
-            },
+            return switch (stdio.*) {
+                .inherit => Readable{ .inherit = {} },
+                .ignore, .ipc => Readable{ .ignore = {} },
+                .fd => |fd| Readable{ .fd = fd },
+                .memfd => if (Environment.isPosix) memfd: {
+                    const fd = stdio.memfd;
+                    stdio.* = .ignore;
+                    _ = result.take();
+                    break :memfd Readable{ .memfd = fd };
+                } else Readable{ .ignore = {} },
+                .dup2 => |dup2| if (Environment.isPosix) Output.panic("TODO: implement dup2 support in Stdio readable", .{}) else Readable{ .fd = dup2.out.toFd() },
+                .pipe => Readable{ .pipe = try PipeReader.create(event_loop, process, result, max_size) },
+                .blob => |*blob| file: {
+                    bun.assert(blob.needsToReadFile());
+                    const store = blob.store() orelse unreachable;
+                    break :file switch (store.data.file.pathlike) {
+                        .fd => |fd| .{ .fd = fd },
+                        .path => .ignore,
+                    };
+                },
+                .retained_bytes => unreachable,
+                .capture => Output.panic("TODO: implement capture support in Stdio readable", .{}),
+                .readable_stream => Readable{ .ignore = {} }, // ReadableStream is handled separately
+            };
         }
-    }
 
-    pub fn toBufferedValue(this: *Readable, globalThis: *jsc.JSGlobalObject) bun.JSError!JSValue {
-        switch (this.*) {
-            .fd => |fd| {
-                return fd.toJS(globalThis);
-            },
-            .memfd => |fd| {
-                if (comptime !Environment.isPosix) {
-                    Output.panic("memfd is only supported on Linux", .{});
+        pub fn onClose(this: *Readable, _: ?bun.sys.Error) void {
+            this.* = .closed;
+        }
+
+        pub fn onReady(_: *Readable, _: ?usize, _: ?usize) void {}
+
+        pub fn onStart(_: *Readable) void {}
+
+        pub fn close(this: *Readable) void {
+            switch (this.*) {
+                .memfd => |fd| {
+                    this.* = .{ .closed = {} };
+                    _ = fd.closeAllowingStandardIo(null);
+                },
+                .fd => {
+                    this.* = .{ .closed = {} };
+                },
+                .pipe => {
+                    this.pipe.close();
+                },
+                else => {},
+            }
+        }
+
+        pub fn finalize(this: *Readable) void {
+            switch (this.*) {
+                .memfd => |fd| {
+                    this.* = .{ .closed = {} };
+                    _ = fd.closeAllowingStandardIo(null);
+                },
+                .fd => {
+                    this.* = .{ .closed = {} };
+                },
+                .pipe => |pipe| {
+                    defer pipe.detach();
+                    this.* = .{ .closed = {} };
+                },
+                .buffer => |*buf| {
+                    buf.deinit(bun.default_allocator);
+                },
+                else => {},
+            }
+        }
+
+        pub fn toBindingResult(this: *Readable, context: anytype) bun.bindgen.CallError(@TypeOf(context))!bun.bindgen.Return(@TypeOf(context)) {
+            return switch (this.*) {
+                .fd => |fd| .{ .fd = try this.transferFD(context, fd) },
+                .memfd => switch (try this.takeBufferedBytes()) {
+                    .bytes => |bytes| .{ .node_buffer = bytes },
+                    .unavailable => .{ .undefined = true },
+                    .err => |err| context.fail(.system, try bindgen.SystemError.fromSysError(err)),
+                },
+                .pipe => |pipe| stream: {
+                    this.* = .{ .closed = {} };
+                    break :stream .{ .stream = try pipe.toReadableStreamResult(context) };
+                },
+                .buffer => |*buffer| stream: {
+                    defer this.* = .{ .closed = {} };
+                    if (buffer.length() == 0) {
+                        break :stream .{ .stream = try Integration.emptyStream(context, false) };
+                    }
+                    const owned = try buffer.takeSlice(bun.default_allocator);
+                    break :stream .{ .stream = try Integration.streamFromOwnedSlice(context, owned) };
+                },
+                .inherit, .ignore, .closed => .{ .undefined = true },
+            };
+        }
+
+        fn transferFD(this: *Readable, context: anytype, fd: bun.FD) bun.bindgen.CallError(@TypeOf(context))!i32 {
+            return switch (Integration.fdToBindingInt32(fd)) {
+                .result => |owned| owned,
+                .err => |err| {
+                    this.* = .{ .closed = {} };
+                    return context.fail(.system, try bindgen.SystemError.fromSysError(err));
+                },
+            };
+        }
+
+        pub fn takeBufferedBytes(this: *Readable) bun.OOM!BufferedBytes {
+            return switch (this.*) {
+                .memfd => |fd| try this.takeMemfdBytes(fd),
+                .pipe => |pipe| blk: {
+                    const bytes = pipe.takeBuffer();
+                    pipe.detach();
+                    this.* = .{ .closed = {} };
+                    break :blk if (bytes) |owned|
+                        .{ .bytes = try copyAndFreeDefaultBytes(owned) }
+                    else
+                        .unavailable;
+                },
+                .buffer => |*buf| blk: {
+                    const owned = try buf.takeSlice(bun.default_allocator);
+                    this.* = .{ .closed = {} };
+                    break :blk .{ .bytes = try copyAndFreeDefaultBytes(owned) };
+                },
+                .fd => {
+                    this.* = .{ .closed = {} };
+                    return .unavailable;
+                },
+                .inherit, .ignore, .closed => .unavailable,
+            };
+        }
+
+        fn takeMemfdBytes(this: *Readable, fd: bun.FD) bun.OOM!BufferedBytes {
+            if (comptime Environment.isLinux) return this.takeMemfdBytesLinux(fd);
+            unreachable;
+        }
+
+        fn takeMemfdBytesLinux(this: *Readable, fd: bun.FD) bun.OOM!BufferedBytes {
+            this.* = .{ .closed = {} };
+            defer _ = fd.closeAllowingStandardIo(null);
+
+            const stat = switch (bun.sys.fstat(fd)) {
+                .result => |value| value,
+                .err => |err| return .{ .err = err },
+            };
+            const size = std.math.cast(usize, stat.size) orelse
+                return .{ .err = bun.sys.Error.fromCode(.OVERFLOW, .fstat) };
+            if (size == 0) return .{ .bytes = bindgen.OwnedBytes.empty() };
+
+            if (size < mmap_threshold) {
+                const bytes = try bun.default_allocator.alloc(u8, size);
+                var offset: usize = 0;
+                while (offset < bytes.len) {
+                    switch (bun.sys.pread(fd, bytes[offset..], @intCast(offset))) {
+                        .result => |amount| {
+                            if (amount == 0) {
+                                @memset(bytes[offset..], 0);
+                                break;
+                            }
+                            offset += amount;
+                        },
+                        .err => |err| {
+                            bun.default_allocator.free(bytes);
+                            return .{ .err = err };
+                        },
+                    }
                 }
-                this.* = .{ .closed = {} };
-                return jsc.ArrayBuffer.toJSBufferFromMemfd(fd, globalThis);
-            },
-            .pipe => |pipe| {
-                defer pipe.detach();
-                this.* = .{ .closed = {} };
-                return pipe.toBuffer(globalThis);
-            },
-            .buffer => |*buf| {
-                defer this.* = .{ .closed = {} };
-                const own = buf.takeSlice(bun.default_allocator) catch {
-                    return globalThis.throwOutOfMemory();
-                };
+                return .{ .bytes = try copyAndFreeDefaultBytes(bytes) };
+            }
 
-                return jsc.MarkedArrayBuffer.fromBytes(own, bun.default_allocator, .Uint8Array).toNodeBuffer(globalThis);
-            },
-            else => {
-                return .js_undefined;
-            },
+            const mapping = switch (bun.sys.mmap(
+                null,
+                size,
+                .{ .READ = true, .WRITE = true },
+                .{ .TYPE = .SHARED },
+                fd,
+                0,
+            )) {
+                .result => |value| value,
+                .err => |err| return .{ .err = err },
+            };
+            return .{ .bytes = bindgen.OwnedBytes.fromMappedSlice(mapping) catch |err| {
+                _ = bun.sys.munmap(mapping);
+                return err;
+            } };
         }
-    }
-};
+    };
+}
 
 const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
-const default_allocator = bun.default_allocator;
 const CowString = bun.ptr.CowString;
-const Stdio = bun.spawn.Stdio;
+const bindgen = bun.bindgen;
+const BlobSize = @import("../../../webcore/BlobSize.zig").SizeType;
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+const mmap_threshold = 4 * 1024 * 1024;
 
-const Subprocess = jsc.API.Subprocess;
-const MaxBuf = Subprocess.MaxBuf;
-const PipeReader = Subprocess.PipeReader;
-const StdioResult = Subprocess.StdioResult;
+const MaxBuf = bun.io.MaxBuf;
+const StdioResult = bun.spawn.process.SpawnProcessResult.StdioResult;

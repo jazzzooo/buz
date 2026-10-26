@@ -29,7 +29,6 @@ class CryptoKeyOKP;
 
 class CryptoAlgorithmX25519 final : public CryptoAlgorithm {
 public:
-    static constexpr ASCIILiteral s_name = "X25519"_s;
     static constexpr CryptoAlgorithmIdentifier s_identifier = CryptoAlgorithmIdentifier::X25519;
     static Ref<CryptoAlgorithm> create();
 
@@ -37,12 +36,12 @@ private:
     CryptoAlgorithmX25519() = default;
     CryptoAlgorithmIdentifier identifier() const final;
 
-    void generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap usages, KeyOrKeyPairCallback&&, ExceptionCallback&&, ScriptExecutionContext&);
-    void deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, size_t length, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&) final;
-    void importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyCallback&&, ExceptionCallback&&) final;
-    void exportKey(CryptoKeyFormat, Ref<CryptoKey>&&, KeyDataCallback&&, ExceptionCallback&&) final;
+    ExceptionOr<KeyOrKeyPair> generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap usages);
+    ExceptionOr<Vector<uint8_t>> deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, size_t length) final;
+    ExceptionOr<Ref<CryptoKey>> importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap) final;
+    ExceptionOr<KeyData> exportKey(CryptoKeyFormat, Ref<CryptoKey>&&) final;
 
-    static std::optional<Vector<uint8_t>> platformDeriveBits(const CryptoKeyOKP&, const CryptoKeyOKP&);
+    static ExceptionOr<Vector<uint8_t>> platformDeriveBits(const CryptoKeyOKP&, const CryptoKeyOKP&);
 };
 
 } // namespace WebCore

@@ -1,108 +1,84 @@
 #include "root.h"
 
-/*
- * Wrapper functions for Text Codecs to allow access from Zig
- */
-
 #include "TextCodec.h"
-#include "TextCodecSingleByte.h"
 #include "TextCodecCJK.h"
-// TextCodecICU removed - ICU data not available
-#include "TextCodecReplacement.h"
+#include "TextCodecSingleByte.h"
 #include "TextCodecUserDefined.h"
-#include "TextEncodingRegistry.h"
-#include "TextEncoding.h"
-#include "headers-handwritten.h"
+#include "SchemaBindings.h"
 #include <wtf/text/StringView.h>
 #include <wtf/text/WTFString.h>
 #include <memory>
 #include <span>
-#include <cstring>
 
 using namespace PAL;
 
-extern "C" {
-
-// Create codec for a specific encoding
-void* Bun__createTextCodec(const char* encodingName, size_t encodingNameLen)
+Bun::Bindgen::Engine::BunBindgenEngine_text_codecs_textCodecCreate_Return Bun::Bindgen::Engine::bunBindgenEngine_text_codecs_textCodecCreate(
+    const BunBindgenEngine_text_codecs_textCodecCreate_Arguments& args)
 {
-    std::span<const char> span(encodingName, encodingNameLen);
-    StringView encodingView(span);
-    TextEncoding encoding(encodingView);
-
-    if (!encoding.isValid())
-        return nullptr;
-
-    auto codec = newTextCodec(encoding);
+    auto codec = [&]() -> std::unique_ptr<TextCodec> {
+        using Encoding = decltype(args.encoding);
+        switch (args.encoding) {
+        case Encoding::ibm866:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::IBM866);
+        case Encoding::iso_8859_3:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::ISO_8859_3);
+        case Encoding::iso_8859_6:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::ISO_8859_6);
+        case Encoding::iso_8859_7:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::ISO_8859_7);
+        case Encoding::iso_8859_8:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::ISO_8859_8);
+        case Encoding::koi8_u:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::KOI8U);
+        case Encoding::windows_874:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::Windows_874);
+        case Encoding::windows_1253:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::Windows_1253);
+        case Encoding::windows_1255:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::Windows_1255);
+        case Encoding::windows_1257:
+            return TextCodec::create<TextCodecSingleByte>(TextCodecSingleByte::Encoding::Windows_1257);
+        case Encoding::big5:
+            return TextCodec::create<TextCodecCJK>(TextCodecCJK::Encoding::Big5);
+        case Encoding::euc_jp:
+            return TextCodec::create<TextCodecCJK>(TextCodecCJK::Encoding::EUC_JP);
+        case Encoding::iso_2022_jp:
+            return TextCodec::create<TextCodecCJK>(TextCodecCJK::Encoding::ISO2022JP);
+        case Encoding::shift_jis:
+            return TextCodec::create<TextCodecCJK>(TextCodecCJK::Encoding::Shift_JIS);
+        case Encoding::euc_kr:
+            return TextCodec::create<TextCodecCJK>(TextCodecCJK::Encoding::EUC_KR);
+        case Encoding::gbk:
+            return TextCodec::create<TextCodecCJK>(TextCodecCJK::Encoding::GBK);
+        case Encoding::gb18030:
+            return TextCodec::create<TextCodecCJK>(TextCodecCJK::Encoding::GB18030);
+        case Encoding::user_defined:
+            return TextCodec::create<TextCodecUserDefined>();
+        }
+        RELEASE_ASSERT_NOT_REACHED();
+    }();
     if (!codec)
-        return nullptr;
-
+        return Bun::Bindgen::nativeAllocationFailure();
     return codec.release();
 }
 
-// Decode bytes using a codec and return as BunString
-BunString Bun__decodeWithTextCodec(void* codecPtr, const uint8_t* data, size_t length, bool flush, bool stopOnError, bool* outSawError)
+void Bun::Bindgen::Engine::releaseTextCodec(PAL::TextCodec* codec)
 {
-    if (!codecPtr || !outSawError) {
-        if (outSawError) *outSawError = false;
-        return { BunStringTag::Empty, {} };
-    }
+    delete codec;
+}
 
-    TextCodec* codec = static_cast<TextCodec*>(codecPtr);
+void Bun::Bindgen::Engine::bunBindgenEngine_text_codecs_textCodecReset(
+    const BunBindgenEngine_text_codecs_textCodecReset_Arguments& args)
+{
+    args.codec->reset();
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_text_codecs_textCodecDecode_Return Bun::Bindgen::Engine::bunBindgenEngine_text_codecs_textCodecDecode(
+    const BunBindgenEngine_text_codecs_textCodecDecode_Arguments& args)
+{
     bool sawError = false;
-
-    std::span<const uint8_t> span(data, length);
-    String result = codec->decode(span, flush, stopOnError, sawError);
-
-    *outSawError = sawError;
-
-    // Convert WTF::String to BunString
-    // This properly manages the memory using WTF's reference counting
-    return Bun::toStringRef(result);
+    String result = args.codec->decode(args.data, args.flush, args.stopOnError, sawError);
+    if (result.isNull())
+        return Bun::Bindgen::nativeAllocationFailure();
+    return BunBindgenEngine_text_codecs_textCodecDecode_Return::value_type { .result = WTF::move(result), .sawError = sawError };
 }
-
-// Delete a codec
-void Bun__deleteTextCodec(void* codecPtr)
-{
-    if (codecPtr) {
-        TextCodec* codec = static_cast<TextCodec*>(codecPtr);
-        delete codec;
-    }
-}
-
-// Strip BOM from codec
-void Bun__stripBOMFromTextCodec(void* codecPtr)
-{
-    if (codecPtr) {
-        TextCodec* codec = static_cast<TextCodec*>(codecPtr);
-        codec->stripByteOrderMark();
-    }
-}
-
-// Check if an encoding is supported
-bool Bun__isEncodingSupported(const char* encodingName, size_t encodingNameLen)
-{
-    std::span<const char> span(encodingName, encodingNameLen);
-    StringView encodingView(span);
-    TextEncoding encoding(encodingView);
-    return encoding.isValid();
-}
-
-// Get canonical encoding name
-const char* Bun__getCanonicalEncodingName(const char* encodingName, size_t encodingNameLen, size_t* outLen)
-{
-    std::span<const char> span(encodingName, encodingNameLen);
-    StringView encodingView(span);
-    TextEncoding encoding(encodingView);
-
-    if (!encoding.isValid()) {
-        *outLen = 0;
-        return nullptr;
-    }
-
-    const char* name = encoding.name();
-    *outLen = strlen(name);
-    return name;
-}
-
-} // extern "C"

@@ -10,26 +10,12 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
-    pub fn stdout(this: EventLoopHandle) *jsc.WebCore.Blob.Store {
-        return switch (this) {
-            .js => this.js.virtual_machine.rareData().stdout(),
-            .mini => this.mini.stdout(),
-        };
-    }
-
     pub fn bunVM(this: EventLoopHandle) ?*VirtualMachine {
         if (this == .js) {
             return this.js.virtual_machine;
         }
 
         return null;
-    }
-
-    pub fn stderr(this: EventLoopHandle) *jsc.WebCore.Blob.Store {
-        return switch (this) {
-            .js => this.js.virtual_machine.rareData().stderr(),
-            .mini => this.mini.stderr(),
-        };
     }
 
     pub fn cast(this: EventLoopHandle, comptime tag: EventLoopKind) tag.Type() {
@@ -56,13 +42,43 @@ pub const EventLoopHandle = union(EventLoopKind) {
             *VirtualMachine => .{ .js = context.eventLoop() },
             *jsc.EventLoop => .{ .js = context },
             *jsc.MiniEventLoop => .{ .mini = context },
-            *AnyEventLoop => switch (context.*) {
-                .js => .{ .js = context.js },
-                .mini => .{ .mini = &context.mini },
-            },
+            *RuntimeLoop => fromParentEventLoop(context.parentEventLoop()),
             EventLoopHandle => context,
             else => @compileError("Invalid context type for EventLoopHandle.init " ++ @typeName(Context)),
         };
+    }
+
+    pub fn parentEventLoop(this: EventLoopHandle) ParentEventLoop {
+        return switch (this) {
+            .js => |event_loop| .{
+                .context = .init(event_loop),
+                .kind = .js,
+                .vtable = &js_parent_event_loop_vtable,
+            },
+            .mini => |mini_loop| mini_loop.parentEventLoop(),
+        };
+    }
+
+    pub fn runtimeLoopHandle(this: EventLoopHandle) RuntimeLoopHandle {
+        return switch (this) {
+            .js => |event_loop| .{
+                .context = .init(event_loop),
+                .kind = .js,
+                .vtable = &js_runtime_loop_handle_vtable,
+            },
+            .mini => |mini_loop| mini_loop.runtimeLoopHandle(),
+        };
+    }
+
+    pub fn fromParentEventLoop(parent: ParentEventLoop) EventLoopHandle {
+        return switch (parent.kind) {
+            .js => .{ .js = parent.context.get(*jsc.EventLoop) },
+            .mini => .{ .mini = parent.context.get(*MiniEventLoop) },
+        };
+    }
+
+    pub fn attach(this: EventLoopHandle, platform_loop: *bun.uws.Loop) void {
+        platform_loop.internal_loop_data.setParent(this.parentEventLoop());
     }
 
     pub fn filePolls(this: EventLoopHandle) *bun.Async.FilePoll.Store {
@@ -157,6 +173,72 @@ pub const EventLoopHandle = union(EventLoopKind) {
     }
 };
 
+const js_parent_event_loop_vtable = ParentEventLoop.VTable{
+    .native_completion_registry = struct {
+        fn call(context: ParentEventLoop.Context) bun.OOM!?*jsc.NativeCompletionRegistry {
+            const loop = context.get(*jsc.EventLoop);
+            const vm = loop.virtual_machine;
+            if (vm.isShuttingDown()) return null;
+            const rare = try vm.tryRareData();
+            return try rare.nativeCompletionRegistryForLoop(vm, loop);
+        }
+    }.call,
+    .io = struct {
+        fn call(context: ParentEventLoop.Context) std.Io {
+            const loop = context.get(*jsc.EventLoop);
+            return loop.virtual_machine.io;
+        }
+    }.call,
+    .background_tasks = struct {
+        fn call(context: ParentEventLoop.Context) *bun.BackgroundTaskGroup {
+            const loop = context.get(*jsc.EventLoop);
+            return &loop.virtual_machine.background_tasks;
+        }
+    }.call,
+    .runtime_loop_handle = struct {
+        fn call(context: ParentEventLoop.Context) RuntimeLoopHandle {
+            return (EventLoopHandle{ .js = context.get(*jsc.EventLoop) }).runtimeLoopHandle();
+        }
+    }.call,
+    .platform_event_loop = struct {
+        fn call(context: ParentEventLoop.Context) *jsc.PlatformEventLoop {
+            const loop = context.get(*jsc.EventLoop);
+            return loop.virtual_machine.event_loop_handle.?;
+        }
+    }.call,
+};
+
+const js_runtime_loop_handle_vtable = RuntimeLoopHandle.VTable{
+    .io = struct {
+        fn call(context: RuntimeLoopHandle.Context) std.Io {
+            return context.get(*jsc.EventLoop).virtual_machine.io;
+        }
+    }.call,
+    .file_polls = struct {
+        fn call(context: RuntimeLoopHandle.Context) bun.OOM!*Async.FilePoll.Store {
+            const loop = context.get(*jsc.EventLoop);
+            const rare = try loop.virtual_machine.tryRareData();
+            return rare.tryFilePolls(loop.virtual_machine);
+        }
+    }.call,
+    .platform_loop = struct {
+        fn call(context: RuntimeLoopHandle.Context) *ParentEventLoop.PlatformEventLoop {
+            const loop = context.get(*jsc.EventLoop);
+            return (EventLoopHandle{ .js = loop }).parentEventLoop().platformEventLoop();
+        }
+    }.call,
+    .pipe_read_buffer = struct {
+        fn call(context: RuntimeLoopHandle.Context) []u8 {
+            return context.get(*jsc.EventLoop).pipeReadBuffer();
+        }
+    }.call,
+    .parent_event_loop = struct {
+        fn call(context: RuntimeLoopHandle.Context) ParentEventLoop {
+            return (EventLoopHandle{ .js = context.get(*jsc.EventLoop) }).parentEventLoop();
+        }
+    }.call,
+};
+
 pub const EventLoopTask = union(EventLoopKind) {
     js: jsc.ConcurrentTask,
     mini: jsc.AnyTaskWithExtraContext,
@@ -188,7 +270,9 @@ const bun = @import("bun");
 const Async = bun.Async;
 
 const jsc = bun.jsc;
-const AnyEventLoop = jsc.AnyEventLoop;
 const EventLoopKind = jsc.EventLoopKind;
 const MiniEventLoop = jsc.MiniEventLoop;
 const VirtualMachine = jsc.VirtualMachine;
+const ParentEventLoop = @import("../event_loop/ParentEventLoop.zig");
+const RuntimeLoop = @import("../event_loop/RuntimeLoop.zig").RuntimeLoop;
+const RuntimeLoopHandle = @import("../event_loop/RuntimeLoopHandle.zig");

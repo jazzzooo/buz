@@ -78,7 +78,7 @@ private:
     Token tryToConsumeRegexOrWildcardToken(const Token&);
     Token tryToConsumeModifierToken();
 
-    String consumeText();
+    ExceptionOr<String> consumeText();
     ExceptionOr<Token> consumeRequiredToken(TokenType);
 
     ExceptionOr<void> maybeAddPartFromPendingFixedValue();
@@ -92,18 +92,16 @@ private:
     Vector<Part> m_partList;
     EncodingCallbackType m_callbackType;
     String m_segmentWildcardRegexp;
-    StringBuilder m_pendingFixedValue;
+    StringBuilder m_pendingFixedValue { OverflowPolicy::RecordOverflow };
     size_t m_index { 0 };
     int m_nextNumericName { 0 };
 };
 
-// FIXME: Consider moving functions to somewhere generic, perhaps refactor Part to its own class.
-String generateSegmentWildcardRegexp(const URLPatternStringOptions&);
-String escapeRegexString(StringView);
+ExceptionOr<String> generateSegmentWildcardRegexp(const URLPatternStringOptions&);
 ASCIILiteral convertModifierToString(Modifier);
-std::pair<String, Vector<String>> generateRegexAndNameList(const Vector<Part>& partList, const URLPatternStringOptions&);
-String generatePatternString(const Vector<Part>& partList, const URLPatternStringOptions&);
-String escapePatternString(StringView input);
+ExceptionOr<std::pair<String, Vector<String>>> generateRegexAndNameList(const Vector<Part>& partList, const URLPatternStringOptions&);
+ExceptionOr<String> generatePatternString(const Vector<Part>& partList, const URLPatternStringOptions&);
+ExceptionOr<String> escapePatternString(StringView input);
 bool isValidNameCodepoint(char32_t codepoint, URLPatternUtilities::IsFirst);
 
 } // namespace URLPatternUtilities

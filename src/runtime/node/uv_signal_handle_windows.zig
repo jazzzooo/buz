@@ -1,21 +1,18 @@
-//! Windows-only `uv_signal_t` lifecycle exported for `BunProcess.cpp`.
-//! Lives under `runtime/` because `init` takes a `*JSGlobalObject` to reach
-//! the VM's libuv loop; the rest of `sys/windows/` is JSC-free.
+//! Windows-only `uv_signal_t` lifecycle used by process signal listeners.
 
-fn Bun__UVSignalHandle__init(
-    global: *bun.jsc.JSGlobalObject,
-    signal_num: i32,
-    callback: *const fn (sig: *libuv.uv_signal_t, num: c_int) callconv(.c) void,
-) callconv(.c) ?*libuv.uv_signal_t {
+fn bindUVSignalHandleInit(
+    args: bun.bindgen.Args(UVSignalHandleInitSchema),
+) bun.bindgen.Return(UVSignalHandleInitSchema) {
+    const callback: *const fn (sig: *libuv.uv_signal_t, num: c_int) callconv(.c) void = @ptrCast(args.callback);
     const signal = bun.new(libuv.uv_signal_t, undefined);
 
-    var rc = libuv.uv_signal_init(global.bunVM().uvLoop(), signal);
+    var rc = libuv.uv_signal_init(args.loop, signal);
     if (rc.errno()) |_| {
         bun.destroy(signal);
         return null;
     }
 
-    rc = libuv.uv_signal_start(signal, callback, signal_num);
+    rc = libuv.uv_signal_start(signal, callback, args.signal);
     if (rc.errno()) |_| {
         libuv.uv_close(@ptrCast(signal), &freeWithDefaultAllocator);
         return null;
@@ -23,22 +20,31 @@ fn Bun__UVSignalHandle__init(
 
     libuv.uv_unref(@ptrCast(signal));
 
-    return signal;
+    return @ptrCast(signal);
 }
 
 fn freeWithDefaultAllocator(signal: *anyopaque) callconv(.c) void {
     bun.destroy(@as(*libuv.uv_signal_t, @ptrCast(@alignCast(signal))));
 }
 
-fn Bun__UVSignalHandle__close(signal: *libuv.uv_signal_t) callconv(.c) void {
+fn bindUVSignalHandleClose(
+    args: bun.bindgen.Args(UVSignalHandleCloseSchema),
+) bun.bindgen.Return(UVSignalHandleCloseSchema) {
+    const signal: *libuv.uv_signal_t = @ptrCast(@alignCast(args.handle));
     _ = libuv.uv_signal_stop(signal);
     libuv.uv_close(@ptrCast(signal), &freeWithDefaultAllocator);
 }
 
+const UVSignalHandleBindings = bun.bindgen.Module("uv_signal_handles");
+const UVSignalHandleInitSchema = UVSignalHandleBindings.nativeExport("uvSignalHandleInit");
+const UVSignalHandleCloseSchema = UVSignalHandleBindings.nativeExport("uvSignalHandleClose");
+const UVSignalHandleInitBinding = bun.bindgen.Fn(UVSignalHandleInitSchema, bindUVSignalHandleInit);
+const UVSignalHandleCloseBinding = bun.bindgen.Fn(UVSignalHandleCloseSchema, bindUVSignalHandleClose);
+
 comptime {
     if (bun.Environment.isWindows) {
-        @export(&Bun__UVSignalHandle__init, .{ .name = "Bun__UVSignalHandle__init" });
-        @export(&Bun__UVSignalHandle__close, .{ .name = "Bun__UVSignalHandle__close" });
+        _ = UVSignalHandleInitBinding;
+        _ = UVSignalHandleCloseBinding;
     }
 }
 

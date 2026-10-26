@@ -55,13 +55,25 @@ pub fn TagTypeEnumWithTypeMap(comptime Types: anytype) struct {
     tag_type: type,
     ty_map: TypeMap(Types),
 } {
+    @setEvalBranchQuota(100_000);
     var type_map: TypeMap(Types) = undefined;
     var field_names: [Types.len][]const u8 = undefined;
     var field_values: [Types.len]TaggedPointer.Tag = undefined;
 
     inline for (Types, 0..) |field, i| {
         const name = comptime @typeName(field);
+        inline for (0..i) |previous_index| {
+            const previous = Types[previous_index];
+            if (field == previous) @compileError("duplicate tagged pointer type: " ++ name);
+        }
         field_names[i] = name;
+        inline for (0..i) |previous_index| {
+            const previous = Types[previous_index];
+            if (std.mem.eql(u8, @typeName(previous), name)) {
+                field_names[i] = std.fmt.comptimePrint("{s} ({d})", .{ name, i });
+                break;
+            }
+        }
         field_values[i] = 1024 - i;
         type_map[i] = .{ .value = 1024 - i, .ty = field, .name = name };
     }
@@ -104,15 +116,12 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         }
 
         pub fn typeName(this: This) ?[]const u8 {
-            return @tagName(this.tag());
+            return typeNameFromTag(this.repr.data);
         }
 
         const This = @This();
         pub fn assert_type(comptime Type: type) void {
-            const name = comptime @typeName(Type);
-            if (!comptime @hasField(Tag, name)) {
-                @compileError("TaggedPointerUnion does not have " ++ name ++ ".");
-            }
+            _ = comptime case(Type);
         }
         pub inline fn get(this: This, comptime Type: type) ?*Type {
             comptime assert_type(Type);
@@ -125,7 +134,11 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         }
 
         pub fn case(comptime Type: type) Tag {
-            return @field(Tag, bun.meta.typeBaseName(@typeName(Type)));
+            @setEvalBranchQuota(10_000);
+            inline for (type_map) |entry| {
+                if (entry.ty == Type) return @fromBackingInt(entry.value);
+            }
+            @compileError("TaggedPointerUnion does not have " ++ @typeName(Type) ++ ".");
         }
 
         /// unsafely cast a tagged pointer to a specific type, without checking that it's really that type
@@ -144,7 +157,7 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
 
         pub inline fn is(this: This, comptime Type: type) bool {
             comptime assert_type(Type);
-            return this.repr.data == comptime @backingInt(@field(Tag, @typeName(Type)));
+            return this.repr.data == comptime @backingInt(case(Type));
         }
 
         pub fn set(this: *@This(), _ptr: anytype) void {
@@ -152,14 +165,7 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         }
 
         pub inline fn isValid(this: This) bool {
-            return switch (this.repr.data) {
-                @backingInt(
-                    @field(Tag, @typeName(Types[Types.len - 1])),
-                )...@backingInt(
-                    @field(Tag, @typeName(Types[0])),
-                ) => true,
-                else => false,
-            };
+            return this.repr.data >= type_map[Types.len - 1].value and this.repr.data <= type_map[0].value;
         }
 
         pub inline fn from(_ptr: ?*anyopaque) This {
@@ -181,10 +187,7 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
         pub inline fn initWithType(comptime Type: type, _ptr: anytype) @This() {
             const tyinfo = @typeInfo(@TypeOf(_ptr));
             if (tyinfo != .pointer) @compileError("Only pass pointers to TaggedPointerUnion.init(), you gave us a: " ++ @typeName(@TypeOf(_ptr)));
-            const name = comptime @typeName(Type);
-
-            // there will be a compiler error if the passed in type doesn't exist in the enum
-            return This{ .repr = TaggedPointer.init(_ptr, @backingInt(@field(Tag, name))) };
+            return This{ .repr = TaggedPointer.init(_ptr, @backingInt(case(Type))) };
         }
 
         pub inline fn isNull(this: This) bool {
@@ -214,5 +217,29 @@ pub fn TaggedPointerUnion(comptime Types: anytype) type {
     };
 }
 
-const bun = @import("bun");
+test "tagged pointers distinguish generic types with the same display name" {
+    const Factory = struct {
+        fn make(comptime identity: u8) type {
+            const Item = struct {
+                value: u8 = identity,
+            };
+            return Item;
+        }
+    };
+    const First = Factory.make(1);
+    const Second = Factory.make(2);
+    const Pointer = TaggedPointerUnion(.{ First, Second });
+    var first: First = .{};
+    var second: Second = .{};
+    const first_pointer = Pointer.init(&first);
+    const second_pointer = Pointer.init(&second);
+    try std.testing.expect(first_pointer.tag() != second_pointer.tag());
+    try std.testing.expect(first_pointer.get(First).? == &first);
+    try std.testing.expect(second_pointer.get(Second).? == &second);
+    try std.testing.expect(first_pointer.get(Second) == null);
+    try std.testing.expect(second_pointer.get(First) == null);
+    try std.testing.expect(first_pointer.isValid() and second_pointer.isValid());
+    try std.testing.expect(!Pointer.Null.isValid());
+}
+
 const std = @import("std");

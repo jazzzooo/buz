@@ -118,93 +118,25 @@ else
 
 // const ShellSubprocessMini = bun.shell.ShellSubprocessMini;
 pub const ProcessExitHandler = struct {
-    ptr: TaggedPointer = TaggedPointer.Null,
+    const Context = bun.bindgen.NativeCallbackContext(.vm);
 
-    const SyncProcess = if (Environment.isWindows) sync.SyncWindowsProcess else SyncProcessPosix;
-    const SyncProcessPosix = opaque {};
+    context: ?Context = null,
+    callback: ?*const fn (Context, *Process, Status, *const Rusage) void = null,
 
-    pub const TaggedPointer = bun.TaggedPointerUnion(
-        .{
-            Subprocess,
-            LifecycleScriptSubprocess,
-            ShellSubprocess,
-            ProcessHandle,
-            MultiRunProcessHandle,
-            TestWorkerHandle,
-            SecurityScanSubprocess,
-            WebViewHostProcess,
-            ChromeProcess,
-            SyncProcess,
-            CronRegisterJob,
-            CronRemoveJob,
-        },
-    );
-
-    pub fn init(this: *ProcessExitHandler, ptr: anytype) void {
-        this.ptr = TaggedPointer.init(ptr);
+    pub fn init(this: *ProcessExitHandler, handler: anytype) void {
+        const Handler = std.meta.Child(@TypeOf(handler));
+        this.context = .init(handler);
+        this.callback = struct {
+            fn call(raw_handler: Context, process: *Process, status: Status, rusage: *const Rusage) void {
+                const typed_handler = raw_handler.get(*Handler);
+                typed_handler.onProcessExit(process, status, rusage);
+            }
+        }.call;
     }
 
     pub fn call(this: *const ProcessExitHandler, process: *Process, status: Status, rusage: *const Rusage) void {
-        if (this.ptr.isNull()) {
-            return;
-        }
-
-        switch (this.ptr.tag()) {
-            @field(TaggedPointer.Tag, @typeName(Subprocess)) => {
-                const subprocess = this.ptr.as(Subprocess);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(LifecycleScriptSubprocess)) => {
-                const subprocess = this.ptr.as(LifecycleScriptSubprocess);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(ProcessHandle)) => {
-                const subprocess = this.ptr.as(ProcessHandle);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(MultiRunProcessHandle)) => {
-                const subprocess = this.ptr.as(MultiRunProcessHandle);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(TestWorkerHandle)) => {
-                const subprocess = this.ptr.as(TestWorkerHandle);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(ShellSubprocess)) => {
-                const subprocess = this.ptr.as(ShellSubprocess);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(SecurityScanSubprocess)) => {
-                const subprocess = this.ptr.as(SecurityScanSubprocess);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(WebViewHostProcess)) => {
-                const subprocess = this.ptr.as(WebViewHostProcess);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(ChromeProcess)) => {
-                const subprocess = this.ptr.as(ChromeProcess);
-                subprocess.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(CronRegisterJob)) => {
-                const cron_job = this.ptr.as(CronRegisterJob);
-                cron_job.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(CronRemoveJob)) => {
-                const cron_job = this.ptr.as(CronRemoveJob);
-                cron_job.onProcessExit(process, status, rusage);
-            },
-            @field(TaggedPointer.Tag, @typeName(SyncProcess)) => {
-                const subprocess = this.ptr.as(SyncProcess);
-                if (comptime Environment.isPosix) {
-                    @panic("This code should not reached");
-                }
-                subprocess.onProcessExit(status, rusage);
-            },
-            else => {
-                @panic("Internal Bun error: ProcessExitHandler has an invalid tag. Please file a bug report.");
-            },
-        }
+        const callback = this.callback orelse return;
+        callback(this.context.?, process, status, rusage);
     }
 };
 pub const PidFDType = if (Environment.isLinux) fd_t else u0;
@@ -220,8 +152,8 @@ pub const PidFDType = if (Environment.isLinux) fd_t else u0;
 /// `EPOLLONESHOT` is actively harmful here: the kernel disarms the fd the
 /// instant `epoll_wait` returns it — before user-space has dispatched it.
 /// If a poll callback then re-enters `us_loop_run_bun_tick` (e.g.
-/// `expect(p).resolves` → `waitForPromise` → `autoTick`, or any other
-/// `waitForPromise` path), the inner tick overwrites the shared
+/// `expect(p).resolves` → `waitForPromiseResult` → `autoTick`, or any other
+/// `waitForPromiseResult` path), the inner tick overwrites the shared
 /// `loop->ready_polls`/`num_ready_polls`/`current_ready_poll` and the outer
 /// dispatch silently skips its remaining events. A dropped one-shot pidfd
 /// event is unrecoverable: the fd is disarmed with no re-arm path, so the
@@ -242,7 +174,7 @@ pub const Process = struct {
     pub const deref = RefCount.deref;
 
     pid: pid_t = 0,
-    pidfd: PidFDType = 0,
+    pidfd: ?PidFDType = null,
     status: Status = Status{ .running = {} },
     poller: Poller = Poller{
         .detached = {},
@@ -250,7 +182,7 @@ pub const Process = struct {
     ref_count: RefCount,
     exit_handler: ProcessExitHandler = ProcessExitHandler{},
     sync: bool = false,
-    event_loop: jsc.EventLoopHandle,
+    event_loop: ProcessEventLoop,
 
     pub fn memoryCost(_: *const Process) usize {
         return @sizeOf(@This());
@@ -269,15 +201,16 @@ pub const Process = struct {
     }
 
     pub fn initPosix(
+        this: *Process,
         posix: PosixSpawnResult,
-        event_loop: anytype,
+        event_loop: ?RuntimeLoopHandle,
         sync_: bool,
-    ) *Process {
-        return bun.new(Process, .{
+    ) void {
+        this.* = .{
             .ref_count = .init(),
             .pid = posix.pid,
-            .pidfd = posix.pidfd orelse 0,
-            .event_loop = jsc.EventLoopHandle.init(event_loop),
+            .pidfd = posix.pidfd,
+            .event_loop = event_loop orelse undefined,
             .sync = sync_,
             .poller = .{ .detached = {} },
             .status = brk: {
@@ -289,7 +222,7 @@ pub const Process = struct {
 
                 break :brk Status{ .running = {} };
             },
-        });
+        };
     }
 
     pub fn hasExited(this: *const Process) bool {
@@ -422,18 +355,18 @@ pub const Process = struct {
         }
 
         if (WaiterThread.shouldUseWaiterThread()) {
-            this.poller = .{ .waiter_thread = .{} };
-            this.poller.waiter_thread.ref(this.event_loop);
-            this.ref();
-            WaiterThread.append(this);
-            return .success;
+            return WaiterThread.append(this);
         }
 
-        const watchfd = if (comptime Environment.isLinux) this.pidfd else this.pid;
+        const watchfd = if (comptime Environment.isLinux)
+            this.pidfd orelse return .{ .err = bun.sys.Error.fromCode(.SRCH, .pidfd_open) }
+        else
+            this.pid;
         const poll = if (this.poller == .fd)
             this.poller.fd
         else
-            bun.Async.FilePoll.init(this.event_loop, .fromNative(watchfd), .{}, Process, this);
+            bun.Async.FilePoll.create(this.event_loop, .fromNative(watchfd), .{}, Process, this) catch
+                return .{ .err = bun.sys.Error.fromCode(.NOMEM, if (Environment.isLinux) .epoll_ctl else .kevent) };
 
         this.poller = .{ .fd = poll };
         this.poller.fd.enableKeepingProcessAlive(this.event_loop);
@@ -459,12 +392,7 @@ pub const Process = struct {
 
     pub fn rewatchPosix(this: *Process) bun.sys.Maybe(void) {
         if (WaiterThread.shouldUseWaiterThread()) {
-            if (this.poller != .waiter_thread)
-                this.poller = .{ .waiter_thread = .{} };
-            this.poller.waiter_thread.ref(this.event_loop);
-            this.ref();
-            WaiterThread.append(this);
-            return .success;
+            return WaiterThread.append(this);
         }
 
         if (this.poller == .fd) {
@@ -537,7 +465,7 @@ pub const Process = struct {
                 },
 
                 .waiter_thread => |*waiter| {
-                    waiter.disable();
+                    waiter.unref(this.event_loop);
                     this.poller = .{ .detached = {} };
                 },
                 else => {},
@@ -561,9 +489,9 @@ pub const Process = struct {
         }
 
         if (comptime Environment.isLinux) {
-            if (this.pidfd != bun.invalid_fd.value.as_system and this.pidfd > 0) {
-                bun.FD.fromNative(this.pidfd).close();
-                this.pidfd = bun.invalid_fd.value.as_system;
+            if (this.pidfd) |fd| {
+                this.pidfd = null;
+                _ = bun.FD.fromNative(fd).closeAllowingStandardIo(null);
             }
         }
     }
@@ -594,19 +522,14 @@ pub const Process = struct {
     }
 
     pub fn kill(this: *Process, signal: u8) Maybe(void) {
+        if (this.hasExited()) return .success;
         if (comptime Environment.isPosix) {
-            switch (this.poller) {
-                .waiter_thread, .fd => {
-                    const err = std.c.kill(this.pid, @fromBackingInt(@intCast(signal)));
-                    if (err != 0) {
-                        const errno_ = bun.sys.getErrno(err);
-
-                        // if the process was already killed don't throw
-                        if (errno_ != .SRCH)
-                            return .{ .err = bun.sys.Error.fromCode(errno_, .kill) };
-                    }
-                },
-                else => {},
+            bun.assert(this.pid > 0);
+            const err = std.c.kill(this.pid, @fromBackingInt(@intCast(signal)));
+            if (err != 0) {
+                const errno_ = bun.sys.getErrno(err);
+                if (errno_ != .SRCH)
+                    return .{ .err = bun.sys.Error.fromCode(errno_, .kill) };
             }
         } else if (comptime Environment.isWindows) {
             switch (this.poller) {
@@ -740,7 +663,7 @@ pub const PollerPosix = union(enum) {
         }
     }
 
-    pub fn enableKeepingEventLoopAlive(this: *Poller, event_loop: jsc.EventLoopHandle) void {
+    pub fn enableKeepingEventLoopAlive(this: *Poller, event_loop: ProcessEventLoop) void {
         switch (this.*) {
             .fd => |poll| {
                 poll.enableKeepingProcessAlive(event_loop);
@@ -752,7 +675,7 @@ pub const PollerPosix = union(enum) {
         }
     }
 
-    pub fn disableKeepingEventLoopAlive(this: *PollerPosix, event_loop: jsc.EventLoopHandle) void {
+    pub fn disableKeepingEventLoopAlive(this: *PollerPosix, event_loop: ProcessEventLoop) void {
         switch (this.*) {
             .fd => |poll| {
                 poll.disableKeepingProcessAlive(event_loop);
@@ -785,7 +708,7 @@ pub const PollerWindows = union(enum) {
         }
     }
 
-    pub fn enableKeepingEventLoopAlive(this: *PollerWindows, event_loop: jsc.EventLoopHandle) void {
+    pub fn enableKeepingEventLoopAlive(this: *PollerWindows, event_loop: ProcessEventLoop) void {
         _ = event_loop; // autofix
         switch (this.*) {
             .uv => |*process| {
@@ -795,7 +718,7 @@ pub const PollerWindows = union(enum) {
         }
     }
 
-    pub fn disableKeepingEventLoopAlive(this: *PollerWindows, event_loop: jsc.EventLoopHandle) void {
+    pub fn disableKeepingEventLoopAlive(this: *PollerWindows, event_loop: ProcessEventLoop) void {
         _ = event_loop; // autofix
 
         // This is disabled on Windows
@@ -832,145 +755,95 @@ pub const WaiterThread = if (Environment.isPosix) WaiterThreadPosix else struct 
 // use a thread to wait for the child process to exit.
 // We use a single thread to call waitpid() in a loop.
 const WaiterThreadPosix = struct {
-    started: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    init_lock: std.atomic.Mutex = .unlocked,
+    started: std.atomic.Value(bool) = .init(false),
     eventfd: if (Environment.isLinux) bun.FD else u0 = undefined,
 
     js_process: ProcessQueue = .{},
 
-    pub const ProcessQueue = NewQueue(Process);
+    pub const ProcessQueue = struct {
+        const Registry = @import("../../../event_loop/NativeCompletionRegistry.zig");
+        queue: bun.UnboundedQueue(Work, .next) = .{},
+        active: ?*Work = null,
 
-    fn NewQueue(comptime T: type) type {
-        return struct {
-            queue: ConcurrentQueue = .{},
-            active: std.array_list.Managed(*T) = std.array_list.Managed(*T).init(bun.default_allocator),
+        const Work = struct {
+            next: ?*Work = null,
+            pid: pid_t,
+            lock: std.atomic.Mutex = .unlocked,
+            references: std.atomic.Value(u32) = .init(2),
+            registry: *Registry,
+            entry: Registry.Entry,
+            process: ?*Process,
+            result: bun.sys.Maybe(PosixSpawn.WaitPidResult) = undefined,
+            rusage: Rusage = undefined,
 
-            const TaskQueueEntry = struct {
-                process: *T,
-                next: ?*TaskQueueEntry = null,
-
-                pub const new = bun.TrivialNew(@This());
-                pub const deinit = bun.TrivialDeinit(@This());
-            };
-            pub const ConcurrentQueue = bun.UnboundedQueue(TaskQueueEntry, .next);
-
-            pub const ResultTask = struct {
-                result: bun.sys.Maybe(PosixSpawn.WaitPidResult),
-                subprocess: *T,
-                rusage: Rusage,
-
-                pub const new = bun.TrivialNew(@This());
-
-                pub const runFromJSThread = runFromMainThread;
-
-                pub fn runFromMainThread(self: *@This()) void {
-                    const result = self.result;
-                    const subprocess = self.subprocess;
-                    const rusage = self.rusage;
-                    bun.destroy(self);
-                    subprocess.onWaitPidFromWaiterThread(&result, &rusage);
-                }
-
-                pub fn runFromMainThreadMini(self: *@This(), _: *void) void {
-                    self.runFromMainThread();
-                }
-            };
-
-            pub const ResultTaskMini = struct {
-                result: bun.sys.Maybe(PosixSpawn.WaitPidResult),
-                subprocess: *T,
-                task: jsc.AnyTaskWithExtraContext = .{},
-
-                pub const new = bun.TrivialNew(@This());
-
-                pub const runFromJSThread = runFromMainThread;
-
-                pub fn runFromMainThread(self: *@This()) void {
-                    const result = self.result;
-                    const subprocess = self.subprocess;
-                    bun.destroy(self);
-                    subprocess.onWaitPidFromWaiterThread(&result, &std.mem.zeroes(Rusage));
-                }
-
-                pub fn runFromMainThreadMini(self: *@This(), _: *void) void {
-                    self.runFromMainThread();
-                }
-            };
-
-            pub fn append(self: *@This(), process: *T) void {
-                self.queue.push(
-                    TaskQueueEntry.new(.{
-                        .process = process,
-                    }),
-                );
+            fn deliver(context: bun.bindgen.NativeCallbackContext(.vm)) void {
+                const this = context.get(*Work);
+                defer this.release();
+                this.lockWork();
+                const result = this.result;
+                const process = this.process.?;
+                this.process = null;
+                const rusage = this.rusage;
+                this.lock.unlock();
+                process.onWaitPidFromWaiterThread(&result, &rusage);
             }
 
-            pub fn loop(this: *@This()) void {
-                {
-                    var batch = this.queue.popBatch();
-                    var iter = batch.iterator();
-                    this.active.ensureUnusedCapacity(batch.count) catch unreachable;
-                    while (iter.next()) |task| {
-                        this.active.appendAssumeCapacity(task.process);
-                        task.deinit();
-                    }
+            fn detach(context: bun.bindgen.NativeCallbackContext(.vm)) void {
+                const this = context.get(*Work);
+                defer this.release();
+                this.lockWork();
+                const process = this.process.?;
+                this.process = null;
+                this.lock.unlock();
+                process.detach();
+                process.deref();
+            }
+
+            fn complete(this: *Work, result: bun.sys.Maybe(PosixSpawn.WaitPidResult), rusage: Rusage) void {
+                defer this.release();
+                this.lockWork();
+                defer this.lock.unlock();
+                this.result = result;
+                this.rusage = rusage;
+                if (this.process != null) _ = this.registry.submit(&this.entry);
+            }
+
+            fn release(this: *Work) void {
+                const references = this.references.fetchSub(1, .acq_rel);
+                if (references == 0) @panic("waiter work reference count underflowed");
+                if (references == 1) {
+                    this.registry.release();
+                    bun.default_allocator.destroy(this);
                 }
+            }
 
-                var i: usize = 0;
-                while (i < this.active.items.len) {
-                    var remove = false;
-                    defer {
-                        if (remove) {
-                            _ = this.active.orderedRemove(i);
-                        } else {
-                            i += 1;
-                        }
-                    }
-
-                    const process = this.active.items[i];
-                    const pid = process.pid;
-                    // this case shouldn't really happen
-                    if (pid == 0) {
-                        remove = true;
-                        continue;
-                    }
-
-                    var rusage = std.mem.zeroes(Rusage);
-                    const result = PosixSpawn.wait4(pid, std.posix.W.NOHANG, &rusage);
-                    if (result == .err or (result == .result and result.result.pid == pid)) {
-                        remove = true;
-
-                        switch (process.event_loop) {
-                            .js => |event_loop| {
-                                event_loop.enqueueTaskConcurrent(
-                                    jsc.ConcurrentTask.create(jsc.Task.init(
-                                        ResultTask.new(
-                                            .{
-                                                .result = result,
-                                                .subprocess = process,
-                                                .rusage = rusage,
-                                            },
-                                        ),
-                                    )),
-                                );
-                            },
-                            .mini => |mini| {
-                                const AnyTask = jsc.AnyTaskWithExtraContext.New(ResultTaskMini, void, ResultTaskMini.runFromMainThreadMini);
-                                const out = ResultTaskMini.new(
-                                    .{
-                                        .result = result,
-                                        .subprocess = process,
-                                    },
-                                );
-                                out.task = AnyTask.init(out);
-
-                                mini.enqueueTaskConcurrent(&out.task);
-                            },
-                        }
-                    }
-                }
+            fn lockWork(this: *Work) void {
+                while (!this.lock.tryLock()) std.atomic.spinLoopHint();
             }
         };
-    }
+
+        pub fn loop(this: *ProcessQueue) void {
+            const batch = this.queue.popBatch();
+            if (batch.last) |last| {
+                last.next = this.active;
+                this.active = batch.front;
+            }
+
+            var link = &this.active;
+            while (link.*) |work| {
+                var rusage = std.mem.zeroes(Rusage);
+                const result = PosixSpawn.wait4(work.pid, std.posix.W.NOHANG, &rusage);
+                if (result == .err or (result == .result and result.result.pid == work.pid)) {
+                    link.* = work.next;
+                    work.next = null;
+                    work.complete(result, rusage);
+                } else {
+                    link = &work.next;
+                }
+            }
+        }
+    };
 
     pub fn setShouldUseWaiterThread() void {
         @atomicStore(bool, &should_use_waiter_thread, true, .monotonic);
@@ -980,47 +853,104 @@ const WaiterThreadPosix = struct {
         return @atomicLoad(bool, &should_use_waiter_thread, .monotonic);
     }
 
-    pub fn append(process: anytype) void {
-        switch (comptime @TypeOf(process)) {
-            *Process => instance.js_process.append(process),
-            else => @compileError("Unknown Process type"),
+    pub fn append(process: *Process) bun.sys.Maybe(void) {
+        bun.assert(process.pid > 0);
+        const work = bun.default_allocator.create(ProcessQueue.Work) catch
+            return .{ .err = bun.sys.Error.fromCode(.NOMEM, .waitpid) };
+        if (init().asErr()) |err| {
+            bun.default_allocator.destroy(work);
+            return .{ .err = err };
         }
-
-        init() catch @panic("Failed to start WaiterThread");
-
-        if (comptime Environment.isLinux) {
-            const one = @as([8]u8, @bitCast(@as(usize, 1)));
-            _ = bun.sys.write(instance.eventfd, &one).unwrap() catch @panic("Failed to write to eventfd");
+        const registry = (process.event_loop.parentEventLoop().nativeCompletionRegistry() catch {
+            bun.default_allocator.destroy(work);
+            return .{ .err = bun.sys.Error.fromCode(.NOMEM, .waitpid) };
+        }) orelse {
+            bun.default_allocator.destroy(work);
+            return .{ .err = bun.sys.Error.fromCode(.CANCELED, .waitpid) };
+        };
+        work.* = .{
+            .pid = process.pid,
+            .registry = registry,
+            .entry = .{ .context = .init(work), .deliver = ProcessQueue.Work.deliver, .detach = ProcessQueue.Work.detach },
+            .process = process,
+        };
+        if (!registry.register(&work.entry)) {
+            bun.default_allocator.destroy(work);
+            return .{ .err = bun.sys.Error.fromCode(.CANCELED, .waitpid) };
         }
+        registry.retain();
+        if (process.poller == .waiter_thread) {
+            process.poller.waiter_thread.unref(process.event_loop);
+        } else {
+            process.poller.deinit();
+        }
+        process.poller = .{ .waiter_thread = .{} };
+        process.poller.waiter_thread.ref(process.event_loop);
+        process.ref();
+        instance.js_process.queue.push(work);
+
+        if (notify().asErr() != null) @panic("waiter eventfd became unavailable");
+        return .success;
     }
 
     var should_use_waiter_thread = false;
 
     const stack_size = 512 * 1024;
     pub var instance: WaiterThread = .{};
-    pub fn init() !void {
-        bun.assert(should_use_waiter_thread);
-
-        if (instance.started.fetchMax(1, .monotonic) > 0) {
-            return;
-        }
+    pub fn init() bun.sys.Maybe(void) {
+        bun.assert(shouldUseWaiterThread());
+        while (!instance.init_lock.tryLock()) std.atomic.spinLoopHint();
+        defer instance.init_lock.unlock();
+        if (instance.started.load(.acquire)) return .success;
 
         if (comptime Environment.isLinux) {
             const linux = std.os.linux;
-            instance.eventfd = try bun.sys.eventfd(0, linux.EFD.NONBLOCK | linux.EFD.CLOEXEC).unwrap();
+            instance.eventfd = switch (bun.sys.eventfd(0, linux.EFD.NONBLOCK | linux.EFD.CLOEXEC)) {
+                .result => |fd| fd,
+                .err => |err| return .{ .err = err },
+            };
         }
 
-        var thread = try std.Thread.spawn(.{ .stack_size = stack_size }, loop, .{});
+        var thread = std.Thread.spawn(.{ .stack_size = stack_size }, loop, .{}) catch |err| {
+            if (comptime Environment.isLinux) {
+                _ = instance.eventfd.closeAllowingStandardIo(null);
+                instance.eventfd = bun.invalid_fd;
+            }
+            return .{ .err = bun.sys.Error.fromCode(switch (err) {
+                error.OutOfMemory, error.SystemResources, error.LockedMemoryLimitExceeded => .NOMEM,
+                error.ThreadQuotaExceeded => .AGAIN,
+                error.Unexpected => .IO,
+            }, .waitpid) };
+        };
+        instance.started.store(true, .release);
         thread.detach();
+        return .success;
+    }
+
+    fn notify() bun.sys.Maybe(void) {
+        if (comptime !Environment.isLinux) return .success;
+        const one: [8]u8 = @bitCast(@as(u64, 1));
+        while (true) {
+            switch (bun.sys.write(instance.eventfd, &one)) {
+                .result => |written| {
+                    bun.assert(written == one.len);
+                    return .success;
+                },
+                .err => |err| switch (err.getErrno()) {
+                    .INTR => continue,
+                    .AGAIN => return .success,
+                    else => return .{ .err = err },
+                },
+            }
+        }
     }
 
     fn wakeup(_: std.posix.SIG) callconv(.c) void {
-        const one = @as([8]u8, @bitCast(@as(usize, 1)));
-        _ = bun.sys.write(instance.eventfd, &one).unwrap() catch 0;
+        _ = notify();
     }
 
     pub fn reloadHandlers() void {
-        if (!should_use_waiter_thread) {
+        if (!instance.started.load(.acquire)) {
             return;
         }
 
@@ -1037,6 +967,7 @@ const WaiterThreadPosix = struct {
     }
 
     pub fn loop() void {
+        while (!instance.started.load(.acquire)) std.atomic.spinLoopHint();
         Output.Source.configureNamedThread("Waitpid");
         reloadHandlers();
         var this = &instance;
@@ -1104,7 +1035,7 @@ pub const PosixSpawnOptions = struct {
     /// Windows-only ConPTY handle; void placeholder on POSIX.
     pseudoconsole: void = {},
     /// Linux only. When non-null, the child sets PR_SET_PDEATHSIG to this
-    /// signal between vfork and exec in posix_spawn_bun, so the kernel kills
+    /// signal before exec, so the kernel kills
     /// it when the spawning thread dies. When null, defaults to SIGKILL if
     /// no-orphans mode is enabled (see `ParentDeathWatchdog`), else 0 (no
     /// PDEATHSIG). Not exposed to JS yet.
@@ -1118,7 +1049,7 @@ pub const PosixSpawnOptions = struct {
         ipc: void,
         pipe: bun.FD,
         // TODO: remove this entry, it doesn't seem to be used
-        dup2: struct { out: bun.jsc.Subprocess.StdioKind, to: bun.jsc.Subprocess.StdioKind },
+        dup2: struct { out: StdioKind, to: StdioKind },
     };
 
     pub fn deinit(_: *const PosixSpawnOptions) void {
@@ -1141,6 +1072,24 @@ pub const WindowsSpawnResult = struct {
 
         buffer: *bun.windows.libuv.Pipe,
         buffer_fd: bun.FD,
+
+        pub fn take(this: *StdioResult) StdioResult {
+            const result = this.*;
+            this.* = .unavailable;
+            return result;
+        }
+
+        pub fn deinit(this: *StdioResult) void {
+            switch (this.take()) {
+                .buffer => |pipe| pipe.close(destroyPipe),
+                .buffer_fd => |fd| _ = fd.closeAllowingStandardIo(null),
+                .unavailable => {},
+            }
+        }
+
+        fn destroyPipe(pipe: *bun.windows.libuv.Pipe) callconv(.c) void {
+            bun.default_allocator.destroy(pipe);
+        }
     };
 
     pub fn toProcess(
@@ -1155,6 +1104,11 @@ pub const WindowsSpawnResult = struct {
     }
 
     pub fn close(this: *WindowsSpawnResult) void {
+        this.stdin.deinit();
+        this.stdout.deinit();
+        this.stderr.deinit();
+        for (this.extra_pipes.items) |*pipe| pipe.deinit();
+        this.extra_pipes.clearAndFree();
         if (this.process_) |proc| {
             this.process_ = null;
             proc.close();
@@ -1189,7 +1143,7 @@ pub const WindowsSpawnOptions = struct {
     pub const WindowsOptions = struct {
         verbatim_arguments: bool = false,
         hide_window: bool = true,
-        loop: jsc.EventLoopHandle = undefined,
+        loop: ParentEventLoop = undefined,
     };
 
     pub const Stdio = union(enum) {
@@ -1199,7 +1153,7 @@ pub const WindowsSpawnOptions = struct {
         buffer: *bun.windows.libuv.Pipe,
         ipc: *bun.windows.libuv.Pipe,
         pipe: bun.FD,
-        dup2: struct { out: bun.jsc.Subprocess.StdioKind, to: bun.jsc.Subprocess.StdioKind },
+        dup2: struct { out: StdioKind, to: StdioKind },
 
         pub fn deinit(this: *const Stdio) void {
             switch (this.*) {
@@ -1221,64 +1175,89 @@ pub const WindowsSpawnOptions = struct {
 };
 
 pub const PosixSpawnResult = struct {
+    process_storage: ?*Process = null,
     pid: pid_t = 0,
     pidfd: ?PidFDType = null,
-    stdin: ?bun.FD = null,
-    stdout: ?bun.FD = null,
-    stderr: ?bun.FD = null,
+    stdin: StdioResult = .unavailable,
+    stdout: StdioResult = .unavailable,
+    stderr: StdioResult = .unavailable,
     ipc: ?bun.FD = null,
-    extra_pipes: std.array_list.Managed(ExtraPipe) = std.array_list.Managed(ExtraPipe).init(bun.default_allocator),
+    extra_pipes: std.array_list.Managed(StdioResult) = std.array_list.Managed(StdioResult).init(bun.default_allocator),
 
     memfds: [3]bool = .{ false, false, false },
 
     // ESRCH can happen when requesting the pidfd
     has_exited: bool = false,
 
-    /// Entry in `extra_pipes` for a stdio slot at index >= 3.
-    pub const ExtraPipe = union(enum) {
-        /// We created this fd (e.g. socketpair for `"pipe"`); expose it via
-        /// `Subprocess.stdio[N]` and close it in `finalizeStreams`.
+    pub const StdioResult = union(enum) {
         owned_fd: bun.FD,
-        /// The caller supplied this fd in the stdio array; expose it via
-        /// `Subprocess.stdio[N]` but never close it — the caller retains ownership.
         unowned_fd: bun.FD,
-        /// Nothing to expose for this slot (`"ignore"`, `"inherit"`, a path, or
-        /// the IPC channel after ownership has been transferred to uSockets).
         unavailable: void,
 
-        pub fn fd(this: ExtraPipe) bun.FD {
+        pub fn fd(this: StdioResult) bun.FD {
             return switch (this) {
                 .owned_fd, .unowned_fd => |f| f,
                 .unavailable => bun.invalid_fd,
             };
         }
-    };
 
-    pub fn close(this: *PosixSpawnResult) void {
-        for (this.extra_pipes.items) |item| {
-            switch (item) {
-                .owned_fd => |f| f.close(),
+        pub fn take(this: *StdioResult) StdioResult {
+            const result = this.*;
+            this.* = .unavailable;
+            return result;
+        }
+
+        pub fn takeOwnedFd(this: *StdioResult) ?bun.FD {
+            if (this.* != .owned_fd) return null;
+            const result = this.owned_fd;
+            this.* = .unavailable;
+            return result;
+        }
+
+        pub fn deinit(this: *StdioResult) void {
+            switch (this.take()) {
+                .owned_fd => |owned_fd| _ = owned_fd.closeAllowingStandardIo(null),
                 .unowned_fd, .unavailable => {},
             }
         }
+    };
 
+    pub fn close(this: *PosixSpawnResult) void {
+        if (this.process_storage) |storage| {
+            this.process_storage = null;
+            bun.default_allocator.destroy(storage);
+        }
+        if (comptime Environment.isLinux) {
+            if (this.pidfd) |fd| {
+                this.pidfd = null;
+                _ = bun.FD.fromNative(fd).closeAllowingStandardIo(null);
+            }
+        }
+        this.stdin.deinit();
+        this.stdout.deinit();
+        this.stderr.deinit();
+        for (this.extra_pipes.items) |*item| item.deinit();
         this.extra_pipes.clearAndFree();
     }
 
     pub fn toProcess(
-        this: *const PosixSpawnResult,
-        event_loop: anytype,
+        this: *PosixSpawnResult,
+        event_loop: ?RuntimeLoopHandle,
         sync_: bool,
     ) *Process {
-        return Process.initPosix(
+        const process = this.process_storage orelse @panic("spawn result process storage already consumed");
+        this.process_storage = null;
+        process.initPosix(
             this.*,
             event_loop,
             sync_,
         );
+        this.pidfd = null;
+        return process;
     }
 
     fn pidfdFlagsForLinux() u32 {
-        const kernel = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
+        const kernel = bun.Platform.kernelVersion();
 
         // pidfd_nonblock only supported in 5.10+
         return if (kernel.orderWithoutTag(.{ .major = 5, .minor = 10, .patch = 0 }).compare(.gte))
@@ -1319,28 +1298,7 @@ pub const PosixSpawnResult = struct {
                             return .{ .err = err };
                         },
 
-                        // No such process can happen if it exited between the time we got the pid and called pidfd_open
-                        // Until we switch to CLONE_PIDFD, this needs to be handled separately.
-                        .SRCH => {},
-
-                        // For all other cases, ensure we don't leak the child process on error
-                        // That would cause Zombie processes to accumulate.
-                        else => {
-                            while (true) {
-                                var status: i32 = 0;
-                                const rc = std.os.linux.wait4(this.pid, &status, 0, null);
-
-                                switch (bun.sys.getErrno(rc)) {
-                                    .SUCCESS => {},
-                                    .INTR => {
-                                        continue;
-                                    },
-                                    else => {},
-                                }
-
-                                break;
-                            }
-                        },
+                        else => {},
                     }
 
                     return .{ .err = err };
@@ -1414,10 +1372,8 @@ pub fn spawnProcessPosix(
     attr.new_process_group = options.new_process_group;
 
     if (Environment.isLinux) {
-        // Explicit per-spawn value wins; otherwise no-orphans mode defaults
-        // every child to SIGKILL-on-parent-death so non-Bun descendants are
-        // covered without relying on env-var inheritance, and the prctl happens
-        // in the vfork child before exec so there's no startup race.
+        // Explicit per-spawn policy overrides the watchdog default. The child
+        // installs PDEATHSIG and checks for reparenting before exec.
         attr.linux_pdeathsig = if (options.linux_pdeathsig) |sig|
             @intCast(sig)
         else if (bun.ParentDeathWatchdog.shouldDefaultSpawnPdeathsig())
@@ -1430,17 +1386,18 @@ pub fn spawnProcessPosix(
         try actions.chdir(options.cwd);
     }
     var spawned = PosixSpawnResult{};
-    var extra_fds = std.array_list.Managed(PosixSpawnResult.ExtraPipe).init(bun.default_allocator);
-    errdefer extra_fds.deinit();
+    var committed = false;
+    var extra_fds = std.array_list.Managed(PosixSpawnResult.StdioResult).init(bun.default_allocator);
+    defer extra_fds.deinit();
     var stack_fallback_buffer: [2048]u8 = undefined;
     var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_fallback_buffer, bun.default_allocator);
     const allocator = stack_fallback.allocator();
     var to_close_at_end = std.array_list.Managed(bun.FD).init(allocator);
     var to_set_cloexec = std.array_list.Managed(bun.FD).init(allocator);
     defer {
-        for (to_set_cloexec.items) |fd| {
+        if (committed) for (to_set_cloexec.items) |fd| {
             _ = bun.sys.setCloseOnExec(fd);
-        }
+        };
         to_set_cloexec.clearAndFree();
 
         for (to_close_at_end.items) |fd| {
@@ -1451,15 +1408,21 @@ pub fn spawnProcessPosix(
 
     var to_close_on_error = std.array_list.Managed(bun.FD).init(allocator);
 
-    errdefer {
-        for (to_close_on_error.items) |fd| {
+    defer {
+        if (!committed) for (to_close_on_error.items) |fd| {
             fd.close();
-        }
+        };
+        to_close_on_error.deinit();
     }
-    defer to_close_on_error.clearAndFree();
 
-    attr.set(@intCast(flags)) catch {};
-    attr.resetSignals() catch {};
+    const stdio_count = std.math.add(usize, 3, options.extra_fds.len) catch return error.OutOfMemory;
+    try to_close_at_end.ensureTotalCapacity(stdio_count);
+    try to_close_on_error.ensureTotalCapacity(stdio_count);
+    try to_set_cloexec.ensureTotalCapacity(3);
+    try extra_fds.ensureTotalCapacity(options.extra_fds.len);
+
+    try attr.set(@intCast(flags));
+    try attr.resetSignals();
 
     if (options.ipc) |ipc| {
         try actions.inherit(ipc);
@@ -1467,7 +1430,7 @@ pub fn spawnProcessPosix(
     }
 
     const stdio_options: [3]PosixSpawnOptions.Stdio = .{ options.stdin, options.stdout, options.stderr };
-    const stdios: [3]*?bun.FD = .{ &spawned.stdin, &spawned.stdout, &spawned.stderr };
+    const stdios: [3]*PosixSpawnResult.StdioResult = .{ &spawned.stdin, &spawned.stdout, &spawned.stderr };
 
     var dup_stdout_to_stderr: bool = false;
 
@@ -1511,10 +1474,10 @@ pub fn spawnProcessPosix(
 
                         const fd = bun.sys.memfd_create(label, .cross_process).unwrap() catch break :use_memfd;
 
-                        to_close_on_error.append(fd) catch {};
-                        to_set_cloexec.append(fd) catch {};
+                        to_close_on_error.appendAssumeCapacity(fd);
+                        to_set_cloexec.appendAssumeCapacity(fd);
                         try actions.dup2(fd, fileno);
-                        stdio.* = fd;
+                        stdio.* = .{ .owned_fd = fd };
                         spawned.memfds[i] = true;
                         continue;
                     }
@@ -1556,8 +1519,8 @@ pub fn spawnProcessPosix(
                     }
                 }
 
-                try to_close_at_end.append(fds[1]);
-                try to_close_on_error.append(fds[0]);
+                to_close_at_end.appendAssumeCapacity(fds[1]);
+                to_close_on_error.appendAssumeCapacity(fds[0]);
 
                 if (!options.sync) {
                     try bun.sys.setNonblocking(fds[0]).unwrap();
@@ -1567,11 +1530,11 @@ pub fn spawnProcessPosix(
                 if (fds[1] != fileno)
                     try actions.close(fds[1]);
 
-                stdio.* = fds[0];
+                stdio.* = .{ .owned_fd = fds[0] };
             },
             .pipe => |fd| {
                 try actions.dup2(fd, fileno);
-                stdio.* = fd;
+                stdio.* = .{ .unowned_fd = fd };
             },
         }
     }
@@ -1587,16 +1550,16 @@ pub fn spawnProcessPosix(
             .dup2 => @panic("TODO dup2 extra fd"),
             .inherit => {
                 try actions.inherit(fileno);
-                try extra_fds.append(.unavailable);
+                extra_fds.appendAssumeCapacity(.unavailable);
             },
             .ignore => {
                 try actions.openZ(fileno, "/dev/null", bun.O.RDWR, 0o664);
-                try extra_fds.append(.unavailable);
+                extra_fds.appendAssumeCapacity(.unavailable);
             },
 
             .path => |path| {
                 try actions.open(fileno, path, bun.O.RDWR | bun.O.CREAT, 0o664);
-                try extra_fds.append(.unavailable);
+                extra_fds.appendAssumeCapacity(.unavailable);
             },
             .ipc, .buffer => {
                 const fds: [2]bun.FD = try bun.sys.socketpair(
@@ -1606,28 +1569,30 @@ pub fn spawnProcessPosix(
                     if (ipc == .ipc) .nonblocking else .blocking,
                 ).unwrap();
 
+                to_close_at_end.appendAssumeCapacity(fds[1]);
+                to_close_on_error.appendAssumeCapacity(fds[0]);
+
                 if (!options.sync and ipc == .buffer)
                     try bun.sys.setNonblocking(fds[0]).unwrap();
-
-                try to_close_at_end.append(fds[1]);
-                try to_close_on_error.append(fds[0]);
 
                 try actions.dup2(fds[1], fileno);
                 if (fds[1] != fileno)
                     try actions.close(fds[1]);
-                try extra_fds.append(.{ .owned_fd = fds[0] });
+                extra_fds.appendAssumeCapacity(.{ .owned_fd = fds[0] });
             },
             .pipe => |fd| {
                 try actions.dup2(fd, fileno);
                 // The fd was supplied by the caller (a number in the stdio array) and is
                 // not owned by us. Record it so `stdio[N]` returns the caller's fd, but
                 // mark it unowned so finalizeStreams leaves it open.
-                try extra_fds.append(.{ .unowned_fd = fd });
+                extra_fds.appendAssumeCapacity(.{ .unowned_fd = fd });
             },
         }
     }
 
     const argv0 = options.argv0 orelse argv[0].?;
+    var process_storage: ?*Process = try bun.default_allocator.create(Process);
+    defer if (process_storage) |storage| bun.default_allocator.destroy(storage);
     const spawn_result = PosixSpawn.spawnZ(
         argv0,
         actions,
@@ -1635,26 +1600,12 @@ pub fn spawnProcessPosix(
         argv,
         envp,
     );
-    var failed_after_spawn = false;
-    defer {
-        if (failed_after_spawn) {
-            for (to_close_on_error.items) |fd| {
-                fd.close();
-            }
-            to_close_on_error.clearAndFree();
-        }
-    }
-
     switch (spawn_result) {
         .err => {
-            failed_after_spawn = true;
             return .{ .err = spawn_result.err };
         },
         .result => |pid| {
             spawned.pid = pid;
-            spawned.extra_pipes = extra_fds;
-            extra_fds = std.array_list.Managed(PosixSpawnResult.ExtraPipe).init(bun.default_allocator);
-
             if (comptime Environment.isLinux) {
                 // If it's spawnSync and we want to block the entire thread
                 // don't even bother with pidfd. It's not necessary.
@@ -1667,14 +1618,11 @@ pub fn spawnProcessPosix(
                             spawned.pidfd = pidfd;
                         },
                         .err => |err| {
-                            // we intentionally do not clean up any of the file descriptors in this case
-                            // you could have data sitting in stdout, just waiting.
                             if (err.getErrno() == .SRCH) {
                                 spawned.has_exited = true;
-
-                                // a real error occurred. one we should not assume means pidfd_open is blocked.
                             } else if (!WaiterThread.shouldUseWaiterThread()) {
-                                failed_after_spawn = true;
+                                _ = std.c.kill(pid, std.posix.SIG.KILL);
+                                _ = PosixSpawn.wait4(pid, 0, null);
                                 return .{ .err = err };
                             }
                         },
@@ -1682,6 +1630,11 @@ pub fn spawnProcessPosix(
                 }
             }
 
+            spawned.extra_pipes = extra_fds;
+            extra_fds = .init(bun.default_allocator);
+            spawned.process_storage = process_storage;
+            process_storage = null;
+            committed = true;
             return .{ .result = spawned };
         },
     }
@@ -1706,7 +1659,7 @@ pub fn spawnProcessWindows(
     var stack_allocator_buffer: [8192]u8 = undefined;
     var stack_allocator: std.heap.BufferFirstAllocator = .init(&stack_allocator_buffer, bun.default_allocator);
     const allocator = stack_allocator.allocator();
-    const loop = options.windows.loop.platformEventLoop().uv_loop;
+    const loop = options.windows.loop.platformEventLoop();
 
     var cwd_buf: bun.PathBuffer = undefined;
     @memcpy(cwd_buf[0..options.cwd.len], options.cwd);
@@ -1717,7 +1670,7 @@ pub fn spawnProcessWindows(
 
     var uv_files_to_close = std.array_list.Managed(uv.uv_file).init(allocator);
 
-    var failed = false;
+    var committed = false;
 
     defer {
         for (uv_files_to_close.items) |fd| {
@@ -1725,8 +1678,6 @@ pub fn spawnProcessWindows(
         }
         uv_files_to_close.clearAndFree();
     }
-
-    errdefer failed = true;
 
     if (options.pseudoconsole) |hpcon| {
         uv_process_options.pseudoconsole = hpcon;
@@ -1744,10 +1695,14 @@ pub fn spawnProcessWindows(
         uv_process_options.flags |= uv.UV_PROCESS_DETACHED;
     }
 
-    var stdio_containers = try std.array_list.Managed(uv.uv_stdio_container_t).initCapacity(allocator, 3 + options.extra_fds.len);
+    const stdio_count = std.math.add(usize, 3, options.extra_fds.len) catch return error.OutOfMemory;
+    try uv_files_to_close.ensureTotalCapacity(stdio_count);
+    var extra_pipes = try std.array_list.Managed(WindowsSpawnResult.StdioResult).initCapacity(bun.default_allocator, options.extra_fds.len);
+    defer extra_pipes.deinit();
+    var stdio_containers = try std.array_list.Managed(uv.uv_stdio_container_t).initCapacity(allocator, stdio_count);
     defer stdio_containers.deinit();
     @memset(stdio_containers.allocatedSlice(), std.mem.zeroes(uv.uv_stdio_container_t));
-    stdio_containers.items.len = 3 + options.extra_fds.len;
+    stdio_containers.items.len = stdio_count;
 
     const stdios = .{ &stdio_containers.items[0], &stdio_containers.items[1], &stdio_containers.items[2] };
     const stdio_options: [3]WindowsSpawnOptions.Stdio = .{ options.stdin, options.stdout, options.stderr };
@@ -1760,6 +1715,10 @@ pub fn spawnProcessWindows(
     var dup_fds: [2]uv.uv_file = .{ -1, -1 };
     var dup_src: ?u32 = null;
     var dup_tgt: ?u32 = null;
+    defer {
+        if (!committed and dup_fds[0] != -1) bun.FD.fromUV(dup_fds[0]).close();
+        if (dup_fds[1] != -1) bun.FD.fromUV(dup_fds[1]).close();
+    }
     inline for (0..3) |fd_i| {
         const pipe_flags = uv.UV_CREATE_PIPE | uv.UV_READABLE_PIPE | uv.UV_WRITABLE_PIPE;
         const stdio: *uv.uv_stdio_container_t = stdios[fd_i];
@@ -1797,13 +1756,12 @@ pub fn spawnProcessWindows(
                 defer req.deinit();
                 const rc = uv.uv_fs_open(loop, &req, &(try std.posix.toPosixPath(path)), flag | uv.O.CREAT, 0o644, null);
                 if (rc.toError(.open)) |err| {
-                    failed = true;
                     return .{ .err = err };
                 }
 
                 stdio.flags = uv.UV_INHERIT_FD;
                 const fd = rc.int();
-                try uv_files_to_close.append(fd);
+                uv_files_to_close.appendAssumeCapacity(fd);
                 stdio.data.fd = fd;
             },
             .buffer => |my_pipe| {
@@ -1848,13 +1806,12 @@ pub fn spawnProcessWindows(
                 defer req.deinit();
                 const rc = uv.uv_fs_open(loop, &req, &(try std.posix.toPosixPath(path)), flag | uv.O.CREAT, 0o644, null);
                 if (rc.toError(.open)) |err| {
-                    failed = true;
                     return .{ .err = err };
                 }
 
                 stdio.flags = uv.StdioFlags.inherit_fd;
                 const fd = rc.int();
-                try uv_files_to_close.append(fd);
+                uv_files_to_close.appendAssumeCapacity(fd);
                 stdio.data.fd = fd;
             },
             .ipc => |my_pipe| {
@@ -1878,39 +1835,24 @@ pub fn spawnProcessWindows(
     uv_process_options.stdio_count = @intCast(stdio_containers.items.len);
 
     uv_process_options.exit_cb = &Process.onExitUV;
-    const process = bun.new(Process, .{
+    const process = try bun.default_allocator.create(Process);
+    process.* = .{
         .ref_count = .init(),
         .event_loop = options.windows.loop,
         .pid = 0,
-    });
+    };
 
     defer {
-        if (failed) {
+        if (!committed) {
             process.close();
             process.deref();
         }
     }
 
-    errdefer failed = true;
     process.poller = .{ .uv = std.mem.zeroes(uv.Process) };
 
-    defer {
-        if (dup_src != null) {
-            if (Environment.allow_assert) bun.assert(dup_src != null and dup_tgt != null);
-        }
-
-        if (failed) {
-            if (dup_fds[0] != -1) {
-                bun.FD.fromUV(dup_fds[0]).close();
-            }
-        }
-
-        if (dup_fds[1] != -1) {
-            bun.FD.fromUV(dup_fds[1]).close();
-        }
-    }
+    if (dup_src != null) bun.assert(dup_tgt != null);
     if (process.poller.uv.spawn(loop, &uv_process_options).toError(.uv_spawn)) |err| {
-        failed = true;
         return .{ .err = err };
     }
 
@@ -1919,8 +1861,9 @@ pub fn spawnProcessWindows(
 
     var result = WindowsSpawnResult{
         .process_ = process,
-        .extra_pipes = try std.array_list.Managed(WindowsSpawnResult.StdioResult).initCapacity(bun.default_allocator, options.extra_fds.len),
+        .extra_pipes = extra_pipes,
     };
+    extra_pipes = .init(bun.default_allocator);
 
     const result_stdios = .{ &result.stdin, &result.stdout, &result.stderr };
     inline for (0..3) |i| {
@@ -1952,6 +1895,7 @@ pub fn spawnProcessWindows(
         }
     }
 
+    committed = true;
     return .{ .result = result };
 }
 
@@ -2079,7 +2023,7 @@ pub const sync = struct {
         process: *Process,
         status: ?Status = null,
 
-        pub fn onProcessExit(this: *SyncWindowsProcess, status: Status, _: *const Rusage) void {
+        pub fn onProcessExit(this: *SyncWindowsProcess, _: *Process, status: Status, _: *const Rusage) void {
             this.status = status;
             this.waiting_count -= 1;
             this.process.detach();
@@ -2131,7 +2075,7 @@ pub const sync = struct {
             .result => |proces| proces,
         };
 
-        var process = spawned.toProcess(undefined, true);
+        var process = spawned.toProcess(null, true);
         defer {
             process.detach();
             process.deref();
@@ -2154,13 +2098,13 @@ pub const sync = struct {
         argv: [*:null]?[*:0]const u8,
         envp: [*:null]?[*:0]const u8,
     ) !Maybe(Result) {
-        var loop: jsc.EventLoopHandle = options.windows.loop;
+        const loop = options.windows.loop;
         var spawned = switch (try spawnProcessWindows(&options.toSpawnOptions(false), argv, envp)) {
             .err => |err| return .{ .err = err },
             .result => |process| process,
         };
         const this = SyncWindowsProcess.new(.{
-            .process = spawned.toProcess(undefined, true),
+            .process = spawned.toProcess(null, true),
         });
         this.process.ref();
         this.process.setExitHandler(this);
@@ -2247,16 +2191,6 @@ pub const sync = struct {
         return spawnWithArgv(options, @ptrCast(args.items.ptr), @ptrCast(envp));
     }
 
-    // Forward signals from parent to the child process.
-    extern "c" fn Bun__registerSignalsForForwarding() void;
-    extern "c" fn Bun__unregisterSignalsForForwarding() void;
-
-    // macOS p_puniqueid descendant tracker — see NoOrphansTracker.cpp.
-    extern "c" fn Bun__noOrphans_begin(kq: c_int, root: std.c.pid_t) void;
-    extern "c" fn Bun__noOrphans_releaseKq() void;
-    extern "c" fn Bun__noOrphans_onFork() void;
-    extern "c" fn Bun__noOrphans_onExit(pid: std.c.pid_t) void;
-
     /// TTY job-control bridge for `--no-orphans` `bun run`. We put the script
     /// in its own pgroup so `kill(-pgid)` reaches every descendant on cleanup,
     /// which makes `bun run` a one-job mini shell on a controlling terminal:
@@ -2309,7 +2243,7 @@ pub const sync = struct {
         fn onChildStopped(self: *const @This()) void {
             if (self.prev <= 0) return; // non-TTY: never asked for stop reports
             ttouBlocked(self.prev);
-            // SIGTSTP is not in `Bun__registerSignalsForForwarding`'s set, so
+            // SIGTSTP is not in the spawnSync forwarding set, so
             // default disposition (stop) applies and we suspend right here.
             _ = std.c.raise(std.posix.SIG.TSTP);
             // — resumed by the shell's SIGCONT —
@@ -2328,13 +2262,101 @@ pub const sync = struct {
         }
     };
 
-    // The PID to forward signals to.
-    // Set to 0 when unregistering.
-    extern "c" var Bun__currentSyncPID: i64;
+    const SignalForwarding = if (Environment.isPosix) struct {
+        const signals = [_]std.posix.SIG{
+            .ABRT,
+            .ALRM,
+            .HUP,
+            .INT,
+            .TERM,
+            .VTALRM,
+            .XCPU,
+            .XFSZ,
+            .USR2,
+            .TRAP,
+            .SYS,
+            .QUIT,
+            .IO,
+        } ++ if (Environment.isLinux) [_]std.posix.SIG{.STKFLT} else [_]std.posix.SIG{};
 
-    // Race condition: a signal could be sent before spawnProcessPosix returns.
-    // We need to make sure to send it after the process is spawned.
-    extern "c" fn Bun__sendPendingSignalIfNecessary() void;
+        var target: std.c.sig_atomic_t = 0;
+        var pending: std.c.sig_atomic_t = 0;
+        var previous_actions: [signals.len]bun.sys.Sigaction = undefined;
+
+        comptime {
+            bun.assert(@sizeOf(std.c.sig_atomic_t) >= @sizeOf(std.c.pid_t));
+        }
+
+        fn read(variable: *std.c.sig_atomic_t) std.c.sig_atomic_t {
+            const volatile_variable: *volatile std.c.sig_atomic_t = variable;
+            return volatile_variable.*;
+        }
+
+        fn write(variable: *std.c.sig_atomic_t, value: std.c.sig_atomic_t) void {
+            const volatile_variable: *volatile std.c.sig_atomic_t = variable;
+            volatile_variable.* = value;
+        }
+
+        fn forward(pid: std.c.pid_t, signal: std.posix.SIG) void {
+            var mask = std.posix.sigemptyset();
+            var previous_mask = std.posix.sigemptyset();
+            std.posix.sigaddset(&mask, signal);
+            std.posix.sigprocmask(std.posix.SIG.BLOCK, &mask, &previous_mask);
+            _ = std.c.kill(pid, signal);
+            std.posix.sigprocmask(std.posix.SIG.SETMASK, &previous_mask, null);
+        }
+
+        fn handle(signal: std.posix.SIG) callconv(.c) void {
+            const pid = read(&target);
+            if (pid == 0) {
+                write(&pending, @intCast(@backingInt(signal)));
+                return;
+            }
+            forward(@intCast(pid), signal);
+        }
+
+        fn begin() void {
+            write(&target, 0);
+            write(&pending, 0);
+            const action = bun.sys.Sigaction{
+                .handler = .{ .handler = handle },
+                .mask = bun.sys.sigemptyset(),
+                .flags = std.posix.SA.RESETHAND,
+            };
+            for (signals, &previous_actions) |signal, *previous| {
+                bun.sys.sigaction(signal, &action, previous);
+            }
+        }
+
+        fn setTarget(pid: std.c.pid_t) void {
+            write(&target, @intCast(pid));
+        }
+
+        fn sendPending() void {
+            const signal_number = read(&pending);
+            write(&pending, 0);
+            const pid = read(&target);
+            if (signal_number == 0 or pid == 0) return;
+            forward(@intCast(pid), @fromBackingInt(@intCast(signal_number)));
+        }
+
+        fn end() void {
+            write(&target, 0);
+            for (signals, &previous_actions) |signal, *previous| {
+                bun.sys.sigaction(signal, previous, null);
+            }
+        }
+    } else struct {
+        fn begin() void {}
+        fn setTarget(_: std.c.pid_t) void {}
+        fn sendPending() void {}
+        fn end() void {}
+    };
+
+    const beginSignalForwarding = SignalForwarding.begin;
+    const setSignalForwardingTarget = SignalForwarding.setTarget;
+    const sendPendingSignal = SignalForwarding.sendPending;
+    const endSignalForwarding = SignalForwarding.end;
 
     fn spawnPosix(
         options: *const Options,
@@ -2411,22 +2433,22 @@ pub const sync = struct {
         // LIFO: runs after killSyncScriptTree() (which needs m_kq live for
         // its NOTE_FORK-drain rescan), before the close above.
         defer if (comptime Environment.isMac) if (no_orphans_kq != bun.invalid_fd)
-            Bun__noOrphans_releaseKq();
+            bun.ParentDeathWatchdog.releaseTrackingKqueue();
 
-        Bun__currentSyncPID = 0;
-        Bun__registerSignalsForForwarding();
+        beginSignalForwarding();
         defer {
-            Bun__unregisterSignalsForForwarding();
+            endSignalForwarding();
             bun.crash_handler.resetOnPosix();
         }
-        const process = switch (try spawnProcessPosix(&options.toSpawnOptions(no_orphans), argv, envp)) {
+        var process = switch (try spawnProcessPosix(&options.toSpawnOptions(no_orphans), argv, envp)) {
             .err => |err| return .{ .err = err },
             .result => |proces| proces,
         };
+        defer process.close();
         // Negative → kill() in the C++ signal forwarder targets the pgroup, so
         // a SIGTERM/SIGINT delivered to `bun run` reaches every descendant
         // that hasn't `setsid()`-escaped.
-        Bun__currentSyncPID = if (no_orphans) -@as(i64, @intCast(process.pid)) else @intCast(process.pid);
+        setSignalForwardingTarget(if (no_orphans) -process.pid else process.pid);
 
         var jc: JobControl = .{};
         const pgid_pushed = no_orphans and bun.ParentDeathWatchdog.pushSyncPgid(process.pid);
@@ -2441,7 +2463,7 @@ pub const sync = struct {
             // each discovered descendant. waitMacKqueue registers the
             // script's own knote.
             if (comptime Environment.isMac) if (no_orphans_kq != bun.invalid_fd)
-                Bun__noOrphans_begin(no_orphans_kq.native(), process.pid);
+                bun.ParentDeathWatchdog.beginTracking(no_orphans_kq.native(), process.pid);
         }
         defer if (no_orphans) {
             jc.restore();
@@ -2463,13 +2485,13 @@ pub const sync = struct {
             }
         };
 
-        Bun__sendPendingSignalIfNecessary();
+        sendPendingSignal();
 
         var out = [2]std.array_list.Managed(u8){
             std.array_list.Managed(u8).init(bun.default_allocator),
             std.array_list.Managed(u8).init(bun.default_allocator),
         };
-        var out_fds = [2]bun.FD{ process.stdout orelse bun.invalid_fd, process.stderr orelse bun.invalid_fd };
+        var out_fds = [2]bun.FD{ process.stdout.takeOwnedFd() orelse bun.invalid_fd, process.stderr.takeOwnedFd() orelse bun.invalid_fd };
         var success = false;
         defer {
             // If we're going to return an error,
@@ -2484,21 +2506,12 @@ pub const sync = struct {
 
             for (out_fds) |fd| {
                 if (fd != bun.invalid_fd) {
-                    fd.close();
-                }
-            }
-
-            if (comptime Environment.isLinux) {
-                if (process.pidfd) |pidfd| {
-                    bun.FD.fromNative(pidfd).close();
+                    _ = fd.closeAllowingStandardIo(null);
                 }
             }
         }
 
-        var out_fds_to_wait_for = [2]bun.FD{
-            process.stdout orelse bun.invalid_fd,
-            process.stderr orelse bun.invalid_fd,
-        };
+        var out_fds_to_wait_for = out_fds;
 
         if (process.memfds[1]) {
             out_fds_to_wait_for[0] = bun.invalid_fd;
@@ -2586,7 +2599,7 @@ pub const sync = struct {
     ///   - macOS: `NOTE_FORK` on the script (and recursively on each
     ///     discovered descendant) triggers a `p_puniqueid` scan
     ///     (`NoOrphansTracker::scan()`) so `setsid()`+double-fork escapees
-    ///     are tracked and killed via `Bun__noOrphans_killTracked()`.
+    ///     are tracked and killed via `ParentDeathWatchdog.killSyncScriptTree()`.
     ///     `NOTE_TRACK` would have made this atomic, but it has been
     ///     ENOTSUP since macOS 10.5.
     ///   - Linux: subreaper (armed in `spawnPosix`) makes those reparent to us,
@@ -2685,7 +2698,7 @@ pub const sync = struct {
             // registration failure. `begin()` has already seeded m_tracked
             // with `child`; prune it so the caller's `reapChild()` doesn't
             // leave a freed pid for `killTracked()` to SIGSTOP.
-            Bun__noOrphans_onExit(child);
+            bun.ParentDeathWatchdog.removeTrackedProcess(child);
             return null;
         }
         if (ppid > 1 and std.c.getppid() != ppid)
@@ -2694,7 +2707,7 @@ pub const sync = struct {
         // returning (in spawnPosix) and the NOTE_FORK registration above
         // taking effect; that fork produced no event. `begin()` already
         // seeded `m_seen` with `child`'s uniqueid, so this picks them up.
-        Bun__noOrphans_onFork();
+        bun.ParentDeathWatchdog.scanTrackedProcesses();
 
         var events: [16]std.c.Kevent = undefined;
         var child_exited = false;
@@ -2722,7 +2735,7 @@ pub const sync = struct {
                         // Drop from the live set (root included — `begin()`
                         // seeded it into `m_tracked`, and `reapChild()` is
                         // about to free its pid before `killTracked()` runs).
-                        Bun__noOrphans_onExit(@intCast(ev.ident));
+                        bun.ParentDeathWatchdog.removeTrackedProcess(@intCast(ev.ident));
                         if (ev.ident == @as(usize, @intCast(child)))
                             child_exited = true;
                     }
@@ -2742,7 +2755,7 @@ pub const sync = struct {
                             // still in m_tracked and `killTracked()` would
                             // SIGSTOP a (potentially recycled) freed pid.
                             // Idempotent with the NOTE_EXIT handler above.
-                            Bun__noOrphans_onExit(child);
+                            bun.ParentDeathWatchdog.removeTrackedProcess(child);
                         }
                     }
                 } else if (ev.filter == std.c.EVFILT.READ) {
@@ -2760,7 +2773,7 @@ pub const sync = struct {
             // `p_puniqueid` unlinkable. NOTE_TRACK closed that atomically;
             // without it the freeze-then-rescan loop in `killTracked()` is
             // the best-effort backstop.
-            if (saw_fork) Bun__noOrphans_onFork();
+            if (saw_fork) bun.ParentDeathWatchdog.scanTrackedProcesses();
             if (child_exited) {
                 // Intentionally don't wait for pipe EOF (unlike the `poll()`
                 // path): a grandchild holding the write end is exactly what
@@ -2948,26 +2961,15 @@ pub const sync = struct {
 };
 
 const std = @import("std");
-const MultiRunProcessHandle = @import("../../../cli/multi_run.zig").ProcessHandle;
-const ProcessHandle = @import("../../../cli/filter_run.zig").ProcessHandle;
-const TestWorkerHandle = @import("../../../cli/test/ParallelRunner.zig").Worker;
-
-const CronRegisterJob = @import("../cron.zig").CronRegisterJob;
-const CronRemoveJob = @import("../cron.zig").CronRemoveJob;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
 const PosixSpawn = bun.spawn;
 const Maybe = bun.sys.Maybe;
-const ShellSubprocess = bun.shell.ShellSubprocess;
 const uv = bun.windows.libuv;
 
-const ChromeProcess = bun.api.ChromeProcess;
-const WebViewHostProcess = bun.api.WebViewHostProcess;
-
-const LifecycleScriptSubprocess = bun.install.LifecycleScriptSubprocess;
-const SecurityScanSubprocess = bun.install.SecurityScanSubprocess;
-
-const jsc = bun.jsc;
-const Subprocess = jsc.Subprocess;
+const ParentEventLoop = @import("../../../event_loop/ParentEventLoop.zig");
+const RuntimeLoopHandle = @import("../../../event_loop/RuntimeLoopHandle.zig");
+const ProcessEventLoop = if (Environment.isPosix) RuntimeLoopHandle else ParentEventLoop;
+const StdioKind = @import("./StdioKind.zig").StdioKind;

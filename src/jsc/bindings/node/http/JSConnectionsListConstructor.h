@@ -1,12 +1,10 @@
 #pragma once
 
 #include "root.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/InternalFunction.h>
 
 namespace Bun {
-
-JSC_DECLARE_HOST_FUNCTION(callConnectionsList);
-JSC_DECLARE_HOST_FUNCTION(constructConnectionsList);
 
 class JSConnectionsListConstructor final : public JSC::InternalFunction {
 public:
@@ -35,7 +33,7 @@ public:
 
 private:
     JSConnectionsListConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, callConnectionsList, constructConnectionsList)
+        : Base(vm, structure, bun_bindgen_host_NodeHTTP_connectionsListConstructorCall, bun_bindgen_host_NodeHTTP_connectionsListConstructorConstruct)
     {
     }
 

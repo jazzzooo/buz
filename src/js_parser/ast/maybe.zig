@@ -53,7 +53,7 @@ pub fn AstMaybe(
             name: string,
             name_loc: logger.Loc,
             identifier_opts: IdentifierOpts,
-        ) ?Expr {
+        ) anyerror!?Expr {
             sw: switch (target.data) {
                 .e_identifier => |id| {
                     // Rewrite property accesses on explicit namespace imports as an identifier.
@@ -66,12 +66,12 @@ pub fn AstMaybe(
                                 // Generate a new import item symbol in the module scope
                                 const new_item = LocRef{
                                     .loc = name_loc,
-                                    .ref = p.newSymbol(.import, name) catch unreachable,
+                                    .ref = try p.newSymbol(.import, name),
                                 };
-                                bun.handleOom(p.module_scope.generated.append(p.allocator, new_item.ref.?));
+                                try p.module_scope.generated.append(p.allocator, new_item.ref.?);
 
-                                import_items.put(p.allocator, name, new_item) catch unreachable;
-                                p.is_import_item.put(p.allocator, new_item.ref.?, {}) catch unreachable;
+                                try import_items.put(p.allocator, name, new_item);
+                                try p.is_import_item.put(p.allocator, new_item.ref.?, {});
 
                                 var symbol = &p.symbols.items[new_item.ref.?.innerIndex()];
 
@@ -125,162 +125,6 @@ pub fn AstMaybe(
                                 p.commonjs_module_exports_assigned_deoptimized = true;
                             }
 
-                            // Detect if we are doing
-                            //
-                            //  module.exports = {
-                            //    foo: "bar"
-                            //  }
-                            //
-                            //  Note that it cannot be any of these:
-                            //
-                            //  module.exports += { };
-                            //  delete module.exports = {};
-                            //  module.exports()
-                            if (!(identifier_opts.is_call_target or identifier_opts.is_delete_target) and
-                                identifier_opts.assign_target == .replace and
-                                p.stmt_expr_value == .e_binary and
-                                p.stmt_expr_value.e_binary.op == .bin_assign)
-                            {
-                                if (
-                                // if it's not top-level, don't do this
-                                p.module_scope != p.current_scope or
-                                    // if you do
-                                    //
-                                    // exports.foo = 123;
-                                    // module.exports = {};
-                                    //
-                                    // that's a de-opt.
-                                    p.commonjs_named_exports.count() > 0 or
-
-                                    // anything which is not module.exports = {} is a de-opt.
-                                    p.stmt_expr_value.e_binary.right.data != .e_object or
-                                    p.stmt_expr_value.e_binary.left.data != .e_dot or
-                                    !strings.eqlComptime(p.stmt_expr_value.e_binary.left.data.e_dot.name, "exports") or
-                                    p.stmt_expr_value.e_binary.left.data.e_dot.target.data != .e_identifier or
-                                    !p.stmt_expr_value.e_binary.left.data.e_dot.target.data.e_identifier.ref.eql(p.module_ref))
-                                {
-                                    p.deoptimizeCommonJSNamedExports();
-                                    return null;
-                                }
-
-                                const props: []const G.Property = p.stmt_expr_value.e_binary.right.data.e_object.properties.slice();
-                                for (props) |prop| {
-                                    // if it's not a trivial object literal, de-opt
-                                    if (prop.kind != .normal or
-                                        prop.key == null or
-                                        prop.key.?.data != .e_string or
-                                        prop.flags.contains(Flags.Property.is_method) or
-                                        prop.flags.contains(Flags.Property.is_computed) or
-                                        prop.flags.contains(Flags.Property.is_spread) or
-                                        prop.flags.contains(Flags.Property.is_static) or
-                                        // If it creates a new scope, we can't do this optimization right now
-                                        // Our scope order verification stuff will get mad
-                                        // But we should let you do module.exports = { bar: foo(), baz: 123 }
-                                        // just not module.exports = { bar: function() {}  }
-                                        // just not module.exports = { bar() {}  }
-                                        switch (prop.value.?.data) {
-                                            .e_commonjs_export_identifier, .e_import_identifier, .e_identifier => false,
-                                            .e_call => |call| switch (call.target.data) {
-                                                .e_commonjs_export_identifier, .e_import_identifier, .e_identifier => false,
-                                                else => |call_target| !@as(Expr.Tag, call_target).isPrimitiveLiteral(),
-                                            },
-                                            else => !prop.value.?.isPrimitiveLiteral(),
-                                        })
-                                    {
-                                        p.deoptimizeCommonJSNamedExports();
-                                        return null;
-                                    }
-                                } else {
-                                    // empty object de-opts because otherwise the statement becomes
-                                    // <empty space> = {};
-                                    p.deoptimizeCommonJSNamedExports();
-                                    return null;
-                                }
-
-                                var stmts = std.array_list.Managed(Stmt).initCapacity(p.allocator, props.len * 2) catch unreachable;
-                                var decls = p.allocator.alloc(Decl, props.len) catch unreachable;
-                                var clause_items = p.allocator.alloc(js_ast.ClauseItem, props.len) catch unreachable;
-
-                                for (props) |prop| {
-                                    const key = prop.key.?.data.e_string.string(p.allocator) catch unreachable;
-                                    const visited_value = p.visitExpr(prop.value.?);
-                                    const value = SideEffects.simplifyUnusedExpr(p, visited_value) orelse visited_value;
-
-                                    // We are doing `module.exports = { ... }`
-                                    // lets rewrite it to a series of what will become export assignments
-                                    const named_export_entry = p.commonjs_named_exports.getOrPut(p.allocator, key) catch unreachable;
-                                    if (!named_export_entry.found_existing) {
-                                        const new_ref = p.newSymbol(
-                                            .other,
-                                            std.fmt.allocPrint(p.allocator, "${f}", .{bun.fmt.fmtIdentifier(key)}) catch unreachable,
-                                        ) catch unreachable;
-                                        bun.handleOom(p.module_scope.generated.append(p.allocator, new_ref));
-                                        named_export_entry.value_ptr.* = .{
-                                            .loc_ref = LocRef{
-                                                .loc = name_loc,
-                                                .ref = new_ref,
-                                            },
-                                            .needs_decl = false,
-                                        };
-                                    }
-                                    const ref = named_export_entry.value_ptr.loc_ref.ref.?;
-                                    // module.exports = {
-                                    //   foo: "bar",
-                                    //   baz: "qux",
-                                    // }
-                                    // ->
-                                    // exports.foo = "bar", exports.baz = "qux"
-                                    // Which will become
-                                    // $foo = "bar";
-                                    // $baz = "qux";
-                                    // export { $foo as foo, $baz as baz }
-
-                                    decls[0] = .{
-                                        .binding = p.b(B.Identifier{ .ref = ref }, prop.key.?.loc),
-                                        .value = value,
-                                    };
-                                    // we have to ensure these are known to be top-level
-                                    p.declared_symbols.append(p.allocator, .{
-                                        .ref = ref,
-                                        .is_top_level = true,
-                                    }) catch unreachable;
-                                    p.had_commonjs_named_exports_this_visit = true;
-                                    clause_items[0] = js_ast.ClauseItem{
-                                        // We want the generated name to not conflict
-                                        .alias = key,
-                                        .alias_loc = prop.key.?.loc,
-                                        .name = named_export_entry.value_ptr.loc_ref,
-                                    };
-
-                                    stmts.appendSlice(
-                                        &[_]Stmt{
-                                            p.s(
-                                                S.Local{
-                                                    .kind = .k_var,
-                                                    .is_export = false,
-                                                    .was_commonjs_export = true,
-                                                    .decls = G.Decl.List.init(decls[0..1]),
-                                                },
-                                                prop.key.?.loc,
-                                            ),
-                                            p.s(
-                                                S.ExportClause{
-                                                    .items = clause_items[0..1],
-                                                    .is_single_line = true,
-                                                },
-                                                prop.key.?.loc,
-                                            ),
-                                        },
-                                    ) catch unreachable;
-                                    decls = decls[1..];
-                                    clause_items = clause_items[1..];
-                                }
-
-                                p.ignoreUsage(p.module_ref);
-                                p.commonjs_replacement_stmts = stmts.items;
-                                return p.newExpr(E.Missing{}, name_loc);
-                            }
-
                             // Deoptimizations:
                             //      delete module.exports
                             //      module.exports();
@@ -314,31 +158,14 @@ pub fn AstMaybe(
                                     return null;
                                 }
 
-                                const named_export_entry = p.commonjs_named_exports.getOrPut(p.allocator, name) catch unreachable;
-                                if (!named_export_entry.found_existing) {
-                                    const new_ref = p.newSymbol(
-                                        .other,
-                                        std.fmt.allocPrint(p.allocator, "${f}", .{bun.fmt.fmtIdentifier(name)}) catch unreachable,
-                                    ) catch unreachable;
-                                    bun.handleOom(p.module_scope.generated.append(p.allocator, new_ref));
-                                    named_export_entry.value_ptr.* = .{
-                                        .loc_ref = LocRef{
-                                            .loc = name_loc,
-                                            .ref = new_ref,
-                                        },
-                                        .needs_decl = true,
-                                    };
-                                    if (p.commonjs_named_exports_needs_conversion == std.math.maxInt(u32))
-                                        p.commonjs_named_exports_needs_conversion = @as(u32, @truncate(p.commonjs_named_exports.count() - 1));
-                                }
-
-                                const ref = named_export_entry.value_ptr.*.loc_ref.ref.?;
+                                const entry = try ensureCommonJSExport(p, name, name_loc);
                                 p.ignoreUsage(id.ref);
-                                p.recordUsage(ref);
+                                p.recordUsage(entry.ref);
 
                                 return p.newExpr(
                                     E.CommonJSExportIdentifier{
-                                        .ref = ref,
+                                        .ref = entry.ref,
+                                        .export_index = entry.index,
                                     },
                                     name_loc,
                                 );
@@ -423,13 +250,7 @@ pub fn AstMaybe(
                             return p.newExpr(E.String.init(p.source.path.text), name_loc);
                         } else if (strings.eqlComptime(name, "url")) {
                             // Inline import.meta.url as file:// URL
-                            const url = if (comptime bun.Environment.isWasm)
-                                std.fmt.allocPrint(p.allocator, "file://{s}", .{p.source.path.text}) catch unreachable
-                            else brk: {
-                                const bunstr = bun.String.fromBytes(p.source.path.text);
-                                defer bunstr.deref();
-                                break :brk std.fmt.allocPrint(p.allocator, "{f}", .{jsc.URL.fileURLFromString(bunstr)}) catch unreachable;
-                            };
+                            const url = p.import_meta_url orelse @panic("import.meta.url lowering requires JavaScript semantics during parse preparation");
                             return p.newExpr(E.String.init(url), name_loc);
                         }
                     }
@@ -459,17 +280,17 @@ pub fn AstMaybe(
                         // note: this use is not removed as we assume it exists later
 
                         // Add a special symbol use instead
-                        const gop = p.import_symbol_property_uses.getOrPutValue(
+                        const gop = try p.import_symbol_property_uses.getOrPutValue(
                             p.allocator,
                             id.ref,
                             .{},
-                        ) catch |err| bun.handleOom(err);
-                        const inner_use = gop.value_ptr.getOrPutValue(
+                        );
+                        const inner_use = try gop.value_ptr.getOrPutValue(
                             p.allocator,
                             name,
                             .{},
-                        ) catch |err| bun.handleOom(err);
-                        inner_use.value_ptr.count_estimate += 1;
+                        );
+                        inner_use.value_ptr.count_estimate +|= 1;
                     }
                 },
                 inline .e_dot, .e_index => |data, tag| {
@@ -491,30 +312,13 @@ pub fn AstMaybe(
                                         return null;
                                     }
 
-                                    const named_export_entry = p.commonjs_named_exports.getOrPut(p.allocator, name) catch unreachable;
-                                    if (!named_export_entry.found_existing) {
-                                        const new_ref = p.newSymbol(
-                                            .other,
-                                            std.fmt.allocPrint(p.allocator, "${f}", .{bun.fmt.fmtIdentifier(name)}) catch unreachable,
-                                        ) catch unreachable;
-                                        bun.handleOom(p.module_scope.generated.append(p.allocator, new_ref));
-                                        named_export_entry.value_ptr.* = .{
-                                            .loc_ref = LocRef{
-                                                .loc = name_loc,
-                                                .ref = new_ref,
-                                            },
-                                            .needs_decl = true,
-                                        };
-                                        if (p.commonjs_named_exports_needs_conversion == std.math.maxInt(u32))
-                                            p.commonjs_named_exports_needs_conversion = @as(u32, @truncate(p.commonjs_named_exports.count() - 1));
-                                    }
-
-                                    const ref = named_export_entry.value_ptr.*.loc_ref.ref.?;
-                                    p.recordUsage(ref);
+                                    const entry = try ensureCommonJSExport(p, name, name_loc);
+                                    p.recordUsage(entry.ref);
 
                                     return p.newExpr(
                                         E.CommonJSExportIdentifier{
-                                            .ref = ref,
+                                            .ref = entry.ref,
+                                            .export_index = entry.index,
                                             // Record this as from module.exports
                                             .base = .module_dot_exports,
                                         },
@@ -569,15 +373,13 @@ pub fn AstMaybe(
                             // runtime. When the API is not validated in this
                             // way, the developer may unintentionally read or
                             // write internal fields of HMRModule.
-                            p.log.addError(
+                            try p.log.addErrorFmt(
                                 p.source,
                                 loc,
-                                std.fmt.allocPrint(
-                                    p.allocator,
-                                    "import.meta.hot.{s} does not exist",
-                                    .{name},
-                                ) catch |err| bun.handleOom(err),
-                            ) catch |err| bun.handleOom(err);
+                                p.allocator,
+                                "import.meta.hot.{s} does not exist",
+                                .{name},
+                            );
                             return .{ .data = .e_undefined, .loc = loc };
                         }
                     },
@@ -587,6 +389,34 @@ pub fn AstMaybe(
             }
 
             return null;
+        }
+
+        const CommonJSExport = struct {
+            ref: Ref,
+            index: E.CommonJSExportIdentifier.ExportIndex,
+        };
+
+        fn ensureCommonJSExport(p: *P, name: string, loc: logger.Loc) anyerror!CommonJSExport {
+            if (p.commonjs_named_exports.getIndex(name)) |index| {
+                return .{
+                    .ref = p.commonjs_named_exports.values()[index].loc_ref.ref.?,
+                    .index = @fromBackingInt(@intCast(index)),
+                };
+            }
+            const index = std.math.cast(u32, p.commonjs_named_exports.count()) orelse return error.OutOfMemory;
+            if (index == std.math.maxInt(u32)) return error.OutOfMemory;
+            try p.commonjs_named_exports.ensureUnusedCapacity(p.allocator, 1);
+            const symbol_name = try std.fmt.allocPrint(p.allocator, "${f}", .{bun.fmt.fmtIdentifier(name)});
+            const ref = p.newSymbol(.other, symbol_name) catch |err| {
+                p.allocator.free(symbol_name);
+                return err;
+            };
+            try p.module_scope.generated.append(p.allocator, ref);
+            p.commonjs_named_exports.putAssumeCapacityNoClobber(name, .{
+                .loc_ref = .{ .loc = loc, .ref = ref },
+                .needs_decl = true,
+            });
+            return .{ .ref = ref, .index = @fromBackingInt(index) };
         }
 
         fn maybeRewritePropertyAccessForNamespace(
@@ -618,18 +448,11 @@ pub fn AstMaybe(
                         // If this isn't a constant, return a clone of this property access
                         // but with the namespace member data associated with it so that
                         // more property accesses off of this property access are recognized.
-                        const expr = if (js_lexer.isIdentifier(name))
-                            p.newExpr(E.Dot{
-                                .target = target.*,
-                                .name = name,
-                                .name_loc = name_loc,
-                            }, loc)
-                        else
-                            p.newExpr(E.Dot{
-                                .target = target.*,
-                                .name = name,
-                                .name_loc = name_loc,
-                            }, loc);
+                        const expr = p.newExpr(E.Dot{
+                            .target = target.*,
+                            .name = name,
+                            .name_loc = name_loc,
+                        }, loc);
 
                         p.ts_namespace = .{
                             .expr = expr.data,
@@ -675,7 +498,7 @@ pub fn AstMaybe(
                     .test_ = try p.checkIfDefinedHelper(identifier_expr),
                     .yes = p.newExpr(
                         E.Identifier{
-                            .ref = (p.findSymbol(logger.Loc.Empty, "Object") catch unreachable).ref,
+                            .ref = (try p.findSymbol(logger.Loc.Empty, "Object")).ref,
                         },
                         logger.Loc.Empty,
                     ),
@@ -685,11 +508,11 @@ pub fn AstMaybe(
             );
         }
 
-        pub fn maybeCommaSpreadError(p: *P, _comma_after_spread: ?logger.Loc) void {
+        pub fn maybeCommaSpreadError(p: *P, _comma_after_spread: ?logger.Loc) bun.OOM!void {
             const comma_after_spread = _comma_after_spread orelse return;
             if (comma_after_spread.start == -1) return;
 
-            p.log.addRangeError(p.source, logger.Range{ .loc = comma_after_spread, .len = 1 }, "Unexpected \",\" after rest pattern") catch unreachable;
+            try p.log.addRangeError(p.source, logger.Range{ .loc = comma_after_spread, .len = 1 }, "Unexpected \",\" after rest pattern");
         }
     };
 }
@@ -701,30 +524,25 @@ const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const assert = bun.assert;
 const js_lexer = bun.js_lexer;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 
 const js_ast = bun.ast;
-const B = js_ast.B;
 const Binding = js_ast.Binding;
 const E = js_ast.E;
 const Expr = js_ast.Expr;
-const Flags = js_ast.Flags;
 const LocRef = js_ast.LocRef;
 const S = js_ast.S;
 const Stmt = js_ast.Stmt;
 const Symbol = js_ast.Symbol;
 
 const G = js_ast.G;
-const Decl = G.Decl;
-const Property = G.Property;
 
 const js_parser = bun.js_parser;
+const Ref = js_parser.Ref;
 const IdentifierOpts = js_parser.IdentifierOpts;
 const JSXTransformType = js_parser.JSXTransformType;
 const RelocateVars = js_parser.RelocateVars;
-const SideEffects = js_parser.SideEffects;
 const TypeScript = js_parser.TypeScript;
 const options = js_parser.options;
 

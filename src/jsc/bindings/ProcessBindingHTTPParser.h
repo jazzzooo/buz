@@ -8,7 +8,7 @@ namespace Bun {
 class ProcessBindingHTTPParser final : public JSC::JSNonFinalObject {
 public:
     using Base = JSC::JSNonFinalObject;
-    static constexpr unsigned StructureFlags = Base::StructureFlags | JSC::HasStaticPropertyTable;
+    static constexpr unsigned StructureFlags = Base::StructureFlags | HasStaticPropertyTable;
 
     static ProcessBindingHTTPParser* create(JSC::VM&, JSC::Structure* structure);
     static JSC::Structure* createStructure(JSC::VM&, JSC::JSGlobalObject*);

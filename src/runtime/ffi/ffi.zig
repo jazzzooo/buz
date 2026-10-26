@@ -1,7 +1,5 @@
 const debug = Output.scoped(.TCC, .visible);
 
-extern fn pthread_jit_write_protect_np(enable: c_int) void;
-
 /// Get the last dynamic library loading error message in a cross-platform way.
 /// On POSIX systems, this calls dlerror().
 /// On Windows, this uses GetLastError() and formats the error message.
@@ -26,29 +24,134 @@ fn getDlError(allocator: std.mem.Allocator) ![]const u8 {
     }
 }
 
-/// Run a function that needs to write to JIT-protected memory.
-///
-/// This is dangerous as it allows overwriting executable regions of memory.
-/// Do not pass in user-defined functions (including JSFunctions).
-fn dangerouslyRunWithoutJitProtections(R: type, func: anytype, args: anytype) R {
-    const has_protection = (Environment.isAarch64 and Environment.isMac);
-    if (comptime has_protection) pthread_jit_write_protect_np(@intFromBool(false));
-    defer if (comptime has_protection) pthread_jit_write_protect_np(@intFromBool(true));
-    return @call(bun.callmod_inline, func, args);
-}
-
 pub const FFI = struct {
-    pub const js = jsc.Codegen.JSFFI;
-    pub const toJS = js.toJS;
-    pub const fromJS = js.fromJS;
-    pub const fromJSDirect = js.fromJSDirect;
+    const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
+    pub const ref = RefCount.ref;
+    pub const deref = RefCount.deref;
 
+    pub const JSBinding = struct {
+        bindgen_state: bun.bindgen.ClassState = .{},
+        ffi: bun.bindgen.RefNative(FFI, .vm),
+
+        pub const destroy = @This().deinit;
+
+        fn deinit(this: *JSBinding) void {
+            this.ffi.deinit();
+            bun.destroy(this);
+        }
+
+        pub fn memoryUsage(this: *const JSBinding, _: bun.bindgen.MemoryUsageContext(.vm)) usize {
+            return @sizeOf(JSBinding) + this.ffi.get().estimatedSize();
+        }
+
+        pub fn bindClose(
+            this: *JSBinding,
+            _: bun.bindgen.CallContext(FFICloseSchema),
+            _: bun.bindgen.Args(FFICloseSchema),
+        ) bun.JSError!void {
+            this.ffi.get().close();
+        }
+
+        pub fn bindGetSymbols(
+            _: *JSBinding,
+            _: bun.bindgen.CallContext(FFISymbolsSchema),
+            _: bun.bindgen.Args(FFISymbolsSchema),
+        ) bun.JSError!bun.bindgen.Return(FFISymbolsSchema) {
+            unreachable;
+        }
+    };
+
+    ref_count: RefCount = .init(),
+    allocator: Allocator,
     dylib: ?DynLib = null,
     functions: bun.StringArrayHashMap(Function) = .empty,
     closed: bool = false,
+    active_calls: usize = 0,
+    environment: ?FFIEnvironment = null,
     shared_state: ?*TCC.State = null,
 
-    pub fn finalize(_: *FFI) callconv(.c) void {}
+    pub fn toResult(this: *FFI, context: anytype) bun.JSError!FFIRef {
+        const binding = bun.default_allocator.create(JSBinding) catch {
+            this.deref();
+            return error.OutOfMemory;
+        };
+        binding.* = .{ .ffi = .adopt(this) };
+        var reference = try FFIClass.adoptResult(binding, context);
+        errdefer reference.deinit();
+
+        const Symbol = struct { name: bun.bindgen.DOMString, index: usize };
+        var symbols: std.ArrayListUnmanaged(Symbol) = .empty;
+        defer {
+            for (symbols.items) |*symbol| {
+                symbol.name.deinit();
+            }
+            symbols.deinit(bun.default_allocator);
+        }
+        try symbols.ensureTotalCapacity(bun.default_allocator, this.functions.count());
+        for (this.functions.values(), 0..) |*function, index| {
+            symbols.appendAssumeCapacity(.{
+                .name = try bun.bindgen.DOMString.fromUTF8(function.base_name.?),
+                .index = index,
+            });
+        }
+
+        const operation = context.engineIn("FFI", "ffiLibraryInstallSymbols");
+        const OperationArgs = @TypeOf(operation).Args;
+        const ContextSymbol = @typeInfo(@FieldType(OperationArgs, "symbols")).pointer.child;
+        var context_symbols: std.ArrayListUnmanaged(ContextSymbol) = .empty;
+        defer context_symbols.deinit(bun.default_allocator);
+        try context_symbols.ensureTotalCapacity(bun.default_allocator, symbols.items.len);
+        for (symbols.items) |*symbol| {
+            context_symbols.appendAssumeCapacity(.{
+                .name = symbol.name.operand(),
+                .index = symbol.index,
+            });
+        }
+
+        try operation.call(.{
+            .library = reference.operand(context),
+            .symbols = context_symbols.items,
+        });
+        return reference;
+    }
+
+    fn estimatedSize(this: *const FFI) usize {
+        _ = this;
+        return @sizeOf(FFI);
+    }
+
+    fn prepare(this: *FFI, context: anytype) bun.JSError!void {
+        for (this.functions.values()) |*function| {
+            if (function.needsNapiEnv() and this.environment == null)
+                this.environment = try context.engineIn("FFI", "createEnvironment").call(.{});
+            function.native_data = try context.engineIn("FFI", "prepareFunction").call(.{
+                .symbol = function.symbol_from_dynamic_library orelse unreachable,
+                .argumentTypes = function.arg_types.items,
+                .returnType = function.return_type,
+            });
+        }
+    }
+
+    pub fn copyFilePath(context: anytype, input: anytype) bun.bindgen.CallError(@TypeOf(context))![:0]const u8 {
+        const allocator = bun.default_allocator;
+        const result = switch (input) {
+            .path => |path| copied: {
+                const bytes = try allocator.allocSentinel(u8, path.length(), 0);
+                if (!path.read(0, bytes)) unreachable;
+                break :copied bytes;
+            },
+            .blob => |blob| copied: {
+                const store = blob.get().storePtr() orelse return context.fail(.expected_file_blob, {});
+                if (store.data != .file or store.data.file.pathlike != .path)
+                    return context.fail(.expected_file_blob, {});
+                break :copied try allocator.dupeSentinel(u8, store.data.file.pathlike.path.slice(), 0);
+            },
+        };
+        errdefer allocator.free(result);
+        if (result.len == 0) return context.fail(.empty_file_path, {});
+        if (std.mem.indexOfScalar(u8, result, 0) != null) return context.fail(.invalid_file_path, {});
+        return result;
+    }
 
     const CompileC = struct {
         source: Source = .{ .file = "" },
@@ -62,10 +165,26 @@ pub const FFI = struct {
         // Flags to replace the default flags
         flags: [:0]const u8 = "",
         deferred_errors: std.ArrayListUnmanaged([]const u8) = .empty,
+        diagnostic_oom: bool = false,
 
         const Source = union(enum) {
             file: [:0]const u8,
             files: std.ArrayListUnmanaged([:0]const u8),
+
+            pub fn fromBinding(context: anytype, input: anytype) bun.bindgen.CallError(@TypeOf(context))!Source {
+                switch (input) {
+                    .single => |path| return .{ .file = try FFI.copyFilePath(context, path) },
+                    .files => |files| {
+                        if (files.len() == 0) return context.fail(.empty_sources, {});
+                        var result: Source = .{ .files = .empty };
+                        errdefer result.deinit(bun.default_allocator);
+                        try result.files.ensureTotalCapacity(bun.default_allocator, files.len());
+                        for (0..files.len()) |index|
+                            result.files.appendAssumeCapacity(try FFI.copyFilePath(context, files.at(index).?));
+                        return result;
+                    },
+                }
+            }
 
             pub fn first(this: *const Source) [:0]const u8 {
                 return switch (this.*) {
@@ -107,116 +226,94 @@ pub const FFI = struct {
         };
 
         const stdarg = struct {
-            extern "c" fn ffi_vfprintf(*anyopaque, [*:0]const u8, ...) callconv(.c) c_int;
-            extern "c" fn ffi_vprintf([*:0]const u8, ...) callconv(.c) c_int;
-            extern "c" fn ffi_fprintf(*anyopaque, [*:0]const u8, ...) callconv(.c) c_int;
-            extern "c" fn ffi_printf([*:0]const u8, ...) callconv(.c) c_int;
-            extern "c" fn ffi_fscanf(*anyopaque, [*:0]const u8, ...) callconv(.c) c_int;
-            extern "c" fn ffi_scanf([*:0]const u8, ...) callconv(.c) c_int;
-            extern "c" fn ffi_sscanf([*:0]const u8, [*:0]const u8, ...) callconv(.c) c_int;
-            extern "c" fn ffi_vsscanf([*:0]const u8, [*:0]const u8, ...) callconv(.c) c_int;
-            extern "c" fn ffi_fopen([*:0]const u8, [*:0]const u8) callconv(.c) *anyopaque;
-            extern "c" fn ffi_fclose(*anyopaque) callconv(.c) c_int;
-            extern "c" fn ffi_fgetc(*anyopaque) callconv(.c) c_int;
-            extern "c" fn ffi_fputc(c: c_int, *anyopaque) callconv(.c) c_int;
-            extern "c" fn ffi_feof(*anyopaque) callconv(.c) c_int;
-            extern "c" fn ffi_fileno(*anyopaque) callconv(.c) c_int;
-            extern "c" fn ffi_ungetc(c: c_int, *anyopaque) callconv(.c) c_int;
-            extern "c" fn ffi_ftell(*anyopaque) callconv(.c) c_long;
-            extern "c" fn ffi_fseek(*anyopaque, c_long, c_int) callconv(.c) c_int;
-            extern "c" fn ffi_fflush(*anyopaque) callconv(.c) c_int;
-
-            extern "c" fn calloc(nmemb: usize, size: usize) callconv(.c) ?*anyopaque;
-            extern "c" fn perror([*:0]const u8) callconv(.c) void;
+            const stdio = @import("tcc-stdio");
 
             const mac = if (Environment.isMac) struct {
-                var ffi_stdinp: *anyopaque = @extern(*anyopaque, .{ .name = "__stdinp" });
-                var ffi_stdoutp: *anyopaque = @extern(*anyopaque, .{ .name = "__stdoutp" });
-                var ffi_stderrp: *anyopaque = @extern(*anyopaque, .{ .name = "__stderrp" });
-
-                pub fn inject(state: *TCC.State) void {
-                    state.addSymbolsComptime(.{
-                        .__stdinp = ffi_stdinp,
-                        .__stdoutp = ffi_stdoutp,
-                        .__stderrp = ffi_stderrp,
-                    }) catch @panic("Failed to add macos symbols");
+                pub fn inject(state: *TCC.State) TCC.Error!void {
+                    try state.addSymbolsComptime(.{
+                        .__stdinp = &stdio.__stdinp,
+                        .__stdoutp = &stdio.__stdoutp,
+                        .__stderrp = &stdio.__stderrp,
+                    });
                 }
             } else struct {
-                pub fn inject(_: *TCC.State) void {}
+                pub fn inject(_: *TCC.State) TCC.Error!void {}
             };
 
-            pub fn inject(state: *TCC.State) void {
-                state.addSymbolsComptime(.{
+            pub fn inject(state: *TCC.State) TCC.Error!void {
+                try state.addSymbolsComptime(.{
                     // printf family
-                    .vfprintf = ffi_vfprintf,
-                    .vprintf = ffi_vprintf,
-                    .fprintf = ffi_fprintf,
-                    .printf = ffi_printf,
-                    .fscanf = ffi_fscanf,
-                    .scanf = ffi_scanf,
-                    .sscanf = ffi_sscanf,
-                    .vsscanf = ffi_vsscanf,
+                    .vfprintf = stdio.bun_tcc_vfprintf,
+                    .vprintf = stdio.bun_tcc_vprintf,
+                    .fprintf = stdio.bun_tcc_fprintf,
+                    .printf = stdio.bun_tcc_printf,
+                    .fscanf = stdio.fscanf,
+                    .scanf = stdio.scanf,
+                    .sscanf = stdio.sscanf,
+                    .vsscanf = stdio.vsscanf,
                     // files
-                    .fopen = ffi_fopen,
-                    .fclose = ffi_fclose,
-                    .fgetc = ffi_fgetc,
-                    .fputc = ffi_fputc,
-                    .feof = ffi_feof,
-                    .fileno = ffi_fileno,
+                    .fopen = stdio.fopen,
+                    .fclose = stdio.fclose,
+                    .fgetc = stdio.fgetc,
+                    .fputc = stdio.fputc,
+                    .feof = stdio.feof,
+                    .fileno = if (Environment.isWindows) stdio._fileno else stdio.fileno,
                     .fwrite = std.c.fwrite,
-                    .ungetc = ffi_ungetc,
-                    .ftell = ffi_ftell,
-                    .fseek = ffi_fseek,
-                    .fflush = ffi_fflush,
+                    .ungetc = stdio.ungetc,
+                    .ftell = stdio.ftell,
+                    .fseek = stdio.fseek,
+                    .fflush = stdio.fflush,
                     .fread = std.c.fread,
                     // memory
                     .malloc = std.c.malloc,
                     .realloc = std.c.realloc,
-                    .calloc = calloc,
+                    .calloc = stdio.calloc,
                     .free = std.c.free,
                     // error
-                    .perror = perror,
-                }) catch @panic("Failed to add std.c symbols");
+                    .perror = stdio.perror,
+                });
 
                 if (Environment.isPosix) {
-                    state.addSymbolsComptime(.{
+                    try state.addSymbolsComptime(.{
                         .posix_memalign = std.c.posix_memalign,
                         .dlopen = std.c.dlopen,
                         .dlclose = std.c.dlclose,
                         .dlsym = std.c.dlsym,
                         .dlerror = std.c.dlerror,
-                    }) catch @panic("Failed to add posix symbols");
+                    });
                 }
 
-                mac.inject(state);
+                try mac.inject(state);
             }
         };
 
-        pub fn handleCompilationError(this_: ?*CompileC, message: ?[*:0]const u8) callconv(.c) void {
+        pub fn handleCompilationError(this_: ?*CompileC, message: [*:0]const u8) callconv(.c) void {
             const this = this_ orelse return;
-            var msg = std.mem.span(message orelse "");
-            if (msg.len == 0) return;
-
-            var offset: usize = 0;
-            // the message we get from TCC sometimes has garbage in it
-            // i think because we're doing in-memory compilation
-            while (offset < msg.len) : (offset += 1) {
-                if (msg[offset] > 0x20 and msg[offset] < 0x7f) break;
-            }
-            msg = msg[offset..];
-
-            bun.handleOom(this.deferred_errors.append(bun.default_allocator, bun.handleOom(bun.default_allocator.dupe(u8, msg))));
+            this.addDiagnostic(std.mem.span(message));
         }
 
-        const DeferredError = error{DeferredErrors};
+        fn addDiagnostic(this: *CompileC, message: []const u8) void {
+            if (message.len == 0 or this.diagnostic_oom) return;
+            const copy = bun.default_allocator.dupe(u8, message) catch {
+                this.diagnostic_oom = true;
+                return;
+            };
+            this.deferred_errors.append(bun.default_allocator, copy) catch {
+                bun.default_allocator.free(copy);
+                this.diagnostic_oom = true;
+            };
+        }
+
+        const DeferredError = error{ DeferredErrors, OutOfMemory };
 
         inline fn hasDeferredErrors(this: *CompileC) bool {
-            return this.deferred_errors.items.len > 0;
+            return this.diagnostic_oom or this.deferred_errors.items.len > 0;
         }
 
         /// Returns DeferredError if any errors from tinycc were registered
         /// via `handleCompilationError`
         inline fn errorCheck(this: *CompileC) DeferredError!void {
+            if (this.diagnostic_oom) return error.OutOfMemory;
             if (this.deferred_errors.items.len > 0) {
                 return error.DeferredErrors;
             }
@@ -299,7 +396,7 @@ pub const FFI = struct {
             return cached_default_system_library_dir;
         }
 
-        pub fn compile(this: *CompileC, globalThis: *JSGlobalObject) !*TCC.State {
+        pub fn compile(this: *CompileC, context: anytype, io: std.Io) (bun.bindgen.CallError(@TypeOf(context)) || DeferredError)!*TCC.State {
             const compile_options: [:0]const u8 = if (this.flags.len > 0)
                 this.flags
             else if (bun.env_var.BUN_TCC_OPTIONS.get()) |tcc_options|
@@ -307,21 +404,22 @@ pub const FFI = struct {
             else
                 default_tcc_options;
 
-            // TODO: correctly handle invalid user-provided options
             const state = TCC.State.init(CompileC, .{
                 .options = compile_options,
                 .err = .{ .ctx = this, .handler = &handleCompilationError },
             }, true) catch |e| switch (e) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
-                    bun.debugAssert(this.hasDeferredErrors());
+                    if (!this.hasDeferredErrors()) this.addDiagnostic("TinyCC could not initialize the compiler options");
+                    try this.errorCheck();
                     return error.DeferredErrors;
                 },
             };
+            errdefer state.deinit();
 
             var pathbuf: [bun.MAX_PATH_BYTES]u8 = undefined;
 
-            if (CompilerRT.dir(globalThis.bunVM().io)) |compiler_rt_dir| {
+            if (CompilerRT.dir(io)) |compiler_rt_dir| {
                 state.addSysIncludePath(compiler_rt_dir) catch {
                     debug("TinyCC failed to add sysinclude path", .{});
                 };
@@ -331,16 +429,16 @@ pub const FFI = struct {
                 add_system_include_dir: {
                     const dirs_to_try = [_][]const u8{
                         bun.env_var.SDKROOT.get() orelse "",
-                        getSystemIncludeDir(globalThis.bunVM().io) orelse "",
+                        getSystemIncludeDir(io) orelse "",
                     };
 
                     for (dirs_to_try) |sdkroot| {
                         if (sdkroot.len > 0) {
                             const include_dir = bun.path.joinAbsStringBufZ(sdkroot, &pathbuf, &.{ "usr", "include" }, .auto);
-                            state.addSysIncludePath(include_dir) catch return globalThis.throw("TinyCC failed to add sysinclude path", .{});
+                            state.addSysIncludePath(include_dir) catch return failMessage(context, .compile_failed, "TinyCC failed to add sysinclude path", .{});
 
                             const lib_dir = bun.path.joinAbsStringBufZ(sdkroot, &pathbuf, &.{ "usr", "lib" }, .auto);
-                            state.addLibraryPath(lib_dir) catch return globalThis.throw("TinyCC failed to add library path", .{});
+                            state.addLibraryPath(lib_dir) catch return failMessage(context, .compile_failed, "TinyCC failed to add library path", .{});
 
                             break :add_system_include_dir;
                         }
@@ -361,13 +459,13 @@ pub const FFI = struct {
                     }
                 }
             } else if (Environment.isLinux) {
-                if (getSystemIncludeDir(globalThis.bunVM().io)) |include_dir| {
+                if (getSystemIncludeDir(io)) |include_dir| {
                     state.addSysIncludePath(include_dir) catch {
                         debug("TinyCC failed to add sysinclude path", .{});
                     };
                 }
 
-                if (getSystemLibraryDir(globalThis.bunVM().io)) |library_dir| {
+                if (getSystemLibraryDir(io)) |library_dir| {
                     state.addLibraryPath(library_dir) catch {
                         debug("TinyCC failed to add library path", .{});
                     };
@@ -393,7 +491,7 @@ pub const FFI = struct {
                     var include_iter = std.mem.splitScalar(u8, c_include_path, ':');
                     while (include_iter.next()) |path| {
                         if (path.len > 0) {
-                            const path_z = bun.default_allocator.dupeSentinel(u8, path, 0) catch continue;
+                            const path_z = try bun.default_allocator.dupeSentinel(u8, path, 0);
                             defer bun.default_allocator.free(path_z);
                             state.addSysIncludePath(path_z) catch {
                                 debug("TinyCC failed to add C_INCLUDE_PATH: {s}", .{path});
@@ -407,7 +505,7 @@ pub const FFI = struct {
                     var library_iter = std.mem.splitScalar(u8, library_path, ':');
                     while (library_iter.next()) |path| {
                         if (path.len > 0) {
-                            const path_z = bun.default_allocator.dupeSentinel(u8, path, 0) catch continue;
+                            const path_z = try bun.default_allocator.dupeSentinel(u8, path, 0);
                             defer bun.default_allocator.free(path_z);
                             state.addLibraryPath(path_z) catch {
                                 debug("TinyCC failed to add LIBRARY_PATH: {s}", .{path});
@@ -421,23 +519,21 @@ pub const FFI = struct {
 
             for (this.include_dirs.items) |include_dir| {
                 state.addSysIncludePath(include_dir) catch {
-                    bun.debugAssert(this.hasDeferredErrors());
+                    if (!this.hasDeferredErrors()) this.addDiagnostic("TinyCC could not add an include directory");
+                    try this.errorCheck();
                     return error.DeferredErrors;
                 };
             }
 
             try this.errorCheck();
 
-            CompilerRT.define(state);
+            CompilerRT.define(state) catch {
+                if (!this.hasDeferredErrors()) this.addDiagnostic("TinyCC could not compile its runtime support");
+                try this.errorCheck();
+                return error.DeferredErrors;
+            };
 
             try this.errorCheck();
-
-            for (this.symbols.map.values()) |*symbol| {
-                if (symbol.needsNapiEnv()) {
-                    state.addSymbol("Bun__thisFFIModuleNapiEnv", globalThis.makeNapiEnvForFFI()) catch return error.DeferredErrors;
-                    break;
-                }
-            }
 
             for (this.define.items) |define| {
                 state.defineSymbol(define[0], define[1]);
@@ -445,18 +541,21 @@ pub const FFI = struct {
             }
 
             this.source.add(state, &this.current_file_for_errors) catch {
-                if (this.deferred_errors.items.len > 0) {
-                    return error.DeferredErrors;
-                } else {
-                    if (!globalThis.hasException()) {
-                        return globalThis.throw("TinyCC failed to compile", .{});
-                    }
-                    return error.JSError;
-                }
+                if (!this.hasDeferredErrors()) this.addDiagnostic("TinyCC failed to compile the source");
+                try this.errorCheck();
+                return error.DeferredErrors;
             };
 
-            CompilerRT.inject(state);
-            stdarg.inject(state);
+            CompilerRT.inject(state) catch {
+                if (!this.hasDeferredErrors()) this.addDiagnostic("TinyCC could not install its memory functions");
+                try this.errorCheck();
+                return error.DeferredErrors;
+            };
+            stdarg.inject(state) catch {
+                if (!this.hasDeferredErrors()) this.addDiagnostic("TinyCC could not install its C library functions");
+                try this.errorCheck();
+                return error.DeferredErrors;
+            };
 
             try this.errorCheck();
 
@@ -474,29 +573,23 @@ pub const FFI = struct {
             }
             try this.errorCheck();
 
-            // TinyCC now manages relocation memory internally
-            dangerouslyRunWithoutJitProtections(TCC.Error!void, TCC.State.relocate, .{state}) catch {
-                if (!this.hasDeferredErrors()) {
-                    bun.handleOom(this.deferred_errors.append(bun.default_allocator, "tcc_relocate returned a negative value"));
-                }
+            state.relocate() catch {
+                if (!this.hasDeferredErrors()) this.addDiagnostic("TinyCC could not relocate the compiled code");
+                try this.errorCheck();
                 return error.DeferredErrors;
             };
 
-            // if errors got added, we would have returned in the relocation catch.
-            bun.debugAssert(this.deferred_errors.items.len == 0);
+            try this.errorCheck();
 
-            for (this.symbols.map.keys(), this.symbols.map.values()) |symbol, *function| {
-                // FIXME: why are we duping here? can we at least use a stack
-                // fallback allocator?
-                const duped = bun.handleOom(bun.default_allocator.dupeSentinel(u8, symbol, 0));
-                defer bun.default_allocator.free(duped);
-                function.symbol_from_dynamic_library = state.getSymbol(duped) orelse {
-                    return globalThis.throw("{f} is missing from {s}. Was it included in the source code?", .{ bun.fmt.quote(symbol), this.source.first() });
-                };
+            for (this.symbols.map.values()) |*function| {
+                const name = function.base_name.?;
+                function.symbol_from_dynamic_library = @ptrCast(state.getSymbol(name) orelse {
+                    return failMessage(context, .symbol_not_found, "{f} is missing from {s}. Was it included in the source code?", .{ bun.fmt.quote(name), this.source.first() });
+                });
             }
 
             try this.errorCheck();
-
+            state.clearErrorFunc();
             return state;
         }
 
@@ -526,9 +619,7 @@ pub const FFI = struct {
     const SymbolsMap = struct {
         map: bun.StringArrayHashMap(Function) = .empty,
         pub fn deinit(this: *SymbolsMap) void {
-            for (this.map.keys()) |key| {
-                bun.default_allocator.free(@constCast(key));
-            }
+            for (this.map.values()) |*function| function.deinit();
             this.map.clearAndFree(bun.default_allocator);
         }
     };
@@ -547,333 +638,194 @@ pub const FFI = struct {
                 bun.default_allocator.free(this.items);
         }
 
-        pub fn fromJSArray(globalThis: *jsc.JSGlobalObject, value: jsc.JSValue, comptime property: []const u8) bun.JSError!StringArray {
-            var iter = try value.arrayIterator(globalThis);
-            var items = std.array_list.Managed([:0]const u8).init(bun.default_allocator);
+        fn append(context: anytype, items: *std.ArrayListUnmanaged([:0]const u8), value: anytype) bun.bindgen.CallError(@TypeOf(context))!void {
+            if (value.length() == 0) return;
+            const text = try value.toOwnedSliceZ(bun.default_allocator);
+            errdefer bun.default_allocator.free(text);
+            if (std.mem.indexOfScalar(u8, text, 0) != null) return context.fail(.invalid_compile_string, {});
+            try items.append(bun.default_allocator, text);
+        }
 
-            while (try iter.next()) |val| {
-                if (!val.isString()) {
-                    for (items.items) |item| {
-                        bun.default_allocator.free(@constCast(item));
+        pub fn fromBinding(context: anytype, value: anytype) bun.bindgen.CallError(@TypeOf(context))!StringArray {
+            var items: std.ArrayListUnmanaged([:0]const u8) = .empty;
+            errdefer {
+                for (items.items) |item| bun.default_allocator.free(item);
+                items.deinit(bun.default_allocator);
+            }
+            switch (value.*) {
+                .string => |*string_value| try append(context, &items, string_value),
+                .strings => |*string_values| {
+                    try items.ensureTotalCapacity(bun.default_allocator, string_values.len());
+                    for (0..string_values.len()) |index| {
+                        const item = string_values.at(index).?;
+                        try append(context, &items, &item);
                     }
-                    items.deinit();
-                    return globalThis.throwInvalidArgumentTypeValue(property, "array of strings", val);
-                }
-                const str = try val.getZigString(globalThis);
-                if (str.isEmpty()) continue;
-                bun.handleOom(items.append(bun.handleOom(str.toOwnedSliceZ(bun.default_allocator))));
+                },
             }
-
-            return .{ .items = items.items };
-        }
-
-        pub fn fromJSString(globalThis: *jsc.JSGlobalObject, value: jsc.JSValue, comptime property: []const u8) bun.JSError!StringArray {
-            if (value.isUndefined()) return .{};
-            if (!value.isString()) {
-                return globalThis.throwInvalidArgumentTypeValue(property, "array of strings", value);
-            }
-            const str = try value.getZigString(globalThis);
-            if (str.isEmpty()) return .{};
-            var items = std.array_list.Managed([:0]const u8).init(bun.default_allocator);
-            bun.handleOom(items.append(bun.handleOom(str.toOwnedSliceZ(bun.default_allocator))));
-            return .{ .items = items.items };
-        }
-
-        pub fn fromJS(globalThis: *jsc.JSGlobalObject, value: jsc.JSValue, comptime property: []const u8) bun.JSError!StringArray {
-            if (value.isArray()) {
-                return fromJSArray(globalThis, value, property);
-            }
-            return fromJSString(globalThis, value, property);
+            return .{ .items = try items.toOwnedSlice(bun.default_allocator) };
         }
     };
 
-    pub fn Bun__FFI__cc(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+    pub fn compile(
+        io: std.Io,
+        context: bun.bindgen.CallContext(CompileSchema),
+        args: bun.bindgen.Args(CompileSchema),
+    ) bun.bindgen.CallError(CompileSchema)!bun.bindgen.Return(CompileSchema) {
         if (comptime !Environment.enable_tinycc) {
-            return globalThis.throw("bun:ffi cc() is not available in this build (TinyCC is disabled)", .{});
+            return context.fail(.compile_disabled, {});
         }
-        const arguments = callframe.arguments_old(1).slice();
-        if (arguments.len == 0 or !arguments[0].isObject()) {
-            return globalThis.throwInvalidArguments("Expected object", .{});
-        }
+        const compile_options = args.options orelse return context.fail(.expected_object, {});
+        const converted_options = try compile_options.convert(context);
+        const compile_options_value = switch (converted_options.value) {
+            .options => |*options_value| options_value,
+            .invalid => return context.fail(.expected_object, {}),
+        };
         const allocator = bun.default_allocator;
 
-        // Step 1. compile the user's code
-
-        const object = arguments[0];
-
         var compile_c = CompileC{};
-        defer {
-            if (globalThis.hasException()) {
-                compile_c.deinit();
-            }
+        defer compile_c.deinit();
+        compile_c.symbols.map = try parseSymbols(context, allocator, &compile_options_value.symbols);
+        if (compile_c.symbols.map.count() == 0) return context.fail(.no_symbols, {});
+
+        if (compile_options_value.library) |*library| {
+            compile_c.libraries = try StringArray.fromBinding(context, library);
         }
 
-        const symbols_object: JSValue = try object.getOwn(globalThis, "symbols") orelse .js_undefined;
-        if (globalThis.hasException()) {
-            return error.JSError;
-        }
-
-        const symbols = symbols_object.getObject() orelse {
-            return globalThis.throwInvalidArgumentTypeValue("symbols", "object", symbols_object);
-        };
-        if (try generateSymbols(globalThis, allocator, &compile_c.symbols.map, symbols)) |val| {
-            if (val != .zero and !globalThis.hasException())
-                return globalThis.throwValue(val);
-            return error.JSError;
-        }
-
-        if (compile_c.symbols.map.count() == 0) {
-            return globalThis.throw("Expected at least one exported symbol", .{});
-        }
-
-        if (try object.getOwn(globalThis, "library")) |library_value| {
-            compile_c.libraries = try StringArray.fromJS(globalThis, library_value, "library");
-        }
-
-        if (globalThis.hasException()) {
-            return error.JSError;
-        }
-
-        if (try object.getOptional(globalThis, "flags", JSValue)) |flags_value| {
-            if (flags_value.isArray()) {
-                var iter = try flags_value.arrayIterator(globalThis);
-
-                var flags = std.array_list.Managed(u8).init(allocator);
-                defer flags.deinit();
-                bun.handleOom(flags.appendSlice(CompileC.default_tcc_options));
-
-                while (try iter.next()) |value| {
-                    if (!value.isString()) {
-                        return globalThis.throwInvalidArgumentTypeValue("flags", "array of strings", value);
+        if (compile_options_value.flags) |*flags_input| {
+            const is_array = flags_input.* == .strings;
+            var values = try StringArray.fromBinding(context, flags_input);
+            defer values.deinit();
+            if (values.items.len > 0 or is_array) {
+                var flags: std.ArrayListUnmanaged(u8) = .empty;
+                defer flags.deinit(allocator);
+                if (is_array) {
+                    try flags.appendSlice(allocator, CompileC.default_tcc_options);
+                }
+                for (values.items) |value| {
+                    if (value.len == 0) continue;
+                    if (flags.items.len > 0) {
+                        try flags.append(allocator, ' ');
                     }
-                    const slice = try value.toSlice(globalThis, allocator);
-                    if (slice.len == 0) continue;
-                    defer slice.deinit();
-                    bun.handleOom(flags.append(' '));
-                    bun.handleOom(flags.appendSlice(slice.slice()));
+                    try flags.appendSlice(allocator, value);
                 }
-                compile_c.flags = bun.handleOom(flags.toOwnedSliceSentinel(0));
-            } else {
-                if (!flags_value.isString()) {
-                    return globalThis.throwInvalidArgumentTypeValue("flags", "string", flags_value);
-                }
-
-                const str = try flags_value.getZigString(globalThis);
-                if (!str.isEmpty()) {
-                    compile_c.flags = bun.handleOom(str.toOwnedSliceZ(allocator));
-                }
+                compile_c.flags = try flags.toOwnedSliceSentinel(allocator, 0);
             }
         }
 
-        if (globalThis.hasException()) {
-            return error.JSError;
-        }
-
-        if (try object.getOptional(globalThis, "define", JSValue)) |define_value| {
-            if (define_value.getObject()) |define_obj| {
-                const Iter = jsc.JSPropertyIterator(.{ .include_value = true, .skip_empty_name = true });
-                var iter = try Iter.init(globalThis, define_obj);
-                defer iter.deinit();
-                while (try iter.next()) |entry| {
-                    const key = bun.handleOom(entry.toOwnedSliceZ(allocator));
+        if (compile_options_value.define) |*define_input| switch (define_input.*) {
+            .values => |*definitions| {
+                for (0..definitions.len()) |index| {
+                    const entry = definitions.at(index).?;
+                    const key_utf8 = try entry.key.toUTF8(allocator);
+                    defer key_utf8.deinit();
+                    if (key_utf8.length() == 0) continue;
+                    if (std.mem.indexOfScalar(u8, key_utf8.slice(), 0) != null) return context.fail(.invalid_compile_string, {});
+                    const key = try allocator.dupeSentinel(u8, key_utf8.slice(), 0);
+                    errdefer allocator.free(key);
                     var owned_value: [:0]const u8 = "";
-                    if (!iter.value.isUndefinedOrNull()) {
-                        if (iter.value.isString()) {
-                            const value = try iter.value.getZigString(globalThis);
-                            if (value.len > 0) {
-                                owned_value = bun.handleOom(value.toOwnedSliceZ(allocator));
+                    errdefer if (owned_value.len > 0) allocator.free(owned_value);
+                    switch (entry.value) {
+                        .string => |*string_value| {
+                            const value_utf8 = try string_value.toUTF8(allocator);
+                            defer value_utf8.deinit();
+                            if (std.mem.indexOfScalar(u8, value_utf8.slice(), 0) != null) return context.fail(.invalid_compile_string, {});
+                            if (value_utf8.length() > 0) {
+                                owned_value = try allocator.dupeSentinel(u8, value_utf8.slice(), 0);
                             }
-                        }
+                        },
+                        .ignored => {},
                     }
-                    if (globalThis.hasException()) {
-                        allocator.free(key);
-                        return error.JSError;
-                    }
-
-                    bun.handleOom(compile_c.define.append(allocator, .{ key, owned_value }));
+                    try compile_c.define.append(allocator, .{ key, owned_value });
                 }
-            }
+            },
+            .ignored => {},
+        };
+
+        if (compile_options_value.include) |*include| {
+            compile_c.include_dirs = try StringArray.fromBinding(context, include);
         }
 
-        if (globalThis.hasException()) {
-            return error.JSError;
-        }
+        compile_c.source = try CompileC.Source.fromBinding(context, compile_options_value.source);
 
-        if (try object.getOptional(globalThis, "include", JSValue)) |include_value| {
-            compile_c.include_dirs = try StringArray.fromJS(globalThis, include_value, "include");
-        }
-
-        if (globalThis.hasException()) {
-            return error.JSError;
-        }
-
-        if (try object.getOwn(globalThis, "source")) |source_value| {
-            if (source_value.isArray()) {
-                compile_c.source = .{ .files = .empty };
-                var iter = try source_value.arrayIterator(globalThis);
-                while (try iter.next()) |value| {
-                    if (!value.isString()) {
-                        return globalThis.throwInvalidArgumentTypeValue("source", "array of strings", value);
-                    }
-                    try compile_c.source.files.append(bun.default_allocator, try (try value.getZigString(globalThis)).toOwnedSliceZ(bun.default_allocator));
-                }
-            } else if (!source_value.isString()) {
-                return globalThis.throwInvalidArgumentTypeValue("source", "string", source_value);
-            } else {
-                const source_path = try (try source_value.getZigString(globalThis)).toOwnedSliceZ(bun.default_allocator);
-                compile_c.source.file = source_path;
-            }
-        }
-
-        if (globalThis.hasException()) {
-            return error.JSError;
-        }
-
-        // Now we compile the code with tinycc.
-        var tcc_state: ?*TCC.State = compile_c.compile(globalThis) catch |err| {
+        var tcc_state: ?*TCC.State = compile_c.compile(context, io) catch |err| {
             switch (err) {
                 error.DeferredErrors => {
                     var combined = std.Io.Writer.Allocating.init(bun.default_allocator);
                     defer combined.deinit();
                     const writer = &combined.writer;
-                    writer.print("{d} errors while compiling {s}\n", .{ compile_c.deferred_errors.items.len, if (compile_c.current_file_for_errors.len > 0) compile_c.current_file_for_errors else compile_c.source.first() }) catch bun.outOfMemory();
+                    writer.print("{d} errors while compiling {s}\n", .{ compile_c.deferred_errors.items.len, if (compile_c.current_file_for_errors.len > 0) compile_c.current_file_for_errors else compile_c.source.first() }) catch return error.OutOfMemory;
 
                     for (compile_c.deferred_errors.items) |deferred_error| {
-                        writer.print("{s}\n", .{deferred_error}) catch bun.outOfMemory();
+                        writer.print("{s}\n", .{deferred_error}) catch return error.OutOfMemory;
                     }
 
-                    return globalThis.throw("{s}", .{combined.written()});
+                    return context.fail(.compile_failed, try bun.bindgen.DOMString.fromUTF8(combined.written()));
                 },
-                error.JSError => |e| return e,
-                error.OutOfMemory => |e| return e,
-                error.JSTerminated => |e| return e,
+                else => |failure| return failure,
             }
         };
         defer {
             if (tcc_state) |state| state.deinit();
         }
 
-        const napi_env = makeNapiEnvIfNeeded(compile_c.symbols.map.values(), globalThis);
-
-        var obj = jsc.JSObject.createEmpty(globalThis, compile_c.symbols.map.count());
-        for (compile_c.symbols.map.values()) |*function| {
-            const function_name = function.base_name.?;
-
-            function.compile(napi_env) catch |err| {
-                if (!globalThis.hasException()) {
-                    const ret = globalThis.toInvalidArguments("{s} when translating symbol \"{s}\"", .{
-                        @errorName(err),
-                        function_name,
-                    });
-                    return globalThis.throwValue(ret);
-                }
-                return error.JSError;
-            };
-            switch (function.step) {
-                .failed => |err| {
-                    const res = try ZigString.init(err.msg).toErrorInstance(globalThis);
-                    return globalThis.throwValue(res.toJS());
-                },
-                .pending => {
-                    return globalThis.throw("Failed to compile (nothing happend!)", .{});
-                },
-                .compiled => |*compiled| {
-                    const str = ZigString.init(bun.asByteSlice(function_name));
-                    const cb = jsc.host_fn.NewRuntimeFunction(
-                        globalThis,
-                        &str,
-                        @as(u32, @intCast(function.arg_types.items.len)),
-                        bun.cast(*const jsc.JSHostFn, compiled.ptr),
-                        true,
-                        function.symbol_from_dynamic_library,
-                    );
-                    obj.putDirect(globalThis, &str, cb);
-                },
-            }
-        }
-
-        // TODO: pub const new = bun.TrivialNew(FFI)
-        var lib = bun.handleOom(bun.default_allocator.create(FFI));
+        const lib = try bun.default_allocator.create(FFI);
         lib.* = .{
+            .allocator = allocator,
             .dylib = null,
             .shared_state = tcc_state,
             .functions = compile_c.symbols.map,
         };
         tcc_state = null;
         compile_c.symbols = .{};
-
-        const js_object = lib.toJS(globalThis);
-        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, globalThis, obj.toJS());
-        return js_object;
+        lib.prepare(context) catch |err| {
+            lib.deref();
+            return err;
+        };
+        return try lib.toResult(context);
     }
 
-    pub fn closeCallback(_: *JSGlobalObject, ctx: JSValue) JSValue {
-        const function: *Function = @ptrFromInt(ctx.asPtrAddress());
-        function.deinit();
-        bun.default_allocator.destroy(function);
-        return .js_undefined;
+    pub fn callback(
+        context: bun.bindgen.CallContext(CallbackSchema),
+        args: bun.bindgen.Args(CallbackSchema),
+    ) bun.bindgen.CallError(CallbackSchema)!bun.bindgen.Return(CallbackSchema) {
+        const allocator = bun.default_allocator;
+        var function = try parseSignature(context, allocator, &args.definition, .callback);
+        defer function.deinit();
+        const callable = try args.factory.call(.{
+            .callback = args.callback.operand(context),
+            .returnType = function.return_type,
+        });
+
+        const resource = try allocator.create(FFICallbackContext);
+        resource.* = .{};
+        var reference = try FFICallbackContextClass.adoptResult(resource, context);
+        errdefer reference.deinit();
+        CallbackSlot.setCallbackViewOnOwned(&reference, @TypeOf(callable).SemanticType, callable);
+        resource.endpoint = try context.engineIn("FFI", "createCallback").call(.{
+            .argumentTypes = function.arg_types.items,
+            .returnType = function.return_type,
+            .threadsafe = function.threadsafe,
+        });
+        return .{
+            .ptr = bun.bindgen.Engine(CallbackPointerSchema).call(.{ .endpoint = resource.endpoint.?.get() }),
+            .threadsafe = function.threadsafe,
+            .resource = reference,
+        };
     }
 
-    pub fn callback(globalThis: *JSGlobalObject, interface: jsc.JSValue, js_callback: jsc.JSValue) bun.JSError!JSValue {
-        if (comptime !Environment.enable_tinycc) {
-            return globalThis.throw("bun:ffi callback() is not available in this build (TinyCC is disabled)", .{});
-        }
-        jsc.markBinding(@src());
-        if (!interface.isObject()) {
-            return globalThis.throwInvalidArguments("Expected object", .{});
-        }
-
-        if (js_callback.isEmptyOrUndefinedOrNull() or !js_callback.isCallable()) {
-            return globalThis.throwInvalidArguments("Expected callback function", .{});
-        }
-
-        const allocator = VirtualMachine.get().allocator;
-        const function = bun.default_allocator.create(Function) catch unreachable;
-        function.* = .{ .allocator = allocator };
-        errdefer {
-            function.deinit();
-            bun.default_allocator.destroy(function);
-        }
-
-        if (try generateSymbolForFunction(globalThis, allocator, interface, function)) |validation_error| {
-            return globalThis.throwValue(validation_error);
-        }
-
-        // TODO: WeakRefHandle that automatically frees it?
-        function.base_name = "";
-        js_callback.ensureStillAlive();
-
-        function.compileCallback(globalThis, js_callback) catch return globalThis.throw("Out of memory", .{});
-        switch (function.step) {
-            .failed => |err| {
-                const message = try ZigString.init(err.msg).toErrorInstance(globalThis);
-                return globalThis.throwValue(message.toJS());
-            },
-            .pending => {
-                return globalThis.throw("Failed to compile, but not sure why. Please report this bug", .{});
-            },
-            .compiled => {
-                return (try jsc.JSObject.createObject2(
-                    globalThis,
-                    ZigString.static("ptr"),
-                    ZigString.static("ctx"),
-                    jsc.JSValue.fromPtrAddress(@intFromPtr(function.step.compiled.ptr)),
-                    jsc.JSValue.fromPtrAddress(@intFromPtr(function)),
-                )).toJS();
-            },
-        }
-    }
-
-    pub fn close(
-        this: *FFI,
-        _: *jsc.JSGlobalObject,
-        _: *jsc.CallFrame,
-    ) bun.JSError!JSValue {
-        jsc.markBinding(@src());
-        if (this.closed) {
-            return .js_undefined;
-        }
+    pub fn close(this: *FFI) void {
+        if (this.closed) return;
         this.closed = true;
+        if (this.active_calls == 0) this.closeResources();
+    }
+
+    fn closeResources(this: *FFI) void {
+        bun.debugAssert(this.active_calls == 0);
+        if (this.environment) |environment| {
+            this.environment = null;
+            var owned = environment;
+            owned.deinit();
+        }
         if (this.dylib) |*dylib| {
             dylib.close();
             this.dylib = null;
@@ -883,1108 +835,264 @@ pub const FFI = struct {
             this.shared_state = null;
             state.deinit();
         }
-
-        const allocator = VirtualMachine.get().allocator;
-
-        for (this.functions.values()) |*val| {
-            val.deinit();
-        }
-        this.functions.deinit(allocator);
-
-        return .js_undefined;
     }
 
-    pub fn printCallback(global: *JSGlobalObject, object: jsc.JSValue) JSValue {
-        jsc.markBinding(@src());
-        const allocator = VirtualMachine.get().allocator;
+    fn deinit(this: *FFI) void {
+        bun.debugAssert(this.active_calls == 0);
+        this.close();
+        for (this.functions.values()) |*function| function.deinit();
+        this.functions.deinit(this.allocator);
+        bun.destroy(this);
+    }
 
-        if (object.isEmptyOrUndefinedOrNull() or !object.isObject()) {
-            return global.toInvalidArguments("Expected an object", .{});
-        }
+    pub fn printCallback(context: anytype, definition: anytype) bun.bindgen.CallError(@TypeOf(context))![]u8 {
+        const allocator = bun.default_allocator;
 
-        var function: Function = .{ .allocator = allocator };
-        if (generateSymbolForFunction(global, allocator, object, &function) catch |err| return global.takeException(err)) |val| {
-            return val;
-        }
+        var function = try parseSignature(context, allocator, definition, .callback);
         defer function.deinit();
 
         var arraylist = std.Io.Writer.Allocating.init(allocator);
         defer arraylist.deinit();
-
-        function.printCallbackSourceCode(&arraylist.writer) catch {
-            return (ZigString.init("Error while printing code").toErrorInstance(global) catch return .zero).toJS();
-        };
-        return ZigString.init(arraylist.written()).toJS(global);
+        function.printSourceCode(&arraylist.writer) catch return error.OutOfMemory;
+        return arraylist.toOwnedSlice();
     }
 
-    pub fn print(global: *JSGlobalObject, object: jsc.JSValue, is_callback_val: ?jsc.JSValue) bun.JSError!JSValue {
+    pub fn printSymbols(context: anytype, definitions: anytype) bun.bindgen.CallError(@TypeOf(context))!std.ArrayListUnmanaged([]u8) {
         const allocator = bun.default_allocator;
-        if (is_callback_val) |is_callback| {
-            if (is_callback.toBoolean()) {
-                return printCallback(global, object);
-            }
-        }
 
-        if (object.isEmptyOrUndefinedOrNull()) return invalidOptionsArg(global);
-        const obj = object.getObject() orelse return invalidOptionsArg(global);
-
-        var symbols = bun.StringArrayHashMap(Function).empty;
-        if (generateSymbols(global, bun.default_allocator, &symbols, obj) catch jsc.JSValue.zero) |val| {
-            // an error while validating symbols
-            for (symbols.keys()) |key| {
-                allocator.free(@constCast(key));
-            }
-            for (symbols.values()) |*function_| {
-                function_.arg_types.deinit(allocator);
-            }
-            symbols.clearAndFree(allocator);
-            return val;
-        }
-        jsc.markBinding(@src());
-        var strs = bun.handleOom(std.array_list.Managed(bun.String).initCapacity(allocator, symbols.count()));
+        var symbols = try parseSymbols(context, allocator, definitions);
         defer {
-            for (strs.items) |str| {
-                str.deref();
-            }
-            strs.deinit();
+            for (symbols.values()) |*function| function.deinit();
+            symbols.deinit(allocator);
         }
+        var sources: std.ArrayListUnmanaged([]u8) = .empty;
+        errdefer {
+            for (sources.items) |source| allocator.free(source);
+            sources.deinit(allocator);
+        }
+        try sources.ensureTotalCapacityPrecise(allocator, symbols.count());
         for (symbols.values()) |*function| {
             var arraylist = std.Io.Writer.Allocating.init(allocator);
             defer arraylist.deinit();
-            function.printSourceCode(&arraylist.writer) catch {
-                // an error while generating source code
-                for (symbols.keys()) |key| {
-                    allocator.free(@constCast(key));
-                }
-                for (symbols.values()) |*function_| {
-                    function_.arg_types.deinit(allocator);
-                }
-
-                symbols.clearAndFree(allocator);
-                return (try ZigString.init("Error while printing code").toErrorInstance(global)).toJS();
-            };
-            strs.appendAssumeCapacity(bun.String.cloneUTF8(arraylist.written()));
+            function.printSourceCode(&arraylist.writer) catch return error.OutOfMemory;
+            sources.appendAssumeCapacity(try arraylist.toOwnedSlice());
         }
-
-        const ret = try bun.String.toJSArray(global, strs.items);
-
-        for (symbols.keys()) |key| {
-            allocator.free(@constCast(key));
-        }
-        for (symbols.values()) |*function_| {
-            function_.arg_types.deinit(allocator);
-        }
-        symbols.clearAndFree(allocator);
-
-        return ret;
+        return sources;
     }
 
-    /// Creates an Exception object indicating that options object is invalid.
-    /// The exception is not thrown on the VM.
-    fn invalidOptionsArg(global: *JSGlobalObject) JSValue {
-        return global.toInvalidArguments("Expected an options object with symbol names", .{});
-    }
-
-    pub fn open(global: *JSGlobalObject, name_str: ZigString, object_value: jsc.JSValue) jsc.JSValue {
-        if (comptime !Environment.enable_tinycc) {
-            global.throw("bun:ffi dlopen() is not available in this build (TinyCC is disabled)", .{}) catch {};
-            return .zero;
+    pub fn open(context: anytype, name: []const u8, definitions: anytype) bun.bindgen.CallError(@TypeOf(context))!FFIRef {
+        if (name.len == 0) return context.fail(.empty_file_path, {});
+        var symbols = try parseSymbols(context, bun.default_allocator, definitions);
+        defer {
+            for (symbols.values()) |*function| function.deinit();
+            symbols.deinit(bun.default_allocator);
         }
-        jsc.markBinding(@src());
-        const vm = VirtualMachine.get();
-        var name_slice = name_str.toSlice(bun.default_allocator);
-        defer name_slice.deinit();
+        if (symbols.count() == 0) return context.fail(.no_symbols, {});
 
-        if (object_value.isEmptyOrUndefinedOrNull()) return invalidOptionsArg(global);
-        const object = object_value.getObject() orelse return invalidOptionsArg(global);
-
-        var filepath_buf = bun.path_buffer_pool.get();
-        defer bun.path_buffer_pool.put(filepath_buf);
-        const name = brk: {
-            if (jsc.ModuleLoader.resolveEmbeddedFile(
-                vm,
-                filepath_buf,
-                name_slice.slice(),
-                switch (Environment.os) {
-                    .linux, .freebsd => "so",
-                    .mac => "dylib",
-                    .windows => "dll",
-                    .wasm => @compileError("TODO"),
-                },
-            )) |resolved| {
-                filepath_buf[resolved.len] = 0;
-                break :brk filepath_buf[0..resolved.len];
-            }
-
-            break :brk name_slice.slice();
-        };
-
-        if (name.len == 0) {
-            return global.toInvalidArguments("Invalid library name", .{});
-        }
-
-        var symbols = bun.StringArrayHashMap(Function).empty;
-        if (generateSymbols(global, bun.default_allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
-            // an error while validating symbols
-            for (symbols.keys()) |key| {
-                bun.default_allocator.free(@constCast(key));
-            }
-            for (symbols.values()) |*function_| {
-                function_.arg_types.deinit(bun.default_allocator);
-            }
-            symbols.clearAndFree(bun.default_allocator);
-            return val;
-        }
-        if (symbols.count() == 0) {
-            return global.toInvalidArguments("Expected at least one symbol", .{});
-        }
-
-        var dylib: DynLib = brk: {
-            // First try using the name directly
+        var dylib: ?DynLib = brk: {
             break :brk DynLib.open(name) catch {
                 const backup_name = Fs.FileSystem.instance.abs(&[1]string{name});
-                // if that fails, try resolving the filepath relative to the current working directory
                 break :brk DynLib.open(backup_name) catch {
-                    // Then, if that fails, report an error with the library name and system error
-                    const dlerror_buf = getDlError(bun.default_allocator) catch null;
-                    defer if (dlerror_buf) |buf| bun.default_allocator.free(buf);
-                    const dlerror_msg = dlerror_buf orelse "unknown error";
-
-                    const msg = bun.handleOom(std.fmt.allocPrint(
+                    const dlerror_msg = try getDlError(bun.default_allocator);
+                    defer bun.default_allocator.free(dlerror_msg);
+                    const msg = try std.fmt.allocPrint(
                         bun.default_allocator,
                         "Failed to open library \"{s}\": {s}",
                         .{ name, dlerror_msg },
-                    ));
+                    );
                     defer bun.default_allocator.free(msg);
-                    const system_error = jsc.SystemError{
-                        .code = bun.String.cloneUTF8(@tagName(.ERR_DLOPEN_FAILED)),
-                        .message = bun.String.cloneUTF8(msg),
-                        .syscall = bun.String.cloneUTF8("dlopen"),
-                    };
-                    return (system_error.toErrorInstance(global) catch return .zero).toJS();
+                    return context.fail(.library_open_failed, try bun.bindgen.SystemError.init(.{
+                        .errno = 0,
+                        .code = "ERR_DLOPEN_FAILED",
+                        .message = msg,
+                        .syscall = "dlopen",
+                    }));
                 };
             };
         };
-
-        var size = symbols.values().len;
-        if (size >= 63) {
-            size = 0;
-        }
-        var obj = jsc.JSObject.createEmpty(global, size);
-        obj.protect();
-        defer obj.unprotect();
-
-        const napi_env = makeNapiEnvIfNeeded(symbols.values(), global);
+        defer if (dylib) |*library| library.close();
 
         for (symbols.values()) |*function| {
             const function_name = function.base_name.?;
-
-            // optional if the user passed "ptr"
             if (function.symbol_from_dynamic_library == null) {
-                const resolved_symbol = dylib.lookup(*anyopaque, function_name) orelse {
-                    const ret = global.toInvalidArguments("Symbol \"{s}\" not found in \"{s}\"", .{ bun.asByteSlice(function_name), name });
-                    for (symbols.values()) |*value| {
-                        bun.default_allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
-                        value.arg_types.clearAndFree(bun.default_allocator);
-                    }
-                    symbols.clearAndFree(bun.default_allocator);
-                    dylib.close();
-                    return ret;
-                };
-
-                function.symbol_from_dynamic_library = resolved_symbol;
-            }
-
-            function.compile(napi_env) catch |err| {
-                const ret = global.toInvalidArguments("{s} when compiling symbol \"{s}\" in \"{s}\"", .{
-                    bun.asByteSlice(@errorName(err)),
-                    bun.asByteSlice(function_name),
-                    name,
-                });
-                for (symbols.values()) |*value| {
-                    value.deinit();
-                }
-                symbols.clearAndFree(bun.default_allocator);
-                dylib.close();
-                return ret;
-            };
-            switch (function.step) {
-                .failed => |err| {
-                    defer for (symbols.values()) |*other_function| {
-                        other_function.deinit();
-                    };
-
-                    const res = ZigString.init(err.msg).toErrorInstance(global) catch return .zero;
-                    symbols.clearAndFree(bun.default_allocator);
-                    dylib.close();
-                    return res.toJS();
-                },
-                .pending => {
-                    for (symbols.values()) |*other_function| {
-                        other_function.deinit();
-                    }
-                    symbols.clearAndFree(bun.default_allocator);
-                    dylib.close();
-                    return (ZigString.init("Failed to compile (nothing happend!)").toErrorInstance(global) catch return .zero).toJS();
-                },
-                .compiled => |*compiled| {
-                    const str = ZigString.init(bun.asByteSlice(function_name));
-                    const cb = jsc.host_fn.NewRuntimeFunction(
-                        global,
-                        &str,
-                        @as(u32, @intCast(function.arg_types.items.len)),
-                        bun.cast(*const jsc.JSHostFn, compiled.ptr),
-                        true,
-                        function.symbol_from_dynamic_library,
-                    );
-                    obj.putDirect(global, &str, cb);
-                },
+                function.symbol_from_dynamic_library = dylib.?.lookup(Function.Symbol, function_name) orelse
+                    return failMessage(context, .symbol_not_found, "Symbol \"{s}\" not found in \"{s}\"", .{ function_name, name });
             }
         }
 
-        const lib = bun.new(FFI, .{
+        const lib = try bun.default_allocator.create(FFI);
+        lib.* = .{
+            .allocator = bun.default_allocator,
             .dylib = dylib,
             .functions = symbols,
-        });
-
-        const js_object = lib.toJS(global);
-        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, global, obj.toJS());
-        return js_object;
+        };
+        dylib = null;
+        symbols = .empty;
+        lib.prepare(context) catch |err| {
+            lib.deref();
+            return err;
+        };
+        return try lib.toResult(context);
     }
 
-    pub fn getSymbols(_: *FFI, _: *jsc.JSGlobalObject) jsc.JSValue {
-        // This shouldn't be called. The cachedValue is what should be called.
-        return .js_undefined;
-    }
+    pub fn linkSymbols(context: anytype, definitions: anytype) bun.bindgen.CallError(@TypeOf(context))!FFIRef {
+        const allocator = bun.default_allocator;
 
-    pub fn linkSymbols(global: *JSGlobalObject, object_value: jsc.JSValue) jsc.JSValue {
-        if (comptime !Environment.enable_tinycc) {
-            global.throw("bun:ffi linkSymbols() is not available in this build (TinyCC is disabled)", .{}) catch {};
-            return .zero;
+        var symbols = try parseSymbols(context, allocator, definitions);
+        defer {
+            for (symbols.values()) |*function| function.deinit();
+            symbols.deinit(allocator);
         }
-        jsc.markBinding(@src());
-        const allocator = VirtualMachine.get().allocator;
-
-        if (object_value.isEmptyOrUndefinedOrNull()) return invalidOptionsArg(global);
-        const object = object_value.getObject() orelse return invalidOptionsArg(global);
-
-        var symbols = bun.StringArrayHashMap(Function).empty;
-        if (generateSymbols(global, allocator, &symbols, object) catch jsc.JSValue.zero) |val| {
-            // an error while validating symbols
-            for (symbols.keys()) |key| {
-                allocator.free(@constCast(key));
-            }
-            for (symbols.values()) |*function_| {
-                function_.arg_types.deinit(allocator);
-            }
-            symbols.clearAndFree(allocator);
-            return val;
-        }
-        if (symbols.count() == 0) {
-            return global.toInvalidArguments("Expected at least one symbol", .{});
-        }
-
-        var obj = jsc.JSObject.createEmpty(global, symbols.count());
-        obj.ensureStillAlive();
-        defer obj.ensureStillAlive();
-
-        const napi_env = makeNapiEnvIfNeeded(symbols.values(), global);
+        if (symbols.count() == 0) return context.fail(.no_symbols, {});
 
         for (symbols.values()) |*function| {
             const function_name = function.base_name.?;
-
             if (function.symbol_from_dynamic_library == null) {
-                const ret = global.toInvalidArguments("Symbol \"{s}\" is missing a \"ptr\" field. When using linkSymbols() or CFunction(), you must provide a \"ptr\" field with the memory address of the native function.", .{bun.asByteSlice(function_name)});
-                for (symbols.values()) |*value| {
-                    allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
-                    value.arg_types.clearAndFree(allocator);
-                }
-                symbols.clearAndFree(allocator);
-                return ret;
-            }
-
-            function.compile(napi_env) catch |err| {
-                const ret = global.toInvalidArguments("{s} when compiling symbol \"{s}\"", .{
-                    bun.asByteSlice(@errorName(err)),
-                    bun.asByteSlice(function_name),
-                });
-                for (symbols.values()) |*value| {
-                    value.deinit();
-                }
-                symbols.clearAndFree(allocator);
-                return ret;
-            };
-            switch (function.step) {
-                .failed => |err| {
-                    for (symbols.values()) |*value| {
-                        allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
-                        value.arg_types.clearAndFree(allocator);
-                    }
-
-                    const res = ZigString.init(err.msg).toErrorInstance(global) catch return .zero;
-                    function.deinit();
-                    symbols.clearAndFree(allocator);
-                    return res.toJS();
-                },
-                .pending => {
-                    for (symbols.values()) |*value| {
-                        allocator.free(@constCast(bun.asByteSlice(value.base_name.?)));
-                        value.arg_types.clearAndFree(allocator);
-                    }
-                    symbols.clearAndFree(allocator);
-                    return (ZigString.static("Failed to compile (nothing happend!)").toErrorInstance(global) catch return .zero).toJS();
-                },
-                .compiled => |*compiled| {
-                    const name = &ZigString.init(bun.asByteSlice(function_name));
-
-                    const cb = jsc.host_fn.NewRuntimeFunction(
-                        global,
-                        name,
-                        @as(u32, @intCast(function.arg_types.items.len)),
-                        bun.cast(*jsc.JSHostFn, compiled.ptr),
-                        true,
-                        function.symbol_from_dynamic_library,
-                    );
-                    obj.putDirect(global, name, cb);
-                },
+                return failMessage(context, .missing_symbol_pointer, "Symbol \"{s}\" is missing a \"ptr\" field. When using linkSymbols() or CFunction(), you must provide a \"ptr\" field with the memory address of the native function.", .{function_name});
             }
         }
 
-        const lib = bun.new(FFI, .{
-            .dylib = null,
-            .functions = symbols,
-        });
-
-        const js_object = lib.toJS(global);
-        jsc.Codegen.JSFFI.symbolsValueSetCached(js_object, global, obj.toJS());
-        return js_object;
-    }
-    pub fn generateSymbolForFunction(global: *JSGlobalObject, allocator: std.mem.Allocator, value: jsc.JSValue, function: *Function) bun.JSError!?JSValue {
-        jsc.markBinding(@src());
-
-        var abi_types = std.ArrayListUnmanaged(ABIType).empty;
-        defer abi_types.deinit(allocator);
-
-        if (try value.getOwn(global, "args")) |args| {
-            if (args.isEmptyOrUndefinedOrNull() or !args.jsType().isArray()) {
-                return (try ZigString.static("Expected an object with \"args\" as an array").toErrorInstance(global)).toJS();
-            }
-
-            var array = try args.arrayIterator(global);
-
-            try abi_types.ensureTotalCapacityPrecise(allocator, array.len);
-            while (try array.next()) |val| {
-                if (val.isEmptyOrUndefinedOrNull()) {
-                    return (try ZigString.static("param must be a string (type name) or number").toErrorInstance(global)).toJS();
-                }
-
-                if (val.isAnyInt()) {
-                    const int = val.to(i32);
-                    switch (int) {
-                        0...ABIType.max => {
-                            abi_types.appendAssumeCapacity(@as(ABIType, @fromBackingInt(@intCast(int))));
-                            continue;
-                        },
-                        else => {
-                            return (try ZigString.static("invalid ABI type").toErrorInstance(global)).toJS();
-                        },
-                    }
-                }
-
-                if (!val.jsType().isStringLike()) {
-                    return (try ZigString.static("param must be a string (type name) or number").toErrorInstance(global)).toJS();
-                }
-
-                var type_name = try val.toSlice(global, allocator);
-                defer type_name.deinit();
-                abi_types.appendAssumeCapacity(ABIType.label.get(type_name.slice()) orelse {
-                    return global.toTypeError(.INVALID_ARG_VALUE, "Unknown type {s}", .{type_name.slice()});
-                });
-            }
-        }
-        // var function
-        var return_type = ABIType.void;
-
-        var threadsafe = false;
-
-        if (try value.getBooleanLoose(global, "threadsafe")) |flag| {
-            threadsafe = flag;
-        }
-
-        if (try value.getOptional(global, "returns", JSValue)) |ret_value| brk: {
-            if (ret_value.isString() and !ret_value.toBoolean()) break :brk;
-            if (ret_value.isAnyInt()) {
-                const int = ret_value.toInt32();
-                switch (int) {
-                    0...ABIType.max => {
-                        return_type = @as(ABIType, @fromBackingInt(@intCast(int)));
-                        break :brk;
-                    },
-                    else => {
-                        return (try ZigString.static("invalid ABI type").toErrorInstance(global)).toJS();
-                    },
-                }
-            }
-
-            var ret_slice = try ret_value.toSlice(global, allocator);
-            defer ret_slice.deinit();
-            return_type = ABIType.label.get(ret_slice.slice()) orelse {
-                return global.toTypeError(.INVALID_ARG_VALUE, "Unknown return type {s}", .{ret_slice.slice()});
-            };
-        }
-
-        if (return_type == ABIType.napi_env) {
-            return (try ZigString.static("Cannot return napi_env to JavaScript").toErrorInstance(global)).toJS();
-        }
-
-        if (return_type == .buffer) {
-            return (try ZigString.static("Cannot return a buffer to JavaScript (since byteLength and byteOffset are unknown)").toErrorInstance(global)).toJS();
-        }
-
-        if (threadsafe) {
-            if (return_type != .void) {
-                return (try ZigString.static("Threadsafe callbacks must return void").toErrorInstance(global)).toJS();
-            }
-
-            for (abi_types.items) |arg_type| {
-                if (!arg_type.supportsThreadsafeCallback()) {
-                    return global.toTypeError(.INVALID_ARG_VALUE, "Threadsafe callbacks do not support {s} arguments", .{@tagName(arg_type)});
-                }
-            }
-        }
-
-        var symbol_from_dynamic_library: ?*anyopaque = null;
-        if (try value.get(global, "ptr")) |ptr| {
-            if (ptr.isNumber()) {
-                const num = ptr.asPtrAddress();
-                if (num > 0)
-                    symbol_from_dynamic_library = @ptrFromInt(num);
-            } else if (ptr.isHeapBigInt()) {
-                const num = ptr.toUInt64NoTruncate();
-                if (num > 0)
-                    symbol_from_dynamic_library = @ptrFromInt(num);
-            }
-        }
-
-        function.* = Function{
-            .symbol_from_dynamic_library = symbol_from_dynamic_library,
-            .base_name = null,
-            .arg_types = abi_types,
-            .return_type = return_type,
-            .threadsafe = threadsafe,
+        const lib = try allocator.create(FFI);
+        lib.* = .{
             .allocator = allocator,
-            .io = global.bunVM().io,
+            .functions = symbols,
         };
-        abi_types = .empty;
-
-        return null;
+        symbols = .empty;
+        lib.prepare(context) catch |err| {
+            lib.deref();
+            return err;
+        };
+        return try lib.toResult(context);
+    }
+    fn failMessage(
+        context: anytype,
+        comptime tag: anytype,
+        comptime format: []const u8,
+        args: anytype,
+    ) bun.bindgen.CallError(@TypeOf(context)) {
+        const message = std.fmt.allocPrint(bun.default_allocator, format, args) catch return error.OutOfMemory;
+        defer bun.default_allocator.free(message);
+        const owned = bun.bindgen.DOMString.fromUTF8(message) catch return error.OutOfMemory;
+        return context.fail(tag, owned);
     }
 
-    pub fn generateSymbols(global: *JSGlobalObject, allocator: Allocator, symbols: *bun.StringArrayHashMap(Function), object: *jsc.JSObject) bun.JSError!?JSValue {
-        jsc.markBinding(@src());
+    const SignatureKind = enum { symbol, callback };
 
-        var symbols_iter = try jsc.JSPropertyIterator(.{
-            .skip_empty_name = true,
-
-            .include_value = true,
-        }).init(global, object);
-        defer symbols_iter.deinit();
-
-        try symbols.ensureTotalCapacity(allocator, symbols_iter.len);
-
-        while (try symbols_iter.next()) |prop| {
-            const value = symbols_iter.value;
-
-            if (value.isEmptyOrUndefinedOrNull() or !value.isObject()) {
-                return global.toTypeError(.INVALID_ARG_VALUE, "Expected an object for key \"{f}\"", .{prop});
+    fn parseSignature(
+        context: anytype,
+        allocator: std.mem.Allocator,
+        definition: anytype,
+        comptime kind: SignatureKind,
+    ) bun.bindgen.CallError(@TypeOf(context))!Function {
+        var function: Function = .{
+            .allocator = allocator,
+            .return_type = definition.returns orelse .void_type,
+            .threadsafe = definition.threadsafe orelse false,
+        };
+        errdefer function.deinit();
+        if (function.return_type == .napi_env) return context.fail(.return_napi_env, {});
+        if (function.return_type == .buffer) return context.fail(.return_buffer, {});
+        if (kind == .symbol and function.threadsafe) return context.fail(.threadsafe_function, {});
+        if (function.threadsafe and function.return_type != .void_type) return context.fail(.threadsafe_return, {});
+        if (definition.args) |*args| {
+            try function.arg_types.ensureTotalCapacityPrecise(allocator, args.len());
+            for (0..args.len()) |index| {
+                const type_ = args.at(index).?;
+                if (type_ == .void_type) return context.fail(.void_argument, {});
+                if (kind == .callback and type_ == .buffer) return context.fail(.callback_buffer, {});
+                if (function.threadsafe and (type_ == .buffer or type_ == .napi_env or type_ == .napi_value))
+                    return context.fail(.threadsafe_argument, {});
+                function.arg_types.appendAssumeCapacity(type_);
             }
-
-            var function: Function = .{ .allocator = allocator };
-            if (try generateSymbolForFunction(global, allocator, value, &function)) |val| {
-                return val;
+        }
+        if (definition.ptr) |pointer| {
+            switch (pointer) {
+                .address => |address| if (address != 0) {
+                    function.symbol_from_dynamic_library = @ptrFromInt(address);
+                },
+                .ignored => {},
             }
+        }
+        return function;
+    }
+
+    fn parseSymbols(
+        context: anytype,
+        allocator: Allocator,
+        definitions: anytype,
+    ) bun.bindgen.CallError(@TypeOf(context))!bun.StringArrayHashMap(Function) {
+        var symbols: bun.StringArrayHashMap(Function) = .empty;
+        errdefer {
+            for (symbols.values()) |*function| function.deinit();
+            symbols.deinit(allocator);
+        }
+        try symbols.ensureTotalCapacity(allocator, definitions.len());
+
+        for (0..definitions.len()) |index| {
+            const entry = definitions.at(index).?;
+            const name = try entry.key.toUTF8(allocator);
+            defer name.deinit();
+            if (name.length() == 0 or std.mem.indexOfScalar(u8, name.slice(), 0) != null)
+                return context.fail(.invalid_symbol_name, {});
+            if (symbols.contains(name.slice()))
+                return context.fail(.duplicate_symbol_name, {});
+
+            const definition = switch (entry.value) {
+                .definition => |definition| definition,
+                .invalid => {
+                    const message = try std.fmt.allocPrint(allocator, "Expected an object for key \"{s}\"", .{name.slice()});
+                    defer allocator.free(message);
+                    return context.fail(.invalid_symbol_definition, try bun.bindgen.DOMString.fromUTF8(message));
+                },
+            };
+            var function = try parseSignature(context, allocator, &definition, .symbol);
             errdefer function.deinit();
-            function.base_name = try prop.toOwnedSliceZ(allocator);
-
+            function.base_name = try allocator.dupeSentinel(u8, name.slice(), 0);
             symbols.putAssumeCapacity(bun.asByteSlice(function.base_name.?), function);
         }
 
-        return null;
+        return symbols;
     }
 
     pub const Function = struct {
-        symbol_from_dynamic_library: ?*anyopaque = null,
-        base_name: ?[:0]const u8 = null,
-        state: ?*TCC.State = null,
+        const Symbol = bun.bindgen.EngineArgumentType(FFIBindings.engineShim("prepareFunction"), "symbol");
 
-        return_type: ABIType = ABIType.void,
+        symbol_from_dynamic_library: ?Symbol = null,
+        base_name: ?[:0]const u8 = null,
+        native_data: ?FFIFunctionData = null,
+
+        return_type: ABIType = .void_type,
         arg_types: std.ArrayListUnmanaged(ABIType) = .empty,
-        step: Step = Step{ .pending = {} },
         threadsafe: bool = false,
         allocator: Allocator,
-        io: std.Io = undefined,
-
-        pub fn needsHandleScope(val: *const Function) bool {
-            for (val.arg_types.items) |arg| {
-                if (arg == ABIType.napi_env or arg == ABIType.napi_value) {
-                    return true;
-                }
-            }
-            return val.return_type == ABIType.napi_value;
-        }
-
-        extern "c" fn FFICallbackState_deref(*anyopaque) void;
 
         pub fn deinit(val: *Function) void {
-            jsc.markBinding(@src());
-
+            if (val.native_data) |*data| data.deinit();
+            val.native_data = null;
             if (val.base_name) |base_name| {
-                if (bun.asByteSlice(base_name).len > 0) {
-                    val.allocator.free(@constCast(bun.asByteSlice(base_name)));
-                }
+                val.allocator.free(base_name);
+                val.base_name = null;
             }
 
             val.arg_types.clearAndFree(val.allocator);
-
-            if (val.state) |state| {
-                state.deinit();
-                val.state = null;
-            }
-
-            if (val.step == .compiled) {
-                if (val.step.compiled.ffi_callback_state) |callback_state| {
-                    FFICallbackState_deref(callback_state);
-                    val.step.compiled.ffi_callback_state = null;
-                }
-            }
-
-            if (val.step == .failed and val.step.failed.allocated) {
-                val.allocator.free(val.step.failed.msg);
-            }
-        }
-
-        pub const Step = union(enum) {
-            pending: void,
-            compiled: struct {
-                ptr: *anyopaque,
-                ffi_callback_state: ?*anyopaque = null,
-            },
-            failed: struct {
-                msg: []const u8,
-                allocated: bool = false,
-            },
-        };
-
-        fn fail(this: *Function, comptime msg: []const u8) void {
-            if (this.step != .failed) {
-                @branchHint(.likely);
-                this.step = .{ .failed = .{ .msg = msg, .allocated = false } };
-            }
-        }
-
-        pub fn ffiHeader(this: *const Function) string {
-            return if (Environment.codegen_embed)
-                @embedFile("./FFI.h")
-            else
-                bun.runtimeEmbedFile(this.io, .src, "runtime/ffi/FFI.h");
-        }
-
-        pub fn handleTCCError(ctx: ?*Function, message: [*c]const u8) callconv(.c) void {
-            var this = ctx.?;
-            var msg = std.mem.span(message);
-            if (msg.len > 0) {
-                var offset: usize = 0;
-                // the message we get from TCC sometimes has garbage in it
-                // i think because we're doing in-memory compilation
-                while (offset < msg.len) : (offset += 1) {
-                    if (msg[offset] > 0x20 and msg[offset] < 0x7f) break;
-                }
-                msg = msg[offset..];
-            }
-
-            this.step = .{ .failed = .{ .msg = this.allocator.dupe(u8, msg) catch unreachable, .allocated = true } };
-        }
-
-        const tcc_options = "-std=c11 -nostdlib -Wl,--export-all-symbols" ++ if (Environment.isDebug) " -g" else "";
-
-        pub fn compile(this: *Function, napiEnv: ?*napi.NapiEnv) !void {
-            var source_code = std.Io.Writer.Allocating.init(this.allocator);
-            try this.printSourceCode(&source_code.writer);
-
-            try source_code.writer.writeByte(0);
-            defer source_code.deinit();
-            const state = TCC.State.init(Function, .{
-                .options = tcc_options,
-                .err = .{ .ctx = this, .handler = handleTCCError },
-            }, false) catch return error.TCCMissing;
-
-            this.state = state;
-            defer {
-                if (this.step == .failed) {
-                    state.deinit();
-                    this.state = null;
-                }
-            }
-
-            if (napiEnv) |env| {
-                _ = state.addSymbol("Bun__thisFFIModuleNapiEnv", env) catch {
-                    this.fail("Failed to add NAPI env symbol");
-                    return;
-                };
-            }
-
-            CompilerRT.define(state);
-
-            state.compileString(@ptrCast(source_code.written())) catch {
-                this.fail("Failed to compile source code");
-                return;
-            };
-
-            CompilerRT.inject(state);
-            state.addSymbol(this.base_name.?, this.symbol_from_dynamic_library.?) catch {
-                bun.debugAssert(this.step == .failed);
-                return;
-            };
-
-            // TinyCC now manages relocation memory internally
-            dangerouslyRunWithoutJitProtections(TCC.Error!void, TCC.State.relocate, .{state}) catch {
-                this.fail("tcc_relocate returned a negative value");
-                return;
-            };
-
-            const symbol = state.getSymbol("JSFunctionCall") orelse {
-                this.fail("missing generated symbol in source code");
-                return;
-            };
-
-            this.step = .{
-                .compiled = .{
-                    .ptr = symbol,
-                },
-            };
-            return;
-        }
-
-        pub fn compileCallback(
-            this: *Function,
-            js_context: *jsc.JSGlobalObject,
-            js_function: JSValue,
-        ) !void {
-            jsc.markBinding(@src());
-            var source_code = std.Io.Writer.Allocating.init(this.allocator);
-            defer source_code.deinit();
-            try this.printCallbackSourceCode(&source_code.writer);
-
-            if (comptime Environment.isDebug and Environment.isPosix) {
-                debug_write: {
-                    const file = bun.sys.File.open("/tmp/bun-ffi-callback-source.c", bun.O.CREAT | bun.O.WRONLY, 0o644).unwrap() catch break :debug_write;
-                    defer file.close();
-                    file.writeAll(source_code.written()).unwrap() catch break :debug_write;
-                    bun.sys.ftruncate(file.handle, @intCast(source_code.written().len)).unwrap() catch break :debug_write;
-                }
-            }
-
-            try source_code.writer.writeByte(0);
-
-            const state = TCC.State.init(Function, .{
-                .options = tcc_options,
-                .err = .{ .ctx = this, .handler = handleTCCError },
-            }, false) catch |e| switch (e) {
-                error.OutOfMemory => return error.TCCMissing,
-                // 1. .Memory is always a valid option, so InvalidOptions is
-                //    impossible
-                // 2. other throwable functions arent called, so their errors
-                //    aren't possible
-                else => unreachable,
-            };
-            this.state = state;
-            defer {
-                if (this.step == .failed) {
-                    state.deinit();
-                    this.state = null;
-                }
-            }
-
-            if (this.needsNapiEnv()) {
-                state.addSymbol("Bun__thisFFIModuleNapiEnv", js_context.makeNapiEnvForFFI()) catch {
-                    this.fail("Failed to add NAPI env symbol");
-                    return;
-                };
-            }
-
-            CompilerRT.define(state);
-
-            state.compileString(@ptrCast(source_code.written())) catch {
-                this.fail("Failed to compile source code");
-                return;
-            };
-
-            CompilerRT.inject(state);
-            if (this.threadsafe) {
-                state.addSymbol("FFI_Callback_threadsafe_call", FFI_Callback_threadsafe_call) catch {
-                    this.fail("Failed to add FFI callback symbol");
-                    return;
-                };
-            } else {
-                state.addSymbol("FFI_Callback_call", switch (this.arg_types.items.len) {
-                    0 => FFI_Callback_call_0,
-                    1 => FFI_Callback_call_1,
-                    2 => FFI_Callback_call_2,
-                    3 => FFI_Callback_call_3,
-                    4 => FFI_Callback_call_4,
-                    5 => FFI_Callback_call_5,
-                    6 => FFI_Callback_call_6,
-                    7 => FFI_Callback_call_7,
-                    else => FFI_Callback_call,
-                }) catch {
-                    this.fail("Failed to add FFI callback symbol");
-                    return;
-                };
-            }
-            // TinyCC now manages relocation memory internally
-            dangerouslyRunWithoutJitProtections(TCC.Error!void, TCC.State.relocate, .{state}) catch {
-                this.fail("tcc_relocate returned a negative value");
-                return;
-            };
-
-            const symbol = state.getSymbol("my_callback_function") orelse {
-                this.fail("missing generated symbol in source code");
-                return;
-            };
-            const callback_context_symbol = state.getSymbol("callback_ctx") orelse {
-                this.fail("missing callback_ctx in generated source code");
-                return;
-            };
-            const callback_global_symbol = if (this.threadsafe)
-                null
-            else
-                state.getSymbol("callback_global") orelse {
-                    this.fail("missing callback_global in generated source code");
-                    return;
-                };
-
-            const callback_state = Bun__createFFICallbackState(js_context, js_function, this.arg_types.items.ptr, this.arg_types.items.len);
-            dangerouslyRunWithoutJitProtections(void, bindCallbackContext, .{
-                callback_context_symbol,
-                callback_global_symbol,
-                callback_state,
-                js_context,
-            });
-
-            this.step = .{
-                .compiled = .{
-                    .ptr = symbol,
-                    .ffi_callback_state = callback_state,
-                },
-            };
-        }
-
-        fn bindCallbackContext(
-            callback_context_symbol: *anyopaque,
-            callback_global_symbol: ?*anyopaque,
-            callback_state: *anyopaque,
-            js_context: *jsc.JSGlobalObject,
-        ) void {
-            const callback_context_ptr: *?*anyopaque = @ptrCast(@alignCast(callback_context_symbol));
-            callback_context_ptr.* = callback_state;
-            if (callback_global_symbol) |symbol| {
-                const callback_global_ptr: *?*anyopaque = @ptrCast(@alignCast(symbol));
-                callback_global_ptr.* = js_context;
-            }
         }
 
         pub fn printSourceCode(
             this: *Function,
             writer: anytype,
         ) !void {
-            if (this.arg_types.items.len > 0) {
-                try writer.writeAll("#define HAS_ARGUMENTS\n");
-            }
-
-            brk: {
-                if (this.return_type.isFloatingPoint()) {
-                    try writer.writeAll("#define USES_FLOAT 1\n");
-                    break :brk;
-                }
-
-                for (this.arg_types.items) |arg| {
-                    // conditionally include math.h
-                    if (arg.isFloatingPoint()) {
-                        try writer.writeAll("#define USES_FLOAT 1\n");
-                        break;
-                    }
-                }
-            }
-
-            try writer.writeAll(this.ffiHeader());
-
-            // -- Generate the FFI function symbol
-            try writer.writeAll("/* --- The Function To Call */\n");
-            try this.return_type.typename(writer);
-            try writer.writeAll(" ");
-            try writer.writeAll(bun.asByteSlice(this.base_name.?));
-            try writer.writeAll("(");
-            var first = true;
+            try writer.writeAll("#include <stdint.h>\n#include <stdbool.h>\n");
+            if (this.needsNapiEnv()) try writer.writeAll("#include <node_api.h>\n");
+            try writer.writeAll("\ntypedef ");
+            try writer.writeAll(abiTypeName(this.return_type));
+            try writer.writeAll(" (*BunForeignFunction)(");
+            if (this.arg_types.items.len == 0) try writer.writeAll("void");
             for (this.arg_types.items, 0..) |arg, i| {
-                if (!first) {
-                    try writer.writeAll(", ");
-                }
-                first = false;
-                try arg.paramTypename(writer);
+                if (i != 0) try writer.writeAll(", ");
+                try writer.writeAll(abiTypeName(arg));
                 try writer.print(" arg{d}", .{i});
-            }
-            try writer.writeAll(
-                \\);
-                \\
-                \\/* ---- Your Wrapper Function ---- */
-                \\ZIG_REPR_TYPE JSFunctionCall(void* JS_GLOBAL_OBJECT, void* callFrame) {
-                \\
-            );
-
-            if (this.needsHandleScope()) {
-                try writer.writeAll(
-                    \\  void* handleScope = NapiHandleScope__open(&Bun__thisFFIModuleNapiEnv, false);
-                    \\
-                );
-            }
-
-            if (this.arg_types.items.len > 0) {
-                try writer.writeAll(
-                    \\  LOAD_ARGUMENTS_FROM_CALL_FRAME;
-                    \\
-                );
-                for (this.arg_types.items, 0..) |arg, i| {
-                    if (arg == .napi_env) {
-                        try writer.print(
-                            \\  napi_env arg{d} = (napi_env)&Bun__thisFFIModuleNapiEnv;
-                            \\  argsPtr++;
-                            \\
-                        ,
-                            .{
-                                i,
-                            },
-                        );
-                    } else if (arg == .napi_value) {
-                        try writer.print(
-                            \\  EncodedJSValue arg{d} = {{ .asInt64 = *argsPtr++ }};
-                            \\
-                        ,
-                            .{
-                                i,
-                            },
-                        );
-                    } else if (arg.needsACastInC()) {
-                        if (i < this.arg_types.items.len - 1) {
-                            try writer.print(
-                                \\  EncodedJSValue arg{d} = {{ .asInt64 = *argsPtr++ }};
-                                \\
-                            ,
-                                .{
-                                    i,
-                                },
-                            );
-                        } else {
-                            try writer.print(
-                                \\  EncodedJSValue arg{d};
-                                \\  arg{d}.asInt64 = *argsPtr;
-                                \\
-                            ,
-                                .{
-                                    i,
-                                    i,
-                                },
-                            );
-                        }
-                    } else {
-                        if (i < this.arg_types.items.len - 1) {
-                            try writer.print(
-                                \\  int64_t arg{d} = *argsPtr++;
-                                \\
-                            ,
-                                .{
-                                    i,
-                                },
-                            );
-                        } else {
-                            try writer.print(
-                                \\  int64_t arg{d} = *argsPtr;
-                                \\
-                            ,
-                                .{
-                                    i,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-
-            // try writer.writeAll(
-            //     "(JSContext ctx, void* function, void* thisObject, size_t argumentCount, const EncodedJSValue arguments[], void* exception);\n\n",
-            // );
-
-            var arg_buf: [512]u8 = undefined;
-
-            try writer.writeAll("    ");
-            if (!(this.return_type == .void)) {
-                try this.return_type.typename(writer);
-                try writer.writeAll(" return_value = ");
-            }
-            try writer.print("{s}(", .{bun.asByteSlice(this.base_name.?)});
-            first = true;
-            arg_buf[0..3].* = "arg".*;
-            for (this.arg_types.items, 0..) |arg, i| {
-                if (!first) {
-                    try writer.writeAll(", ");
-                }
-                first = false;
-                try writer.writeAll("    ");
-
-                const lengthBuf = std.fmt.printInt(arg_buf["arg".len..], i, 10, .lower, .{});
-                const argName = arg_buf[0 .. 3 + lengthBuf];
-                if (arg.needsACastInC()) {
-                    try writer.print("{f}", .{arg.toC(argName)});
-                } else {
-                    try writer.writeAll(argName);
-                }
             }
             try writer.writeAll(");\n");
-
-            if (!first) try writer.writeAll("\n");
-
-            try writer.writeAll("    ");
-
-            if (this.needsHandleScope()) {
-                try writer.writeAll(
-                    \\  NapiHandleScope__close(&Bun__thisFFIModuleNapiEnv, handleScope);
-                    \\
-                );
-            }
-
-            try writer.writeAll("return ");
-
-            if (!(this.return_type == .void)) {
-                try writer.print("{f}.asZigRepr", .{this.return_type.toJS("return_value")});
-            } else {
-                try writer.writeAll("ValueUndefined.asZigRepr");
-            }
-
-            try writer.writeAll(";\n}\n\n");
-        }
-
-        extern fn FFI_Callback_call(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn FFI_Callback_call_0(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn FFI_Callback_call_1(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn FFI_Callback_call_2(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn FFI_Callback_call_3(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn FFI_Callback_call_4(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn FFI_Callback_call_5(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn FFI_Callback_threadsafe_call(*anyopaque, usize, [*]const u64) void;
-        extern fn FFI_Callback_call_6(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn FFI_Callback_call_7(*anyopaque, usize, [*]JSValue) JSValue;
-        extern fn Bun__createFFICallbackState(*jsc.JSGlobalObject, JSValue, [*]const ABIType, usize) *anyopaque;
-
-        pub fn printCallbackSourceCode(
-            this: *Function,
-            writer: anytype,
-        ) !void {
-            try writer.writeAll("#define IS_CALLBACK 1\n");
-            if (this.threadsafe)
-                try writer.writeAll("#define IS_THREADSAFE_CALLBACK 1\n");
-
-            brk: {
-                if (this.return_type.isFloatingPoint()) {
-                    try writer.writeAll("#define USES_FLOAT 1\n");
-                    break :brk;
-                }
-
-                for (this.arg_types.items) |arg| {
-                    // conditionally include math.h
-                    if (arg.isFloatingPoint()) {
-                        try writer.writeAll("#define USES_FLOAT 1\n");
-                        break;
-                    }
-                }
-            }
-
-            try writer.writeAll(this.ffiHeader());
-
-            // -- Generate the FFI function symbol
-            try writer.writeAll("\n \n/* --- The Callback Function */\n");
-            var first = true;
-            try this.return_type.typename(writer);
-
-            try writer.writeAll(" my_callback_function");
-            try writer.writeAll("(");
-            for (this.arg_types.items, 0..) |arg, i| {
-                if (!first) {
-                    try writer.writeAll(", ");
-                }
-                first = false;
-                try arg.typename(writer);
-                try writer.print(" arg{d}", .{i});
-            }
-            try writer.writeAll(") {\n");
-
-            if (comptime Environment.isDebug) {
-                try writer.writeAll("#ifdef INJECT_BEFORE\n");
-                try writer.writeAll("INJECT_BEFORE;\n");
-                try writer.writeAll("#endif\n");
-            }
-
-            if (this.arg_types.items.len > 0) {
-                var arg_buf: [512]u8 = undefined;
-                try writer.print(" {s} arguments[{d}];\n", .{
-                    if (this.threadsafe) "uint64_t" else "ZIG_REPR_TYPE",
-                    this.arg_types.items.len,
-                });
-
-                arg_buf[0.."arg".len].* = "arg".*;
-                for (this.arg_types.items, 0..) |arg, i| {
-                    const printed = std.fmt.printInt(arg_buf["arg".len..], i, 10, .lower, .{});
-                    const arg_name = arg_buf[0 .. "arg".len + printed];
-                    if (this.threadsafe)
-                        try writer.print("arguments[{d}] = {f};\n", .{ i, arg.toThreadsafeCallbackBits(arg_name) })
-                    else
-                        try writer.print("arguments[{d}] = {f}.asZigRepr;\n", .{ i, arg.toJS(arg_name) });
-                }
-            }
-
-            if (this.threadsafe) {
-                bun.debugAssert(this.return_type == .void);
-                if (this.arg_types.items.len > 0)
-                    try writer.print("  FFI_Callback_threadsafe_call(callback_ctx, {d}, arguments);\n", .{this.arg_types.items.len})
-                else
-                    try writer.writeAll("  FFI_Callback_threadsafe_call(callback_ctx, 0, 0);\n");
-                try writer.writeAll("}\n\n");
-                return;
-            }
-
-            try writer.writeAll("  ");
-            var inner_buf_: [372]u8 = undefined;
-            var inner_buf = if (this.arg_types.items.len > 0)
-                try std.fmt.bufPrint(
-                    inner_buf_[1..],
-                    "FFI_Callback_call(callback_ctx, {d}, arguments)",
-                    .{this.arg_types.items.len},
-                )
-            else
-                try std.fmt.bufPrint(
-                    inner_buf_[1..],
-                    "FFI_Callback_call(callback_ctx, 0, 0)",
-                    .{},
-                );
-
-            if (this.return_type == .void) {
-                try writer.writeAll(inner_buf);
-            } else {
-                const len = inner_buf.len + 1;
-                inner_buf = inner_buf_[0..len];
-                inner_buf[0] = '_';
-                try writer.print("return {f}", .{this.return_type.toCExact(inner_buf)});
-            }
-
-            try writer.writeAll(";\n}\n\n");
         }
 
         fn needsNapiEnv(this: *const FFI.Function) bool {
@@ -1994,352 +1102,32 @@ pub const FFI = struct {
                 }
             }
 
-            return false;
+            return this.return_type == .napi_value;
         }
     };
 
-    // Must be kept in sync with JSFFIFunction.h version
-    pub const ABIType = enum(i32) {
-        char = 0,
+    pub const ABIType = FFIABIType;
 
-        int8_t = 1,
-        uint8_t = 2,
-
-        int16_t = 3,
-        uint16_t = 4,
-
-        int32_t = 5,
-        uint32_t = 6,
-
-        int64_t = 7,
-        uint64_t = 8,
-
-        double = 9,
-        float = 10,
-
-        bool = 11,
-
-        ptr = 12,
-
-        void = 13,
-
-        cstring = 14,
-
-        i64_fast = 15,
-        u64_fast = 16,
-
-        function = 17,
-        napi_env = 18,
-        napi_value = 19,
-        buffer = 20,
-        pub const max = @backingInt(ABIType.napi_value);
-
-        pub fn supportsThreadsafeCallback(this: ABIType) bool {
-            return switch (this) {
-                .char,
-                .int8_t,
-                .uint8_t,
-                .int16_t,
-                .uint16_t,
-                .int32_t,
-                .uint32_t,
-                .int64_t,
-                .uint64_t,
-                .double,
-                .float,
-                .bool,
-                .ptr,
-                .cstring,
-                .i64_fast,
-                .u64_fast,
-                .function,
-                => true,
-                .void, .napi_env, .napi_value, .buffer => false,
-            };
-        }
-
-        pub fn fromThreadsafeCallbackBits(this: ABIType, global: *JSGlobalObject, bits: u64) JSValue {
-            return switch (this) {
-                .char, .int8_t, .int16_t, .int32_t => JSValue.jsNumber(@as(i64, @bitCast(bits))),
-                .uint8_t, .uint16_t, .uint32_t => JSValue.jsNumber(bits),
-                .int64_t => JSValue.fromInt64NoTruncate(global, @bitCast(bits)),
-                .uint64_t => JSValue.fromUInt64NoTruncate(global, bits),
-                .i64_fast => fast: {
-                    const value: i64 = @bitCast(bits);
-                    if (value >= jsc.MIN_SAFE_INTEGER and value <= jsc.MAX_SAFE_INTEGER)
-                        break :fast JSValue.jsNumber(value);
-                    break :fast JSValue.fromInt64NoTruncate(global, value);
-                },
-                .u64_fast => if (bits <= jsc.MAX_SAFE_INTEGER)
-                    JSValue.jsNumber(bits)
-                else
-                    JSValue.fromUInt64NoTruncate(global, bits),
-                .double => JSValue.jsNumber(purifyNaN(@as(f64, @bitCast(bits)))),
-                .float => JSValue.jsNumber(purifyNaN(@as(f32, @bitCast(@as(u32, @truncate(bits)))))),
-                .bool => JSValue.jsBoolean(bits != 0),
-                .ptr, .cstring, .function => if (bits == 0) .null else JSValue.fromPtrAddress(@intCast(bits)),
-                .void, .napi_env, .napi_value, .buffer => unreachable,
-            };
-        }
-
-        fn purifyNaN(value: anytype) f64 {
-            return if (std.math.isNan(value)) std.math.nan(f64) else @floatCast(value);
-        }
-
-        /// Types that we can directly pass through as an `int64_t`
-        pub fn needsACastInC(this: ABIType) bool {
-            return switch (this) {
-                .char, .int8_t, .uint8_t, .int16_t, .uint16_t, .int32_t, .uint32_t => false,
-                else => true,
-            };
-        }
-
-        const map = .{
-            .{ "bool", ABIType.bool },
-            .{ "c_int", ABIType.int32_t },
-            .{ "c_uint", ABIType.uint32_t },
-            .{ "char", ABIType.char },
-            .{ "char*", ABIType.ptr },
-            .{ "double", ABIType.double },
-            .{ "f32", ABIType.float },
-            .{ "f64", ABIType.double },
-            .{ "float", ABIType.float },
-            .{ "i16", ABIType.int16_t },
-            .{ "i32", ABIType.int32_t },
-            .{ "i64", ABIType.int64_t },
-            .{ "i8", ABIType.int8_t },
-            .{ "int", ABIType.int32_t },
-            .{ "int16_t", ABIType.int16_t },
-            .{ "int32_t", ABIType.int32_t },
-            .{ "int64_t", ABIType.int64_t },
-            .{ "int8_t", ABIType.int8_t },
-            .{ "isize", ABIType.int64_t },
-            .{ "u16", ABIType.uint16_t },
-            .{ "u32", ABIType.uint32_t },
-            .{ "u64", ABIType.uint64_t },
-            .{ "u8", ABIType.uint8_t },
-            .{ "uint16_t", ABIType.uint16_t },
-            .{ "uint32_t", ABIType.uint32_t },
-            .{ "uint64_t", ABIType.uint64_t },
-            .{ "uint8_t", ABIType.uint8_t },
-            .{ "usize", ABIType.uint64_t },
-            .{ "size_t", ABIType.uint64_t },
-            .{ "buffer", ABIType.buffer },
-            .{ "void*", ABIType.ptr },
-            .{ "ptr", ABIType.ptr },
-            .{ "pointer", ABIType.ptr },
-            .{ "void", ABIType.void },
-            .{ "cstring", ABIType.cstring },
-            .{ "i64_fast", ABIType.i64_fast },
-            .{ "u64_fast", ABIType.u64_fast },
-            .{ "function", ABIType.function },
-            .{ "callback", ABIType.function },
-            .{ "fn", ABIType.function },
-            .{ "napi_env", ABIType.napi_env },
-            .{ "napi_value", ABIType.napi_value },
+    fn abiTypeName(type_: ABIType) []const u8 {
+        return switch (type_) {
+            .buffer, .function_pointer, .c_string, .pointer => "void*",
+            .boolean => "bool",
+            .int8 => "int8_t",
+            .uint8 => "uint8_t",
+            .int16 => "int16_t",
+            .uint16 => "uint16_t",
+            .int32 => "int32_t",
+            .uint32 => "uint32_t",
+            .int64_fast, .int64 => "int64_t",
+            .uint64_fast, .uint64 => "uint64_t",
+            .double_type => "double",
+            .float_type => "float",
+            .char_type => "char",
+            .void_type => "void",
+            .napi_env => "napi_env",
+            .napi_value => "napi_value",
         };
-        pub const label = bun.ComptimeStringMap(ABIType, map);
-        pub fn isFloatingPoint(this: ABIType) bool {
-            return switch (this) {
-                .double, .float => true,
-                else => false,
-            };
-        }
-
-        const ToCFormatter = struct {
-            symbol: string,
-            tag: ABIType,
-            exact: bool = false,
-
-            pub fn format(self: ToCFormatter, writer: *std.Io.Writer) !void {
-                switch (self.tag) {
-                    .void => {
-                        return;
-                    },
-                    .bool => {
-                        if (self.exact)
-                            try writer.writeAll("(bool)");
-                        try writer.writeAll("JSVALUE_TO_BOOL(");
-                    },
-                    .char, .int8_t, .uint8_t, .int16_t, .uint16_t, .int32_t, .uint32_t => {
-                        if (self.exact)
-                            try writer.print("({s})", .{bun.asByteSlice(@tagName(self.tag))});
-
-                        try writer.writeAll("JSVALUE_TO_INT32(");
-                    },
-                    .i64_fast, .int64_t => {
-                        if (self.exact)
-                            try writer.writeAll("(int64_t)");
-                        try writer.writeAll("JSVALUE_TO_INT64(");
-                    },
-                    .u64_fast, .uint64_t => {
-                        if (self.exact)
-                            try writer.writeAll("(uint64_t)");
-                        try writer.writeAll("JSVALUE_TO_UINT64(");
-                    },
-                    .function, .cstring, .ptr => {
-                        if (self.exact)
-                            try writer.writeAll("(void*)");
-                        try writer.writeAll("JSVALUE_TO_PTR(");
-                    },
-                    .double => {
-                        if (self.exact)
-                            try writer.writeAll("(double)");
-                        try writer.writeAll("JSVALUE_TO_DOUBLE(");
-                    },
-                    .float => {
-                        if (self.exact)
-                            try writer.writeAll("(float)");
-                        try writer.writeAll("JSVALUE_TO_FLOAT(");
-                    },
-                    .napi_env => {
-                        try writer.writeAll("((napi_env)&Bun__thisFFIModuleNapiEnv)");
-                        return;
-                    },
-                    .napi_value => {
-                        try writer.writeAll(self.symbol);
-                        try writer.writeAll(".asNapiValue");
-                        return;
-                    },
-                    .buffer => {
-                        try writer.writeAll("JSVALUE_TO_TYPED_ARRAY_VECTOR(");
-                    },
-                }
-                try writer.writeAll(self.symbol);
-                try writer.writeAll(")");
-            }
-        };
-
-        const ToJSFormatter = struct {
-            symbol: []const u8,
-            tag: ABIType,
-
-            pub fn format(self: ToJSFormatter, writer: *std.Io.Writer) !void {
-                switch (self.tag) {
-                    .void => {},
-                    .bool => {
-                        try writer.print("BOOLEAN_TO_JSVALUE({s})", .{self.symbol});
-                    },
-                    .char, .int8_t, .uint8_t, .int16_t, .uint16_t, .int32_t => {
-                        try writer.print("INT32_TO_JSVALUE((int32_t){s})", .{self.symbol});
-                    },
-                    .uint32_t => {
-                        try writer.print("UINT32_TO_JSVALUE({s})", .{self.symbol});
-                    },
-                    .i64_fast => {
-                        try writer.print("INT64_TO_JSVALUE(JS_GLOBAL_OBJECT, (int64_t){s})", .{self.symbol});
-                    },
-                    .int64_t => {
-                        try writer.print("INT64_TO_JSVALUE_SLOW(JS_GLOBAL_OBJECT, {s})", .{self.symbol});
-                    },
-                    .u64_fast => {
-                        try writer.print("UINT64_TO_JSVALUE(JS_GLOBAL_OBJECT, {s})", .{self.symbol});
-                    },
-                    .uint64_t => {
-                        try writer.print("UINT64_TO_JSVALUE_SLOW(JS_GLOBAL_OBJECT, {s})", .{self.symbol});
-                    },
-                    .function, .cstring, .ptr => {
-                        try writer.print("PTR_TO_JSVALUE({s})", .{self.symbol});
-                    },
-                    .double => {
-                        try writer.print("DOUBLE_TO_JSVALUE({s})", .{self.symbol});
-                    },
-                    .float => {
-                        try writer.print("FLOAT_TO_JSVALUE({s})", .{self.symbol});
-                    },
-                    .napi_env => {
-                        try writer.writeAll("((napi_env)&Bun__thisFFIModuleNapiEnv)");
-                    },
-                    .napi_value => {
-                        try writer.print("((EncodedJSValue) {{.asNapiValue = {s} }} )", .{self.symbol});
-                    },
-                    .buffer => {
-                        try writer.writeAll("0");
-                    },
-                }
-            }
-        };
-
-        const ToThreadsafeCallbackBitsFormatter = struct {
-            symbol: []const u8,
-            tag: ABIType,
-
-            pub fn format(self: ToThreadsafeCallbackBitsFormatter, writer: *std.Io.Writer) !void {
-                switch (self.tag) {
-                    .char, .int8_t, .int16_t, .int32_t, .int64_t, .i64_fast => {
-                        try writer.print("((uint64_t)(int64_t){s})", .{self.symbol});
-                    },
-                    .uint8_t, .uint16_t, .uint32_t, .uint64_t, .u64_fast, .bool => {
-                        try writer.print("((uint64_t){s})", .{self.symbol});
-                    },
-                    .ptr, .cstring, .function => {
-                        try writer.print("((uint64_t)(uintptr_t){s})", .{self.symbol});
-                    },
-                    .double => {
-                        try writer.print("DOUBLE_TO_THREADSAFE_CALLBACK_BITS({s})", .{self.symbol});
-                    },
-                    .float => {
-                        try writer.print("FLOAT_TO_THREADSAFE_CALLBACK_BITS({s})", .{self.symbol});
-                    },
-                    .void, .napi_env, .napi_value, .buffer => unreachable,
-                }
-            }
-        };
-
-        pub fn toC(this: ABIType, symbol: string) ToCFormatter {
-            return ToCFormatter{ .tag = this, .symbol = symbol };
-        }
-
-        pub fn toCExact(this: ABIType, symbol: string) ToCFormatter {
-            return ToCFormatter{ .tag = this, .symbol = symbol, .exact = true };
-        }
-
-        pub fn toJS(
-            this: ABIType,
-            symbol: string,
-        ) ToJSFormatter {
-            return ToJSFormatter{
-                .tag = this,
-                .symbol = symbol,
-            };
-        }
-
-        pub fn toThreadsafeCallbackBits(this: ABIType, symbol: string) ToThreadsafeCallbackBitsFormatter {
-            return .{
-                .tag = this,
-                .symbol = symbol,
-            };
-        }
-
-        pub fn typename(this: ABIType, writer: anytype) !void {
-            try writer.writeAll(this.typenameLabel());
-        }
-
-        pub fn typenameLabel(this: ABIType) []const u8 {
-            return switch (this) {
-                .buffer, .function, .cstring, .ptr => "void*",
-                .bool => "bool",
-                .int8_t => "int8_t",
-                .uint8_t => "uint8_t",
-                .int16_t => "int16_t",
-                .uint16_t => "uint16_t",
-                .int32_t => "int32_t",
-                .uint32_t => "uint32_t",
-                .i64_fast, .int64_t => "int64_t",
-                .u64_fast, .uint64_t => "uint64_t",
-                .double => "double",
-                .float => "float",
-                .char => "char",
-                .void => "void",
-                .napi_env => "napi_env",
-                .napi_value => "napi_value",
-            };
-        }
-
-        pub fn paramTypename(this: ABIType, writer: anytype) !void {
-            try writer.writeAll(this.typenameLabel());
-        }
-    };
+    }
 };
 
 const CompilerRT = struct {
@@ -2377,89 +1165,223 @@ const CompilerRT = struct {
         return compiler_rt_dir;
     }
 
-    const MyFunctionSStructWorkAround = struct {
-        JSVALUE_TO_INT64: *const fn (JSValue0: jsc.JSValue) callconv(.c) i64,
-        JSVALUE_TO_UINT64: *const fn (JSValue0: jsc.JSValue) callconv(.c) u64,
-        INT64_TO_JSVALUE: *const fn (arg0: *jsc.JSGlobalObject, arg1: i64) callconv(.c) jsc.JSValue,
-        UINT64_TO_JSVALUE: *const fn (arg0: *jsc.JSGlobalObject, arg1: u64) callconv(.c) jsc.JSValue,
-        bun_call: *const @TypeOf(jsc.C.JSObjectCallAsFunction),
-    };
-    const headers = JSValue.exposed_to_ffi;
-    var workaround: MyFunctionSStructWorkAround = .{
-        .JSVALUE_TO_INT64 = headers.JSVALUE_TO_INT64,
-        .JSVALUE_TO_UINT64 = headers.JSVALUE_TO_UINT64,
-        .INT64_TO_JSVALUE = headers.INT64_TO_JSVALUE,
-        .UINT64_TO_JSVALUE = headers.UINT64_TO_JSVALUE,
-        .bun_call = &jsc.C.JSObjectCallAsFunction,
-    };
-
     noinline fn memset(
-        dest: [*]u8,
-        c: u8,
+        dest: ?*anyopaque,
+        c: c_int,
         byte_count: usize,
-    ) callconv(.c) void {
-        @memset(dest[0..byte_count], c);
+    ) callconv(.c) ?*anyopaque {
+        if (byte_count != 0) {
+            const bytes: [*]u8 = @ptrCast(dest.?);
+            @memset(bytes[0..byte_count], @as(u8, @truncate(@as(c_uint, @bitCast(c)))));
+        }
+        return dest;
     }
 
     noinline fn memcpy(
-        noalias dest: [*]u8,
-        noalias source: [*]const u8,
+        noalias dest: ?*anyopaque,
+        noalias source: ?*const anyopaque,
         byte_count: usize,
-    ) callconv(.c) void {
-        @memcpy(dest[0..byte_count], source[0..byte_count]);
+    ) callconv(.c) ?*anyopaque {
+        if (byte_count != 0) {
+            const destination: [*]u8 = @ptrCast(dest.?);
+            const input: [*]const u8 = @ptrCast(source.?);
+            @memcpy(destination[0..byte_count], input[0..byte_count]);
+        }
+        return dest;
     }
 
-    pub fn define(state: *TCC.State) void {
+    pub fn define(state: *TCC.State) TCC.Error!void {
         if (comptime Environment.isX64) {
             state.defineSymbol("NEEDS_COMPILER_RT_FUNCTIONS", "1");
-            state.compileString(@embedFile(("libtcc1.c"))) catch {
-                if (bun.Environment.isDebug) {
-                    @panic("Failed to compile libtcc1.c");
-                }
-            };
+            try state.compileString(@embedFile("libtcc1.c"));
         }
-
-        const offsets = Offsets.get();
-        state.defineSymbolsComptime(.{
-            .Bun_FFI_PointerOffsetToArgumentsList = offsets.CallFrame__argumentOffset,
-            .JSArrayBufferView__offsetOfLength = offsets.JSArrayBufferView__offsetOfLength,
-            .JSArrayBufferView__offsetOfVector = offsets.JSArrayBufferView__offsetOfVector,
-            .JSCell__offsetOfType = offsets.JSCell__offsetOfType,
-            .JSTypeArrayBufferViewMin = @backingInt(jsc.JSValue.JSType.min_typed_array),
-            .JSTypeArrayBufferViewMax = @backingInt(jsc.JSValue.JSType.max_typed_array),
-        });
     }
 
-    pub fn inject(state: *TCC.State) void {
-        state.addSymbol("memset", &memset) catch unreachable;
-        state.addSymbol("memcpy", &memcpy) catch unreachable;
-        state.addSymbol("NapiHandleScope__open", &bun.api.napi.NapiHandleScope.NapiHandleScope__open) catch unreachable;
-        state.addSymbol("NapiHandleScope__close", &bun.api.napi.NapiHandleScope.NapiHandleScope__close) catch unreachable;
-
-        state.addSymbol("JSVALUE_TO_INT64_SLOW", workaround.JSVALUE_TO_INT64) catch unreachable;
-        state.addSymbol("JSVALUE_TO_UINT64_SLOW", workaround.JSVALUE_TO_UINT64) catch unreachable;
-        state.addSymbol("INT64_TO_JSVALUE_SLOW", workaround.INT64_TO_JSVALUE) catch unreachable;
-        state.addSymbol("UINT64_TO_JSVALUE_SLOW", workaround.UINT64_TO_JSVALUE) catch unreachable;
+    pub fn inject(state: *TCC.State) TCC.Error!void {
+        try state.addSymbol("memset", &memset);
+        try state.addSymbol("memcpy", &memcpy);
     }
 };
 
-pub const Bun__FFI__cc = FFI.Bun__FFI__cc;
+pub const ForeignFunctionData = opaque {};
+pub const EnvironmentData = opaque {};
 
-pub export fn Bun__FFI__decodeThreadsafeCallbackArgument(global: *JSGlobalObject, abi_type: i32, bits: u64) JSValue {
-    jsc.markBinding(@src());
-    const arg_type: FFI.ABIType = @fromBackingInt(@intCast(abi_type));
-    bun.debugAssert(arg_type.supportsThreadsafeCallback());
-    return arg_type.fromThreadsafeCallbackBits(global, bits);
-}
+pub const ForeignFunction = struct {
+    bindgen_state: bun.bindgen.ClassState = .{},
+    library: bun.bindgen.RefNative(FFI, .vm),
+    index: usize,
 
-fn makeNapiEnvIfNeeded(functions: []const FFI.Function, globalThis: *JSGlobalObject) ?*napi.NapiEnv {
-    for (functions) |function| {
-        if (function.needsNapiEnv()) {
-            return globalThis.makeNapiEnvForFFI();
-        }
+    pub fn destroy(this: *ForeignFunction) void {
+        this.library.deinit();
+        bun.destroy(this);
     }
 
-    return null;
+    fn function(this: *const ForeignFunction) *FFI.Function {
+        return &this.library.get().functions.values()[this.index];
+    }
+};
+
+fn adoptForeignFunction(
+    context: bun.bindgen.CallContext(AdoptForeignFunctionSchema),
+    args: bun.bindgen.Args(AdoptForeignFunctionSchema),
+) bun.JSError!bun.bindgen.Return(AdoptForeignFunctionSchema) {
+    const library = args.library.get(FFI.JSBinding).ffi.get();
+    if (args.index >= library.functions.count()) @panic("foreign function factory received an invalid symbol index");
+    const state = try bun.default_allocator.create(ForeignFunction);
+    state.* = .{ .library = .init(library), .index = args.index };
+    return ForeignFunctionClass.adoptResult(state, context);
+}
+
+fn functionSignature(
+    _: bun.bindgen.CallContext(FunctionSignatureSchema),
+    args: bun.bindgen.Args(FunctionSignatureSchema),
+) bun.JSError!bun.bindgen.Return(FunctionSignatureSchema) {
+    const function = args.function.get(ForeignFunction).function();
+    const Result = bun.bindgen.Return(FunctionSignatureSchema);
+    const Arguments = @FieldType(Result, "argumentTypes");
+    const types = try bun.default_allocator.alloc(Arguments.Element, function.arg_types.items.len);
+    defer bun.default_allocator.free(types);
+    @memcpy(types, function.arg_types.items);
+    var name = try bun.bindgen.DOMString.fromUTF8(function.base_name.?);
+    errdefer name.deinit();
+    return .{
+        .name = name,
+        .argumentTypes = try Arguments.fromOwnedSlice(types),
+        .returnType = function.return_type,
+        .ptr = @intFromPtr(function.symbol_from_dynamic_library.?),
+    };
+}
+
+fn beginForeignCall(args: bun.bindgen.Args(BeginForeignCallSchema)) ?*ForeignFunctionData {
+    const library = args.function.library.get();
+    if (library.closed) return null;
+    library.ref();
+    library.active_calls += 1;
+    return args.function.function().native_data.?.get();
+}
+
+fn endForeignCall(args: bun.bindgen.Args(EndForeignCallSchema)) void {
+    const library = args.function.library.get();
+    bun.debugAssert(library.active_calls > 0);
+    library.active_calls -= 1;
+    if (library.closed and library.active_calls == 0) library.closeResources();
+    library.deref();
+}
+
+fn foreignEnvironment(args: bun.bindgen.Args(ForeignEnvironmentSchema)) ?*EnvironmentData {
+    const environment = args.function.library.get().environment orelse return null;
+    return environment.get();
+}
+
+pub const CallbackEndpointData = opaque {};
+
+pub const FFICallbackContext = struct {
+    bindgen_state: bun.bindgen.ClassState = .{},
+    endpoint: ?CallbackEndpoint = null,
+
+    pub fn destroy(this: *@This()) void {
+        this.close();
+        bun.destroy(this);
+    }
+
+    pub fn memoryUsage(this: *const @This(), _: bun.bindgen.MemoryUsageContext(.vm)) usize {
+        const endpoint = this.endpoint orelse return @sizeOf(@This());
+        return @sizeOf(@This()) + bun.bindgen.Engine(CallbackMemoryUsageSchema).call(.{ .endpoint = endpoint.get() });
+    }
+
+    pub fn bindClose(
+        this: *@This(),
+        _: bun.bindgen.CallContext(FFICallbackContextCloseSchema),
+        _: bun.bindgen.Args(FFICallbackContextCloseSchema),
+    ) bun.JSError!void {
+        if (this.endpoint) |endpoint| bun.bindgen.Engine(CloseCallbackSchema).call(.{
+            .endpoint = endpoint.get(),
+        });
+    }
+
+    pub fn bindPublish(
+        this: *@This(),
+        context: bun.bindgen.CallContext(FFICallbackContextPublishSchema),
+        args: bun.bindgen.Args(FFICallbackContextPublishSchema),
+    ) bun.JSError!void {
+        if (this.endpoint) |endpoint| context.engineIn("FFI", "publishCallback").call(.{
+            .endpoint = endpoint.get(),
+            .context = args.bindingThis.operand(context),
+        });
+    }
+
+    fn close(this: *@This()) void {
+        var endpoint = this.endpoint orelse return;
+        this.endpoint = null;
+        endpoint.deinit();
+    }
+};
+
+fn invokeCallback(
+    context: bun.bindgen.CallContext(InvokeCallbackSchema),
+    args: bun.bindgen.Args(InvokeCallbackSchema),
+) bun.JSError!bun.bindgen.Return(InvokeCallbackSchema) {
+    const callback_view = (try CallbackSlot.view(args.context)) orelse return .{ .void_type = false };
+    const PassingArgs = bun.bindgen.Args(NativeCallbackType);
+    const Value = @typeInfo(@FieldType(PassingArgs, "arguments")).pointer.child;
+    const values = try bun.default_allocator.alloc(Value, args.arguments.len());
+    defer bun.default_allocator.free(values);
+    for (values, 0..) |*value, index| {
+        value.* = switch (args.arguments.at(index).?) {
+            .napi_value => |payload| .{ .napi_value = payload.operand(context) },
+            inline else => |payload, tag| @unionInit(Value, @tagName(tag), payload),
+        };
+    }
+    return callback_view.call(.{ .arguments = values });
+}
+
+const FFIBindings = bun.bindgen.Module("FFI");
+const CompileSchema = FFIBindings.function("compile");
+const CallbackSchema = FFIBindings.function("callback");
+const NativeCallbackType = bun.bindgen.CallbackSchema("FFINativeCallback");
+const CallbackPointerSchema = FFIBindings.engineShim("callbackPointer");
+const CallbackMemoryUsageSchema = FFIBindings.engineShim("callbackMemoryUsage");
+const CloseCallbackSchema = FFIBindings.engineShim("closeCallback");
+const CallbackEndpoint = bun.bindgen.Return(FFIBindings.engineShim("createCallback"));
+const InvokeCallbackSchema = FFIBindings.nativeExport("invokeCallback");
+const InvokeCallbackBinding = bun.bindgen.Fn(InvokeCallbackSchema, invokeCallback);
+const FFIClassSchema = FFIBindings.class("FFI");
+const FFIClass = bun.bindgen.Class(FFIClassSchema, FFI.JSBinding);
+const FFIRef = bun.bindgen.ClassRef(FFIClassSchema);
+const FFICloseSchema = FFIClassSchema.member("close");
+const FFISymbolsSchema = FFIClassSchema.member("symbols");
+const ForeignFunctionClassSchema = FFIBindings.class("ForeignFunction");
+const ForeignFunctionClass = bun.bindgen.Class(ForeignFunctionClassSchema, ForeignFunction);
+const AdoptForeignFunctionSchema = FFIBindings.nativeExport("adoptForeignFunction");
+const AdoptForeignFunctionBinding = bun.bindgen.Fn(AdoptForeignFunctionSchema, adoptForeignFunction);
+const FunctionSignatureSchema = FFIBindings.function("functionSignature");
+const FunctionSignatureBinding = bun.bindgen.Fn(FunctionSignatureSchema, functionSignature);
+const PrepareFunctionSchema = FFIBindings.engineShim("prepareFunction");
+const FFIFunctionData = bun.bindgen.Return(PrepareFunctionSchema);
+const FFIEnvironment = bun.bindgen.Return(FFIBindings.engineShim("createEnvironment"));
+const BeginForeignCallSchema = FFIBindings.nativeExport("beginForeignCall");
+const EndForeignCallSchema = FFIBindings.nativeExport("endForeignCall");
+const ForeignEnvironmentSchema = FFIBindings.nativeExport("foreignEnvironment");
+const BeginForeignCallBinding = bun.bindgen.Fn(BeginForeignCallSchema, beginForeignCall);
+const EndForeignCallBinding = bun.bindgen.Fn(EndForeignCallSchema, endForeignCall);
+const ForeignEnvironmentBinding = bun.bindgen.Fn(ForeignEnvironmentSchema, foreignEnvironment);
+const FFICallbackContextClassSchema = FFIBindings.class("FFICallbackContext");
+const FFICallbackContextClass = bun.bindgen.Class(FFICallbackContextClassSchema, FFICallbackContext);
+const FFICallbackContextCloseSchema = FFICallbackContextClassSchema.member("close");
+const FFICallbackContextPublishSchema = FFICallbackContextClassSchema.member("publish");
+const CallbackSlot = FFICallbackContextClass.CachedSlot("callbackValue");
+const FFIABIType = @typeInfo(bun.bindgen.EngineArgumentType(PrepareFunctionSchema, "argumentTypes")).pointer.child;
+
+comptime {
+    _ = FFIClass;
+    _ = FFICallbackContextClass;
+    _ = ForeignFunctionClass;
+    _ = AdoptForeignFunctionBinding;
+    _ = FunctionSignatureBinding;
+    _ = BeginForeignCallBinding;
+    _ = EndForeignCallBinding;
+    _ = ForeignEnvironmentBinding;
+    _ = InvokeCallbackBinding;
 }
 
 const string = []const u8;
@@ -2471,7 +1393,6 @@ const TCC = if (Environment.enable_tinycc) @import("../../tcc_sys/tcc.zig") else
 };
 
 const Fs = @import("../../resolver/fs.zig");
-const napi = @import("../../napi/napi.zig");
 const options = @import("../../bundler/options.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -2480,7 +1401,28 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Output = bun.Output;
 const strings = bun.strings;
-const DynLib = if (Environment.isWindows) WindowsDynLib else std.DynLib;
+const DynLib = if (Environment.isWindows) WindowsDynLib else PosixDynLib;
+
+const PosixDynLib = struct {
+    const LibraryHandle = opaque {};
+    handle: *LibraryHandle,
+
+    fn open(path: []const u8) !PosixDynLib {
+        const library = try std.DynLib.open(path);
+        return .{ .handle = @ptrCast(library.inner.handle) };
+    }
+
+    fn close(this: *PosixDynLib) void {
+        var library: std.DynLib = .{ .inner = .{ .handle = @ptrCast(this.handle) } };
+        library.close();
+        this.* = undefined;
+    }
+
+    fn lookup(this: *PosixDynLib, comptime T: type, name: [:0]const u8) ?T {
+        var library: std.DynLib = .{ .inner = .{ .handle = @ptrCast(this.handle) } };
+        return library.lookup(T, name);
+    }
+};
 
 const WindowsDynLib = struct {
     const libuv = bun.windows.libuv;
@@ -2505,11 +1447,3 @@ const WindowsDynLib = struct {
         return @ptrCast(pointer orelse return null);
     }
 };
-
-const jsc = bun.jsc;
-const Offsets = jsc.FFIOffsets;
-const JSGlobalObject = bun.jsc.JSGlobalObject;
-const JSValue = bun.jsc.JSValue;
-const VM = bun.jsc.VM;
-const VirtualMachine = jsc.VirtualMachine;
-const ZigString = bun.jsc.ZigString;

@@ -4,17 +4,17 @@ pub const OptionValueType = enum { boolean, string };
 /// i.e. the values passed to `parseArgs(..., { options: <values> })`
 pub const OptionDefinition = struct {
     // e.g. "abc" for --abc
-    long_name: String,
+    long_name: TextView,
 
     /// e.g. "a" for -a
     /// if len is 0, it has no short name
-    short_name: String = String.empty,
+    short_name: TextView = .empty,
 
     type: OptionValueType = .boolean,
 
     multiple: bool = false,
 
-    default_value: ?JSValue = null,
+    has_default: bool = false,
 };
 
 pub const TokenSubtype = enum {
@@ -34,8 +34,8 @@ pub const TokenSubtype = enum {
     positional,
 };
 
-pub inline fn classifyToken(arg: String, options: []const OptionDefinition) TokenSubtype {
-    const len = arg.length();
+pub inline fn classifyToken(arg: TextView, options: []const OptionDefinition) TokenSubtype {
+    const len = arg.len();
 
     if (len == 2) {
         if (arg.hasPrefixComptime("-")) {
@@ -61,8 +61,8 @@ pub inline fn classifyToken(arg: String, options: []const OptionDefinition) Toke
 /// Detect whether there is possible confusion and user may have omitted
 /// the option argument, like `--port --verbose` when `port` of type:string.
 /// In strict mode we throw errors if value is option-like.
-pub fn isOptionLikeValue(value: String) bool {
-    return value.length() > 1 and value.hasPrefixComptime("-");
+pub fn isOptionLikeValue(value: TextView) bool {
+    return value.len() > 1 and value.hasPrefixComptime("-");
 }
 
 /// Find the long option associated with a short option. Looks for a configured
@@ -74,13 +74,13 @@ pub fn isOptionLikeValue(value: String) bool {
 ///   options: { bar: { short: 'b' } }
 /// }) // returns "bar"
 /// ```
-pub fn findOptionByShortName(short_name: String, options: []const OptionDefinition) ?usize {
+pub fn findOptionByShortName(short_name: TextView, options: []const OptionDefinition) ?usize {
     var long_option_index: ?usize = null;
     for (options, 0..) |option, i| {
-        if (short_name.eql(option.short_name)) {
+        if (short_name.eqlUTF8View(option.short_name)) {
             return i;
         }
-        if (option.long_name.length() == 1 and short_name.eql(option.long_name)) {
+        if (option.long_name.len() == 1 and short_name.eqlUTF8View(option.long_name)) {
             long_option_index = i;
         }
     }
@@ -88,5 +88,4 @@ pub fn findOptionByShortName(short_name: String, options: []const OptionDefiniti
 }
 
 const bun = @import("bun");
-const String = bun.String;
-const JSValue = bun.jsc.JSValue;
+const TextView = bun.TextView;

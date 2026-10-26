@@ -2,8 +2,6 @@ const CPUFeatures = @This();
 
 flags: Flags,
 
-extern "c" fn bun_cpu_features() u8;
-
 pub const Flags = switch (@import("builtin").cpu.arch) {
     .x86_64 => packed struct(u8) {
         none: bool,
@@ -55,10 +53,14 @@ pub fn hasAnyAVX(features: CPUFeatures) bool {
     return features.flags.avx or features.flags.avx2 or features.flags.avx512;
 }
 
-pub fn get() CPUFeatures {
-    const flags: Flags = @bitCast(bun_cpu_features());
-    bun.debugAssert(flags.none == false and flags.padding == 0); // sanity check
+pub fn detect() Flags {
+    const flags: Flags = @bitCast(bun.bindgen.Engine(DetectSchema).call(.{}));
+    bun.debugAssert(!flags.none and flags.padding == 0);
+    return flags;
+}
 
+pub fn get() CPUFeatures {
+    const flags = detect();
     if (bun.Environment.isX64) {
         bun.analytics.Features.no_avx += @as(usize, @intFromBool(!flags.avx));
         bun.analytics.Features.no_avx2 += @as(usize, @intFromBool(!flags.avx2));
@@ -69,3 +71,4 @@ pub fn get() CPUFeatures {
 
 const bun = @import("bun");
 const std = @import("std");
+const DetectSchema = bun.bindgen.Module("CPUFeatures").engineShim("detect");

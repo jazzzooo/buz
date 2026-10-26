@@ -431,6 +431,7 @@ export fn getTests(opts_array: u64) u64 {
     const allocator = arena.allocator();
     defer arena.deinit();
     var log_ = Logger.Log.init(allocator);
+    defer log_.deinit();
     var reader = ApiReader.init(Uint8Array.fromJS(opts_array), allocator);
     const opts = api.GetTestsRequest.decode(&reader) catch unreachable;
     var code = Logger.Source.initPathString(if (opts.path.len > 0) opts.path else "my-test-file.test.tsx", opts.contents);
@@ -487,6 +488,7 @@ export fn transform(opts_array: u64) u64 {
     const allocator = arena.allocator();
     defer arena.deinit();
     log = Logger.Log.init(allocator);
+    defer log.deinit();
 
     var reader = ApiReader.init(Uint8Array.fromJS(opts_array), allocator);
     const opts = api.Transform.decode(&reader) catch unreachable;
@@ -560,6 +562,7 @@ export fn scan(opts_array: u64) u64 {
     var allocator = arena.allocator();
     defer arena.deinit();
     log = Logger.Log.init(allocator);
+    defer log.deinit();
 
     var reader = ApiReader.init(Uint8Array.fromJS(opts_array), allocator);
     const opts = api.Scan.decode(&reader) catch unreachable;

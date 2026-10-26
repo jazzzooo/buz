@@ -72,6 +72,47 @@ pub const StandaloneModuleGraph = struct {
         return this.findAssumeStandalonePath(name);
     }
 
+    pub fn findText(this: *const StandaloneModuleGraph, name: bun.TextView) ?*File {
+        const canonical = if (Environment.isWindows) path: {
+            inline for (.{ &bun.windows.nt_object_prefix_u8, &bun.windows.long_path_prefix_u8, &bun.windows.nt_unc_object_prefix_u8 }) |prefix| {
+                if (name.hasPrefixComptime(prefix)) break :path name.substring(prefix.len);
+            }
+            break :path name;
+        } else name;
+        if (!canonical.hasPrefixComptime(base_path) and
+            !(Environment.isWindows and canonical.hasPrefixComptime(base_public_path))) return null;
+        return this.files.getPtrAdapted(canonical, TextPathContext{});
+    }
+
+    const TextPathContext = struct {
+        const Iterator = struct {
+            chunks: @TypeOf(bun.TextView.empty.utf8Chunks()),
+            chunk: []const u8 = &.{},
+
+            fn next(iterator: *Iterator) ?u8 {
+                if (iterator.chunk.len == 0) iterator.chunk = iterator.chunks.next() orelse return null;
+                const byte = iterator.chunk[0];
+                iterator.chunk = iterator.chunk[1..];
+                return if (Environment.isWindows and byte == '\\') '/' else byte;
+            }
+        };
+
+        pub fn hash(_: TextPathContext, input: bun.TextView) u32 {
+            var iterator = Iterator{ .chunks = input.utf8Chunks() };
+            var hasher = std.hash.Wyhash.init(0);
+            while (iterator.next()) |byte| hasher.update(&.{byte});
+            return @truncate(hasher.final());
+        }
+
+        pub fn eql(_: TextPathContext, input: bun.TextView, expected: []const u8, _: usize) bool {
+            var iterator = Iterator{ .chunks = input.utf8Chunks() };
+            for (expected) |byte| {
+                if (iterator.next() != byte) return false;
+            }
+            return iterator.next() == null;
+        }
+    };
+
     pub fn stat(this: *const StandaloneModuleGraph, name: []const u8) ?bun.Stat {
         const file = this.find(name) orelse return null;
         return file.stat();
@@ -122,52 +163,10 @@ pub const StandaloneModuleGraph = struct {
         cjs = 2,
     };
 
-    const Macho = struct {
-        pub extern "C" fn Bun__getStandaloneModuleGraphMachoLength() ?*align(1) u64;
-
-        pub fn getData() ?[]const u8 {
-            if (Bun__getStandaloneModuleGraphMachoLength()) |length| {
-                if (length.* < 8) {
-                    return null;
-                }
-
-                // BlobHeader has 8 bytes size (u64), so data starts at offset 8.
-                const data_offset = @sizeOf(u64);
-                const slice_ptr: [*]const u8 = @ptrCast(length);
-                return slice_ptr[data_offset..][0..length.*];
-            }
-
-            return null;
-        }
-    };
-
-    const PE = struct {
-        pub extern "C" fn Bun__getStandaloneModuleGraphPELength() u64;
-        pub extern "C" fn Bun__getStandaloneModuleGraphPEData() ?[*]u8;
-
-        pub fn getData() ?[]const u8 {
-            const length = Bun__getStandaloneModuleGraphPELength();
-            if (length == 0) return null;
-
-            const data_ptr = Bun__getStandaloneModuleGraphPEData() orelse return null;
-            return data_ptr[0..length];
-        }
-    };
-
-    const ELF = struct {
-        pub extern "C" fn Bun__getStandaloneModuleGraphELFVaddr() ?*align(1) u64;
-
-        pub fn getData() ?[]const u8 {
-            const vaddr = (Bun__getStandaloneModuleGraphELFVaddr() orelse return null).*;
-            if (vaddr == 0) return null;
-            // BUN_COMPILED.size holds the virtual address of the appended data.
-            // The kernel mapped it via PT_LOAD, so we can dereference directly.
-            // Format at target: [u64 payload_len][payload bytes]
-            const target: [*]const u8 = @ptrFromInt(vaddr);
-            const payload_len = std.mem.readInt(u64, target[0..8], .little);
-            if (payload_len < 8) return null;
-            return target[8..][0..payload_len];
-        }
+    /// The OS owns these executable-image pages until process exit.
+    pub const ExecutableFileBytes = struct {
+        name: []const u8,
+        contents: []const u8,
     };
 
     pub const File = struct {
@@ -175,7 +174,6 @@ pub const StandaloneModuleGraph = struct {
         loader: bun.options.Loader,
         contents: [:0]const u8 = "",
         sourcemap: LazySourceMap,
-        cached_blob: ?*bun.webcore.Blob = null,
         encoding: Encoding = .binary,
         wtf_string: bun.String = bun.String.empty,
         bytecode: []u8 = "",
@@ -185,6 +183,10 @@ pub const StandaloneModuleGraph = struct {
         bytecode_origin_path: []const u8 = "",
         module_format: ModuleFormat = .none,
         side: FileSide = .server,
+
+        pub fn executableBytes(this: *const File) ExecutableFileBytes {
+            return .{ .name = this.name, .contents = this.contents };
+        }
 
         pub fn appearsInEmbeddedFilesArray(this: *const File) bool {
             return this.side == .client or !this.loader.isJavaScriptLike();
@@ -210,7 +212,7 @@ pub const StandaloneModuleGraph = struct {
                         this.wtf_string = bun.String.cloneUTF8(this.contents);
                     },
                     .latin1 => {
-                        this.wtf_string = bun.String.createStaticExternal(this.contents, true);
+                        this.wtf_string = bun.String.createStaticExternal(.latin1, this.contents);
                     },
                 }
             }
@@ -218,19 +220,17 @@ pub const StandaloneModuleGraph = struct {
             // We don't want this to free.
             return this.wtf_string.dupeRef();
         }
-
-        pub const blob = @import("../runtime/api/standalone_graph_jsc.zig").fileBlob;
     };
 
     pub const LazySourceMap = union(enum) {
         serialized: SerializedSourceMap,
+        /// Owns the initial reference for the lifetime of the standalone graph.
         parsed: *SourceMap.ParsedSourceMap,
         none,
 
-        /// It probably is not possible to run two decoding jobs on the same file
         var init_lock: std.Io.Mutex = .init;
 
-        pub fn load(this: *LazySourceMap, io: std.Io) ?*SourceMap.ParsedSourceMap {
+        pub fn load(this: *LazySourceMap, io: std.Io) bun.OOM!?*SourceMap.ParsedSourceMap {
             init_lock.lockUncancelable(io);
             defer init_lock.unlock(io);
 
@@ -254,27 +254,30 @@ pub const StandaloneModuleGraph = struct {
                     };
 
                     const source_files = serialized.sourceFileNames();
-                    const slices = bun.handleOom(bun.default_allocator.alloc(?[]u8, source_files.len * 2));
-
-                    const file_names: [][]const u8 = @ptrCast(slices[0..source_files.len]);
-                    const decompressed_contents_slice = slices[source_files.len..][0..source_files.len];
+                    const allocator = bun.default_allocator;
+                    const file_names = try allocator.alloc([]const u8, source_files.len);
+                    errdefer allocator.free(file_names);
+                    const decompressed_contents_slice = try allocator.alloc(?[]u8, source_files.len);
+                    errdefer allocator.free(decompressed_contents_slice);
                     for (file_names, source_files) |*dest, src| {
                         dest.* = src.slice(serialized.bytes);
                     }
 
                     @memset(decompressed_contents_slice, null);
 
-                    const data = bun.new(SerializedSourceMap.Loaded, .{
+                    const data = try allocator.create(SerializedSourceMap.Loaded);
+                    errdefer allocator.destroy(data);
+                    data.* = .{
                         .map = serialized,
+                        .file_names = file_names,
                         .decompressed_files = decompressed_contents_slice,
-                    });
+                    };
 
                     stored.external_source_names = file_names;
-                    stored.underlying_provider = .{ .data = @truncate(@intFromPtr(data)), .load_hint = .none, .kind = .zig };
-                    stored.is_standalone_module_graph = true;
+                    stored.source_content = .{ .standalone_module_graph = data };
 
-                    const parsed = bun.new(SourceMap.ParsedSourceMap, stored);
-                    parsed.ref(); // never free
+                    const parsed = try allocator.create(SourceMap.ParsedSourceMap);
+                    parsed.* = stored;
                     this.* = .{ .parsed = parsed };
                     return parsed;
                 },
@@ -300,7 +303,7 @@ pub const StandaloneModuleGraph = struct {
 
     const trailer = "\n---- Bun! ----\n";
 
-    pub fn fromBytes(allocator: std.mem.Allocator, raw_bytes: []u8, offsets: Offsets) !StandaloneModuleGraph {
+    fn fromBytes(allocator: std.mem.Allocator, raw_bytes: []u8, offsets: Offsets) !StandaloneModuleGraph {
         if (raw_bytes.len == 0) return StandaloneModuleGraph{
             .files = bun.StringArrayHashMap(File).empty,
         };
@@ -1050,14 +1053,14 @@ pub const StandaloneModuleGraph = struct {
 
     pub const CompileTarget = @import("../options_types/CompileTarget.zig");
 
-    pub fn download(allocator: std.mem.Allocator, io: std.Io, target: *const CompileTarget, env: *bun.DotEnv.Loader) ![:0]const u8 {
+    pub fn download(allocator: std.mem.Allocator, io: std.Io, javascript_semantics: JavaScriptSemantics, target: *const CompileTarget, env: *bun.DotEnv.Loader) ![:0]const u8 {
         var exe_path_buf: bun.PathBuffer = undefined;
         var version_str_buf: [1024]u8 = undefined;
         const version_str = try std.mem.printSentinel(&version_str_buf, "{}", .{target}, 0);
         var needs_download: bool = true;
         const dest_z = target.exePath(&exe_path_buf, version_str, env, &needs_download);
         if (needs_download) {
-            target.downloadToPath(io, env, allocator, dest_z) catch |err| {
+            target.downloadToPath(io, javascript_semantics, env, allocator, dest_z) catch |err| {
                 // For CLI, provide detailed error messages and exit
                 switch (err) {
                     error.TargetNotFound => {
@@ -1103,6 +1106,7 @@ pub const StandaloneModuleGraph = struct {
         target: *const CompileTarget,
         allocator: std.mem.Allocator,
         io: std.Io,
+        javascript_semantics: JavaScriptSemantics,
         output_files: []const bun.options.OutputFile,
         root_dir: std.Io.Dir,
         module_prefix: []const u8,
@@ -1137,7 +1141,7 @@ pub const StandaloneModuleGraph = struct {
             const dest_z = target.exePath(&exe_path_buf, version_str, env, &needs_download);
 
             if (needs_download) {
-                target.downloadToPath(io, env, allocator, dest_z) catch |err| {
+                target.downloadToPath(io, javascript_semantics, env, allocator, dest_z) catch |err| {
                     return switch (err) {
                         error.TargetNotFound => CompileResult.failFmt("Target platform '{f}' is not available for download. Check if this version of Bun supports this target.", .{target}),
                         error.NetworkError => CompileResult.failFmt("Network error downloading executable for '{f}'. Check your internet connection and proxy settings.", .{target}),
@@ -1278,55 +1282,12 @@ pub const StandaloneModuleGraph = struct {
     /// Loads the standalone module graph from the executable, allocates it on the heap,
     /// sets it globally, and returns the pointer.
     pub fn fromExecutable(allocator: std.mem.Allocator) !?*StandaloneModuleGraph {
-        if (comptime Environment.isMac) {
-            const macho_bytes = Macho.getData() orelse return null;
-            if (macho_bytes.len < @sizeOf(Offsets) + trailer.len) {
-                Output.debugWarn("bun standalone module graph is too small to be valid", .{});
-                return null;
-            }
-            const macho_bytes_slice = macho_bytes[macho_bytes.len - @sizeOf(Offsets) - trailer.len ..];
-            const trailer_bytes = macho_bytes[macho_bytes.len - trailer.len ..][0..trailer.len];
-            if (!bun.strings.eqlComptime(trailer_bytes, trailer)) {
-                Output.debugWarn("bun standalone module graph has invalid trailer", .{});
-                return null;
-            }
-            const offsets = std.mem.bytesAsValue(Offsets, macho_bytes_slice).*;
-            return try fromBytesAlloc(allocator, @constCast(macho_bytes), offsets);
-        }
-
-        if (comptime Environment.isWindows) {
-            const pe_bytes = PE.getData() orelse return null;
-            if (pe_bytes.len < @sizeOf(Offsets) + trailer.len) {
-                Output.debugWarn("bun standalone module graph is too small to be valid", .{});
-                return null;
-            }
-            const pe_bytes_slice = pe_bytes[pe_bytes.len - @sizeOf(Offsets) - trailer.len ..];
-            const trailer_bytes = pe_bytes[pe_bytes.len - trailer.len ..][0..trailer.len];
-            if (!bun.strings.eqlComptime(trailer_bytes, trailer)) {
-                Output.debugWarn("bun standalone module graph has invalid trailer", .{});
-                return null;
-            }
-            const offsets = std.mem.bytesAsValue(Offsets, pe_bytes_slice).*;
-            return try fromBytesAlloc(allocator, @constCast(pe_bytes), offsets);
-        }
-
-        if (comptime Environment.isLinux or Environment.isFreeBSD) {
-            const elf_bytes = ELF.getData() orelse return null;
-            if (elf_bytes.len < @sizeOf(Offsets) + trailer.len) {
-                Output.debugWarn("bun standalone module graph is too small to be valid", .{});
-                return null;
-            }
-            const elf_bytes_slice = elf_bytes[elf_bytes.len - @sizeOf(Offsets) - trailer.len ..];
-            const trailer_bytes = elf_bytes[elf_bytes.len - trailer.len ..][0..trailer.len];
-            if (!bun.strings.eqlComptime(trailer_bytes, trailer)) {
-                Output.debugWarn("bun standalone module graph has invalid trailer", .{});
-                return null;
-            }
-            const offsets = std.mem.bytesAsValue(Offsets, elf_bytes_slice).*;
-            return try fromBytesAlloc(allocator, @constCast(elf_bytes), offsets);
-        }
-
-        comptime unreachable;
+        const bytes = try EmbeddedData.get() orelse return null;
+        if (bytes.len < @sizeOf(Offsets) + trailer.len) return error.InvalidStandaloneExecutable;
+        if (!bun.strings.eqlComptime(bytes[bytes.len - trailer.len ..], trailer)) return error.InvalidStandaloneExecutable;
+        const metadata = bytes[bytes.len - @sizeOf(Offsets) - trailer.len ..];
+        const offsets = std.mem.bytesAsValue(Offsets, metadata).*;
+        return try fromBytesAlloc(allocator, @constCast(bytes), offsets);
     }
 
     /// Hint to the kernel that the embedded `__BUN`/`.bun` source pages are
@@ -1338,12 +1299,8 @@ pub const StandaloneModuleGraph = struct {
     pub fn hintSourcePagesDontNeed() void {
         if (comptime Environment.isWindows) return;
 
-        const bytes: []const u8 = if (comptime Environment.isMac)
-            Macho.getData() orelse return
-        else if (comptime Environment.isLinux)
-            ELF.getData() orelse return
-        else
-            return;
+        if (comptime !Environment.isMac and !Environment.isLinux) return;
+        const bytes = (EmbeddedData.get() catch return) orelse return;
 
         if (bytes.len == 0) return;
 
@@ -1364,6 +1321,7 @@ pub const StandaloneModuleGraph = struct {
     /// Allocates a StandaloneModuleGraph on the heap, populates it from bytes, sets it globally, and returns the pointer.
     fn fromBytesAlloc(allocator: std.mem.Allocator, raw_bytes: []u8, offsets: Offsets) !*StandaloneModuleGraph {
         const graph_ptr = try allocator.create(StandaloneModuleGraph);
+        errdefer allocator.destroy(graph_ptr);
         graph_ptr.* = try StandaloneModuleGraph.fromBytes(allocator, raw_bytes, offsets);
         graph_ptr.set();
         return graph_ptr;
@@ -1393,8 +1351,13 @@ pub const StandaloneModuleGraph = struct {
         pub fn mappingBlob(map: SerializedSourceMap) ?[]const u8 {
             if (map.bytes.len < @sizeOf(Header)) return null;
             const head = map.header();
-            const start = @sizeOf(Header) + head.source_files_count * @sizeOf(StringPointer) * 2;
+            const start = @sizeOf(Header) + @as(usize, head.source_files_count) * @sizeOf(StringPointer) * 2;
             if (start > map.bytes.len or head.map_bytes_length > map.bytes.len - start) return null;
+            const payload_start = start + head.map_bytes_length;
+            const pointers = std.mem.bytesAsSlice(StringPointer, map.bytes[@sizeOf(Header)..start]);
+            for (pointers) |pointer| {
+                if (pointer.offset < payload_start or pointer.offset > map.bytes.len or pointer.length > map.bytes.len - pointer.offset) return null;
+            }
             return map.bytes[start..][0..head.map_bytes_length];
         }
 
@@ -1411,13 +1374,27 @@ pub const StandaloneModuleGraph = struct {
         /// Once loaded, this map stores additional data for keeping track of source code.
         pub const Loaded = struct {
             map: SerializedSourceMap,
+            /// Owns the outer slice; names borrow the standalone graph's storage.
+            file_names: [][]const u8,
+            mutex: std.Io.Mutex = .init,
 
             /// Only decompress source code once! Once a file is decompressed,
             /// it is stored here. Decompression failures are stored as an empty
             /// string, which will be treated as "no contents".
             decompressed_files: []?[]u8,
 
-            pub fn sourceFileContents(this: Loaded, index: usize) ?[]const u8 {
+            pub fn deinit(this: *Loaded) void {
+                const allocator = bun.default_allocator;
+                for (this.decompressed_files) |file| if (file) |bytes| allocator.free(bytes);
+                allocator.free(this.decompressed_files);
+                allocator.free(this.file_names);
+                allocator.destroy(this);
+            }
+
+            pub fn sourceFileContents(this: *Loaded, io: std.Io, index: usize) bun.OOM!?[]const u8 {
+                this.mutex.lockUncancelable(io);
+                defer this.mutex.unlock(io);
+                if (index >= this.decompressed_files.len) return null;
                 if (this.decompressed_files[index]) |decompressed| {
                     return if (decompressed.len == 0) null else decompressed;
                 }
@@ -1425,9 +1402,17 @@ pub const StandaloneModuleGraph = struct {
                 const compressed_codes = this.map.compressedSourceFiles();
                 const compressed_file = compressed_codes[@intCast(index)].slice(this.map.bytes);
                 const size = bun.zstd.getDecompressedSize(compressed_file);
+                if (size >= std.math.maxInt(u64) - 1) {
+                    this.decompressed_files[index] = "";
+                    return null;
+                }
 
-                const bytes = bun.handleOom(bun.default_allocator.alloc(u8, size));
+                const bytes = try bun.default_allocator.alloc(u8, size);
                 const result = bun.zstd.decompress(bytes, compressed_file);
+                if (result == .out_of_memory) {
+                    bun.default_allocator.free(bytes);
+                    return error.OutOfMemory;
+                }
 
                 if (result == .err) {
                     bun.Output.warn("Source map decompression error: {s}", .{result.err});
@@ -1436,9 +1421,13 @@ pub const StandaloneModuleGraph = struct {
                     return null;
                 }
 
-                const data = bytes[0..result.success];
-                this.decompressed_files[index] = data;
-                return data;
+                if (result.success != bytes.len) {
+                    bun.default_allocator.free(bytes);
+                    this.decompressed_files[index] = "";
+                    return null;
+                }
+                this.decompressed_files[index] = bytes;
+                return if (bytes.len == 0) null else bytes;
             }
         };
     };
@@ -1485,8 +1474,7 @@ pub const StandaloneModuleGraph = struct {
         }
 
         const map_vlq: []const u8 = mappings_str.data.e_string.slice(arena);
-        const map_blob = SourceMap.InternalSourceMap.fromVLQ(arena, map_vlq, 0) catch
-            return error.InvalidSourceMap;
+        const map_blob = try SourceMap.InternalSourceMap.fromVLQ(arena, map_vlq, 0);
 
         try out.writeInt(u32, sources_paths.items.len, .little);
         try out.writeInt(u32, @intCast(map_blob.len), .little);
@@ -1527,6 +1515,7 @@ pub const StandaloneModuleGraph = struct {
 
             const unused = string_payload.unusedCapacitySlice();
             const compressed_result = bun.zstd.compress(unused, utf8, 1);
+            if (compressed_result == .out_of_memory) return error.OutOfMemory;
             if (compressed_result == .err) {
                 bun.Output.panic("Unexpected error compressing sourcemap: {s}", .{bun.span(compressed_result.err)});
             }
@@ -1548,7 +1537,28 @@ pub const StandaloneModuleGraph = struct {
     }
 };
 
+test "serialized source-map pointers remain within their payload" {
+    var bytes: [32]u8 = @splat(0);
+    std.mem.writeInt(u32, bytes[0..4], 1, .little);
+    std.mem.writeInt(u32, bytes[4..8], 4, .little);
+    std.mem.writeInt(u32, bytes[8..12], 28, .little);
+    std.mem.writeInt(u32, bytes[12..16], 1, .little);
+    std.mem.writeInt(u32, bytes[16..20], 29, .little);
+    std.mem.writeInt(u32, bytes[20..24], 3, .little);
+    const map: StandaloneModuleGraph.SerializedSourceMap = .{ .bytes = &bytes };
+    try std.testing.expectEqualSlices(u8, bytes[24..28], map.mappingBlob().?);
+    std.mem.writeInt(u32, bytes[0..4], 0x80000000, .little);
+    try std.testing.expect(map.mappingBlob() == null);
+    std.mem.writeInt(u32, bytes[0..4], 1, .little);
+    std.mem.writeInt(u32, bytes[12..16], 5, .little);
+    try std.testing.expect(map.mappingBlob() == null);
+    std.mem.writeInt(u32, bytes[12..16], 1, .little);
+    std.mem.writeInt(u32, bytes[16..20], 5, .little);
+    try std.testing.expect(map.mappingBlob() == null);
+}
+
 const std = @import("std");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 const w = bun.windows;
 
 const bun = @import("bun");
@@ -1561,3 +1571,4 @@ const macho = bun.macho;
 const pe = bun.pe;
 const strings = bun.strings;
 const Schema = bun.schema.api;
+const EmbeddedData = @import("../exe_format/EmbeddedData.zig");

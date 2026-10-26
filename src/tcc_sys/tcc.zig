@@ -23,6 +23,7 @@ extern fn tcc_add_symbol(s: *TCCState, name: [*:0]const u8, val: *const anyopaqu
 extern fn tcc_output_file(s: *TCCState, filename: [*:0]const u8) c_int;
 extern fn tcc_run(s: *TCCState, argc: c_int, argv: [*c][*c]u8) c_int;
 extern fn tcc_relocate(s1: *TCCState) c_int;
+extern fn pthread_jit_write_protect_np(enable: c_int) void;
 extern fn tcc_get_symbol(s: *TCCState, name: [*:0]const u8) ?*anyopaque;
 extern fn tcc_list_symbols(s: *TCCState, ctx: ?*anyopaque, symbol_cb: ?*const fn (?*anyopaque, [*:0]const u8, ?*const anyopaque) callconv(.c) void) void;
 const TCC_OUTPUT_MEMORY = @as(c_int, 1);
@@ -119,6 +120,10 @@ pub const State = opaque {
     /// Set error/warning display callback
     pub fn setErrorFunc(s: *State, Context: type, errorOpaque: ?*Context, errorFunc: *const ErrorFunc(Context)) void {
         tcc_set_error_func(s, errorOpaque, @ptrCast(errorFunc));
+    }
+
+    pub fn clearErrorFunc(s: *State) void {
+        tcc_set_error_func(s, null, null);
     }
 
     /// Return error/warning callback
@@ -301,6 +306,9 @@ pub const State = opaque {
     /// Memory is allocated and managed internally by TinyCC.
     /// Returns 0 on success, error on failure.
     pub fn relocate(s: *State) Error!void {
+        const jit_write_protection = builtin.cpu.arch == .aarch64 and builtin.os.tag == .macos;
+        if (comptime jit_write_protection) pthread_jit_write_protect_np(0);
+        defer if (comptime jit_write_protection) pthread_jit_write_protect_np(1);
         const ret = tcc_relocate(s);
         if (ret < 0) {
             @branchHint(.unlikely);
@@ -320,4 +328,5 @@ pub const State = opaque {
 };
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;

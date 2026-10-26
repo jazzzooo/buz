@@ -4,6 +4,7 @@ ref_count: RefCount,
 writer: IOWriter = .{},
 event_loop_handle: jsc.EventLoopHandle,
 written: usize = 0,
+pending_start: ?usize = null,
 pending: streams.Result.Writable.Pending = .{
     .result = .{ .done = {} },
 },
@@ -13,21 +14,32 @@ started: bool = false,
 must_be_kept_alive_until_eof: bool = false,
 
 auto_flusher: webcore.AutoFlusher = .{},
-run_pending_later: FlushPendingTask = .{},
+run_pending_later: CancellableTask = .{},
 
 /// Currently, only used when `stdin` in `Bun.spawn` is a ReadableStream.
 readable_stream: jsc.WebCore.ReadableStream.Strong = .{},
-
-/// Strong reference to the JS wrapper object to prevent GC from collecting it
-/// while an async operation is pending. This is set when endFromJS returns a
-/// pending Promise and cleared when the operation completes.
-js_sink_ref: jsc.Strong.Optional = .empty,
+process_lifecycle: ?bun.bindgen.RefNative(bun.api.Subprocess, .vm) = null,
 
 const log = Output.scoped(.FileSink, .visible);
 
 pub const RefCount = bun.ptr.RefCount(FileSink, "ref_count", deinit, .{});
 pub const ref = RefCount.ref;
 pub const deref = RefCount.deref;
+
+pub fn releasePromiseReactionRef(this: *FileSink) void {
+    this.deref();
+}
+
+pub fn attachProcessLifecycle(this: *FileSink, owner: bun.bindgen.RefNative(bun.api.Subprocess, .vm)) void {
+    bun.assert(this.process_lifecycle == null);
+    this.process_lifecycle = owner;
+}
+
+pub fn takeProcessLifecycle(this: *FileSink) ?bun.bindgen.RefNative(bun.api.Subprocess, .vm) {
+    const owner = this.process_lifecycle;
+    this.process_lifecycle = null;
+    return owner;
+}
 
 /// Count of live native FileSink instances. Incremented at allocation,
 /// decremented in `deinit`. Exposed to tests via `bun:internal-for-testing`
@@ -36,8 +48,11 @@ pub const deref = RefCount.deref;
 pub var live_count = std.atomic.Value(i32).init(0);
 
 pub const TestingAPIs = struct {
-    pub fn fileSinkLiveCount(_: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-        return .jsNumber(live_count.load(.monotonic));
+    pub fn fileSinkLiveCount(
+        _: bun.bindgen.CallContext(FileSinkLiveCountSchema),
+        _: bun.bindgen.Args(FileSinkLiveCountSchema),
+    ) bun.JSError!i32 {
+        return live_count.load(.monotonic);
     }
 };
 
@@ -45,6 +60,7 @@ pub const IOWriter = bun.io.StreamingWriter(@This(), opaque {
     pub const onClose = FileSink.onClose;
     pub const onWritable = FileSink.onReady;
     pub const onError = FileSink.onError;
+    pub const onWriteError = FileSink.onWriteError;
     pub const onWrite = FileSink.onWrite;
 });
 pub const Poll = IOWriter;
@@ -68,13 +84,17 @@ pub fn memoryCost(this: *const FileSink) usize {
     return this.writer.memoryCost();
 }
 
-fn Bun__ForceFileSinkToBeSynchronousForProcessObjectStdio(_: *jsc.JSGlobalObject, jsvalue: jsc.JSValue) callconv(.c) void {
-    var this: *FileSink = @ptrCast(@alignCast(JSSink.fromJS(jsvalue) orelse return));
+fn bindForceSynchronous(
+    _: bun.bindgen.CallContext(ForceSynchronousSchema),
+    args: bun.bindgen.Args(ForceSynchronousSchema),
+) bun.JSError!bun.bindgen.Return(ForceSynchronousSchema) {
+    const adapter = (args.value orelse return).get(JSSink.Main);
+    const this = JSSink.nativeFromMain(adapter) orelse return;
     this.writer.makeSynchronous();
 }
 
 comptime {
-    @export(&Bun__ForceFileSinkToBeSynchronousForProcessObjectStdio, .{ .name = "Bun__ForceFileSinkToBeSynchronousForProcessObjectStdio" });
+    _ = ForceSynchronousBinding;
 }
 
 pub fn onAttachedProcessExit(this: *FileSink, status: *const bun.spawn.Status) void {
@@ -92,15 +112,13 @@ pub fn onAttachedProcessExit(this: *FileSink, status: *const bun.spawn.Status) v
     this.readable_stream = .{};
     if (readable_stream.has()) {
         if (this.event_loop_handle.globalObject()) |global| {
-            if (readable_stream.get(global)) |*stream| {
-                if (!status.isOK()) {
-                    const event_loop = global.bunVM().eventLoop();
-                    event_loop.enter();
-                    defer event_loop.exit();
-                    stream.cancel(global);
-                } else {
-                    stream.done(global);
-                }
+            if (!status.isOK()) {
+                const event_loop = global.bunVM().eventLoop();
+                event_loop.enter();
+                defer event_loop.exit();
+                readable_stream.cancel(global);
+            } else {
+                readable_stream.done(global);
             }
         }
         // Clean up the readable stream reference
@@ -121,17 +139,13 @@ fn runPending(this: *FileSink) void {
     this.ref();
     defer this.deref();
 
-    this.run_pending_later.has = false;
+    this.run_pending_later.cancel();
     const l = this.eventLoop();
 
     l.enter();
     defer l.exit();
+    if (this.pending.state == .pending) this.pending_start = null;
     this.pending.run();
-
-    // Release the JS wrapper reference now that the pending operation is complete.
-    // This was held to prevent GC from collecting the wrapper while the async
-    // operation was in progress.
-    this.js_sink_ref.deinit();
 }
 
 pub fn onWrite(this: *FileSink, amount: usize, status: bun.io.WriteStatus) void {
@@ -144,7 +158,7 @@ pub fn onWrite(this: *FileSink, amount: usize, status: bun.io.WriteStatus) void 
     this.ref();
     defer this.deref();
 
-    this.written += amount;
+    if (status != .buffered) this.written += amount;
 
     // TODO: on windows done means ended (no pending data on the buffer) on unix we can still have pending data on the buffer
     // we should unify the behaviors to simplify this
@@ -156,52 +170,61 @@ pub fn onWrite(this: *FileSink, amount: usize, status: bun.io.WriteStatus) void 
     if (has_pending_data) {
         if (this.event_loop_handle.bunVM()) |vm| {
             if (!vm.is_inside_deferred_task_queue) {
-                webcore.AutoFlusher.registerDeferredMicrotaskWithType(@This(), this, vm);
+                webcore.AutoFlusherEngine.register(@This(), this, &this.auto_flusher, vm);
             }
         }
     }
 
+    if (status == .buffered) return;
+
     // if we are not done yet and has pending data we just wait so we do not runPending twice
     if (status == .pending and has_pending_data) {
-        if (this.pending.state == .pending) {
-            this.pending.consumed = @truncate(amount);
-        }
         return;
     }
 
     if (this.pending.state == .pending) {
-        this.pending.consumed = @truncate(amount);
+        const count = this.written - (this.pending_start orelse @panic("pending file write has no starting offset"));
 
         // when "done" is true, we will never receive more data.
         if (this.done or status == .end_of_file) {
-            this.pending.result = .{ .owned_and_done = this.pending.consumed };
+            this.pending.result = .{ .owned_and_done = count };
         } else {
-            this.pending.result = .{ .owned = this.pending.consumed };
+            this.pending.result = .{ .owned = count };
         }
 
         this.runPending();
+    }
 
-        // this.done == true means ended was called
-        const ended_and_done = this.done and status == .end_of_file;
-
-        if (this.done and status == .drained) {
-            // if we call end/endFromJS and we have some pending returned from .flush() we should call writer.end()
-            this.writer.end();
-        } else if (ended_and_done and !has_pending_data) {
-            this.writer.close();
-        }
+    if (this.done and status == .drained and !this.writer.hasPendingData()) {
+        this.writer.end();
+    } else if (this.done and status == .end_of_file and !this.writer.hasPendingData()) {
+        this.writer.close();
     }
 
     if (status == .end_of_file) {
         this.signal.close(null);
         this.clearKeepAliveRef();
     }
+    _ = FileSinkLiveCountBinding;
+}
+
+pub fn onWriteError(this: *FileSink, err: bun.sys.Error, written: usize) void {
+    this.ref();
+    defer this.deref();
+    this.written += written;
+    this.onError(err);
 }
 
 pub fn onError(this: *FileSink, err: bun.sys.Error) void {
+    this.ref();
+    defer this.deref();
     log("onError({f})", .{err});
+    this.done = true;
+    if (this.event_loop_handle.bunVM()) |vm| {
+        webcore.AutoFlusherEngine.unregister(@This(), this, &this.auto_flusher, vm);
+    }
     if (this.pending.state == .pending) {
-        this.pending.result = .{ .err = err };
+        this.pending.result = if (err.getErrno() == .NOMEM) .out_of_memory else .{ .err = err };
         if (this.eventLoop().bunVM()) |vm| {
             if (vm.is_inside_deferred_task_queue) {
                 this.runPendingLater();
@@ -233,12 +256,12 @@ pub fn onReady(this: *FileSink) void {
 }
 
 pub fn onClose(this: *FileSink) void {
+    this.ref();
+    defer this.deref();
     log("onClose()", .{});
     if (this.readable_stream.has()) {
         if (this.event_loop_handle.globalObject()) |global| {
-            if (this.readable_stream.get(global)) |stream| {
-                stream.done(global);
-            }
+            this.readable_stream.done(global);
         }
     }
 
@@ -250,8 +273,7 @@ pub fn onClose(this: *FileSink) void {
     this.clearKeepAliveRef();
 }
 
-/// Release the ref taken in `toResult`/`end`/`endFromJS` when a write
-/// returned `.pending` and we needed to stay alive until it completed.
+/// Release the ref taken while a pending write keeps the sink alive until EOF.
 /// Idempotent via the flag check. May free `this`.
 fn clearKeepAliveRef(this: *FileSink) void {
     if (this.must_be_kept_alive_until_eof) {
@@ -263,40 +285,35 @@ fn clearKeepAliveRef(this: *FileSink) void {
 pub fn createWithPipe(
     event_loop_: anytype,
     pipe: *uv.Pipe,
-) *FileSink {
+) bun.OOM!*FileSink {
     if (Environment.isPosix) {
         @compileError("FileSink.createWithPipe is only available on Windows");
     }
 
-    const evtloop = switch (@TypeOf(event_loop_)) {
-        jsc.EventLoopHandle => event_loop_,
-        else => jsc.EventLoopHandle.init(event_loop_),
-    };
-
-    var this = bun.new(FileSink, .{
-        .ref_count = .init(),
-        .event_loop_handle = jsc.EventLoopHandle.init(evtloop),
-    });
-    _ = live_count.fetchAdd(1, .monotonic);
+    const this = try create(event_loop_);
     this.writer.setPipe(pipe);
-    this.writer.setParent(this);
     return this;
 }
 
 pub fn create(
     event_loop_: anytype,
-) *FileSink {
+) bun.OOM!*FileSink {
     const evtloop = switch (@TypeOf(event_loop_)) {
         jsc.EventLoopHandle => event_loop_,
         else => jsc.EventLoopHandle.init(event_loop_),
     };
-    var this = bun.new(FileSink, .{
+    const this = try bun.default_allocator.create(FileSink);
+    this.initialize(evtloop);
+    return this;
+}
+
+fn initialize(this: *FileSink, event_loop: jsc.EventLoopHandle) void {
+    this.* = .{
         .ref_count = .init(),
-        .event_loop_handle = jsc.EventLoopHandle.init(evtloop),
-    });
+        .event_loop_handle = event_loop,
+    };
     _ = live_count.fetchAdd(1, .monotonic);
     this.writer.setParent(this);
-    return this;
 }
 
 pub fn setup(this: *FileSink, options: *const FileSink.Options) bun.sys.Maybe(void) {
@@ -316,7 +333,10 @@ pub fn setup(this: *FileSink, options: *const FileSink.Options) bun.sys.Maybe(vo
         .err => |err| {
             return .{ .err = err };
         },
-        .result => |fd| fd,
+        .result => |fd| switch (fd.makeLibUVOwnedForSyscall(.open, .close_on_fail)) {
+            .result => |owned_fd| owned_fd,
+            .err => |err| return .{ .err = err },
+        },
     };
     const ofd_ownership: bun.io.WriterStartOptions.Ownership = switch (options.input_path) {
         .path => .exclusive,
@@ -331,7 +351,7 @@ pub fn setup(this: *FileSink, options: *const FileSink.Options) bun.sys.Maybe(vo
         },
     )) {
         .err => |err| {
-            fd.close();
+            _ = fd.closeAllowingStandardIo(null);
             return .{ .err = err };
         },
         .result => {
@@ -362,6 +382,7 @@ pub fn connect(this: *FileSink, signal: streams.Signal) void {
 
 pub fn start(this: *FileSink, stream_start: streams.Start) bun.sys.Maybe(void) {
     switch (stream_start) {
+        .err => |err| return .{ .err = err },
         .FileSink => |*file| {
             switch (this.setup(file)) {
                 .err => |err| {
@@ -380,21 +401,22 @@ pub fn start(this: *FileSink, stream_start: streams.Start) bun.sys.Maybe(void) {
 }
 
 pub fn runPendingLater(this: *FileSink) void {
-    if (this.run_pending_later.has) {
-        return;
-    }
-    this.run_pending_later.has = true;
+    if (this.pending.state != .pending) return;
+    if (this.run_pending_later.isScheduled()) return;
     const event_loop = this.eventLoop();
     if (event_loop == .js) {
         this.ref();
-        event_loop.js.enqueueTask(jsc.Task.init(&this.run_pending_later));
+        if (!this.run_pending_later.scheduleWithCancel(event_loop.js, this, runDeferredPending, cancelDeferredPending)) {
+            this.deref();
+        }
+    } else {
+        this.runPending();
     }
 }
 
 pub fn onAutoFlush(this: *FileSink) bool {
     if (this.done or !this.writer.hasPendingData()) {
         this.updateRef(false);
-        this.auto_flusher.registered = false;
         return false;
     }
 
@@ -419,112 +441,92 @@ pub fn onAutoFlush(this: *FileSink) bool {
         },
     }
 
-    const is_registered = !this.writer.hasPendingData();
-    this.auto_flusher.registered = is_registered;
-    return is_registered;
+    return !this.done and this.writer.hasPendingData();
 }
 
 pub fn flush(_: *FileSink) bun.sys.Maybe(void) {
     return .success;
 }
 
-pub fn flushFromJS(this: *FileSink, globalThis: *JSGlobalObject, wait: bool) bun.sys.Maybe(JSValue) {
+pub fn flushFromBinding(this: *FileSink, wait: bool) bun.sys.Maybe(Sink.BindingOperation) {
+    this.ref();
+    defer this.deref();
     _ = wait;
 
     if (this.pending.state == .pending) {
-        return .{ .result = this.pending.future.promise.strong.value() };
+        return .{ .result = .{ .writable = .{ .pending = &this.pending } } };
     }
 
     if (this.done) {
-        return .initResult(.js_undefined);
+        return .{ .result = .undefined };
     }
 
+    const started_at = this.written;
     const rc = this.writer.flush();
     switch (rc) {
-        .done => |written| {
-            this.written += @truncate(written);
-        },
-        .pending => |written| {
-            this.written += @truncate(written);
-        },
-        .wrote => |written| {
-            this.written += @truncate(written);
-        },
+        .done, .pending, .wrote => {},
         .err => |err| {
             return .{ .err = err };
         },
     }
-    return switch (this.toResult(rc)) {
-        .err => unreachable,
-        else => |result| .initResult(result.toJS(globalThis)),
-    };
+    return .{ .result = .{ .writable = this.toResult(rc, started_at) } };
 }
 
 pub fn finalize(this: *FileSink) void {
-    this.readable_stream.deinit();
-    this.pending.deinit();
-    this.js_sink_ref.deinit();
     this.deref();
 }
+pub const releaseBindingRef = finalize;
 
-/// Protect the JS wrapper object from GC collection while an async operation is pending.
-/// This should be called when endFromJS returns a pending Promise.
-/// The reference is released when runPending() completes.
-pub fn protectJSWrapper(this: *FileSink, globalThis: *jsc.JSGlobalObject, js_wrapper: jsc.JSValue) void {
-    this.js_sink_ref.set(globalThis, js_wrapper);
-}
-
-pub fn init(event_loop_handle: anytype) *FileSink {
-    var this = bun.new(FileSink, .{
-        .ref_count = .init(),
-        .writer = .{},
-        .event_loop_handle = jsc.EventLoopHandle.init(event_loop_handle),
-    });
-    _ = live_count.fetchAdd(1, .monotonic);
-    this.writer.setParent(this);
-
-    return this;
+pub fn hasPendingActivity(this: *const FileSink) bool {
+    return this.pending.state == .pending;
 }
 
 pub fn construct(this: *FileSink, _: std.mem.Allocator) void {
-    this.* = FileSink{
-        .ref_count = .init(),
-        .event_loop_handle = jsc.EventLoopHandle.init(jsc.VirtualMachine.get().eventLoop()),
-    };
-    _ = live_count.fetchAdd(1, .monotonic);
+    this.initialize(jsc.EventLoopHandle.init(jsc.VirtualMachine.get().eventLoop()));
 }
 
 pub fn write(this: *@This(), data: streams.Result) streams.Result.Writable {
+    this.ref();
+    defer this.deref();
     if (this.done) {
         return .{ .done = {} };
     }
 
-    return this.toResult(this.writer.write(data.slice()));
+    const started_at = this.written;
+    return this.toResult(this.writer.write(data.slice()), started_at);
 }
 pub const writeBytes = write;
 pub fn writeLatin1(this: *@This(), data: streams.Result) streams.Result.Writable {
+    this.ref();
+    defer this.deref();
     if (this.done) {
         return .{ .done = {} };
     }
 
-    return this.toResult(this.writer.writeLatin1(data.slice()));
+    const started_at = this.written;
+    return this.toResult(this.writer.writeLatin1(data.slice()), started_at);
 }
 pub fn writeUTF16(this: *@This(), data: streams.Result) streams.Result.Writable {
+    this.ref();
+    defer this.deref();
     if (this.done) {
         return .{ .done = {} };
     }
 
-    return this.toResult(this.writer.writeUTF16(data.slice16()));
+    const started_at = this.written;
+    return this.toResult(this.writer.writeUTF16(data.slice16()), started_at);
 }
 
 pub fn end(this: *FileSink, _: ?bun.sys.Error) bun.sys.Maybe(void) {
+    this.ref();
+    defer this.deref();
     if (this.done) {
         return .success;
     }
+    this.done = true;
 
     switch (this.writer.flush()) {
-        .done => |written| {
-            this.written += @truncate(written);
+        .done => {
             this.writer.end();
             return .success;
         },
@@ -532,8 +534,7 @@ pub fn end(this: *FileSink, _: ?bun.sys.Error) bun.sys.Maybe(void) {
             this.writer.close();
             return .{ .err = e };
         },
-        .pending => |written| {
-            this.written += @truncate(written);
+        .pending => {
             if (!this.must_be_kept_alive_until_eof) {
                 this.must_be_kept_alive_until_eof = true;
                 this.ref();
@@ -541,8 +542,7 @@ pub fn end(this: *FileSink, _: ?bun.sys.Error) bun.sys.Maybe(void) {
             this.done = true;
             return .success;
         },
-        .wrote => |written| {
-            this.written += @truncate(written);
+        .wrote => {
             this.writer.end();
             return .success;
         },
@@ -550,62 +550,68 @@ pub fn end(this: *FileSink, _: ?bun.sys.Error) bun.sys.Maybe(void) {
 }
 
 fn deinit(this: *FileSink) void {
+    bun.assert(!this.run_pending_later.isScheduled());
+    var process = this.takeProcessLifecycle();
+    defer if (process) |*owner| owner.deinit();
+    if (process) |*owner| owner.get().onStdinSinkDestroyed();
     _ = live_count.fetchSub(1, .monotonic);
     this.pending.deinit();
     this.writer.deinit();
     this.readable_stream.deinit();
-    this.js_sink_ref.deinit();
     if (this.event_loop_handle.globalObject()) |global| {
-        webcore.AutoFlusher.unregisterDeferredMicrotaskWithType(@This(), this, global.bunVM());
+        webcore.AutoFlusherEngine.unregister(@This(), this, &this.auto_flusher, global.bunVM());
     }
     bun.destroy(this);
 }
 
-pub fn toJS(this: *FileSink, globalThis: *JSGlobalObject) JSValue {
-    return JSSink.createObject(globalThis, this, 0);
-}
-
-pub fn toJSWithDestructor(this: *FileSink, globalThis: *JSGlobalObject, destructor: ?Sink.DestructorPtr) JSValue {
-    return JSSink.createObject(globalThis, this, if (destructor) |dest| @intFromPtr(dest.ptr()) else 0);
-}
-
-pub fn endFromJS(this: *FileSink, globalThis: *JSGlobalObject) bun.sys.Maybe(JSValue) {
+pub fn endFromBinding(this: *FileSink) bun.sys.Maybe(Sink.BindingOperation) {
+    this.ref();
+    defer this.deref();
     if (this.done) {
         if (this.pending.state == .pending) {
-            return .{ .result = this.pending.future.promise.strong.value() };
+            return .{ .result = .{ .writable = .{ .pending = &this.pending } } };
         }
 
-        return .{ .result = JSValue.jsNumber(this.written) };
+        return .{ .result = .{ .count = this.written } };
     }
 
+    var existing_promise: ?Sink.PendingCountPromise = if (this.pending.state == .pending) switch (this.pending.future) {
+        .promise => |*promise| promise.existingPromiseOwned(),
+        else => null,
+    } else null;
+    defer if (existing_promise) |*promise| promise.deinit();
+    this.done = true;
+    const started_at = this.written;
     const flush_result = this.writer.flush();
 
     switch (flush_result) {
         .done => |written| {
             this.updateRef(false);
             this.writer.end();
-            return .{ .result = JSValue.jsNumber(written) };
+            if (existing_promise) |*promise| return .{ .result = .{ .count_promise = promise.take() } };
+            return .{ .result = .{ .count = written } };
         },
         .err => |err| {
+            this.onError(err);
             this.writer.close();
+            if (existing_promise) |*promise| return .{ .result = .{ .count_promise = promise.take() } };
             return .{ .err = err };
         },
         .pending => |pending_written| {
-            this.written += @truncate(pending_written);
             if (!this.must_be_kept_alive_until_eof) {
                 this.must_be_kept_alive_until_eof = true;
                 this.ref();
             }
             this.done = true;
-            this.pending.result = .{ .owned = @truncate(pending_written) };
-
-            const promise_result = this.pending.promise(globalThis);
-
-            return .{ .result = promise_result.toJS() };
+            if (this.pending.state != .pending) this.pending_start = started_at;
+            this.pending.result = .{ .owned = pending_written };
+            if (existing_promise) |*promise| return .{ .result = .{ .count_promise = promise.take() } };
+            return .{ .result = .{ .writable = .{ .pending = &this.pending } } };
         },
         .wrote => |written| {
             this.writer.end();
-            return .{ .result = JSValue.jsNumber(written) };
+            if (existing_promise) |*promise| return .{ .result = .{ .count_promise = promise.take() } };
+            return .{ .result = .{ .count = written } };
         },
     }
 }
@@ -622,7 +628,7 @@ pub fn updateRef(this: *FileSink, value: bool) void {
     }
 }
 
-pub const JSSink = Sink.JSSink(@This(), "FileSink");
+pub const JSSink = Sink.JSSink(@This(), "FileSink", 2);
 
 fn getFd(this: *const @This()) i32 {
     const fd = this.writer.getFd();
@@ -635,53 +641,47 @@ fn getFd(this: *const @This()) i32 {
     return fd.cast();
 }
 
-fn toResult(this: *FileSink, write_result: bun.io.WriteResult) streams.Result.Writable {
-    switch (write_result) {
+fn toResult(this: *FileSink, write_result: bun.OOM!bun.io.WriteResult, started_at: usize) streams.Result.Writable {
+    switch (write_result catch return .out_of_memory) {
         .done => |amt| {
             if (amt > 0)
-                return .{ .owned_and_done = @truncate(amt) };
+                return .{ .owned_and_done = amt };
 
             return .{ .done = {} };
         },
         .wrote => |amt| {
             if (amt > 0)
-                return .{ .owned = @truncate(amt) };
+                return .{ .owned = amt };
 
-            return .{ .temporary = @truncate(amt) };
+            return .{ .temporary = amt };
         },
         .err => |err| {
-            return .{ .err = err };
+            return if (err.getErrno() == .NOMEM) .out_of_memory else .{ .err = err };
         },
         .pending => |pending_written| {
             if (!this.must_be_kept_alive_until_eof) {
                 this.must_be_kept_alive_until_eof = true;
                 this.ref();
             }
-            this.pending.consumed += @truncate(pending_written);
-            this.pending.result = .{ .owned = @truncate(pending_written) };
+            if (this.pending.state != .pending) this.pending_start = started_at;
+            this.pending.result = .{ .owned = pending_written };
             return .{ .pending = &this.pending };
         },
     }
 }
 
-pub const FlushPendingTask = struct {
-    has: bool = false,
+fn runDeferredPending(this: *FileSink) void {
+    defer this.deref();
+    this.runPending();
+}
 
-    pub fn runFromJSThread(flush_pending: *FlushPendingTask) void {
-        const had = flush_pending.has;
-        flush_pending.has = false;
-        const this: *FileSink = @alignCast(@fieldParentPtr("run_pending_later", flush_pending));
-        defer this.deref();
-        if (had)
-            this.runPending();
-    }
-};
+fn cancelDeferredPending(this: *FileSink) void {
+    this.deref();
+}
 
 /// Does not ref or unref.
-fn handleResolveStream(this: *FileSink, globalThis: *jsc.JSGlobalObject) void {
-    if (this.readable_stream.get(globalThis)) |*stream| {
-        stream.done(globalThis);
-    }
+fn handleResolveStream(this: *FileSink) void {
+    this.readable_stream.doneInStoredRealm();
 
     if (!this.done) {
         this.writer.close();
@@ -689,87 +689,86 @@ fn handleResolveStream(this: *FileSink, globalThis: *jsc.JSGlobalObject) void {
 }
 
 /// Does not ref or unref.
-fn handleRejectStream(this: *FileSink, globalThis: *jsc.JSGlobalObject, _: jsc.JSValue) void {
-    if (this.readable_stream.get(globalThis)) |*stream| {
-        stream.abort(globalThis);
-        this.readable_stream.deinit();
-    }
+fn handleRejectStream(this: *FileSink) void {
+    this.readable_stream.abortInStoredRealm();
+    this.readable_stream.deinit();
 
     if (!this.done) {
         this.writer.close();
     }
 }
 
-fn onResolveStream(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+fn bindOnResolveStream(
+    context: bun.bindgen.CallContext(OnResolveStreamSchema),
+    args: bun.bindgen.Args(OnResolveStreamSchema),
+) bun.JSError!bun.bindgen.Return(OnResolveStreamSchema) {
     log("onResolveStream", .{});
-    var args = callframe.arguments();
-    var this: *@This() = args[args.len - 1].asPromisePtr(@This());
+    const this = PromiseReaction.take(args.context) orelse return;
     defer this.deref();
-    this.handleResolveStream(globalThis);
-    return .js_undefined;
+    _ = context;
+    this.handleResolveStream();
 }
-fn onRejectStream(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+
+fn bindOnRejectStream(
+    context: bun.bindgen.CallContext(OnRejectStreamSchema),
+    args: bun.bindgen.Args(OnRejectStreamSchema),
+) bun.JSError!bun.bindgen.Return(OnRejectStreamSchema) {
     log("onRejectStream", .{});
-    const args = callframe.arguments();
-    var this = args[args.len - 1].asPromisePtr(@This());
-    const err = args[0];
+    const this = PromiseReaction.take(args.context) orelse return;
     defer this.deref();
-
-    this.handleRejectStream(globalThis, err);
-    return .js_undefined;
+    _ = context;
+    this.handleRejectStream();
 }
 
-pub fn assignToStream(this: *FileSink, stream: *jsc.WebCore.ReadableStream, globalThis: *JSGlobalObject) jsc.JSValue {
+pub fn assignToStream(this: *FileSink, stream: *const jsc.WebCore.ReadableStream.Strong, globalThis: *JSGlobalObject) bun.JSError!void {
     var signal = &this.signal;
-    signal.* = jsc.WebCore.FileSink.JSSink.SinkSignal.init(JSValue.zero);
     this.ref();
     defer this.deref();
 
-    // explicitly set it to a dead pointer
-    // we use this memory address to disable signals being sent
     signal.clear();
 
-    this.readable_stream = .init(stream.*, globalThis);
-    const promise_result = jsc.WebCore.FileSink.JSSink.assignToStream(globalThis, stream.value, this, @as(**anyopaque, @ptrCast(&signal.ptr)));
-
-    if (promise_result.toError()) |err| {
+    this.readable_stream = stream.clone();
+    errdefer {
+        jsc.WebCore.FileSink.JSSink.detach(this);
         this.readable_stream.deinit();
         this.readable_stream = .{};
-        return err;
     }
 
-    if (!promise_result.isEmptyOrUndefinedOrNull()) {
-        if (promise_result.asAnyPromise()) |promise| {
-            switch (promise.status()) {
-                .pending => {
-                    this.writer.enableKeepingProcessAlive(this.event_loop_handle);
-                    this.ref();
-                    promise_result.then(globalThis, this, onResolveStream, onRejectStream) catch {}; // TODO: properly propagate exception upwards
-                },
-                .fulfilled => {
-                    // These don't ref().
-                    this.handleResolveStream(globalThis);
-                },
-                .rejected => {
-                    // These don't ref().
-                    this.handleRejectStream(globalThis, promise.result(globalThis.vm()));
-                },
-            }
-        }
-    }
+    var owned_stream = stream.cloneOwned() orelse return;
+    defer owned_stream.deinit();
+    var promise_result = try jsc.WebCore.FileSink.JSSink.assignToStream(
+        globalThis,
+        &owned_stream,
+        this,
+    ) orelse return;
+    defer promise_result.deinit();
 
-    return promise_result;
-}
-
-comptime {
-    const export_prefix = "Bun__FileSink";
-    if (bun.Environment.export_cpp_apis) {
-        @export(&jsc.toJSHostFn(onResolveStream), .{ .name = export_prefix ++ "__onResolveStream" });
-        @export(&jsc.toJSHostFn(onRejectStream), .{ .name = export_prefix ++ "__onRejectStream" });
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(globalThis);
+    defer engine_scope.deinit();
+    switch (engine_scope.engine(PromiseStatusSchema).call(.{ .promise = promise_result.operand(&engine_scope) })) {
+        .pending => {
+            this.writer.enableKeepingProcessAlive(this.event_loop_handle);
+            this.ref();
+            try PromiseReaction.attach(
+                &engine_scope,
+                promise_result.operand(&engine_scope).asPromise(),
+                this,
+                OnResolveStreamBinding,
+                OnRejectStreamBinding,
+            );
+        },
+        .fulfilled => this.handleResolveStream(),
+        .rejected => {
+            // Native consumption does not install a promise reaction in this branch.
+            engine_scope.engine(PromiseSetHandledSchema).call(.{ .promise = promise_result.operand(&engine_scope) });
+            this.handleRejectStream();
+        },
     }
 }
 
 const std = @import("std");
+const CancellableTask = @import("../../event_loop/CancellableTask.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
@@ -778,9 +777,30 @@ const uv = bun.windows.libuv;
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
 
 const webcore = bun.webcore;
 const Blob = webcore.Blob;
 const Sink = webcore.Sink;
 const streams = webcore.streams;
+
+const InternalTestingBindings = bun.bindgen.Module("InternalTesting");
+const FileSinkLiveCountSchema = InternalTestingBindings.function("fileSinkLiveCount");
+const FileSinkLiveCountBinding = bun.bindgen.Fn(FileSinkLiveCountSchema, TestingAPIs.fileSinkLiveCount);
+const PromiseBindings = bun.bindgen.Module("promises");
+const PromiseStatusSchema = PromiseBindings.engineShim("promiseStatus");
+const PromiseSetHandledSchema = PromiseBindings.engineShim("promiseSetHandled");
+const JSSinkBindings = bun.bindgen.Module("JSSink");
+const ForceSynchronousSchema = JSSinkBindings.nativeExport("fileSinkForceSynchronous");
+const ForceSynchronousBinding = bun.bindgen.Fn(ForceSynchronousSchema, bindForceSynchronous);
+const FileSinkCallbackBindings = bun.bindgen.Module("FileSink");
+const OnResolveStreamSchema = FileSinkCallbackBindings.function("onResolveStream");
+const OnRejectStreamSchema = FileSinkCallbackBindings.function("onRejectStream");
+const PromiseReaction = bun.bindgen.PromiseReaction(OnResolveStreamSchema.args[1].ArgumentType, FileSink);
+const OnResolveStreamBinding = bun.bindgen.Fn(OnResolveStreamSchema, bindOnResolveStream);
+const OnRejectStreamBinding = bun.bindgen.Fn(OnRejectStreamSchema, bindOnRejectStream);
+
+comptime {
+    _ = FileSinkLiveCountBinding;
+    _ = OnResolveStreamBinding;
+    _ = OnRejectStreamBinding;
+}

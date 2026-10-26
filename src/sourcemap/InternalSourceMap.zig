@@ -170,11 +170,6 @@ pub fn memoryCost(self: InternalSourceMap) usize {
     return self.totalLen();
 }
 
-/// Sanity-check the blob's outer header (total_len, sync_count, stream_offset)
-/// against its actual length so a *truncated* embedded section in a `--compile`
-/// binary degrades to "no sourcemap". This does not walk per-window
-/// `SyncEntry.byte_offset`/section lengths; the blob is self-produced at build
-/// time, and a tampered executable already implies arbitrary execution.
 pub fn isValidBlob(blob: []const u8) bool {
     if (blob.len < header_size) return false;
     const self = InternalSourceMap{ .data = blob.ptr };
@@ -183,10 +178,99 @@ pub fn isValidBlob(blob: []const u8) bool {
     const sync_n = self.syncCount();
     const stream_off = self.streamOffset();
     const sync_end = header_size + @as(usize, sync_n) * @sizeOf(SyncEntry);
-    if (stream_off < sync_end) return false;
+    if (stream_off != sync_end) return false;
     if (stream_off > total) return false;
-    if (total < stream_off + stream_tail_pad) return false;
+    if (total - stream_off < stream_tail_pad) return false;
+    if (blob[total - 1] != 0) return false;
+    const mapping_count = self.mappingCount();
+    if (sync_n != mapping_count / sync_interval + @intFromBool(mapping_count % sync_interval != 0)) return false;
+    const windows = blob[stream_off .. total - stream_tail_pad];
+    if (sync_n == 0) return windows.len == 0;
+    if (self.syncEntry(0).byte_offset != 0) return false;
+    for (0..sync_n) |index| {
+        const entry = self.syncEntry(index);
+        const end = if (index + 1 < sync_n) self.syncEntry(index + 1).byte_offset else windows.len;
+        if (entry.byte_offset > end or end > windows.len) return false;
+        const count = @min(sync_interval, mapping_count - index * sync_interval);
+        const seed = entry.toState();
+        if (!validState(seed)) return false;
+        _ = validateWindow(windows[entry.byte_offset..end], count, seed) catch return false;
+    }
     return true;
+}
+
+fn validState(state: State) bool {
+    return state.generated_line >= 0 and state.generated_column >= 0 and state.original_line >= 0 and state.original_column >= 0 and state.source_index >= 0;
+}
+
+fn takeBytes(remaining: *[]const u8, count: usize) error{InvalidSourceMap}![]const u8 {
+    if (count > remaining.*.len) return error.InvalidSourceMap;
+    const bytes = remaining.*[0..count];
+    remaining.* = remaining.*[count..];
+    return bytes;
+}
+
+fn checkedVarint(remaining: *[]const u8) error{InvalidSourceMap}!i32 {
+    var value: u32 = 0;
+    for (0..max_varint_len) |index| {
+        const byte = (try takeBytes(remaining, 1))[0];
+        if (index == max_varint_len - 1 and byte > 0x0f) return error.InvalidSourceMap;
+        value |= @as(u32, byte & 0x7f) << @as(u5, @intCast(index * 7));
+        if (byte & 0x80 == 0) return zigzagDecode(value);
+    }
+    return error.InvalidSourceMap;
+}
+
+fn validateWindow(bytes: []const u8, count: usize, seed: State) error{InvalidSourceMap}!State {
+    var remaining = bytes;
+    const header = try takeBytes(&remaining, win_hdr.gen_col_lane_off);
+    if (count == 0 or count > sync_interval or header[win_hdr.count_off] != count) return error.InvalidSourceMap;
+    const flags = header[win_hdr.flags_off];
+    if (flags & ~(flag_has_gen_line_exceptions | flag_has_src_idx) != 0) return error.InvalidSourceMap;
+    var gen_cols = try takeBytes(&remaining, std.mem.readInt(u16, header[win_hdr.gen_col_len_off..][0..2], .little));
+    var orig_lines = try takeBytes(&remaining, std.mem.readInt(u16, header[win_hdr.orig_line_len_off..][0..2], .little));
+    var orig_cols = try takeBytes(&remaining, std.mem.readInt(u16, header[win_hdr.orig_col_len_off..][0..2], .little));
+    const delta_count = count - 1;
+    var gen_lines: [sync_interval - 1]i32 = undefined;
+    for (gen_lines[0..delta_count], 0..) |*line, index| {
+        line.* = @intFromBool(testBit(header.ptr + win_hdr.gen_line_mask_off, index));
+    }
+    if (flags & flag_has_gen_line_exceptions != 0) {
+        var previous_index: ?u8 = null;
+        while (true) {
+            const index = (try takeBytes(&remaining, 1))[0];
+            if (index == 0xff) break;
+            if (index >= delta_count) return error.InvalidSourceMap;
+            if (previous_index) |previous| {
+                if (index <= previous) return error.InvalidSourceMap;
+            }
+            previous_index = index;
+            gen_lines[index] = try checkedVarint(&remaining);
+        }
+    }
+    const source_mask = if (flags & flag_has_src_idx != 0) try takeBytes(&remaining, 8) else null;
+    var state = seed;
+    for (gen_lines[0..delta_count], 0..) |gen_line, index| {
+        const gen_col = try checkedVarint(&gen_cols);
+        const orig_line = if (testBit(header.ptr + win_hdr.orig_line_eq_mask_off, index)) gen_line else try checkedVarint(&orig_lines);
+        const orig_col = if (testBit(header.ptr + win_hdr.orig_col_eq_mask_off, index)) gen_col else try checkedVarint(&orig_cols);
+        if (source_mask) |mask| {
+            if (!testBit(mask.ptr, index)) {
+                state.source_index = std.math.add(i32, state.source_index, try checkedVarint(&remaining)) catch return error.InvalidSourceMap;
+            }
+        }
+        if (gen_line != 0) {
+            state.generated_line = std.math.add(i32, state.generated_line, gen_line) catch return error.InvalidSourceMap;
+            state.generated_column = gen_col;
+        } else {
+            state.generated_column = std.math.add(i32, state.generated_column, gen_col) catch return error.InvalidSourceMap;
+        }
+        state.original_line = std.math.add(i32, state.original_line, orig_line) catch return error.InvalidSourceMap;
+        state.original_column = std.math.add(i32, state.original_column, orig_col) catch return error.InvalidSourceMap;
+        if (!validState(state)) return error.InvalidSourceMap;
+    }
+    if (gen_cols.len != 0 or orig_lines.len != 0 or orig_cols.len != 0 or remaining.len != 0) return error.InvalidSourceMap;
+    return state;
 }
 
 const State = struct {
@@ -610,7 +694,7 @@ pub fn cursor(self: InternalSourceMap) Cursor {
 
 /// Re-encode the full mapping stream as a standard VLQ "mappings" string. Only
 /// the inspector's inline-sourcemap path needs this.
-pub fn appendVLQTo(self: InternalSourceMap, out: *MutableString) void {
+pub fn appendVLQTo(self: InternalSourceMap, out: *MutableString) bun.OOM!void {
     const n_sync = self.syncCount();
     var prev: SourceMapState = .{};
     var generated_line: i32 = 0;
@@ -620,17 +704,17 @@ pub fn appendVLQTo(self: InternalSourceMap, out: *MutableString) void {
         var state: State = .{};
         var reader: WindowReader = undefined;
         self.seedWindow(idx, &state, &reader);
-        emitVLQ(&state, &prev, &generated_line, out);
+        try emitVLQ(&state, &prev, &generated_line, out);
         while (!reader.done()) {
             reader.next(&state);
-            emitVLQ(&state, &prev, &generated_line, out);
+            try emitVLQ(&state, &prev, &generated_line, out);
         }
     }
 }
 
-fn emitVLQ(state: *const State, prev: *SourceMapState, generated_line: *i32, out: *MutableString) void {
+fn emitVLQ(state: *const State, prev: *SourceMapState, generated_line: *i32, out: *MutableString) bun.OOM!void {
     while (generated_line.* < state.generated_line) : (generated_line.* += 1) {
-        out.appendChar(';') catch |err| bun.handleOom(err);
+        try out.appendChar(';');
         prev.generated_column = 0;
     }
     const current: SourceMapState = .{
@@ -644,7 +728,7 @@ fn emitVLQ(state: *const State, prev: *SourceMapState, generated_line: *i32, out
         out.list.items[out.list.items.len - 1]
     else
         0;
-    SourceMap.appendMappingToBuffer(out, last_byte, prev.*, current);
+    try SourceMap.appendMappingToBuffer(out, last_byte, prev.*, current);
     prev.* = current;
 }
 
@@ -667,44 +751,42 @@ pub const Builder = struct {
         self.sync_entries.deinit(self.allocator);
         self.win_stream.deinit(self.allocator);
         if (self.finalized) |*m| m.deinit();
+        self.* = init(self.allocator);
     }
 
-    pub fn appendLineSeparator(self: *Builder) void {
-        self.pending_generated_line_delta += 1;
+    pub fn appendLineSeparator(self: *Builder) bun.OOM!void {
+        bun.assert(self.finalized == null);
+        const delta = std.math.add(i32, self.pending_generated_line_delta, 1) catch return error.OutOfMemory;
+        _ = std.math.add(i32, self.state.generated_line, delta) catch return error.OutOfMemory;
+        self.pending_generated_line_delta = delta;
     }
 
-    pub fn appendMapping(self: *Builder, current: SourceMapState) void {
-        self.state = .{
-            .generated_line = self.state.generated_line + self.pending_generated_line_delta,
+    pub fn appendMapping(self: *Builder, current: SourceMapState) bun.OOM!void {
+        bun.assert(self.finalized == null);
+        const count = std.math.add(u32, self.count, 1) catch return error.OutOfMemory;
+        const state: State = .{
+            .generated_line = std.math.add(i32, self.state.generated_line, self.pending_generated_line_delta) catch return error.OutOfMemory,
             .generated_column = current.generated_column,
             .source_index = current.source_index,
             .original_line = current.original_line,
             .original_column = current.original_column,
         };
+        if (self.pending_n == sync_interval) try self.flushWindow();
+        self.state = state;
         self.pending_generated_line_delta = 0;
 
         self.pending[self.pending_n] = self.state;
         self.pending_n += 1;
-        self.count += 1;
-
-        if (self.pending_n == sync_interval) self.flushWindow();
+        self.count = count;
     }
 
     const Delta = struct { d_gen_line: i32, d_gen_col: i32, d_orig_line: i32, d_orig_col: i32, d_src_idx: i32 };
 
-    fn flushWindow(self: *Builder) void {
+    fn flushWindow(self: *Builder) bun.OOM!void {
         const n = self.pending_n;
         if (n == 0) return;
         const seed = self.pending[0];
-        const start_off: u32 = @intCast(self.win_stream.items.len);
-        self.sync_entries.append(self.allocator, .{
-            .generated_line = seed.generated_line,
-            .generated_column = seed.generated_column,
-            .byte_offset = start_off,
-            .original_line = seed.original_line,
-            .original_column = seed.original_column,
-            .source_index = seed.source_index,
-        }) catch |err| bun.handleOom(err);
+        const start_off = std.math.cast(u32, self.win_stream.items.len) orelse return error.OutOfMemory;
 
         const n_deltas: usize = n - 1;
         var deltas: [sync_interval - 1]Delta = undefined;
@@ -726,7 +808,9 @@ pub const Builder = struct {
         if (flags & flag_has_gen_line_exceptions != 0) cap += n_deltas * (1 + max_varint_len) + 1;
         if (flags & flag_has_src_idx != 0) cap += 8 + n_deltas * max_varint_len;
 
-        self.win_stream.ensureUnusedCapacity(self.allocator, cap) catch |err| bun.handleOom(err);
+        _ = std.math.add(u32, start_off, @intCast(cap)) catch return error.OutOfMemory;
+        try self.sync_entries.ensureUnusedCapacity(self.allocator, 1);
+        try self.win_stream.ensureUnusedCapacity(self.allocator, cap);
         const base = self.win_stream.items.len;
         self.win_stream.items.len += cap;
         const buf = self.win_stream.items[base..][0..cap];
@@ -786,28 +870,37 @@ pub const Builder = struct {
         }
 
         self.win_stream.items.len = base + w;
+        self.sync_entries.appendAssumeCapacity(.{
+            .generated_line = seed.generated_line,
+            .generated_column = seed.generated_column,
+            .byte_offset = start_off,
+            .original_line = seed.original_line,
+            .original_column = seed.original_column,
+            .source_index = seed.source_index,
+        });
         self.pending_n = 0;
     }
 
     /// Serialize into the single-allocation blob layout. The first 24 header
-    /// bytes are left for `Chunk.Builder.generateChunk` to fill in (length,
-    /// count, input line count) so this path flows through the existing
-    /// `Chunk.buffer` plumbing unchanged.
-    pub fn finalize(self: *Builder) *MutableString {
+    /// bytes are left for the caller to fill in length, count, and input line count.
+    pub fn finalize(self: *Builder) bun.OOM!*MutableString {
         if (self.finalized) |*m| return m;
 
-        self.flushWindow();
+        try self.flushWindow();
 
-        const sync_bytes = self.sync_entries.items.len * @sizeOf(SyncEntry);
-        const stream_offset: u32 = @intCast(header_size + sync_bytes);
-        const total: usize = stream_offset + self.win_stream.items.len + stream_tail_pad;
+        const sync_count = std.math.cast(u32, self.sync_entries.items.len) orelse return error.OutOfMemory;
+        const sync_bytes = std.math.mul(u32, sync_count, @sizeOf(SyncEntry)) catch return error.OutOfMemory;
+        const stream_offset = std.math.add(u32, header_size, sync_bytes) catch return error.OutOfMemory;
+        const stream_end = std.math.add(usize, stream_offset, self.win_stream.items.len) catch return error.OutOfMemory;
+        const total = std.math.add(usize, stream_end, stream_tail_pad) catch return error.OutOfMemory;
 
         var out = MutableString.initEmpty(self.allocator);
-        out.list.resize(self.allocator, total) catch |err| bun.handleOom(err);
+        errdefer out.deinit();
+        try out.list.resize(self.allocator, total);
         const blob = out.list.items;
 
         @memset(blob[0..24], 0);
-        blob[24..28].* = @bitCast(@as(u32, @intCast(self.sync_entries.items.len)));
+        blob[24..28].* = @bitCast(sync_count);
         blob[28..32].* = @bitCast(stream_offset);
         if (sync_bytes > 0) {
             @memcpy(blob[header_size..][0..sync_bytes], std.mem.sliceAsBytes(self.sync_entries.items));
@@ -835,9 +928,9 @@ pub fn fromVLQ(
     allocator: std.mem.Allocator,
     vlq: []const u8,
     input_line_count_hint: u32,
-) error{InvalidSourceMap}![]u8 {
+) error{ InvalidSourceMap, OutOfMemory }![]u8 {
     var builder = Builder.init(allocator);
-    errdefer builder.deinit();
+    defer builder.deinit();
 
     var generated_column: i32 = 0;
     var source_index: i32 = 0;
@@ -850,7 +943,7 @@ pub fn fromVLQ(
         if (remain[0] == ';') {
             generated_column = 0;
             while (remain.len > 0 and remain[0] == ';') {
-                builder.appendLineSeparator();
+                try builder.appendLineSeparator();
                 remain = remain[1..];
             }
             if (remain.len == 0) break;
@@ -858,7 +951,8 @@ pub fn fromVLQ(
 
         const gc = VLQ.decode(remain, 0);
         if (gc.start == 0) return error.InvalidSourceMap;
-        generated_column += gc.value;
+        generated_column = std.math.add(i32, generated_column, gc.value) catch return error.InvalidSourceMap;
+        if (generated_column < 0) return error.InvalidSourceMap;
         remain = remain[gc.start..];
 
         if (remain.len == 0 or remain[0] == ',' or remain[0] == ';') {
@@ -868,17 +962,20 @@ pub fn fromVLQ(
 
         const si = VLQ.decode(remain, 0);
         if (si.start == 0) return error.InvalidSourceMap;
-        source_index += si.value;
+        source_index = std.math.add(i32, source_index, si.value) catch return error.InvalidSourceMap;
+        if (source_index < 0) return error.InvalidSourceMap;
         remain = remain[si.start..];
 
         const ol = VLQ.decode(remain, 0);
         if (ol.start == 0) return error.InvalidSourceMap;
-        original_line += ol.value;
+        original_line = std.math.add(i32, original_line, ol.value) catch return error.InvalidSourceMap;
+        if (original_line < 0) return error.InvalidSourceMap;
         remain = remain[ol.start..];
 
         const oc = VLQ.decode(remain, 0);
         if (oc.start == 0) return error.InvalidSourceMap;
-        original_column += oc.value;
+        original_column = std.math.add(i32, original_column, oc.value) catch return error.InvalidSourceMap;
+        if (original_column < 0) return error.InvalidSourceMap;
         remain = remain[oc.start..];
 
         if (remain.len > 0 and remain[0] != ',' and remain[0] != ';') {
@@ -889,7 +986,7 @@ pub fn fromVLQ(
         if (remain.len > 0 and remain[0] == ',') remain = remain[1..];
 
         max_original_line = @max(max_original_line, original_line);
-        builder.appendMapping(.{
+        try builder.appendMapping(.{
             .generated_column = generated_column,
             .source_index = source_index,
             .original_line = original_line,
@@ -897,7 +994,7 @@ pub fn fromVLQ(
         });
     }
 
-    const out = builder.finalize();
+    const out = try builder.finalize();
     const blob = out.list.items;
     const total_len: u64 = @intCast(blob.len);
     const mapping_count: u64 = builder.count;
@@ -909,12 +1006,53 @@ pub fn fromVLQ(
     blob[8..16].* = @bitCast(mapping_count);
     blob[16..24].* = @bitCast(input_lines);
 
-    const owned = out.list.toOwnedSlice(allocator) catch |err| bun.handleOom(err);
+    const owned = try out.list.toOwnedSlice(allocator);
     builder.finalized = null;
     return owned;
 }
 
-pub const TestingAPIs = @import("../sourcemap_jsc/internal_jsc.zig").TestingAPIs;
+test "internal source-map windows commit only after allocation succeeds" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var builder = Builder.init(allocator);
+            defer builder.deinit();
+            for (0..130) |index| {
+                const count = builder.count;
+                const pending_n = builder.pending_n;
+                const sync_count = builder.sync_entries.items.len;
+                const stream_len = builder.win_stream.items.len;
+                builder.appendMapping(.{
+                    .generated_column = @intCast(index),
+                    .original_column = @intCast(index),
+                }) catch |err| {
+                    try std.testing.expectEqual(count, builder.count);
+                    try std.testing.expectEqual(pending_n, builder.pending_n);
+                    try std.testing.expectEqual(sync_count, builder.sync_entries.items.len);
+                    try std.testing.expectEqual(stream_len, builder.win_stream.items.len);
+                    return err;
+                };
+            }
+            const result = try builder.finalize();
+            try std.testing.expectEqual(@as(u32, 130), builder.count);
+            try std.testing.expectEqual(@as(u32, 3), std.mem.readInt(u32, result.list.items[24..28], .little));
+        }
+    }.run, .{});
+}
+
+test "VLQ import releases partial state and rejects negative coordinates" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const input: [130][5]u8 = @splat("AAAA;".*);
+            const blob = try fromVLQ(allocator, std.mem.asBytes(&input), 0);
+            defer allocator.free(blob);
+            try std.testing.expect(isValidBlob(blob));
+            try std.testing.expectEqual(@as(u64, 130), std.mem.readInt(u64, blob[8..16], .little));
+        }
+    }.run, .{});
+    for ([_][]const u8{ "DAAA", "ADAA", "AADA", "AAAD" }) |invalid| {
+        try std.testing.expectError(error.InvalidSourceMap, fromVLQ(std.testing.allocator, invalid, 0));
+    }
+}
 
 const std = @import("std");
 

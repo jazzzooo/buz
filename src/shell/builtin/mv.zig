@@ -86,7 +86,6 @@ pub const ShellMvBatchedTask = struct {
     err_path_owned: bool = false,
 
     task: ShellTask(@This(), runInBackground, runFromMainThread, debug),
-    event_loop: jsc.EventLoopHandle,
 
     pub fn runInBackground(this: *@This()) void {
         // Moving multiple entries into a directory
@@ -201,10 +200,7 @@ pub fn next(this: *Mv) Yield {
                             .mv = this,
                             .cwd = this.bltn().parentCmd().base.shell.cwd_fd,
                             .target = this.args.target,
-                            .task = .{
-                                .event_loop = this.bltn().parentCmd().base.eventLoop(),
-                                .concurrent_task = jsc.EventLoopTask.fromEventLoop(this.bltn().parentCmd().base.eventLoop()),
-                            },
+                            .task = .init(this.bltn().parentCmd().base.eventLoop()),
                         },
                         .state = .running,
                     },
@@ -275,11 +271,7 @@ pub fn next(this: *Mv) Yield {
                             .sources = sources,
                             // We set this later
                             .error_signal = undefined,
-                            .task = .{
-                                .event_loop = this.bltn().parentCmd().base.eventLoop(),
-                                .concurrent_task = jsc.EventLoopTask.fromEventLoop(this.bltn().parentCmd().base.eventLoop()),
-                            },
-                            .event_loop = this.bltn().parentCmd().base.eventLoop(),
+                            .task = .init(this.bltn().parentCmd().base.eventLoop()),
                         };
                     }
                 }
@@ -314,7 +306,7 @@ pub fn next(this: *Mv) Yield {
     }
 }
 
-pub fn onIOWriterChunk(this: *Mv, _: usize, e: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *Mv, _: usize, e: ?bun.sys.SystemError) Yield {
     defer if (e) |err| err.deref();
     switch (this.state) {
         .waiting_write_err => {
@@ -512,7 +504,6 @@ const Result = Interpreter.Builtin.Result;
 const bun = @import("bun");
 const ResolvePath = bun.path;
 const assert = bun.assert;
-const jsc = bun.jsc;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

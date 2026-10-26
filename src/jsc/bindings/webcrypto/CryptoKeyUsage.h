@@ -25,6 +25,8 @@
 
 #pragma once
 
+#include "SchemaBindingsEnumerations.h"
+
 #if ENABLE(WEB_CRYPTO)
 
 namespace WebCore {
@@ -42,17 +44,7 @@ enum {
 
 typedef int CryptoKeyUsageBitmap;
 
-// Only for binding purpose.
-enum class CryptoKeyUsage {
-    Encrypt,
-    Decrypt,
-    Sign,
-    Verify,
-    DeriveKey,
-    DeriveBits,
-    WrapKey,
-    UnwrapKey
-};
+using CryptoKeyUsage = Bun::Bindgen::SubtleCryptoKeyUsage;
 
 } // namespace WebCore
 

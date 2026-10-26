@@ -4,9 +4,8 @@
 //! channel layout.
 //!
 //! Memory ownership: decode returns `bun.default_allocator`-owned RGBA. Encode
-//! returns `Encoded{bytes, free}` carrying the codec's own deallocator so the
-//! JS layer can hand the buffer to `ArrayBuffer.toJSWithContext` without a
-//! dupe — see `Encoded` below.
+//! returns `Encoded{bytes, free}` carrying the codec's own deallocator until
+//! the result is copied into bindgen-owned output — see `Encoded` below.
 
 /// Optional OS-native backend. `null` on Linux (and any platform we haven't
 /// written one for) so the dispatch in `decode`/`encode` compiles away. The
@@ -19,37 +18,26 @@ else if (bun.Environment.isWindows)
 else
     null;
 
-/// Process-global selector exposed as `Bun.Image.backend`.
-///
-/// `.system` (default on darwin/windows) is the perf-optimal hybrid:
-///   • jpeg/png/webp decode+encode → static codecs (turbo/spng/libwebp).
-///     Profiling on M-series found ImageIO no faster: Huffman/inflate
-///     dominate and aren't AMX-amenable, and ImageIO bottoms out in stock
-///     libz vs our zlib-ng. Keeping these static also makes output bytes
-///     and the `quality` scale match Linux.
-///   • lanczos3 resize, rotate90, flip → vImage (AMX, ~3-6× the Highway
-///     kernel on the geometry step).
-///   • heic/avif decode+encode → ImageIO/WIC (no static codec).
-///
-/// `.bun` skips the OS layer entirely (Highway geometry, heic/avif throw)
-/// so behaviour is byte-identical to a Linux build.
-///
-/// Unsynchronised: written from JS, read from BackgroundWork — a torn read of a
-/// 1-byte enum is fine and the worst case is one task using the previous
-/// mode.
-pub const Backend = enum {
+pub const Backend = enum(u8) {
     system,
     bun,
-    pub const Map = bun.ComptimeEnumMap(Backend);
 };
-pub var backend: Backend = if (system_backend != null) .system else .bun;
+var backend: std.atomic.Value(Backend) = .init(if (system_backend != null) .system else .bun);
+
+pub fn getBackend() Backend {
+    return backend.load(.monotonic);
+}
+
+pub fn setBackend(value: Backend) void {
+    backend.store(value, .monotonic);
+}
 
 /// Runtime half of the dispatch check; the comptime half is the
 /// `if (system_backend) |b|` capture at each call site (types can't be
 /// runtime-conditional, so the two stay separate). On platforms with no
 /// backend the capture is comptime-dead and this is never referenced.
 inline fn useSystem() bool {
-    return backend == .system;
+    return getBackend() == .system;
 }
 
 pub const Format = enum(u8) {
@@ -167,6 +155,7 @@ pub const Error = error{
     UnknownFormat,
     DecodeFailed,
     EncodeFailed,
+    InvalidDimensions,
     /// width × height exceeds the caller's `max_pixels` guard. This is the
     /// decompression-bomb defence — checked AFTER reading the header but
     /// BEFORE allocating the full RGBA buffer.
@@ -231,6 +220,7 @@ fn decodeViaSystem(bytes: []const u8, max_pixels: u64) (Error || error{BackendUn
 pub inline fn guard(w: u32, h: u32, max_pixels: u64) Error!void {
     // u64 mul cannot overflow from two u32 factors.
     if (@as(u64, w) * @as(u64, h) > max_pixels) return error.TooManyPixels;
+    _ = try rgbaByteLength(w, h);
 }
 
 /// Header-only dimensions probe for `.metadata()`. Decoding the full RGBA for
@@ -324,12 +314,7 @@ pub const EncodeOptions = struct {
 
 /// Encoded output paired with the free function for its allocator. The C
 /// codecs each malloc internally (turbojpeg's allocator, libwebp's, libc for
-/// libspng); rather than dupe into `bun.default_allocator` so JS can own it,
-/// we hand the original buffer to JS via `ArrayBuffer.toJSWithContext` with
-/// the matching free — one allocation, zero copies, for the final output.
-///
-/// `free` matches `jsc.C.JSTypedArrayBytesDeallocator` (bytes, ctx) so it can
-/// be passed straight through; the `ctx` arg is unused.
+/// libspng), so the result carries the matching deallocator until consumed.
 pub const Encoded = struct {
     bytes: []u8,
     free: *const fn (*anyopaque, *anyopaque) callconv(.c) void,
@@ -354,6 +339,7 @@ pub const Encoded = struct {
 };
 
 pub fn encode(rgba: []const u8, width: u32, height: u32, opts: EncodeOptions) Error!Encoded {
+    if (rgba.len < try rgbaByteLength(width, height)) return error.InvalidDimensions;
     return switch (opts.format) {
         .jpeg => jpeg.encode(rgba, width, height, opts.quality, opts.progressive, opts.icc_profile),
         // PNG carries iCCP on both truecolour and indexed images — quantise
@@ -386,79 +372,62 @@ pub fn encode(rgba: []const u8, width: u32, height: u32, opts: EncodeOptions) Er
 
 // ───────────────────────────── highway kernels ──────────────────────────────
 
-pub const Filter = enum(i32) {
-    box = 0,
-    bilinear = 1,
-    lanczos3 = 2,
-    mitchell = 3,
-    nearest = 4,
-    cubic = 5, // Catmull-Rom
-    lanczos2 = 6,
-    mks2013 = 7, // Magic Kernel Sharp
-    mks2021 = 8,
-
-    /// `JSValue.toEnum` lookup table. Hand-listed (not `ComptimeEnumMap`) so
-    /// Sharp's `'linear'` alias can map to `.bilinear`; the auto-generated
-    /// error message still lists only the canonical tags.
-    pub const Map = bun.ComptimeStringMap(Filter, .{
-        .{ "box", .box },
-        .{ "bilinear", .bilinear },
-        .{ "linear", .bilinear },
-        .{ "lanczos3", .lanczos3 },
-        .{ "mitchell", .mitchell },
-        .{ "nearest", .nearest },
-        .{ "cubic", .cubic },
-        .{ "lanczos2", .lanczos2 },
-        .{ "mks2013", .mks2013 },
-        .{ "mks2021", .mks2021 },
-    });
+pub const Filter = enum(u8) {
+    box = c.BUN_IMAGE_FILTER_BOX,
+    bilinear = c.BUN_IMAGE_FILTER_BILINEAR,
+    lanczos3 = c.BUN_IMAGE_FILTER_LANCZOS3,
+    mitchell = c.BUN_IMAGE_FILTER_MITCHELL,
+    nearest = c.BUN_IMAGE_FILTER_NEAREST,
+    cubic = c.BUN_IMAGE_FILTER_CUBIC,
+    lanczos2 = c.BUN_IMAGE_FILTER_LANCZOS2,
+    mks2013 = c.BUN_IMAGE_FILTER_MKS2013,
+    mks2021 = c.BUN_IMAGE_FILTER_MKS2021,
 };
 
-extern fn bun_image_resize_scratch_size(src_w: i32, src_h: i32, dst_w: i32, dst_h: i32, filter: i32) usize;
-extern fn bun_image_resize_rgba8(
-    src: [*]const u8,
-    src_w: i32,
-    src_h: i32,
-    dst: [*]u8,
-    dst_w: i32,
-    dst_h: i32,
-    filter: i32,
-    scratch: [*]u8,
-) c_int;
-extern fn bun_image_rotate_rgba8(src: [*]const u8, w: i32, h: i32, dst: [*]u8, deg: i32) void;
-extern fn bun_image_flip_rgba8(src: [*]const u8, w: i32, h: i32, dst: [*]u8, horiz: i32) void;
-extern fn bun_image_modulate_rgba8(buf: [*]u8, len: usize, brightness: f32, saturation: f32) void;
+pub fn rgbaByteLength(width: u32, height: u32) error{InvalidDimensions}!usize {
+    if (width == 0 or height == 0 or width > std.math.maxInt(i32) or height > std.math.maxInt(i32))
+        return error.InvalidDimensions;
+    const pixels = std.math.mul(usize, width, height) catch return error.InvalidDimensions;
+    return std.math.mul(usize, pixels, 4) catch return error.InvalidDimensions;
+}
+
+fn kernelResult(status: c.BunImageStatus) error{InvalidDimensions}!void {
+    return switch (status) {
+        c.BUN_IMAGE_OK => {},
+        c.BUN_IMAGE_INVALID_INPUT => error.InvalidDimensions,
+        else => @panic("image kernel returned an unknown status"),
+    };
+}
 
 /// In-place brightness/saturation. brightness multiplies V (so 1.0 is
 /// identity); saturation linearly interpolates each channel toward the pixel's
 /// luma (0 = greyscale, 1 = identity, >1 = boost).
 pub fn modulate(rgba: []u8, brightness: f32, saturation: f32) void {
-    bun_image_modulate_rgba8(rgba.ptr, rgba.len, brightness, saturation);
+    c.bun_image_modulate_rgba8(rgba.ptr, rgba.len, brightness, saturation);
 }
 
 pub fn resize(src: []const u8, sw: u32, sh: u32, dw: u32, dh: u32, f: Filter) Error![]u8 {
+    const out_sz = try rgbaByteLength(dw, dh);
+    if (src.len < try rgbaByteLength(sw, sh)) return error.InvalidDimensions;
     if (system_backend) |b| if (@hasDecl(b, "scale")) if (useSystem()) {
         if (b.scale(src, sw, sh, dw, dh, f)) |out| return out else |e| switch (e) {
             error.BackendUnavailable => {},
             else => |narrowed| return narrowed,
         }
     };
-    // ONE allocation for output + the kernel's scratch arena (intermediate
-    // dst_w×src_h×4 row buffer + spans/weights tables). Zero mallocs in the
-    // C++; mimalloc here is faster than libc, and the over-allocation rounds
-    // into the same size class as the row buffer alone.
-    const out_sz: usize = @as(usize, dw) * dh * 4;
-    const scratch_sz = bun_image_resize_scratch_size(@intCast(sw), @intCast(sh), @intCast(dw), @intCast(dh), @backingInt(f));
-    const block = try bun.default_allocator.alloc(u8, out_sz + scratch_sz);
+    var scratch_sz: usize = undefined;
+    try kernelResult(c.bun_image_resize_scratch_size(sw, sh, dw, dh, @backingInt(f), &scratch_sz));
+    const block_sz = std.math.add(usize, out_sz, scratch_sz) catch return error.InvalidDimensions;
+    const block = try bun.default_allocator.alloc(u8, block_sz);
     errdefer bun.default_allocator.free(block);
-    if (bun_image_resize_rgba8(src.ptr, @intCast(sw), @intCast(sh), block.ptr, @intCast(dw), @intCast(dh), @backingInt(f), block.ptr + out_sz) != 0)
-        return error.OutOfMemory;
-    // Drop the scratch tail; mimalloc's shrink is in-place when the new size
-    // fits the same block, so this is free.
-    return bun.handleOom(bun.default_allocator.realloc(block, out_sz));
+    try kernelResult(c.bun_image_resize_rgba8(src.ptr, src.len, sw, sh, block.ptr, out_sz, dw, dh, @backingInt(f), block.ptr + out_sz, scratch_sz));
+    return try bun.default_allocator.realloc(block, out_sz);
 }
 
 pub fn rotate(src: []const u8, w: u32, h: u32, degrees: u32) Error!Decoded {
+    if (degrees >= 360 or degrees % 90 != 0) return error.InvalidDimensions;
+    const out_sz = try rgbaByteLength(w, h);
+    if (src.len < out_sz) return error.InvalidDimensions;
     const dw: u32, const dh: u32 = if (degrees == 90 or degrees == 270) .{ h, w } else .{ w, h };
     if (system_backend) |b| if (@hasDecl(b, "rotate")) if (useSystem()) {
         if (b.rotate(src, w, h, degrees / 90)) |out|
@@ -468,20 +437,24 @@ pub fn rotate(src: []const u8, w: u32, h: u32, degrees: u32) Error!Decoded {
             else => |narrowed| return narrowed,
         }
     };
-    const out = try bun.default_allocator.alloc(u8, @as(usize, dw) * dh * 4);
-    bun_image_rotate_rgba8(src.ptr, @intCast(w), @intCast(h), out.ptr, @intCast(degrees));
+    const out = try bun.default_allocator.alloc(u8, out_sz);
+    errdefer bun.default_allocator.free(out);
+    try kernelResult(c.bun_image_rotate_rgba8(src.ptr, src.len, w, h, out.ptr, out.len, @intCast(degrees / 90)));
     return .{ .rgba = out, .width = dw, .height = dh };
 }
 
 pub fn flip(src: []const u8, w: u32, h: u32, horizontal: bool) Error![]u8 {
+    const out_sz = try rgbaByteLength(w, h);
+    if (src.len < out_sz) return error.InvalidDimensions;
     if (system_backend) |b| if (@hasDecl(b, "flip")) if (useSystem()) {
         if (b.flip(src, w, h, horizontal)) |out| return out else |e| switch (e) {
             error.BackendUnavailable => {},
             else => |narrowed| return narrowed,
         }
     };
-    const out = try bun.default_allocator.alloc(u8, @as(usize, w) * h * 4);
-    bun_image_flip_rgba8(src.ptr, @intCast(w), @intCast(h), out.ptr, @intFromBool(horizontal));
+    const out = try bun.default_allocator.alloc(u8, out_sz);
+    errdefer bun.default_allocator.free(out);
+    try kernelResult(c.bun_image_flip_rgba8(src.ptr, src.len, w, h, out.ptr, out.len, @intFromBool(horizontal)));
     return out;
 }
 
@@ -497,3 +470,4 @@ pub const gif = @import("./codec_gif.zig");
 
 const bun = @import("bun");
 const std = @import("std");
+const c = @import("image-ffi");

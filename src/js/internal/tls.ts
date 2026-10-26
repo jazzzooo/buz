@@ -1,4 +1,8 @@
 const { isTypedArray, isArrayBuffer } = require("node:util/types");
+const isBlob = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isBlob>(
+  "NativeTypePredicates.schema.zig",
+  "isBlob",
+);
 
 function isPemObject(obj: unknown): obj is { pem: unknown } {
   return $isObject(obj) && "pem" in obj;
@@ -10,7 +14,7 @@ function isPemArray(obj: unknown): obj is [{ pem: unknown }] {
 }
 
 function isValidTLSItem(obj: unknown) {
-  if (typeof obj === "string" || isTypedArray(obj) || isArrayBuffer(obj) || $inheritsBlob(obj) || isPemArray(obj)) {
+  if (typeof obj === "string" || isTypedArray(obj) || isArrayBuffer(obj) || isBlob(obj) || isPemArray(obj)) {
     return true;
   }
 

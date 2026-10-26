@@ -4,6 +4,7 @@
 #include <JavaScriptCore/JSDestructibleObject.h>
 #include <JavaScriptCore/JSObject.h>
 #include <JavaScriptCore/JSTypedArrays.h>
+#include <optional>
 #include <wtf/text/WTFString.h>
 #include "ncrypto.h"
 #include "BunClientData.h"
@@ -18,6 +19,20 @@ class JSKeyObject : public JSC::JSDestructibleObject {
 public:
     using Base = JSC::JSDestructibleObject;
     static constexpr unsigned StructureFlags = Base::StructureFlags;
+
+    static bool isInstance(JSC::JSValue value) noexcept { return value.inherits<JSKeyObject>(); }
+
+    static JSKeyObject* from(JSC::JSValue value)
+    {
+        auto* key = dynamicDowncast<JSKeyObject>(value);
+        RELEASE_ASSERT(key);
+        return key;
+    }
+
+    static JSKeyObject* from(const std::optional<JSC::JSValue>& value)
+    {
+        return value ? from(*value) : nullptr;
+    }
 
     static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
     {

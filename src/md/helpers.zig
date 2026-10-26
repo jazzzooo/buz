@@ -336,7 +336,7 @@ pub fn generateSlug(
     text_buf: *std.ArrayListUnmanaged(u8),
     slug_counts: *bun.StringHashMapUnmanaged(u32),
     allocator: Allocator,
-) []const u8 {
+) bun.OOM![]const u8 {
     const text_items = text_buf.items;
     var out_len: usize = 0;
     var prev_hyphen: bool = true; // true to trim leading hyphens
@@ -368,24 +368,21 @@ pub fn generateSlug(
     const base_slug = text_buf.items[0..out_len];
 
     // Deduplicate via slug_counts
-    const gop = slug_counts.getOrPut(allocator, base_slug) catch return base_slug;
+    const gop = try slug_counts.getOrPut(allocator, base_slug);
 
     if (!gop.found_existing) {
         // First occurrence — store a duped key so the map owns it
-        gop.key_ptr.* = allocator.dupe(u8, base_slug) catch {
+        gop.key_ptr.* = allocator.dupe(u8, base_slug) catch |err| {
             // Dupe failed: remove the entry so deinit won't free a pointer into text_buf
             slug_counts.removeByPtr(gop.key_ptr);
-            return base_slug;
+            return err;
         };
         gop.value_ptr.* = 0;
         return base_slug;
     }
 
     // Already seen — append -N suffix
-    const count = gop.value_ptr.* + 1;
-    gop.value_ptr.* = count;
-    text_buf.shrinkRetainingCapacity(out_len);
-    text_buf.append(allocator, '-') catch return base_slug;
+    const count = std.math.add(u32, gop.value_ptr.*, 1) catch return error.OutOfMemory;
 
     // Inline decimal formatting (count is always >= 1)
     var dec_buf: [10]u8 = undefined;
@@ -396,7 +393,12 @@ pub fn generateSlug(
         dec_buf[i] = @intCast('0' + v % 10);
         v /= 10;
     }
-    text_buf.appendSlice(allocator, dec_buf[i..]) catch return base_slug;
+    const total_len = std.math.add(usize, out_len, 1 + dec_buf.len - i) catch return error.OutOfMemory;
+    try text_buf.ensureTotalCapacity(allocator, total_len);
+    text_buf.items.len = out_len;
+    text_buf.appendAssumeCapacity('-');
+    text_buf.appendSliceAssumeCapacity(dec_buf[i..]);
+    gop.value_ptr.* = count;
     return text_buf.items;
 }
 
@@ -429,26 +431,26 @@ pub const HeadingIdTracker = struct {
 
     /// Call from text callback to accumulate text for slug.
     /// No-op if not inside a heading or disabled.
-    pub fn trackText(self: *HeadingIdTracker, text_type: TextType, content: []const u8, allocator: Allocator) void {
+    pub fn trackText(self: *HeadingIdTracker, text_type: TextType, content: []const u8, allocator: Allocator) bun.OOM!void {
         if (!self.in_heading) return;
         switch (text_type) {
-            .null_char => self.text_buf.appendSlice(allocator, "\xEF\xBF\xBD") catch {},
-            .br, .softbr => self.text_buf.appendSlice(allocator, " ") catch {},
+            .null_char => try self.text_buf.appendSlice(allocator, "\xEF\xBF\xBD"),
+            .br, .softbr => try self.text_buf.appendSlice(allocator, " "),
             .html => {}, // skip HTML tags in slug
             .entity => {
                 var buf: [8]u8 = undefined;
                 const decoded = decodeEntityToUtf8(content, &buf) orelse content;
-                self.text_buf.appendSlice(allocator, decoded) catch {};
+                try self.text_buf.appendSlice(allocator, decoded);
             },
-            else => self.text_buf.appendSlice(allocator, content) catch {},
+            else => try self.text_buf.appendSlice(allocator, content),
         }
     }
 
     /// Call on leaving a heading block. Returns slug (valid until clearAfterHeading).
-    pub fn leaveHeading(self: *HeadingIdTracker, allocator: Allocator) ?[]const u8 {
+    pub fn leaveHeading(self: *HeadingIdTracker, allocator: Allocator) bun.OOM!?[]const u8 {
         if (!self.enabled) return null;
         self.in_heading = false;
-        return generateSlug(&self.text_buf, &self.slug_counts, allocator);
+        return try generateSlug(&self.text_buf, &self.slug_counts, allocator);
     }
 
     /// Call after using the slug to reset text buffer.

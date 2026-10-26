@@ -31,18 +31,39 @@
 #include "URLPatternParser.h"
 #include "URLPatternResult.h"
 #include <JavaScriptCore/RegExp.h>
+#include <JavaScriptCore/JSCInlines.h>
 #include <JavaScriptCore/YarrFlags.h>
+#include <wtf/text/MakeString.h>
+#include <utility>
 
 namespace WebCore {
 using namespace JSC;
 namespace URLPatternUtilities {
 
-URLPatternComponent::URLPatternComponent(String&& patternString, JSC::Strong<JSC::RegExp>&& regex, Vector<String>&& groupNameList, bool hasRegexpGroupsFromPartsList)
+URLPatternComponent::URLPatternComponent(String&& patternString, JSC::Strong<JSC::RegExp>&& regex, Vector<String>&& groupNameList, bool hasRegexpGroupsFromPartsList) noexcept
     : m_patternString(WTF::move(patternString))
-    , m_regularExpression(WTF::move(regex))
     , m_groupNameList(WTF::move(groupNameList))
     , m_hasRegexGroupsFromPartList(hasRegexpGroupsFromPartsList)
 {
+    m_regularExpression.swap(regex);
+}
+
+URLPatternComponent::URLPatternComponent(URLPatternComponent&& other) noexcept
+    : URLPatternComponent(WTF::move(other.m_patternString), WTF::move(other.m_regularExpression),
+          WTF::move(other.m_groupNameList), std::exchange(other.m_hasRegexGroupsFromPartList, false))
+{
+}
+
+URLPatternComponent& URLPatternComponent::operator=(URLPatternComponent&& other) noexcept
+{
+    if (this == &other)
+        return *this;
+    m_patternString = WTF::move(other.m_patternString);
+    m_regularExpression.clear();
+    m_regularExpression.swap(other.m_regularExpression);
+    m_groupNameList = WTF::move(other.m_groupNameList);
+    m_hasRegexGroupsFromPartList = std::exchange(other.m_hasRegexGroupsFromPartList, false);
+    return *this;
 }
 
 // https://urlpattern.spec.whatwg.org/#compile-a-component
@@ -53,33 +74,50 @@ ExceptionOr<URLPatternComponent> URLPatternComponent::compile(Ref<JSC::VM> vm, S
         return maybePartList.releaseException();
     Vector<Part> partList = maybePartList.releaseReturnValue();
 
-    auto [regularExpressionString, nameList] = generateRegexAndNameList(partList, options);
+    auto generated = generateRegexAndNameList(partList, options);
+    if (generated.hasException())
+        return generated.releaseException();
+    auto [regularExpressionString, nameList] = generated.releaseReturnValue();
+    auto patternString = generatePatternString(partList, options);
+    if (patternString.hasException())
+        return patternString.releaseException();
 
     OptionSet<JSC::Yarr::Flags> flags = { JSC::Yarr::Flags::UnicodeSets };
     if (options.ignoreCase)
         flags.add(JSC::Yarr::Flags::IgnoreCase);
 
     JSC::RegExp* regularExpression = JSC::RegExp::create(vm, regularExpressionString, flags);
+    if (regularExpression->constructionFailedOutOfMemory())
+        return Exception { OutOfMemoryError };
     if (!regularExpression->isValid())
         return Exception { ExceptionCode::TypeError, "Unable to create RegExp object regular expression from provided URLPattern string."_s };
-
-    String patternString = generatePatternString(partList, options);
 
     bool hasRegexGroups = partList.containsIf([](auto& part) {
         return part.type == PartType::Regexp;
     });
 
-    return URLPatternComponent { WTF::move(patternString), JSC::Strong<JSC::RegExp> { vm, regularExpression }, WTF::move(nameList), hasRegexGroups };
+    return URLPatternComponent { patternString.releaseReturnValue(), JSC::Strong<JSC::RegExp> { vm, regularExpression }, WTF::move(nameList), hasRegexGroups };
+}
+
+ExceptionOr<bool> URLPatternComponent::test(JSC::JSGlobalObject* globalObject, StringView input) const
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto* regExp = m_regularExpression.get();
+    auto matched = regExp->match(globalObject, input, 0);
+    RETURN_IF_EXCEPTION(scope, Exception { ExceptionCode::ExistingExceptionError });
+    return static_cast<bool>(matched);
 }
 
 // https://urlpattern.spec.whatwg.org/#protocol-component-matches-a-special-scheme
-bool URLPatternComponent::matchSpecialSchemeProtocol(JSC::JSGlobalObject* globalObject) const
+ExceptionOr<bool> URLPatternComponent::matchSpecialSchemeProtocol(JSC::JSGlobalObject* globalObject) const
 {
     static constexpr std::array specialSchemeList { "ftp"_s, "file"_s, "http"_s, "https"_s, "ws"_s, "wss"_s };
 
-    auto* regExp = m_regularExpression.get();
     for (auto scheme : specialSchemeList) {
-        if (regExp->match(globalObject, scheme, 0))
+        auto matched = test(globalObject, scheme);
+        if (matched.hasException())
+            return matched.releaseException();
+        if (matched.releaseReturnValue())
             return true;
     }
     return false;
@@ -87,32 +125,39 @@ bool URLPatternComponent::matchSpecialSchemeProtocol(JSC::JSGlobalObject* global
 
 // Implements both "regexp matching" and "create a component match result":
 // https://urlpattern.spec.whatwg.org/#create-a-component-match-result
-std::optional<URLPatternComponentResult> URLPatternComponent::componentMatch(JSC::JSGlobalObject* globalObject, String&& input) const
+ExceptionOr<std::optional<URLPatternComponentResult>> URLPatternComponent::componentMatch(JSC::JSGlobalObject* globalObject, String&& input) const
 {
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     auto* regExp = m_regularExpression.get();
     auto ovector = regExp->ovectorSpan();
     int position = regExp->match(globalObject, input, 0, ovector);
+    RETURN_IF_EXCEPTION(scope, Exception { ExceptionCode::ExistingExceptionError });
     if (position < 0)
-        return std::nullopt;
+        return { std::nullopt };
 
     unsigned numSubpatterns = regExp->numSubpatterns();
 
     URLPatternComponentResult::GroupsRecord groups;
-    groups.reserveInitialCapacity(numSubpatterns);
+    if (!groups.tryReserveInitialCapacity(numSubpatterns))
+        return Exception { OutOfMemoryError };
     for (unsigned i = 1; i <= numSubpatterns; ++i) {
         int start = ovector[i * 2];
         int end = ovector[i * 2 + 1];
 
         Variant<std::monostate, String> value;
-        if (start >= 0)
-            value = input.substring(start, end - start);
+        if (start >= 0) {
+            auto matched = tryMakeString(StringView(input).substring(start, end - start));
+            if (matched.isNull())
+                return Exception { OutOfMemoryError };
+            value = WTF::move(matched);
+        }
 
         size_t groupIndex = i - 1;
         String groupName = groupIndex < m_groupNameList.size() ? m_groupNameList[groupIndex] : emptyString();
-        groups.append(URLPatternComponentResult::NameMatchPair { WTF::move(groupName), WTF::move(value) });
+        groups.unsafeAppendWithoutCapacityCheck(URLPatternComponentResult::NameMatchPair { WTF::move(groupName), WTF::move(value) });
     }
 
-    return URLPatternComponentResult { !input.isEmpty() ? WTF::move(input) : emptyString(), WTF::move(groups) };
+    return { URLPatternComponentResult { !input.isEmpty() ? WTF::move(input) : emptyString(), WTF::move(groups) } };
 }
 
 }

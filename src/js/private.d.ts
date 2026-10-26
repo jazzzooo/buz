@@ -33,7 +33,7 @@ declare module "bun" {
       query: string;
     };
 
-    type DefinedOptions = DefinedSQLiteOptions | DefinedPostgresOrMySQLOptions;
+    type DefinedOptions = (DefinedSQLiteOptions & { bigint?: undefined }) | DefinedPostgresOrMySQLOptions;
     type OptionsWithDefinedAdapter = Define<Bun.SQL.Options, "adapter">;
   }
 }
@@ -130,8 +130,34 @@ type BunFS = Omit<typeof import("node:fs") & typeof import("node:fs/promises"), 
 };
 
 declare module "bun" {
+  namespace Serve {
+    interface BaseServeOptions<WebSocketData> {
+      /** Internal hook used by node:http to receive raw requests from Bun.serve. */
+      onNodeHTTPRequest?: (...args: any[]) => void;
+    }
+  }
+
+  namespace dns {
+    // Internal natives consumed by node:dns; not part of the public API surface.
+    function getServers(): string[];
+    function lookupService(address: string, port: number): Promise<[hostname: string, service: string]>;
+    function resolve(hostname: string, rrtype?: string): Promise<unknown[]>;
+    function resolveAny(hostname: string): Promise<unknown[]>;
+    function resolveSrv(hostname: string): Promise<unknown[]>;
+    function resolveTxt(hostname: string): Promise<unknown[]>;
+    function resolveSoa(hostname: string): Promise<unknown>;
+    function resolveNaptr(hostname: string): Promise<unknown[]>;
+    function resolveMx(hostname: string): Promise<unknown[]>;
+    function resolveCaa(hostname: string): Promise<unknown[]>;
+    function resolveNs(hostname: string): Promise<unknown[]>;
+    function resolvePtr(hostname: string): Promise<unknown[]>;
+    function resolveCname(hostname: string): Promise<unknown[]>;
+    function reverse(ip: string): Promise<string[]>;
+  }
+
   var TOML: {
     parse(contents: string): any;
+    stringify(value: unknown, replacer?: undefined | null, space?: string | number): string | undefined;
   };
   function jest(path: string): typeof import("bun:test");
   var main: string;
@@ -176,10 +202,6 @@ interface LoaderModule {
   dependenciesMap: Map<string, LoaderEntry>;
 }
 
-declare interface Error {
-  code?: string;
-}
-
 interface JSCommonJSModule {
   $require(id: string, mod: any, args_count: number, args: Array): any;
   $requireNativeModule(id: string): any;
@@ -195,73 +217,97 @@ interface JSCommonJSModule {
 }
 
 /**
- * Call a native c++ binding, getting whatever it returns.
- *
- * This is more like a macro; it is replaced with a WebKit intrisic during
- * codegen. Passing a template parameter will break codegen. Prefer `$cpp(...)
- * as Foo` instead.
- *
- * Binding files are located in `src/jsc/bindings`
- *
- * @see {@link $zig} for native zig bindings.
- * @see `src/codegen/replacements.ts` for the script that performs replacement of this funciton.
- *
- * @param filename name of the c++ file containing the function. Do not pass a path.
- * @param symbol   The name of the binding function to call. Use `dot.notation` to access
- *                 member symbols.
- *
- * @returns whatever the binding function returns.
- */
-declare function $cpp<T = any>(filename: NativeFilenameCPP, symbol: string): T;
-/**
- * Call a native zig binding function, getting whatever it returns.
- *
- * This is more like a macro; it is replaced with a WebKit intrisic during
- * codegen. Passing a template parameter will break codegen. Prefer `$zig(...)
- * as Foo` instead.
- *
- * Binding files are located in `src/jsc/bindings`
- *
- * @see {@link $cpp} for native c++ bindings.
- * @see `src/codegen/replacements.ts` for the script that performs replacement of this funciton.
- *
- * @param filename name of the zig file containing the function. Do not pass a path.
- * @param symbol   The name of the binding function. Use `dot.notation` to access
- *                 member symbols.
- *
- * @returns whatever the binding function returns.
- */
-declare function $zig<T = any>(filename: NativeFilenameZig, symbol: string): T;
-declare function $newCppFunction<T = (...args: any) => any>(
-  filename: NativeFilenameCPP,
-  symbol: string,
-  argCount: number,
-): T;
-declare function $newZigFunction<T = (...args: any) => any>(
-  filename: NativeFilenameZig,
-  symbol: string,
-  argCount: number,
-): T;
-/**
- * Retrieves a handle to a function defined in Zig or C++, defined in a
- * `.bind.ts` file. For more information on how to define bindgen functions, see
+ * Retrieves a handle to a function defined in a bindgen schema. For more information on how to define bindgen functions, see
  * [bindgen's documentation](https://bun.com/docs/project/bindgen).
- * @param filename - The basename of the `.bind.ts` file.
+ * @param filename - The basename of the `.schema.zig` file.
  * @param symbol - The name of the function to call.
  */
 declare function $bindgenFn<T = (...args: any) => any>(filename: string, symbol: string): T;
+declare function $bindgenClass<T = new (...args: any) => any>(filename: string, symbol: string): T;
 // NOTE: $debug, $assert, and $isPromiseFulfilled omitted
+
+declare namespace NodeJS {
+  interface Process {
+    /** Set when the process was started with `-e/--eval`; forwarded by node:child_process fork(). */
+    _eval?: string;
+  }
+}
+
+declare module "node:stream" {
+  /** The internal state objects of readable/writable streams. Loosely typed: the
+   * common flags are declared, everything else is reachable via the index signature. */
+  interface InternalStreamState {
+    ending: boolean;
+    ended: boolean;
+    finished: boolean;
+    destroyed: boolean;
+    constructed: boolean;
+    closed: boolean;
+    errored: Error | null;
+    errorEmitted: boolean;
+    [key: string]: any;
+  }
+
+  interface Writable {
+    _writableState: InternalStreamState;
+  }
+
+  interface Readable {
+    _readableState: InternalStreamState;
+  }
+}
 
 declare module "node:net" {
   function _normalizeArgs(options: any[]): [Record<PropertyKey, any>, Function | null];
 
+  /**
+   * The implementation's view of a `Socket`: state internal to net/tls plus
+   * writable versions of properties the public type exposes read-only.
+   */
+  interface SocketImpl extends Socket {
+    bytesRead: number;
+    connecting: boolean;
+    timeout: number | undefined;
+    connect(...args: any[]): this;
+    _hadError: boolean;
+    _pendingData: string | Uint8Array | null;
+    _pendingEncoding: string;
+    _host: string | null;
+    _port?: number;
+    _parent: unknown;
+    _parentWrap: unknown;
+    _peername: unknown;
+    _sockname: unknown;
+    _closeAfterHandlingError: boolean;
+    addressType?: number;
+    pauseOnConnect?: boolean;
+    blockList?: BlockList;
+    // TLS state, present when the socket is a TLSSocket
+    isServer?: boolean;
+    secureConnecting?: boolean;
+    _securePending?: boolean;
+    _secureEstablished?: boolean;
+    _requestCert?: boolean;
+    _rejectUnauthorized?: boolean;
+    authorized?: boolean;
+    authorizationError?: string | null;
+    setSession?(session: unknown): void;
+    getPeerCertificate?(detailed?: boolean): object;
+  }
+
   interface Socket {
-    _handle: Bun.Socket<{ self: Socket; req?: object }> | null;
+    _handle: Bun.Socket<any> | null;
     server: Server | null;
+    _unrefTimer(): void;
+    // TLS-populated fields readable on any socket flowing through the shared handlers
+    alpnProtocol?: string | boolean | null;
+    servername?: string;
   }
 
   interface Server {
     _handle: Bun.SocketListener<Socket> | null;
     _connections: number;
+    pauseOnConnect: boolean;
+    blockList?: BlockList;
   }
 }

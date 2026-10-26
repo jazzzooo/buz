@@ -3,7 +3,7 @@
 const { inspect } = require("internal/util/inspect");
 const colors = require("internal/util/colors");
 const { validateObject } = require("internal/validators");
-const { myersDiff, printMyersDiff, printSimpleMyersDiff } = require("internal/assert/myers_diff") as typeof Internal;
+const { myersDiff, printMyersDiff, printSimpleMyersDiff } = require("internal/assert/myers_diff") as unknown as typeof Internal;
 
 const ErrorCaptureStackTrace = Error.captureStackTrace;
 const ObjectAssign = Object.assign;
@@ -193,7 +193,11 @@ function createErrDiff(actual, expected, operator, customMessage) {
   let header = `${colors.green}+ actual${colors.white} ${colors.red}- expected${colors.white}`;
 
   if (showSimpleDiff) {
-    const simpleDiff = getSimpleDiff(actual, inspectedSplitActual[0], expected, inspectedSplitExpected[0]);
+    const simpleDiff = getSimpleDiff(actual, inspectedSplitActual[0], expected, inspectedSplitExpected[0]) as {
+      message: string;
+      header?: string;
+      skipped?: boolean;
+    };
     message = simpleDiff.message;
     if (typeof simpleDiff.header !== "undefined") {
       header = simpleDiff.header;

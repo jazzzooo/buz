@@ -28,14 +28,14 @@
 #include "CryptoAlgorithmIdentifier.h"
 #include "CryptoKeyFormat.h"
 #include "CryptoKeyPair.h"
+#include "CryptoOperationResult.h"
 #include "CryptoKeyUsage.h"
 #include "ExceptionOr.h"
 #include "JsonWebKey.h"
 #include <variant>
-#include <wtf/Function.h>
+#include <wtf/FastMalloc.h>
 #include <wtf/ThreadSafeRefCounted.h>
 #include <wtf/Vector.h>
-#include "SubtleCrypto.h"
 
 #if ENABLE(WEB_CRYPTO)
 
@@ -43,10 +43,6 @@ namespace WebCore {
 
 class CryptoAlgorithmParameters;
 class CryptoKey;
-class ScriptExecutionContext;
-
-using KeyData = std::variant<Vector<uint8_t>, JsonWebKey>;
-using KeyOrKeyPair = std::variant<RefPtr<CryptoKey>, CryptoKeyPair>;
 
 class CryptoAlgorithm : public ThreadSafeRefCounted<CryptoAlgorithm> {
 public:
@@ -54,31 +50,18 @@ public:
 
     virtual CryptoAlgorithmIdentifier identifier() const = 0;
 
-    using BoolCallback = Function<void(bool)>;
-    using KeyCallback = Function<void(CryptoKey&)>;
-    using KeyOrKeyPairCallback = Function<void(KeyOrKeyPair&&)>;
-    // FIXME: https://bugs.webkit.org/show_bug.cgi?id=169395
-    using VectorCallback = Function<void(const Vector<uint8_t>&)>;
-    using VoidCallback = Function<void()>;
-    using ExceptionCallback = Function<void(ExceptionCode, const String&)>;
-    using KeyDataCallback = Function<void(CryptoKeyFormat, KeyData&&)>;
-
-    virtual void encrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&);
-    virtual void decrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&);
-    virtual void sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&);
-    virtual void verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&& signature, Vector<uint8_t>&&, BoolCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&);
-    virtual void digest(Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&);
-    virtual void generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyOrKeyPairCallback&&, ExceptionCallback&&, ScriptExecutionContext&);
-    virtual void deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, size_t length, VectorCallback&&, ExceptionCallback&&, ScriptExecutionContext&, WorkQueue&);
+    virtual ExceptionOr<Vector<uint8_t>> encrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&);
+    virtual ExceptionOr<Vector<uint8_t>> decrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&);
+    virtual ExceptionOr<Vector<uint8_t>> sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&);
+    virtual ExceptionOr<bool> verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&& signature, Vector<uint8_t>&&);
+    virtual ExceptionOr<KeyOrKeyPair> generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap);
+    virtual ExceptionOr<Vector<uint8_t>> deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, size_t length);
     // FIXME: https://bugs.webkit.org/show_bug.cgi?id=169262
-    virtual void importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyCallback&&, ExceptionCallback&&);
-    virtual void exportKey(CryptoKeyFormat, Ref<CryptoKey>&&, KeyDataCallback&&, ExceptionCallback&&);
-    virtual void wrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&);
-    virtual void unwrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&);
+    virtual ExceptionOr<Ref<CryptoKey>> importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap);
+    virtual ExceptionOr<KeyData> exportKey(CryptoKeyFormat, Ref<CryptoKey>&&);
+    virtual ExceptionOr<Vector<uint8_t>> wrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&);
+    virtual ExceptionOr<Vector<uint8_t>> unwrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&);
     virtual ExceptionOr<size_t> getKeyLength(const CryptoAlgorithmParameters&);
-
-    static void dispatchOperationInWorkQueue(WorkQueue&, ScriptExecutionContext&, VectorCallback&&, ExceptionCallback&&, Function<ExceptionOr<Vector<uint8_t>>()>&&);
-    static void dispatchOperationInWorkQueue(WorkQueue&, ScriptExecutionContext&, BoolCallback&&, ExceptionCallback&&, Function<ExceptionOr<bool>()>&&);
 };
 
 } // namespace WebCore

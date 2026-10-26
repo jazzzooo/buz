@@ -1,22 +1,22 @@
 #pragma once
 
 #include "bun-native-bundler-plugin-api/bundler_plugin.h"
+#include "BunClientData.h"
 #include "root.h"
-#include "headers-handwritten.h"
+#include "SchemaBindings.h"
+#include <JavaScriptCore/JSDestructibleObject.h>
 #include <JavaScriptCore/JSGlobalObject.h>
+#include <JavaScriptCore/LazyProperty.h>
 #include <JavaScriptCore/RegularExpression.h>
 #include "napi_external.h"
 #include <JavaScriptCore/Yarr.h>
-#include "WriteBarrierList.h"
 
-typedef void (*JSBundlerPluginAddErrorCallback)(void*, void*, JSC::EncodedJSValue, JSC::EncodedJSValue);
-typedef void (*JSBundlerPluginOnLoadAsyncCallback)(void*, void*, JSC::EncodedJSValue, JSC::EncodedJSValue);
-typedef void (*JSBundlerPluginOnResolveAsyncCallback)(void*, void*, JSC::EncodedJSValue, JSC::EncodedJSValue, JSC::EncodedJSValue);
 typedef void (*JSBundlerPluginNativeOnBeforeParseCallback)(const OnBeforeParseArguments*, OnBeforeParseResult*);
 
 namespace Bun {
 
 using namespace JSC;
+using BunPluginTarget = Bindgen::BunPluginTarget;
 
 class BundlerPlugin final {
 public:
@@ -44,104 +44,142 @@ public:
         bool match(JSC::VM& vm, const String& path);
     };
 
-    class NamespaceList {
+    template<typename Entry> class NamespaceList {
     public:
-        Vector<FilterRegExp> fileNamespace = {};
-        Vector<String> namespaces = {};
-        Vector<Vector<FilterRegExp>> groups = {};
-        BunPluginTarget target { BunPluginTargetBun };
-
-        Vector<FilterRegExp>* group(const String& namespaceStr, unsigned& index)
+        Vector<Entry>* group(const String& namespaceStr)
         {
-            if (namespaceStr.isEmpty()) {
-                index = std::numeric_limits<unsigned>::max();
+            if (namespaceStr.isEmpty())
                 return &fileNamespace;
-            }
 
-            size_t length = namespaces.size();
-            for (size_t i = 0; i < length; i++) {
-                if (namespaces[i] == namespaceStr) {
-                    index = i;
-                    return &groups[i];
-                }
+            for (auto& entry : namespaces) {
+                if (entry.name == namespaceStr)
+                    return &entry.entries;
             }
 
             return nullptr;
         }
 
-        void append(JSC::VM& vm, JSC::RegExp* filter, String& namespaceString, unsigned& index);
+        bool tryAppend(const String& namespaceString, Entry&& entry)
+        {
+            if (auto* entries = group(namespaceString))
+                return entries->tryAppend(WTF::move(entry));
+
+            NamespaceGroup newGroup { namespaceString, {} };
+            if (!newGroup.entries.tryAppend(WTF::move(entry)))
+                return false;
+            return namespaces.tryAppend(WTF::move(newGroup));
+        }
+
+        bool isEmpty() const { return fileNamespace.isEmpty() && namespaces.isEmpty(); }
+
+    private:
+        struct NamespaceGroup {
+            String name;
+            Vector<Entry> entries;
+        };
+
+        Vector<Entry> fileNamespace;
+        Vector<NamespaceGroup> namespaces;
     };
+
+    using FilterList = NamespaceList<FilterRegExp>;
 
     struct NativePluginCallback {
         JSBundlerPluginNativeOnBeforeParseCallback callback;
-        Bun::NapiExternal* external;
-        /// This refers to the string exported in the native plugin under
-        /// the symbol BUN_PLUGIN_NAME
-        ///
-        /// Right now we do not close NAPI modules opened with dlopen and
-        /// so we do not worry about lifetimes right now.
+        void* external;
+        // BUN_PLUGIN_NAME belongs to the loaded module, whose handle remains open.
         const char* name;
     };
 
-    class NativePluginList {
+    struct NativePluginEntry {
+        FilterRegExp filter;
+        NativePluginCallback callback;
+    };
+
+    class NativePluginList : public NamespaceList<NativePluginEntry> {
     public:
-        using PerNamespaceCallbackList = Vector<NativePluginCallback>;
-
-        Vector<FilterRegExp> fileNamespace = {};
-        Vector<String> namespaces = {};
-        Vector<Vector<FilterRegExp>> groups = {};
-        BunPluginTarget target { BunPluginTargetBun };
-
-        PerNamespaceCallbackList fileCallbacks = {};
-        Vector<PerNamespaceCallbackList> namespaceCallbacks = {};
-
-        int call(JSC::VM& vm, BundlerPlugin* plugin, int* shouldContinue, void* bunContextPtr, const BunString* namespaceStr, const BunString* pathString, OnBeforeParseArguments* onBeforeParseArgs, OnBeforeParseResult* onBeforeParseResult);
-        void append(JSC::VM& vm, JSC::RegExp* filter, String& namespaceString, JSBundlerPluginNativeOnBeforeParseCallback callback, const char* name, NapiExternal* external);
-
-        Vector<FilterRegExp>* group(const String& namespaceStr, unsigned& index)
-        {
-            if (namespaceStr.isEmpty()) {
-                index = std::numeric_limits<unsigned>::max();
-                return &fileNamespace;
-            }
-
-            size_t length = namespaces.size();
-            for (size_t i = 0; i < length; i++) {
-                if (namespaces[i] == namespaceStr) {
-                    index = i;
-                    return &groups[i];
-                }
-            }
-
-            return nullptr;
-        }
+        Bindgen::NativeAllocationResult<uint32_t> call(JSC::VM& vm, JSBundlerPluginParseContext* bunContext, const String& namespaceString, const String& path, OnBeforeParseArguments* onBeforeParseArgs, OnBeforeParseResult* onBeforeParseResult);
     };
 
 public:
-    bool anyMatchesCrossThread(JSC::VM&, const BunString* namespaceStr, const BunString* path, bool isOnLoad);
+    bool anyMatchesCrossThread(JSC::VM&, const String& namespaceString, const String& path, bool isOnLoad);
     void tombstone() { tombstoned = true; }
 
-    BundlerPlugin(void* config, BunPluginTarget target, JSBundlerPluginAddErrorCallback addError, JSBundlerPluginOnLoadAsyncCallback onLoadAsync, JSBundlerPluginOnResolveAsyncCallback onResolveAsync)
-        : addError(addError)
-        , onLoadAsync(onLoadAsync)
-        , onResolveAsync(onResolveAsync)
+    BundlerPlugin(JSC::VM& vm, BunPluginTarget target)
+        : m_vm(&vm)
     {
         this->target = target;
-        this->config = config;
     }
 
-    NamespaceList onLoad = {};
-    NamespaceList onResolve = {};
+    JSC::VM& vm() const { return *m_vm; }
+
+    FilterList onLoad = {};
+    FilterList onResolve = {};
     NativePluginList onBeforeParse = {};
-    BunPluginTarget target { BunPluginTargetBrowser };
+    BunPluginTarget target { BunPluginTarget::browser };
 
-    WriteBarrierList<JSC::JSPromise> deferredPromises = {};
-
-    JSBundlerPluginAddErrorCallback addError;
-    JSBundlerPluginOnLoadAsyncCallback onLoadAsync;
-    JSBundlerPluginOnResolveAsyncCallback onResolveAsync;
-    void* config { nullptr };
     bool tombstoned { false };
+
+private:
+    JSC::VM* m_vm;
 };
 
-} // namespace Zig
+class JSBundlerPlugin final : public JSC::JSDestructibleObject {
+public:
+    using Base = JSC::JSDestructibleObject;
+    static JSBundlerPlugin* create(JSC::VM& vm,
+        JSC::Structure* structure,
+        BunPluginTarget target)
+    {
+        JSBundlerPlugin* ptr = new (NotNull, JSC::allocateCell<JSBundlerPlugin>(vm)) JSBundlerPlugin(vm, structure, target);
+        ptr->finishCreation(vm);
+        return ptr;
+    }
+
+    DECLARE_INFO;
+    template<typename, SubspaceAccess mode> static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm)
+    {
+        if constexpr (mode == JSC::SubspaceAccess::Concurrently)
+            return nullptr;
+        return WebCore::subspaceForImpl<JSBundlerPlugin, WebCore::UseCustomHeapCellType::No>(
+            vm,
+            [](auto& spaces) { return spaces.m_clientSubspaceForBundlerPlugin.get(); },
+            [](auto& spaces, auto&& space) { spaces.m_clientSubspaceForBundlerPlugin = std::forward<decltype(space)>(space); },
+            [](auto& spaces) { return spaces.m_subspaceForBundlerPlugin.get(); },
+            [](auto& spaces, auto&& space) { spaces.m_subspaceForBundlerPlugin = std::forward<decltype(space)>(space); });
+    }
+
+    static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
+    {
+        return JSC::Structure::create(vm, globalObject, prototype, JSC::TypeInfo(JSC::ObjectType, StructureFlags), info());
+    }
+
+    DECLARE_VISIT_CHILDREN;
+    DECLARE_VISIT_OUTPUT_CONSTRAINTS;
+
+    template<typename Visitor> void visitAdditionalChildrenInGCThread(Visitor&);
+
+    Bun::BundlerPlugin plugin;
+    JSC::LazyProperty<JSBundlerPlugin, JSC::JSFunction> onLoadFunction;
+    JSC::LazyProperty<JSBundlerPlugin, JSC::JSFunction> onResolveFunction;
+    JSC::LazyProperty<JSBundlerPlugin, JSC::JSFunction> setupFunction;
+    Vector<JSC::WriteBarrier<NapiExternal>> nativePluginExternals;
+
+    static void destroy(JSC::JSCell* cell)
+    {
+        JSBundlerPlugin* thisObject = static_cast<JSBundlerPlugin*>(cell);
+        thisObject->~JSBundlerPlugin();
+    }
+
+private:
+    JSBundlerPlugin(JSC::VM& vm, JSC::Structure* structure, BunPluginTarget target)
+        : Base(vm, structure)
+        , plugin(vm, target)
+    {
+    }
+
+    ~JSBundlerPlugin() = default;
+    void finishCreation(JSC::VM&);
+};
+
+} // namespace Bun

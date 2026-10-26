@@ -26,6 +26,7 @@
 #pragma once
 
 #include "root.h"
+#include "ExceptionOr.h"
 
 #include <wtf/URL.h>
 
@@ -39,41 +40,43 @@ public:
     // Returns nullopt on parse error, or optional<uint16_t> (nullopt means empty/default port)
     static std::optional<std::optional<uint16_t>> parsePort(StringView port, StringView protocol);
 
-    String origin() const;
+    ExceptionOr<String> origin() const;
+    static ExceptionOr<String> origin(const URL&);
 
-    WEBCORE_EXPORT String protocol() const;
-    void setProtocol(StringView);
+    WEBCORE_EXPORT ExceptionOr<String> protocol() const;
+    ExceptionOr<void> setProtocol(StringView);
 
-    String username() const;
-    void setUsername(StringView);
+    ExceptionOr<String> username() const;
+    ExceptionOr<void> setUsername(StringView);
 
-    String password() const;
-    void setPassword(StringView);
+    ExceptionOr<String> password() const;
+    ExceptionOr<void> setPassword(StringView);
 
-    WEBCORE_EXPORT String host() const;
-    void setHost(StringView);
+    WEBCORE_EXPORT ExceptionOr<String> host() const;
+    ExceptionOr<void> setHost(StringView);
 
-    WEBCORE_EXPORT String hostname() const;
-    void setHostname(StringView);
+    WEBCORE_EXPORT ExceptionOr<String> hostname() const;
+    ExceptionOr<void> setHostname(StringView);
 
-    WEBCORE_EXPORT String port() const;
-    void setPort(StringView);
+    WEBCORE_EXPORT ExceptionOr<String> port() const;
+    ExceptionOr<void> setPort(StringView);
 
-    WEBCORE_EXPORT String pathname() const;
-    void setPathname(StringView);
+    WEBCORE_EXPORT ExceptionOr<String> pathname() const;
+    ExceptionOr<void> setPathname(StringView);
 
-    WEBCORE_EXPORT String search() const;
-    void setSearch(const String&);
+    WEBCORE_EXPORT ExceptionOr<String> search() const;
+    ExceptionOr<void> setSearch(const String&);
 
-    WEBCORE_EXPORT String hash() const;
-    void setHash(StringView);
+    WEBCORE_EXPORT ExceptionOr<String> hash() const;
+    ExceptionOr<void> setHash(StringView);
 
 protected:
     virtual ~URLDecomposition() = default;
 
 private:
-    virtual URL fullURL() const = 0;
-    virtual void setFullURL(const URL&) = 0;
+    virtual ExceptionOr<URL> fullURL() const = 0;
+    virtual URL urlForQueryReplacement() const = 0;
+    virtual ExceptionOr<void> setFullURL(const URL&) = 0;
 };
 
 } // namespace WebCore

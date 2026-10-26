@@ -104,36 +104,6 @@ pub const Location = struct {
         return cost;
     }
 
-    pub fn count(this: Location, builder: *StringBuilder) void {
-        builder.count(this.file);
-        builder.count(this.namespace);
-        if (this.line_text) |text| builder.count(text);
-    }
-
-    pub fn clone(this: Location, allocator: std.mem.Allocator) !Location {
-        return Location{
-            .file = try allocator.dupe(u8, this.file),
-            .namespace = this.namespace,
-            .line = this.line,
-            .column = this.column,
-            .length = this.length,
-            .line_text = if (this.line_text != null) try allocator.dupe(u8, this.line_text.?) else null,
-            .offset = this.offset,
-        };
-    }
-
-    pub fn cloneWithBuilder(this: Location, string_builder: *StringBuilder) Location {
-        return Location{
-            .file = string_builder.append(this.file),
-            .namespace = this.namespace,
-            .line = this.line,
-            .column = this.column,
-            .length = this.length,
-            .line_text = if (this.line_text != null) string_builder.append(this.line_text.?) else null,
-            .offset = this.offset,
-        };
-    }
-
     pub fn toAPI(this: *const Location) api.Location {
         return api.Location{
             .file = this.file,
@@ -144,9 +114,6 @@ pub const Location = struct {
             .offset = @as(u32, @truncate(this.offset)),
         };
     }
-
-    // don't really know what's safe to deinit here!
-    pub fn deinit(_: *Location, _: std.mem.Allocator) void {}
 
     pub fn init(file: string, namespace: string, line: i32, column: i32, length: u32, line_text: ?string) Location {
         return Location{
@@ -220,46 +187,6 @@ pub const Data = struct {
             cost += loc.memoryCost();
         }
         return cost;
-    }
-
-    pub fn deinit(d: *Data, allocator: std.mem.Allocator) void {
-        if (d.location) |*loc| {
-            loc.deinit(allocator);
-        }
-
-        allocator.free(d.text);
-    }
-
-    pub fn cloneLineText(this: Data, should: bool, allocator: std.mem.Allocator) OOM!Data {
-        if (!should or this.location == null or this.location.?.line_text == null)
-            return this;
-
-        const new_line_text = try allocator.dupe(u8, this.location.?.line_text.?);
-        var new_location = this.location.?;
-        new_location.line_text = new_line_text;
-        return Data{
-            .text = this.text,
-            .location = new_location,
-        };
-    }
-
-    pub fn clone(this: Data, allocator: std.mem.Allocator) OOM!Data {
-        return Data{
-            .text = if (this.text.len > 0) try allocator.dupe(u8, this.text) else "",
-            .location = if (this.location != null) try this.location.?.clone(allocator) else null,
-        };
-    }
-
-    pub fn cloneWithBuilder(this: Data, builder: *StringBuilder) Data {
-        return Data{
-            .text = if (this.text.len > 0) builder.append(this.text) else "",
-            .location = if (this.location != null) this.location.?.cloneWithBuilder(builder) else null,
-        };
-    }
-
-    pub fn count(this: Data, builder: *StringBuilder) void {
-        builder.count(this.text);
-        if (this.location) |loc| loc.count(builder);
     }
 
     pub fn toAPI(this: *const Data) api.MessageData {
@@ -384,18 +311,18 @@ pub const Data = struct {
     }
 };
 
-pub const BabyString = packed struct(u32) {
-    offset: u16,
-    len: u16,
+pub const MessageSubstring = struct {
+    offset: usize,
+    len: usize,
 
-    pub fn in(parent: string, text: string) BabyString {
-        return BabyString{
-            .offset = @as(u16, @truncate(std.mem.indexOf(u8, parent, text) orelse unreachable)),
-            .len = @as(u16, @truncate(text.len)),
+    pub fn in(parent: string, text: string) MessageSubstring {
+        return .{
+            .offset = std.mem.indexOf(u8, parent, text) orelse unreachable,
+            .len = text.len,
         };
     }
 
-    pub fn slice(this: BabyString, container: string) string {
+    pub fn slice(this: MessageSubstring, container: string) string {
         return container[this.offset..][0..this.len];
     }
 };
@@ -416,45 +343,12 @@ pub const Msg = struct {
         return cost;
     }
 
-    pub const fromJS = @import("../logger_jsc/logger_jsc.zig").msgFromJS;
-    pub const toJS = @import("../logger_jsc/logger_jsc.zig").msgToJS;
-
-    pub fn count(this: *const Msg, builder: *StringBuilder) void {
-        this.data.count(builder);
-        for (this.notes) |note| {
-            note.count(builder);
-        }
-    }
-
-    pub fn clone(this: *const Msg, allocator: std.mem.Allocator) OOM!Msg {
-        return Msg{
-            .kind = this.kind,
-            .data = try this.data.clone(allocator),
-            .metadata = this.metadata,
-            .notes = try bun.clone(this.notes, allocator),
-        };
-    }
-
-    pub fn cloneWithBuilder(this: *const Msg, notes: []Data, builder: *StringBuilder) Msg {
-        return Msg{
-            .kind = this.kind,
-            .data = this.data.cloneWithBuilder(builder),
-            .metadata = this.metadata,
-            .notes = if (this.notes.len > 0) brk: {
-                for (this.notes, 0..) |note, i| {
-                    notes[i] = note.cloneWithBuilder(builder);
-                }
-                break :brk notes[0..this.notes.len];
-            } else &.{},
-        };
-    }
-
     pub const Metadata = union(enum) {
         build,
         resolve: Resolve,
 
         pub const Resolve = struct {
-            specifier: BabyString,
+            specifier: MessageSubstring,
             import_kind: ImportKind,
             err: anyerror = error.ModuleNotFound,
         };
@@ -491,17 +385,6 @@ pub const Msg = struct {
         return out_list;
     }
 
-    pub fn deinit(msg: *Msg, allocator: std.mem.Allocator) void {
-        msg.data.deinit(allocator);
-        for (msg.notes) |*note| {
-            note.deinit(allocator);
-        }
-
-        allocator.free(msg.notes);
-
-        msg.notes = &.{};
-    }
-
     pub fn writeFormat(
         msg: *const Msg,
         to: *std.Io.Writer,
@@ -520,6 +403,8 @@ pub const Msg = struct {
         }
     }
 };
+
+pub const OwnedMessage = @import("./OwnedMessage.zig");
 
 // Do not mark these as packed
 // https://github.com/ziglang/zig/issues/15715
@@ -561,9 +446,18 @@ pub const Log = struct {
     warnings: u32 = 0,
     errors: u32 = 0,
     msgs: std.array_list.Managed(Msg),
+    owned_messages: std.ArrayListUnmanaged(StoredMessage) = .empty,
     level: Level = if (Environment.isDebug) Level.info else Level.warn,
 
-    clone_line_text: bool = false,
+    const StoredMessage = struct {
+        message: OwnedMessage,
+        notes: []Data,
+
+        fn deinit(self: *StoredMessage) void {
+            self.message.deinit();
+            bun.default_allocator.free(self.notes);
+        }
+    };
 
     pub fn memoryCost(this: *const Log) usize {
         var cost: usize = 0;
@@ -578,15 +472,24 @@ pub const Log = struct {
     }
 
     pub fn reset(this: *Log) void {
+        for (this.owned_messages.items) |*owned| owned.deinit();
+        this.owned_messages.clearRetainingCapacity();
         this.msgs.clearRetainingCapacity();
         this.warnings = 0;
         this.errors = 0;
     }
 
+    pub fn take(this: *Log) Log {
+        const result = this.*;
+        this.* = Log.init(this.msgs.allocator);
+        this.level = result.level;
+        return result;
+    }
+
     pub var default_log_level = Level.warn;
 
     pub fn hasAny(this: *const Log) bool {
-        return (this.warnings + this.errors) > 0;
+        return this.warnings > 0 or this.errors > 0;
     }
 
     pub fn toAPI(this: *const Log, allocator: std.mem.Allocator) !api.Log {
@@ -631,8 +534,6 @@ pub const Log = struct {
             .{ "warn", Level.warn },
             .{ "error", Level.err },
         });
-
-        pub const fromJS = @import("../logger_jsc/logger_jsc.zig").levelFromJS;
     };
 
     pub fn init(allocator: std.mem.Allocator) Log {
@@ -650,91 +551,37 @@ pub const Log = struct {
 
     pub inline fn addDebugFmt(log: *Log, source: ?*const Source, l: Loc, allocator: std.mem.Allocator, comptime text: string, args: anytype) OOM!void {
         if (!Kind.shouldPrint(.debug, log.level)) return;
-        return log.addFormattedMsg(.debug, source, .{ .loc = l }, try allocPrint(allocator, text, args), &.{}, true, false);
+        return log.addFormattedMsg(.debug, source, .{ .loc = l }, allocator, try allocPrint(allocator, text, args), &.{}, false);
     }
 
-    pub const toJS = @import("../logger_jsc/logger_jsc.zig").logToJS;
-    pub const toJSAggregateError = @import("../logger_jsc/logger_jsc.zig").logToJSAggregateError;
-    pub const toJSArray = @import("../logger_jsc/logger_jsc.zig").logToJSArray;
-
-    pub fn cloneTo(self: *Log, other: *Log) OOM!void {
-        var notes_count: usize = 0;
-
-        for (self.msgs.items) |msg_| {
-            const msg: Msg = msg_;
-            for (msg.notes) |note| {
-                notes_count += @as(usize, @intCast(@intFromBool(note.text.len > 0)));
-            }
-        }
-
-        if (notes_count > 0) {
-            var notes = try other.msgs.allocator.alloc(Data, notes_count);
-            var note_i: usize = 0;
-            for (self.msgs.items) |*msg| {
-                const start_note_i: usize = note_i;
-                for (msg.notes) |note| {
-                    notes[note_i] = note;
-                    note_i += 1;
-                }
-                msg.notes = notes[start_note_i..note_i];
-            }
-        }
-
-        try other.msgs.appendSlice(self.msgs.items);
-        other.warnings += self.warnings;
-        other.errors += self.errors;
+    pub fn cloneTo(self: *const Log, other: *Log) OOM!void {
+        var copy = Log.init(other.msgs.allocator);
+        defer copy.deinit();
+        for (self.msgs.items) |msg| try copy.addMsg(msg);
+        try copy.appendTo(other);
     }
 
     pub fn appendTo(self: *Log, other: *Log) OOM!void {
-        try self.cloneTo(other);
-        self.msgs.clearAndFree();
-    }
-
-    pub fn cloneToWithRecycled(self: *Log, other: *Log, recycled: bool) OOM!void {
-        try other.msgs.appendSlice(self.msgs.items);
-        other.warnings += self.warnings;
-        other.errors += self.errors;
-
-        if (recycled) {
-            var string_builder = StringBuilder{};
-            var notes_count: usize = 0;
-            {
-                for (self.msgs.items) |msg| {
-                    msg.count(&string_builder);
-
-                    notes_count += msg.notes.len;
-                }
-            }
-
-            try string_builder.allocate(other.msgs.allocator);
-            var notes_buf = try other.msgs.allocator.alloc(Data, notes_count);
-            var note_i: usize = 0;
-
-            {
-                for (self.msgs.items, (other.msgs.items.len - self.msgs.items.len)..) |msg, j| {
-                    other.msgs.items[j] = msg.cloneWithBuilder(notes_buf[note_i..], &string_builder);
-                    note_i += msg.notes.len;
-                }
-            }
-        }
-    }
-
-    pub fn appendToWithRecycled(self: *Log, other: *Log, recycled: bool) OOM!void {
-        try self.cloneToWithRecycled(other, recycled);
-        self.msgs.clearAndFree();
-    }
-
-    pub fn appendToMaybeRecycled(self: *Log, other: *Log, source: *const Source) OOM!void {
-        return self.appendToWithRecycled(other, source.contents_is_recycled);
+        bun.assert(self != other);
+        bun.assert(self.msgs.items.len == self.owned_messages.items.len);
+        const warnings = std.math.add(u32, other.warnings, self.warnings) catch return error.OutOfMemory;
+        const errors = std.math.add(u32, other.errors, self.errors) catch return error.OutOfMemory;
+        try other.msgs.ensureUnusedCapacity(self.msgs.items.len);
+        try other.owned_messages.ensureUnusedCapacity(other.msgs.allocator, self.owned_messages.items.len);
+        other.msgs.appendSliceAssumeCapacity(self.msgs.items);
+        other.owned_messages.appendSliceAssumeCapacity(self.owned_messages.items);
+        other.warnings = warnings;
+        other.errors = errors;
+        self.owned_messages.clearRetainingCapacity();
+        self.deinit();
     }
 
     pub fn deinit(log: *Log) void {
+        log.reset();
+        log.owned_messages.clearAndFree(log.msgs.allocator);
         log.msgs.clearAndFree();
-        // log.warnings = 0;
-        // log.errors = 0;
     }
 
-    // TODO: remove `deinit` because it does not de-initialize the log; it clears it
     pub const clearAndFree = deinit;
 
     pub fn addVerboseWithNotes(log: *Log, source: ?*const Source, loc: Loc, text: string, notes: []Data) OOM!void {
@@ -754,32 +601,22 @@ pub const Log = struct {
         };
     }
 
-    /// Shared, non-generic tail for the `add*Fmt` family. The public wrappers
-    /// are `inline` and only do the per-call-site `allocPrint(fmt, args)`; the
-    /// rest (counter bump, rangeData, cloneLineText, addMsg) lives here so it
-    /// isn't re-stamped for every distinct format string. ~165 callers of
-    /// `addErrorFmt` alone used to duplicate this body.
+    /// Keeps message insertion out of per-format-string instantiations.
     noinline fn addFormattedMsg(
         log: *Log,
         kind: Kind,
         source: ?*const Source,
         r: Range,
+        allocator: std.mem.Allocator,
         text: string,
         notes: []Data,
-        clone: bool,
         redact: bool,
     ) OOM!void {
         @branchHint(.cold);
-        switch (kind) {
-            .err => log.errors += 1,
-            .warn => log.warnings += 1,
-            else => {},
-        }
-        var data = rangeData(source, r, text);
-        if (clone) data = try data.cloneLineText(log.clone_line_text, log.msgs.allocator);
+        defer allocator.free(text);
         try log.addMsg(.{
             .kind = kind,
-            .data = data,
+            .data = rangeData(source, r, text),
             .notes = notes,
             .redact_sensitive_information = redact,
         });
@@ -793,41 +630,16 @@ pub const Log = struct {
         comptime fmt: string,
         args: anytype,
         import_kind: ImportKind,
-        comptime dupe_text: bool,
         comptime kind: enum { err, warn },
         err: anyerror,
     ) OOM!void {
         const text = try allocPrint(allocator, fmt, args);
-        // TODO: fix this. this is stupid, it should be returned in allocPrint.
-        const specifier = BabyString.in(text, args.@"0");
-        if (comptime kind == .err) {
-            log.errors += 1;
-        } else {
-            log.warnings += 1;
-        }
-
-        const data = if (comptime dupe_text) brk: {
-            var _data = rangeData(
-                source,
-                r,
-                text,
-            );
-            if (_data.location != null) {
-                if (_data.location.?.line_text) |line| {
-                    _data.location.?.line_text = try allocator.dupe(u8, line);
-                }
-            }
-            break :brk _data;
-        } else rangeData(
-            source,
-            r,
-            text,
-        );
+        defer allocator.free(text);
+        const specifier = MessageSubstring.in(text, args.@"0");
 
         const msg = Msg{
-            // .kind = if (comptime error_type == .err) Kind.err else Kind.warn,
             .kind = @field(Kind, @tagName(kind)),
-            .data = data,
+            .data = rangeData(source, r, text),
             .metadata = .{ .resolve = Msg.Metadata.Resolve{
                 .specifier = specifier,
                 .import_kind = import_kind,
@@ -849,9 +661,7 @@ pub const Log = struct {
         err: anyerror,
     ) OOM!void {
         @branchHint(.cold);
-        // Always dupe the line_text from the source to ensure the Location data
-        // outlives the source's backing memory (which may be arena-allocated).
-        return try addResolveErrorWithLevel(log, source, r, allocator, fmt, args, import_kind, true, .err, err);
+        return try addResolveErrorWithLevel(log, source, r, allocator, fmt, args, import_kind, .err, err);
     }
 
     pub fn addResolveErrorWithTextDupe(
@@ -864,12 +674,11 @@ pub const Log = struct {
         import_kind: ImportKind,
     ) OOM!void {
         @branchHint(.cold);
-        return try addResolveErrorWithLevel(log, source, r, allocator, fmt, args, import_kind, true, .err, error.ModuleNotFound);
+        return try addResolveErrorWithLevel(log, source, r, allocator, fmt, args, import_kind, .err, error.ModuleNotFound);
     }
 
     pub fn addRangeError(log: *Log, source: ?*const Source, r: Range, text: string) OOM!void {
         @branchHint(.cold);
-        log.errors += 1;
         try log.addMsg(.{
             .kind = .err,
             .data = rangeData(source, r, text),
@@ -877,20 +686,20 @@ pub const Log = struct {
     }
 
     pub inline fn addRangeErrorFmt(log: *Log, source: ?*const Source, r: Range, allocator: std.mem.Allocator, comptime text: string, args: anytype) OOM!void {
-        return log.addFormattedMsg(.err, source, r, try allocPrint(allocator, text, args), &.{}, true, false);
+        return log.addFormattedMsg(.err, source, r, allocator, try allocPrint(allocator, text, args), &.{}, false);
     }
 
     pub inline fn addRangeErrorFmtWithNotes(log: *Log, source: ?*const Source, r: Range, allocator: std.mem.Allocator, notes: []Data, comptime fmt: string, args: anytype) OOM!void {
-        return log.addFormattedMsg(.err, source, r, try allocPrint(allocator, fmt, args), notes, true, false);
+        return log.addFormattedMsg(.err, source, r, allocator, try allocPrint(allocator, fmt, args), notes, false);
     }
 
     pub inline fn addErrorFmt(log: *Log, source: ?*const Source, l: Loc, allocator: std.mem.Allocator, comptime text: string, args: anytype) OOM!void {
-        return log.addFormattedMsg(.err, source, .{ .loc = l }, try allocPrint(allocator, text, args), &.{}, true, false);
+        return log.addFormattedMsg(.err, source, .{ .loc = l }, allocator, try allocPrint(allocator, text, args), &.{}, false);
     }
 
     // TODO(dylan-conway): rename and replace `addErrorFmt`
     pub inline fn addErrorFmtOpts(log: *Log, allocator: std.mem.Allocator, comptime fmt: string, args: anytype, opts: AddErrorOptions) OOM!void {
-        return log.addFormattedMsg(.err, opts.source, .{ .loc = opts.loc, .len = opts.len }, try allocPrint(allocator, fmt, args), &.{}, true, opts.redact_sensitive_information);
+        return log.addFormattedMsg(.err, opts.source, .{ .loc = opts.loc, .len = opts.len }, allocator, try allocPrint(allocator, fmt, args), &.{}, opts.redact_sensitive_information);
     }
 
     // Use a bun.sys.Error's message in addition to some extra context.
@@ -911,31 +720,29 @@ pub const Log = struct {
 
     pub fn addZigErrorWithNote(log: *Log, allocator: std.mem.Allocator, err: anyerror, comptime noteFmt: string, args: anytype) OOM!void {
         @branchHint(.cold);
-        log.errors += 1;
-
-        var notes = try allocator.alloc(Data, 1);
-        notes[0] = rangeData(null, Range.None, try allocPrint(allocator, noteFmt, args));
+        const note = try allocPrint(allocator, noteFmt, args);
+        defer allocator.free(note);
+        var notes = [_]Data{rangeData(null, Range.None, note)};
 
         try log.addMsg(.{
             .kind = .err,
             .data = rangeData(null, Range.None, @errorName(err)),
-            .notes = notes,
+            .notes = &notes,
         });
     }
 
     pub fn addRangeWarning(log: *Log, source: ?*const Source, r: Range, text: string) OOM!void {
         @branchHint(.cold);
         if (!Kind.shouldPrint(.warn, log.level)) return;
-        log.warnings += 1;
         try log.addMsg(.{
             .kind = .warn,
-            .data = try rangeData(source, r, text).cloneLineText(log.clone_line_text, log.msgs.allocator),
+            .data = rangeData(source, r, text),
         });
     }
 
     pub inline fn addWarningFmt(log: *Log, source: ?*const Source, l: Loc, allocator: std.mem.Allocator, comptime text: string, args: anytype) OOM!void {
         if (!Kind.shouldPrint(.warn, log.level)) return;
-        return log.addFormattedMsg(.warn, source, .{ .loc = l }, try allocPrint(allocator, text, args), &.{}, true, false);
+        return log.addFormattedMsg(.warn, source, .{ .loc = l }, allocator, try allocPrint(allocator, text, args), &.{}, false);
     }
 
     pub fn addWarningFmtLineCol(log: *Log, filepath: []const u8, line: u32, col: u32, allocator: std.mem.Allocator, comptime text: string, args: anytype) OOM!void {
@@ -946,64 +753,25 @@ pub const Log = struct {
     pub fn addWarningFmtLineColWithNotes(log: *Log, filepath: []const u8, line: u32, col: u32, allocator: std.mem.Allocator, comptime text: string, args: anytype, notes: []Data) OOM!void {
         @branchHint(.cold);
         if (!Kind.shouldPrint(.warn, log.level)) return;
-        log.warnings += 1;
-
-        // TODO: do this properly
-
+        const message = try allocPrint(allocator, text, args);
+        defer allocator.free(message);
         try log.addMsg(.{
             .kind = .warn,
-            .data = try Data.cloneLineText(
-                Data{
-                    .text = try allocPrint(allocator, text, args),
-                    .location = Location{
-                        .file = filepath,
-                        .line = @intCast(line),
-                        .column = @intCast(col),
-                    },
+            .data = .{
+                .text = message,
+                .location = Location{
+                    .file = filepath,
+                    .line = @intCast(line),
+                    .column = @intCast(col),
                 },
-                log.clone_line_text,
-                allocator,
-            ),
+            },
             .notes = notes,
         });
     }
 
-    // pub fn addWarningFmtLineColWithNote(log: *Log, filepath: []const u8, line: u32, col: u32, allocator: std.mem.Allocator, comptime text: string, args: anytype, comptime note_fmt: string, note_args: anytype, note_range: Range) OOM!void {
-    //     @branchHint(.cold);
-    //     if (!Kind.shouldPrint(.warn, log.level)) return;
-    //     log.warnings += 1;
-
-    //     var notes = try allocator.alloc(Data, 1);
-    //     notes[0] = Data{
-    //         .text = try allocPrint(allocator, note_fmt, note_args),
-    //         .lcoation = Location{
-    //             .file = filepath,
-    //             .line = @intCast(line),
-    //             .column = @intCast(col),
-    //         },
-    //     };
-
-    //     try log.addMsg(.{
-    //         .kind = .warn,
-    //         .data = try Data.cloneLineText(
-    //             Data{
-    //                 .text = try allocPrint(allocator, text, args),
-    //                 .location = Location{
-    //                     .file = filepath,
-    //                     .line = @intCast(line),
-    //                     .column = @intCast(col),
-    //                 },
-    //             },
-    //             log.clone_line_text,
-    //             allocator,
-    //         ),
-    //         .notes = notes,
-    //     });
-    // }
-
     pub inline fn addRangeWarningFmt(log: *Log, source: ?*const Source, r: Range, allocator: std.mem.Allocator, comptime text: string, args: anytype) OOM!void {
         if (!Kind.shouldPrint(.warn, log.level)) return;
-        return log.addFormattedMsg(.warn, source, r, try allocPrint(allocator, text, args), &.{}, true, false);
+        return log.addFormattedMsg(.warn, source, r, allocator, try allocPrint(allocator, text, args), &.{}, false);
     }
 
     pub fn addRangeWarningFmtWithNote(
@@ -1019,20 +787,21 @@ pub const Log = struct {
     ) OOM!void {
         @branchHint(.cold);
         if (!Kind.shouldPrint(.warn, log.level)) return;
-        log.warnings += 1;
-
-        var notes = try allocator.alloc(Data, 1);
-        notes[0] = rangeData(source, note_range, try allocPrint(allocator, note_fmt, note_args));
+        const note = try allocPrint(allocator, note_fmt, note_args);
+        defer allocator.free(note);
+        const message = try allocPrint(allocator, fmt, args);
+        defer allocator.free(message);
+        var notes = [_]Data{rangeData(source, note_range, note)};
 
         try log.addMsg(.{
             .kind = .warn,
-            .data = rangeData(source, r, try allocPrint(allocator, fmt, args)),
-            .notes = notes,
+            .data = rangeData(source, r, message),
+            .notes = &notes,
         });
     }
 
     pub inline fn addRangeWarningFmtWithNotes(log: *Log, source: ?*const Source, r: Range, allocator: std.mem.Allocator, notes: []Data, comptime fmt: string, args: anytype) OOM!void {
-        return log.addFormattedMsg(.warn, source, r, try allocPrint(allocator, fmt, args), notes, true, false);
+        return log.addFormattedMsg(.warn, source, r, allocator, try allocPrint(allocator, fmt, args), notes, false);
     }
 
     pub fn addRangeErrorFmtWithNote(
@@ -1048,22 +817,22 @@ pub const Log = struct {
     ) OOM!void {
         @branchHint(.cold);
         if (!Kind.shouldPrint(.err, log.level)) return;
-        log.errors += 1;
-
-        var notes = try allocator.alloc(Data, 1);
-        notes[0] = rangeData(source, note_range, try allocPrint(allocator, note_fmt, note_args));
+        const note = try allocPrint(allocator, note_fmt, note_args);
+        defer allocator.free(note);
+        const message = try allocPrint(allocator, fmt, args);
+        defer allocator.free(message);
+        var notes = [_]Data{rangeData(source, note_range, note)};
 
         try log.addMsg(.{
             .kind = .err,
-            .data = rangeData(source, r, try allocPrint(allocator, fmt, args)),
-            .notes = notes,
+            .data = rangeData(source, r, message),
+            .notes = &notes,
         });
     }
 
     pub fn addWarning(log: *Log, source: ?*const Source, l: Loc, text: string) OOM!void {
         @branchHint(.cold);
         if (!Kind.shouldPrint(.warn, log.level)) return;
-        log.warnings += 1;
         try log.addMsg(.{
             .kind = .warn,
             .data = rangeData(source, Range{ .loc = l }, text),
@@ -1073,15 +842,14 @@ pub const Log = struct {
     pub fn addWarningWithNote(log: *Log, source: ?*const Source, l: Loc, allocator: std.mem.Allocator, warn: string, comptime note_fmt: string, note_args: anytype) OOM!void {
         @branchHint(.cold);
         if (!Kind.shouldPrint(.warn, log.level)) return;
-        log.warnings += 1;
-
-        var notes = try allocator.alloc(Data, 1);
-        notes[0] = rangeData(source, Range{ .loc = l }, try allocPrint(allocator, note_fmt, note_args));
+        const note = try allocPrint(allocator, note_fmt, note_args);
+        defer allocator.free(note);
+        var notes = [_]Data{rangeData(source, Range{ .loc = l }, note)};
 
         try log.addMsg(.{
             .kind = .warn,
             .data = rangeData(null, Range.None, warn),
-            .notes = notes,
+            .notes = &notes,
         });
     }
 
@@ -1097,7 +865,6 @@ pub const Log = struct {
     pub fn addRangeDebugWithNotes(log: *Log, source: ?*const Source, r: Range, text: string, notes: []Data) OOM!void {
         @branchHint(.cold);
         if (!Kind.shouldPrint(.debug, log.level)) return;
-        // log.de += 1;
         try log.addMsg(.{
             .kind = Kind.debug,
             .data = rangeData(source, r, text),
@@ -1107,7 +874,6 @@ pub const Log = struct {
 
     pub fn addRangeErrorWithNotes(log: *Log, source: ?*const Source, r: Range, text: string, notes: []Data) OOM!void {
         @branchHint(.cold);
-        log.errors += 1;
         try log.addMsg(.{
             .kind = Kind.err,
             .data = rangeData(source, r, text),
@@ -1116,12 +882,27 @@ pub const Log = struct {
     }
 
     pub fn addMsg(self: *Log, msg: Msg) OOM!void {
-        try self.msgs.append(msg);
+        return self.addOwnedMessage(try OwnedMessage.copy(msg));
+    }
+
+    /// Consumes the message on both success and failure.
+    pub fn addOwnedMessage(self: *Log, message: OwnedMessage) OOM!void {
+        var owned = message;
+        errdefer owned.deinit();
+        const warnings = std.math.add(u32, self.warnings, @intFromBool(owned.kind == .warn)) catch return error.OutOfMemory;
+        const errors = std.math.add(u32, self.errors, @intFromBool(owned.kind == .err)) catch return error.OutOfMemory;
+        const notes = try bun.default_allocator.alloc(Data, owned.notes.slice().len);
+        errdefer bun.default_allocator.free(notes);
+        try self.msgs.ensureUnusedCapacity(1);
+        try self.owned_messages.ensureUnusedCapacity(self.msgs.allocator, 1);
+        self.msgs.appendAssumeCapacity(owned.view(notes));
+        self.owned_messages.appendAssumeCapacity(.{ .message = owned, .notes = notes });
+        self.warnings = warnings;
+        self.errors = errors;
     }
 
     pub fn addError(self: *Log, _source: ?*const Source, loc: Loc, text: string) OOM!void {
         @branchHint(.cold);
-        self.errors += 1;
         try self.addMsg(.{ .kind = .err, .data = rangeData(_source, Range{ .loc = loc }, text) });
     }
 
@@ -1135,7 +916,6 @@ pub const Log = struct {
     // TODO(dylan-conway): rename and replace `addError`
     pub fn addErrorOpts(self: *Log, text: string, opts: AddErrorOptions) OOM!void {
         @branchHint(.cold);
-        self.errors += 1;
         try self.addMsg(.{
             .kind = .err,
             .data = rangeData(opts.source, .{ .loc = opts.loc, .len = opts.len }, text),
@@ -1144,18 +924,19 @@ pub const Log = struct {
     }
 
     pub fn addSymbolAlreadyDeclaredError(self: *Log, allocator: std.mem.Allocator, source: *const Source, name: string, new_loc: Loc, old_loc: Loc) OOM!void {
-        var notes = try allocator.alloc(Data, 1);
-        notes[0] = rangeData(
+        const note = try std.fmt.allocPrint(allocator, "\"{s}\" was originally declared here", .{name});
+        defer allocator.free(note);
+        var notes = [_]Data{rangeData(
             source,
             source.rangeOfIdentifier(old_loc),
-            try std.fmt.allocPrint(allocator, "\"{s}\" was originally declared here", .{name}),
-        );
+            note,
+        )};
 
         try self.addRangeErrorFmtWithNotes(
             source,
             source.rangeOfIdentifier(new_loc),
             allocator,
-            notes,
+            &notes,
             "\"{s}\" has already been declared",
             .{name},
         );
@@ -1455,7 +1236,6 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const OOM = bun.OOM;
 const Output = bun.Output;
-const StringBuilder = bun.StringBuilder;
 const assert = bun.assert;
 const strings = bun.strings;
 const Index = bun.ast.Index;

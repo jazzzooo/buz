@@ -28,29 +28,23 @@
 #include "root.h"
 
 #include "InternalWritableStream.h"
-#include <JavaScriptCore/Strong.h>
 #include <wtf/RefCounted.h>
 
 namespace WebCore {
 
 class InternalWritableStream;
-class WritableStreamSink;
 
 class WritableStream : public RefCounted<WritableStream> {
 public:
-    static ExceptionOr<Ref<WritableStream>> create(JSC::JSGlobalObject&, std::optional<JSC::Strong<JSC::JSObject>>&&, std::optional<JSC::Strong<JSC::JSObject>>&&);
-    static ExceptionOr<Ref<WritableStream>> create(JSDOMGlobalObject&, Ref<WritableStreamSink>&&);
     static Ref<WritableStream> create(Ref<InternalWritableStream>&&);
 
     ~WritableStream() = default;
 
-    void lock() { m_internalWritableStream->lock(); }
     bool locked() const { return m_internalWritableStream->locked(); }
 
     InternalWritableStream& internalWritableStream() { return m_internalWritableStream.get(); }
 
 private:
-    static ExceptionOr<Ref<WritableStream>> create(JSC::JSGlobalObject&, JSC::JSValue, JSC::JSValue);
     explicit WritableStream(Ref<InternalWritableStream>&&);
 
     Ref<InternalWritableStream> m_internalWritableStream;

@@ -2,9 +2,11 @@
 #define UWS_H3RESPONSEDATA_H
 
 #include "AsyncSocketData.h"
+#include "HttpCallback.h"
 #include "quic.h"
 
 #include <wtf/Vector.h>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 
@@ -31,64 +33,57 @@ struct Http3ResponseData {
         HTTP_WROTE_DATE_HEADER = 64,
     };
 
-    void *userData = nullptr;
-    /* onWritable is owned by the body writer (HTTPServerWritable sink),
-     * which is a different object than the RequestContext that owns
-     * onAborted/onTimeout/onData. uWS HttpResponseData<SSL> shares one
-     * userData and gets away with it because tryEnd() over a corked TCP
-     * socket never reports backpressure for in-memory bodies; QUIC does
-     * (lsquic needs a process_conns() between HEADERS and DATA), so the
-     * sink and the request context are armed concurrently. */
-    void *writableUserData = nullptr;
     void *socketData = nullptr;
-    OnWritableCallback onWritable = nullptr;
-    OnAbortedCallback onAborted = nullptr;
-    OnDataCallback inStream = nullptr;
-    OnTimeoutCallback onTimeout = nullptr;
+    HttpCallback<OnWritableCallback> onWritable;
+    HttpCallback<OnAbortedCallback> onAborted;
+    HttpCallback<OnDataCallback> inStream;
+    HttpCallback<OnTimeoutCallback> onTimeout;
 
-    /* Outgoing headers buffered until the first body write/end so they go
-     * out as one HEADERS frame. WTF::Vector's inline capacity keeps the
-     * common case (status + content-type + content-length + date ≈ 100
-     * bytes, ≤ 6 headers) entirely off the heap. hdrs stores byte offsets
-     * (cast through name/value pointers) so hdrBuf can grow; resolved
-     * against hdrBuf.data() once at send time. */
-    WTF::Vector<char, 256> hdrBuf;
-    WTF::Vector<us_quic_header_t, 16> hdrs;
+    struct StoredHeader {
+        size_t nameOffset;
+        size_t valueOffset;
+        unsigned nameLength;
+        unsigned valueLength;
+    };
+    ByteBuffer hdrBuf;
+    WTF::Vector<StoredHeader, 16> hdrs;
 
     /* Body bytes the QUIC stream couldn't accept yet. */
     BackPressure backpressure;
     bool endAfterDrain = false;
+    bool failed = false;
 
     uint64_t offset = 0;
-    uint64_t totalSize = 0;
     uint8_t state = 0;
 
-    void appendHeader(const char *name, unsigned nlen, const char *value, unsigned vlen) {
-        size_t off = hdrBuf.size();
-        hdrBuf.grow(off + nlen + vlen);
-        char *dst = hdrBuf.mutableSpan().data() + off;
-        for (unsigned i = 0; i < nlen; i++) {
-            char c = name[i];
+    [[nodiscard]] bool tryAppendHeader(std::string_view name, std::string_view value, bool implicitStatus = false) {
+        if (name.empty() || name.size() > UINT_MAX || value.size() > UINT_MAX) return false;
+        const size_t count = implicitStatus ? 2 : 1;
+        if (hdrs.size() > INT_MAX - count || !hdrs.tryReserveCapacity(hdrs.size() + count)) return false;
+        const size_t off = hdrBuf.size();
+        if (!hdrBuf.tryAppend({implicitStatus ? ":status200" : "", name, value})) return false;
+        const size_t nameOffset = off + (implicitStatus ? 10 : 0);
+        char *dst = hdrBuf.data() + nameOffset;
+        for (size_t i = 0; i < name.size(); i++) {
+            char c = dst[i];
             dst[i] = (char)(c | ((unsigned char)(c - 'A') < 26 ? 0x20 : 0));
         }
-        memcpy(dst + nlen, value, vlen);
-        hdrs.append({(const char *)(uintptr_t) off, nlen,
-                     (const char *)(uintptr_t)(off + nlen), vlen, -1});
+        if (implicitStatus) hdrs.append(StoredHeader{off, off + 7, 7, 3});
+        hdrs.append(StoredHeader{nameOffset, nameOffset + name.size(), (unsigned) name.size(), (unsigned) value.size()});
+        return true;
     }
 
     void reset() {
-        userData = nullptr;
-        writableUserData = nullptr;
-        onWritable = nullptr;
-        onAborted = nullptr;
-        inStream = nullptr;
-        onTimeout = nullptr;
-        hdrBuf.shrink(0);
+        onWritable.clear();
+        onAborted.clear();
+        inStream.clear();
+        onTimeout.clear();
+        hdrBuf.clear();
         hdrs.shrink(0);
         backpressure.clear();
         endAfterDrain = false;
+        failed = false;
         offset = 0;
-        totalSize = 0;
         state = HTTP_RESPONSE_PENDING;
     }
 };

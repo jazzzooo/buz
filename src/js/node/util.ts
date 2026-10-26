@@ -7,11 +7,17 @@ const { validateString, validateOneOf } = require("internal/validators");
 const { MIMEType, MIMEParams } = require("internal/util/mime");
 const { deprecate } = require("internal/util/deprecate");
 
-const internalErrorName = $newZigFunction("node_util_binding.zig", "internalErrorName", 1);
-const parseEnv = $newZigFunction("node_util_binding.zig", "parseEnv", 1);
+const internalErrorName = $bindgenFn("NodeUtil.schema.zig", "internalErrorName");
+const parseEnv = $bindgenFn("NodeUtil.schema.zig", "parseEnv");
 
 const NumberIsSafeInteger = Number.isSafeInteger;
 const ObjectKeys = Object.keys;
+const ArrayIsArray = Array.isArray;
+const ArrayPrototypeSlice = Array.prototype.slice;
+const ObjectCreate = Object.create;
+const ObjectSetPrototypeOf = Object.setPrototypeOf;
+const ObjectPrototypePropertyIsEnumerable = Object.prototype.propertyIsEnumerable;
+const ReflectOwnKeys = Reflect.ownKeys;
 
 var cjs_exports;
 
@@ -25,7 +31,76 @@ function isFunction(value) {
 const deepEquals = Bun.deepEquals;
 const isDeepStrictEqual = (a, b) => deepEquals(a, b, true);
 
-const parseArgs = $newZigFunction("parse_args.zig", "parseArgs", 1);
+const parseArgsNative = $bindgenFn("NodeUtil.schema.zig", "parseArgs");
+
+function parseArgsDefaultArgs() {
+  const execArgv = process.execArgv;
+  const argv = process.argv;
+  if (!ArrayIsArray(execArgv) || !ArrayIsArray(argv)) return [];
+
+  for (let index = 0; index < execArgv.length; index++) {
+    const value = execArgv[index];
+    if (value === "-e" || value === "--eval" || value === "-p" || value === "--print") {
+      return ArrayPrototypeSlice.$call(argv, 1);
+    }
+  }
+  return ArrayPrototypeSlice.$call(argv, 2);
+}
+
+function snapshotParseArgsConfig(config) {
+  if (config === null) return [config, undefined];
+
+  const args = config === undefined ? undefined : config.args;
+  const strict = config === undefined ? undefined : config.strict;
+  const allowPositionals = config === undefined ? undefined : config.allowPositionals;
+  const tokens = config === undefined ? undefined : config.tokens;
+  const allowNegative = config === undefined ? undefined : config.allowNegative;
+  const options = config === undefined ? undefined : config.options;
+
+  let optionSnapshots = options;
+  let defaults;
+  if (options !== null && (typeof options === "object" || typeof options === "function")) {
+    optionSnapshots = ObjectCreate(null);
+    defaults = ObjectCreate(null);
+    for (const key of ReflectOwnKeys(options)) {
+      if (!ObjectPrototypePropertyIsEnumerable.$call(options, key)) continue;
+      const option = options[key];
+      if (option !== null && (typeof option === "object" || typeof option === "function")) {
+        const type = option.type;
+        const short = option.short;
+        const multiple = option.multiple;
+        const defaultValue = option.default;
+        optionSnapshots[key] = { type, short, multiple, default: defaultValue };
+        if (defaultValue !== undefined) defaults[key] = defaultValue;
+      } else {
+        optionSnapshots[key] = option;
+      }
+    }
+  }
+
+  return [
+    {
+      args: args == null ? parseArgsDefaultArgs() : args,
+      strict,
+      allowPositionals,
+      tokens,
+      allowNegative,
+      options: optionSnapshots,
+    },
+    defaults,
+  ];
+}
+
+function parseArgs(config) {
+  const [snapshot, defaults] = snapshotParseArgsConfig(config);
+  const result = parseArgsNative(snapshot);
+  ObjectSetPrototypeOf(result.values, null);
+  if (defaults !== undefined) {
+    for (const name of result.missingDefaults) result.values[name] = defaults[name];
+  }
+  delete result.missingDefaults;
+  return result;
+}
 
 const inspect = utl.inspect;
 const formatWithOptions = utl.formatWithOptions;
@@ -91,7 +166,7 @@ function isObject(arg) {
   return typeof arg === "object" && arg !== null;
 }
 var isDate = types.isDate;
-var isError = $newCppFunction("NodeUtilTypesModule.cpp", "jsFunctionIsError", 1);
+var isError = $bindgenFn("NodeUtil.schema.zig", "isError");
 function isPrimitive(arg) {
   return (
     arg === null ||
@@ -148,7 +223,7 @@ var _extend = function (origin, add) {
 function callbackifyOnRejected(reason, cb) {
   if (!reason) {
     var newReason = new Error("Promise was rejected with a falsy value");
-    newReason.reason = reason;
+    (newReason as any).reason = reason;
     newReason.code = "ERR_FALSY_VALUE_REJECTION";
     reason = newReason;
   }

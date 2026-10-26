@@ -213,8 +213,17 @@ pub const us_socket_t = opaque {
         return rc;
     }
 
+    pub fn writeIPC(this: *us_socket_t, data: []const u8) bun.sys.Maybe(u32) {
+        if (comptime bun.Environment.isWindows) @compileError("IPC named pipes use libuv writes");
+        const result = c.us_socket_ipc_write(this, data.ptr, @intCast(@min(data.len, max_i32)));
+        if (result < 0) return .{ .err = bun.sys.Error.fromCodeInt(-result, .write) };
+        return .{ .result = @intCast(result) };
+    }
+
     pub fn write2(this: *us_socket_t, first: []const u8, second: []const u8) i32 {
-        const rc = c.us_socket_write2(this, first.ptr, first.len, second.ptr, second.len);
+        const first_len = @min(first.len, max_i32);
+        const second_len = @min(second.len, max_i32 - first_len);
+        const rc = c.us_socket_write2(this, first.ptr, first_len, second.ptr, second_len);
         debug("us_socket_write2({p}, {d}, {d}) = {d}", .{ this, first.len, second.len, rc });
         return rc;
     }
@@ -274,6 +283,7 @@ const c = struct {
 
     extern fn us_socket_write(s: *us_socket_t, data: [*]const u8, length: i32) i32;
     extern fn us_socket_ipc_write_fd(s: *us_socket_t, data: [*]const u8, length: i32, fd: i32) i32;
+    extern fn us_socket_ipc_write(s: *us_socket_t, data: [*]const u8, length: i32) i32;
     extern fn us_socket_write2(*us_socket_t, header: ?[*]const u8, len: usize, payload: ?[*]const u8, usize) i32;
     extern fn us_socket_raw_write(s: *us_socket_t, data: [*]const u8, length: i32) i32;
     extern fn us_socket_flush(s: *us_socket_t) void;
@@ -298,53 +308,19 @@ const c = struct {
     extern fn us_socket_start_tls_handshake(s: *us_socket_t) void;
 };
 
-pub const us_socket_stream_buffer_t = extern struct {
-    list_ptr: ?[*]u8 = null,
-    list_cap: usize = 0,
-    list_len: usize = 0,
+pub const us_socket_stream_buffer_t = struct {
+    stream: bun.io.StreamBuffer = .{},
     total_bytes_written: usize = 0,
-    cursor: usize = 0,
 
-    pub fn update(this: *us_socket_stream_buffer_t, stream_buffer: bun.io.StreamBuffer) void {
-        if (stream_buffer.list.capacity > 0) {
-            this.list_ptr = stream_buffer.list.items.ptr;
-        } else {
-            this.list_ptr = null;
-        }
-        this.list_len = stream_buffer.list.items.len;
-        this.list_cap = stream_buffer.list.capacity;
-        this.cursor = stream_buffer.cursor;
-    }
     pub fn wrote(this: *us_socket_stream_buffer_t, written: usize) void {
         this.total_bytes_written +|= written;
     }
 
-    pub fn toStreamBuffer(this: *us_socket_stream_buffer_t) bun.io.StreamBuffer {
-        return .{
-            .list = if (this.list_ptr) |buffer_ptr| .{
-                .allocator = bun.default_allocator,
-                .items = buffer_ptr[0..this.list_len],
-                .capacity = this.list_cap,
-            } else .{
-                .allocator = bun.default_allocator,
-                .items = &.{},
-                .capacity = 0,
-            },
-            .cursor = this.cursor,
-        };
-    }
-
     pub fn deinit(this: *us_socket_stream_buffer_t) void {
-        if (this.list_ptr) |buffer| {
-            bun.default_allocator.free(buffer[0..this.list_cap]);
-        }
+        this.stream.deinit();
+        bun.destroy(this);
     }
 };
-
-export fn us_socket_free_stream_buffer(buffer: *us_socket_stream_buffer_t) void {
-    buffer.deinit();
-}
-// us_socket_buffered_js_write moved to src/runtime/socket/uws_jsc.zig
 
 const std = @import("std");
 

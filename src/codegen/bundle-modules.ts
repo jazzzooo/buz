@@ -12,25 +12,30 @@ import fs from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { builtinModules } from "node:module";
 import path from "path";
-import jsclasses from "./../jsc/bindings/js_classes";
 import { sliceSourceCode } from "./builtin-parser";
 import { createAssertClientJS, createLogClientJS } from "./client-js";
-import { getJS2NativeCPP, getJS2NativeZig } from "./generate-js2native";
-import { cap, declareASCIILiteral, writeIfNotChanged } from "./helpers";
+import { declareASCIILiteral, writeIfNotChanged } from "./helpers";
 import { createInternalModuleRegistry } from "./internal-module-registry-scanner";
+import { configureBindgenLinkMetadata, getBindgenFunctionTableCPP } from "./native-function-table";
 import { define } from "./replacements";
 
 const BASE = path.join(import.meta.dir, "../js");
 const debug = process.argv[2] === "--debug=ON";
 const CMAKE_BUILD_ROOT = process.argv[3];
+const NATIVE_MODULE_MANIFEST = process.argv[4];
+const BINDGEN_LINK_METADATA = process.argv[5];
 
 const timeString = 'Bundled "src/js" for ' + (debug ? "development" : "production");
-console.time(timeString);
+const timeStart = performance.now();
 
-if (!CMAKE_BUILD_ROOT) {
-  console.error("Usage: bun bundle-modules.ts --debug=[OFF|ON] <CMAKE_WORK_DIR>");
+if (!CMAKE_BUILD_ROOT || !NATIVE_MODULE_MANIFEST || !BINDGEN_LINK_METADATA) {
+  console.error(
+    "Usage: bun bundle-modules.ts --debug=[OFF|ON] <CMAKE_WORK_DIR> <NATIVE_MODULE_MANIFEST> <BINDGEN_LINK_METADATA>",
+  );
   process.exit(1);
 }
+
+const bindingFingerprint = configureBindgenLinkMetadata(BINDGEN_LINK_METADATA);
 
 globalThis.CMAKE_BUILD_ROOT = CMAKE_BUILD_ROOT;
 const bundleBuiltinFunctions = require("./bundle-functions").bundleBuiltinFunctions;
@@ -51,8 +56,10 @@ function markVerbose(log: string) {
 
 const mark = silent ? (log: string) => {} : markVerbose;
 
-const { moduleList, nativeModuleIds, nativeModuleEnumToId, nativeModuleEnums, requireTransformer, nativeStartIndex } =
-  createInternalModuleRegistry(BASE);
+const { moduleList, moduleDescriptions, requireTransformer, nativeStartIndex, privateSymbols, fingerprint } =
+  createInternalModuleRegistry(BASE, NATIVE_MODULE_MANIFEST);
+if (fingerprint !== bindingFingerprint)
+  throw new Error("Internal module and binding link metadata come from different schemas");
 globalThis.requireTransformer = requireTransformer;
 
 // these logs surround a very weird issue where writing files and then bundling sometimes doesn't
@@ -279,87 +286,23 @@ for (const entrypoint of bundledEntryPoints) {
 mark("Postprocesss modules");
 
 function idToEnumName(id: string) {
-  return id
-    .replace(/\.[mc]?[tj]s$/, "")
-    .replace(/[^a-zA-Z0-9]+/g, " ")
-    .split(" ")
-    .map(x => (["jsc", "ffi", "vm", "tls", "os", "ws", "fs", "dns"].includes(x) ? x.toUpperCase() : cap(x)))
-    .join("");
+  const entry = moduleDescriptions.get(id);
+  if (!entry) throw new Error(`Module has no schema declaration: ${id}`);
+  return entry.name;
 }
 
 function idToPublicSpecifierOrEnumName(id: string) {
-  if (id === "internal-for-testing.ts") return "bun:internal-for-testing"; // not in the `bun/` folder because it's added conditionally
-  id = id.replace(/\.[mc]?[tj]s$/, "");
-  if (id.startsWith("node/")) {
-    return "node:" + id.slice(5).replaceAll(".", "/");
-  } else if (id.startsWith("bun/")) {
-    return "bun:" + id.slice(4).replaceAll(".", "/");
-  } else if (id.startsWith("internal/")) {
-    return "internal:" + id.slice(9).replaceAll(".", "/");
-  } else if (id.startsWith("thirdparty/")) {
-    return id.slice(11).replaceAll(".", "/");
-  }
-  return idToEnumName(id);
+  const entry = moduleDescriptions.get(id);
+  if (!entry) throw new Error(`Module has no schema declaration: ${id}`);
+  return entry.specifier;
 }
 
 await bundleBuiltinFunctions({
   requireTransformer,
+  schemaPrivateNames: privateSymbols,
 });
 
 mark("Bundle Functions");
-
-// This is a file with a single macro that is used in defining InternalModuleRegistry.h
-writeIfNotChanged(
-  path.join(CODEGEN_DIR, "InternalModuleRegistry+numberOfModules.h"),
-  `#define BUN_INTERNAL_MODULE_COUNT ${moduleList.length}
-#define BUN_NATIVE_MODULE_START_INDEX ${nativeStartIndex}
-`,
-);
-
-// This code slice is used in InternalModuleRegistry.h for inlining the enum. I dont think we
-// actually use this enum but it's probably a good thing to include.
-writeIfNotChanged(
-  path.join(CODEGEN_DIR, "InternalModuleRegistry+enum.h"),
-  `${
-    moduleList
-      .map((id, n) => {
-        return `${idToEnumName(id)} = ${n},`;
-      })
-      .join("\n") + "\n"
-  }
-`,
-);
-
-// This code slice is used in InternalModuleRegistry.cpp. It defines the loading function for modules.
-writeIfNotChanged(
-  path.join(CODEGEN_DIR, "InternalModuleRegistry+createInternalModuleById.h"),
-  `// clang-format off
-JSValue InternalModuleRegistry::createInternalModuleById(JSGlobalObject* globalObject, VM& vm, Field id)
-{
-  switch (id) {
-    // JS internal modules
-    ${moduleList
-      .map((id, n) => {
-        const moduleName = idToPublicSpecifierOrEnumName(id);
-        const fileBase = JSON.stringify(id.replace(/\.[mc]?[tj]s$/, ".js"));
-        const urlString = "builtin://" + id.replace(/\.[mc]?[tj]s$/, "").replace(/[^a-zA-Z0-9]+/g, "/");
-        const inner =
-          n >= nativeStartIndex
-            ? `return generateNativeModule(globalObject, vm, generateNativeModule_${nativeModuleEnums[id]});`
-            : `INTERNAL_MODULE_REGISTRY_GENERATE(globalObject, vm, "${moduleName}"_s, ${fileBase}_s, InternalModuleRegistryConstants::${idToEnumName(id)}Code, "${urlString}"_s);`;
-        return `case Field::${idToEnumName(id)}: {
-      ${inner}
-    }`;
-      })
-      .join("\n    ")}
-    default: {
-      __builtin_unreachable();
-    }
-  }
-  __builtin_unreachable();
-}
-`,
-);
 
 // This header is used by InternalModuleRegistry.cpp, and should only be included in that file.
 // It inlines all the strings for the module IDs.
@@ -405,88 +348,7 @@ namespace InternalModuleRegistryConstants {
   );
 }
 
-// This is a generated enum for zig code (exports.zig)
-writeIfNotChanged(
-  path.join(CODEGEN_DIR, "ResolvedSourceTag.zig"),
-  `// zig fmt: off
-pub const ResolvedSourceTag = enum(u32) {
-    javascript = 0,
-    package_json_type_module = 1,
-    package_json_type_commonjs = 2,
-    wasm = 3,
-    object = 4,
-    file = 5,
-    esm = 6,
-    json_for_object_loader = 7,
-    /// Generate an object with "default" set to all the exports, including a "default" property
-    exports_object = 8,
-    /// Generate a module that only exports default the input JSValue
-    export_default_object = 9,
-    /// Signal upwards that the matching value in 'require.extensions' should be used.
-    common_js_custom_extension = 10,
-
-    // Built in modules are loaded through InternalModuleRegistry by numerical ID.
-    // In this enum are represented as \`(1 << 9) & id\`
-${moduleList
-  .slice(0, nativeStartIndex)
-  .map((id, n) => `    @"${idToPublicSpecifierOrEnumName(id)}" = ${(1 << 9) | n},`)
-  .join("\n")}
-    // Native modules come after the JS modules
-${Object.entries(nativeModuleEnumToId)
-  .map(([id, n], i) => `    @"${moduleList[nativeStartIndex + i]}" = ${(1 << 9) | (n + nativeStartIndex)},`)
-  .join("\n")}
-};
-`,
-);
-
-// This is a generated enum for c++ code (headers-handwritten.h)
-writeIfNotChanged(
-  path.join(CODEGEN_DIR, "SyntheticModuleType.h"),
-  `enum SyntheticModuleType : uint32_t {
-    JavaScript = 0,
-    PackageJSONTypeModule = 1,
-    PackageJSONTypeCommonJS = 2,
-    Wasm = 3,
-    ObjectModule = 4,
-    File = 5,
-    ESM = 6,
-    JSONForObjectLoader = 7,
-    ExportsObject = 8,
-    ExportDefaultObject = 9,
-    CommonJSCustomExtension = 10,
-    // Built in modules are loaded through InternalModuleRegistry by numerical ID.
-    // In this enum are represented as \`(1 << 9) & id\`
-    InternalModuleRegistryFlag = 1 << 9,
-${moduleList
-  .slice(0, nativeStartIndex)
-  .map((id, n) => `    ${idToEnumName(id)} = ${(1 << 9) | n},`)
-  .join("\n")}
-    // Native modules come after the JS modules
-${Object.entries(nativeModuleEnumToId)
-  .map(([id, n], i) => `    ${id} = ${(1 << 9) | (i + nativeStartIndex)},`)
-  .join("\n")}
-};
-
-`,
-);
-
-// This is used in ModuleLoader.cpp to link to all the headers for native modules.
-writeIfNotChanged(
-  path.join(CODEGEN_DIR, "NativeModuleImpl.h"),
-  Object.values(nativeModuleEnums)
-    .map(value => `#include "../../jsc/modules/${value}Module.h"`)
-    .join("\n") + "\n",
-);
-
-writeIfNotChanged(path.join(CODEGEN_DIR, "GeneratedJS2Native.h"), getJS2NativeCPP());
-
-// Lives in the source tree because it imports src files by relative path;
-// also written into the codegen dir so the build graph can re-materialize it
-// from a cached run.
-const js2nativeZigPath = path.join(import.meta.dir, "../jsc/bindings/GeneratedJS2Native.zig");
-const js2nativeZig = getJS2NativeZig(js2nativeZigPath);
-writeIfNotChanged(js2nativeZigPath, js2nativeZig);
-writeIfNotChanged(path.join(CODEGEN_DIR, "GeneratedJS2Native.zig"), js2nativeZig);
+writeIfNotChanged(path.join(CODEGEN_DIR, "BindgenFunctionTable.h"), getBindgenFunctionTableCPP());
 
 const generatedDTSPath = path.join(CODEGEN_DIR, "generated.d.ts");
 writeIfNotChanged(
@@ -535,10 +397,6 @@ declare module "module" {
 }
 `;
 
-    for (const [name] of jsclasses) {
-      dts += `\ndeclare function $inherits${name}(value: any): value is ${name};`;
-    }
-
     return dts;
   })(),
 );
@@ -568,7 +426,7 @@ for (const file of evalFiles) {
 
 if (!silent) {
   console.log("");
-  console.timeEnd(timeString);
+  console.log(`[${((performance.now() - timeStart) / 1000).toFixed(2)}s] ${timeString}`);
   console.log(
     `  %s kb`,
     Math.floor(
@@ -580,7 +438,7 @@ if (!silent) {
     ),
   );
   console.log(`  %s internal modules`, nativeStartIndex);
-  console.log(`  %s native modules`, Object.keys(nativeModuleIds).length);
+  console.log(`  %s native modules`, moduleList.length - nativeStartIndex);
   console.log(
     `  %s internal functions across %s files`,
     globalThis.internalFunctionCount,

@@ -67,6 +67,13 @@ pub fn UnboundedQueue(comptime T: type, comptime next_field: meta.FieldEnum(T)) 
                     self.batch.count -= 1;
                     return front;
                 }
+
+                pub fn requeueRemaining(self: *Self.Batch.Iterator, queue: *Self) void {
+                    const remaining = self.batch;
+                    self.batch = .{};
+                    if (remaining.count == 0) return;
+                    queue.pushBatch(remaining.front.?, remaining.last.?);
+                }
             };
 
             front: ?*T = null,

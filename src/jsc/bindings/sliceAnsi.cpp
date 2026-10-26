@@ -1,20 +1,20 @@
 #include "root.h"
-#include "sliceAnsi.h"
+#include "SchemaBindings.h"
 #include "ANSIHelpers.h"
 
 #include <wtf/text/WTFString.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/Vector.h>
 
-// Zig exports for visible width and grapheme break
-extern "C" uint8_t Bun__codepointWidth(uint32_t cp, bool ambiguous_as_wide);
-extern "C" bool Bun__graphemeBreak(uint32_t cp1, uint32_t cp2, uint8_t* state);
-extern "C" bool Bun__isEmojiPresentation(uint32_t cp);
-extern "C" size_t Bun__visibleWidthExcludeANSI_latin1(const uint8_t* ptr, size_t len, bool ambiguous_as_wide);
-extern "C" size_t Bun__visibleWidthExcludeANSI_utf16(const uint16_t* ptr, size_t len, bool ambiguous_as_wide);
-
 namespace Bun {
 using namespace WTF;
+
+static bool graphemeBreak(uint32_t previous, uint32_t current, uint8_t& state)
+{
+    uint16_t result = Bindgen::ZigExports::bunBindgenZig_StringWidth_graphemeBreak(previous, current, state);
+    state = static_cast<uint8_t>(result >> 8);
+    return (result & 1) != 0;
+}
 
 // Shared SIMD/SGR helpers live in ANSIHelpers.h. We keep a local
 // GraphemeWidthState mirror of visible.zig's GraphemeState because these are
@@ -48,10 +48,10 @@ struct GraphemeWidthState {
         vs15 = false;
         vs16 = false;
 
-        uint8_t w = Bun__codepointWidth(cp, ambiguousIsWide);
+        uint8_t w = Bindgen::ZigExports::bunBindgenZig_StringWidth_codepointWidth(cp, ambiguousIsWide);
         baseWidth = w;
         nonEmojiWidth = w;
-        emojiBase = Bun__isEmojiPresentation(cp);
+        emojiBase = Bindgen::ZigExports::bunBindgenZig_StringWidth_isEmojiPresentation(cp);
     }
 
     void add(uint32_t cp, bool ambiguousIsWide)
@@ -65,7 +65,7 @@ struct GraphemeWidthState {
         vs15 = vs15 || (cp == 0xFE0E);
         vs16 = vs16 || (cp == 0xFE0F);
 
-        uint8_t w = Bun__codepointWidth(cp, ambiguousIsWide);
+        uint8_t w = Bindgen::ZigExports::bunBindgenZig_StringWidth_codepointWidth(cp, ambiguousIsWide);
         if (w > 0) {
             uint16_t newWidth = nonEmojiWidth + w;
             nonEmojiWidth = newWidth < 1023 ? newWidth : 1023;
@@ -734,7 +734,7 @@ static size_t computeTotalWidth(std::span<const Char> input, size_t asciiPrefix,
             cp = ANSI::decodeUTF16(p, dataEnd - p, charLen);
         }
 
-        bool shouldBreak = !hasPrev || Bun__graphemeBreak(prevCp, cp, &breakState);
+        bool shouldBreak = !hasPrev || graphemeBreak(prevCp, cp, breakState);
 
         if (shouldBreak) {
             if (hasPrev) totalW += gs.width();
@@ -920,7 +920,7 @@ static WTF::String emitSliceStreaming(
     // the SIMD-skipped tight loop and the false-positive fallback. Returns
     // false if we should stop (past end).
     auto processVisibleCp = [&](char32_t cp, size_t charLen) -> bool {
-        bool shouldBreak = !hasPrev || Bun__graphemeBreak(prevVisCp, cp, &breakState);
+        bool shouldBreak = !hasPrev || graphemeBreak(prevVisCp, cp, breakState);
 
         if (shouldBreak) {
             if (hasPrev) position += gs.width();
@@ -1304,35 +1304,24 @@ static WTF::String sliceAnsiImpl(std::span<const Char> input, double startD, dou
 // JavaScript Binding
 // ============================================================================
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionBunSliceAnsi, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+WTF::String Bindgen::Cpp::bunBindgenCpp_StringWidth_sliceAnsi(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_StringWidth_sliceAnsi_Arguments& args)
 {
-    auto& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    UNUSED_PARAM(context);
+    WTF::String input = args.input.value_or("undefined"_s);
+    WTF::StringView view(input);
 
-    JSC::JSValue inputValue = callFrame->argument(0);
-    JSC::JSValue startValue = callFrame->argument(1);
-    JSC::JSValue endValue = callFrame->argument(2);
-
-    JSC::JSString* jsString = inputValue.toString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    auto view = jsString->view(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (view->isEmpty())
-        return JSC::JSValue::encode(JSC::jsEmptyString(vm));
+    if (view.isEmpty())
+        return emptyString();
 
     // Index parsing matches String.prototype.slice (StringPrototypeInlines.h):
     // keep as double, resolve/clamp in double space, cast only after the range
     // is proven to be in [0, totalWidth] which fits exactly in double. No UB,
     // no bespoke int64 clamping needed.
-    double startD = startValue.isUndefined() ? 0.0
-                                             : startValue.toIntegerOrInfinity(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
+    double startD = args.start.value_or(0.0);
     // Default end is +Infinity ("to the end of the string").
-    double endD = endValue.isUndefined() ? std::numeric_limits<double>::infinity()
-                                         : endValue.toIntegerOrInfinity(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
+    double endD = args.end.value_or(std::numeric_limits<double>::infinity());
 
     // 4th argument overloads (checked in order, no coercion):
     //   string  → ellipsis shorthand
@@ -1344,63 +1333,54 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionBunSliceAnsi, (JSC::JSGlobalObject * globalOb
     //             ambiguousIsNarrow without an object:
     //             sliceAnsi(s, 0, n, "…", false)
     //
-    // Hold the JSString* (GC-rooted as a call argument) and its SafeView so
-    // the underlying characters stay alive for the duration of sliceAnsiImpl.
-    // No WTF::String materialization — we pass a zero-copy StringView.
-    JSC::JSString* ellipsisJS = nullptr;
-    bool ambiguousIsWide = false; // default: narrow (matches stringWidth/wrapAnsi)
-    JSC::JSValue arg4 = callFrame->argument(3);
-    if (arg4.isString()) {
-        ellipsisJS = arg4.toString(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-        // 5th arg: ambiguousIsNarrow. Only checked on the string-ellipsis path
-        // (object path has the option built in; boolean-4th conflicts).
-        JSC::JSValue arg5 = callFrame->argument(4);
-        if (arg5.isBoolean()) ambiguousIsWide = !arg5.asBoolean();
-    } else if (arg4.isBoolean()) {
-        // Boolean 4th → ambiguousIsNarrow only (no ellipsis).
-        ambiguousIsWide = !arg4.asBoolean();
-    } else if (arg4.isObject()) {
-        JSC::JSObject* opts = arg4.getObject();
-        JSC::JSValue e = opts->get(globalObject, JSC::Identifier::fromString(vm, "ellipsis"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (e.isString()) {
-            ellipsisJS = e.toString(globalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-        JSC::JSValue a = opts->get(globalObject, JSC::Identifier::fromString(vm, "ambiguousIsNarrow"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!a.isUndefined()) ambiguousIsWide = !a.toBoolean(globalObject);
-    } else if (arg4.isUndefined()) {
-        // No 4th arg: still check 5th for ambiguousIsNarrow.
-        // Enables sliceAnsi(s, a, b, undefined, false) for consistency.
-        JSC::JSValue arg5 = callFrame->argument(4);
-        if (arg5.isBoolean()) ambiguousIsWide = !arg5.asBoolean();
+    std::optional<WTF::String> ellipsisString;
+    std::optional<bool> ambiguousIsNarrow;
+    bool allowFifth = true;
+    if (args.options) {
+        const auto& input = *args.options;
+        if (input.is_ellipsis())
+            ellipsisString = input.ellipsis();
+        else if (input.is_ambiguous()) {
+            ambiguousIsNarrow = input.ambiguous();
+            allowFifth = false;
+        } else if (input.is_options()) {
+            const auto& options = input.options();
+            ellipsisString = options.ellipsis;
+            ambiguousIsNarrow = options.ambiguous_is_narrow;
+            allowFifth = false;
+        } else if (!input.is_undefined_value())
+            allowFifth = false;
     }
-    auto ellipsisSafeView = ellipsisJS ? ellipsisJS->view(globalObject) : decltype(ellipsisJS->view(globalObject)) {};
-    RETURN_IF_EXCEPTION(scope, {});
-    StringView ellipsis = ellipsisJS ? StringView(ellipsisSafeView) : StringView();
+
+    bool ambiguousIsWide = false; // default: narrow (matches stringWidth/wrapAnsi)
+    if (ambiguousIsNarrow)
+        ambiguousIsWide = !*ambiguousIsNarrow;
+    std::optional<bool> fifth = args.ambiguousIsNarrow.value_or(std::nullopt);
+    if (allowFifth && fifth)
+        ambiguousIsWide = !*fifth;
+    StringView ellipsis = ellipsisString ? StringView(*ellipsisString) : StringView();
 
     size_t ellipsisWidth = 0;
     if (!ellipsis.isEmpty()) {
         ellipsisWidth = ellipsis.is8Bit()
-            ? Bun__visibleWidthExcludeANSI_latin1(reinterpret_cast<const uint8_t*>(ellipsis.span8().data()), ellipsis.length(), ambiguousIsWide)
-            : Bun__visibleWidthExcludeANSI_utf16(reinterpret_cast<const uint16_t*>(ellipsis.span16().data()), ellipsis.length(), ambiguousIsWide);
+            ? Bun::Bindgen::ZigExports::bunBindgenZig_StringWidth_visibleWidthExcludeANSILatin1(
+                  std::span<const uint8_t> { ellipsis.span8().data(), ellipsis.length() }, ambiguousIsWide)
+            : Bun::Bindgen::ZigExports::bunBindgenZig_StringWidth_visibleWidthExcludeANSIUTF16(
+                  std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(ellipsis.span16().data()), ellipsis.length() * sizeof(UChar) }, ambiguousIsWide);
     }
 
     WTF::String result;
-    if (view->is8Bit()) {
-        result = sliceAnsiImpl<Latin1Character>(view->span8(), startD, endD, ellipsis, ellipsisWidth, ambiguousIsWide);
+    if (view.is8Bit()) {
+        result = sliceAnsiImpl<Latin1Character>(view.span8(), startD, endD, ellipsis, ellipsisWidth, ambiguousIsWide);
     } else {
-        result = sliceAnsiImpl<UChar>(view->span16(), startD, endD, ellipsis, ellipsisWidth, ambiguousIsWide);
+        result = sliceAnsiImpl<UChar>(view.span16(), startD, endD, ellipsis, ellipsisWidth, ambiguousIsWide);
     }
 
-    // null → no-op fast path hit: return the input JSString unchanged (zero-copy).
     if (result.isNull())
-        return JSC::JSValue::encode(jsString);
+        return input;
     if (result.isEmpty())
-        return JSC::JSValue::encode(JSC::jsEmptyString(vm));
-    return JSC::JSValue::encode(JSC::jsString(vm, result));
+        return emptyString();
+    return result;
 }
 
 } // namespace Bun

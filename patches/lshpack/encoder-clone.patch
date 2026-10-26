@@ -1,0 +1,111 @@
+--- a/lshpack.h
++++ b/lshpack.h
+@@ -158,6 +158,9 @@ lshpack_enc_encode (struct lshpack_enc *henc, unsigned char *dst,
+ void
+ lshpack_enc_set_max_capacity (struct lshpack_enc *, unsigned);
+ 
++int
++lshpack_enc_clone (struct lshpack_enc *dst, const struct lshpack_enc *src);
++
+ /**
+  * Turn history on or off.  Turning history on may fail (malloc), in
+  * which case -1 is returned.
+--- a/lshpack.c
++++ b/lshpack.c
+@@ -1193,6 +1193,96 @@ lshpack_enc_encode (struct lshpack_enc *enc, unsigned char *dst,
+ }
+ 
+ 
++static int
++henc_entry_has_name_index (const struct lshpack_enc *enc,
++                    const struct lshpack_enc_table_entry *target)
++{
++    const struct lshpack_enc_table_entry *entry;
++    const unsigned buckno = BUCKNO(enc->hpe_nbits, target->ete_name_hash);
++    STAILQ_FOREACH(entry, &enc->hpe_buckets[buckno].by_name, ete_next_name)
++        if (entry == target)
++            return 1;
++    return 0;
++}
++
++
++int
++lshpack_enc_clone (struct lshpack_enc *dst, const struct lshpack_enc *src)
++{
++    const struct lshpack_enc_table_entry *source_entry;
++    struct lshpack_enc_table_entry *entry;
++    unsigned n;
++    size_t size;
++
++    memset(dst, 0, sizeof(*dst));
++    STAILQ_INIT(&dst->hpe_all_entries);
++    dst->hpe_nbits = src->hpe_nbits;
++    dst->hpe_buckets = malloc(sizeof(dst->hpe_buckets[0])
++                                            * N_BUCKETS(dst->hpe_nbits));
++    if (!dst->hpe_buckets)
++        return -1;
++    for (n = 0; n < N_BUCKETS(dst->hpe_nbits); ++n)
++    {
++        STAILQ_INIT(&dst->hpe_buckets[n].by_name);
++        STAILQ_INIT(&dst->hpe_buckets[n].by_nameval);
++    }
++
++    dst->hpe_max_capacity = src->hpe_max_capacity;
++    dst->hpe_next_id = src->hpe_next_id;
++    dst->hpe_flags = src->hpe_flags;
++    if (src->hpe_hist_buf)
++    {
++        dst->hpe_hist_buf = malloc(sizeof(dst->hpe_hist_buf[0])
++                                            * (src->hpe_hist_size + 1));
++        if (!dst->hpe_hist_buf)
++            goto fail;
++        memcpy(dst->hpe_hist_buf, src->hpe_hist_buf,
++                    sizeof(dst->hpe_hist_buf[0]) * (src->hpe_hist_size + 1));
++        dst->hpe_hist_size = src->hpe_hist_size;
++        dst->hpe_hist_idx = src->hpe_hist_idx;
++        dst->hpe_hist_wrapped = src->hpe_hist_wrapped;
++    }
++
++    STAILQ_FOREACH(source_entry, &src->hpe_all_entries, ete_next_all)
++    {
++        size = sizeof(*entry) + source_entry->ete_name_len
++                                      + source_entry->ete_val_len;
++        entry = malloc(size);
++        if (!entry)
++            goto fail;
++        entry->ete_id = source_entry->ete_id;
++        entry->ete_nameval_hash = source_entry->ete_nameval_hash;
++        entry->ete_name_hash = source_entry->ete_name_hash;
++        entry->ete_name_len = source_entry->ete_name_len;
++        entry->ete_val_len = source_entry->ete_val_len;
++        memcpy(entry->ete_buf, source_entry->ete_buf,
++                       source_entry->ete_name_len + source_entry->ete_val_len);
++
++        STAILQ_INSERT_TAIL(&dst->hpe_all_entries, entry, ete_next_all);
++        n = BUCKNO(dst->hpe_nbits, entry->ete_nameval_hash);
++        STAILQ_INSERT_TAIL(&dst->hpe_buckets[n].by_nameval, entry,
++                                                        ete_next_nameval);
++        if (henc_entry_has_name_index(src, source_entry))
++        {
++            n = BUCKNO(dst->hpe_nbits, entry->ete_name_hash);
++            STAILQ_INSERT_TAIL(&dst->hpe_buckets[n].by_name, entry,
++                                                            ete_next_name);
++        }
++        dst->hpe_cur_capacity += DYNAMIC_ENTRY_OVERHEAD
++                                  + entry->ete_name_len + entry->ete_val_len;
++        ++dst->hpe_nelem;
++    }
++
++    assert(dst->hpe_cur_capacity == src->hpe_cur_capacity);
++    assert(dst->hpe_nelem == src->hpe_nelem);
++    return 0;
++
++  fail:
++    lshpack_enc_cleanup(dst);
++    return -1;
++}
++
++
+ void
+ lshpack_enc_set_max_capacity (struct lshpack_enc *enc, unsigned max_capacity)
+ {

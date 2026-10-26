@@ -62,14 +62,16 @@ enum uws_opcode_t : int32_t {
 
 enum uws_sendstatus_t : uint32_t { BACKPRESSURE,
     SUCCESS,
-    DROPPED };
+    DROPPED,
+    UWS_SEND_OUT_OF_MEMORY };
 
-typedef struct {
-
-    int port;
-    const char* host;
-    int options;
-} uws_app_listen_config_t;
+enum uws_write_status_t : uint8_t {
+    UWS_WRITE_COMPLETE,
+    UWS_WRITE_BACKPRESSURE,
+    UWS_WRITE_OUT_OF_MEMORY,
+    UWS_WRITE_CLOSED,
+    UWS_WRITE_FAILED
+};
 
 struct uws_app_s;
 struct uws_req_s;
@@ -81,6 +83,27 @@ typedef struct uws_req_s uws_req_t;
 typedef struct uws_res_s uws_res_t;
 typedef struct uws_socket_context_s uws_socket_context_t;
 typedef struct uws_websocket_s uws_websocket_t;
+typedef struct uws_prepared_websocket_upgrade_s uws_prepared_websocket_upgrade_t;
+
+enum uws_websocket_upgrade_error_t : int32_t {
+    UWS_WEBSOCKET_UPGRADE_OK,
+    UWS_WEBSOCKET_UPGRADE_OUT_OF_MEMORY,
+    UWS_WEBSOCKET_UPGRADE_INVALID_EXTENSIONS,
+    UWS_WEBSOCKET_UPGRADE_COMPRESSION_INITIALIZATION_FAILED,
+    UWS_WEBSOCKET_UPGRADE_INVALID_KEY,
+    UWS_WEBSOCKET_UPGRADE_INVALID_PROTOCOL,
+    UWS_WEBSOCKET_UPGRADE_INVALID_RESPONSE_STATE
+};
+
+uws_prepared_websocket_upgrade_t* uws_res_prepare_upgrade(int ssl, uws_res_t* response,
+    const char* key, size_t key_length, const char* protocol, size_t protocol_length,
+    const char* extensions, size_t extensions_length, uws_socket_context_t* context,
+    uws_websocket_upgrade_error_t* error);
+void uws_prepared_websocket_upgrade_destroy(uws_prepared_websocket_upgrade_t* prepared);
+bool uws_prepared_websocket_upgrade_add_header(uws_prepared_websocket_upgrade_t* prepared,
+    const char* name, size_t name_length, const char* value, size_t value_length);
+bool uws_prepared_websocket_upgrade_finish(uws_prepared_websocket_upgrade_t* prepared);
+struct us_socket_t* uws_res_upgrade(uws_prepared_websocket_upgrade_t* prepared, void* data);
 
 typedef void (*uws_websocket_handler)(uws_websocket_t* ws);
 typedef void (*uws_websocket_message_handler)(uws_websocket_t* ws,
@@ -123,12 +146,6 @@ typedef struct {
     uws_websocket_close_handler close;
 } uws_socket_behavior_t;
 
-typedef void (*uws_listen_handler)(struct us_listen_socket_t* listen_socket,
-    void* user_data);
-typedef void (*uws_listen_domain_handler)(
-    struct us_listen_socket_t* listen_socket, const char* domain, int options,
-    void* user_data);
-
 typedef void (*uws_method_handler)(uws_res_t* response, uws_req_t* request,
     void* user_data);
 typedef void (*uws_filter_handler)(uws_res_t* response, int, void* user_data);
@@ -141,6 +158,12 @@ typedef void (*uws_get_headers_server_handler)(const char* header_name,
     void* user_data);
 
 struct us_loop_t* uws_get_loop();
+struct us_loop_t* uws_ensure_loop(void *existing_native_loop, struct us_poll_error_t *failure);
+void uws_mark_process_exiting(void);
+
+/* Address text is borrowed until the next query of the same kind on this thread. */
+uint64_t uws_res_get_remote_address_info(uws_res_t* res, const char** address, int* port, bool* is_ipv6);
+uint64_t uws_res_get_local_address_info(uws_res_t* res, const char** address, int* port, bool* is_ipv6);
 
 #ifdef __cplusplus
 }

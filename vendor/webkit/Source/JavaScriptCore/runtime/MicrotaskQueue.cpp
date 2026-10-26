@@ -39,6 +39,7 @@
 #include "ScriptProfilingScope.h"
 #include "SlotVisitorInlines.h"
 #include <wtf/TZoneMallocInlines.h>
+#include <wtf/Scope.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
@@ -47,6 +48,16 @@ namespace JSC {
 WTF_MAKE_TZONE_ALLOCATED_IMPL(MicrotaskQueue);
 WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(MicrotaskDispatcher);
 WTF_MAKE_COMPACT_TZONE_ALLOCATED_IMPL(DebuggableMicrotaskDispatcher);
+
+#if USE(BUN_JSC_ADDITIONS)
+void QueuedTask::discardBunNativeTask()
+{
+    if (auto* context = std::exchange(m_nativeContext, nullptr)) {
+        auto* global = globalObject();
+        global->globalObjectMethodTable()->destroyNativeMicrotask(global, context);
+    }
+}
+#endif
 
 bool QueuedTask::isRunnable() const
 {
@@ -57,7 +68,7 @@ bool QueuedTask::isRunnable() const
 
 static bool runMicrotask(JSGlobalObject* globalObject, TopExceptionScope& catchScope, VM& vm, QueuedTask& task, MicrotaskCallCache* microtaskCallCache)
 {
-    runInternalMicrotask(globalObject, vm, task.job(), task.payload(), task.arguments(), microtaskCallCache);
+    runInternalMicrotask(globalObject, vm, task.job(), task.payload(), task.arguments(), microtaskCallCache, task.nativeContext());
     if (auto* exception = catchScope.exception()) [[unlikely]] {
         if (!catchScope.clearExceptionExceptTermination()) [[unlikely]]
             return false;
@@ -113,6 +124,7 @@ Ref<MicrotaskQueue> MicrotaskQueue::create(VM& vm)
 
 MicrotaskQueue::~MicrotaskQueue()
 {
+    clear();
     if (isOnList())
         remove();
 }
@@ -182,6 +194,10 @@ ALWAYS_INLINE std::pair<JSGlobalObject*, bool> MicrotaskQueue::drainImpl(JSGloba
                 auto task = m_queue.dequeue();
                 if (result == QueuedTask::Result::Suspended)
                     m_toKeep.enqueue(WTF::move(task));
+#if USE(BUN_JSC_ADDITIONS)
+                else
+                    task.discardBunNativeTask();
+#endif
                 continue;
             }
 
@@ -189,6 +205,9 @@ ALWAYS_INLINE std::pair<JSGlobalObject*, bool> MicrotaskQueue::drainImpl(JSGloba
                 return { globalObject, false };
 
             auto task = m_queue.dequeue();
+#if USE(BUN_JSC_ADDITIONS)
+            auto discardNativeTask = makeScopeExit([&] { task.discardBunNativeTask(); });
+#endif
             if (!runMicrotask(globalObject, catchScope, vm, task, &microtaskCallCache)) [[unlikely]] {
                 clear();
                 return { nullptr, true };
@@ -203,6 +222,9 @@ ALWAYS_INLINE std::pair<JSGlobalObject*, bool> MicrotaskQueue::drainImpl(JSGloba
             EnsureStillAliveScope dispatcherScope(jsMicrotaskDispatcher);
 
             auto task = m_queue.dequeue();
+#if USE(BUN_JSC_ADDITIONS)
+            auto discardNativeTask = makeScopeExit([&] { task.discardBunNativeTask(); });
+#endif
             QueuedTask::Result result;
             {
                 ScriptProfilingScope profilingScope(globalObject, ProfilingReason::Microtask);
@@ -216,6 +238,9 @@ ALWAYS_INLINE std::pair<JSGlobalObject*, bool> MicrotaskQueue::drainImpl(JSGloba
                 break;
             case QueuedTask::Result::Suspended:
                 m_toKeep.enqueue(WTF::move(task));
+#if USE(BUN_JSC_ADDITIONS)
+                discardNativeTask.release();
+#endif
                 break;
             }
 

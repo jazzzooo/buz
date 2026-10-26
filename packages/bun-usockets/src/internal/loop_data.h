@@ -20,10 +20,8 @@
 
 #include <stdint.h>
 
-typedef uint32_t zig_mutex_t;
-
-// IMPORTANT: When changing this, don't forget to update the zig version in uws.zig as well!
 struct us_quic_socket_context_s;
+struct us_loop_t;
 
 struct us_internal_loop_data_t {
     struct us_timer_t *sweep_timer;
@@ -57,19 +55,24 @@ struct us_internal_loop_data_t {
     struct us_socket_t *closed_head;
     struct us_socket_t *low_prio_head;
     int low_prio_budget;
+    /* Accessed atomically: producers publish, the loop detaches the full list. */
     struct us_connecting_socket_t *dns_ready_head;
     struct us_connecting_socket_t *closed_connecting_head;
-    zig_mutex_t mutex;
     void *parent_ptr;
+    const void *parent_vtable;
     char parent_tag;
     /* We do not care if this flips or not, it doesn't matter */
     size_t iteration_nr;
-    void* jsc_vm;
+    void* before_wait_ctx;
+    void (*before_wait_cb)(void *);
+    void (*dispatch_ready_poll)(struct us_loop_t *, void *);
     /* Reentrancy depth of us_loop_run_bun_tick. When >1, we are inside a
      * nested tick (e.g. waitForPromise from a poll callback). Freeing closed
      * sockets must be deferred to the outermost tick so the outer dispatch
      * doesn't read a freed poll. */
     int tick_depth;
+    uint64_t pending_sweeps;
+    unsigned char sweep_in_progress;
 };
 
 #endif // LOOP_DATA_H

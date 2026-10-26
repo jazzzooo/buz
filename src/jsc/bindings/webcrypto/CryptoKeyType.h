@@ -25,15 +25,13 @@
 
 #pragma once
 
+#include "SchemaBindingsEnumerations.h"
+
 #if ENABLE(WEB_CRYPTO)
 
 namespace WebCore {
 
-enum class CryptoKeyType : uint8_t {
-    Public = 0,
-    Private,
-    Secret
-};
+using CryptoKeyType = Bun::Bindgen::WebCryptoKeyType;
 
 const constexpr uint8_t cryptoKeyTypeMaximumValue = 2;
 

@@ -37,6 +37,7 @@ fn generateCompileResultForJSChunkImpl(worker: *Executor.Worker, c: *LinkerConte
 
     var arena = &worker.temporary_arena;
     var buffer_writer = js_printer.BufferWriter.init(allocator);
+    defer buffer_writer.buffer.deinit();
     defer _ = arena.reset(.retain_capacity);
     worker.stmt_list.reset();
 
@@ -84,7 +85,6 @@ fn generateCompileResultForJSChunkImpl(worker: *Executor.Worker, c: *LinkerConte
     };
 }
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
 const DeclCollector = @import("./generateCodeForFileInChunkJS.zig").DeclCollector;

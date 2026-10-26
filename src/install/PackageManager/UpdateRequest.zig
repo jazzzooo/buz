@@ -46,22 +46,20 @@ pub fn getResolvedName(this: *const UpdateRequest, lockfile: *const Lockfile) st
         this.version.literal.slice(this.version_buf);
 }
 
-pub const fromJS = @import("../../install_jsc/update_request_jsc.zig").fromJS;
-
 pub fn parse(
     allocator: std.mem.Allocator,
-    pm: ?*PackageManager,
+    parse_context: Dependency.ParseContext,
     log: *logger.Log,
     positionals: []const string,
     update_requests: *Array,
     subcommand: Subcommand,
 ) []UpdateRequest {
-    return parseWithError(allocator, pm, log, positionals, update_requests, subcommand, true) catch Global.crash();
+    return parseWithError(allocator, parse_context, log, positionals, update_requests, subcommand, true) catch Global.crash();
 }
 
 pub fn parseWithError(
     allocator: std.mem.Allocator,
-    pm: ?*PackageManager,
+    parse_context: Dependency.ParseContext,
     log: *logger.Log,
     positionals: []const string,
     update_requests: *Array,
@@ -116,7 +114,7 @@ pub fn parseWithError(
             null,
             &SlicedString.init(input, value),
             log,
-            pm,
+            parse_context,
         ) orelse {
             if (fatal) {
                 Output.errGeneric("unrecognised dependency format: {s}", .{
@@ -139,7 +137,7 @@ pub fn parseWithError(
                 null,
                 &SlicedString.init(input, input),
                 log,
-                pm,
+                parse_context,
             )) |ver| {
                 alias = null;
                 version = ver;

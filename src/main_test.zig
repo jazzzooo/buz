@@ -30,7 +30,7 @@ pub fn main(init: std.process.Init) void {
         );
     }
 
-    bun.handleOom(bun.initEnviron(init.minimal.environ, init.environ_map));
+    bun.handleOom(bun.initEnviron(init.minimal.environ));
     if (Environment.isWindows) {
         environ = @ptrCast(@constCast(bun.environ.ptr));
         _environ = @ptrCast(@constCast(bun.environ.ptr));
@@ -193,19 +193,8 @@ pub const overrides = struct {
     };
 };
 
-pub export fn Bun__panic(msg: [*]const u8, len: usize) noreturn {
-    Output.panic("{s}", .{msg[0..len]});
-}
-
 comptime {
-    _ = bun.bake.production.BakeProdResolve;
-    _ = bun.bake.production.BakeProdLoad;
-
-    _ = bun.bun_js.Bun__onRejectEntryPointResult;
-    _ = bun.bun_js.Bun__onResolveEntryPointResult;
     _ = &@import("./runtime/node/buffer.zig").BufferVectorized;
-    @import("./cli/upgrade_command.zig").@"export"();
-    @import("./cli/test_command.zig").@"export"();
 }
 
 const builtin = @import("builtin");

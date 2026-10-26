@@ -1,5 +1,4 @@
 #include "root.h"
-#include "headers-handwritten.h"
 #include "NodeModuleModule.h"
 #include "WebCoreJSBuiltins.h"
 
@@ -11,38 +10,21 @@
 #include <JavaScriptCore/VMTrapsInlines.h>
 #include <JavaScriptCore/CallData.h>
 #include <JavaScriptCore/JSPromise.h>
-#include <JavaScriptCore/IteratorOperations.h>
 #include "JavaScriptCore/Completion.h"
 #include "JavaScriptCore/JSNativeStdFunction.h"
 #include "JSCommonJSExtensions.h"
 
 #include "PathInlines.h"
+#include "Bindgen/FileURL.h"
 #include "ZigGlobalObject.h"
-#include "headers.h"
 #include "ErrorCode.h"
 
-#include "GeneratedNodeModuleModule.h"
-#include "ZigGeneratedClasses.h"
+#include "SchemaBindings.h"
+#include <wtf/URL.h>
 
 namespace Bun {
 
 using namespace JSC;
-
-BUN_DECLARE_HOST_FUNCTION(Bun__JSSourceMap__find);
-
-BUN_DECLARE_HOST_FUNCTION(Resolver__nodeModulePathsForJS);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionDebugNoop);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionFindPath);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionIsBuiltinModule);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionNodeModuleCreateRequire);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionNodeModuleModuleConstructor);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionResolveFileName);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionResolveLookupPaths);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionSyncBuiltinExports);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionWrap);
-
-JSC_DECLARE_CUSTOM_GETTER(getterRequireFunction);
-JSC_DECLARE_CUSTOM_SETTER(setterRequireFunction);
 
 // This is a list of builtin module names that do not have the node prefix. It
 // also includes Bun's builtin modules, as well as Bun's thirdparty overrides.
@@ -133,323 +115,121 @@ template<std::size_t N, class T> consteval std::size_t countof(T (&)[N])
     return N;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionDebugNoop,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_moduleCall(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_moduleCall_Arguments&)
 {
-    return JSValue::encode(jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionNodeModuleModuleCall,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_moduleConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_moduleConstruct_Arguments& args)
 {
-    return JSValue::encode(jsUndefined());
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionNodeModuleModuleConstructor,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
-{
-
-    // In node, this is supposed to be the actual CommonJSModule constructor.
-    // We are cutting a huge corner by not doing all that work.
-    // This code is only to support babel.
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
-    JSString* idString = JSC::jsString(vm, WTF::String("."_s));
-
+    JSString* idString = jsString(vm, WTF::String("."_s));
     JSString* dirname = jsEmptyString(vm);
 
-    // TODO: handle when JSGlobalObject !== Zig::GlobalObject, such as in node:vm
-    Structure* structure = static_cast<Zig::GlobalObject*>(globalObject)
-                               ->CommonJSModuleObjectStructure();
+    if (args.id && args.id->is_string()) {
+        const auto& id = args.id->string();
+        idString = jsString(vm, id);
+        auto index = id.reverseFind('/');
+        if (index != WTF::notFound)
+            dirname = jsString(vm, id.left(index));
+    }
 
-    // TODO: handle ShadowRealm, node:vm, new.target, subclasses
-    JSValue idValue = callFrame->argument(0);
-    JSValue parentValue = callFrame->argument(1);
+    auto* structure = static_cast<Zig::GlobalObject*>(globalObject)->CommonJSModuleObjectStructure();
+    auto* module = JSCommonJSModule::create(vm, structure, idString, jsNull(), dirname, SourceCode());
 
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    if (idValue.isString()) {
-        idString = idValue.toString(globalObject);
+    if (args.parent)
+        args.parent->defineOwnDataProperty(vm, *module, Identifier::fromString(vm, "parent"_s), 0);
+
+    module->putDirect(vm, Identifier::fromString(vm, "exports"_s),
+        constructEmptyObject(globalObject, globalObject->objectPrototype(), 0), 0);
+    return module;
+}
+
+bool Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_isBuiltin(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_isBuiltin_Arguments& args)
+{
+    return args.moduleName && args.moduleName->is_string() && Bun::isBuiltinModule(args.moduleName->string());
+}
+
+WTF::String Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_wrap(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_wrap_Arguments& args)
+{
+    return makeString("(function (exports, require, module, __filename, __dirname) { "_s, args.code, "\n});"_s);
+}
+
+std::optional<WTF::String> Bindgen::Engine::bunBindgenEngine_NodeModuleModule_commonJSModuleSourceFilename(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_NodeModuleModule_commonJSModuleSourceFilename_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto* module = dynamicDowncast<Bun::JSCommonJSModule>(args.module);
+    RELEASE_ASSERT(module);
+    auto filename = module->filename();
+    if (!filename)
+        return std::nullopt;
+    auto source = filename.toWTFString(globalObject);
+    RETURN_IF_EXCEPTION(scope, std::nullopt);
+    return source;
+}
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_createRequire(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_createRequire_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto filename = args.filename;
+    if (!isAbsolutePath(filename)) {
+        WTF::URL url { filename };
+        if (!url.isValid() || !url.protocolIsFile()) {
+            ERR::INVALID_ARG_VALUE(scope, globalObject, "filename"_s, args.original_filename,
+                "must be a file URL object, file URL string, or absolute path string"_s);
+            return {};
+        }
+        filename = Bun::Bindgen::fileURLToPath(*globalObject, url);
         RETURN_IF_EXCEPTION(scope, {});
-
-        auto index = idString->tryGetValue()->reverseFind('/', idString->length());
-
-        if (index != WTF::notFound) {
-            dirname = JSC::jsSubstring(globalObject, idString, 0, index);
-        }
     }
-
-    auto* out = Bun::JSCommonJSModule::create(vm, structure, idString, jsNull(),
-        dirname, SourceCode());
-
-    if (!parentValue.isUndefined()) {
-        out->putDirect(vm, JSC::Identifier::fromString(vm, "parent"_s), parentValue,
-            0);
-    }
-
-    out->putDirect(vm, JSC::Identifier::fromString(vm, "exports"_s),
-        JSC::constructEmptyObject(globalObject,
-            globalObject->objectPrototype(), 0),
-        0);
-
-    return JSValue::encode(out);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionIsBuiltinModule,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    JSValue moduleName = callFrame->argument(0);
-    if (!moduleName.isString()) {
-        return JSValue::encode(jsBoolean(false));
-    }
-
-    auto moduleStr = moduleName.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, JSValue::encode(jsBoolean(false)));
-
-    return JSValue::encode(jsBoolean(Bun::isBuiltinModule(moduleStr)));
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionWrap, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    JSString* code = callFrame->argument(0).toStringOrNull(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    if (!code) {
-        return JSC::JSValue::encode(JSC::jsUndefined());
-    }
-
-    JSString* prefix = jsString(
-        vm,
-        String(
-            "(function (exports, require, module, __filename, __dirname) { "_s));
-    JSString* suffix = jsString(vm, String("\n});"_s));
-
-    return JSValue::encode(jsString(globalObject, prefix, code, suffix));
-}
-extern "C" void Bun__Node__Path_joinWTF(BunString* lhs, const char* rhs,
-    size_t len, BunString* result);
-JSC_DEFINE_HOST_FUNCTION(jsFunctionNodeModuleCreateRequire,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    if (callFrame->argumentCount() < 1) {
-        return Bun::throwError(globalObject, scope,
-            Bun::ErrorCode::ERR_MISSING_ARGS,
-            "createRequire() requires at least one argument"_s);
-    }
-
-    auto argument = callFrame->uncheckedArgument(0);
-    auto val = argument.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (!isAbsolutePath(val)) {
-        WTF::URL url(val);
-        if (!url.isValid()) {
-            ERR::INVALID_ARG_VALUE(scope, globalObject,
-                "filename"_s, argument,
-                "must be a file URL object, file URL string, or absolute path string"_s);
-            RELEASE_AND_RETURN(scope, {});
-        }
-        if (!url.protocolIsFile()) {
-            ERR::INVALID_ARG_VALUE(scope, globalObject,
-                "filename"_s, argument,
-                "must be a file URL object, file URL string, or absolute path string"_s);
-            RELEASE_AND_RETURN(scope, {});
-        }
-        val = url.fileSystemPath();
-    }
-
-    bool trailingSlash = val.endsWith('/');
+    bool trailingSlash = filename.endsWith('/');
 #if OS(WINDOWS)
-    if (val.endsWith('\\')) {
-        trailingSlash = true;
-    }
+    trailingSlash |= filename.endsWith('\\');
 #endif
-
-    // https://github.com/nodejs/node/blob/2eff28fb7a93d3f672f80b582f664a7c701569fb/lib/internal/modules/cjs/loader.js#L1603-L1620
     if (trailingSlash) {
-        BunString lhs = Bun::toString(val);
-        BunString result;
-        Bun__Node__Path_joinWTF(&lhs, "noop.js", sizeof("noop.js") - 1, &result);
-        val = result.toWTFString();
-        if (!val.isNull()) {
-            ASSERT(val.impl()->refCount() == 2);
-            val.impl()->deref();
-        }
-    }
-
-    RETURN_IF_EXCEPTION(scope, {});
-    RELEASE_AND_RETURN(
-        scope, JSValue::encode(Bun::JSCommonJSModule::createBoundRequireFunction(vm, globalObject, val)));
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionSyncBuiltinExports,
-    (JSGlobalObject * globalObject,
-        CallFrame* callFrame))
-{
-    return JSValue::encode(jsUndefined());
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionResolveFileName,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    switch (callFrame->argumentCount()) {
-    case 0: {
-        // not "requires" because "require" could be confusing
-        JSC::throwTypeError(globalObject, scope, "Module._resolveFilename needs 2+ arguments (a string)"_s);
-        return {};
-    }
-    default: {
-        JSC::JSValue moduleName = callFrame->argument(0);
-        JSC::JSValue fromValue = callFrame->argument(1);
-        JSC::JSValue optionsValue = callFrame->argument(3); // 4th argument is options
-        auto& names = builtinNames(vm);
-
-        if (moduleName.isUndefinedOrNull()) {
-            JSC::throwTypeError(globalObject, scope, "Module._resolveFilename expects a string"_s);
-            return {};
-        }
-
-        // Extract filename string from fromValue
-        // Follows pattern: typeof this === "string" ? this : (this?.filename ?? this?.id ?? "")
-        if (!fromValue.isString()) {
-            if (
-                // fast path: it's a real CommonJS module object.
-                auto* cjs = dynamicDowncast<Bun::JSCommonJSModule>(fromValue)) {
-                fromValue = cjs->filename();
-            } else if (fromValue.isObject()) {
-                // slow path: userland code did something weird. Try filename first, then id
-                auto* obj = fromValue.getObject();
-                auto filenameValue = obj->getIfPropertyExists(globalObject, names.filenamePublicName());
-                RETURN_IF_EXCEPTION(scope, {});
-
-                if (filenameValue && filenameValue.isString()) {
-                    fromValue = filenameValue;
-                } else {
-                    auto idValue = obj->getIfPropertyExists(globalObject, vm.propertyNames->id);
-                    RETURN_IF_EXCEPTION(scope, {});
-
-                    if (idValue && idValue.isString()) {
-                        fromValue = idValue;
-                    } else {
-                        // Fallback to empty string if no valid filename or id
-                        fromValue = jsEmptyString(vm);
-                    }
-                }
-            } else {
-                // Not a string, not an object - use empty string
-                fromValue = jsEmptyString(vm);
-            }
-        }
-
-        // Handle options.paths if provided
-        JSC::JSValue pathsValue = JSC::jsUndefined();
-        if (optionsValue.isObject()) {
-            pathsValue = optionsValue.getObject()->getIfPropertyExists(globalObject, JSC::Identifier::fromString(vm, "paths"_s));
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-
-        JSC::EncodedJSValue result;
-
-        // If paths are provided, use Bun__resolveSyncWithPaths
-        if (!pathsValue.isUndefinedOrNull()) {
-            // Node.js requires options.paths to be an array
-            if (!JSC::isArray(globalObject, pathsValue)) {
-                Bun::throwError(globalObject, scope,
-                    Bun::ErrorCode::ERR_INVALID_ARG_TYPE,
-                    "options.paths must be an array"_s);
-                return {};
-            }
-
-            WTF::Vector<BunString> paths;
-
-            // Iterate through the array using forEachInIterable
-            forEachInIterable(globalObject, pathsValue, [&](JSC::VM&, JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSValue item) {
-                if (scope.exception())
-                    return;
-
-                WTF::String pathStr = item.toWTFString(lexicalGlobalObject);
-                if (scope.exception())
-                    return;
-
-                paths.append(Bun::toStringRef(pathStr));
-            });
-
-            if (scope.exception()) {
-                // Clean up on exception
-                for (auto& path : paths) {
-                    path.deref();
-                }
-                return {};
-            }
-
-            result = Bun__resolveSyncWithPaths(globalObject, JSC::JSValue::encode(moduleName), JSValue::encode(fromValue), false, true, paths.begin(), paths.size());
-
-            // Clean up BunStrings to avoid leaking
-            for (auto& path : paths) {
-                path.deref();
-            }
-
-            RETURN_IF_EXCEPTION(scope, {});
-
-            if (!JSC::JSValue::decode(result).isString()) {
-                JSC::throwException(globalObject, scope, JSC::JSValue::decode(result));
-                return {};
-            }
-
-            return result;
-        }
-
-        // No paths provided, use regular resolution
-        result = Bun__resolveSync(globalObject, JSC::JSValue::encode(moduleName), JSValue::encode(fromValue), false, true);
+        filename = ZigExports::bunBindgenZig_Path_nodePathJoinCurrentPlatform(
+            globalObject, filename, "noop.js"_s);
         RETURN_IF_EXCEPTION(scope, {});
-
-        if (!JSC::JSValue::decode(result).isString()) {
-            JSC::throwException(globalObject, scope, JSC::JSValue::decode(result));
-            return {};
-        }
-
-        return result;
     }
-    }
+    RELEASE_AND_RETURN(scope, JSCommonJSModule::createBoundRequireFunction(globalObject->vm(), globalObject, filename));
 }
 
-JSC_DEFINE_CUSTOM_GETTER(nodeModuleResolveFilename,
-    (JSGlobalObject * lexicalGlobalObject,
-        EncodedJSValue thisValue,
-        PropertyName propertyName))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_getResolveFilename(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_getResolveFilename_Arguments&)
 {
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-    return JSValue::encode(
-        globalObject->m_moduleResolveFilenameFunction.getInitializedOnMainThread(
-            globalObject));
+    auto* globalObject = defaultGlobalObject(&context.globalObject);
+    return globalObject->m_moduleResolveFilenameFunction.getInitializedOnMainThread(globalObject);
 }
 
-JSC_DEFINE_CUSTOM_SETTER(setNodeModuleResolveFilename,
-    (JSGlobalObject * lexicalGlobalObject,
-        EncodedJSValue thisValue, EncodedJSValue encodedValue,
-        PropertyName propertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_setResolveFilename(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_setResolveFilename_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-    auto value = JSValue::decode(encodedValue);
-    if (value.isCell()) {
+    if (args.value) {
+        auto value = *args.value;
         bool isOriginal = false;
         if (value.isCallable()) {
             JSC::CallData callData = JSC::getCallData(value);
 
             if (callData.type == JSC::CallData::Type::Native) {
-                if (callData.native.function.untaggedPtr() == &jsFunctionResolveFileName) {
+                if (callData.native.function.untaggedPtr() == &bun_bindgen_host_NodeModuleModule_resolveFilename) {
                     isOriginal = true;
                 }
             }
@@ -462,129 +242,75 @@ JSC_DEFINE_CUSTOM_SETTER(setNodeModuleResolveFilename,
     return true;
 }
 
-PathResolveModule getParent(VM& vm, JSGlobalObject* global, JSValue maybe_parent)
+std::optional<Bindgen::CppResultSequence<Bindgen::NodeModuleLookupPathResultResult>> Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_resolveLookupPaths(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_resolveLookupPaths_Arguments& args)
 {
-    PathResolveModule value { nullptr, nullptr, false };
-
-    if (!maybe_parent) {
-        return value;
-    }
-
-    auto parent = maybe_parent.getObject();
-    if (!parent) {
-        return value;
-    }
-
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    const auto& builtinNames = Bun::builtinNames(vm);
-    JSValue paths = parent->get(global, builtinNames.pathsPublicName());
-    RETURN_IF_EXCEPTION(scope, value);
-    if (paths.isCell()) {
-        value.paths = dynamicDowncast<JSArray>(paths);
-    }
-
-    JSValue filename = parent->get(global, builtinNames.filenamePublicName());
-    RETURN_IF_EXCEPTION(scope, value);
-    if (filename.isString()) {
-        value.filename = filename.toString(global);
-    }
-    RELEASE_AND_RETURN(scope, value);
-}
-
-// https://github.com/nodejs/node/blob/40ef9d541ed79470977f90eb445c291b95ab75a0/lib/internal/modules/cjs/loader.js#L895
-JSC_DEFINE_HOST_FUNCTION(jsFunctionResolveLookupPaths,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
-{
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
+    const Bindgen::NodeModuleLookupParent* parent = nullptr;
+    if (args.parent && args.parent->is_parent())
+        parent = &args.parent->parent();
 
-    String request = callFrame->argument(0).toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    auto utf8 = request.utf8();
-    if (ModuleLoader__isBuiltin(utf8.data(), utf8.length())) {
-        return JSC::JSValue::encode(JSC::jsNull());
+    auto utf8 = args.request.utf8();
+    if (Bindgen::ZigExports::bunBindgenZig_ModuleLoader_moduleLoaderIsBuiltin(
+            std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(utf8.data()), utf8.length()))) {
+        return std::nullopt;
     }
 
-    PathResolveModule parent = getParent(vm, globalObject, callFrame->argument(1));
-    RETURN_IF_EXCEPTION(scope, {});
-    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(resolveLookupPaths(globalObject, request, parent)));
-}
-
-JSC::JSValue resolveLookupPaths(JSC::JSGlobalObject* globalObject, String request, PathResolveModule parent)
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    // Check for node modules paths.
-    if (request.codeUnitAt(0) != '.' || (request.length() > 1 && request.codeUnitAt(1) != '.' && request.codeUnitAt(1) != '/' &&
-#if OS(WINDOWS)
-            request.codeUnitAt(1) != '\\'
-#else
-            true
-#endif
-            )) {
-        if (parent.paths) {
-            auto array = JSC::constructArray(globalObject, (ArrayAllocationProfile*)nullptr, nullptr, 0);
-            RETURN_IF_EXCEPTION(scope, {});
-            auto len = parent.paths->length();
-            for (size_t i = 0; i < len; i++) {
-                auto path = parent.paths->getIndex(globalObject, i);
-                array->push(globalObject, path);
+    if (usesNodeModuleLookupPaths(args.request)) {
+        if (parent && parent->paths.is_paths()) {
+            const auto& paths = parent->paths.paths();
+            Bindgen::CppResultSequence<Bindgen::NodeModuleLookupPathResultResult> result;
+            if (!result.reserveCapacity(context.results(), paths.size()))
+                return std::nullopt;
+            for (auto path : paths) {
+                Bindgen::NodeModuleLookupPathResultResult item;
+                item.set_value(path);
+                if (!result.append(context.results(), WTF::move(item)))
+                    return std::nullopt;
             }
-            RELEASE_AND_RETURN(scope, array);
-        } else if (parent.pathsArrayLazy && parent.filename) {
-            auto filenameValue = parent.filename->value(globalObject);
-            RETURN_IF_EXCEPTION(scope, {});
-            auto filename = Bun::toString(filenameValue);
-            auto paths = JSValue::decode(Resolver__nodeModulePathsJSValue(filename, globalObject, true));
-            RELEASE_AND_RETURN(scope, paths);
-        } else {
-            auto array = JSC::constructEmptyArray(globalObject, nullptr, 0);
-            RETURN_IF_EXCEPTION(scope, {});
-            RELEASE_AND_RETURN(scope, array);
+            return result;
         }
+
+        return Bindgen::CppResultSequence<Bindgen::NodeModuleLookupPathResultResult> {};
     }
 
-    JSValue dirname;
-    if (parent.filename) {
-        EncodedJSValue encodedFilename = JSValue::encode(parent.filename);
+    WTF::String dirname;
+    if (parent && parent->filename.is_string()) {
+        const auto& filename = parent->filename.string();
 #if OS(WINDOWS)
-        dirname = JSValue::decode(
-            Bun__Path__dirname(globalObject, true, &encodedFilename, 1));
+        dirname = Bindgen::ZigExports::bunBindgenZig_Path_dirnameWindows(globalObject, filename);
 #else
-        dirname = JSValue::decode(
-            Bun__Path__dirname(globalObject, false, &encodedFilename, 1));
+        dirname = Bindgen::ZigExports::bunBindgenZig_Path_dirnamePosix(globalObject, filename);
 #endif
-    } else {
-        dirname = jsString(vm, String("."_s));
-    }
+        RETURN_IF_EXCEPTION(scope, {});
+    } else
+        dirname = "."_s;
 
-    JSValue values[] = { dirname };
-    auto array = JSC::constructArray(globalObject, (ArrayAllocationProfile*)nullptr, values, 1);
-    RETURN_IF_EXCEPTION(scope, {});
-    RELEASE_AND_RETURN(scope, array);
+    Bindgen::CppResultSequence<Bindgen::NodeModuleLookupPathResultResult> result;
+    Bindgen::NodeModuleLookupPathResultResult item;
+    item.set_string(WTF::move(dirname));
+    if (!result.append(context.results(), WTF::move(item)))
+        return std::nullopt;
+    return result;
 }
 
-extern "C" JSC::EncodedJSValue NodeModuleModule__findPath(JSGlobalObject*,
-    BunString, JSArray*);
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionFindPath, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+bool usesNodeModuleLookupPaths(const WTF::String& request)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    JSValue request_value = callFrame->argument(0);
-    JSValue paths_value = callFrame->argument(1);
-
-    String request = request_value.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    BunString request_bun_str = Bun::toString(request);
-
-    JSArray* paths = paths_value.isCell() ? dynamicDowncast<JSArray>(paths_value) : nullptr;
-
-    return NodeModuleModule__findPath(globalObject, request_bun_str, paths);
+    if (request.isEmpty() || request.codeUnitAt(0) != '.')
+        return true;
+    if (request.length() == 1)
+        return false;
+    auto second = request.codeUnitAt(1);
+    if (second == '.' || second == '/')
+        return false;
+#if OS(WINDOWS)
+    if (second == '\\')
+        return false;
+#endif
+    return true;
 }
 
 // These two setters are only used if you directly hit
@@ -598,25 +324,25 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionFindPath, (JSGlobalObject * globalObject, JSC
 // Note: allowing require to be overridable at all is only needed for Next.js to
 // work (they do Module.prototype.require = ...)
 
-JSC_DEFINE_CUSTOM_GETTER(getterRequireFunction,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::EncodedJSValue thisValue, JSC::PropertyName))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_getRequireFunction(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_getRequireFunction_Arguments&)
 {
-    return JSValue::encode(globalObject->getDirect(
-        globalObject->vm(), WebCore::clientData(globalObject->vm())->builtinNames().overridableRequirePrivateName()));
+    auto* globalObject = &context.globalObject;
+    return globalObject->getDirect(
+        globalObject->vm(), WebCore::clientData(globalObject->vm())->builtinNames().overridableRequirePrivateName());
 }
 
-JSC_DEFINE_CUSTOM_SETTER(setterRequireFunction,
-    (JSC::JSGlobalObject * globalObject,
-        JSC::EncodedJSValue thisValue,
-        JSC::EncodedJSValue value,
-        JSC::PropertyName propertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_setRequireFunction(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_setRequireFunction_Arguments& args)
 {
-    globalObject->putDirect(globalObject->vm(),
+    auto* globalObject = &context.globalObject;
+    args.value.defineOwnDataProperty(globalObject->vm(), *globalObject,
         WebCore::clientData(globalObject->vm())
             ->builtinNames()
             .overridableRequirePrivateName(),
-        JSValue::decode(value), 0);
+        0);
     return true;
 }
 
@@ -632,91 +358,34 @@ static JSValue getModuleExtensionsObject(VM& vm, JSObject* moduleObject)
         ->lazyRequireExtensionsObject();
 }
 
-static JSValue getModuleDebugObject(VM& vm, JSObject* moduleObject)
+WTF::Vector<WTF::String> Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_getBuiltinModulesObject(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_getBuiltinModulesObject_Arguments&)
 {
-    return JSC::constructEmptyObject(moduleObject->globalObject());
+    WTF::Vector<WTF::String> modules;
+    modules.reserveInitialCapacity(countof(builtinModuleNames));
+
+    for (auto name : builtinModuleNames)
+        modules.append(WTF::String(name));
+
+    return modules;
 }
 
-static JSValue getPathCacheObject(VM& vm, JSObject* moduleObject)
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_setCJSWrapperItem(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_setCJSWrapperItem_Arguments& args)
 {
-    auto* globalObject = defaultGlobalObject(moduleObject->globalObject());
-    return JSC::constructEmptyObject(
-        vm, globalObject->nullPrototypeObjectStructure());
-}
-
-static JSValue getSourceMapFunction(VM& vm, JSObject* moduleObject)
-{
-    auto* globalObject = defaultGlobalObject(moduleObject->globalObject());
-    auto* zigGlobalObject = globalObject;
-
-    // Return the actual SourceMap constructor from code generation
-    return zigGlobalObject->JSSourceMapConstructor();
-}
-
-static JSValue getBuiltinModulesObject(VM& vm, JSObject* moduleObject)
-{
-    MarkedArgumentBuffer args;
-    args.ensureCapacity(countof(builtinModuleNames));
-
-    for (unsigned i = 0; i < countof(builtinModuleNames); ++i) {
-        args.append(JSC::jsOwnedString(vm, String(builtinModuleNames[i])));
-    }
-
-    auto* globalObject = defaultGlobalObject(moduleObject->globalObject());
-    return JSC::constructArray(globalObject, static_cast<JSC::ArrayAllocationProfile*>(nullptr), JSC::ArgList(args));
-}
-
-static JSValue getConstantsObject(VM& vm, JSObject* moduleObject)
-{
-    auto* globalObject = defaultGlobalObject(moduleObject->globalObject());
-    auto* compileCacheStatus = JSC::constructEmptyObject(
-        vm, globalObject->nullPrototypeObjectStructure());
-    compileCacheStatus->putDirect(vm, JSC::Identifier::fromString(vm, "FAILED"_s),
-        JSC::jsNumber(0));
-    compileCacheStatus->putDirect(
-        vm, JSC::Identifier::fromString(vm, "ENABLED"_s), JSC::jsNumber(1));
-    compileCacheStatus->putDirect(
-        vm, JSC::Identifier::fromString(vm, "ALREADY_ENABLED"_s),
-        JSC::jsNumber(2));
-    compileCacheStatus->putDirect(
-        vm, JSC::Identifier::fromString(vm, "DISABLED"_s), JSC::jsNumber(3));
-
-    auto* constantsObject = JSC::constructEmptyObject(
-        vm, globalObject->nullPrototypeObjectStructure());
-    constantsObject->putDirect(
-        vm, JSC::Identifier::fromString(vm, "compileCacheStatus"_s),
-        compileCacheStatus);
-    return constantsObject;
-}
-
-static JSValue getGlobalPathsObject(VM& vm, JSObject* moduleObject)
-{
-    return JSC::constructEmptyArray(
-        moduleObject->globalObject(),
-        static_cast<ArrayAllocationProfile*>(nullptr), 0);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsFunctionSetCJSWrapperItem, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
-    JSValue a = callFrame->argument(0);
-    JSValue b = callFrame->argument(1);
-    Zig::GlobalObject* global = defaultGlobalObject(globalObject);
-    String aString = a.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    String bString = b.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    global->m_moduleWrapperStart = aString;
-    global->m_moduleWrapperEnd = bString;
+    auto* global = defaultGlobalObject(&context.globalObject);
+    global->m_moduleWrapperStart = args.prefix;
+    global->m_moduleWrapperEnd = args.suffix;
     global->hasOverriddenModuleWrapper = true;
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
-JSC_DEFINE_CUSTOM_GETTER(nodeModuleWrapper,
-    (JSGlobalObject * global,
-        EncodedJSValue thisValue,
-        PropertyName propertyName))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_getWrapper(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_getWrapper_Arguments&)
 {
+    auto* global = &context.globalObject;
     // This does not cache anything because it is assumed nobody reads it more than once.
     VM& vm = global->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -726,119 +395,95 @@ JSC_DEFINE_CUSTOM_GETTER(nodeModuleWrapper,
     JSC::MarkedArgumentBuffer args;
     args.append(JSFunction::create(
         vm, global, 1, "onMutate"_s,
-        jsFunctionSetCJSWrapperItem, JSC::ImplementationVisibility::Public,
+        bun_bindgen_host_NodeModuleModule_setCJSWrapperItem, JSC::ImplementationVisibility::Public,
         JSC::NoIntrinsic));
 
     auto result = JSC::profiledCall(global, JSC::ProfilingReason::API, cb, callData, JSC::jsUndefined(), args);
     RETURN_IF_EXCEPTION(scope, {});
     ASSERT(result.isCell());
-    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(result));
+    RELEASE_AND_RETURN(scope, result);
 }
 
-JSC_DEFINE_CUSTOM_SETTER(setNodeModuleWrapper,
-    (JSGlobalObject * lexicalGlobalObject,
-        EncodedJSValue thisValue, EncodedJSValue encodedValue,
-        PropertyName propertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_setWrapper(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_setWrapper_Arguments& args)
 {
-    auto v = JSValue::decode(encodedValue);
-    if (!v.isObject()) return false;
-    auto o = v.getObject();
-    if (!o) return false;
-
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-
-    auto scope = DECLARE_THROW_SCOPE(lexicalGlobalObject->vm());
-    auto a = o->getIndex(globalObject, 0);
-    RETURN_IF_EXCEPTION(scope, false);
-    auto b = o->getIndex(globalObject, 1);
-    RETURN_IF_EXCEPTION(scope, false);
-    auto astring = a.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, false);
-    auto bstring = b.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, false);
-
-    globalObject->m_moduleWrapperStart = astring;
-    globalObject->m_moduleWrapperEnd = bstring;
+    if (!args.value.is_wrapper())
+        return false;
+    const auto& wrapper = args.value.wrapper();
+    auto* globalObject = defaultGlobalObject(&context.globalObject);
+    globalObject->m_moduleWrapperStart = wrapper.prefix;
+    globalObject->m_moduleWrapperEnd = wrapper.suffix;
     globalObject->hasOverriddenModuleWrapper = true;
 
     return true;
 }
 
-static JSValue getModulePrototypeObject(VM& vm, JSObject* moduleObject)
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_load(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_load_Arguments&)
 {
-    auto* globalObject = defaultGlobalObject(moduleObject->globalObject());
-    auto prototype = constructEmptyObject(globalObject, globalObject->objectPrototype(), 2);
-
-    prototype->putDirectCustomAccessor(
-        vm, WebCore::clientData(vm)->builtinNames().requirePublicName(),
-        JSC::CustomGetterSetter::create(vm, getterRequireFunction,
-            setterRequireFunction),
-        0);
-
-    prototype->putDirect(vm, Identifier::fromString(vm, "_compile"_s), globalObject->modulePrototypeUnderscoreCompileFunction());
-
-    return prototype;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionLoad, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_runMain(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_runMain_Arguments& args)
 {
-    return JSC::JSValue::encode(JSC::jsUndefined());
-}
-
-extern "C" void Bun__VirtualMachine__setOverrideModuleRunMainPromise(void* bunVM, JSPromise* promise);
-JSC_DEFINE_HOST_FUNCTION(jsFunctionRunMain, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
-    auto arg1 = callFrame->argument(0);
-    auto name = makeAtomString(arg1.toWTFString(globalObject));
+    auto name = makeAtomString(args.specifier);
 
     auto* promise = JSC::loadAndEvaluateModule(globalObject, name, nullptr, nullptr);
-    RETURN_IF_EXCEPTION(scope, {});
-    Bun__VirtualMachine__setOverrideModuleRunMainPromise(defaultGlobalObject(globalObject)->bunVM(), promise);
-
-    return JSC::JSValue::encode(JSC::jsUndefined());
+    RETURN_IF_EXCEPTION(scope, void());
+    Bindgen::ZigExports::bunBindgenZig_module_run_main_setOverrideModuleRunMainPromise(
+        defaultGlobalObject(globalObject), promise);
+    RELEASE_AND_RETURN(scope, void());
 }
 
-JSC_DEFINE_CUSTOM_GETTER(moduleRunMain,
-    (JSGlobalObject * lexicalGlobalObject,
-        EncodedJSValue thisValue,
-        PropertyName propertyName))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_getRunMain(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_getRunMain_Arguments&)
 {
+    auto* globalObject = defaultGlobalObject(&context.globalObject);
+    return globalObject->m_moduleRunMainFunction.getInitializedOnMainThread(globalObject);
+}
+
+JSC::JSValue Bindgen::Engine::bunBindgenEngine_NodeModuleModule_callOverriddenRunMain(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_NodeModuleModule_callOverriddenRunMain_Arguments& args)
+{
+    auto* global = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto scope = DECLARE_THROW_SCOPE(global->vm());
+    JSC::JSValue overrideHandler = global->m_moduleRunMainFunction.get(global);
+    auto callData = JSC::getCallData(overrideHandler);
+    if (callData.type == JSC::CallData::Type::None) {
+        JSC::throwTypeError(global, scope, "Module.runMain is not a function"_s);
+        return {};
+    }
+    MarkedArgumentBuffer arguments;
+    arguments.append(args.argument);
+    RELEASE_AND_RETURN(scope, JSC::profiledCall(global, JSC::ProfilingReason::API, overrideHandler, callData, global, arguments));
+}
+
+bool Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_setRunMain(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_setRunMain_Arguments& args)
+{
+    auto* lexicalGlobalObject = &context.globalObject;
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-
-    return JSValue::encode(
-        globalObject->m_moduleRunMainFunction.getInitializedOnMainThread(
-            globalObject));
-}
-
-extern "C" void Bun__VirtualMachine__setOverrideModuleRunMain(void* bunVM, bool isOriginal);
-extern "C" JSC::EncodedJSValue NodeModuleModule__callOverriddenRunMain(Zig::GlobalObject* global, JSValue argv1)
-{
-    auto overrideHandler = uncheckedDowncast<JSObject>(global->m_moduleRunMainFunction.get(global));
-    MarkedArgumentBuffer args;
-    args.append(argv1);
-    return JSC::JSValue::encode(JSC::profiledCall(global, JSC::ProfilingReason::API, overrideHandler, JSC::getCallData(overrideHandler), global, args));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(setModuleRunMain,
-    (JSGlobalObject * lexicalGlobalObject,
-        EncodedJSValue thisValue, EncodedJSValue encodedValue,
-        PropertyName propertyName))
-{
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-    auto value = JSValue::decode(encodedValue);
-    if (value.isCell()) {
+    if (args.value) {
+        auto value = *args.value;
         bool isOriginal = false;
         if (value.isCallable()) {
             JSC::CallData callData = JSC::getCallData(value);
             if (callData.type == JSC::CallData::Type::Native) {
-                if (callData.native.function.untaggedPtr() == &jsFunctionRunMain) {
+                if (callData.native.function.untaggedPtr() == &bun_bindgen_host_NodeModuleModule_runMain) {
                     isOriginal = true;
                 }
             }
         }
-        Bun__VirtualMachine__setOverrideModuleRunMain(globalObject->bunVM(), !isOriginal);
+        Bun::Bindgen::ZigExports::bunBindgenZig_module_run_main_setOverrideModuleRunMain(globalObject, !isOriginal);
         globalObject->m_moduleRunMainFunction.set(
             lexicalGlobalObject->vm(), globalObject, value.asCell());
     }
@@ -846,77 +491,39 @@ JSC_DEFINE_CUSTOM_SETTER(setModuleRunMain,
     return true;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionPreloadModules,
-    (JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_preloadModules(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_preloadModules_Arguments&)
 {
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionSyncBuiltinESMExports,
-    (JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_syncBuiltinESMExports(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_syncBuiltinESMExports_Arguments&)
 {
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionRegister, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_register(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_register_Arguments&)
 {
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionEnableCompileCache,
-    (JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_enableCompileCache(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_enableCompileCache_Arguments&)
 {
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionGetCompileCacheDir,
-    (JSGlobalObject * globalObject,
-        JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_getCompileCacheDir(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_getCompileCacheDir_Arguments&)
 {
-    return JSC::JSValue::encode(JSC::jsUndefined());
 }
 
-static JSValue getModuleObject(VM& vm, JSObject* moduleObject)
-{
-    return moduleObject;
-}
-
-/* Source for NodeModuleModule.lut.h
-@begin nodeModuleObjectTable
-_cache                  getModuleCacheObject              PropertyCallback
-_debug                  getModuleDebugObject              PropertyCallback
-_extensions             getModuleExtensionsObject         PropertyCallback
-_findPath                jsFunctionFindPath               Function 3
-_initPaths              JSBuiltin                         Function|Builtin 0
-_load                   jsFunctionLoad                    Function 1
-_nodeModulePaths        Resolver__nodeModulePathsForJS    Function 1
-_pathCache              getPathCacheObject                PropertyCallback
-_preloadModules         jsFunctionPreloadModules          Function 0
-_resolveFilename        nodeModuleResolveFilename         CustomAccessor
-_resolveLookupPaths     jsFunctionResolveLookupPaths      Function 2
-_stat                   &Generated::NodeModuleModule::js_stat Function 1
-builtinModules          getBuiltinModulesObject           PropertyCallback
-constants               getConstantsObject                PropertyCallback
-createRequire           jsFunctionNodeModuleCreateRequire Function 1
-enableCompileCache      jsFunctionEnableCompileCache      Function 0
-findSourceMap           Bun__JSSourceMap__find           Function 1
-getCompileCacheDir      jsFunctionGetCompileCacheDir      Function 0
-globalPaths             getGlobalPathsObject              PropertyCallback
-isBuiltin               jsFunctionIsBuiltinModule         Function 1
-prototype               getModulePrototypeObject          PropertyCallback
-register                jsFunctionRegister                Function 1
-runMain                 moduleRunMain                        CustomAccessor
-SourceMap               getSourceMapFunction              PropertyCallback
-syncBuiltinESMExports   jsFunctionSyncBuiltinESMExports   Function 0
-wrap                    jsFunctionWrap                    Function 1
-wrapper                 nodeModuleWrapper                 CustomAccessor
-Module                  getModuleObject                   PropertyCallback
-@end
-*/
-#include "NodeModuleModule.lut.h"
+#define BUN_BINDGEN_OBJECT_SURFACE_NodeModuleConstructor
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_NodeModuleConstructor
 
 class JSModuleConstructor : public JSC::InternalFunction {
     using Base = JSC::InternalFunction;
@@ -956,8 +563,8 @@ public:
 
 private:
     JSModuleConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, jsFunctionNodeModuleModuleCall,
-              jsFunctionNodeModuleModuleConstructor)
+        : Base(vm, structure, bun_bindgen_host_NodeModuleModule_moduleCall,
+              bun_bindgen_host_NodeModuleModule_moduleConstruct)
     {
     }
 
@@ -965,89 +572,14 @@ private:
     {
         Base::finishCreation(vm, 1, "Module"_s,
             PropertyAdditionMode::WithoutStructureTransition);
+        bunBindgenObjectSurface_NodeModuleConstructor_install(vm, info(), *this);
     }
 };
 
 const JSC::ClassInfo JSModuleConstructor::s_info = {
-    "Module"_s, &Base::s_info, &nodeModuleObjectTable, nullptr,
+    "Module"_s, &Base::s_info, &bunBindgenObjectSurface_NodeModuleConstructorTable, nullptr,
     CREATE_METHOD_TABLE(JSModuleConstructor)
 };
-
-static JSC::Structure* createNodeModuleSourceMapEntryStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject)
-{
-    Structure* structure = globalObject->structureCache().emptyObjectStructureForPrototype(globalObject, globalObject->objectPrototype(), 6);
-    PropertyOffset offset;
-
-    structure = Structure::addPropertyTransition(vm, structure, Identifier::fromString(vm, "generatedLine"), 0, offset);
-    RELEASE_ASSERT(offset == 0);
-    structure = Structure::addPropertyTransition(vm, structure, Identifier::fromString(vm, "generatedColumn"), 0, offset);
-    RELEASE_ASSERT(offset == 1);
-    structure = Structure::addPropertyTransition(vm, structure, Identifier::fromString(vm, "originalLine"), 0, offset);
-    RELEASE_ASSERT(offset == 2);
-    structure = Structure::addPropertyTransition(vm, structure, Identifier::fromString(vm, "originalColumn"), 0, offset);
-    RELEASE_ASSERT(offset == 3);
-    structure = Structure::addPropertyTransition(vm, structure, Identifier::fromString(vm, "originalSource"), 0, offset);
-    RELEASE_ASSERT(offset == 4);
-    structure = Structure::addPropertyTransition(vm, structure, vm.propertyNames->name, 0, offset);
-    RELEASE_ASSERT(offset == 5);
-
-    return structure;
-}
-
-extern "C" JSC::EncodedJSValue Bun__createNodeModuleSourceMapEntryObject(
-    JSC::JSGlobalObject* globalObject,
-    JSC::EncodedJSValue encodedGeneratedLine,
-    JSC::EncodedJSValue encodedGeneratedColumn,
-    JSC::EncodedJSValue encodedOriginalLine,
-    JSC::EncodedJSValue encodedOriginalColumn,
-    JSC::EncodedJSValue encodedOriginalSource,
-    JSC::EncodedJSValue encodedName)
-{
-    auto& vm = globalObject->vm();
-    auto* zigGlobalObject = defaultGlobalObject(globalObject);
-    JSObject* object = JSC::constructEmptyObject(vm, zigGlobalObject->m_nodeModuleSourceMapEntryStructure.getInitializedOnMainThread(zigGlobalObject));
-    object->putDirectOffset(vm, 0, JSC::JSValue::decode(encodedGeneratedLine));
-    object->putDirectOffset(vm, 1, JSC::JSValue::decode(encodedGeneratedColumn));
-    object->putDirectOffset(vm, 2, JSC::JSValue::decode(encodedOriginalLine));
-    object->putDirectOffset(vm, 3, JSC::JSValue::decode(encodedOriginalColumn));
-    object->putDirectOffset(vm, 4, JSC::JSValue::decode(encodedOriginalSource));
-    object->putDirectOffset(vm, 5, JSC::JSValue::decode(encodedName));
-    return JSValue::encode(object);
-}
-
-static JSC::Structure* createNodeModuleSourceMapOriginStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject)
-{
-    Structure* structure = globalObject->structureCache().emptyObjectStructureForPrototype(globalObject, globalObject->objectPrototype(), 4);
-    PropertyOffset offset;
-
-    structure = Structure::addPropertyTransition(vm, structure, vm.propertyNames->name, 0, offset);
-    RELEASE_ASSERT(offset == 0);
-    structure = Structure::addPropertyTransition(vm, structure, Identifier::fromString(vm, "line"), 0, offset);
-    RELEASE_ASSERT(offset == 1);
-    structure = Structure::addPropertyTransition(vm, structure, Identifier::fromString(vm, "column"), 0, offset);
-    RELEASE_ASSERT(offset == 2);
-    structure = Structure::addPropertyTransition(vm, structure, Identifier::fromString(vm, "fileName"), 0, offset);
-    RELEASE_ASSERT(offset == 3);
-
-    return structure;
-}
-
-extern "C" JSC::EncodedJSValue Bun__createNodeModuleSourceMapOriginObject(
-    JSC::JSGlobalObject* globalObject,
-    JSC::EncodedJSValue encodedName,
-    JSC::EncodedJSValue encodedLine,
-    JSC::EncodedJSValue encodedColumn,
-    JSC::EncodedJSValue encodedSource)
-{
-    auto& vm = globalObject->vm();
-    auto* zigGlobalObject = defaultGlobalObject(globalObject);
-    JSObject* object = JSC::constructEmptyObject(vm, zigGlobalObject->m_nodeModuleSourceMapOriginStructure.getInitializedOnMainThread(zigGlobalObject));
-    object->putDirectOffset(vm, 0, JSC::JSValue::decode(encodedName));
-    object->putDirectOffset(vm, 1, JSC::JSValue::decode(encodedLine));
-    object->putDirectOffset(vm, 2, JSC::JSValue::decode(encodedColumn));
-    object->putDirectOffset(vm, 3, JSC::JSValue::decode(encodedSource));
-    return JSValue::encode(object);
-}
 
 void addNodeModuleConstructorProperties(JSC::VM& vm,
     Zig::GlobalObject* globalObject)
@@ -1059,21 +591,12 @@ void addNodeModuleConstructorProperties(JSC::VM& vm,
             init.set(moduleConstructor);
         });
 
-    globalObject->m_nodeModuleSourceMapEntryStructure.initLater(
-        [](const Zig::GlobalObject::Initializer<Structure>& init) {
-            init.set(createNodeModuleSourceMapEntryStructure(init.vm, init.owner));
-        });
-    globalObject->m_nodeModuleSourceMapOriginStructure.initLater(
-        [](const Zig::GlobalObject::Initializer<Structure>& init) {
-            init.set(createNodeModuleSourceMapOriginStructure(init.vm, init.owner));
-        });
-
     globalObject->m_moduleRunMainFunction.initLater(
         [](const Zig::GlobalObject::Initializer<JSCell>& init) {
             JSFunction* runMainFunction = JSFunction::create(
                 init.vm, init.owner, 2, "runMain"_s,
-                jsFunctionRunMain, JSC::ImplementationVisibility::Public,
-                JSC::NoIntrinsic, jsFunctionRunMain);
+                bun_bindgen_host_NodeModuleModule_runMain, JSC::ImplementationVisibility::Public,
+                JSC::NoIntrinsic, bun_bindgen_host_NodeModuleModule_runMain);
             init.set(runMainFunction);
         });
 
@@ -1081,8 +604,8 @@ void addNodeModuleConstructorProperties(JSC::VM& vm,
         [](const Zig::GlobalObject::Initializer<JSCell>& init) {
             JSFunction* resolveFilenameFunction = JSFunction::create(
                 init.vm, init.owner, 2, "_resolveFilename"_s,
-                jsFunctionResolveFileName, JSC::ImplementationVisibility::Public,
-                JSC::NoIntrinsic, jsFunctionResolveFileName);
+                bun_bindgen_host_NodeModuleModule_resolveFilename, JSC::ImplementationVisibility::Public,
+                JSC::NoIntrinsic, bun_bindgen_host_NodeModuleModule_resolveFilename);
             init.set(resolveFilenameFunction);
         });
 
@@ -1090,8 +613,8 @@ void addNodeModuleConstructorProperties(JSC::VM& vm,
         [](const Zig::GlobalObject::Initializer<JSFunction>& init) {
             JSFunction* resolveFilenameFunction = JSFunction::create(
                 init.vm, init.owner, 2, "_compile"_s,
-                functionJSCommonJSModule_compile, JSC::ImplementationVisibility::Public,
-                JSC::NoIntrinsic, functionJSCommonJSModule_compile);
+                bun_bindgen_host_RuntimeFunctions_functionJSCommonJSModule_compile, JSC::ImplementationVisibility::Public,
+                JSC::NoIntrinsic, bun_bindgen_host_RuntimeFunctions_functionJSCommonJSModule_compile);
             init.set(resolveFilenameFunction);
         });
 
@@ -1124,57 +647,39 @@ void addNodeModuleConstructorProperties(JSC::VM& vm,
         });
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionIsModuleResolveFilenameSlowPathEnabled,
-    (JSGlobalObject * globalObject,
-        CallFrame* callframe))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_moduleConstructor(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_moduleConstructor_Arguments&)
 {
-    return JSValue::encode(
-        jsBoolean(defaultGlobalObject(globalObject)
-                ->hasOverriddenModuleResolveFilenameFunction));
+    auto* globalObject = defaultGlobalObject(&context.globalObject);
+    return globalObject->m_nodeModuleConstructor.getInitializedOnMainThread(globalObject);
+}
+
+bool Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_isResolveFilenameSlowPathEnabled(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_isResolveFilenameSlowPathEnabled_Arguments&)
+{
+    return defaultGlobalObject(&context.globalObject)->hasOverriddenModuleResolveFilenameFunction;
+}
+
+#define BUN_DEFINE_LAZY_SURFACE_FUNCTION(Module, Function, Callback)                                      \
+    JSC::JSValue Bindgen::Cpp::bunBindgenCpp_##Module##_##Function(                                      \
+        Bindgen::CppCallContext& context,                                                               \
+        const Bindgen::Cpp::BunBindgenCpp_##Module##_##Function##_Arguments& args)                       \
+    {                                                                                                   \
+        return Callback(context.globalObject.vm(), JSC::asObject(args.bindingThis));                     \
+    }
+
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(NodeModuleModule, getModuleCacheObject, getModuleCacheObject)
+BUN_DEFINE_LAZY_SURFACE_FUNCTION(NodeModuleModule, getModuleExtensionsObject, getModuleExtensionsObject)
+
+#undef BUN_DEFINE_LAZY_SURFACE_FUNCTION
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_getModulePrototypeCompileFunction(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_getModulePrototypeCompileFunction_Arguments&)
+{
+    return defaultGlobalObject(&context.globalObject)->modulePrototypeUnderscoreCompileFunction();
 }
 
 } // namespace Bun
-
-namespace Zig {
-void generateNativeModule_NodeModule(JSC::JSGlobalObject* lexicalGlobalObject,
-    JSC::Identifier moduleKey,
-    Vector<JSC::Identifier, 4>& exportNames,
-    JSC::MarkedArgumentBuffer& exportValues)
-{
-    Zig::GlobalObject* globalObject = defaultGlobalObject(lexicalGlobalObject);
-    auto& vm = JSC::getVM(globalObject);
-    auto topExceptionScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-    auto* constructor = globalObject->m_nodeModuleConstructor.getInitializedOnMainThread(globalObject);
-    // Don't bulk-reifyAllStaticProperties here. JSObject::reifyAllStaticProperties
-    // walks every PropertyCallbackAttribute back-to-back without an exception
-    // check between them, and several of our callbacks (getBuiltinModulesObject,
-    // getGlobalPathsObject, …) call constructArray/constructEmptyArray which
-    // open a ThrowScope at the same recursion depth as the next callback's
-    // ThrowScope — that trips the exception-check verifier on the synthetic
-    // ESM path (BUN_JSC_validateExceptionChecks=1). The loop below already
-    // does constructor->get(property) per-export, which lazy-reifies one entry
-    // at a time inside JSObject::get's own ThrowScope and is checked
-    // immediately after.
-
-    exportNames.reserveCapacity(Bun::countof(Bun::nodeModuleObjectTableValues) + 1);
-    exportValues.ensureCapacity(Bun::countof(Bun::nodeModuleObjectTableValues) + 1);
-
-    exportNames.append(vm.propertyNames->defaultKeyword);
-    exportValues.append(constructor);
-
-    for (unsigned i = 0; i < Bun::countof(Bun::nodeModuleObjectTableValues); ++i) {
-        const auto& entry = Bun::nodeModuleObjectTableValues[i];
-        const auto& property = Identifier::fromString(vm, entry.m_key);
-        JSValue value = constructor->get(globalObject, property);
-
-        if (topExceptionScope.exception()) [[unlikely]] {
-            value = {};
-            (void)topExceptionScope.tryClearException();
-        }
-
-        exportNames.append(property);
-        exportValues.append(value);
-    }
-}
-
-} // namespace Zig

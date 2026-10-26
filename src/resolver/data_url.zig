@@ -30,11 +30,11 @@ pub const PercentEncoding = struct {
     }
 
     /// Replaces percent encoded entities within `path` without throwing an error if other URL unsafe characters are present
-    pub fn decodeUnstrict(allocator: Allocator, path: []const u8) EncodeError!?[]u8 {
+    pub fn decodeUnstrict(allocator: Allocator, path: []const u8) bun.OOM!?[]u8 {
         return _decode(allocator, path, false);
     }
 
-    fn _decode(allocator: Allocator, path: []const u8, strict: bool) EncodeError!?[]u8 {
+    fn _decode(allocator: Allocator, path: []const u8, comptime strict: bool) (if (strict) EncodeError else bun.OOM)!?[]u8 {
         var ret: ?[]u8 = null;
         errdefer if (ret) |some| allocator.free(some);
         var ret_index: usize = 0;
@@ -54,7 +54,7 @@ pub const PercentEncoding = struct {
                 ret.?[ret_index] = new;
                 ret_index += 1;
                 i += 2;
-            } else if (path[i] != '/' and !isPchar(path[i..]) and strict) {
+            } else if (strict and path[i] != '/' and !isPchar(path[i..])) {
                 return error.InvalidCharacter;
             } else if (ret != null) {
                 ret.?[ret_index] = path[i];
@@ -62,7 +62,7 @@ pub const PercentEncoding = struct {
             }
         }
 
-        if (ret) |some| return some[0..ret_index];
+        if (ret) |some| return try allocator.realloc(some, ret_index);
         return null;
     }
 };
@@ -98,11 +98,11 @@ pub const DataURL = struct {
     }
 
     pub fn decodeMimeType(d: DataURL) bun.http.MimeType {
-        return bun.http.MimeType.init(d.mime_type, null, null);
+        return bun.http.MimeType.init(d.mime_type);
     }
 
     /// Decodes the data from the data URL. Always returns an owned slice.
-    pub fn decodeData(url: DataURL, allocator: Allocator) ![]u8 {
+    pub fn decodeData(url: DataURL, allocator: Allocator) (bun.OOM || error{Base64DecodeError})![]u8 {
         const percent_decoded_owned: ?[]u8 = try PercentEncoding.decodeUnstrict(allocator, url.data);
         defer if (percent_decoded_owned) |owned| allocator.free(owned);
         const percent_decoded: []const u8 = percent_decoded_owned orelse url.data;

@@ -1,1010 +1,359 @@
 #include "config.h"
 #include "JSCookie.h"
+#include "StringConversion.h"
 
-#include "DOMClientIsoSubspaces.h"
-#include "DOMIsoSubspaces.h"
-#include "ErrorCode.h"
-#include "IDLTypes.h"
-#include "JSDOMBinding.h"
-#include "JSDOMConstructor.h"
-#include "JSDOMConvertBase.h"
-#include "JSDOMConvertBoolean.h"
-#include "JSDOMConvertInterface.h"
-#include "JSDOMConvertNullable.h"
-#include "JSDOMConvertNumbers.h"
-#include "JSDOMConvertStrings.h"
-#include "JSDOMExceptionHandling.h"
-#include "JSDOMGlobalObject.h"
-#include "JSDOMGlobalObjectInlines.h"
-#include "JSDOMOperation.h"
-#include "JSDOMWrapperCache.h"
-#include <JavaScriptCore/HeapAnalyzer.h>
-#include <JavaScriptCore/JSCInlines.h>
-#include <JavaScriptCore/SlotVisitorMacros.h>
-#include <JavaScriptCore/SubspaceInlines.h>
-#include <wtf/GetPtr.h>
-#include <wtf/PointerPreparations.h>
-#include <JavaScriptCore/DateInstance.h>
 #include "HTTPParsers.h"
+#include "JSDOMExceptionHandling.h"
+#include "SchemaBindings.h"
+#include "ZigGlobalObject.h"
+#include <JavaScriptCore/DateInstance.h>
+#include <JavaScriptCore/JSCInlines.h>
+#include <JavaScriptCore/ObjectConstructor.h>
+#include <wtf/DateMath.h>
+
 namespace WebCore {
 
 using namespace JSC;
 
-// Helper for getting wrapped Cookie from JS value
-static Cookie* toCookieWrapped(JSGlobalObject* lexicalGlobalObject, JSC::ThrowScope& throwScope, JSValue value)
+RefPtr<Cookie> protectedCookie(JSGlobalObject* global, JSValue value)
 {
-    auto& vm = getVM(lexicalGlobalObject);
-    auto* impl = JSCookie::toWrapped(vm, value);
-    if (!impl) [[unlikely]]
-        throwVMTypeError(lexicalGlobalObject, throwScope);
-    return impl;
+    auto* cookie = Bun::Bindgen::ZigExports::bunBindgenZig_cookie_cookieRetainFromWrapper(global, value);
+    if (!cookie)
+        return nullptr;
+    return adoptRef(*cookie);
 }
 
-static int64_t getExpiresValue(JSGlobalObject* lexicalGlobalObject, JSC::ThrowScope& throwScope, JSValue expiresValue)
+JSValue getInternalProperties(VM& vm, JSGlobalObject* global, JSCookie* wrapper)
 {
-    if (expiresValue.isUndefined() || expiresValue.isNull()) {
-        return Cookie::emptyExpiresAtValue;
-    }
-
-    if (auto* dateInstance = dynamicDowncast<JSC::DateInstance>(expiresValue)) {
-        double date = dateInstance->internalNumber();
-        if (std::isnan(date) || std::isinf(date)) [[unlikely]] {
-            throwScope.throwException(lexicalGlobalObject, createRangeError(lexicalGlobalObject, "expires must be a valid Date (or Number)"_s));
-            return Cookie::emptyExpiresAtValue;
-        }
-        return static_cast<int64_t>(date);
-    }
-
-    if (expiresValue.isNumber()) {
-        double expires = expiresValue.asNumber();
-        if (std::isnan(expires) || !std::isfinite(expires)) [[unlikely]] {
-            throwScope.throwException(lexicalGlobalObject, createRangeError(lexicalGlobalObject, "expires must be a valid Number (or Date)"_s));
-            return Cookie::emptyExpiresAtValue;
-        }
-
-        // expires can be a negative number. This is allowed because people do that to force cookie expiration.
-        return static_cast<int64_t>(expires * 1000);
-    }
-
-    if (expiresValue.isString()) {
-        auto expiresStr = convert<IDLUSVString>(*lexicalGlobalObject, expiresValue);
-        RETURN_IF_EXCEPTION(throwScope, Cookie::emptyExpiresAtValue);
-        auto nullTerminatedSpan = expiresStr.utf8();
-        if (auto parsed = WTF::parseDate(std::span<const Latin1Character>(reinterpret_cast<const Latin1Character*>(nullTerminatedSpan.data()), nullTerminatedSpan.length()))) {
-            if (std::isnan(parsed)) {
-                throwVMError(lexicalGlobalObject, throwScope, createTypeError(lexicalGlobalObject, "Invalid cookie expiration date"_s));
-                return Cookie::emptyExpiresAtValue;
-            }
-            return static_cast<int64_t>(parsed);
-        } else {
-            throwVMError(lexicalGlobalObject, throwScope, createTypeError(lexicalGlobalObject, "Invalid cookie expiration date"_s));
-            return Cookie::emptyExpiresAtValue;
-        }
-    }
-
-    return Bun::ERR::INVALID_ARG_VALUE(throwScope, lexicalGlobalObject, "expires"_s, expiresValue, "Invalid expires value. Must be a Date or a number"_s);
-}
-
-template<bool checkName>
-static std::optional<CookieInit> cookieInitFromJS(JSC::VM& vm, JSGlobalObject* lexicalGlobalObject, JSValue options, String& name, String& value)
-{
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    // Default values
-    String domain;
-    String path = "/"_s;
-    int64_t expires = Cookie::emptyExpiresAtValue;
-    double maxAge = std::numeric_limits<double>::quiet_NaN();
-    bool secure = false;
-    bool httpOnly = false;
-    bool partitioned = false;
-    CookieSameSite sameSite = CookieSameSite::Lax;
-    auto& names = builtinNames(vm);
-
-    if (!options.isUndefinedOrNull()) {
-        if (!options.isObject()) {
-            throwVMTypeError(lexicalGlobalObject, throwScope, "Options must be an object"_s);
-            return std::nullopt;
-        }
-
-        if (auto* optionsObj = options.getObject()) {
-            if (checkName) {
-                auto nameValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, vm.propertyNames->name);
-                RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-                if (nameValue) {
-                    name = convert<IDLUSVString>(*lexicalGlobalObject, nameValue);
-                    RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-                }
-
-                if (name.isEmpty()) {
-                    throwVMTypeError(lexicalGlobalObject, throwScope, "name is required"_s);
-                    return std::nullopt;
-                }
-
-                auto valueValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, vm.propertyNames->value);
-                RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-                if (valueValue) {
-                    value = convert<IDLUSVString>(*lexicalGlobalObject, valueValue);
-                    RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-                }
-            }
-
-            // domain
-            auto domainValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, names.domainPublicName());
-            RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            if (domainValue) {
-                if (!domainValue.isUndefined() && !domainValue.isNull()) {
-                    domain = convert<IDLUSVString>(*lexicalGlobalObject, domainValue);
-                    RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-                }
-            }
-
-            // path
-            auto pathValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, names.pathPublicName());
-            RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            if (pathValue) {
-                if (!pathValue.isUndefined() && !pathValue.isNull()) {
-                    path = convert<IDLUSVString>(*lexicalGlobalObject, pathValue);
-                    RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-                }
-            }
-
-            // expires
-            auto expiresValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, names.expiresPublicName());
-            RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            if (expiresValue) {
-                expires = getExpiresValue(lexicalGlobalObject, throwScope, expiresValue);
-                RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            }
-
-            // maxAge
-            auto maxAgeValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, names.maxAgePublicName());
-            RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            if (maxAgeValue) {
-                if (!maxAgeValue.isUndefined() && !maxAgeValue.isNull() && maxAgeValue.isNumber()) {
-                    maxAge = maxAgeValue.asNumber();
-                }
-            }
-
-            // secure
-            auto secureValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, names.securePublicName());
-            RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            if (secureValue) {
-                if (!secureValue.isUndefined()) {
-                    secure = secureValue.toBoolean(lexicalGlobalObject);
-                }
-            }
-
-            // httpOnly
-            auto httpOnlyValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, names.httpOnlyPublicName());
-            RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            if (httpOnlyValue) {
-                if (!httpOnlyValue.isUndefined()) {
-                    httpOnly = httpOnlyValue.toBoolean(lexicalGlobalObject);
-                }
-            }
-
-            // partitioned
-            auto partitionedValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, names.partitionedPublicName());
-            RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            if (partitionedValue) {
-                if (!partitionedValue.isUndefined()) {
-                    partitioned = partitionedValue.toBoolean(lexicalGlobalObject);
-                }
-            }
-
-            // sameSite
-            auto sameSiteValue = optionsObj->getIfPropertyExists(lexicalGlobalObject, names.sameSitePublicName());
-            RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-            if (sameSiteValue) {
-                if (!sameSiteValue.isUndefined() && !sameSiteValue.isNull()) {
-                    String sameSiteStr = convert<IDLUSVString>(*lexicalGlobalObject, sameSiteValue);
-                    RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-
-                    if (sameSiteStr == "strict"_s)
-                        sameSite = CookieSameSite::Strict;
-                    else if (sameSiteStr == "lax"_s)
-                        sameSite = CookieSameSite::Lax;
-                    else if (sameSiteStr == "none"_s)
-                        sameSite = CookieSameSite::None;
-                    else
-                        throwVMTypeError(lexicalGlobalObject, throwScope, "Invalid sameSite value. Must be 'strict', 'lax', or 'none'"_s);
-                    RETURN_IF_EXCEPTION(throwScope, std::nullopt);
-                }
-            }
-        }
-    }
-
-    return CookieInit { name, value, domain, path, expires, secure, sameSite, httpOnly, maxAge, partitioned };
-}
-
-std::optional<CookieInit> CookieInit::fromJS(JSC::VM& vm, JSGlobalObject* lexicalGlobalObject, JSValue options, String name, String cookieValue)
-{
-    return cookieInitFromJS<false>(vm, lexicalGlobalObject, options, name, cookieValue);
-}
-
-std::optional<CookieInit> CookieInit::fromJS(JSC::VM& vm, JSGlobalObject* lexicalGlobalObject, JSValue options)
-{
-    WTF::String name;
-    WTF::String value;
-    return cookieInitFromJS<true>(vm, lexicalGlobalObject, options, name, value);
-}
-
-static JSC_DECLARE_HOST_FUNCTION(jsCookiePrototypeFunction_toString);
-static JSC_DECLARE_HOST_FUNCTION(jsCookiePrototypeFunction_serialize);
-static JSC_DECLARE_HOST_FUNCTION(jsCookiePrototypeFunction_toJSON);
-static JSC_DECLARE_HOST_FUNCTION(jsCookieStaticFunctionParse);
-static JSC_DECLARE_HOST_FUNCTION(jsCookieStaticFunctionFrom);
-static JSC_DECLARE_HOST_FUNCTION(jsCookieStaticFunctionSerialize);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_name);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_value);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_value);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_domain);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_domain);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_path);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_path);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_expires);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_expires);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_secure);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_secure);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_sameSite);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_sameSite);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_httpOnly);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_httpOnly);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_maxAge);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_maxAge);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookiePrototypeGetter_partitioned);
-static JSC_DECLARE_CUSTOM_SETTER(jsCookiePrototypeSetter_partitioned);
-static JSC_DECLARE_HOST_FUNCTION(jsCookiePrototypeFunction_isExpired);
-static JSC_DECLARE_CUSTOM_GETTER(jsCookieConstructor);
-
-class JSCookiePrototype final : public JSC::JSNonFinalObject {
-public:
-    using Base = JSC::JSNonFinalObject;
-    static JSCookiePrototype* create(JSC::VM& vm, JSDOMGlobalObject* globalObject, JSC::Structure* structure)
-    {
-        JSCookiePrototype* ptr = new (NotNull, JSC::allocateCell<JSCookiePrototype>(vm)) JSCookiePrototype(vm, globalObject, structure);
-        ptr->finishCreation(vm);
-        return ptr;
-    }
-
-    DECLARE_INFO;
-    template<typename CellType, JSC::SubspaceAccess>
-    static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm)
-    {
-        STATIC_ASSERT_ISO_SUBSPACE_SHARABLE(JSCookiePrototype, Base);
-        return &vm.plainObjectSpace();
-    }
-    static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
-    {
-        return JSC::Structure::create(vm, globalObject, prototype, JSC::TypeInfo(JSC::ObjectType, StructureFlags), info());
-    }
-
-private:
-    JSCookiePrototype(JSC::VM& vm, JSC::JSGlobalObject*, JSC::Structure* structure)
-        : JSC::JSNonFinalObject(vm, structure)
-    {
-    }
-
-    void finishCreation(JSC::VM&);
-};
-
-STATIC_ASSERT_ISO_SUBSPACE_SHARABLE(JSCookiePrototype, JSCookiePrototype::Base);
-
-JSValue getInternalProperties(JSC::VM& vm, JSC::JSGlobalObject* lexicalGlobalObject, JSCookie* castedThis)
-{
-    return castedThis->wrapped().toJSON(vm, lexicalGlobalObject);
-}
-
-using JSCookieDOMConstructor = JSDOMConstructor<JSCookie>;
-
-template<> JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES JSCookieDOMConstructor::construct(JSGlobalObject* lexicalGlobalObject, CallFrame* callFrame)
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* castedThis = uncheckedDowncast<JSCookieDOMConstructor>(callFrame->jsCallee());
-
-    // Check if this was called with 'new'
-    if (!callFrame->thisValue().isObject()) [[unlikely]]
-        return throwVMError(lexicalGlobalObject, throwScope, createNotAConstructorError(lexicalGlobalObject, callFrame->jsCallee()));
-
-    // Static method: parse(cookieString)
-    if (callFrame->argumentCount() == 1 && callFrame->argument(0).isString()) {
-        // new Bun.Cookie.parse("foo=bar")
-        auto cookieString = convert<IDLUSVString>(*lexicalGlobalObject, callFrame->argument(0));
-        RETURN_IF_EXCEPTION(throwScope, {});
-
-        if (!WebCore::isValidHTTPHeaderValue(cookieString)) [[unlikely]] {
-            throwVMTypeError(lexicalGlobalObject, throwScope, "cookie string is not a valid HTTP header value"_s);
-            RELEASE_AND_RETURN(throwScope, {});
-        }
-
-        auto cookie_exception = Cookie::parse(cookieString);
-        if (cookie_exception.hasException()) {
-            WebCore::propagateException(lexicalGlobalObject, throwScope, cookie_exception.releaseException());
-            RELEASE_AND_RETURN(throwScope, {});
-        }
-        auto cookie = cookie_exception.releaseReturnValue();
-
-        auto* globalObject = castedThis->globalObject();
-        RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS(lexicalGlobalObject, globalObject, WTF::move(cookie))));
-    } else if (callFrame->argumentCount() == 1 && callFrame->argument(0).isObject()) {
-        // new Bun.Cooke({
-        //     name: "name",
-        //     value: "value",
-        //     domain: "domain",
-        //     path: "path",
-        //     expires: "expires",
-        //     secure: "secure",
-        // })
-        auto cookieInit = CookieInit::fromJS(vm, lexicalGlobalObject, callFrame->argument(0));
-        RETURN_IF_EXCEPTION(throwScope, {});
-        ASSERT(cookieInit);
-
-        auto cookie_exception = Cookie::create(*cookieInit);
-        if (cookie_exception.hasException()) {
-            WebCore::propagateException(lexicalGlobalObject, throwScope, cookie_exception.releaseException());
-            RELEASE_AND_RETURN(throwScope, {});
-        }
-        auto cookie = cookie_exception.releaseReturnValue();
-        auto* globalObject = castedThis->globalObject();
-        RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS(lexicalGlobalObject, globalObject, WTF::move(cookie))));
-    } else if (callFrame->argumentCount() >= 2) {
-        // new Bun.Cookie("name", "value", {
-        //     domain: "domain",
-        //     path: "path",
-        //     expires: "expires",
-        //     secure: "secure",
-        // })
-        String name = convert<IDLUSVString>(*lexicalGlobalObject, callFrame->argument(0));
-        RETURN_IF_EXCEPTION(throwScope, {});
-
-        if (name.isEmpty()) {
-            throwVMTypeError(lexicalGlobalObject, throwScope, "name is required"_s);
-            RELEASE_AND_RETURN(throwScope, {});
-        }
-
-        String value = convert<IDLUSVString>(*lexicalGlobalObject, callFrame->argument(1));
-        RETURN_IF_EXCEPTION(throwScope, {});
-
-        CookieInit cookieInit { name, value };
-
-        if (callFrame->argumentCount() > 2) {
-            if (auto updatedCookieInit = CookieInit::fromJS(vm, lexicalGlobalObject, callFrame->argument(2), name, value)) {
-                cookieInit = *updatedCookieInit;
-            }
-            RETURN_IF_EXCEPTION(throwScope, {});
-        }
-
-        auto cookie_exception = Cookie::create(cookieInit);
-        if (cookie_exception.hasException()) {
-            WebCore::propagateException(lexicalGlobalObject, throwScope, cookie_exception.releaseException());
-            RELEASE_AND_RETURN(throwScope, {});
-        }
-        auto cookie = cookie_exception.releaseReturnValue();
-
-        auto* globalObject = castedThis->globalObject();
-        RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS(lexicalGlobalObject, globalObject, WTF::move(cookie))));
-    }
-
-    return throwVMError(lexicalGlobalObject, throwScope, createNotEnoughArgumentsError(lexicalGlobalObject));
-}
-
-JSC_ANNOTATE_HOST_FUNCTION(JSCookieDOMConstructorConstruct, JSCookieDOMConstructor::construct);
-
-// Setup for JSCookieDOMConstructor
-template<> const ClassInfo JSCookieDOMConstructor::s_info = { "Cookie"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSCookieDOMConstructor) };
-
-template<> JSValue JSCookieDOMConstructor::prototypeForStructure(JSC::VM& vm, const JSDOMGlobalObject& globalObject)
-{
-    return globalObject.objectPrototype();
-}
-
-template<> void JSCookieDOMConstructor::initializeProperties(VM& vm, JSDOMGlobalObject& globalObject)
-{
-    putDirect(vm, vm.propertyNames->length, jsNumber(2), JSC::PropertyAttribute::ReadOnly | JSC::PropertyAttribute::DontEnum);
-    JSString* nameString = jsNontrivialString(vm, "Cookie"_s);
-    m_originalName.set(vm, this, nameString);
-    putDirect(vm, vm.propertyNames->name, nameString, JSC::PropertyAttribute::ReadOnly | JSC::PropertyAttribute::DontEnum);
-    putDirect(vm, vm.propertyNames->prototype, JSCookie::prototype(vm, globalObject), JSC::PropertyAttribute::ReadOnly | JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::DontDelete);
-
-    // Add static methods
-    JSC::JSFunction* parseFunction = JSC::JSFunction::create(vm, &globalObject, 1, "parse"_s, jsCookieStaticFunctionParse, JSC::ImplementationVisibility::Public, JSC::NoIntrinsic);
-    putDirect(vm, Identifier::fromString(vm, "parse"_s), parseFunction, static_cast<unsigned>(JSC::PropertyAttribute::DontDelete));
-
-    JSC::JSFunction* fromFunction = JSC::JSFunction::create(vm, &globalObject, 3, "from"_s, jsCookieStaticFunctionFrom, JSC::ImplementationVisibility::Public, JSC::NoIntrinsic);
-    putDirect(vm, Identifier::fromString(vm, "from"_s), fromFunction, static_cast<unsigned>(JSC::PropertyAttribute::DontDelete));
-}
-
-static const HashTableValue JSCookiePrototypeTableValues[] = {
-    { "constructor"_s, static_cast<unsigned>(JSC::PropertyAttribute::DontEnum), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookieConstructor, 0 } },
-    { "name"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_name, 0 } },
-    { "value"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_value, jsCookiePrototypeSetter_value } },
-    { "domain"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_domain, jsCookiePrototypeSetter_domain } },
-    { "path"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_path, jsCookiePrototypeSetter_path } },
-    { "expires"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_expires, jsCookiePrototypeSetter_expires } },
-    { "maxAge"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_maxAge, jsCookiePrototypeSetter_maxAge } },
-    { "secure"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_secure, jsCookiePrototypeSetter_secure } },
-    { "httpOnly"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_httpOnly, jsCookiePrototypeSetter_httpOnly } },
-    { "sameSite"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_sameSite, jsCookiePrototypeSetter_sameSite } },
-    { "partitioned"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsCookiePrototypeGetter_partitioned, jsCookiePrototypeSetter_partitioned } },
-    { "isExpired"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsCookiePrototypeFunction_isExpired, 0 } },
-    { "toString"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsCookiePrototypeFunction_toString, 0 } },
-    { "toJSON"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsCookiePrototypeFunction_toJSON, 0 } },
-    { "serialize"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), NoIntrinsic, { HashTableValue::NativeFunctionType, jsCookiePrototypeFunction_serialize, 0 } },
-};
-
-const ClassInfo JSCookiePrototype::s_info = { "Cookie"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSCookiePrototype) };
-
-void JSCookiePrototype::finishCreation(VM& vm)
-{
-    Base::finishCreation(vm);
-    reifyStaticProperties(vm, JSCookie::info(), JSCookiePrototypeTableValues, *this);
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
-}
-
-const ClassInfo JSCookie::s_info = { "Cookie"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSCookie) };
-
-JSCookie::JSCookie(Structure* structure, JSDOMGlobalObject& globalObject, Ref<Cookie>&& impl)
-    : JSDOMWrapper<Cookie>(structure, globalObject, WTF::move(impl))
-{
-}
-
-void JSCookie::finishCreation(VM& vm)
-{
-    Base::finishCreation(vm);
-    ASSERT(inherits(info()));
-
-    m_expires.setMayBeNull(vm, this, nullptr);
-}
-
-JSObject* JSCookie::createPrototype(VM& vm, JSDOMGlobalObject& globalObject)
-{
-    auto* structure = JSCookiePrototype::createStructure(vm, &globalObject, globalObject.objectPrototype());
-    structure->setMayBePrototype(true);
-    return JSCookiePrototype::create(vm, &globalObject, structure);
-}
-
-JSObject* JSCookie::prototype(VM& vm, JSDOMGlobalObject& globalObject)
-{
-    return getDOMPrototype<JSCookie>(vm, globalObject);
-}
-
-JSValue JSCookie::getConstructor(VM& vm, const JSGlobalObject* globalObject)
-{
-    return getDOMConstructor<JSCookieDOMConstructor, DOMConstructorID::Cookie>(vm, *uncheckedDowncast<const JSDOMGlobalObject>(globalObject));
-}
-
-void JSCookie::destroy(JSC::JSCell* cell)
-{
-    JSCookie* thisObject = static_cast<JSCookie*>(cell);
-    thisObject->JSCookie::~JSCookie();
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsCookieConstructor, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* prototype = dynamicDowncast<JSCookiePrototype>(JSValue::decode(thisValue));
-    if (!prototype) [[unlikely]]
-        return throwVMTypeError(lexicalGlobalObject, throwScope);
-    return JSValue::encode(JSCookie::getConstructor(vm, prototype->globalObject()));
-}
-
-// Instance methods
-static inline JSC::EncodedJSValue jsCookiePrototypeFunction_toStringBody(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame, typename IDLOperation<JSCookie>::ClassParameter castedThis)
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto& impl = castedThis->wrapped();
-    RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS<IDLDOMString>(*lexicalGlobalObject, throwScope, impl.toString(vm))));
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsCookiePrototypeFunction_toString, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    return IDLOperation<JSCookie>::call<jsCookiePrototypeFunction_toStringBody>(*lexicalGlobalObject, *callFrame, "toString");
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsCookiePrototypeFunction_serialize, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    return IDLOperation<JSCookie>::call<jsCookiePrototypeFunction_toStringBody>(*lexicalGlobalObject, *callFrame, "serialize");
-}
-
-// Implementation of the toJSON method
-static inline JSC::EncodedJSValue jsCookiePrototypeFunction_toJSONBody(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame, typename IDLOperation<JSCookie>::ClassParameter castedThis)
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto& impl = castedThis->wrapped();
-
-    // Delegate to the C++ toJSON method
-    JSC::JSValue result = impl.toJSON(vm, lexicalGlobalObject);
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    return JSValue::encode(result);
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsCookiePrototypeFunction_toJSON, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    return IDLOperation<JSCookie>::call<jsCookiePrototypeFunction_toJSONBody>(*lexicalGlobalObject, *callFrame, "toJSON");
-}
-
-// Static function implementations
-JSC_DEFINE_HOST_FUNCTION(jsCookieStaticFunctionParse, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    if (callFrame->argumentCount() < 1)
-        return throwVMError(lexicalGlobalObject, throwScope, createNotEnoughArgumentsError(lexicalGlobalObject));
-
-    auto cookieString = convert<IDLUSVString>(*lexicalGlobalObject, callFrame->uncheckedArgument(0));
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    if (cookieString.isEmpty()) {
-        auto cookie_exception = Cookie::create(CookieInit {});
-        if (cookie_exception.hasException()) {
-            WebCore::propagateException(lexicalGlobalObject, throwScope, cookie_exception.releaseException());
-            RELEASE_AND_RETURN(throwScope, {});
-        }
-        auto cookie = cookie_exception.releaseReturnValue();
-        return JSValue::encode(toJSNewlyCreated(lexicalGlobalObject, defaultGlobalObject(lexicalGlobalObject), WTF::move(cookie)));
-    }
-
-    if (!WebCore::isValidHTTPHeaderValue(cookieString)) [[unlikely]] {
-        throwVMTypeError(lexicalGlobalObject, throwScope, "cookie string is not a valid HTTP header value"_s);
-        RELEASE_AND_RETURN(throwScope, {});
-    }
-
-    auto cookie_exception = Cookie::parse(cookieString);
-    if (cookie_exception.hasException()) {
-        WebCore::propagateException(lexicalGlobalObject, throwScope, cookie_exception.releaseException());
-        RELEASE_AND_RETURN(throwScope, {});
-    }
-    auto cookie = cookie_exception.releaseReturnValue();
-
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-    RELEASE_AND_RETURN(throwScope, JSValue::encode(toJSNewlyCreated(lexicalGlobalObject, globalObject, WTF::move(cookie))));
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsCookieStaticFunctionFrom, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    if (callFrame->argumentCount() < 2)
-        return throwVMError(lexicalGlobalObject, throwScope, createNotEnoughArgumentsError(lexicalGlobalObject));
-
-    auto name = convert<IDLUSVString>(*lexicalGlobalObject, callFrame->uncheckedArgument(0));
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    if (name.isEmpty()) {
-        throwVMTypeError(lexicalGlobalObject, throwScope, "name is required"_s);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto protectedValue = protectedCookie(global, wrapper);
+    RETURN_IF_EXCEPTION(scope, {});
+    RELEASE_ASSERT(protectedValue);
+    auto* object = constructEmptyObject(vm, global->nullPrototypeObjectStructure());
+    RETURN_IF_EXCEPTION(scope, {});
+    const auto& cookie = *protectedValue;
+    auto& names = Bun::builtinNames(vm);
+    const auto putString = [&](const Identifier& key, const String& text) {
+        auto* value = jsString(vm, text);
+        if (scope.exception())
+            return false;
+        object->putDirect(vm, key, value);
+        return !scope.exception();
+    };
+    if (!putString(vm.propertyNames->name, cookie.name())
+        || !putString(vm.propertyNames->value, cookie.value())
+        || (!cookie.domain().isEmpty() && !putString(names.domainPublicName(), cookie.domain()))
+        || !putString(names.pathPublicName(), cookie.path()))
         return {};
+    if (auto expires = cookie.expires()) {
+        auto* date = DateInstance::create(vm, global->dateStructure(), *expires);
+        RETURN_IF_EXCEPTION(scope, {});
+        object->putDirect(vm, names.expiresPublicName(), date);
+        RETURN_IF_EXCEPTION(scope, {});
     }
-
-    auto value = convert<IDLUSVString>(*lexicalGlobalObject, callFrame->uncheckedArgument(1));
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    CookieInit cookieInit { name, value };
-    JSValue optionsValue = callFrame->argument(2);
-    // Check for options object
-    if (!optionsValue.isUndefinedOrNull() && optionsValue.isObject()) {
-        if (auto updatedCookieInit = CookieInit::fromJS(vm, lexicalGlobalObject, optionsValue, name, value)) {
-            cookieInit = *updatedCookieInit;
-        }
-        RETURN_IF_EXCEPTION(throwScope, {});
+    if (auto maxAge = cookie.maxAge()) {
+        object->putDirect(vm, names.maxAgePublicName(), jsNumber(*maxAge));
+        RETURN_IF_EXCEPTION(scope, {});
     }
-
-    auto cookie_exception = Cookie::create(cookieInit);
-    if (cookie_exception.hasException()) {
-        WebCore::propagateException(lexicalGlobalObject, throwScope, cookie_exception.releaseException());
-        RELEASE_AND_RETURN(throwScope, {});
-    }
-    auto cookie = cookie_exception.releaseReturnValue();
-    auto* globalObject = uncheckedDowncast<JSDOMGlobalObject>(lexicalGlobalObject);
-    return JSValue::encode(toJSNewlyCreated(lexicalGlobalObject, globalObject, WTF::move(cookie)));
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsCookieStaticFunctionSerialize, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    if (callFrame->argumentCount() < 1)
-        return JSValue::encode(jsEmptyString(vm));
-
-    Vector<Ref<Cookie>> cookies;
-
-    // Process each cookie argument
-    for (unsigned i = 0; i < callFrame->argumentCount(); i++) {
-        auto* cookieImpl = toCookieWrapped(lexicalGlobalObject, throwScope, callFrame->uncheckedArgument(i));
-        RETURN_IF_EXCEPTION(throwScope, {});
-
-        if (cookieImpl)
-            cookies.append(*cookieImpl);
-    }
-
-    // Let the C++ Cookie::serialize handle the work
-    String result = Cookie::serialize(vm, cookies);
-
-    return JSValue::encode(jsString(vm, result));
-}
-
-// Property getters/setters
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_name, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "name"_s);
-    auto& impl = thisObject->wrapped();
-    return JSValue::encode(toJS<IDLUSVString>(*lexicalGlobalObject, throwScope, impl.name()));
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_value, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "value"_s);
-    auto& impl = thisObject->wrapped();
-    return JSValue::encode(toJS<IDLUSVString>(*lexicalGlobalObject, throwScope, impl.value()));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_value, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "value"_s);
-    auto& impl = thisObject->wrapped();
-    auto value = convert<IDLUSVString>(*lexicalGlobalObject, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-    impl.setValue(value);
-    return true;
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_domain, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "domain"_s);
-    auto& impl = thisObject->wrapped();
-    return JSValue::encode(toJS<IDLNullable<IDLUSVString>>(*lexicalGlobalObject, throwScope, impl.domain()));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_domain, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "domain"_s);
-    auto& impl = thisObject->wrapped();
-    auto value = convert<IDLUSVString>(*lexicalGlobalObject, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-    WebCore::propagateException(*lexicalGlobalObject, throwScope, impl.setDomain(value));
-    return true;
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_path, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "path"_s);
-    auto& impl = thisObject->wrapped();
-    return JSValue::encode(toJS<IDLUSVString>(*lexicalGlobalObject, throwScope, impl.path()));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_path, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "path"_s);
-    auto& impl = thisObject->wrapped();
-    auto value = convert<IDLUSVString>(*lexicalGlobalObject, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-    WebCore::propagateException(*lexicalGlobalObject, throwScope, impl.setPath(value));
-    return true;
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_expires, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "expires"_s);
-    auto& impl = thisObject->wrapped();
-    if (impl.hasExpiry()) {
-        if (thisObject->m_expires) {
-            auto* dateInstance = thisObject->m_expires.get();
-            if (static_cast<int64_t>(dateInstance->internalNumber()) == impl.expires()) {
-                return JSValue::encode(dateInstance);
-            }
-        }
-        auto* dateInstance = JSC::DateInstance::create(vm, lexicalGlobalObject->dateStructure(), impl.expires());
-        thisObject->m_expires.set(vm, thisObject, dateInstance);
-        return JSValue::encode(dateInstance);
-    }
-
-    return JSValue::encode(JSC::jsUndefined());
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_expires, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "expires"_s);
-    auto& impl = thisObject->wrapped();
-    auto value = getExpiresValue(lexicalGlobalObject, throwScope, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-    impl.setExpires(value);
-    thisObject->m_expires.clear();
-    return true;
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_secure, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "secure"_s);
-    auto& impl = thisObject->wrapped();
-    return JSValue::encode(toJS<IDLBoolean>(*lexicalGlobalObject, throwScope, impl.secure()));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_secure, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "secure"_s);
-    auto& impl = thisObject->wrapped();
-    auto value = convert<IDLBoolean>(*lexicalGlobalObject, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-    impl.setSecure(value);
-    return true;
-}
-
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_sameSite, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "sameSite"_s);
-    auto& impl = thisObject->wrapped();
-
-    return JSValue::encode(toJS(lexicalGlobalObject, impl.sameSite()));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_sameSite, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "sameSite"_s);
-    auto& impl = thisObject->wrapped();
-
-    auto sameSiteStr = convert<IDLUSVString>(*lexicalGlobalObject, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-
-    CookieSameSite sameSite;
-    if (WTF::equalIgnoringASCIICase(sameSiteStr, "strict"_s))
-        sameSite = CookieSameSite::Strict;
-    else if (WTF::equalIgnoringASCIICase(sameSiteStr, "lax"_s))
-        sameSite = CookieSameSite::Lax;
-    else if (WTF::equalIgnoringASCIICase(sameSiteStr, "none"_s))
-        sameSite = CookieSameSite::None;
-    else {
-        throwTypeError(lexicalGlobalObject, throwScope, "Invalid sameSite value. Must be 'strict', 'lax', or 'none'"_s);
-        return false;
-    }
-
-    impl.setSameSite(sameSite);
-    return true;
-}
-
-// HttpOnly property
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_httpOnly, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "httpOnly"_s);
-    auto& impl = thisObject->wrapped();
-    return JSValue::encode(toJS<IDLBoolean>(*lexicalGlobalObject, throwScope, impl.httpOnly()));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_httpOnly, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "httpOnly"_s);
-    auto& impl = thisObject->wrapped();
-    auto value = convert<IDLBoolean>(*lexicalGlobalObject, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-    impl.setHttpOnly(value);
-    return true;
-}
-
-// MaxAge property
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_maxAge, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "maxAge"_s);
-    auto& impl = thisObject->wrapped();
-    double maxAge = impl.maxAge();
-    if (std::isnan(maxAge))
-        return JSValue::encode(jsUndefined());
-    return JSValue::encode(toJS<IDLNullable<IDLDouble>>(*lexicalGlobalObject, throwScope, maxAge));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_maxAge, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "maxAge"_s);
-    auto& impl = thisObject->wrapped();
-    if (JSValue::decode(encodedValue).isUndefinedOrNull()) {
-        impl.setMaxAge(std::numeric_limits<double>::quiet_NaN());
-        return true;
-    }
-    auto value = convert<IDLDouble>(*lexicalGlobalObject, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-    impl.setMaxAge(value);
-
-    return true;
-}
-
-// Partitioned property
-JSC_DEFINE_CUSTOM_GETTER(jsCookiePrototypeGetter_partitioned, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "partitioned"_s);
-    auto& impl = thisObject->wrapped();
-    return JSValue::encode(toJS<IDLBoolean>(*lexicalGlobalObject, throwScope, impl.partitioned()));
-}
-
-JSC_DEFINE_CUSTOM_SETTER(jsCookiePrototypeSetter_partitioned, (JSGlobalObject * lexicalGlobalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, PropertyName))
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto* thisObject = dynamicDowncast<JSCookie>(JSValue::decode(thisValue));
-    if (!thisObject) [[unlikely]]
-        return throwThisTypeError(*lexicalGlobalObject, throwScope, "Cookie"_s, "partitioned"_s);
-    auto& impl = thisObject->wrapped();
-    auto value = convert<IDLBoolean>(*lexicalGlobalObject, JSValue::decode(encodedValue));
-    RETURN_IF_EXCEPTION(throwScope, false);
-    impl.setPartitioned(value);
-    return true;
-}
-
-// isExpired method
-static inline JSC::EncodedJSValue jsCookiePrototypeFunction_isExpiredBody(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame, typename IDLOperation<JSCookie>::ClassParameter castedThis)
-{
-    auto& vm = JSC::getVM(lexicalGlobalObject);
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto& impl = castedThis->wrapped();
-
-    bool expired = impl.isExpired();
-    return JSValue::encode(JSC::jsBoolean(expired));
-}
-
-JSC_DEFINE_HOST_FUNCTION(jsCookiePrototypeFunction_isExpired, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
-{
-    return IDLOperation<JSCookie>::call<jsCookiePrototypeFunction_isExpiredBody>(*lexicalGlobalObject, *callFrame, "isExpired");
-}
-
-GCClient::IsoSubspace* JSCookie::subspaceForImpl(VM& vm)
-{
-    return WebCore::subspaceForImpl<JSCookie, UseCustomHeapCellType::No>(
-        vm,
-        [](auto& spaces) { return spaces.m_clientSubspaceForCookie.get(); },
-        [](auto& spaces, auto&& space) { spaces.m_clientSubspaceForCookie = std::forward<decltype(space)>(space); },
-        [](auto& spaces) { return spaces.m_subspaceForCookie.get(); },
-        [](auto& spaces, auto&& space) { spaces.m_subspaceForCookie = std::forward<decltype(space)>(space); });
-}
-
-void JSCookie::analyzeHeap(JSCell* cell, HeapAnalyzer& analyzer)
-{
-    auto* thisObject = uncheckedDowncast<JSCookie>(cell);
-    analyzer.setWrappedObjectForCell(cell, &thisObject->wrapped());
-    Base::analyzeHeap(cell, analyzer);
-}
-
-bool JSCookieOwner::isReachableFromOpaqueRoots(JSC::Handle<JSC::Unknown> handle, void*, AbstractSlotVisitor& visitor, ASCIILiteral* reason)
-{
-    UNUSED_PARAM(handle);
-    UNUSED_PARAM(visitor);
-    UNUSED_PARAM(reason);
-    return false;
-}
-
-DEFINE_VISIT_CHILDREN(JSCookie);
-
-template<typename Visitor>
-void JSCookie::visitChildrenImpl(JSCell* cell, Visitor& visitor)
-{
-    JSCookie* thisObject = uncheckedDowncast<JSCookie>(cell);
-    ASSERT_GC_OBJECT_INHERITS(thisObject, info());
-    Base::visitChildren(thisObject, visitor);
-
-    visitor.append(thisObject->m_expires);
-}
-
-void JSCookieOwner::finalize(JSC::Handle<JSC::Unknown> handle, void* context)
-{
-    auto* jsCookie = static_cast<JSCookie*>(handle.slot()->asCell());
-    auto& world = *static_cast<DOMWrapperWorld*>(context);
-    uncacheWrapper(world, &jsCookie->wrapped(), jsCookie);
-}
-
-JSC::JSValue toJSNewlyCreated(JSC::JSGlobalObject*, JSDOMGlobalObject* globalObject, Ref<Cookie>&& impl)
-{
-    return createWrapper<Cookie>(globalObject, WTF::move(impl));
-}
-
-JSC::JSValue toJS(JSC::JSGlobalObject* lexicalGlobalObject, JSDOMGlobalObject* globalObject, Cookie& impl)
-{
-    return wrap(lexicalGlobalObject, globalObject, impl);
-}
-
-Cookie* JSCookie::toWrapped(JSC::VM& vm, JSC::JSValue value)
-{
-    if (auto* wrapper = dynamicDowncast<JSCookie>(value))
-        return &wrapper->wrapped();
-    return nullptr;
-}
-
-size_t JSCookie::estimatedSize(JSC::JSCell* cell, JSC::VM& vm)
-{
-    auto* thisObject = uncheckedDowncast<JSCookie>(cell);
-    auto& wrapped = thisObject->wrapped();
-    return Base::estimatedSize(cell, vm) + wrapped.memoryCost();
-}
-
-JSC::JSValue toJS(JSC::JSGlobalObject* globalObject, CookieSameSite sameSite)
-{
-    auto& commonStrings = defaultGlobalObject(globalObject)->commonStrings();
-    switch (sameSite) {
-    case CookieSameSite::Strict:
-        return commonStrings.strictString(globalObject);
-    case CookieSameSite::Lax:
-        return commonStrings.laxString(globalObject);
-    case CookieSameSite::None:
-        return commonStrings.noneString(globalObject);
-    default: {
+    object->putDirect(vm, names.securePublicName(), jsBoolean(cookie.secure()));
+    RETURN_IF_EXCEPTION(scope, {});
+    String sameSite;
+    switch (cookie.sameSite()) {
+    case CookieSameSite::strict:
+        sameSite = "strict"_s;
+        break;
+    case CookieSameSite::lax:
+        sameSite = "lax"_s;
+        break;
+    case CookieSameSite::none:
+        sameSite = "none"_s;
         break;
     }
+    if (!putString(names.sameSitePublicName(), sameSite))
+        return {};
+    object->putDirect(vm, names.httpOnlyPublicName(), jsBoolean(cookie.httpOnly()));
+    RETURN_IF_EXCEPTION(scope, {});
+    object->putDirect(vm, names.partitionedPublicName(), jsBoolean(cookie.partitioned()));
+    RETURN_IF_EXCEPTION(scope, {});
+    return object;
+}
+
+} // namespace WebCore
+
+namespace Bun::Bindgen::Custom {
+
+std::optional<int64_t> bunBindgenCookieExpires(
+    JSC::JSGlobalObject& global,
+    const std::optional<Bun::Bindgen::CookieExpiresInput>& input,
+    WTF::ASCIILiteral)
+{
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    if (!input)
+        return std::nullopt;
+
+    if (input->is_date()) {
+        auto* date = dynamicDowncast<JSC::DateInstance>(input->date());
+        RELEASE_ASSERT(date);
+        const double milliseconds = date->internalNumber();
+        if (!WebCore::Cookie::isValidExpiration(milliseconds)) [[unlikely]] {
+            JSC::throwRangeError(&global, scope, "expires must be a valid Date (or Number)"_s);
+            return std::nullopt;
+        }
+        return static_cast<int64_t>(milliseconds);
     }
-    __builtin_unreachable();
-    return {};
+
+    if (input->is_number()) {
+        const double milliseconds = input->number() * 1000;
+        if (!WebCore::Cookie::isValidExpiration(milliseconds)) [[unlikely]] {
+            JSC::throwRangeError(&global, scope, "expires must be a valid Number (or Date)"_s);
+            return std::nullopt;
+        }
+        return static_cast<int64_t>(milliseconds);
+    }
+
+    RELEASE_ASSERT(input->is_string());
+    auto utf8 = Bun::encodeUTF8ReplacingInvalidSequences(input->string());
+    if (!utf8) {
+        RELEASE_ASSERT(utf8.error() == WTF::UTF8ConversionError::OutOfMemory);
+        JSC::throwOutOfMemoryError(&global, scope);
+        return std::nullopt;
+    }
+    const auto parsed = WTF::parseDate(std::span<const Latin1Character>(
+        reinterpret_cast<const Latin1Character*>(utf8->span().data()), utf8->size()));
+    if (WebCore::Cookie::isValidExpiration(parsed))
+        return static_cast<int64_t>(parsed);
+    JSC::throwTypeError(&global, scope, "Invalid cookie expiration date"_s);
+    return std::nullopt;
 }
+
+} // namespace Bun::Bindgen::Custom
+
+namespace Bun::Bindgen::Engine {
+
+using namespace JSC;
+using namespace WebCore;
+
+static Cookie* finishCookieCreation(
+    EngineCallContext& context,
+    ExceptionOr<Ref<Cookie>>&& result)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    if (result.hasException()) [[unlikely]] {
+        propagateException(context.globalObject, scope, result.releaseException());
+        return nullptr;
+    }
+
+    return &result.releaseReturnValue().leakRef();
 }
+
+Cookie* bunBindgenEngine_cookie_cookieCreate(
+    EngineCallContext& context,
+    const BunBindgenEngine_cookie_cookieCreate_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    if (args.name.isEmpty()) {
+        JSC::throwTypeError(&context.globalObject, scope, "name is required"_s);
+        return nullptr;
+    }
+    CookieInit init;
+    init.name = args.name;
+    if (args.value)
+        init.value = *args.value;
+    if (args.domain)
+        init.domain = *args.domain;
+    if (args.path)
+        init.path = *args.path;
+    init.expires = args.expires;
+    init.secure = args.secure;
+    init.sameSite = args.same_site;
+    init.httpOnly = args.http_only;
+    init.maxAge = args.max_age;
+    init.partitioned = args.partitioned;
+    RELEASE_AND_RETURN(scope, finishCookieCreation(context, Cookie::create(init)));
+}
+
+Cookie* bunBindgenEngine_cookie_cookieParse(
+    EngineCallContext& context,
+    const BunBindgenEngine_cookie_cookieParse_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    if (!WebCore::isValidHTTPHeaderValue(args.input)) [[unlikely]] {
+        JSC::throwTypeError(&context.globalObject, scope, "cookie string is not a valid HTTP header value"_s);
+        return nullptr;
+    }
+    RELEASE_AND_RETURN(scope, finishCookieCreation(context, Cookie::parse(args.input)));
+}
+
+Cookie* bunBindgenEngine_cookie_cookieRetain(const BunBindgenEngine_cookie_cookieRetain_Arguments& args)
+{
+    args.cookie->ref();
+    return args.cookie;
+}
+
+void releaseCookie(Cookie* cookie)
+{
+    cookie->deref();
+}
+
+size_t bunBindgenEngine_cookie_cookieMemoryCost(const BunBindgenEngine_cookie_cookieMemoryCost_Arguments& args)
+{
+    return args.cookie->memoryCost();
+}
+
+WTF::String bunBindgenEngine_cookie_cookieName(const BunBindgenEngine_cookie_cookieName_Arguments& args)
+{
+    return args.cookie->name();
+}
+
+WTF::String bunBindgenEngine_cookie_cookieValue(const BunBindgenEngine_cookie_cookieValue_Arguments& args)
+{
+    return args.cookie->value();
+}
+
+void bunBindgenEngine_cookie_cookieSetValue(const BunBindgenEngine_cookie_cookieSetValue_Arguments& args)
+{
+    args.cookie->setValue(args.value);
+}
+
+std::optional<WTF::String> bunBindgenEngine_cookie_cookieDomain(const BunBindgenEngine_cookie_cookieDomain_Arguments& args)
+{
+    auto domain = args.cookie->domain();
+    if (domain.isNull())
+        return std::nullopt;
+    return domain;
+}
+
+void bunBindgenEngine_cookie_cookieSetDomain(
+    EngineCallContext& context,
+    const BunBindgenEngine_cookie_cookieSetDomain_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    propagateException(context.globalObject, scope, args.cookie->setDomain(args.value));
+}
+
+WTF::String bunBindgenEngine_cookie_cookiePath(const BunBindgenEngine_cookie_cookiePath_Arguments& args)
+{
+    return args.cookie->path();
+}
+
+void bunBindgenEngine_cookie_cookieSetPath(
+    EngineCallContext& context,
+    const BunBindgenEngine_cookie_cookieSetPath_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    propagateException(context.globalObject, scope, args.cookie->setPath(args.value));
+}
+
+std::optional<JSValue> bunBindgenEngine_cookie_cookieExpires(
+    EngineCallContext& context,
+    const BunBindgenEngine_cookie_cookieExpires_Arguments& args)
+{
+    const auto expires = args.cookie->expires();
+    if (!expires)
+        return std::nullopt;
+    return DateInstance::create(context.globalObject.vm(), context.globalObject.dateStructure(), *expires);
+}
+
+void bunBindgenEngine_cookie_cookieSetExpires(
+    EngineCallContext& context,
+    const BunBindgenEngine_cookie_cookieSetExpires_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    propagateException(context.globalObject, scope, args.cookie->setExpires(args.value));
+}
+
+bool bunBindgenEngine_cookie_cookieSecure(const BunBindgenEngine_cookie_cookieSecure_Arguments& args)
+{
+    return args.cookie->secure();
+}
+
+void bunBindgenEngine_cookie_cookieSetSecure(const BunBindgenEngine_cookie_cookieSetSecure_Arguments& args)
+{
+    args.cookie->setSecure(args.value);
+}
+
+Bun::Bindgen::CookieSameSite bunBindgenEngine_cookie_cookieSameSite(const BunBindgenEngine_cookie_cookieSameSite_Arguments& args)
+{
+    return args.cookie->sameSite();
+}
+
+void bunBindgenEngine_cookie_cookieSetSameSite(const BunBindgenEngine_cookie_cookieSetSameSite_Arguments& args)
+{
+    args.cookie->setSameSite(args.value);
+}
+
+bool bunBindgenEngine_cookie_cookieHttpOnly(const BunBindgenEngine_cookie_cookieHttpOnly_Arguments& args)
+{
+    return args.cookie->httpOnly();
+}
+
+void bunBindgenEngine_cookie_cookieSetHttpOnly(const BunBindgenEngine_cookie_cookieSetHttpOnly_Arguments& args)
+{
+    args.cookie->setHttpOnly(args.value);
+}
+
+std::optional<double> bunBindgenEngine_cookie_cookieMaxAge(const BunBindgenEngine_cookie_cookieMaxAge_Arguments& args)
+{
+    return args.cookie->maxAge();
+}
+
+void bunBindgenEngine_cookie_cookieSetMaxAge(const BunBindgenEngine_cookie_cookieSetMaxAge_Arguments& args)
+{
+    args.cookie->setMaxAge(args.value);
+}
+
+bool bunBindgenEngine_cookie_cookiePartitioned(const BunBindgenEngine_cookie_cookiePartitioned_Arguments& args)
+{
+    return args.cookie->partitioned();
+}
+
+void bunBindgenEngine_cookie_cookieSetPartitioned(const BunBindgenEngine_cookie_cookieSetPartitioned_Arguments& args)
+{
+    args.cookie->setPartitioned(args.value);
+}
+
+bool bunBindgenEngine_cookie_cookieIsExpired(const BunBindgenEngine_cookie_cookieIsExpired_Arguments& args)
+{
+    return args.cookie->isExpired();
+}
+
+WTF::String bunBindgenEngine_cookie_cookieToString(
+    EngineCallContext& context,
+    const BunBindgenEngine_cookie_cookieToString_Arguments& args)
+{
+    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
+    auto result = args.cookie->toString();
+    if (result.hasException()) {
+        propagateException(context.globalObject, scope, result.releaseException());
+        return {};
+    }
+    return result.releaseReturnValue();
+}
+
+BunBindgenEngine_cookie_cookieJSON_Return bunBindgenEngine_cookie_cookieJSON(
+    EngineCallContext& context,
+    const BunBindgenEngine_cookie_cookieJSON_Arguments& args)
+{
+    auto& global = context.globalObject;
+    auto& cookie = *args.cookie;
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    std::optional<JSValue> expires;
+    if (const auto milliseconds = cookie.expires()) {
+        expires = DateInstance::create(global.vm(), global.dateStructure(), *milliseconds);
+        RETURN_IF_EXCEPTION(scope, {});
+    }
+    return {
+        .name = cookie.name(),
+        .value = cookie.value(),
+        .domain = cookie.domain().isEmpty() ? std::nullopt : std::optional { cookie.domain() },
+        .path = cookie.path(),
+        .expires = expires,
+        .max_age = cookie.maxAge(),
+        .secure = cookie.secure(),
+        .same_site = cookie.sameSite(),
+        .http_only = cookie.httpOnly(),
+        .partitioned = cookie.partitioned(),
+    };
+}
+
+} // namespace Bun::Bindgen::Engine

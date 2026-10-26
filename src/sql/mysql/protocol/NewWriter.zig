@@ -3,6 +3,7 @@ pub fn NewWriterWrap(
     comptime offsetFn_: (fn (ctx: Context) usize),
     comptime writeFunction_: (fn (ctx: Context, bytes: []const u8) AnyMySQLError.Error!void),
     comptime pwriteFunction_: (fn (ctx: Context, bytes: []const u8, offset: usize) AnyMySQLError.Error!void),
+    comptime truncateFunction_: (fn (ctx: Context, offset: usize) void),
 ) type {
     return struct {
         wrapped: Context,
@@ -10,6 +11,7 @@ pub fn NewWriterWrap(
         const writeFn = writeFunction_;
         const pwriteFn = pwriteFunction_;
         const offsetFn = offsetFn_;
+        const truncateFn = truncateFunction_;
         pub const Ctx = Context;
 
         pub const is_wrapped = true;
@@ -34,14 +36,20 @@ pub fn NewWriterWrap(
             header: PacketHeader,
             offset: usize,
             ctx: WrappedWriter,
+            committed: bool = false,
+
+            pub fn deinit(this: *@This()) void {
+                if (!this.committed) truncateFn(this.ctx.wrapped, this.offset);
+            }
 
             pub fn end(this: *@This()) AnyMySQLError.Error!void {
                 const new_offset = offsetFn(this.ctx.wrapped);
                 // fix position for packet header
                 const length = new_offset - this.offset - PacketHeader.size;
-                this.header.length = @intCast(length);
+                this.header.length = std.math.cast(u24, length) orelse return error.Overflow;
                 debug("writing packet header: {d}", .{this.header.length});
                 try pwrite(this.ctx, &this.header.encode(), this.offset);
+                this.committed = true;
             }
         };
 
@@ -88,7 +96,7 @@ pub fn NewWriterWrap(
                 return;
             }
 
-            var sliced = value.toUTF8(bun.default_allocator);
+            var sliced = try value.toUTF8(bun.default_allocator);
             defer sliced.deinit();
             const slice = sliced.slice();
 
@@ -104,7 +112,7 @@ pub fn NewWriter(comptime Context: type) type {
         return Context;
     }
 
-    return NewWriterWrap(Context, Context.offset, Context.write, Context.pwrite);
+    return NewWriterWrap(Context, Context.offset, Context.write, Context.pwrite, Context.truncate);
 }
 
 pub fn writeWrap(comptime Container: type, comptime writeFn: anytype) type {
@@ -128,6 +136,6 @@ const bun = @import("bun");
 const std = @import("std");
 const encodeLengthInt = @import("./EncodeInt.zig").encodeLengthInt;
 
-const types = @import("../MySQLTypes.zig");
+const types = @import("mysql_domain").types;
 const MySQLInt32 = types.MySQLInt32;
 const MySQLInt64 = types.MySQLInt64;

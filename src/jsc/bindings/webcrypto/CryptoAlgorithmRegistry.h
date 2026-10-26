@@ -27,11 +27,6 @@
 
 #include "CryptoAlgorithmIdentifier.h"
 #include <wtf/Forward.h>
-#include <wtf/HashMap.h>
-#include <wtf/Lock.h>
-#include <wtf/Noncopyable.h>
-#include <wtf/text/StringHash.h>
-
 #if ENABLE(WEB_CRYPTO)
 
 namespace WebCore {
@@ -39,38 +34,9 @@ namespace WebCore {
 class CryptoAlgorithm;
 
 class CryptoAlgorithmRegistry {
-    WTF_MAKE_NONCOPYABLE(CryptoAlgorithmRegistry);
-    friend class LazyNeverDestroyed<CryptoAlgorithmRegistry>;
-
 public:
-    static CryptoAlgorithmRegistry& singleton();
-
-    std::optional<CryptoAlgorithmIdentifier> identifier(const String&);
-    String name(CryptoAlgorithmIdentifier);
-
-    RefPtr<CryptoAlgorithm> create(CryptoAlgorithmIdentifier);
-
-private:
-    CryptoAlgorithmRegistry();
-    void platformRegisterAlgorithms();
-
-    using CryptoAlgorithmConstructor = Ref<CryptoAlgorithm> (*)();
-
-    template<typename AlgorithmClass> void registerAlgorithm()
-    {
-        registerAlgorithm(AlgorithmClass::s_name, AlgorithmClass::s_identifier, AlgorithmClass::create);
-    }
-    template<typename AlgorithmClass> void registerAlgorithmWithAlternativeName()
-    {
-        registerAlgorithm(AlgorithmClass::s_name, AlgorithmClass::s_identifier, AlgorithmClass::create);
-        registerAlgorithm(AlgorithmClass::s_alternative_name, AlgorithmClass::s_identifier, AlgorithmClass::create);
-    }
-
-    void registerAlgorithm(const String& name, CryptoAlgorithmIdentifier, CryptoAlgorithmConstructor);
-
-    Lock m_lock;
-    HashMap<String, CryptoAlgorithmIdentifier, ASCIICaseInsensitiveHash> m_identifiers WTF_GUARDED_BY_LOCK(m_lock);
-    HashMap<unsigned, std::pair<String, CryptoAlgorithmConstructor>> m_constructors WTF_GUARDED_BY_LOCK(m_lock);
+    static String name(CryptoAlgorithmIdentifier);
+    static RefPtr<CryptoAlgorithm> create(CryptoAlgorithmIdentifier);
 };
 
 } // namespace WebCore

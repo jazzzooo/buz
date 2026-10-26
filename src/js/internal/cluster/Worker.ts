@@ -4,8 +4,10 @@ const ObjectFreeze = Object.freeze;
 
 const kEmptyObject = ObjectFreeze(Object.create(null));
 
+type WorkerCtor = new (options?: any) => any;
+
 function Worker(options) {
-  if (!(this instanceof Worker)) return new Worker(options);
+  if (!(this instanceof Worker)) return new (Worker as unknown as WorkerCtor)(options);
 
   EventEmitter.$apply(this, []);
 
@@ -40,4 +42,4 @@ Worker.prototype.isConnected = function () {
   return this.process.connected;
 };
 
-export default Worker;
+export default Worker as unknown as WorkerCtor;

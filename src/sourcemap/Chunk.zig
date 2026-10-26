@@ -39,7 +39,7 @@ pub fn printSourceMapContentsFromInternal(
     const ism: InternalSourceMap = .{ .data = chunk.buffer.list.items.ptr };
     var vlq = MutableString.initEmpty(bun.default_allocator);
     defer vlq.deinit();
-    ism.appendVLQTo(&vlq);
+    try ism.appendVLQTo(&vlq);
     try printSourceMapContentsJSON(source, mutable, include_sources_contents, vlq.list.items, ascii_only);
 }
 
@@ -87,6 +87,10 @@ pub fn SourceMapFormat(comptime Type: type) type {
             return .{ .ctx = Type.init(allocator, prepend_count) };
         }
 
+        pub fn deinit(this: *Format) void {
+            this.ctx.deinit();
+        }
+
         pub inline fn appendLineSeparator(this: *Format) anyerror!void {
             try this.ctx.appendLineSeparator();
         }
@@ -99,12 +103,8 @@ pub fn SourceMapFormat(comptime Type: type) type {
             return this.ctx.shouldIgnore();
         }
 
-        pub inline fn getBuffer(this: *Format) MutableString {
-            return this.ctx.getBuffer();
-        }
-
-        pub inline fn takeBuffer(this: *Format) MutableString {
-            return this.ctx.takeBuffer();
+        pub inline fn takeBuffer(this: *Format) bun.OOM!MutableString {
+            return try this.ctx.takeBuffer();
         }
 
         pub inline fn getCount(this: Format) usize {
@@ -119,6 +119,12 @@ pub const VLQSourceMap = struct {
     count: usize = 0,
     offset: usize = 0,
     approximate_input_line_count: usize = 0,
+
+    pub fn deinit(this: *VLQSourceMap) void {
+        this.data.deinit();
+        if (this.internal) |*builder| builder.deinit();
+        this.internal = null;
+    }
 
     pub fn init(allocator: std.mem.Allocator, prepend_count: bool) VLQSourceMap {
         if (prepend_count) {
@@ -135,7 +141,7 @@ pub const VLQSourceMap = struct {
 
     pub fn appendLineSeparator(this: *VLQSourceMap) anyerror!void {
         if (this.internal) |*b| {
-            b.appendLineSeparator();
+            try b.appendLineSeparator();
             return;
         }
         try this.data.appendChar(';');
@@ -143,7 +149,7 @@ pub const VLQSourceMap = struct {
 
     pub fn append(this: *VLQSourceMap, current_state: SourceMapState, prev_state: SourceMapState) anyerror!void {
         if (this.internal) |*b| {
-            b.appendMapping(current_state);
+            try b.appendMapping(current_state);
             this.count += 1;
             return;
         }
@@ -153,7 +159,7 @@ pub const VLQSourceMap = struct {
         else
             0;
 
-        appendMappingToBuffer(&this.data, last_byte, prev_state, current_state);
+        try appendMappingToBuffer(&this.data, last_byte, prev_state, current_state);
         this.count += 1;
     }
 
@@ -161,19 +167,11 @@ pub const VLQSourceMap = struct {
         return this.count == 0;
     }
 
-    pub fn getBuffer(this: *VLQSourceMap) MutableString {
+    pub fn takeBuffer(this: *VLQSourceMap) bun.OOM!MutableString {
         if (this.internal) |*b| {
-            this.data = b.finalize().*;
+            this.data = (try b.finalize()).*;
             b.finalized = null;
-            this.internal = null;
-        }
-        return this.data;
-    }
-
-    pub fn takeBuffer(this: *VLQSourceMap) MutableString {
-        if (this.internal) |*b| {
-            this.data = b.finalize().*;
-            b.finalized = null;
+            b.deinit();
             this.internal = null;
         }
         defer this.data = .initEmpty(this.data.allocator);
@@ -216,16 +214,16 @@ pub fn NewBuilder(comptime SourceMapFormatType: type) type {
 
         pub const SourceMapper = SourceMapFormat(SourceMapFormatType);
 
-        pub noinline fn generateChunk(b: *ThisBuilder, output: []const u8) Chunk {
+        pub noinline fn generateChunk(b: *ThisBuilder, output: []const u8) bun.OOM!Chunk {
             b.updateGeneratedLineAndColumn(output);
-            var buffer = b.source_map.getBuffer();
+            var buffer = try b.source_map.takeBuffer();
             if (b.prepend_count) {
                 buffer.list.items[0..8].* = @as([8]u8, @bitCast(buffer.list.items.len));
                 buffer.list.items[8..16].* = @as([8]u8, @bitCast(b.source_map.getCount()));
                 buffer.list.items[16..24].* = @as([8]u8, @bitCast(b.approximate_input_line_count));
             }
             return Chunk{
-                .buffer = b.source_map.takeBuffer(),
+                .buffer = buffer,
                 .end_state = b.prev_state,
                 .final_generated_column = b.generated_column,
                 .should_ignore = b.source_map.shouldIgnore(),

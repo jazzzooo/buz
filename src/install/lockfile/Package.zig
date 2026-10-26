@@ -461,7 +461,7 @@ pub fn Package(comptime SemverIntType: type) type {
                                 sliced.slice,
                                 &sliced,
                                 log,
-                                pm,
+                                Dependency.ParseContext.fromPackageManager(pm),
                             ) orelse Dependency.Version{},
                         };
 
@@ -717,11 +717,11 @@ pub fn Package(comptime SemverIntType: type) type {
 
                         {
                             // added
-                            for (default_trusted_dependencies.entries) |entry| {
-                                if (!from_trusted_dependencies.contains(@truncate(entry.hash))) {
+                            for (Lockfile.default_trusted_dependency_hashes) |name_hash| {
+                                if (!from_trusted_dependencies.contains(name_hash)) {
                                     // although this is a new trusted dependency, it is from the default
                                     // list so it shouldn't be added to the lockfile
-                                    try summary.added_trusted_dependencies.put(allocator, @truncate(entry.hash), false);
+                                    try summary.added_trusted_dependencies.put(allocator, name_hash, false);
                                 }
                             }
                         }
@@ -731,7 +731,7 @@ pub fn Package(comptime SemverIntType: type) type {
                             var from_trusted_iter = from_trusted_dependencies.iterator();
                             while (from_trusted_iter.next()) |entry| {
                                 const from_trusted = entry.key_ptr.*;
-                                if (!default_trusted_dependencies.hasWithHash(@intCast(from_trusted))) {
+                                if (std.mem.indexOfScalar(TruncatedPackageNameHash, &Lockfile.default_trusted_dependency_hashes, from_trusted) == null) {
                                     try summary.removed_trusted_dependencies.put(allocator, from_trusted, {});
                                 }
                             }
@@ -1000,7 +1000,7 @@ pub fn Package(comptime SemverIntType: type) type {
             const source_dir = std.fs.path.dirname(source.path.text) orelse FileSystem.instance.top_level_dir;
             const external_version = brk: {
                 if (comptime Environment.isWindows) {
-                    switch (tag orelse Dependency.Version.Tag.infer(version)) {
+                    switch (tag orelse Dependency.Version.Tag.infer(pm.javascript_semantics, version)) {
                         .workspace, .folder, .symlink, .tarball => {
                             if (String.canInline(version)) {
                                 var copy = string_builder.append(String, version);
@@ -1031,7 +1031,7 @@ pub fn Package(comptime SemverIntType: type) type {
                 tag,
                 &sliced,
                 log,
-                pm,
+                Dependency.ParseContext.fromPackageManager(pm),
             ) orelse Dependency.Version{};
             var workspace_range: ?Semver.Query.Group = null;
             const name_hash = switch (dependency_version.tag) {
@@ -1104,7 +1104,7 @@ pub fn Package(comptime SemverIntType: type) type {
                                 .workspace,
                                 &path,
                                 log,
-                                pm,
+                                Dependency.ParseContext.fromPackageManager(pm),
                             )) |dep| {
                                 dependency_version.tag = dep.tag;
                                 dependency_version.value = dep.value;
@@ -1527,7 +1527,7 @@ pub fn Package(comptime SemverIntType: type) type {
                                 string_builder.count(value);
 
                                 // If it's a folder or workspace, pessimistically assume we will need a maximum path
-                                switch (Dependency.Version.Tag.infer(value)) {
+                                switch (Dependency.Version.Tag.infer(pm.javascript_semantics, value)) {
                                     .folder, .workspace => string_builder.cap += bun.MAX_PATH_BYTES,
                                     else => {},
                                 }
@@ -2247,4 +2247,3 @@ const Stream = Lockfile.Stream;
 const StringBuilder = Lockfile.StringBuilder;
 const TrustedDependenciesSet = Lockfile.TrustedDependenciesSet;
 const assertNoUninitializedPadding = Lockfile.assertNoUninitializedPadding;
-const default_trusted_dependencies = Lockfile.default_trusted_dependencies;

@@ -19,21 +19,26 @@ namespace Bun {
 
 const JSC::ClassInfo JSSecretKeyObjectConstructor::s_info = { "SecretKeyObject"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSSecretKeyObjectConstructor) };
 
-JSC_DEFINE_HOST_FUNCTION(callSecretKeyObject, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_secretKeyObjectConstructorCall(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_secretKeyObjectConstructorCall_Arguments&)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     VM& vm = lexicalGlobalObject->vm();
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
     throwConstructorCannotBeCalledAsFunctionTypeError(lexicalGlobalObject, scope, "SecretKeyObject"_s);
-    return {};
 }
 
-JSC_DEFINE_HOST_FUNCTION(constructSecretKeyObject, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_secretKeyObjectConstructorConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_secretKeyObjectConstructorConstruct_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     JSC::VM& vm = lexicalGlobalObject->vm();
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
 
-    JSValue handleValue = callFrame->argument(0);
-    return ERR::INVALID_ARG_TYPE(scope, lexicalGlobalObject, "handle"_s, "object"_s, handleValue);
+    JSValue handleValue = args.handle.value_or(JSC::jsUndefined());
+    ERR::INVALID_ARG_TYPE(scope, lexicalGlobalObject, "handle"_s, "object"_s, handleValue);
 }
 
 } // namespace Bun

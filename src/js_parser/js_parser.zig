@@ -116,26 +116,18 @@ pub const Flags = struct {
 };
 
 pub const ClauseItem = struct {
-    /// The local alias used for the imported/exported symbol in the current module.
-    /// For imports: `import { foo as bar }` - "bar" is the alias
-    /// For exports: `export { foo as bar }` - "bar" is the alias
-    /// For re-exports: `export { foo as bar } from 'path'` - "bar" is the alias
+    /// Imported name for imports (`foo` in `import { foo as bar }`).
+    /// Exported name for exports and re-exports (`bar` in `export { foo as bar }`).
     alias: string,
     alias_loc: logger.Loc = logger.Loc.Empty,
     /// Reference to the actual symbol being imported/exported.
-    /// For imports: `import { foo as bar }` - ref to the symbol representing "foo" from the source module
+    /// For imports: `import { foo as bar }` - ref to the local symbol "bar"
     /// For exports: `export { foo as bar }` - ref to the local symbol "foo"
     /// For re-exports: `export { foo as bar } from 'path'` - ref to an intermediate symbol
     name: LocRef,
 
-    /// This is the original name of the symbol stored in "Name". It's needed for
-    /// "SExportClause" statements such as this:
-    ///
-    ///   export {foo as bar} from 'path'
-    ///
-    /// In this case both "foo" and "bar" are aliases because it's a re-export.
-    /// We need to preserve both aliases in case the symbol is renamed. In this
-    /// example, "foo" is "OriginalName" and "bar" is "Alias".
+    /// For imports, the local name before renaming. For exports, the source-side name.
+    /// Re-exports retain this name because their intermediate symbol may be renamed.
     original_name: string = "",
 
     pub const default_alias: string = "default";
@@ -254,47 +246,9 @@ pub const Span = struct {
 };
 
 /// Inlined enum values can only be numbers and strings
-/// This type special cases an encoding similar to JSValue, where nan-boxing is used
-/// to encode both a 64-bit pointer or a 64-bit float using 64 bits.
-pub const InlinedEnumValue = struct {
-    raw_data: u64,
-
-    pub const Decoded = union(enum) {
-        string: *E.String,
-        number: f64,
-    };
-
-    /// See JSCJSValue.h in WebKit for more details
-    const double_encode_offset = 1 << 49;
-    /// See PureNaN.h in WebKit for more details
-    const pure_nan: f64 = @bitCast(@as(u64, 0x7ff8000000000000));
-
-    fn purifyNaN(value: f64) f64 {
-        return if (std.math.isNan(value)) pure_nan else value;
-    }
-
-    pub fn encode(decoded: Decoded) InlinedEnumValue {
-        const encoded: InlinedEnumValue = .{ .raw_data = switch (decoded) {
-            .string => |ptr| @as(u48, @truncate(@intFromPtr(ptr))),
-            .number => |num| @as(u64, @bitCast(purifyNaN(num))) + double_encode_offset,
-        } };
-        if (Environment.allow_assert) {
-            bun.assert(switch (encoded.decode()) {
-                .string => |str| str == decoded.string,
-                .number => |num| @as(u64, @bitCast(num)) ==
-                    @as(u64, @bitCast(purifyNaN(decoded.number))),
-            });
-        }
-        return encoded;
-    }
-
-    pub fn decode(encoded: InlinedEnumValue) Decoded {
-        if (encoded.raw_data > 0x0000FFFFFFFFFFFF) {
-            return .{ .number = @bitCast(encoded.raw_data - double_encode_offset) };
-        } else {
-            return .{ .string = @ptrFromInt(@as(usize, @truncate(encoded.raw_data))) };
-        }
-    }
+pub const InlinedEnumValue = union(enum) {
+    string: *E.String,
+    number: f64,
 };
 
 pub const ExportsKind = enum {
@@ -447,7 +401,7 @@ pub const DeclaredSymbol = struct {
         }
     };
 
-    fn forEachTopLevelSymbolWithType(decls: *List, comptime Ctx: type, ctx: Ctx, comptime Fn: fn (Ctx, Ref) void) void {
+    pub fn forEachTopLevelSymbol(decls: *List, ctx: anytype, comptime Fn: anytype) bun.meta.ReturnOf(Fn) {
         var entries = decls.entries.slice();
         const is_top_level = entries.items(.is_top_level);
         const refs = entries.items(.ref);
@@ -455,13 +409,13 @@ pub const DeclaredSymbol = struct {
         // TODO: SIMD
         for (is_top_level, refs) |top, ref| {
             if (top) {
-                @call(bun.callmod_inline, Fn, .{ ctx, ref });
+                if (comptime @typeInfo(bun.meta.ReturnOf(Fn)) == .error_union) {
+                    try @call(bun.callmod_inline, Fn, .{ ctx, ref });
+                } else {
+                    @call(bun.callmod_inline, Fn, .{ ctx, ref });
+                }
             }
         }
-    }
-
-    pub fn forEachTopLevelSymbol(decls: *List, ctx: anytype, comptime Fn: anytype) void {
-        forEachTopLevelSymbolWithType(decls, @TypeOf(ctx), ctx, Fn);
     }
 };
 
@@ -676,7 +630,7 @@ pub const E = @import("./ast/E.zig");
 pub const Expr = @import("./ast/Expr.zig");
 pub const ExprNodeIndex = Expr;
 pub const G = @import("./ast/G.zig");
-pub const Macro = @import("../js_parser_jsc/Macro.zig");
+pub const Macro = @import("./Macro.zig");
 pub const Op = @import("./ast/Op.zig");
 pub const S = @import("./ast/S.zig");
 pub const Scope = @import("./ast/Scope.zig");

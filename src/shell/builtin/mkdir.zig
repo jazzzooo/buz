@@ -10,13 +10,13 @@ state: union(enum) {
         output_waiting: u16 = 0,
         output_done: u16 = 0,
         args: []const [*:0]const u8,
-        err: ?jsc.SystemError = null,
+        err: ?bun.sys.SystemError = null,
     },
     waiting_write_err,
     done,
 } = .idle,
 
-pub fn onIOWriterChunk(this: *Mkdir, _: usize, e: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *Mkdir, _: usize, e: ?bun.sys.SystemError) Yield {
     if (e) |err| err.deref();
 
     switch (this.state) {
@@ -120,13 +120,7 @@ pub fn onShellMkdirTaskDone(this: *Mkdir, task: *ShellMkdirTask) void {
     output_task.start(null).run();
 }
 
-pub const ShellMkdirOutputTask = OutputTask(Mkdir, .{
-    .writeErr = ShellMkdirOutputTaskVTable.writeErr,
-    .onWriteErr = ShellMkdirOutputTaskVTable.onWriteErr,
-    .writeOut = ShellMkdirOutputTaskVTable.writeOut,
-    .onWriteOut = ShellMkdirOutputTaskVTable.onWriteOut,
-    .onDone = ShellMkdirOutputTaskVTable.onDone,
-});
+pub const ShellMkdirOutputTask = OutputTask(Mkdir, ShellMkdirOutputTaskVTable);
 
 const ShellMkdirOutputTaskVTable = struct {
     pub fn writeErr(this: *Mkdir, childptr: anytype, errbuf: []const u8) ?Yield {
@@ -174,10 +168,10 @@ pub const ShellMkdirTask = struct {
     cwd_path: [:0]const u8,
     created_directories: ArrayList(u8),
 
-    err: ?jsc.SystemError = null,
-    task: jsc.BackgroundTask = .{ .callback = &runInBackground },
-    event_loop: jsc.EventLoopHandle,
-    concurrent_task: jsc.EventLoopTask,
+    err: ?bun.sys.SystemError = null,
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = &runInBackground },
+    scheduler: Interpreter.Scheduler,
+    main_task: Interpreter.Scheduler.Task = .{},
 
     pub fn deinit(this: *ShellMkdirTask) void {
         this.created_directories.deinit();
@@ -201,28 +195,23 @@ pub const ShellMkdirTask = struct {
         cwd_path: [:0]const u8,
     ) *ShellMkdirTask {
         const task = bun.handleOom(bun.default_allocator.create(ShellMkdirTask));
-        const evtloop = mkdir.bltn().parentCmd().base.eventLoop();
+        const scheduler = mkdir.bltn().parentCmd().base.eventLoop();
         task.* = ShellMkdirTask{
             .mkdir = mkdir,
             .opts = opts,
             .cwd_path = cwd_path,
             .filepath = filepath,
             .created_directories = ArrayList(u8).init(bun.default_allocator),
-            .event_loop = evtloop,
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(evtloop),
+            .scheduler = scheduler,
         };
         return task;
     }
 
     pub fn schedule(this: *@This()) void {
         debug("{f} schedule", .{this});
-        BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch {
+        BackgroundWork.schedule(this.scheduler.backgroundTasks(), &this.task) catch {
             this.err = bun.sys.Error.fromCode(.AGAIN, .mkdir).toShellSystemError();
-            if (this.event_loop == .js) {
-                this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-            } else {
-                this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-            }
+            this.scheduler.enqueue(&this.main_task, this);
         };
     }
 
@@ -235,7 +224,7 @@ pub const ShellMkdirTask = struct {
         this.runFromMainThread();
     }
 
-    fn runInBackground(task: *jsc.BackgroundTask) void {
+    fn runInBackground(task: *bun.BackgroundTaskGroup.Task) void {
         var this: *ShellMkdirTask = @fieldParentPtr("task", task);
         debug("{f} runInBackground", .{this});
 
@@ -247,31 +236,30 @@ pub const ShellMkdirTask = struct {
             &.{ this.cwd_path, this.filepath }));
         defer bun.default_allocator.free(filepath);
 
-        var node_fs = jsc.Node.fs.NodeFS{};
+        var mkdir_error_buffer: bun.PathBuffer = undefined;
         // Recursive
         if (this.opts.parents) {
-            const args = jsc.Node.fs.Arguments.Mkdir{
-                .path = jsc.Node.PathLike{ .string = bun.PathString.init(filepath) },
+            const args = NodeFSCore.Mkdir{
+                .path = NodeTypes.PathLike{ .string = bun.PathString.init(filepath) },
                 .recursive = true,
                 .always_return_none = true,
             };
 
             var vtable = MkdirVerboseVTable{ .inner = this, .active = this.opts.verbose };
 
-            switch (node_fs.mkdirRecursiveImpl(args, *MkdirVerboseVTable, &vtable)) {
+            switch (NodeFSCore.mkdirFromArgs(&mkdir_error_buffer, &args, *MkdirVerboseVTable, &vtable)) {
                 .result => {},
                 .err => |e| {
                     this.err = e.withPath(filepath).toShellSystemError();
-                    std.mem.doNotOptimizeAway(&node_fs);
                 },
             }
         } else {
-            const args = jsc.Node.fs.Arguments.Mkdir{
-                .path = jsc.Node.PathLike{ .string = bun.PathString.init(filepath) },
+            const args = NodeFSCore.Mkdir{
+                .path = NodeTypes.PathLike{ .string = bun.PathString.init(filepath) },
                 .recursive = false,
                 .always_return_none = true,
             };
-            switch (node_fs.mkdirNonRecursive(args)) {
+            switch (NodeFSCore.mkdirNonRecursive(&mkdir_error_buffer, args)) {
                 .result => {
                     if (this.opts.verbose) {
                         bun.handleOom(this.created_directories.appendSlice(filepath[0..filepath.len]));
@@ -280,16 +268,11 @@ pub const ShellMkdirTask = struct {
                 },
                 .err => |e| {
                     this.err = e.withPath(filepath).toShellSystemError();
-                    std.mem.doNotOptimizeAway(&node_fs);
                 },
             }
         }
 
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
+        this.scheduler.enqueue(&this.main_task, this);
     }
 
     const MkdirVerboseVTable = struct {
@@ -394,10 +377,11 @@ const Builtin = Interpreter.Builtin;
 const Result = Interpreter.Builtin.Result;
 
 const bun = @import("bun");
+const NodeFSCore = @import("../../runtime/node/NodeFSCore.zig");
+const NodeTypes = @import("../../runtime/node/types.zig");
 const ResolvePath = bun.path;
 
-const jsc = bun.jsc;
-const BackgroundWork = bun.jsc.BackgroundWork;
+const BackgroundWork = bun.BackgroundWork;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

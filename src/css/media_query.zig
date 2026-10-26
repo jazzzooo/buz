@@ -329,7 +329,7 @@ pub const MediaType = union(enum) {
     pub fn fromStr(name: []const u8) MediaType {
         const Enumerations = enum { all, print, screen };
         const Map = comptime bun.ComptimeEnumMap(Enumerations);
-        if (Map.getASCIIICaseInsensitive(name)) |x| return switch (x) {
+        if (Map.getCaseInsensitiveASCII(name)) |x| return switch (x) {
             .all => .all,
             .print => .print,
             .screen => .screen,

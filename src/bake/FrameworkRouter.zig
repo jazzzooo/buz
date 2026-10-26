@@ -79,7 +79,7 @@ pub const Route = struct {
     // file_not_found: OpaqueFileId.Optional = .none,
 
     /// Only used by DevServer, if this route is 1. navigatable & 2. has been requested at least once
-    bundle: bun.bake.DevServer.RouteBundle.Index.Optional = .none,
+    bundle: BakeCore.RouteBundleIndex.Optional = .none,
 
     inline fn filePtr(r: *Route, file_kind: FileKind) *OpaqueFileId.Optional {
         return &switch (file_kind) {
@@ -110,7 +110,7 @@ pub const Type = struct {
     /// `FrameworkRouter` itself does not use this value.
     server_file: OpaqueFileId,
     /// `FrameworkRouter` itself does not use this value.
-    server_file_string: jsc.Strong.Optional,
+    server_file_string: ?bun.String,
 
     pub fn rootRouteIndex(type_index: Index) Route.Index {
         return Route.Index.init(type_index.get());
@@ -151,6 +151,9 @@ pub fn initEmpty(root: []const u8, types: []Type, allocator: Allocator) !Framewo
 }
 
 pub fn deinit(fr: *FrameworkRouter, allocator: Allocator) void {
+    for (fr.types) |*router_type| {
+        if (router_type.server_file_string) |server_file_string| server_file_string.deref();
+    }
     fr.routes.deinit(allocator);
     fr.static_routes.deinit(allocator);
     fr.dynamic_routes.deinit(allocator);
@@ -348,315 +351,18 @@ const StaticPattern = struct {
     };
 };
 
-/// A part of a URL pattern
-pub const Part = union(enum(u3)) {
-    /// Does not contain slashes. One per slash.
-    text: []const u8,
-    param: []const u8,
-    /// Must be the last part of the pattern
-    catch_all_optional: []const u8,
-    /// Must be the last part of the pattern
-    catch_all: []const u8,
-    /// Does not affect URL matching, but does affect hierarchy.
-    group: []const u8,
+pub const Part = BakeCore.RoutePart;
 
-    const SerializedHeader = packed struct(u32) {
-        tag: @typeInfo(Part).@"union".tag_type.?,
-        len: u29,
-    };
-
-    pub fn writeAsSerialized(part: Part, writer: anytype) !void {
-        switch (part) {
-            .text => |text| {
-                bun.assert(text.len > 0);
-                bun.assert(bun.strings.indexOfChar(text, '/') == null);
-            },
-            else => {},
-        }
-        const payload = switch (part) {
-            inline else => |t| t,
-        };
-        try writer.writeInt(u32, @bitCast(SerializedHeader{
-            .tag = std.meta.activeTag(part),
-            .len = @intCast(payload.len),
-        }), .little);
-        try writer.writeAll(payload);
-    }
-
-    pub fn eql(a: Part, b: Part) bool {
-        if (std.meta.activeTag(a) != std.meta.activeTag(b))
-            return false;
-        return switch (a) {
-            inline else => |payload, tag| bun.strings.eql(
-                payload,
-                @field(b, @tagName(tag)),
-            ),
-        };
-    }
-
-    pub fn format(part: Part, writer: *std.Io.Writer) !void {
-        try writer.writeAll("Part \"");
-        try part.toStringForInternalUse(writer);
-        try writer.writeAll("\"");
-    }
-
-    fn toStringForInternalUse(part: Part, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        switch (part) {
-            .text => |text| try writer.print("/{s}", .{text}),
-            .param => |param_name| try writer.print("/:{s}", .{param_name}),
-            .group => |label| try writer.print("/({s})", .{label}),
-            .catch_all => |param_name| try writer.print("/:*{s}", .{param_name}),
-            .catch_all_optional => |param_name| try writer.print("/:*?{s}", .{param_name}),
-        }
-    }
-};
-
-pub const ParsedPattern = struct {
-    parts: []const Part,
-    kind: Kind,
-
-    pub const Kind = enum {
-        /// Can be navigated to. Pages can have children, which allows having
-        /// nested routes exactly how Remix allows them.
-        page,
-        /// Is not considered when resolving navigations, but is still a valid
-        /// node in the route tree.
-        layout,
-        /// Another file related to a route
-        extra,
-    };
-};
+pub const ParsedPattern = BakeCore.ParsedPattern;
 
 pub const Style = union(enum) {
     nextjs_pages,
     nextjs_app_ui,
     nextjs_app_routes,
-    javascript_defined: jsc.Strong.Optional,
-
-    pub const map = bun.ComptimeStringMap(Style, .{
-        .{ "nextjs-pages", .nextjs_pages },
-        .{ "nextjs-app-ui", .nextjs_app_ui },
-        .{ "nextjs-app-routes", .nextjs_app_routes },
-    });
-    pub const error_message = "'style' must be either \"nextjs-pages\", \"nextjs-app-ui\", \"nextjs-app-routes\", or a function.";
-
-    pub fn fromJS(value: JSValue, global: *jsc.JSGlobalObject) !Style {
-        if (value.isString()) {
-            const bun_string = try value.toBunString(global);
-            var sfa_buffer: [4096]u8 = undefined;
-            var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
-            const utf8 = bun_string.toUTF8(sfa.allocator());
-            defer utf8.deinit();
-            if (map.get(utf8.slice())) |style| {
-                return style;
-            }
-        } else if (value.isCallable()) {
-            return .{ .javascript_defined = .create(value, global) };
-        }
-
-        return global.throwInvalidArguments(error_message, .{});
-    }
-
-    pub fn deinit(style: *Style) void {
-        switch (style.*) {
-            .javascript_defined => |*strong| strong.deinit(),
-            else => {},
-        }
-    }
-
-    pub const UiOrRoutes = enum { ui, routes };
-    const NextRoutingConvention = enum { app, pages };
-
-    pub fn parse(style: Style, file_path: []const u8, ext: []const u8, log: *TinyLog, allow_layouts: bool, arena: Allocator) !?ParsedPattern {
-        bun.assert(file_path[0] == '/');
-
-        return switch (style) {
-            .nextjs_pages => parseNextJsPages(file_path, ext, log, allow_layouts, arena),
-            .nextjs_app_ui => parseNextJsApp(file_path, ext, log, allow_layouts, arena, .ui),
-            .nextjs_app_routes => parseNextJsApp(file_path, ext, log, allow_layouts, arena, .routes),
-
-            // The strategy for this should be to collect a list of candidates,
-            // then batch-call the javascript handler and collect all results.
-            // This will avoid most of the back-and-forth native<->js overhead.
-            .javascript_defined => @panic("TODO: customizable Style"),
-        };
-    }
-
-    /// Implements the pages router parser from Next.js:
-    /// https://nextjs.org/docs/getting-started/project-structure#pages-routing-conventions
-    pub fn parseNextJsPages(file_path_raw: []const u8, ext: []const u8, log: *TinyLog, allow_layouts: bool, arena: Allocator) !?ParsedPattern {
-        var file_path = file_path_raw[0 .. file_path_raw.len - ext.len];
-        var kind: ParsedPattern.Kind = .page;
-        if (strings.hasSuffixComptime(file_path, "/index")) {
-            file_path.len -= "/index".len;
-        } else if (allow_layouts and strings.hasSuffixComptime(file_path, "/_layout")) {
-            file_path.len -= "/_layout".len;
-            kind = .layout;
-        }
-        if (file_path.len == 0) return .{
-            .kind = kind,
-            .parts = &.{},
-        };
-        const parts = try parseNextJsLikeRouteSegment(file_path_raw, file_path, log, arena, .pages);
-        return .{
-            .kind = kind,
-            .parts = parts,
-        };
-    }
-
-    /// Implements the app router parser from Next.js:
-    /// https://nextjs.org/docs/getting-started/project-structure#app-routing-conventions
-    pub fn parseNextJsApp(
-        file_path_raw: []const u8,
-        ext: []const u8,
-        log: *TinyLog,
-        allow_layouts: bool,
-        arena: Allocator,
-        comptime extract: UiOrRoutes,
-    ) !?ParsedPattern {
-        const without_ext = file_path_raw[0 .. file_path_raw.len - ext.len];
-        const basename = std.fs.path.basename(without_ext);
-        const loader = bun.options.Loader.fromString(ext) orelse
-            return null;
-
-        // TODO: opengraph-image and metadata friends
-        if (!loader.isJavaScriptLike())
-            return null;
-
-        const kind = bun.ComptimeStringMap(ParsedPattern.Kind, switch (extract) {
-            .ui => .{
-                .{ "page", .page },
-                .{ "layout", .layout },
-
-                .{ "default", .extra },
-                .{ "template", .extra },
-                .{ "error", .extra },
-                .{ "loading", .extra },
-                .{ "not-found", .extra },
-            },
-            .routes => .{
-                .{ "route", .page },
-            },
-        }).get(basename) orelse
-            return null;
-
-        if (kind == .layout and !allow_layouts) return null;
-
-        const dirname = std.fs.path.dirnamePosix(without_ext) orelse "";
-        if (dirname.len <= 1) return .{
-            .kind = kind,
-            .parts = &.{},
-        };
-        const parts = try parseNextJsLikeRouteSegment(file_path_raw, dirname, log, arena, .app);
-        return .{
-            .kind = kind,
-            .parts = parts,
-        };
-    }
-
-    fn parseNextJsLikeRouteSegment(
-        raw_input: []const u8,
-        route_segment: []const u8,
-        log: *TinyLog,
-        arena: Allocator,
-        comptime conventions: NextRoutingConvention,
-    ) ![]Part {
-        var i: usize = 1;
-        var parts: std.ArrayListUnmanaged(Part) = .empty;
-        const stop_chars = switch (conventions) {
-            .pages => "[",
-            .app => "[(@",
-        };
-        while (strings.indexOfAnyPosComptime(route_segment, stop_chars, i)) |start| {
-            if (conventions == .pages or route_segment[start] == '[') {
-                var end = strings.indexOfCharPos(route_segment, ']', start + 1) orelse
-                    return log.fail("Missing \"]\" to match this route parameter", .{}, start, raw_input.len - start);
-
-                const is_optional = route_segment[start + 1] == '[';
-
-                const param_content = route_segment[start + 1 + @as(u64, @intFromBool(is_optional)) .. end];
-
-                var has_ending_double_bracket = false;
-                if (end + 1 < route_segment.len and route_segment[end + 1] == ']') {
-                    end += 1;
-                    has_ending_double_bracket = true;
-                }
-                const len = end - start + 1;
-
-                const is_catch_all = strings.hasPrefixComptime(param_content, "...");
-                const param_name = if (is_catch_all) param_content[3..] else param_content;
-
-                if (param_name.len == 0)
-                    return log.fail("Parameter needs a name", .{}, start, len);
-                if (param_name[0] == '.')
-                    return log.fail("Parameter name cannot start with \".\" (use \"...\" for catch-all)", .{}, start, len);
-                if (is_optional and !is_catch_all)
-                    return log.fail("Optional parameters can only be catch-all (change to \"[[...{s}]]\" or remove extra brackets)", .{param_name}, start, len);
-                // Potential future proofing
-                if (bun.strings.indexOfAny(param_name, "?*{}()=:#,")) |bad_char_index|
-                    return log.fail("Parameter name cannot contain \"{c}\"", .{param_name[bad_char_index]}, start + bad_char_index, 1);
-
-                if (has_ending_double_bracket and !is_optional)
-                    return log.fail("Extra \"]\" in route parameter", .{}, end, 1)
-                else if (!has_ending_double_bracket and is_optional)
-                    return log.fail("Missing second \"]\" to close optional route parameter", .{}, end, 1);
-
-                if (route_segment[start - 1] != '/' or (end + 1 < route_segment.len and route_segment[end + 1] != '/'))
-                    return log.fail("Parameters must take up the entire file name", .{}, start, len);
-
-                if (is_catch_all and route_segment.len != end + 1)
-                    return log.fail("Catch-all parameter must be at the end of a route", .{}, start, len);
-
-                const between = route_segment[i..start];
-                var it = std.mem.tokenizeScalar(u8, between, '/');
-                while (it.next()) |part|
-                    try parts.append(arena, .{ .text = part });
-                try parts.append(
-                    arena,
-                    if (is_optional)
-                        .{ .catch_all_optional = param_name }
-                    else if (is_catch_all)
-                        .{ .catch_all = param_name }
-                    else
-                        .{ .param = param_name },
-                );
-
-                i = end + 1;
-            } else if (route_segment[start] == '(') {
-                const end = strings.indexOfCharPos(route_segment, ')', start + 1) orelse
-                    return log.fail("Missing \")\" to match this route group", .{}, start, raw_input.len - start);
-
-                const len = end - start + 1;
-
-                const group_name = route_segment[start + 1 .. end];
-                if (strings.hasPrefixComptime(group_name, "."))
-                    return log.fail("Bun Bake currently does not support named slots and intercepted routes", .{}, start, len);
-
-                if (route_segment[start - 1] != '/' or (end + 1 < route_segment.len and route_segment[end + 1] != '/'))
-                    return log.fail("Route group marker must take up the entire file name", .{}, start, len);
-
-                const between = route_segment[i..start];
-                var it = std.mem.tokenizeScalar(u8, between, '/');
-                while (it.next()) |part|
-                    try parts.append(arena, .{ .text = part });
-                try parts.append(arena, .{ .group = group_name });
-
-                i = end + 1;
-            } else if (route_segment[start] == '@') {
-                const end = strings.indexOfCharPos(route_segment, ')', start + 1) orelse
-                    route_segment.len;
-                const len = end - start + 1;
-                return log.fail("Bun Bake currently does not support named slots and intercepted routes", .{}, start, len);
-            }
-        }
-        if (route_segment[i..].len > 0) {
-            var it = std.mem.tokenizeScalar(u8, route_segment[i..], '/');
-            while (it.next()) |part|
-                try parts.append(arena, .{ .text = part });
-        }
-        return parts.items;
-    }
+    custom: u8,
 };
+
+pub const PatternParseError = BakeCore.PatternParseError;
 
 const InsertError = error{ RouteCollision, OutOfMemory };
 const InsertKind = enum {
@@ -685,7 +391,7 @@ pub fn insert(
     pattern: insertion_kind.Pattern(),
     file_kind: Route.FileKind,
     file_path: []const u8,
-    ctx: InsertionContext,
+    ctx: anytype,
     /// When `error.RouteCollision` is returned, this is set to the existing file index.
     out_colliding_file_id: *OpaqueFileId,
 ) InsertError!void {
@@ -748,7 +454,7 @@ pub fn insert(
         }
     };
 
-    const file_id = try ctx.vtable.getFileIdForRouter(ctx.opaque_ctx, file_path, new_route_index, file_kind);
+    const file_id = try ctx.getFileIdForRouter(file_path, new_route_index, file_kind);
 
     const new_route = fr.routePtr(new_route_index);
     if (new_route.filePtr(file_kind).unwrap()) |existing| {
@@ -800,28 +506,6 @@ pub const MatchedParams = struct {
         self.entries[self.len] = .{ .key = key, .value = value };
         self.len += 1;
     }
-
-    /// Convert the matched params to a JavaScript object
-    /// Returns null if there are no params
-    pub fn toJS(self: *const MatchedParams, global: *jsc.JSGlobalObject) JSValue {
-        const params_array = self.entries[0..self.len];
-
-        if (params_array.len == 0) {
-            return JSValue.null;
-        }
-
-        // Create a JavaScript object with params
-        const obj = jsc.JSObject.createEmpty(global, params_array.len);
-        for (params_array) |param| {
-            const key_str = bun.String.cloneUTF8(param.key);
-            defer key_str.deref();
-            const value_str = bun.String.cloneUTF8(param.value);
-            defer value_str.deref();
-
-            _ = obj.putBunStringOneOrArray(global, &key_str, value_str.toJS(global) catch unreachable) catch unreachable;
-        }
-        return obj.toJS();
-    }
 };
 
 /// Fast enough for development to be seamless, but avoids building a
@@ -869,106 +553,48 @@ fn newEdge(fr: *FrameworkRouter, alloc: Allocator, edge_data: Route.Edge) !Route
     }
 }
 
-const PatternParseError = error{InvalidRoutePattern};
+pub const TinyLog = BakeCore.TinyLog;
 
-/// Non-allocating single message log, specialized for the messages from the route pattern parsers.
-/// DevServer uses this to special-case the printing of these messages to highlight the offending part of the filename
-pub const TinyLog = struct {
-    const max_message_len = 512 + @min(std.fs.max_path_bytes, 4096);
-
-    message_buffer: [max_message_len]u8 = undefined,
-    message_len: u16,
-    cursor_at: u32,
-    cursor_len: u32,
-
-    pub const empty: TinyLog = .{
-        .message_len = 0,
-        .cursor_at = std.math.maxInt(u32),
-        .cursor_len = 0,
-    };
-
-    pub fn fail(log: *TinyLog, comptime fmt: []const u8, args: anytype, cursor_at: usize, cursor_len: usize) PatternParseError {
-        log.write(fmt, args);
-        log.cursor_at = @intCast(cursor_at);
-        log.cursor_len = @intCast(cursor_len);
-        return PatternParseError.InvalidRoutePattern;
-    }
-
-    pub fn write(log: *TinyLog, comptime fmt: []const u8, args: anytype) void {
-        log.message_len = @intCast(if (std.fmt.bufPrint(&log.message_buffer, fmt, args)) |slice| slice.len else |_| brk: {
-            // truncation should never happen because the buffer is HUGE. handle it anyways
-            @memcpy(log.message_buffer[log.message_buffer.len - 3 ..], "...");
-            break :brk log.message_buffer.len;
-        });
-    }
-
-    pub fn message(log: *const TinyLog) []const u8 {
-        return log.message_buffer[0..log.message_len];
-    }
-
-    pub fn print(log: *const TinyLog, rel_path: []const u8) void {
-        const after = rel_path[@max(0, log.cursor_at)..];
-        bun.Output.errGeneric("\"{s}<blue>{s}<r>{s}\" is not a valid route", .{
-            rel_path[0..@max(0, log.cursor_at)],
-            after[0..@min(log.cursor_len, after.len)],
-            after[@min(log.cursor_len, after.len)..],
-        });
-        const w = bun.Output.errorWriterBuffered();
-        w.splatByteAll(' ', "error: \"".len + log.cursor_at) catch return;
-        if (bun.Output.enable_ansi_colors_stderr) {
-            const symbols = bun.fmt.TableSymbols.unicode;
-            bun.Output.prettyError("<blue>" ++ symbols.topColumnSep(), .{});
-            if (log.cursor_len > 1) {
-                w.splatBytesAll(symbols.horizontalEdge(), log.cursor_len - 1) catch return;
-            }
-        } else {
-            if (log.cursor_len <= 1) {
-                w.writeAll("|") catch return;
-            } else {
-                w.splatByteAll('-', log.cursor_len - 1) catch return;
-            }
-        }
-        w.writeByte('\n') catch return;
-        w.splatByteAll(' ', "error: \"".len + log.cursor_at) catch return;
-        w.writeAll(log.message()) catch return;
-        bun.Output.prettyError("<r>\n", .{});
-        bun.Output.flush();
-    }
-};
-
-/// Interface for connecting FrameworkRouter to another codebase
 pub const InsertionContext = struct {
-    opaque_ctx: *anyopaque,
-    vtable: *const VTable,
-    const VTable = struct {
-        getFileIdForRouter: *const fn (*anyopaque, abs_path: []const u8, associated_route: Route.Index, kind: Route.FileKind) bun.OOM!OpaqueFileId,
-        onRouterSyntaxError: *const fn (*anyopaque, rel_path: []const u8, fail: TinyLog) bun.OOM!void,
-        onRouterCollisionError: *const fn (*anyopaque, rel_path: []const u8, other_id: OpaqueFileId, file_kind: Route.FileKind) bun.OOM!void,
-    };
-    pub fn wrap(comptime T: type, ctx: *T) InsertionContext {
-        const wrapper = struct {
-            fn getFileIdForRouter(opaque_ctx: *anyopaque, abs_path: []const u8, associated_route: Route.Index, kind: Route.FileKind) bun.OOM!OpaqueFileId {
-                const cast_ctx: *T = @ptrCast(@alignCast(opaque_ctx));
-                return try cast_ctx.getFileIdForRouter(abs_path, associated_route, kind);
+    pub fn wrap(comptime T: type, context: *T) Context(T) {
+        comptime {
+            if (!@hasDecl(T, "getFileIdForRouter")) @compileError(@typeName(T) ++ " must implement getFileIdForRouter");
+            if (!@hasDecl(T, "onRouterSyntaxError")) @compileError(@typeName(T) ++ " must implement onRouterSyntaxError");
+            if (!@hasDecl(T, "onRouterCollisionError")) @compileError(@typeName(T) ++ " must implement onRouterCollisionError");
+            if (!@hasDecl(T, "parseCustomRoute")) @compileError(@typeName(T) ++ " must implement parseCustomRoute");
+        }
+        return .{ .context = context };
+    }
+
+    fn ParseResult(comptime T: type) type {
+        return @typeInfo(@TypeOf(T.parseCustomRoute)).@"fn".return_type.?;
+    }
+
+    fn Context(comptime T: type) type {
+        return struct {
+            context: *T,
+
+            pub fn getFileIdForRouter(self: @This(), abs_path: []const u8, associated_route: Route.Index, kind: Route.FileKind) bun.OOM!OpaqueFileId {
+                return self.context.getFileIdForRouter(abs_path, associated_route, kind);
             }
-            fn onRouterSyntaxError(opaque_ctx: *anyopaque, rel_path: []const u8, log: TinyLog) bun.OOM!void {
-                const cast_ctx: *T = @ptrCast(@alignCast(opaque_ctx));
-                if (!@hasDecl(T, "onRouterSyntaxError")) @panic("TODO: onRouterSyntaxError for " ++ @typeName(T));
-                return try cast_ctx.onRouterSyntaxError(rel_path, log);
+
+            pub fn onRouterSyntaxError(self: @This(), rel_path: []const u8, log: TinyLog) bun.OOM!void {
+                return self.context.onRouterSyntaxError(rel_path, log);
             }
-            fn onRouterCollisionError(opaque_ctx: *anyopaque, rel_path: []const u8, other_id: OpaqueFileId, file_kind: Route.FileKind) bun.OOM!void {
-                const cast_ctx: *T = @ptrCast(@alignCast(opaque_ctx));
-                if (!@hasDecl(T, "onRouterCollisionError")) @panic("TODO: onRouterCollisionError for " ++ @typeName(T));
-                return try cast_ctx.onRouterCollisionError(rel_path, other_id, file_kind);
+
+            pub fn onRouterCollisionError(self: @This(), rel_path: []const u8, other_id: OpaqueFileId, file_kind: Route.FileKind) bun.OOM!void {
+                return self.context.onRouterCollisionError(rel_path, other_id, file_kind);
             }
-        };
-        return .{
-            .opaque_ctx = ctx,
-            .vtable = comptime &.{
-                .getFileIdForRouter = &wrapper.getFileIdForRouter,
-                .onRouterSyntaxError = &wrapper.onRouterSyntaxError,
-                .onRouterCollisionError = &wrapper.onRouterCollisionError,
-            },
+
+            pub fn parseCustomRoute(
+                self: @This(),
+                style_index: u8,
+                file_path: []const u8,
+                log: *TinyLog,
+                allocator: Allocator,
+            ) ParseResult(T) {
+                return self.context.parseCustomRoute(style_index, file_path, log, allocator);
+            }
         };
     }
 };
@@ -978,8 +604,8 @@ pub fn scan(
     alloc: Allocator,
     ty: Type.Index,
     r: *Resolver,
-    ctx: InsertionContext,
-) bun.OOM!void {
+    ctx: anytype,
+) !void {
     const t = &fw.types[ty.get()];
     bun.assert(!strings.hasSuffixComptime(t.abs_root, "/"));
     bun.assert(std.fs.path.isAbsolute(t.abs_root));
@@ -998,8 +624,8 @@ fn scanInner(
     r: *Resolver,
     dir_info: *const DirInfo,
     arena_state: *std.heap.ArenaAllocator,
-    ctx: InsertionContext,
-) bun.OOM!void {
+    ctx: anytype,
+) !void {
     const fs = r.fs;
     const fs_impl = &fs.fs;
 
@@ -1047,10 +673,18 @@ fn scanInner(
                         full_rel_path[t.abs_root.len - fr.root.len - 1 ..];
                     var log = TinyLog.empty;
                     defer _ = arena_state.reset(.retain_capacity);
-                    const parsed = (t.style.parse(rel_path, ext, &log, t.allow_layouts, arena_state.allocator()) catch {
-                        log.cursor_at += @intCast(t.abs_root.len - fr.root.len);
-                        try ctx.vtable.onRouterSyntaxError(ctx.opaque_ctx, full_rel_path, log);
-                        continue :outer;
+                    const parsed = (switch (t.style) {
+                        .nextjs_pages => BakeCore.parseNextJsPages(rel_path, ext, &log, t.allow_layouts, arena_state.allocator()),
+                        .nextjs_app_ui => BakeCore.parseNextJsApp(rel_path, ext, &log, t.allow_layouts, arena_state.allocator(), .ui),
+                        .nextjs_app_routes => BakeCore.parseNextJsApp(rel_path, ext, &log, t.allow_layouts, arena_state.allocator(), .routes),
+                        .custom => |style_index| ctx.parseCustomRoute(style_index, rel_path, &log, arena_state.allocator()),
+                    } catch |err| switch (err) {
+                        error.InvalidRoutePattern => {
+                            log.cursor_at += @intCast(t.abs_root.len - fr.root.len);
+                            try ctx.onRouterSyntaxError(full_rel_path, log);
+                            continue :outer;
+                        },
+                        else => |e| return e,
                     }) orelse continue :outer;
 
                     if (parsed.kind == .page and t.ignore_underscores and bun.strings.hasPrefixComptime(base, "_"))
@@ -1073,7 +707,7 @@ fn scanInner(
 
                     if (param_count > 64) {
                         log.write("Pattern cannot have more than 64 param", .{});
-                        try ctx.vtable.onRouterSyntaxError(ctx.opaque_ctx, full_rel_path, log);
+                        try ctx.onRouterSyntaxError(full_rel_path, log);
                         continue :outer;
                     }
 
@@ -1121,8 +755,7 @@ fn scanInner(
                     result catch |err| switch (err) {
                         error.OutOfMemory => |e| return e,
                         error.RouteCollision => {
-                            try ctx.vtable.onRouterCollisionError(
-                                ctx.opaque_ctx,
+                            try ctx.onRouterCollisionError(
                                 full_rel_path,
                                 out_colliding_file_id,
                                 file_kind,
@@ -1135,235 +768,11 @@ fn scanInner(
     }
 }
 
-/// This binding is currently only intended for testing FrameworkRouter, and not
-/// production usage. It uses a slower but easier to use pattern for object
-/// creation. A production-grade JS api would be able to re-use objects.
-pub const JSFrameworkRouter = struct {
-    pub const js = jsc.Codegen.JSFrameworkFileSystemRouter;
-    pub const toJS = js.toJS;
-    pub const fromJS = js.fromJS;
-
-    files: std.ArrayListUnmanaged(bun.String),
-    router: FrameworkRouter,
-    stored_parse_errors: std.ArrayListUnmanaged(struct {
-        // Owned by bun.default_allocator
-        rel_path: []const u8,
-        log: TinyLog,
-    }),
-
-    const validators = bun.jsc.Node.validators;
-
-    pub fn getBindings(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-        return (try jsc.JSObject.create(.{
-            .parseRoutePattern = jsc.JSFunction.create(global, "parseRoutePattern", jsc.host_fn.toJSHostFn(parseRoutePattern), 1, .{}),
-            .FrameworkRouter = js.getConstructor(global),
-        }, global)).toJS();
-    }
-
-    pub fn constructor(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*JSFrameworkRouter {
-        const opts = callframe.argumentsAsArray(1)[0];
-        if (!opts.isObject())
-            return global.throwInvalidArguments("FrameworkRouter needs an object as it's first argument", .{});
-
-        const root = try opts.getOptional(global, "root", bun.String.Slice) orelse
-            return global.throwInvalidArguments("Missing options.root", .{});
-        defer root.deinit();
-
-        var style = try Style.fromJS(try opts.getOptional(global, "style", JSValue) orelse .js_undefined, global);
-        errdefer style.deinit();
-
-        const abs_root = try std.fs.path.resolve(bun.default_allocator, &.{ bun.fs.FileSystem.instance.top_level_dir, root.slice() });
-        errdefer bun.default_allocator.free(abs_root);
-
-        const types = try bun.default_allocator.dupe(Type, &.{.{
-            .abs_root = abs_root,
-            .ignore_underscores = false,
-            .extensions = &.{ ".tsx", ".ts", ".jsx", ".js" },
-            .style = style,
-            .allow_layouts = true,
-            // Unused by JSFrameworkRouter
-            .client_file = undefined,
-            .server_file = undefined,
-            .server_file_string = undefined,
-        }});
-        errdefer bun.default_allocator.free(types);
-
-        const jsfr = bun.new(JSFrameworkRouter, .{
-            .router = try FrameworkRouter.initEmpty(abs_root, types, bun.default_allocator),
-            .files = .empty,
-            .stored_parse_errors = .empty,
-        });
-
-        try jsfr.router.scan(
-            bun.default_allocator,
-            Type.Index.init(0),
-            &global.bunVM().transpiler.resolver,
-            InsertionContext.wrap(JSFrameworkRouter, jsfr),
-        );
-        if (jsfr.stored_parse_errors.items.len > 0) {
-            const arr = try jsc.JSArray.createEmpty(global, jsfr.stored_parse_errors.items.len);
-            for (jsfr.stored_parse_errors.items, 0..) |*item, i| {
-                try arr.putDirectIndex(
-                    global,
-                    @intCast(i),
-                    (try global.createErrorInstance("Invalid route {f}: {s}", .{
-                        bun.fmt.quote(item.rel_path),
-                        item.log.message(),
-                    })).toJS(),
-                );
-            }
-            return global.throwValue((try global.createAggregateErrorWithArray(.static("Errors scanning routes"), arr)).toJS());
-        }
-
-        return jsfr;
-    }
-
-    pub fn match(jsfr: *JSFrameworkRouter, global: *JSGlobalObject, callframe: *jsc.CallFrame) !JSValue {
-        const path_value = callframe.argumentsAsArray(1)[0];
-        const path = try path_value.toSlice(global, bun.default_allocator);
-        defer path.deinit();
-
-        var params_out: MatchedParams = undefined;
-        if (jsfr.router.matchSlow(path.slice(), &params_out)) |index| {
-            var sfb_buffer: [4096]u8 = undefined;
-            var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, bun.default_allocator);
-            const alloc = sfb.allocator();
-
-            return (try jsc.JSObject.create(.{
-                .params = params_out.toJS(global),
-                .route = try jsfr.routeToJsonInverse(global, index, alloc),
-            }, global)).toJS();
-        }
-
-        return .null;
-    }
-
-    pub fn toJSON(jsfr: *JSFrameworkRouter, global: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-        _ = callframe;
-
-        var sfb_buffer: [4096]u8 = undefined;
-        var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, bun.default_allocator);
-        const alloc = sfb.allocator();
-
-        return jsfr.routeToJson(global, Route.Index.init(0), alloc);
-    }
-
-    fn routeToJson(jsfr: *JSFrameworkRouter, global: *JSGlobalObject, route_index: Route.Index, allocator: Allocator) !JSValue {
-        const route = jsfr.router.routePtr(route_index);
-        return (try jsc.JSObject.create(.{
-            .part = try partToJS(global, route.part, allocator),
-            .page = try jsfr.fileIdToJS(global, route.file_page),
-            .layout = try jsfr.fileIdToJS(global, route.file_layout),
-            // .notFound = jsfr.fileIdToJS(global, route.file_not_found),
-            .children = brk: {
-                var len: usize = 0;
-                var next = route.first_child.unwrap();
-                while (next) |r| : (next = jsfr.router.routePtr(r).next_sibling.unwrap())
-                    len += 1;
-                const arr = try jsc.JSArray.createEmpty(global, len);
-                next = route.first_child.unwrap();
-                var i: u32 = 0;
-                while (next) |r| : (next = jsfr.router.routePtr(r).next_sibling.unwrap()) {
-                    try arr.putDirectIndex(global, i, try routeToJson(jsfr, global, r, allocator));
-                    i += 1;
-                }
-                break :brk arr;
-            },
-        }, global)).toJS();
-    }
-
-    fn routeToJsonInverse(jsfr: *JSFrameworkRouter, global: *JSGlobalObject, route_index: Route.Index, allocator: Allocator) !JSValue {
-        const route = jsfr.router.routePtr(route_index);
-        return (try jsc.JSObject.create(.{
-            .part = try partToJS(global, route.part, allocator),
-            .page = try jsfr.fileIdToJS(global, route.file_page),
-            .layout = try jsfr.fileIdToJS(global, route.file_layout),
-            // .notFound = jsfr.fileIdToJS(global, route.file_not_found),
-            .parent = if (route.parent.unwrap()) |parent|
-                try routeToJsonInverse(jsfr, global, parent, allocator)
-            else
-                .null,
-        }, global)).toJS();
-    }
-
-    pub fn finalize(this: *JSFrameworkRouter) void {
-        this.files.deinit(bun.default_allocator);
-        this.router.deinit(bun.default_allocator);
-        for (this.stored_parse_errors.items) |i| bun.default_allocator.free(i.rel_path);
-        this.stored_parse_errors.deinit(bun.default_allocator);
-        bun.destroy(this);
-    }
-
-    pub fn parseRoutePattern(global: *JSGlobalObject, frame: *CallFrame) bun.JSError!JSValue {
-        var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        if (frame.argumentsCount() < 2)
-            return global.throwInvalidArguments("parseRoutePattern takes two arguments", .{});
-
-        const style_js, const filepath_js = frame.argumentsAsArray(2);
-        const filepath = try filepath_js.toSlice(global, alloc);
-        defer filepath.deinit();
-        var style = try Style.fromJS(style_js, global);
-        errdefer style.deinit();
-
-        var log = TinyLog.empty;
-        const parsed = style.parse(filepath.slice(), std.fs.path.extension(filepath.slice()), &log, true, alloc) catch |err| switch (err) {
-            error.InvalidRoutePattern => {
-                return global.throw("{s} ({d}:{d})", .{ log.message(), log.cursor_at, log.cursor_len });
-            },
-            else => |e| return e,
-        } orelse
-            return .null;
-
-        var rendered = try std.Io.Writer.Allocating.initCapacity(alloc, filepath.slice().len);
-        defer rendered.deinit();
-        for (parsed.parts) |part| part.toStringForInternalUse(&rendered.writer) catch return error.OutOfMemory;
-
-        var out = bun.String.init(rendered.written());
-        const obj = jsc.JSObject.createEmpty(global, 2);
-        obj.putDirect(global, "kind", try bun.String.static(@tagName(parsed.kind)).toJS(global));
-        obj.putDirect(global, "pattern", try out.transferToJS(global));
-        return obj.toJS();
-    }
-
-    fn partToJS(global: *JSGlobalObject, part: Part, temp_allocator: Allocator) !JSValue {
-        var rendered = std.Io.Writer.Allocating.init(temp_allocator);
-        defer rendered.deinit();
-        part.toStringForInternalUse(&rendered.writer) catch return error.OutOfMemory;
-        var str = bun.String.cloneUTF8(rendered.written());
-        return try str.transferToJS(global);
-    }
-
-    pub fn getFileIdForRouter(jsfr: *JSFrameworkRouter, abs_path: []const u8, _: Route.Index, _: Route.FileKind) !OpaqueFileId {
-        try jsfr.files.append(bun.default_allocator, bun.String.cloneUTF8(abs_path));
-        return OpaqueFileId.init(@intCast(jsfr.files.items.len - 1));
-    }
-
-    pub fn onRouterSyntaxError(jsfr: *JSFrameworkRouter, rel_path: []const u8, log: TinyLog) !void {
-        const rel_path_dupe = try bun.default_allocator.dupe(u8, rel_path);
-        errdefer bun.default_allocator.free(rel_path_dupe);
-        try jsfr.stored_parse_errors.append(bun.default_allocator, .{
-            .rel_path = rel_path_dupe,
-            .log = log,
-        });
-    }
-
-    pub fn fileIdToJS(jsfr: *JSFrameworkRouter, global: *JSGlobalObject, id: OpaqueFileId.Optional) bun.JSError!JSValue {
-        return jsfr.files.items[(id.unwrap() orelse return .null).get()].toJS(global);
-    }
-};
-
 const std = @import("std");
+const BakeCore = @import("./BakeCore.zig");
 
 const bun = @import("bun");
 const strings = bun.strings;
-
-const jsc = bun.jsc;
-const CallFrame = jsc.CallFrame;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
 
 const DirInfo = bun.resolver.DirInfo;
 const Resolver = bun.resolver.Resolver;

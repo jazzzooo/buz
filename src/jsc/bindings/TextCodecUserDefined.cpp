@@ -29,32 +29,21 @@
 #include "TextCodecUserDefined.h"
 
 #include <array>
-#include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/CString.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/text/WTFString.h>
 
 namespace PAL {
 
-WTF_MAKE_TZONE_ALLOCATED_IMPL(TextCodecUserDefined);
-
-void TextCodecUserDefined::registerEncodingNames(EncodingNameRegistrar registrar)
-{
-    registrar("x-user-defined"_s, "x-user-defined"_s);
-}
-
-void TextCodecUserDefined::registerCodecs(TextCodecRegistrar registrar)
-{
-    registrar("x-user-defined"_s, [] {
-        return makeUnique<TextCodecUserDefined>();
-    });
-}
-
 String TextCodecUserDefined::decode(std::span<const uint8_t> bytes, bool, bool, bool&)
 {
-    StringBuilder result;
+    if (bytes.size() > String::MaxLength)
+        return {};
+    StringBuilder result(OverflowPolicy::RecordOverflow);
     result.reserveCapacity(bytes.size());
     for (const uint8_t byte : bytes) {
+        if (result.hasOverflowed())
+            return {};
         // x-user-defined maps 0x80-0xFF to U+F780-U+F7FF
         // ASCII range (0x00-0x7F) maps directly
         if (byte < 0x80)
@@ -62,46 +51,7 @@ String TextCodecUserDefined::decode(std::span<const uint8_t> bytes, bool, bool, 
         else
             result.append(static_cast<char16_t>(0xF700 | byte));
     }
-    return result.toString();
-}
-
-static Vector<uint8_t> encodeComplexUserDefined(StringView string, UnencodableHandling handling)
-{
-    Vector<uint8_t> result;
-
-    for (auto character : string.codePoints()) {
-        int8_t signedByte = character;
-        if ((signedByte & 0xF7FF) == character)
-            result.append(signedByte);
-        else {
-            // No way to encode this character with x-user-defined.
-            UnencodableReplacementArray replacement;
-            result.append(TextCodec::getUnencodableReplacement(character, handling, replacement));
-        }
-    }
-
-    return result;
-}
-
-Vector<uint8_t> TextCodecUserDefined::encode(StringView string, UnencodableHandling handling) const
-{
-    {
-        Vector<uint8_t> result(string.length());
-        size_t index = 0;
-
-        // Convert and simultaneously do a check to see if it's all ASCII.
-        char16_t ored = 0;
-        for (auto character : string.codeUnits()) {
-            result[index++] = character;
-            ored |= character;
-        }
-
-        if (!(ored & 0xFF80))
-            return result;
-    }
-
-    // If it wasn't all ASCII, call the function that handles more-complex cases.
-    return encodeComplexUserDefined(string, handling);
+    return finishTextDecode(result);
 }
 
 } // namespace PAL

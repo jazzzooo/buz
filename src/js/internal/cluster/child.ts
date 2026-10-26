@@ -2,17 +2,20 @@ const EventEmitter = require("node:events");
 const Worker = require("internal/cluster/Worker");
 const path = require("node:path");
 
-const sendHelper = $newZigFunction("node_cluster_binding.zig", "sendHelperChild", 3);
-const onInternalMessage = $newZigFunction("node_cluster_binding.zig", "onInternalMessageChild", 2);
+const sendHelper = $bindgenFn("NodeCluster.schema.zig", "sendHelperChild");
+const onInternalMessage = $bindgenFn("NodeCluster.schema.zig", "onInternalMessageChild");
+const emitProcessErrorEvent = $bindgenFn("NodeCluster.schema.zig", "emitProcessErrorEvent");
 
 const FunctionPrototype = Function.prototype;
 const ArrayPrototypeJoin = Array.prototype.join;
 const ObjectAssign = Object.assign;
 
-const cluster = new EventEmitter();
+const cluster: any = new EventEmitter();
 const handles = new Map();
 const indexes = new Map();
-const noop = FunctionPrototype;
+const sendCallbacks = new Map<number, (message: any, handle: any) => void>();
+let sendSequence = 0;
+const noop = FunctionPrototype as () => void;
 const TIMEOUT_MAX = 2 ** 31 - 1;
 const kNoFailure = 0;
 const owner_symbol = Symbol("owner_symbol");
@@ -27,7 +30,7 @@ cluster.Worker = Worker;
 
 cluster._setupWorker = function () {
   const worker = new Worker({
-    id: +process.env.NODE_UNIQUE_ID | 0,
+    id: +process.env.NODE_UNIQUE_ID! | 0,
     process: process,
     state: "online",
   });
@@ -36,9 +39,9 @@ cluster._setupWorker = function () {
 
   // make sure the process.once("disconnect") doesn't count as a ref
   // before calling, check if the channel is refd. if it isn't, then unref it after calling process.once();
-  $newZigFunction("node_cluster_binding.zig", "channelIgnoreOneDisconnectEventListener", 0)();
+  $bindgenFn("NodeCluster.schema.zig", "channelIgnoreOneDisconnectEventListener")();
   process.once("disconnect", () => {
-    process.channel = null;
+    (process as any).channel = null;
     worker.emit("disconnect");
 
     if (!worker.exitedAfterDisconnect) {
@@ -48,10 +51,21 @@ cluster._setupWorker = function () {
     }
   });
 
-  onInternalMessage(worker, onmessage);
+  onInternalMessage((message, handle) => {
+    const ack = message?.ack;
+    if (ack !== undefined) {
+      const callback = sendCallbacks.get(ack | 0);
+      if (callback !== undefined) {
+        sendCallbacks.delete(ack | 0);
+        callback(message, handle);
+        return;
+      }
+    }
+    onmessage(worker, message, handle);
+  });
   send({ act: "online" });
 
-  function onmessage(message, handle) {
+  function onmessage(_worker, message, handle) {
     if (message.act === "newconn") onconnection(message, handle);
     else if (message.act === "disconnect") worker._disconnect(true);
   }
@@ -196,7 +210,13 @@ function rr(message, { indexesKey, index }, cb) {
 
   // Faux handle. net.Server is not associated with handle,
   // so we control its state(ref or unref) by setInterval.
-  const handle = { close, listen, ref, unref };
+  const handle: {
+    close: typeof close;
+    listen: typeof listen;
+    ref: typeof ref;
+    unref: typeof unref;
+    getsockname?: typeof getsockname;
+  } = { close, listen, ref, unref };
   handle.ref();
   if (message.sockname) {
     handle.getsockname = getsockname; // TCP handles only.
@@ -227,7 +247,19 @@ function onconnection(message, handle) {
 }
 
 function send(message, cb?) {
-  return sendHelper(message, null, cb);
+  const sequence = sendSequence;
+  sendSequence = (sendSequence + 1) | 0;
+  message.seq = sequence;
+  if (cb !== undefined) sendCallbacks.set(sequence, cb);
+
+  const result = sendHelper(message);
+  if (result === "failure" || result === "unavailable") sendCallbacks.delete(sequence);
+  if (result === "failure") {
+    const error: any = new TypeError("sendInternal() failed");
+    error.syscall = "write";
+    process.nextTick(() => emitProcessErrorEvent(error));
+  }
+  return result === "success";
 }
 
 // Extend generic Worker with methods specific to worker processes.
@@ -240,7 +272,7 @@ Worker.prototype.disconnect = function () {
   return this;
 };
 
-Worker.prototype._disconnect = function (this: typeof Worker, primaryInitiated?) {
+Worker.prototype._disconnect = function (this: any, primaryInitiated?) {
   this.exitedAfterDisconnect = true;
   let waitingCount = 1;
 
@@ -253,9 +285,9 @@ Worker.prototype._disconnect = function (this: typeof Worker, primaryInitiated?)
       // it's primary initiated there's no need to send the
       // exitedAfterDisconnect message
       if (primaryInitiated) {
-        process.disconnect();
+        process.disconnect!();
       } else {
-        send({ act: "exitedAfterDisconnect" }, () => process.disconnect());
+        send({ act: "exitedAfterDisconnect" }, () => process.disconnect!());
       }
     }
   }
@@ -279,7 +311,7 @@ Worker.prototype.destroy = function () {
     process.exit(kNoFailure);
   } else {
     this.state = "destroying";
-    send({ act: "exitedAfterDisconnect" }, () => process.disconnect());
+    send({ act: "exitedAfterDisconnect" }, () => process.disconnect!());
     process.once("disconnect", () => process.exit(kNoFailure));
   }
 };

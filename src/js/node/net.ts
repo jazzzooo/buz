@@ -23,13 +23,15 @@
 const Duplex = require("internal/streams/duplex");
 const { getDefaultHighWaterMark } = require("internal/streams/state");
 const EventEmitter = require("node:events");
-let dns: typeof import("node:dns");
+let dns: (typeof import("./dns.ts"))["default"];
 
 const normalizedArgsSymbol = Symbol("normalizedArgs");
 const { ExceptionWithHostPort, ConnResetException, NodeAggregateError, ErrnoException } = require("internal/shared");
 import type { Socket, SocketHandler, SocketListener } from "bun";
-import type { Server as NetServer, Socket as NetSocket, ServerOpts } from "node:net";
-import type { TLSSocket } from "node:tls";
+import type { Server as NetServer, Socket as NetSocket, ServerOpts, SocketImpl } from "node:net";
+
+const DEFAULT_IPV4_ADDR = "0.0.0.0";
+const DEFAULT_IPV6_ADDR = "::";
 const { kTimeout, getTimerDuration } = require("internal/timers");
 const { validateFunction, validateNumber, validateAbortSignal, validatePort, validateBoolean, validateInt32, validateString } = require("internal/validators"); // prettier-ignore
 const { isIPv4, isIPv6, isIP } = require("internal/net/isIP");
@@ -41,19 +43,19 @@ const MathMax = Math.max;
 const { UV_ECANCELED, UV_ETIMEDOUT } = process.binding("uv");
 const isWindows = process.platform === "win32";
 
-const getDefaultAutoSelectFamily = $zig("node_net_binding.zig", "getDefaultAutoSelectFamily");
-const setDefaultAutoSelectFamily = $zig("node_net_binding.zig", "setDefaultAutoSelectFamily");
-const getDefaultAutoSelectFamilyAttemptTimeout = $zig("node_net_binding.zig", "getDefaultAutoSelectFamilyAttemptTimeout"); // prettier-ignore
-const setDefaultAutoSelectFamilyAttemptTimeout = $zig("node_net_binding.zig", "setDefaultAutoSelectFamilyAttemptTimeout"); // prettier-ignore
-const SocketAddress = $zig("node_net_binding.zig", "SocketAddress");
-const BlockList = $zig("node_net_binding.zig", "BlockList");
-const newDetachedSocket = $newZigFunction("node_net_binding.zig", "newDetachedSocket", 1);
-const doConnect = $newZigFunction("node_net_binding.zig", "doConnect", 2);
+const getDefaultAutoSelectFamily = $bindgenFn("NodeSocket.schema.zig", "getDefaultAutoSelectFamily");
+const setDefaultAutoSelectFamily = $bindgenFn("NodeSocket.schema.zig", "setDefaultAutoSelectFamily");
+const getDefaultAutoSelectFamilyAttemptTimeout = $bindgenFn("NodeSocket.schema.zig", "getDefaultAutoSelectFamilyAttemptTimeout"); // prettier-ignore
+const setDefaultAutoSelectFamilyAttemptTimeout = $bindgenFn("NodeSocket.schema.zig", "setDefaultAutoSelectFamilyAttemptTimeout"); // prettier-ignore
+const SocketAddress = $bindgenClass("SocketAddress.schema.zig", "SocketAddress");
+const BlockList = $bindgenClass("BlockList.schema.zig", "BlockList");
+const newDetachedSocket = $bindgenFn("NodeSocket.schema.zig", "newDetachedSocket");
+const doConnect = $bindgenFn("NodeSocket.schema.zig", "doConnect");
 
-const addServerName = $newZigFunction("Listener.zig", "jsAddServerName", 3);
-const upgradeDuplexToTLS = $newZigFunction("runtime/socket/socket.zig", "jsUpgradeDuplexToTLS", 2);
-const isNamedPipeSocket = $newZigFunction("runtime/socket/socket.zig", "jsIsNamedPipeSocket", 1);
-const getBufferedAmount = $newZigFunction("runtime/socket/socket.zig", "jsGetBufferedAmount", 1);
+const addServerName = $bindgenFn("NodeSocket.schema.zig", "addServerName");
+const upgradeDuplexToTLS = $bindgenFn("NodeSocket.schema.zig", "upgradeDuplexToTLS");
+const isNamedPipeSocket = $bindgenFn("NodeSocket.schema.zig", "isNamedPipeSocket");
+const getBufferedAmount = $bindgenFn("NodeSocket.schema.zig", "getBufferedAmount");
 
 const bunTlsSymbol = Symbol.for("::buntls::");
 const bunSocketServerOptions = Symbol.for("::bunnetserveroptions::");
@@ -81,7 +83,7 @@ const kwriteCallback = Symbol("writeCallback");
 const kSocketClass = Symbol("kSocketClass");
 
 function endNT(socket, callback, err) {
-  socket.$end();
+  socket.shutdown();
   callback(err);
 }
 function emitCloseNT(self, hasError) {
@@ -108,7 +110,7 @@ function onSocketEnd() {
 // Provide a better error message when we call end() as a result
 // of the other side sending a FIN.  The standard 'write after end'
 // is overly vague, and makes it seem like the user's code is to blame.
-function writeAfterFIN(chunk, encoding, cb) {
+function writeAfterFIN(this: SocketImpl, chunk: any, encoding?: any, cb?: any): boolean {
   if (!this.writableEnded) {
     return Duplex.prototype.write.$call(this, chunk, encoding, cb);
   }
@@ -127,22 +129,63 @@ function writeAfterFIN(chunk, encoding, cb) {
 
   return false;
 }
+function createTLSConnectionResetError(options) {
+  const error = new ConnResetException(
+    "Client network socket disconnected before secure TLS connection was established",
+  );
+  error.path = options.path;
+  error.host = options.host;
+  error.port = options.port;
+  error.localAddress = options.localAddress;
+  return error;
+}
+
 function onConnectEnd() {
   if (!this._hadError && this.secureConnecting) {
-    const options = this[kConnectOptions];
     this._hadError = true;
-    const error = new ConnResetException(
-      "Client network socket disconnected before secure TLS connection was established",
-    );
-    error.path = options.path;
-    error.host = options.host;
-    error.port = options.port;
-    error.localAddress = options.localAddress;
-    this.destroy(error);
+    this.destroy(createTLSConnectionResetError(this[kConnectOptions]));
   }
 }
 
-const SocketHandlers: SocketHandler = {
+function finishClientTLSHandshake(self, socket, success, verifyError) {
+  if (!self) return;
+  if (!success) {
+    if (verifyError?.code === "ECONNRESET") return;
+    const error = verifyError || createTLSConnectionResetError(self[kConnectOptions]);
+    self._securePending = false;
+    self.secureConnecting = false;
+    self._secureEstablished = false;
+    self.authorized = false;
+    self.authorizationError = error.code || error.message;
+    self.destroy(error);
+    return;
+  }
+
+  self._securePending = false;
+  self.secureConnecting = false;
+  self._secureEstablished = true;
+
+  self.emit("secure", self);
+  self.alpnProtocol = socket.alpnProtocol;
+  const { checkServerIdentity } = self[bunTLSConnectOptions];
+  if (!verifyError && typeof checkServerIdentity === "function") {
+    const hostname = self.servername || self._host || "localhost";
+    const cert = self.getPeerCertificate!(true);
+    if (cert) {
+      verifyError = checkServerIdentity(hostname, cert);
+    }
+  }
+  self.authorized = !verifyError;
+  self.authorizationError = verifyError ? verifyError.code || verifyError.message : null;
+  if (verifyError && self._rejectUnauthorized) {
+    self.destroy(verifyError);
+    return;
+  }
+  self.emit("secureConnect", verifyError);
+  self.removeListener("end", onConnectEnd);
+}
+
+const SocketHandlers = {
   close(socket, err) {
     const self = socket.data;
     if (!self || self[kclosed]) return;
@@ -150,7 +193,7 @@ const SocketHandlers: SocketHandler = {
     //socket cannot be used after close
     detachSocket(self);
     SocketEmitEndNT(self, err);
-    self.data = null;
+    socket.data = null;
   },
   data(socket, buffer) {
     const { data: self } = socket;
@@ -215,7 +258,7 @@ const SocketHandlers: SocketHandler = {
     if (options) {
       const { session } = options;
       if (session) {
-        self.setSession(session);
+        self.setSession!(session);
       }
     }
 
@@ -238,43 +281,7 @@ const SocketHandlers: SocketHandler = {
     SocketHandlers.drain(socket);
   },
   handshake(socket, success, verifyError) {
-    const { data: self } = socket;
-    if (!self) return;
-    if (!success && verifyError?.code === "ECONNRESET") {
-      // will be handled in onConnectEnd
-      return;
-    }
-
-    self._securePending = false;
-    self.secureConnecting = false;
-    self._secureEstablished = !!success;
-
-    self.emit("secure", self);
-    self.alpnProtocol = socket.alpnProtocol;
-    const { checkServerIdentity } = self[bunTLSConnectOptions];
-    if (!verifyError && typeof checkServerIdentity === "function") {
-      const hostname = self.servername || self._host || "localhost";
-      const cert = self.getPeerCertificate(true);
-      if (cert) {
-        verifyError = checkServerIdentity(hostname, cert);
-      }
-    }
-    if (self._requestCert || self._rejectUnauthorized) {
-      if (verifyError) {
-        self.authorized = false;
-        self.authorizationError = verifyError.code || verifyError.message;
-        if (self._rejectUnauthorized) {
-          self.destroy(verifyError);
-          return;
-        }
-      } else {
-        self.authorized = true;
-      }
-    } else {
-      self.authorized = true;
-    }
-    self.emit("secureConnect", verifyError);
-    self.removeListener("end", onConnectEnd);
+    finishClientTLSHandshake(socket.data, socket, success, verifyError);
   },
   timeout(socket) {
     const self = socket.data;
@@ -283,7 +290,7 @@ const SocketHandlers: SocketHandler = {
     self.emit("timeout", self);
   },
   binaryType: "buffer",
-} as const;
+} satisfies SocketHandler<SocketImpl | null>;
 
 function SocketEmitEndNT(self, _err?) {
   if (!self[kended]) {
@@ -299,7 +306,7 @@ function SocketEmitEndNT(self, _err?) {
   // }
 }
 
-const ServerHandlers: SocketHandler<NetSocket> = {
+const ServerHandlers = {
   data(socket, buffer) {
     const { data: self } = socket;
     if (!self) return;
@@ -312,18 +319,16 @@ const ServerHandlers: SocketHandler<NetSocket> = {
   },
   close(socket, err) {
     $debug("Bun.Server close");
-    const data = this.data;
+    const data = socket.data;
     if (!data) return;
 
-    {
-      if (!data[kclosed]) {
-        data[kclosed] = true;
-        //socket cannot be used after close
-        detachSocket(data);
-        SocketEmitEndNT(data, err);
-        data.data = null;
-        socket[owner_symbol] = null;
-      }
+    if (!data[kclosed]) {
+      data[kclosed] = true;
+      //socket cannot be used after close
+      detachSocket(data);
+      SocketEmitEndNT(data, err);
+      socket.data = null;
+      socket[owner_symbol] = null;
     }
   },
   end(socket) {
@@ -334,20 +339,18 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     const self = socket.data as any as NetServer;
     socket[kServerSocket] = self._handle;
     const options = self[bunSocketServerOptions];
-    const { pauseOnConnect, connectionListener, [kSocketClass]: SClass, requestCert, rejectUnauthorized } = options;
-    const _socket = new SClass({}) as NetSocket | TLSSocket;
+    const { pauseOnConnect, connectionListener, [kSocketClass]: SClass } = options;
+    const _socket = new SClass({}) as SocketImpl;
     _socket.isServer = true;
-    _socket._requestCert = requestCert;
-    _socket._rejectUnauthorized = rejectUnauthorized;
 
-    _socket[kAttach](this.localPort, socket);
+    _socket[kAttach](socket.localPort, socket);
 
     if (self.blockList) {
       const addressType = isIP(socket.remoteAddress);
       if (addressType && self.blockList.check(socket.remoteAddress, `ipv${addressType}`)) {
         const data = {
           localAddress: _socket.localAddress,
-          localPort: _socket.localPort || this.localPort,
+          localPort: _socket.localPort || socket.localPort,
           localFamily: _socket.localFamily,
           remoteAddress: _socket.remoteAddress,
           remotePort: _socket.remotePort,
@@ -361,7 +364,7 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     if (self.maxConnections != null && self._connections >= self.maxConnections) {
       const data = {
         localAddress: _socket.localAddress,
-        localPort: _socket.localPort || this.localPort,
+        localPort: _socket.localPort || socket.localPort,
         localFamily: _socket.localFamily,
         remoteAddress: _socket.remoteAddress,
         remotePort: _socket.remotePort,
@@ -375,6 +378,10 @@ const ServerHandlers: SocketHandler<NetSocket> = {
 
     const bunTLS = _socket[bunTlsSymbol];
     const isTLS = typeof bunTLS === "function";
+    if (isTLS) {
+      _socket._requestCert = self._requestCert === true;
+      _socket._rejectUnauthorized = self._rejectUnauthorized !== false;
+    }
 
     self._connections++;
     _socket.server = self;
@@ -384,7 +391,6 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     }
 
     if (typeof connectionListener === "function") {
-      this.pauseOnConnect = pauseOnConnect;
       if (!isTLS) {
         self.prependOnceListener("connection", connectionListener);
       }
@@ -397,10 +403,16 @@ const ServerHandlers: SocketHandler<NetSocket> = {
   },
   handshake(socket, success, verifyError) {
     const self = socket.data;
-    if (!success && verifyError?.code === "ECONNRESET") {
-      const err = new ConnResetException("socket hang up");
+    if (!self) return;
+    if (!success) {
+      const err = verifyError?.code === "ECONNRESET" || !verifyError ? new ConnResetException("socket hang up") : verifyError;
+      self._securePending = false;
+      self.secureConnecting = false;
+      self._secureEstablished = false;
+      self.authorized = false;
+      self.authorizationError = err.code || err.message;
       self.emit("_tlsError", err);
-      self.server.emit("tlsClientError", err, self);
+      self.server!.emit("tlsClientError", err, self);
       self._hadError = true;
       // error before handshake on the server side will only be emitted using tlsClientError
       self.destroy();
@@ -408,26 +420,27 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     }
     self._securePending = false;
     self.secureConnecting = false;
-    self._secureEstablished = !!success;
+    self._secureEstablished = true;
     self.servername = socket.getServername();
     const server = self.server!;
     self.alpnProtocol = socket.alpnProtocol;
-    if (self._requestCert || self._rejectUnauthorized) {
+    if (self._requestCert) {
       if (verifyError) {
         self.authorized = false;
         self.authorizationError = verifyError.code || verifyError.message;
-        server.emit("tlsClientError", verifyError, self);
         if (self._rejectUnauthorized) {
-          // if we reject we still need to emit secure
-          self.emit("secure", self);
-          self.destroy(verifyError);
+          self._hadError = true;
+          server.emit("tlsClientError", verifyError, self);
+          self.destroy();
           return;
         }
       } else {
         self.authorized = true;
+        self.authorizationError = null;
       }
     } else {
-      self.authorized = true;
+      self.authorized = false;
+      self.authorizationError = null;
     }
     const connectionListener = server[bunSocketServerOptions]?.connectionListener;
     if (typeof connectionListener === "function") {
@@ -444,12 +457,12 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     }
   },
   error(socket, error) {
-    const data = this.data;
+    const data = socket.data;
     if (!data) return;
 
     if (data._hadError) return;
     data._hadError = true;
-    const bunTLS = this[bunTlsSymbol];
+    const bunTLS = data[bunTlsSymbol];
 
     if (typeof bunTLS === "function") {
       // Destroy socket if error happened before handshake's finish
@@ -464,15 +477,14 @@ const ServerHandlers: SocketHandler<NetSocket> = {
         data.destroy();
       } else {
         // Emit error
-        data._emitTLSError(error);
-        this.emit("_tlsError", error);
-        this.server.emit("tlsClientError", error, data);
-        SocketHandlers.error(socket, error, true);
+        data.emit("_tlsError", error);
+        data.server?.emit("tlsClientError", error, data);
+        SocketHandlers.error(socket, error);
         return;
       }
     }
-    SocketHandlers.error(socket, error, true);
-    this.server?.emit("clientError", error, data);
+    SocketHandlers.error(socket, error);
+    data.server?.emit("clientError", error, data);
   },
   timeout(socket) {
     SocketHandlers.timeout(socket);
@@ -481,10 +493,22 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     SocketHandlers.drain(socket);
   },
   binaryType: "buffer",
-} as const;
+} satisfies SocketHandler<any>;
 
 // TODO: SocketHandlers2 is a bad name but its temporary. reworking the Server in a followup PR
-const SocketHandlers2: SocketHandler<NonNullable<import("node:net").Socket["_handle"]>["data"]> = {
+type ConnectHandleData = {
+  self: SocketImpl;
+  req?: {
+    oncomplete(
+      status: number | string | undefined,
+      handle: unknown,
+      req: unknown,
+      readable: boolean,
+      writable: boolean,
+    ): void;
+  };
+};
+const SocketHandlers2: SocketHandler<ConnectHandleData> = {
   open(socket) {
     $debug("Bun.Socket open");
     let { self, req } = socket.data;
@@ -501,7 +525,7 @@ const SocketHandlers2: SocketHandler<NonNullable<import("node:net").Socket["_han
       if (options) {
         const { session } = options;
         if (session) {
-          self.setSession(session);
+          self.setSession!(session);
         }
       }
       SocketHandlers2.drain!(socket);
@@ -553,43 +577,7 @@ const SocketHandlers2: SocketHandler<NonNullable<import("node:net").Socket["_han
     self.read(0);
   },
   handshake(socket, success, verifyError) {
-    $debug("Bun.Socket handshake");
-    const { self } = socket.data;
-    if (!success && verifyError?.code === "ECONNRESET") {
-      // will be handled in onConnectEnd
-      return;
-    }
-
-    self._securePending = false;
-    self.secureConnecting = false;
-    self._secureEstablished = !!success;
-
-    self.emit("secure", self);
-    self.alpnProtocol = socket.alpnProtocol;
-    const { checkServerIdentity } = self[bunTLSConnectOptions];
-    if (!verifyError && typeof checkServerIdentity === "function") {
-      const hostname = self.servername || self._host || "localhost";
-      const cert = self.getPeerCertificate(true);
-      if (cert) {
-        verifyError = checkServerIdentity(hostname, cert);
-      }
-    }
-    if (self._requestCert || self._rejectUnauthorized) {
-      if (verifyError) {
-        self.authorized = false;
-        self.authorizationError = verifyError.code || verifyError.message;
-        if (self._rejectUnauthorized) {
-          self.destroy(verifyError);
-          return;
-        }
-      } else {
-        self.authorized = true;
-      }
-    } else {
-      self.authorized = true;
-    }
-    self.emit("secureConnect", verifyError);
-    self.removeListener("end", onConnectEnd);
+    finishClientTLSHandshake(socket.data?.self, socket, success, verifyError);
   },
   error(socket, error) {
     $debug("Bun.Socket error");
@@ -628,6 +616,7 @@ function kConnectTcp(self, addressType, req, address, port) {
     ipv6Only: addressType === 6,
     allowHalfOpen: self.allowHalfOpen,
     tls: req.tls,
+    secureContext: req.tls?.secureContext,
     data: { self, req },
     socket: self[khandlers],
   });
@@ -645,6 +634,7 @@ function kConnectPipe(self, req, address) {
     unix: address,
     allowHalfOpen: self.allowHalfOpen,
     tls: req.tls,
+    secureContext: req.tls?.secureContext,
     data: { self, req },
     socket: self[khandlers],
   });
@@ -655,8 +645,10 @@ function kConnectPipe(self, req, address) {
   return 0;
 }
 
-function Socket(options?) {
-  if (!(this instanceof Socket)) return new Socket(options);
+type SocketCtor = new (options?: any) => SocketImpl;
+
+function Socket(this: SocketImpl, options?) {
+  if (!(this instanceof Socket)) return new (Socket as unknown as SocketCtor)(options);
 
   let {
     socket,
@@ -710,18 +702,18 @@ function Socket(options?) {
   this[kclosed] = false;
   this[kended] = false;
   this.connecting = false;
-  this._host = undefined;
+  this._host = null;
   this._port = undefined;
   this[bunTLSConnectOptions] = null;
   this.timeout = 0;
   this[kwriteCallback] = undefined;
-  this._pendingData = undefined;
-  this._pendingEncoding = undefined; // for compatibility
+  this._pendingData = null;
+  this._pendingEncoding = ""; // for compatibility
   this._hadError = false;
   this.isServer = false;
   this._handle = null;
   this[ksocket] = undefined;
-  this.server = undefined;
+  this.server = null;
   this.pauseOnConnect = false;
   this._peername = null;
   this._sockname = null;
@@ -821,15 +813,8 @@ Object.defineProperty(Socket.prototype, "bytesWritten", {
     for (const el of writableBuffer) {
       bytes += el.chunk instanceof Buffer ? el.chunk.length : Buffer.byteLength(el.chunk, el.encoding);
     }
-    if ($isArray(data)) {
-      // Was a writev, iterate over chunks to get total length
-      for (let i = 0; i < data.length; i++) {
-        const chunk = data[i];
-        if (data.allBuffers || chunk instanceof Buffer) bytes += chunk.length;
-        else bytes += Buffer.byteLength(chunk.chunk, chunk.encoding);
-      }
-    } else if (data) {
-      // Writes are either a string or a Buffer.
+    if (data) {
+      // Writes are either a string or a Buffer; _writev concatenates chunks into one Buffer.
       if (typeof data !== "string") bytes += data.length;
       else bytes += Buffer.byteLength(data, this._pendingEncoding || "utf8");
     }
@@ -981,6 +966,7 @@ Socket.prototype.connect = function connect(...args) {
           const [result, events] = upgradeDuplexToTLS(connection, {
             data: { self: this, req: { oncomplete: afterConnect } },
             tls,
+            secureContext: tls?.secureContext,
             socket: this[khandlers],
           });
           connection.on("data", events[0]);
@@ -994,6 +980,7 @@ Socket.prototype.connect = function connect(...args) {
             const result = socket.upgradeTLS({
               data: { self: this, req: { oncomplete: afterConnect } },
               tls,
+              secureContext: tls?.secureContext,
               socket: this[khandlers],
             });
             if (result) {
@@ -1020,6 +1007,7 @@ Socket.prototype.connect = function connect(...args) {
                 const [result, events] = upgradeDuplexToTLS(connection, {
                   data: { self: this, req: { oncomplete: afterConnect } },
                   tls,
+                  secureContext: tls?.secureContext,
                   socket: this[khandlers],
                 });
                 connection.on("data", events[0]);
@@ -1032,6 +1020,7 @@ Socket.prototype.connect = function connect(...args) {
                 const result = socket.upgradeTLS({
                   data: { self: this, req: { oncomplete: afterConnect } },
                   tls,
+                  secureContext: tls?.secureContext,
                   socket: this[khandlers],
                 });
                 if (result) {
@@ -1166,6 +1155,9 @@ Socket.prototype._final = function _final(callback) {
   $debug("Socket.prototype._final");
   if (this.connecting) {
     return this.once("connect", () => this._final(callback));
+  }
+  if (this.secureConnecting) {
+    return this.once("secureConnect", () => this._final(callback));
   }
   const socket = this._handle;
 
@@ -1479,7 +1471,7 @@ Socket.prototype._write = function _write(chunk, encoding, callback) {
 function createConnection(...args) {
   const normalized = normalizeArgs(args);
   const options = normalized[0];
-  const socket = new Socket(options);
+  const socket = new (Socket as unknown as SocketCtor)(options);
 
   if (options.timeout) {
     socket.setTimeout(options.timeout);
@@ -1507,7 +1499,7 @@ function lookupAndConnect(self, options) {
     }
     validatePort(port);
   }
-  port |= 0;
+  port = Number(port) | 0;
 
   if (autoSelectFamily != null) {
     validateBoolean(autoSelectFamily, "options.autoSelectFamily");
@@ -1545,6 +1537,7 @@ function lookupAndConnect(self, options) {
   const dnsopts = {
     family: socketToDnsFamily(options.family),
     hints: options.hints || 0,
+    all: false,
   };
   if (!isWindows && dnsopts.family !== 4 && dnsopts.family !== 6 && dnsopts.hints === 0) {
     dnsopts.hints = dns.ADDRCONFIG;
@@ -1687,8 +1680,7 @@ function lookupAndConnectMultiple(self, lookup, host, options, dnsopts, port, lo
   });
 }
 
-function internalConnect(self, options, path);
-function internalConnect(self, options, address, port, addressType, localAddress, localPort, _flags?) {
+function internalConnect(self, options, address, port?, addressType?, localAddress?, localPort?, _flags?) {
   $assert(self.connecting);
 
   let err;
@@ -1724,7 +1716,7 @@ function internalConnect(self, options, address, port, addressType, localAddress
   if (options.socket) {
     connection = options.socket;
   }
-  let tls = undefined;
+  let tls: any = undefined;
   const bunTLS = self[bunTlsSymbol];
   if (typeof bunTLS === "function") {
     tls = bunTLS.$call(self, port, self._host, true);
@@ -1861,7 +1853,7 @@ function internalConnectMultiple(context, canceled?) {
   if (context.options.socket) {
     connection = context.options.socket;
   }
-  let tls = undefined;
+  let tls: any = undefined;
   const bunTLS = self[bunTlsSymbol];
   if (typeof bunTLS === "function") {
     tls = bunTLS.$call(self, port, self._host, true);
@@ -1896,14 +1888,15 @@ function internalConnectMultiple(context, canceled?) {
   self.emit("connectionAttempt", address, port, addressType);
 
   // const req = new TCPConnectWrap();
-  const req = {};
-  req.oncomplete = afterConnectMultiple.bind(undefined, context, current);
-  req.address = address;
-  req.port = port;
-  req.localAddress = localAddress;
-  req.localPort = localPort;
-  req.addressType = addressType;
-  req.tls = tls;
+  const req = {
+    oncomplete: afterConnectMultiple.bind(undefined, context, current),
+    address,
+    port,
+    localAddress,
+    localPort,
+    addressType,
+    tls,
+  };
 
   ArrayPrototypePush.$call(self.autoSelectFamilyAttemptedAddresses, `${address}:${port}`);
 
@@ -2047,6 +2040,7 @@ function createConnectionError(req, status) {
 }
 
 type MaybeListener = SocketListener<unknown> | null;
+type ServerCtor = new (options?: any, connectionListener?: any) => NetServer;
 
 function Server();
 function Server(options?: null | undefined);
@@ -2054,7 +2048,7 @@ function Server(connectionListener: () => {});
 function Server(options: ServerOpts, connectionListener?: () => {});
 function Server(options?, connectionListener?) {
   if (!(this instanceof Server)) {
-    return new Server(options, connectionListener);
+    return new (Server as unknown as ServerCtor)(options, connectionListener);
   }
 
   EventEmitter.$apply(this, []);
@@ -2309,7 +2303,7 @@ Server.prototype.listen = function listen(port, hostname, onListen) {
   }
 
   try {
-    var tls = undefined;
+    var tls: any = undefined;
     var TLSSocketClass = undefined;
     const bunTLS = this[bunTlsSymbol];
     const options = this[bunSocketServerOptions];
@@ -2369,8 +2363,6 @@ Server.prototype[kRealListen] = function (
       unix: path,
       tls,
       allowHalfOpen: allowHalfOpen || this[bunSocketServerOptions]?.allowHalfOpen || false,
-      reusePort: reusePort || this[bunSocketServerOptions]?.reusePort || false,
-      ipv6Only: ipv6Only || this[bunSocketServerOptions]?.ipv6Only || false,
       exclusive: exclusive || this[bunSocketServerOptions]?.exclusive || false,
       socket: ServerHandlers,
       data: this,
@@ -2543,7 +2535,7 @@ function listenInCluster(
 }
 
 function createServer(options, connectionListener) {
-  return new Server(options, connectionListener);
+  return new (Server as unknown as ServerCtor)(options, connectionListener);
 }
 
 function normalizeArgs(args: unknown[]): [options: Record<PropertyKey, any>, cb: Function | null] {
@@ -2612,7 +2604,7 @@ function checkBindError(err, port, handle) {
   // will implicitly bind to a random port. Ergo, check that the socket is
   // bound to the expected port before calling listen() or connect().
   if (err === 0 && port > 0 && handle.getsockname) {
-    const out = {};
+    const out: { port?: number } = {};
     err = handle.getsockname(out);
     if (err === 0 && port !== out.port) {
       $debug(`checkBindError, bound to ${out.port} instead of ${port}`);

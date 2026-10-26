@@ -16,15 +16,21 @@ loop_ptr: *uws.Loop,
 io: std.Io,
 next: ?*PendingConnect = null,
 
-pub fn register(session: *ClientSession, pc: *quic.PendingConnect, l: *uws.Loop) void {
-    const self = bun.new(PendingConnect, .{
+pub fn register(session: *ClientSession, pc: *quic.PendingConnect, l: *uws.Loop) bun.OOM!void {
+    const self = try bun.default_allocator.create(PendingConnect);
+    errdefer bun.default_allocator.destroy(self);
+    self.* = .{
         .session = session,
         .pc = pc,
         .loop_ptr = l,
         .io = l.internal_loop_data.getParent().io(),
-    });
+    };
     session.ref();
-    bun.dns.internal.registerQuic(@ptrCast(@alignCast(pc.addrinfo())), self);
+    errdefer session.deref();
+    try bun.dns.internal.registerQuic(
+        pc.addrinfo(),
+        .init(self),
+    );
 }
 
 pub fn loop(this: *PendingConnect) *uws.Loop {
@@ -44,18 +50,23 @@ pub fn onDNSResolved(this: *PendingConnect) void {
         if (!session.closed) failSession(session, error.Aborted);
         return;
     }
-    const qs = this.pc.resolved() orelse {
-        failSession(session, error.DNSResolutionFailed);
-        return;
+    const qs = switch (this.pc.resolved()) {
+        .socket => |socket| socket,
+        .out_of_memory => {
+            failSession(session, error.OutOfMemory);
+            return;
+        },
+        .failed => {
+            failSession(session, error.DNSResolutionFailed);
+            return;
+        },
     };
     session.qsocket = qs;
     qs.ext(ClientSession).* = session;
 }
 
-/// DNS worker may call from off the HTTP thread; mirror
-/// us_internal_dns_callback_threadsafe: push onto a mutex-protected list and
-/// wake the loop. `drainResolved` runs from `HTTPThread.drainEvents` on the
-/// next loop iteration after the wakeup.
+/// The worker queues completion without touching the HTTP-thread session.
+/// `HTTPThread.drainEvents` delivers it on the next loop iteration.
 pub fn onDNSResolvedThreadsafe(this: *PendingConnect) void {
     resolved_mutex.lockUncancelable(this.io);
     this.next = resolved_head;

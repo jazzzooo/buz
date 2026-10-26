@@ -25,28 +25,34 @@
 
 #include "config.h"
 #include "AbortSignal.h"
+#include "SchemaBindings.h"
 
-#include "AbortAlgorithm.h"
+#include "AbortController.h"
+#include "JSDOMWrapperCache.h"
+#include "WebCoreJSClientData.h"
 #include "DOMException.h"
 // #include "DOMTimer.h"
 #include "Event.h"
 #include "EventNames.h"
 #include "JSDOMException.h"
+#include "JSDOMExceptionHandling.h"
 #include "JavaScriptCore/JSCJSValue.h"
 #include "ScriptExecutionContext.h"
 #include "WebCoreOpaqueRoot.h"
 #include "wtf/DebugHeap.h"
 #include <wtf/TZoneMallocInlines.h>
 #include <JavaScriptCore/Exception.h>
+#include <JavaScriptCore/ExceptionHelpers.h>
+#include <JavaScriptCore/CallData.h>
 #include <JavaScriptCore/JSCast.h>
+#include <JavaScriptCore/JSLock.h>
+#include <JavaScriptCore/TopExceptionScope.h>
+#include <JavaScriptCore/WeakInlines.h>
+#include <limits>
 
 namespace WebCore {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(AbortSignal);
-
-extern "C" AbortSignalTimeout AbortSignal__Timeout__create(void* vm, AbortSignal* signal, uint64_t milliseconds);
-extern "C" void AbortSignal__Timeout__run(AbortSignalTimeout timeout, void* vm);
-extern "C" void AbortSignal__Timeout__deinit(AbortSignalTimeout timeout);
 
 Ref<AbortSignal> AbortSignal::create(ScriptExecutionContext* context)
 {
@@ -54,11 +60,14 @@ Ref<AbortSignal> AbortSignal::create(ScriptExecutionContext* context)
 }
 
 // https://dom.spec.whatwg.org/#dom-abortsignal-abort
-Ref<AbortSignal> AbortSignal::abort(JSDOMGlobalObject& globalObject, ScriptExecutionContext& context, JSC::JSValue reason)
+RefPtr<AbortSignal> AbortSignal::abort(JSDOMGlobalObject& globalObject, ScriptExecutionContext& context, JSC::JSValue reason)
 {
     ASSERT(reason);
-    if (reason.isUndefined())
+    auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
+    if (reason.isUndefined()) {
         reason = toJS(&globalObject, &globalObject, DOMException::create(ExceptionCode::AbortError));
+        RETURN_IF_EXCEPTION(scope, nullptr);
+    }
     return adoptRef(*new AbortSignal(&context, Aborted::Yes, reason));
 }
 
@@ -66,19 +75,23 @@ Ref<AbortSignal> AbortSignal::abort(JSDOMGlobalObject& globalObject, ScriptExecu
 Ref<AbortSignal> AbortSignal::timeout(ScriptExecutionContext& context, uint64_t milliseconds)
 {
     auto signal = adoptRef(*new AbortSignal(&context));
-    signal->m_timeout = AbortSignal__Timeout__create(bunVM(context.vm()), signal.ptr(), milliseconds);
-    ASSERT(signal->m_timeout);
     signal->ref();
+    signal->m_timeout = Bun::Bindgen::ZigExports::bunBindgenZig_abort_signals_abortSignalTimeoutCreate(bunVM(context.vm()), signal.ptr(), milliseconds);
+    ASSERT(signal->m_timeout);
     return signal;
 }
 
-Ref<AbortSignal> AbortSignal::any(ScriptExecutionContext& context, const Vector<RefPtr<AbortSignal>>& signals)
+RefPtr<AbortSignal> AbortSignal::any(JSDOMGlobalObject& globalObject, ScriptExecutionContext& context, const Vector<RefPtr<AbortSignal>>& signals)
 {
+    auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
     Ref resultSignal = AbortSignal::create(&context);
 
     auto abortedSignalIndex = signals.findIf([](auto& signal) { return signal->aborted(); });
     if (abortedSignalIndex != notFound) {
-        resultSignal->signalAbort(signals[abortedSignalIndex]->reason().getValue());
+        auto reason = signals[abortedSignalIndex]->jsReason(globalObject);
+        RETURN_IF_EXCEPTION(scope, nullptr);
+        scope.release();
+        resultSignal->signalAbort(reason);
         return resultSignal;
     }
 
@@ -99,30 +112,25 @@ AbortSignal::AbortSignal(ScriptExecutionContext* context, Aborted aborted, JSC::
 
 AbortSignal::~AbortSignal()
 {
-    // Invalidate WeakPtrs to this signal before our members (notably
-    // m_algorithms) are destroyed. A listener registered on this signal
-    // with { signal: this } stores a WeakPtr<AbortSignal> back to us on its
-    // RegisteredEventListener; without this the base ~EventTarget() (which
-    // runs after m_algorithms is freed but before the CanMakeWeakPtr base
-    // destructor revokes the factory) would call markAsRemoved(), resolve
-    // that WeakPtr, ref() a mid-deletion object, and call removeAlgorithm()
-    // on the freed vector. Clearing only the impl's object pointer leaves
-    // the impl itself (and the EventTargetData it hosts) intact so
-    // ~EventTarget()'s eventTargetData() lookup still works.
+    // Self-signal listeners must not retain this object during base-class teardown.
     if (auto* impl = weakPtrFactory().impl())
         impl->clear();
+    while (m_firstListenerAbortAlgorithm)
+        detachEventListenerAbortAlgorithm(*m_firstListenerAbortAlgorithm);
 
-    cancelTimer();
+    ASSERT(!m_timeout);
 }
 
 JSValue AbortSignal::jsReason(JSC::JSGlobalObject& globalObject)
 {
+    auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
     JSValue existingValue = m_reason.getValue(jsUndefined());
     if (existingValue.isUndefined()) {
         if (m_commonReason != CommonAbortReason::None) {
             existingValue = toJS(&globalObject, m_commonReason);
+            RETURN_IF_EXCEPTION(scope, {});
             m_commonReason = CommonAbortReason::None;
-            m_reason.setWeakly(existingValue);
+            setReason(globalObject.vm(), existingValue);
         }
     }
 
@@ -150,8 +158,19 @@ void AbortSignal::addDependentSignal(AbortSignal& signal)
 void AbortSignal::cancelTimer()
 {
     if (auto timeout = std::exchange(m_timeout, nullptr)) {
-        AbortSignal__Timeout__deinit(timeout);
+        Bun::Bindgen::ZigExports::bunBindgenZig_abort_signals_abortSignalTimeoutDestroy(timeout);
     }
+}
+
+void AbortSignal::setReason(JSC::VM& vm, JSC::JSValue reason)
+{
+    ASSERT(reason);
+    m_reason.setWeakly(reason);
+    auto* worlds = static_cast<JSVMClientData*>(vm.clientData)->wrapperWorlds();
+    writeBarrierForWrappers(vm, worlds, *this);
+    // Controllers trace the reason even before a signal wrapper exists.
+    if (m_controller)
+        writeBarrierForWrappers(vm, worlds, *m_controller);
 }
 
 void AbortSignal::markAborted(JSC::JSValue reason)
@@ -159,10 +178,7 @@ void AbortSignal::markAborted(JSC::JSValue reason)
     applyFlags(static_cast<uint8_t>(AbortSignalFlags::Aborted) | static_cast<uint8_t>(AbortSignalFlags::IsFiringEventListeners));
     m_sourceSignals.clear();
 
-    // FIXME: This code is wrong: we should emit a write-barrier. Otherwise, GC can collect it.
-    // https://bugs.webkit.org/show_bug.cgi?id=236353
-    ASSERT(reason);
-    m_reason.setWeakly(reason);
+    setReason(scriptExecutionContext()->vm(), reason);
 
     cancelTimer();
 }
@@ -172,28 +188,49 @@ void AbortSignal::runAbortSteps()
     auto reason = m_reason.getValue();
     ASSERT(reason);
 
-    auto callbacks = std::exchange(m_native_callbacks, {});
-    for (auto callback : callbacks) {
-        const auto [ctx, func] = callback;
-        func(ctx, JSC::JSValue::encode(reason));
+    auto listeners = std::exchange(m_nativeListeners, {});
+    auto* globalObject = scriptExecutionContext()->jsGlobalObject();
+    RELEASE_ASSERT(globalObject);
+    for (auto* listener : listeners)
+        Bun::Bindgen::ZigExports::bunBindgenZig_abort_signals_abortSignalRunListener(
+            globalObject,
+            static_cast<BunBindgenAbortSignalListener*>(listener),
+            reason);
+
+    while (m_firstListenerAbortAlgorithm) {
+        Ref registration { *m_firstListenerAbortAlgorithm };
+        RefPtr target = registration->m_abortTarget.get();
+        AtomString eventType = registration->m_abortEventType;
+        detachEventListenerAbortAlgorithm(registration);
+        if (target)
+            target->removeEventListener(eventType, registration->callback(), registration->useCapture());
     }
 
-    // 1. For each algorithm of signal's abort algorithms: run algorithm.
-    //    2. Empty signal's abort algorithms. (std::exchange empties)
-    for (auto& algorithm : std::exchange(m_algorithms, {}))
-        algorithm.second(reason);
-
-    Vector<std::pair<uint32_t, Ref<AbortAlgorithm>>> abortAlgorithms;
     {
         Locker locker { m_abortAlgorithmsLock };
-        abortAlgorithms = std::exchange(m_abortAlgorithms, {});
+        ASSERT(m_runningAbortAlgorithms.isEmpty());
+        m_runningAbortAlgorithms = std::exchange(m_abortAlgorithms, {});
     }
-    for (auto& pair : abortAlgorithms)
-        pair.second->handleEvent(reason);
+    size_t algorithmIndex = 0;
+    while (true) {
+        JSC::JSObject* callback;
+        {
+            Locker locker { m_abortAlgorithmsLock };
+            if (algorithmIndex == m_runningAbortAlgorithms.size())
+                break;
+            callback = m_runningAbortAlgorithms[algorithmIndex++].second.get();
+        }
+        if (callback)
+            invokeAbortAlgorithm(*callback, reason);
+    }
+    {
+        Locker locker { m_abortAlgorithmsLock };
+        m_runningAbortAlgorithms.clear();
+    }
 
     // 3. Fire an event named abort at signal.
     if (hasEventListeners(eventNames().abortEvent))
-        dispatchEvent(Event::create(eventNames().abortEvent, Event::CanBubble::No, Event::IsCancelable::No));
+        dispatchSimpleEvent(eventNames().abortEvent);
     setIsFiringEventListeners(false);
 }
 
@@ -204,23 +241,23 @@ void AbortSignal::signalAbort(JSC::JSValue reason)
     if (aborted())
         return;
 
-    // signalAbort() is the sole path for releasing the extra ref that
-    // timeout() took — for ALL abort paths, including when the timer fires
-    // naturally (dispatch -> signal -> signalAbort -> deref).
-    // Timeout::dispatch() intentionally does NOT call unref().
-    // Defer the deref until after all abort work is done so `this` stays
-    // alive throughout.
-    bool hadTimeout = m_timeout != nullptr;
+    Ref protectedThis { *this };
 
     // 2. Set signal’s abort reason to reason if it is given; otherwise to a new "AbortError" DOMException.
     markAborted(reason);
 
-    Vector<Ref<AbortSignal>> dependentSignalsToAbort;
+    RefPtr<AbortSignal> dependentSignalsToAbort;
+    AbortSignal* lastDependentSignal = nullptr;
 
     for (Ref dependentSignal : std::exchange(m_dependentSignals, {})) {
         if (!dependentSignal->aborted()) {
+            ASSERT(!dependentSignal->m_nextDependentToAbort);
             dependentSignal->markAborted(reason);
-            dependentSignalsToAbort.append(WTF::move(dependentSignal));
+            if (lastDependentSignal)
+                lastDependentSignal->m_nextDependentToAbort = dependentSignal.ptr();
+            else
+                dependentSignalsToAbort = dependentSignal.ptr();
+            lastDependentSignal = dependentSignal.ptr();
         }
     }
 
@@ -228,12 +265,13 @@ void AbortSignal::signalAbort(JSC::JSValue reason)
     runAbortSteps();
 
     // 6. For each dependentSignal of dependentSignalsToAbort, run the abort steps for dependentSignal.
-    for (auto& dependentSignal : dependentSignalsToAbort)
+    while (dependentSignalsToAbort) {
+        Ref dependentSignal = dependentSignalsToAbort.releaseNonNull();
+        dependentSignalsToAbort = std::exchange(dependentSignal->m_nextDependentToAbort, nullptr);
         dependentSignal->runAbortSteps();
+    }
 
-    // Release the extra ref from timeout() now that all abort work is done.
-    if (hadTimeout)
-        deref();
+    JSC::ensureStillAliveHere(reason);
 }
 
 void AbortSignal::signalAbort(JSC::JSGlobalObject* globalObject, CommonAbortReason reason)
@@ -242,45 +280,23 @@ void AbortSignal::signalAbort(JSC::JSGlobalObject* globalObject, CommonAbortReas
     if (aborted())
         return;
 
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto value = toJS(globalObject, reason);
+    RETURN_IF_EXCEPTION(scope, void());
     m_commonReason = reason;
-    signalAbort(toJS(globalObject, reason));
+    scope.release();
+    signalAbort(value);
 }
 
-void AbortSignal::cleanNativeBindings(void* ref)
+void AbortSignal::removeNativeListener(void* listener)
 {
-    auto callbacks = std::exchange(m_native_callbacks, {});
-
-    callbacks.removeAllMatching([=](auto callback) {
-        const auto [ctx, func] = callback;
-        return ctx == ref;
-    });
-
-    std::exchange(m_native_callbacks, WTF::move(callbacks));
-    this->eventListenersDidChange();
-}
-
-// https://dom.spec.whatwg.org/#abortsignal-follow
-void AbortSignal::signalFollow(AbortSignal& signal)
-{
-    if (aborted())
-        return;
-
-    if (signal.aborted()) {
-        signalAbort(signal.jsReason(*scriptExecutionContext()->jsGlobalObject()));
-        return;
-    }
-
-    ASSERT(!m_followingSignal);
-    m_followingSignal = signal;
-    signal.addAlgorithm([weakThis = WeakPtr { *this }](JSC::JSValue reason) {
-        if (RefPtr signal = weakThis.get())
-            signal->signalAbort(reason);
-    });
+    m_nativeListeners.removeAll(listener);
+    eventListenersDidChange();
 }
 
 void AbortSignal::eventListenersDidChange()
 {
-    bool hasListeners = hasEventListeners(eventNames().abortEvent) or !m_native_callbacks.isEmpty();
+    bool hasListeners = hasEventListeners(eventNames().abortEvent) or !m_nativeListeners.isEmpty();
     setHasAbortEventListener(hasListeners);
 
     // When a timeout signal loses all observers (no JS listeners, no native
@@ -289,55 +305,140 @@ void AbortSignal::eventListenersDidChange()
     // ref that timeout() took to keep the signal alive, so the C++ object can
     // be destroyed normally.
     if (!hasListeners && m_timeout && !aborted()
-        && m_algorithms.isEmpty() && !hasPendingActivity()
+        && !m_firstListenerAbortAlgorithm && !hasPendingActivity()
         && m_dependentSignals.isEmptyIgnoringNullReferences()) {
-        bool shouldDeref = false;
+        bool shouldCancel;
         {
             Locker locker { m_abortAlgorithmsLock };
-            if (m_abortAlgorithms.isEmpty()) {
-                cancelTimer();
-                shouldDeref = true;
-            }
+            shouldCancel = m_abortAlgorithms.isEmpty();
         }
-        // Release the extra ref after the lock is released, since deref()
-        // may destroy `this` (and m_abortAlgorithmsLock with it).
-        if (shouldDeref)
-            deref(); // balances the ref() in AbortSignal::timeout()
+        // Timer teardown may release the last reference to this signal.
+        if (shouldCancel)
+            cancelTimer();
     }
 }
 
-uint32_t AbortSignal::addAbortAlgorithmToSignal(AbortSignal& signal, Ref<AbortAlgorithm>&& algorithm)
+void AbortSignal::invokeAbortAlgorithm(JSC::JSObject& callback, JSC::JSValue reason)
+{
+    auto& globalObject = *uncheckedDowncast<JSDOMGlobalObject>(callback.globalObject());
+    auto* context = globalObject.scriptExecutionContext();
+    if (!context || context->activeDOMObjectsAreSuspended() || context->activeDOMObjectsAreStopped())
+        return;
+
+    auto& vm = globalObject.vm();
+    JSC::JSLockHolder lock(vm);
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+    JSC::MarkedArgumentBuffer arguments;
+    arguments.append(reason);
+    if (arguments.hasOverflowed()) {
+        auto throwScope = DECLARE_THROW_SCOPE(vm);
+        JSC::throwOutOfMemoryError(&globalObject, throwScope);
+    }
+    if (!scope.exception()) {
+        auto callData = JSC::getCallData(&callback);
+        RELEASE_ASSERT(callData.type != JSC::CallData::Type::None);
+        JSC::profiledCall(&globalObject, JSC::ProfilingReason::Other, &callback, callData, JSC::jsUndefined(), arguments);
+    }
+    if (auto* exception = scope.exception())
+        reportException(&globalObject, exception);
+    JSC::ensureStillAliveHere(&callback);
+}
+
+Bun::Bindgen::NativeAllocationResult<uint32_t> AbortSignal::addAbortAlgorithmToSignal(AbortSignal& signal, JSC::JSObject& callback)
 {
     if (signal.aborted()) {
-        // TODO: Null check.
-        algorithm->handleEvent(signal.jsReason(*signal.scriptExecutionContext()->jsGlobalObject()));
+        auto& globalObject = *signal.scriptExecutionContext()->jsGlobalObject();
+        auto scope = DECLARE_THROW_SCOPE(globalObject.vm());
+        auto reason = signal.jsReason(globalObject);
+        RETURN_IF_EXCEPTION(scope, 0);
+        scope.release();
+        invokeAbortAlgorithm(callback, reason);
         return 0;
     }
-    auto identifier = ++signal.m_algorithmIdentifier;
-    Locker locker { signal.m_abortAlgorithmsLock };
-    signal.m_abortAlgorithms.append(std::make_pair(identifier, WTF::move(algorithm)));
+    if (signal.m_algorithmIdentifier == std::numeric_limits<uint32_t>::max())
+        return Bun::Bindgen::nativeAllocationFailure();
+    const uint32_t identifier = signal.m_algorithmIdentifier + 1;
+    auto entry = std::make_pair(identifier, JSC::Weak<JSC::JSObject> { &callback });
+    {
+        Locker locker { signal.m_abortAlgorithmsLock };
+        if (!signal.m_abortAlgorithms.tryAppend(WTF::move(entry)))
+            return Bun::Bindgen::nativeAllocationFailure();
+        signal.m_algorithmIdentifier = identifier;
+    }
+    auto& vm = callback.vm();
+    auto* worlds = static_cast<JSVMClientData*>(vm.clientData)->wrapperWorlds();
+    writeBarrierForWrappers(vm, worlds, signal);
+    JSC::ensureStillAliveHere(&callback);
     return identifier;
 }
 
 void AbortSignal::removeAbortAlgorithmFromSignal(AbortSignal& signal, uint32_t algorithmIdentifier)
 {
-    Locker locker { signal.m_abortAlgorithmsLock };
-    signal.m_abortAlgorithms.removeFirstMatching([algorithmIdentifier](auto& pair) {
-        return pair.first == algorithmIdentifier;
-    });
+    Ref protectedSignal { signal };
+    JSC::Weak<JSC::JSObject> removed;
+    bool found = false;
+    {
+        Locker locker { signal.m_abortAlgorithmsLock };
+        for (size_t i = 0; i < signal.m_abortAlgorithms.size(); ++i) {
+            if (signal.m_abortAlgorithms[i].first != algorithmIdentifier)
+                continue;
+            removed = WTF::move(signal.m_abortAlgorithms[i].second);
+            signal.m_abortAlgorithms.removeAt(i);
+            found = true;
+            break;
+        }
+    }
+    if (found)
+        signal.eventListenersDidChange();
 }
 
-uint32_t AbortSignal::addAlgorithm(Algorithm&& algorithm)
+void AbortSignal::addEventListenerAbortAlgorithm(RegisteredEventListener& registration, EventTarget& target, const AtomString& eventType)
 {
-    m_algorithms.append(std::make_pair(++m_algorithmIdentifier, WTF::move(algorithm)));
-    return m_algorithmIdentifier;
+    ASSERT(!aborted());
+    ASSERT(!registration.m_wasRemoved);
+    ASSERT(!registration.m_abortSignal);
+    ASSERT(!registration.m_abortPrevious && !registration.m_abortNext);
+
+    auto signal = WeakPtr { *this };
+    auto weakTarget = WeakPtr { target };
+    registration.m_abortSignal = WTF::move(signal);
+    registration.m_abortTarget = WTF::move(weakTarget);
+    registration.m_abortEventType = eventType;
+    registration.m_abortPrevious = m_lastListenerAbortAlgorithm;
+    if (m_lastListenerAbortAlgorithm)
+        m_lastListenerAbortAlgorithm->m_abortNext = &registration;
+    else
+        m_firstListenerAbortAlgorithm = &registration;
+    m_lastListenerAbortAlgorithm = &registration;
 }
 
-void AbortSignal::removeAlgorithm(uint32_t algorithmIdentifier)
+void AbortSignal::detachEventListenerAbortAlgorithm(RegisteredEventListener& registration)
 {
-    m_algorithms.removeFirstMatching([algorithmIdentifier](auto& pair) {
-        return pair.first == algorithmIdentifier;
-    });
+    if (registration.m_abortPrevious)
+        registration.m_abortPrevious->m_abortNext = registration.m_abortNext;
+    else {
+        ASSERT(m_firstListenerAbortAlgorithm == &registration);
+        m_firstListenerAbortAlgorithm = registration.m_abortNext;
+    }
+    if (registration.m_abortNext)
+        registration.m_abortNext->m_abortPrevious = registration.m_abortPrevious;
+    else {
+        ASSERT(m_lastListenerAbortAlgorithm == &registration);
+        m_lastListenerAbortAlgorithm = registration.m_abortPrevious;
+    }
+    registration.m_abortPrevious = nullptr;
+    registration.m_abortNext = nullptr;
+    registration.m_abortSignal = nullptr;
+    registration.m_abortTarget = nullptr;
+    registration.m_abortEventType = AtomString {};
+}
+
+void AbortSignal::removeEventListenerAbortAlgorithm(RegisteredEventListener& registration)
+{
+    Ref protectedThis { *this };
+    ASSERT(registration.m_abortSignal.get() == this);
+    detachEventListenerAbortAlgorithm(registration);
+    eventListenersDidChange();
 }
 
 void AbortSignal::throwIfAborted(JSC::JSGlobalObject& lexicalGlobalObject)
@@ -347,7 +448,9 @@ void AbortSignal::throwIfAborted(JSC::JSGlobalObject& lexicalGlobalObject)
 
     Ref vm = lexicalGlobalObject.vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    throwException(&lexicalGlobalObject, scope, m_reason.getValue());
+    auto reason = jsReason(lexicalGlobalObject);
+    RETURN_IF_EXCEPTION(scope, void());
+    throwException(&lexicalGlobalObject, scope, reason);
 }
 
 WebCoreOpaqueRoot root(AbortSignal* signal)
@@ -357,7 +460,7 @@ WebCoreOpaqueRoot root(AbortSignal* signal)
 
 size_t AbortSignal::memoryCost() const
 {
-    return sizeof(AbortSignal) + m_native_callbacks.sizeInBytes() + m_algorithms.sizeInBytes() + m_abortAlgorithms.sizeInBytes() + m_sourceSignals.capacity() + m_dependentSignals.capacity();
+    return sizeof(AbortSignal) + m_nativeListeners.sizeInBytes() + m_abortAlgorithms.sizeInBytes() + m_runningAbortAlgorithms.sizeInBytes() + m_sourceSignals.capacity() + m_dependentSignals.capacity();
 }
 
 template<typename Visitor>
@@ -365,7 +468,9 @@ void AbortSignal::visitAbortAlgorithms(Visitor& visitor)
 {
     Locker locker { m_abortAlgorithmsLock };
     for (auto& pair : m_abortAlgorithms)
-        pair.second->visitJSFunction(visitor);
+        visitor.append(pair.second);
+    for (auto& pair : m_runningAbortAlgorithms)
+        visitor.append(pair.second);
 }
 
 template void AbortSignal::visitAbortAlgorithms(JSC::AbstractSlotVisitor&);

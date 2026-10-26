@@ -45,10 +45,12 @@ pub fn enqueue(this: *PosixSignalHandle, signal: u8) bool {
 
 /// This is the signal handler entry point. Calls enqueue on the ring buffer.
 /// Note: Must be minimal logic here. Only do atomics & signal‐safe calls.
-export fn Bun__onPosixSignal(number: i32) void {
+fn bindOnPosixSignal(
+    args: bun.bindgen.Args(OnPosixSignalSchema),
+) bun.bindgen.Return(OnPosixSignalSchema) {
     if (comptime Environment.isPosix) {
         const vm = VirtualMachine.getMainThreadVM().?;
-        _ = vm.eventLoop().signal_handler.?.enqueue(@intCast(number));
+        _ = vm.eventLoop().signal_handler.?.enqueue(@intCast(args.signal));
     }
 }
 
@@ -88,15 +90,19 @@ pub fn drain(this: *PosixSignalHandle, event_loop: *jsc.EventLoop) void {
 
 pub const PosixSignalTask = struct {
     number: u8,
-    extern "c" fn Bun__onSignalForJS(number: i32, globalObject: *jsc.JSGlobalObject) void;
 
     pub const new = bun.TrivialNew(@This());
-    pub fn runFromJSThread(number: u8, globalObject: *jsc.JSGlobalObject) void {
-        Bun__onSignalForJS(number, globalObject);
+    pub fn runFromJSThread(number: u8, globalObject: *jsc.JSGlobalObject) bun.JSError!void {
+        try bun.bindgen.Engine(ProcessEmitSignalSchema).call(globalObject, .{
+            .signal = number,
+        });
     }
 };
 
-export fn Bun__ensureSignalHandler() void {
+fn bindEnsureSignalHandler(
+    args: bun.bindgen.Args(EnsureSignalHandlerSchema),
+) bun.bindgen.Return(EnsureSignalHandlerSchema) {
+    _ = args;
     if (comptime Environment.isPosix) {
         if (VirtualMachine.getMainThreadVM()) |vm| {
             const this = vm.eventLoop();
@@ -108,13 +114,6 @@ export fn Bun__ensureSignalHandler() void {
     }
 }
 
-comptime {
-    if (Environment.isPosix) {
-        _ = Bun__ensureSignalHandler;
-        _ = Bun__onPosixSignal;
-    }
-}
-
 const std = @import("std");
 
 const bun = @import("bun");
@@ -122,3 +121,15 @@ const Environment = bun.Environment;
 
 const jsc = bun.jsc;
 const VirtualMachine = jsc.VirtualMachine;
+const PosixSignalBindings = bun.bindgen.Module("posix_signals");
+const ProcessHostBindings = bun.bindgen.Module("ProcessHost");
+const EnsureSignalHandlerSchema = PosixSignalBindings.nativeExport("ensureSignalHandler");
+const OnPosixSignalSchema = PosixSignalBindings.nativeExport("onPosixSignal");
+const ProcessEmitSignalSchema = ProcessHostBindings.engineShim("processEmitSignal");
+const EnsureSignalHandlerBinding = bun.bindgen.Fn(EnsureSignalHandlerSchema, bindEnsureSignalHandler);
+const OnPosixSignalBinding = bun.bindgen.Fn(OnPosixSignalSchema, bindOnPosixSignal);
+
+comptime {
+    _ = EnsureSignalHandlerBinding;
+    _ = OnPosixSignalBinding;
+}

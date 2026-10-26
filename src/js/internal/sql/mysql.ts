@@ -1,28 +1,45 @@
 import type { MySQLErrorOptions } from "internal/sql/errors";
-import type { Query } from "./query";
-import type { ArrayType, DatabaseAdapter, SQLArrayParameter, SQLHelper, SQLResultArray, SSLMode } from "./shared";
-const { SQLHelper, SSLMode, SQLResultArray, buildDefinedColumnsAndQuery } = require("internal/sql/shared");
+import type { ArrayType, DatabaseAdapter, SQLArrayParameter } from "./shared";
+const { SQLHelper, SSLMode, SQLResultArray, buildDefinedColumnsAndQuery } = require("internal/sql/shared") as (typeof import("./shared"))["default"];
 const {
   Query,
   SQLQueryFlags,
   symbols: { _strings, _values, _results, _handle },
-} = require("internal/sql/query");
+} = require("internal/sql/query") as (typeof import("./query"))["default"];
 const { MySQLError } = require("internal/sql/errors");
+
+type Query<T, Handle extends import("./query").BaseQueryHandle<any>> = import("./query").Query<T, Handle>;
+type SQLHelper<T = any> = import("./shared").SQLHelper<T>;
+type SQLResultArray<T = any> = import("./shared").SQLResultArray<T>;
+type SSLMode = import("./shared").SSLMode;
 
 const {
   createConnection: createMySQLConnection,
   createQuery: createMySQLQuery,
   init: initMySQL,
-} = $zig("mysql.zig", "createBinding") as MySQLDotZig;
+} = {
+  createConnection: $bindgenFn("SQLBinding.schema.zig", "mysqlCreateConnection"),
+  createQuery: $bindgenFn("SQLBinding.schema.zig", "mysqlCreateQuery"),
+  init: $bindgenFn("SQLBinding.schema.zig", "mysqlInit"),
+} as MySQLDotZig;
 
-function wrapError(error: Error | MySQLErrorOptions) {
+function wrapError(error: Error | (MySQLErrorOptions & { message: string })) {
   if (Error.isError(error)) {
     return error;
   }
   return new MySQLError(error.message, error);
 }
+
+type NativeMySQLErrorPayload = MySQLErrorOptions & { message: string };
+
+function wrapNativeError(original: unknown, payload: NativeMySQLErrorPayload | undefined) {
+  return payload === undefined
+    ? wrapError(original as Error | NativeMySQLErrorPayload)
+    : new MySQLError(payload.message, payload);
+}
+
 initMySQL(
-  function onResolveMySQLQuery(query, result, commandTag, count, queries, is_last, last_insert_rowid, affected_rows) {
+  function onResolveMySQLQuery(query, result, commandTag, count, is_last, last_insert_rowid, affected_rows) {
     $assert(result instanceof SQLResultArray, "Invalid result array");
 
     result.count = count || 0;
@@ -48,25 +65,17 @@ initMySQL(
       return;
     }
 
-    if (queries) {
-      const queriesIndex = queries.indexOf(query);
-      if (queriesIndex !== -1) {
-        queries.splice(queriesIndex, 1);
-      }
-    }
     try {
       query.resolve(query[_results]);
     } catch {}
   },
 
-  function onRejectMySQLQuery(query: Query<any, any>, reject: Error | MySQLErrorOptions, queries: Query<any, any>[]) {
-    reject = wrapError(reject);
-    if (queries) {
-      const queriesIndex = queries.indexOf(query);
-      if (queriesIndex !== -1) {
-        queries.splice(queriesIndex, 1);
-      }
-    }
+  function onRejectMySQLQuery(
+    query: Query<any, any>,
+    original: unknown,
+    payload: NativeMySQLErrorPayload | undefined,
+  ) {
+    const reject = wrapNativeError(original, payload);
 
     try {
       query.reject(reject as Error);
@@ -78,13 +87,18 @@ export interface MySQLDotZig {
   init: (
     onResolveQuery: (
       query: Query<any, any>,
-      result: SQLResultArray,
+      result: SQLResultArray<any>,
       commandTag: string,
       count: number,
-      queries: any,
       is_last: boolean,
+      last_insert_rowid: number | bigint,
+      affected_rows: number,
     ) => void,
-    onRejectQuery: (query: Query<any, any>, err: Error, queries) => void,
+    onRejectQuery: (
+      query: Query<any, any>,
+      original: unknown,
+      payload: NativeMySQLErrorPayload | undefined,
+    ) => void,
   ) => void;
   createConnection: (
     hostname: string | undefined,
@@ -96,21 +110,21 @@ export interface MySQLDotZig {
     tls: Bun.TLSOptions | boolean | null | Bun.BunFile, // boolean true => empty TLSOptions object `{}`, boolean false or null => nothing
     query: string,
     path: string,
-    onConnected: (err: Error | null, connection: $ZigGeneratedClasses.MySQLConnection) => void,
-    onDisconnected: (err: Error | null, connection: $ZigGeneratedClasses.MySQLConnection) => void,
+    onConnected: (err: Error | null, connection: BunNativeBindings.MySQLConnection.MySQLConnection) => void,
+    onDisconnected: (original: unknown, payload: NativeMySQLErrorPayload | undefined) => void,
     idleTimeout: number,
     connectionTimeout: number,
     maxLifetime: number,
     useUnnamedPreparedStatements: boolean,
-  ) => $ZigGeneratedClasses.MySQLConnection;
+  ) => BunNativeBindings.MySQLConnection.MySQLConnection;
   createQuery: (
     sql: string,
     values: unknown[],
-    pendingValue: SQLResultArray,
+    pendingValue: SQLResultArray<any>,
     columns: string[] | undefined,
     bigint: boolean,
     simple: boolean,
-  ) => $ZigGeneratedClasses.MySQLQuery;
+  ) => BunNativeBindings.MySQLQuery.MySQLQuery;
 }
 
 const enum SQLCommand {
@@ -122,6 +136,7 @@ const enum SQLCommand {
   none = -1,
 }
 export type { SQLCommand };
+export type { MySQLAdapter };
 
 function commandToString(command: SQLCommand): string {
   switch (command) {
@@ -235,9 +250,9 @@ function closeNT(onClose: (err: Error) => void, err: Error | null) {
 class PooledMySQLConnection {
   private static async createConnection(
     options: Bun.SQL.__internal.DefinedPostgresOrMySQLOptions,
-    onConnected: (err: Error | null, connection: $ZigGeneratedClasses.MySQLConnection) => void,
+    onConnected: (err: Error | null, connection: BunNativeBindings.MySQLConnection.MySQLConnection) => void,
     onClose: (err: Error | null) => void,
-  ): Promise<$ZigGeneratedClasses.MySQLConnection | null> {
+  ): Promise<BunNativeBindings.MySQLConnection.MySQLConnection | null> {
     const {
       hostname,
       port,
@@ -292,7 +307,7 @@ class PooledMySQLConnection {
   }
 
   adapter: MySQLAdapter;
-  connection: $ZigGeneratedClasses.MySQLConnection | null = null;
+  connection: BunNativeBindings.MySQLConnection.MySQLConnection | null = null;
   state: PooledConnectionState = PooledConnectionState.pending;
   storedError: Error | null = null;
   queries: Set<(err: Error) => void> = new Set();
@@ -336,10 +351,8 @@ class PooledMySQLConnection {
     this.adapter.release(this, true);
   }
 
-  #onClose(err) {
-    if (err) {
-      err = wrapError(err);
-    }
+  #onClose(original, payload) {
+    const err = original || payload ? wrapNativeError(original, payload) : original;
     const connectionInfo = this.connectionInfo;
     if (connectionInfo?.onclose) {
       connectionInfo.onclose(err);
@@ -367,7 +380,7 @@ class PooledMySQLConnection {
     this.adapter.release(this, true);
   }
 
-  constructor(connectionInfo: Bun.SQL.__internal.DefinedMySQLOptions, adapter: MySQLAdapter) {
+  constructor(connectionInfo: Bun.SQL.__internal.DefinedPostgresOrMySQLOptions, adapter: MySQLAdapter) {
     this.state = PooledConnectionState.pending;
     this.adapter = adapter;
     this.connectionInfo = connectionInfo;
@@ -441,7 +454,11 @@ class PooledMySQLConnection {
 
 class MySQLAdapter
   implements
-    DatabaseAdapter<PooledMySQLConnection, $ZigGeneratedClasses.MySQLConnection, $ZigGeneratedClasses.MySQLQuery>
+    DatabaseAdapter<
+      PooledMySQLConnection,
+      BunNativeBindings.MySQLConnection.MySQLConnection,
+      BunNativeBindings.MySQLQuery.MySQLQuery
+    >
 {
   public readonly connectionInfo: Bun.SQL.__internal.DefinedPostgresOrMySQLOptions;
 
@@ -1111,7 +1128,7 @@ class MySQLAdapter
                   continue;
                 }
                 hasValues = true;
-                query += `${this.escapeIdentifier(column)} = ?${i < lastColumnIndex ? ", " : ""}`;
+                query += `${this.escapeIdentifier(String(column))} = ?${i < lastColumnIndex ? ", " : ""}`;
                 binding_values.push(columnValue);
               }
               if (query.endsWith(", ")) {
@@ -1146,5 +1163,7 @@ export default {
   MySQLAdapter,
   commandToString,
   detectCommand,
+  // @ts-expect-error we're exporting a const enum which works in our builtins
+  // generator but not in typescript officially
   SQLCommand,
 };

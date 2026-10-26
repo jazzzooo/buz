@@ -57,6 +57,36 @@ function withTranslatedError(error: any) {
   return error;
 }
 
+function materializeCaaRecord(record) {
+  const result = {
+    critical: record.critical,
+    [record.property]: record.value,
+  };
+  if (record.type !== undefined) {
+    result.type = record.type;
+  }
+  return result;
+}
+
+function materializeCaaResults(results) {
+  return results.map(materializeCaaRecord);
+}
+
+function materializeAnyResults(results) {
+  return results.map(record => (record.type === "CAA" ? materializeCaaRecord(record) : record));
+}
+
+function materializeResolveResults(rrtype, results) {
+  switch (rrtype?.toLowerCase()) {
+    case "caa":
+      return materializeCaaResults(results);
+    case "any":
+      return materializeAnyResults(results);
+    default:
+      return results;
+  }
+}
+
 function getServers() {
   return dns.getServers();
 }
@@ -65,30 +95,26 @@ function setServers(servers) {
   return setServersOn(servers, dns);
 }
 
-const getRuntimeDefaultResultOrderOption = $newZigFunction(
-  "runtime/dns_jsc/dns.zig",
-  "Resolver.getRuntimeDefaultResultOrderOption",
-  0,
+const getRuntimeDefaultResultOrderOption = $bindgenFn(
+  "NodeDNS.schema.zig",
+  "getRuntimeDefaultResultOrderOption",
 );
 
+let newResolverZig: ((options: any) => any) | undefined;
 function newResolver(options) {
-  if (!newResolver.zig) {
-    newResolver.zig = $newZigFunction("runtime/dns_jsc/dns.zig", "Resolver.newResolver", 1);
-  }
-  return newResolver.zig(options);
+  newResolverZig ??= $bindgenFn("NodeDNS.schema.zig", "newResolver");
+  return newResolverZig!(options);
 }
 
+let defaultResultOrderValue: string | undefined;
 function defaultResultOrder() {
-  if (typeof defaultResultOrder.value === "undefined") {
-    defaultResultOrder.value = getRuntimeDefaultResultOrderOption();
-  }
-
-  return defaultResultOrder.value;
+  defaultResultOrderValue ??= getRuntimeDefaultResultOrderOption();
+  return defaultResultOrderValue;
 }
 
 function setDefaultResultOrder(order) {
   validateOrder(order);
-  defaultResultOrder.value = order;
+  defaultResultOrderValue = order;
 }
 
 function getDefaultResultOrder() {
@@ -98,14 +124,14 @@ function getDefaultResultOrder() {
 function setServersOn(servers, object) {
   validateArray(servers, "servers");
 
-  const triples = [];
+  const endpoints: { family: number; address: string; port: number }[] = [];
 
   servers.forEach((server, i) => {
     validateString(server, `servers[${i}]`);
     let ipVersion = isIP(server);
 
     if (ipVersion !== 0) {
-      triples.push([ipVersion, server, IANA_DNS_PORT]);
+      endpoints.push({ family: ipVersion, address: server, port: IANA_DNS_PORT });
       return;
     }
 
@@ -116,7 +142,7 @@ function setServersOn(servers, object) {
       ipVersion = isIP(match[1]);
       if (ipVersion !== 0) {
         const port = parseInt(addrSplitRE[Symbol.replace](server, "$2")) || IANA_DNS_PORT;
-        triples.push([ipVersion, match[1], port]);
+        endpoints.push({ family: ipVersion, address: match[1], port });
         return;
       }
     }
@@ -126,12 +152,12 @@ function setServersOn(servers, object) {
 
     if (addrSplitMatch) {
       const hostIP = addrSplitMatch[1];
-      const port = addrSplitMatch[2] || IANA_DNS_PORT;
+      const port = addrSplitMatch[2] ? parseInt(addrSplitMatch[2]) : IANA_DNS_PORT;
 
       ipVersion = isIP(hostIP);
 
       if (ipVersion !== 0) {
-        triples.push([ipVersion, hostIP, parseInt(port)]);
+        endpoints.push({ family: ipVersion, address: hostIP, port });
         return;
       }
     }
@@ -139,7 +165,7 @@ function setServersOn(servers, object) {
     throw $ERR_INVALID_IP_ADDRESS(server);
   });
 
-  object.setServers(triples);
+  object.setServers(endpoints);
 }
 
 function validateFlagsOption(options) {
@@ -147,7 +173,7 @@ function validateFlagsOption(options) {
     return;
   }
 
-  validateNumber(options.flags);
+  validateNumber(options.flags, "options.flags");
 
   if ((options.flags & ~(dns.ALL | dns.ADDRCONFIG | dns.V4MAPPED)) != 0) {
     throw $ERR_INVALID_ARG_VALUE("hints", options.flags, "is invalid");
@@ -178,13 +204,13 @@ function validateFamilyOption(options) {
 
 function validateAllOption(options) {
   if (options.all !== undefined) {
-    validateBoolean(options.all);
+    validateBoolean(options.all, "options.all");
   }
 }
 
 function validateVerbatimOption(options) {
   if (options.verbatim !== undefined) {
-    validateBoolean(options.verbatim);
+    validateBoolean(options.verbatim, "options.verbatim");
   }
 }
 
@@ -211,18 +237,19 @@ function validateResolve(hostname, callback) {
 }
 
 function validateLocalAddresses(first, second) {
-  validateString(first);
+  validateString(first, "first");
   if (typeof second !== "undefined") {
-    validateString(second);
+    validateString(second, "second");
   }
 }
 
+let warnedInvalidHostname = false;
 function invalidHostname(hostname) {
-  if (invalidHostname.warned) {
+  if (warnedInvalidHostname) {
     return;
   }
 
-  invalidHostname.warned = true;
+  warnedInvalidHostname = true;
   process.emitWarning(
     `The provided hostname "${String(hostname)}" is not a valid hostname, and is supported in the dns module solely for compatibility.`,
     "DeprecationWarning",
@@ -326,6 +353,13 @@ function lookup(hostname, options, callback) {
     });
 }
 
+function validateLookupServiceAddress(address) {
+  validateString(address, "address");
+  if (isIP(address) === 0) {
+    throw $ERR_INVALID_ARG_VALUE("address", address, "is invalid");
+  }
+}
+
 function lookupService(address, port, callback) {
   if (arguments.length < 3) {
     throw $ERR_MISSING_ARGS("address", "port", "callback");
@@ -335,7 +369,7 @@ function lookupService(address, port, callback) {
     throw $ERR_INVALID_ARG_TYPE("callback", "function", callback);
   }
 
-  validateString(address);
+  validateLookupServiceAddress(address);
 
   dns.lookupService(address, port).then(
     results => {
@@ -370,6 +404,7 @@ function validateResolverOptions(options) {
 
 var InternalResolver = class Resolver {
   #resolver;
+  declare _handle: any;
 
   constructor(options) {
     validateResolverOptions(options);
@@ -410,7 +445,7 @@ var InternalResolver = class Resolver {
               callback(null, results.map(mapResolveX));
               break;
             default:
-              callback(null, results);
+              callback(null, materializeResolveResults(rrtype, results));
               break;
           }
         },
@@ -467,7 +502,7 @@ var InternalResolver = class Resolver {
       .resolveAny(hostname)
       .then(
         results => {
-          callback(null, results);
+          callback(null, materializeAnyResults(results));
         },
         error => {
           callback(withTranslatedError(error));
@@ -574,7 +609,7 @@ var InternalResolver = class Resolver {
       .resolveCaa(hostname)
       .then(
         results => {
-          callback(null, results);
+          callback(null, materializeCaaResults(results));
         },
         error => {
           callback(withTranslatedError(error));
@@ -763,14 +798,14 @@ const promises = {
       throw $ERR_MISSING_ARGS("address", "port");
     }
 
-    validateString(address);
+    validateLookupServiceAddress(address);
 
     try {
       return translateErrorCode(dns.lookupService(address, port)).then(([hostname, service]) => ({
         hostname,
         service,
       }));
-    } catch (err) {
+    } catch (err: any) {
       if (err.name === "TypeError" || err.name === "RangeError") {
         throw err;
       }
@@ -794,7 +829,7 @@ const promises = {
       case "aaaa":
         return translateErrorCode(dns.resolve(hostname, rrtype).then(promisifyResolveX(false)));
       default:
-        return translateErrorCode(dns.resolve(hostname, rrtype));
+        return translateErrorCode(dns.resolve(hostname, rrtype).then(results => materializeResolveResults(rrtype, results)));
     }
   },
 
@@ -807,7 +842,7 @@ const promises = {
   },
 
   resolveAny(hostname) {
-    return translateErrorCode(dns.resolveAny(hostname));
+    return translateErrorCode(dns.resolveAny(hostname).then(materializeAnyResults));
   },
   resolveSrv(hostname) {
     return translateErrorCode(dns.resolveSrv(hostname));
@@ -825,7 +860,7 @@ const promises = {
     return translateErrorCode(dns.resolveMx(hostname));
   },
   resolveCaa(hostname) {
-    return translateErrorCode(dns.resolveCaa(hostname));
+    return translateErrorCode(dns.resolveCaa(hostname).then(materializeCaaResults));
   },
   resolveNs(hostname) {
     return translateErrorCode(dns.resolveNs(hostname));
@@ -842,6 +877,7 @@ const promises = {
 
   Resolver: class Resolver {
     #resolver;
+    declare _handle: any;
 
     constructor(options) {
       validateResolverOptions(options);
@@ -873,7 +909,11 @@ const promises = {
             Resolver.#getResolver(this).resolve(hostname, rrtype).then(promisifyResolveX(false)),
           );
         default:
-          return translateErrorCode(Resolver.#getResolver(this).resolve(hostname, rrtype));
+          return translateErrorCode(
+            Resolver.#getResolver(this)
+              .resolve(hostname, rrtype)
+              .then(results => materializeResolveResults(rrtype, results)),
+          );
       }
     }
 
@@ -890,7 +930,7 @@ const promises = {
     }
 
     resolveAny(hostname) {
-      return translateErrorCode(Resolver.#getResolver(this).resolveAny(hostname));
+      return translateErrorCode(Resolver.#getResolver(this).resolveAny(hostname).then(materializeAnyResults));
     }
 
     resolveCname(hostname) {
@@ -922,7 +962,7 @@ const promises = {
     }
 
     resolveCaa(hostname) {
-      return translateErrorCode(Resolver.#getResolver(this).resolveCaa(hostname));
+      return translateErrorCode(Resolver.#getResolver(this).resolveCaa(hostname).then(materializeCaaResults));
     }
 
     resolveTxt(hostname) {

@@ -1,13 +1,15 @@
+import type { ShellTemplateValue } from "internal/shell";
+
 export function createBunShellTemplateFunction(createShellInterpreter_, createParsedShellScript_) {
+  const { normalizeShellTemplateValue } = require("internal/shell") as typeof import("internal/shell");
+
   const createShellInterpreter = createShellInterpreter_ as (
-    resolve: (code: number, stdout: Buffer, stderr: Buffer) => void,
-    reject: (code: number, stdout: Buffer, stderr: Buffer) => void,
-    args: $ZigGeneratedClasses.ParsedShellScript,
-  ) => $ZigGeneratedClasses.ShellInterpreter;
+    args: BunNativeBindings.ParsedShellScript.ParsedShellScript,
+  ) => BunNativeBindings.ShellInterpreter.ShellInterpreter;
   const createParsedShellScript = createParsedShellScript_ as (
-    raw: string,
-    args: string[],
-  ) => $ZigGeneratedClasses.ParsedShellScript;
+    raw: string[],
+    args: ShellTemplateValue[],
+  ) => BunNativeBindings.ParsedShellScript.ParsedShellScript;
 
   function lazyBufferToHumanReadableString(this: Buffer) {
     return this.toString();
@@ -104,36 +106,36 @@ export function createBunShellTemplateFunction(createShellInterpreter_, createPa
   }
 
   class ShellPromise extends Promise<ShellOutput> {
-    #args: $ZigGeneratedClasses.ParsedShellScript | undefined = undefined;
+    #args: BunNativeBindings.ParsedShellScript.ParsedShellScript | undefined = undefined;
     #hasRun: boolean = false;
     #throws: boolean = true;
     #resolve: (code: number, stdout: Buffer, stderr: Buffer) => void;
-    #reject: (code: number, stdout: Buffer, stderr: Buffer) => void;
+    #reject: (error: unknown) => void;
 
-    constructor(args: $ZigGeneratedClasses.ParsedShellScript, throws: boolean) {
+    constructor(args: BunNativeBindings.ParsedShellScript.ParsedShellScript, throws: boolean) {
       // Create the error immediately so it captures the stacktrace at the point
       // of the shell script's invocation. Just creating the error should be
       // relatively cheap, the costly work is actually computing the stacktrace
       // (`computeErrorInfo()` in ZigGlobalObject.cpp)
       let potentialError: ShellError | undefined = new ShellError();
-      let resolve, reject;
+      let resolve;
+      let reject;
 
       super((res, rej) => {
+        reject = rej;
         resolve = (code, stdout, stderr) => {
-          const out = new ShellOutput(stdout, stderr, code);
-          if (this.#throws && code !== 0) {
-            potentialError!.initialize(out, code);
-            rej(potentialError);
-          } else {
-            // Set to undefined to hint to the GC that this is unused so it can
-            // potentially GC it earlier
-            potentialError = undefined;
-            res(out);
+          try {
+            const out = new ShellOutput(stdout, stderr, code);
+            if (this.#throws && code !== 0) {
+              potentialError!.initialize(out, code);
+              rej(potentialError);
+            } else {
+              potentialError = undefined;
+              res(out);
+            }
+          } catch (error) {
+            rej(error);
           }
-        };
-        reject = (code, stdout, stderr) => {
-          potentialError!.initialize(new ShellOutput(stdout, stderr, code), code);
-          rej(potentialError);
         };
       });
 
@@ -169,9 +171,14 @@ export function createBunShellTemplateFunction(createShellInterpreter_, createPa
       if (!this.#hasRun) {
         this.#hasRun = true;
 
-        let interp = createShellInterpreter(this.#resolve, this.#reject, this.#args!);
-        this.#args = undefined;
-        interp.run();
+        try {
+          const interp = createShellInterpreter(this.#args!);
+          this.#args = undefined;
+          interp.run().$then(({ exitCode, stdout, stderr }) => this.#resolve(exitCode, stdout, stderr), this.#reject);
+        } catch (error) {
+          this.#args = undefined;
+          this.#reject(error);
+        }
       }
     }
 
@@ -238,7 +245,10 @@ export function createBunShellTemplateFunction(createShellInterpreter_, createPa
       return this;
     }
 
-    then(onfulfilled, onrejected) {
+    then<TResult1 = ShellOutput, TResult2 = never>(
+      onfulfilled?: ((value: ShellOutput) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
+    ): Promise<TResult1 | TResult2> {
       this.#run();
 
       return super.then(onfulfilled, onrejected);
@@ -301,7 +311,7 @@ export function createBunShellTemplateFunction(createShellInterpreter_, createPa
 
   var BunShell = function BunShell(first, ...rest) {
     if (first?.raw === undefined) throw new Error("Please use '$' as a tagged template function: $`cmd arg1 arg2`");
-    const parsed_shell_script = createParsedShellScript(first.raw, rest);
+    const parsed_shell_script = createParsedShellScript(first.raw, rest.map(normalizeShellTemplateValue));
 
     const cwd = BunShell[cwdSymbol];
     const env = BunShell[envSymbol];
@@ -321,7 +331,7 @@ export function createBunShellTemplateFunction(createShellInterpreter_, createPa
 
     var Shell = function Shell(first, ...rest) {
       if (first?.raw === undefined) throw new Error("Please use '$' as a tagged template function: $`cmd arg1 arg2`");
-      const parsed_shell_script = createParsedShellScript(first.raw, rest);
+      const parsed_shell_script = createParsedShellScript(first.raw, rest.map(normalizeShellTemplateValue));
 
       const cwd = Shell[cwdSymbol];
       const env = Shell[envSymbol];

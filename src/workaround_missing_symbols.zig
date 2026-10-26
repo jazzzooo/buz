@@ -110,17 +110,14 @@ pub const windows = struct {
         return hay.ptr + i;
     }
 
-    /// lstat is implemented in workaround-missing-symbols.cpp
     pub const lstat = blk: {
         const T = *const fn ([*c]const u8, [*c]std.c.Stat) callconv(.c) c_int;
         break :blk @extern(T, .{ .name = "lstat64" });
     };
-    /// fstat is implemented in workaround-missing-symbols.cpp
     pub const fstat = blk: {
-        const T = *const fn ([*c]const u8, [*c]std.c.Stat) callconv(.c) c_int;
+        const T = *const fn (c_int, [*c]std.c.Stat) callconv(.c) c_int;
         break :blk @extern(T, .{ .name = "fstat64" });
     };
-    /// stat is implemented in workaround-missing-symbols.cpp
     pub const stat = blk: {
         const T = *const fn ([*c]const u8, [*c]std.c.Stat) callconv(.c) c_int;
         break :blk @extern(T, .{ .name = "stat64" });

@@ -35,7 +35,6 @@ class CryptoKeyAES;
 
 class CryptoAlgorithmAES_KW final : public CryptoAlgorithm {
 public:
-    static constexpr ASCIILiteral s_name = "AES-KW"_s;
     static constexpr CryptoAlgorithmIdentifier s_identifier = CryptoAlgorithmIdentifier::AES_KW;
     static Ref<CryptoAlgorithm> create();
 
@@ -43,11 +42,11 @@ private:
     CryptoAlgorithmAES_KW() = default;
     CryptoAlgorithmIdentifier identifier() const final;
 
-    void generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyOrKeyPairCallback&&, ExceptionCallback&&, ScriptExecutionContext&) final;
-    void importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap, KeyCallback&&, ExceptionCallback&&) final;
-    void exportKey(CryptoKeyFormat, Ref<CryptoKey>&&, KeyDataCallback&&, ExceptionCallback&&) final;
-    void wrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&) final;
-    void unwrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&&) final;
+    ExceptionOr<KeyOrKeyPair> generateKey(const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap) final;
+    ExceptionOr<Ref<CryptoKey>> importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool extractable, CryptoKeyUsageBitmap) final;
+    ExceptionOr<KeyData> exportKey(CryptoKeyFormat, Ref<CryptoKey>&&) final;
+    ExceptionOr<Vector<uint8_t>> wrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&) final;
+    ExceptionOr<Vector<uint8_t>> unwrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&) final;
     ExceptionOr<size_t> getKeyLength(const CryptoAlgorithmParameters&) final;
 
     static ExceptionOr<Vector<uint8_t>> platformWrapKey(const CryptoKeyAES&, const Vector<uint8_t>&);

@@ -21,26 +21,22 @@ const arena_vtable = blk: {
     break :blk arena.allocator().vtable;
 };
 
-/// Returns true if `alloc` definitely has a valid `.ptr`.
-fn hasPtr(alloc: Allocator) bool {
+/// Identifies stateful allocators whose context participates in allocator identity.
+fn hasStatefulContext(alloc: Allocator) bool {
     return alloc.vtable == arena_vtable or
         bun.allocators.allocation_scope.isInstance(alloc) or
         ((comptime bun.Environment.isLinux) and LinuxMemFdAllocator.isInstance(alloc)) or
         bun.MaxHeapAllocator.isInstance(alloc) or
-        alloc.vtable == bun.allocators.c_allocator.vtable or
-        alloc.vtable == bun.allocators.z_allocator.vtable or
         MimallocArena.isInstance(alloc) or
-        bun.jsc.CachedBytecode.isInstance(alloc) or
-        bun.bundle_v2.allocatorHasPointer(alloc) or
-        ((comptime bun.heap_breakdown.enabled) and bun.heap_breakdown.Zone.isInstance(alloc)) or
-        bun.String.isWTFAllocator(alloc);
+        bun.allocators.ReleaseAllocator.isInstance(alloc) or
+        ((comptime bun.heap_breakdown.enabled) and bun.heap_breakdown.Zone.isInstance(alloc));
 }
 
 /// Returns true if the allocators are definitely different.
 fn guaranteedMismatch(alloc1: Allocator, alloc2: Allocator) bool {
     if (alloc1.vtable != alloc2.vtable) return true;
-    const ptr1 = if (hasPtr(alloc1)) alloc1.ptr else return false;
-    const ptr2 = if (hasPtr(alloc2)) alloc2.ptr else return false;
+    const ptr1 = if (hasStatefulContext(alloc1)) alloc1.ptr else return false;
+    const ptr2 = if (hasStatefulContext(alloc2)) alloc2.ptr else return false;
     return ptr1 != ptr2;
 }
 
@@ -69,8 +65,8 @@ pub fn assertEqFmt(
             );
             break :blk;
         }
-        const ptr1 = if (hasPtr(alloc1)) alloc1.ptr else return;
-        const ptr2 = if (hasPtr(alloc2)) alloc2.ptr else return;
+        const ptr1 = if (hasStatefulContext(alloc1)) alloc1.ptr else return;
+        const ptr2 = if (hasStatefulContext(alloc2)) alloc2.ptr else return;
         if (ptr1 == ptr2) return;
         bun.Output.err(
             "allocator mismatch",

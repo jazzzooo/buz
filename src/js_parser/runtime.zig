@@ -186,14 +186,14 @@ pub const Runtime = struct {
         /// This is used for `--print` entry points so we can get the result.
         remove_cjs_module_wrapper: bool = false,
 
-        runtime_transpiler_cache: ?*bun.jsc.RuntimeTranspilerCache = null,
+        runtime_transpiler_cache: ?*RuntimeTranspilerCache = null,
 
         // TODO: make this a bitset of all unsupported features
         lower_using: bool = true,
 
         /// Feature flags for dead-code elimination via `import { feature } from "bun:bundle"`
         /// When `feature("FLAG_NAME")` is called, it returns true if FLAG_NAME is in this set.
-        bundler_feature_flags: *const bun.StringSet = &empty_bundler_feature_flags,
+        bundler_feature_flags: @import("../bundler/FeatureSet.zig").View = .empty,
 
         /// REPL mode: transforms code for interactive evaluation
         /// - Wraps lone object literals `{...}` in parentheses
@@ -201,30 +201,6 @@ pub const Runtime = struct {
         /// - Wraps last expression in { value: expr } for result capture
         /// - Assigns functions to context for persistence
         repl_mode: bool = false,
-
-        pub const empty_bundler_feature_flags: bun.StringSet = bun.StringSet.initComptime();
-
-        /// Initialize bundler feature flags for dead-code elimination via `import { feature } from "bun:bundle"`.
-        /// Returns a pointer to a StringSet containing the enabled flags, or the empty set if no flags are provided.
-        /// Keys are kept sorted so iteration order is deterministic (for RuntimeTranspilerCache hashing).
-        pub fn initBundlerFeatureFlags(allocator: std.mem.Allocator, feature_flags: []const []const u8) *const bun.StringSet {
-            if (feature_flags.len == 0) {
-                return &empty_bundler_feature_flags;
-            }
-
-            const set = bun.handleOom(allocator.create(bun.StringSet));
-            set.* = bun.StringSet.init(allocator);
-            for (feature_flags) |flag| {
-                bun.handleOom(set.insert(flag));
-            }
-            set.map.sort(struct {
-                keys: []const []const u8,
-                pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
-                    return std.mem.lessThan(u8, ctx.keys[a], ctx.keys[b]);
-                }
-            }{ .keys = set.map.keys() });
-            return set;
-        }
 
         const hash_fields_for_runtime_transpiler = .{
             .top_level_await,
@@ -258,14 +234,7 @@ pub const Runtime = struct {
 
             hasher.update(std.mem.asBytes(&bools));
 
-            // Hash --feature flags. These directly affect transpiled output via
-            // feature("NAME") replacement in visitExpr.zig. When empty, we add
-            // nothing to the hash so existing cache entries remain valid.
-            // Keys are sorted in initBundlerFeatureFlags so flag order on the CLI doesn't matter.
-            for (this.bundler_feature_flags.keys()) |flag| {
-                hasher.update(flag);
-                hasher.update("\x00");
-            }
+            this.bundler_feature_flags.hash(hasher);
         }
 
         pub fn shouldUnwrapRequire(this: *const Features, package_name: string) bool {
@@ -500,6 +469,7 @@ const std = @import("std");
 const bun = @import("bun");
 const Environment = bun.Environment;
 const strings = bun.strings;
+const RuntimeTranspilerCache = @import("./RuntimeTranspilerCache.zig").RuntimeTranspilerCache;
 
 const JSAst = bun.ast;
 const Ref = bun.ast.Ref;

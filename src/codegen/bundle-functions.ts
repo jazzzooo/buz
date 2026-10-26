@@ -19,9 +19,9 @@
 import assert from "assert";
 import { readdirSync, rmSync } from "fs";
 import path from "path";
+import { createSourceFile, isFunctionDeclaration, isIdentifier, isTypeAliasDeclaration, ScriptKind, ScriptTarget, SyntaxKind } from "typescript";
 import { sliceSourceCode } from "./builtin-parser";
 import { createAssertClientJS, createLogClientJS } from "./client-js";
-import { getJS2NativeDTS } from "./generate-js2native";
 import { addCPPCharArray, cap, low, writeIfNotChanged } from "./helpers";
 import { applyGlobalReplacements, define } from "./replacements";
 
@@ -74,14 +74,24 @@ async function processFileSplit(filename: string): Promise<{ functions: BundledB
 
   contents = applyGlobalReplacements(contents);
   const originalContents = contents;
+  const parsedSource = createSourceFile(filename, originalContents, ScriptTarget.Latest, false, ScriptKind.TS);
+  const typeDeclarationEnds = new Map(
+    parsedSource.statements
+      .filter(isTypeAliasDeclaration)
+      .map(statement => [statement.getStart(parsedSource), statement.end]),
+  );
+  const functionDeclarations = new Map(
+    parsedSource.statements
+      .filter(isFunctionDeclaration)
+      .map(statement => [statement.getStart(parsedSource), statement]),
+  );
 
   // first approach doesnt work perfectly because we actually need to split each function declaration
   // and then compile those separately
 
   const consumeWhitespace = /^\s*/;
   const consumeTopLevelContent =
-    /^(\/\*|\/\/|type|import|interface|\$|const enum|export (?:async )?function|(?:async )?function)/;
-  const consumeEndOfType = /;|.(?=export|type|interface|\$|\/\/|\/\*|function|const enum)/;
+    /^(\/\*|\/\/|(?:export )?type\b|import|interface|\$|const enum|export (?:async )?function|(?:async )?function)/;
 
   const functions: ParsedBuiltin[] = [];
   let directives: Record<string, any> = {};
@@ -139,8 +149,9 @@ async function processFileSplit(filename: string): Promise<{ functions: BundledB
       internal ||= contents.slice(0, i).includes("@internal");
       contents = contents.slice(i);
     } else if (match[1] === "type" || match[1] === "export type") {
-      const i = contents.search(consumeEndOfType);
-      contents = contents.slice(i + 1);
+      const end = typeDeclarationEnds.get(originalContents.length - contents.length);
+      if (end === undefined) throw new SyntaxError(`Could not parse type declaration in ${filename}`);
+      contents = originalContents.slice(end);
     } else if (match[1] === "interface") {
       contents = sliceSourceCode(contents, false).rest;
     } else if (match[1] === "const enum") {
@@ -175,59 +186,27 @@ async function processFileSplit(filename: string): Promise<{ functions: BundledB
       }
       contents = contents.slice(directive[0].length);
     } else if (match[1] === "export function" || match[1] === "export async function") {
-      // consume async token and function name
-      const nameMatch = contents.match(/^export\s+(async\s+)?function\s([_a-zA-Z0-9]+)\s*/);
-      if (!nameMatch)
-        throw new SyntaxError("Could not parse function name:\n" + contents.slice(0, contents.indexOf("\n")));
-      const async = Boolean(nameMatch[1]);
-      const name = nameMatch[2];
-      var remaining = contents.slice(nameMatch[0].length);
-
-      // remove type parameters
-      if (remaining.startsWith("<")) {
-        var cursor = 1; // skip peeked '<'
-        var depth = 1; // already entered first bracket pair
-        for (; depth > 0 && cursor < remaining.length; cursor++) {
-          switch (remaining[cursor]) {
-            case "<":
-              depth++;
-              break;
-            case ">":
-              depth--;
-              break;
-          }
-        }
-
-        if (depth > 0) {
-          throw new SyntaxError(
-            `Function ${name} has an unclosed generic type. Missing ${depth} closing angle bracket(s).`,
-          );
-        }
-        remaining = remaining.slice(cursor).trimStart();
+      const declaration = functionDeclarations.get(originalContents.length - contents.length);
+      if (!declaration?.name || !declaration.body)
+        throw new SyntaxError(`Could not parse builtin function in ${filename}`);
+      const name = declaration.name.text;
+      const async = declaration.modifiers?.some(modifier => modifier.kind === SyntaxKind.AsyncKeyword) ?? false;
+      if (!directives.sloppy && declaration.parameters.some(parameter =>
+        parameter.initializer || parameter.dotDotDotToken || !isIdentifier(parameter.name))) {
+        throw new SyntaxError(`Strict builtin ${basename}.${name} requires simple parameters; initialize or unpack arguments in the body`);
       }
-
-      // parse function parameters
-      assert(
-        remaining.startsWith("("),
-        new SyntaxError(`Function ${name} is missing parameter list start. Found:\n\n\t${remaining.slice(0, 100)}`),
-      );
-      const paramMatch = remaining.match(/^\(([^)]*)\)(?:\s*:\s*([^{\n]+))?\s*{?/);
-      if (!paramMatch)
-        throw new SyntaxError(
-          `Could not parse parameters for function ${name}:\n` + contents.slice(0, contents.indexOf("\n")),
+      const params = declaration.parameters
+        .filter(parameter => parameter.name.getText(parsedSource) !== "this")
+        .map(parameter =>
+          (parameter.dotDotDotToken ? "..." : "") + parameter.name.getText(parsedSource) +
+          (parameter.initializer ? " = " + parameter.initializer.getText(parsedSource) : ""),
         );
-      const paramString = paramMatch[1];
-      const params =
-        paramString.trim().length === 0 ? [] : paramString.split(",").map(x => x.replace(/:.+$/, "").trim());
-      if (params[0] === "this") {
-        params.shift();
-      }
 
-      const { result, rest } = sliceSourceCode(remaining.slice(paramMatch[0].length - 1), true, x =>
+      const { result, rest } = sliceSourceCode(originalContents.slice(declaration.body.getStart(parsedSource)), true, x =>
         globalThis.requireTransformer(x, SRC_DIR + "/" + basename),
       );
 
-      const source = result.trim().slice(2, -1);
+      const source = result.trim().slice(1, -1);
       const constEnumsUsedInFunction: string[] = [];
       if (topLevelEnums.length) {
         // If the function references a top-level const enum let's add the code
@@ -320,14 +299,15 @@ $$capture_start$$(${fn.async ? "async " : ""}${
       throw new Error(`Errors in ${basename}.ts:\n${errors.map(x => x[1]).join("\n")}`);
     }
 
+    const usesAwait = fn.async && /\bawait\b/.test(finalReplacement);
+
     bundledFunctions.push({
       name: fn.name,
       directives: fn.directives,
       source: finalReplacement,
       params: fn.params,
-      // Async functions automatically get Private visibility because the parser
-      // upgrades them when they use await (see Parser.cpp parseFunctionBody)
-      visibility: fn.directives.visibility ?? (fn.directives.linkTimeConstant || fn.async ? "Private" : "Public"),
+      // Parser::parseFunctionBody upgrades async wrappers to Private when they use await.
+      visibility: fn.directives.visibility ?? (fn.directives.linkTimeConstant || usesAwait ? "Private" : "Public"),
       isGetter: !!fn.directives.getter,
       constructAbility: fn.directives.ConstructAbility ?? "CannotConstruct",
       constructKind: fn.directives.ConstructKind ?? "None",
@@ -368,9 +348,10 @@ async function processFunctionFile(x: string) {
 
 interface BundleBuiltinFunctionsArgs {
   requireTransformer: (x: string, filename: string) => string;
+  schemaPrivateNames: readonly string[];
 }
 
-export async function bundleBuiltinFunctions({ requireTransformer }: BundleBuiltinFunctionsArgs) {
+export async function bundleBuiltinFunctions({ requireTransformer, schemaPrivateNames }: BundleBuiltinFunctionsArgs) {
   const filesToProcess = readdirSync(SRC_DIR)
     .filter(x => x.endsWith(".ts") && !x.endsWith(".d.ts"))
     .sort();
@@ -405,18 +386,16 @@ export async function bundleBuiltinFunctions({ requireTransformer }: BundleBuilt
     }
   }
 
-  let additionalPrivateNames = new Set();
-
-  function privateName(name) {
-    additionalPrivateNames.add(name);
-    return "builtinNames." + name + "PrivateName()";
+  const additionalPrivateNames = new Set<string>(schemaPrivateNames);
+  for (const { internal, functions } of files) {
+    if (internal) for (const fn of functions) additionalPrivateNames.add(fn.name);
   }
 
   // C++ codegen
   let bundledCPP = `// Generated by ${import.meta.path}
-    namespace Zig { class GlobalObject; }
     #include "root.h"
     #include "config.h"
+    #include "ZigGlobalObject.h"
     #include "JSDOMGlobalObject.h"
     #include "WebCoreJSClientData.h"
     #include "WebCoreJSBuiltins.h"
@@ -451,16 +430,13 @@ JSC::FunctionExecutable* ${lowerBasename}${cap(fn.name)}CodeGenerator(JSC::VM& v
     const name = `${low(basename)}${cap(fn.name)}CodeSource`;
     return `m_${name}(SourceCode(sourceProvider.copyRef(), ${fn.sourceOffset}, ${fn.source.length + fn.sourceOffset}, 1, 1))`;
   };
-  for (const { basename, internal, functions } of files) {
+  for (const { basename, functions } of files) {
     bundledCPP += `
 #pragma mark ${basename}
 
-${basename}BuiltinsWrapper::${basename}BuiltinsWrapper(JSC::VM& vm, RefPtr<JSC::SourceProvider> sourceProvider, BunBuiltinNames &builtinNames)
+${basename}BuiltinsWrapper::${basename}BuiltinsWrapper(JSC::VM& vm, RefPtr<JSC::SourceProvider> sourceProvider)
     : m_vm(vm)`;
 
-    if (internal) {
-      bundledCPP += `, ${functions.map(fn => `m_${fn.name}PrivateName(${privateName(fn.name)})`).join(",\n   ")}`;
-    }
     bundledCPP += `, ${functions.map(fn => initializeSourceCodeFn(fn, basename)).join(",\n   ")} {}
 `;
   }
@@ -472,22 +448,9 @@ RefPtr<JSC::SourceProvider> createBuiltinsSourceProvider() {
 `;
 
   bundledCPP += `
-JSBuiltinFunctions::JSBuiltinFunctions(JSC::VM& vm, RefPtr<JSC::SourceProvider> provider, BunBuiltinNames& builtinNames) : m_vm(vm),
-  ${files.map(({ basename }) => `m_${low(basename)}Builtins(vm, provider, builtinNames)`).join(", ")}
+JSBuiltinFunctions::JSBuiltinFunctions(JSC::VM& vm, RefPtr<JSC::SourceProvider> provider)
+    : ${files.map(({ basename }) => `m_${low(basename)}Builtins(vm, provider)`).join(", ")}
 {}
-
-void JSBuiltinFunctions::exportNames() {
-`;
-
-  for (const { basename, internal } of files) {
-    if (internal) {
-      bundledCPP += `     m_${low(basename)}Builtins.exportNames();\n`;
-    }
-  }
-
-  bundledCPP += `
-}
-
 `;
 
   bundledCPP += `
@@ -550,7 +513,7 @@ JSBuiltinInternalFunctions::JSBuiltinInternalFunctions(JSC::VM& vm) : m_vm(vm)
     if (internal) {
       bundledCPP += `#define DECLARE_GLOBAL_STATIC(name) \\
         Zig::GlobalObject::GlobalPropertyInfo( \\
-            clientData.builtinFunctions().${low(basename)}Builtins().name##PrivateName(), ${low(basename)}().m_##name##Function.get() , JSC::PropertyAttribute::DontDelete | JSC::PropertyAttribute::ReadOnly),
+            clientData.builtinNames().name##PrivateName(), ${low(basename)}().m_##name##Function.get() , JSC::PropertyAttribute::DontDelete | JSC::PropertyAttribute::ReadOnly),
         WEBCORE_FOREACH_${basename.toUpperCase()}_BUILTIN_FUNCTION_NAME(DECLARE_GLOBAL_STATIC)
       #undef DECLARE_GLOBAL_STATIC
       `;
@@ -625,7 +588,7 @@ JSBuiltinInternalFunctions::JSBuiltinInternalFunctions(JSC::VM& vm) : m_vm(vm)
 
     class ${basename}BuiltinsWrapper : private JSC::WeakHandleOwner {
     public:
-        explicit ${basename}BuiltinsWrapper(JSC::VM& vm, RefPtr<JSC::SourceProvider> sourceProvider, BunBuiltinNames &builtinNames);
+        explicit ${basename}BuiltinsWrapper(JSC::VM& vm, RefPtr<JSC::SourceProvider> sourceProvider);
 
     #define EXPOSE_BUILTIN_EXECUTABLES(name, functionName, overriddenName, length) \\
         JSC::UnlinkedFunctionExecutable* name##Executable(); \\
@@ -633,14 +596,8 @@ JSBuiltinInternalFunctions::JSBuiltinInternalFunctions(JSC::VM& vm) : m_vm(vm)
         WEBCORE_FOREACH_${basename.toUpperCase()}_BUILTIN_CODE(EXPOSE_BUILTIN_EXECUTABLES)
     #undef EXPOSE_BUILTIN_EXECUTABLES
 
-        WEBCORE_FOREACH_${basename.toUpperCase()}_BUILTIN_FUNCTION_NAME(DECLARE_BUILTIN_IDENTIFIER_ACCESSOR)
-
-        void exportNames();
-
     private:
         [[maybe_unused]] JSC::VM& m_vm;
-
-        WEBCORE_FOREACH_${basename.toUpperCase()}_BUILTIN_FUNCTION_NAME(DECLARE_BUILTIN_NAMES)
 
     #define DECLARE_BUILTIN_SOURCE_MEMBERS(name, functionName, overriddenName, length) \\
         JSC::SourceCode m_##name##Source;\\
@@ -654,9 +611,7 @@ JSBuiltinInternalFunctions::JSBuiltinInternalFunctions(JSC::VM& vm) : m_vm(vm)
     inline JSC::UnlinkedFunctionExecutable* ${basename}BuiltinsWrapper::name##Executable() \\
     {\\
         if (!m_##name##Executable) {\\
-            JSC::Identifier executableName = functionName##PublicName();\\
-            if (overriddenName)\\
-                executableName = JSC::Identifier::fromString(m_vm, overriddenName);\\
+            auto executableName = JSC::Identifier::fromString(m_vm, overriddenName ? overriddenName : #functionName ""_s);\\
             m_##name##Executable = JSC::Weak<JSC::UnlinkedFunctionExecutable>(JSC::createBuiltinExecutable(m_vm, m_##name##Source, executableName, s_##name##ImplementationVisibility, s_##name##ConstructorKind, s_##name##ConstructAbility, s_##name##InlineAttribute), this, &m_##name##Executable);\\
         }\\
         return m_##name##Executable.get();\\
@@ -664,12 +619,6 @@ JSBuiltinInternalFunctions::JSBuiltinInternalFunctions(JSC::VM& vm) : m_vm(vm)
     WEBCORE_FOREACH_${basename.toUpperCase()}_BUILTIN_CODE(DEFINE_BUILTIN_EXECUTABLES)
     #undef DEFINE_BUILTIN_EXECUTABLES
 
-    inline void ${basename}BuiltinsWrapper::exportNames()
-    {
-    #define EXPORT_FUNCTION_NAME(name) m_vm.propertyNames->appendExternalName(name##PublicName(), name##PrivateName());
-        WEBCORE_FOREACH_${basename.toUpperCase()}_BUILTIN_FUNCTION_NAME(EXPORT_FUNCTION_NAME)
-    #undef EXPORT_FUNCTION_NAME
-    }
     `;
 
     if (internal) {
@@ -713,8 +662,7 @@ JSBuiltinInternalFunctions::JSBuiltinInternalFunctions(JSC::VM& vm) : m_vm(vm)
   bundledHeader += `class JSBuiltinFunctions {
         WTF_DEPRECATED_MAKE_FAST_ALLOCATED(JSBuiltinFunctions);
     public:
-        explicit JSBuiltinFunctions(JSC::VM& vm, RefPtr<JSC::SourceProvider> provider, BunBuiltinNames &builtinNames);
-        void exportNames();
+        explicit JSBuiltinFunctions(JSC::VM& vm, RefPtr<JSC::SourceProvider> provider);
 
     `;
 
@@ -726,7 +674,6 @@ JSBuiltinInternalFunctions::JSBuiltinInternalFunctions(JSC::VM& vm) : m_vm(vm)
 
   bundledHeader += `
     private:
-        [[maybe_unused]] JSC::VM& m_vm;
     `;
 
   for (const { basename } of files) {
@@ -834,8 +781,6 @@ JSBuiltinInternalFunctions::JSBuiltinInternalFunctions(JSC::VM& vm) : m_vm(vm)
       }
     }
   }
-
-  dts += getJS2NativeDTS();
 
   writeIfNotChanged(path.join(CODEGEN_DIR, "WebCoreJSBuiltins.d.ts"), dts);
 

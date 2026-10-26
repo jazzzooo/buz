@@ -1,76 +1,47 @@
-pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = jsc.JSObject.createEmpty(globalThis, 3);
-    const fields = comptime .{
-        .gcAggressionLevel = gcAggressionLevel,
-        .arrayBufferToString = arrayBufferToString,
-        .mimallocDump = dump_mimalloc,
-    };
-    inline for (comptime std.meta.fieldNames(@TypeOf(fields))) |name| {
-        object.putDirect(
-            globalThis,
-            comptime ZigString.static(name),
-            jsc.JSFunction.create(globalThis, name, @field(fields, name), 1, .{}).toJS(),
-        );
-    }
-    return object.toJS();
-}
-
 pub fn gcAggressionLevel(
-    globalThis: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!jsc.JSValue {
-    const ret = JSValue.jsNumber(@as(i32, @backingInt(globalThis.bunVM().aggressive_garbage_collection)));
-    const value = callframe.arguments_old(1).ptr[0];
-
-    if (!value.isEmptyOrUndefinedOrNull()) {
-        switch (try value.coerce(i32, globalThis)) {
-            1 => globalThis.bunVM().aggressive_garbage_collection = .mild,
-            2 => globalThis.bunVM().aggressive_garbage_collection = .aggressive,
-            0 => globalThis.bunVM().aggressive_garbage_collection = .none,
-            else => {},
-        }
-    }
-    return ret;
+    _: bun.bindgen.CallContext(GcAggressionLevelSchema),
+    args: bun.bindgen.Args(GcAggressionLevelSchema),
+) bun.JSError!i32 {
+    return bun.current_runtime.configureGarbageCollectionAggression(args.value);
 }
 
 pub fn arrayBufferToString(
-    globalThis: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!jsc.JSValue {
-    const args = callframe.arguments_old(2).slice();
-    if (args.len < 1 or !args[0].isCell() or !args[0].jsType().isTypedArrayOrArrayBuffer()) {
-        return globalThis.throwInvalidArguments("Expected an ArrayBuffer", .{});
+    _: bun.bindgen.CallContext(ArrayBufferToStringSchema),
+    args: bun.bindgen.Args(ArrayBufferToStringSchema),
+) bun.JSError!bun.bindgen.DOMString {
+    const bytes = args.value.unsafePtr("the generated entry frame retains the byte lease while the string copies these bytes");
+    if (args.value.elementSize() == 2) {
+        const aligned_bytes: []align(@alignOf(u16)) const u8 = @alignCast(bytes);
+        const units = std.mem.bytesAsSlice(u16, aligned_bytes);
+        return bun.bindgen.DOMString.fromUTF16(units);
     }
-
-    const array_buffer = jsc.ArrayBuffer.fromTypedArray(globalThis, args[0]);
-    switch (array_buffer.typed_array_type) {
-        .Uint16Array, .Int16Array => {
-            var zig_str = ZigString.init("");
-            zig_str._unsafe_ptr_do_not_use = @as([*]const u8, @ptrCast(@alignCast(array_buffer.ptr)));
-            zig_str.len = array_buffer.len;
-            zig_str.markUTF16();
-            return zig_str.toJS(globalThis);
-        },
-        else => {
-            return ZigString.init(array_buffer.slice()).toJS(globalThis);
-        },
-    }
+    return bun.bindgen.DOMString.fromUTF8(bytes);
 }
 
-extern fn dump_zone_malloc_stats() void;
-
-fn dump_mimalloc(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    globalObject.bunVM().arena.dumpStats();
+fn dump_mimalloc(
+    _: bun.bindgen.CallContext(MimallocDumpSchema),
+    _: bun.bindgen.Args(MimallocDumpSchema),
+) bun.JSError!void {
+    bun.current_runtime.dumpAllocatorStats();
     if (bun.heap_breakdown.enabled) {
-        dump_zone_malloc_stats();
+        bun.bindgen.Engine(DumpMallocZoneStatsSchema).call(.{});
     }
-    return .js_undefined;
 }
 
 const bun = @import("bun");
 const std = @import("std");
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
+const UnsafeObjectBindings = bun.bindgen.Module("UnsafeObject");
+const GcAggressionLevelSchema = UnsafeObjectBindings.function("gcAggressionLevel");
+const ArrayBufferToStringSchema = UnsafeObjectBindings.function("arrayBufferToString");
+const MimallocDumpSchema = UnsafeObjectBindings.function("mimallocDump");
+const DumpMallocZoneStatsSchema = UnsafeObjectBindings.engineShim("dumpMallocZoneStats");
+const GcAggressionLevelBinding = bun.bindgen.Fn(GcAggressionLevelSchema, gcAggressionLevel);
+const ArrayBufferToStringBinding = bun.bindgen.Fn(ArrayBufferToStringSchema, arrayBufferToString);
+const MimallocDumpBinding = bun.bindgen.Fn(MimallocDumpSchema, dump_mimalloc);
+
+comptime {
+    _ = GcAggressionLevelBinding;
+    _ = ArrayBufferToStringBinding;
+    _ = MimallocDumpBinding;
+}

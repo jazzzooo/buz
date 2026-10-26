@@ -236,7 +236,7 @@ pub const PropertyDeclarationParser = struct {
             return .{ .err = input.newError(css.BasicParseErrorKind.at_rule_body_invalid) };
         }
 
-        pub fn ruleWithoutBlock(_: *This, _: Prelude, _: *const css.ParserState) css.Maybe(AtRule, void) {
+        pub fn ruleWithoutBlock(_: *This, _: Prelude, _: *const css.ParserState) css.Outcome(AtRule, void) {
             return .{ .err = {} };
         }
     };

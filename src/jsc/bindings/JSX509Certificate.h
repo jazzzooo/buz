@@ -4,7 +4,6 @@
 
 #include "BunClientData.h"
 #include "ncrypto.h"
-#include "headers-handwritten.h"
 
 #include <JavaScriptCore/JSDestructibleObject.h>
 #include <JavaScriptCore/JSGlobalObject.h>
@@ -18,8 +17,6 @@ class GlobalObject;
 }
 
 namespace Bun {
-
-JSC_DECLARE_HOST_FUNCTION(jsIsX509Certificate);
 
 using namespace JSC;
 
@@ -67,13 +64,10 @@ public:
     // Certificate validation methods
     bool checkHost(JSGlobalObject*, std::span<const char>, uint32_t flags);
     bool checkEmail(JSGlobalObject*, std::span<const char>, uint32_t flags);
-    bool checkIP(JSGlobalObject*, const char*);
+    bool checkIP(JSGlobalObject*, const char*, uint32_t flags);
     bool checkIssued(JSGlobalObject*, JSX509Certificate* issuer);
     bool checkPrivateKey(const KeyObject&);
     bool verify(const KeyObject&);
-    JSC::JSObject* toLegacyObject(JSGlobalObject*);
-    static JSObject* toLegacyObject(ncrypto::X509View view, JSGlobalObject*);
-
     // Certificate data access methods
     static JSValue getKeyUsage(ncrypto::X509View view, JSGlobalObject*);
     EVP_PKEY* getPublicKey(JSGlobalObject* globalObject);
@@ -126,8 +120,8 @@ public:
             [](auto& spaces, auto&& space) { spaces.m_subspaceForJSX509Certificate = std::forward<decltype(space)>(space); });
     }
 
-    static JSValue computeSubject(ncrypto::X509View view, JSGlobalObject*, bool legacy);
-    static JSValue computeIssuer(ncrypto::X509View view, JSGlobalObject*, bool legacy);
+    static JSValue computeSubject(ncrypto::X509View view, JSGlobalObject*);
+    static JSValue computeIssuer(ncrypto::X509View view, JSGlobalObject*);
     static JSString* computeValidFrom(ncrypto::X509View view, JSGlobalObject*);
     static JSString* computeValidTo(ncrypto::X509View view, JSGlobalObject*);
     static JSString* computeSerialNumber(ncrypto::X509View view, JSGlobalObject*);
@@ -136,7 +130,7 @@ public:
     static JSString* computeFingerprint512(ncrypto::X509View view, JSGlobalObject*);
     static JSUint8Array* computeRaw(ncrypto::X509View view, JSGlobalObject*);
     static bool computeIsCA(ncrypto::X509View view, JSGlobalObject*);
-    static JSValue computeInfoAccess(ncrypto::X509View view, JSGlobalObject*, bool legacy);
+    static JSValue computeInfoAccess(ncrypto::X509View view, JSGlobalObject*);
     static JSString* computeSubjectAltName(ncrypto::X509View view, JSGlobalObject*);
     static JSValue computePublicKey(ncrypto::X509View view, JSGlobalObject*);
 

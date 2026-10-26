@@ -231,8 +231,12 @@ pub fn joinAbsStringBufChecked(cwd: []const u8, buf: []u8, parts: []const []cons
 }
 
 pub fn joinAbsStringBufZ(cwd: []const u8, buf: []u8, _parts: anytype, comptime platform: Platform) [:0]u8 {
-    if (buf.len == 0) @panic("resolved path exceeds buffer");
-    const resolved = resolveBuf(cwd, buf[0 .. buf.len - 1], _parts, platform) orelse @panic("resolved path exceeds buffer");
+    return joinAbsStringBufZChecked(cwd, buf, _parts, platform) orelse @panic("resolved path exceeds buffer");
+}
+
+pub fn joinAbsStringBufZChecked(cwd: []const u8, buf: []u8, parts: []const []const u8, comptime platform: Platform) ?[:0]u8 {
+    if (buf.len == 0) return null;
+    const resolved = resolveBuf(cwd, buf[0 .. buf.len - 1], parts, platform) orelse return null;
     buf[resolved.len] = 0;
     return buf[0..resolved.len :0];
 }
@@ -268,7 +272,7 @@ fn resolveBuf(
     return buf[0..resolved.len];
 }
 
-// ResolvePath__joinAbsStringBufCurrentPlatformBunString: see src/jsc/resolve_path_jsc.zig
+// The resolvePathFromCwd native export lives in src/jsc/resolve_path_jsc.zig
 // (reaches into the VM for cwd; paths/ is JSC-free).
 
 pub fn platformToPosixInPlace(comptime T: type, path_buffer: []T) void {

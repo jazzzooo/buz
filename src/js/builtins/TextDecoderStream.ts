@@ -23,9 +23,8 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-export function initializeTextDecoderStream() {
-  const label = arguments.length >= 1 ? arguments[0] : "utf-8";
-  const options = arguments.length >= 2 ? arguments[1] : {};
+export function initializeTextDecoderStream(label, fatal, ignoreBOM) {
+  const decoder = new TextDecoder(label, { fatal, ignoreBOM });
 
   const startAlgorithm = () => {
     return Promise.$resolve();
@@ -63,10 +62,6 @@ export function initializeTextDecoderStream() {
 
   const transform = $createTransformStream(startAlgorithm, transformAlgorithm, flushAlgorithm);
   $putByIdDirectPrivate(this, "textDecoderStreamTransform", transform);
-
-  const fatal = !!options.fatal;
-  const ignoreBOM = !!options.ignoreBOM;
-  const decoder = new TextDecoder(label, { fatal, ignoreBOM });
 
   $putByIdDirectPrivate(this, "fatal", fatal);
   $putByIdDirectPrivate(this, "ignoreBOM", ignoreBOM);

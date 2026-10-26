@@ -34,6 +34,7 @@
 #include "PerformanceMarkOptions.h"
 #include "PerformanceUserTiming.h"
 #include "SerializedScriptValue.h"
+#include "SchemaBindings.h"
 // #include "WorkerGlobalScope.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 
@@ -41,7 +42,7 @@ namespace WebCore {
 
 static double performanceNow(ScriptExecutionContext& scriptExecutionContext)
 {
-    return static_cast<double>(Bun__readOriginTimer(uncheckedDowncast<Zig::GlobalObject>(scriptExecutionContext.globalObject())->bunVM())) / 1000000;
+    return static_cast<double>(Bun::Bindgen::ZigExports::bunBindgenZig_virtual_machine_readOriginTimer(uncheckedDowncast<Zig::GlobalObject>(scriptExecutionContext.globalObject())->bunVM())) / 1000000;
 }
 
 ExceptionOr<Ref<PerformanceMark>> PerformanceMark::create(JSC::JSGlobalObject& globalObject, ScriptExecutionContext& scriptExecutionContext, const String& name, std::optional<PerformanceMarkOptions>&& markOptions)
@@ -65,16 +66,19 @@ ExceptionOr<Ref<PerformanceMark>> PerformanceMark::create(JSC::JSGlobalObject& g
         detail = JSC::jsNull();
     }
 
-    if (detail.isNull()) {
-        return adoptRef(*new PerformanceMark(name, startTime, nullptr));
+    RefPtr<SerializedScriptValue> serializedDetail;
+    if (!detail.isNull()) {
+        Vector<RefPtr<MessagePort>> ignoredMessagePorts;
+        auto serialized = SerializedScriptValue::create(globalObject, detail, {}, ignoredMessagePorts);
+        if (serialized.hasException())
+            return serialized.releaseException();
+        serializedDetail = serialized.releaseReturnValue();
     }
 
-    Vector<RefPtr<MessagePort>> ignoredMessagePorts;
-    auto serializedDetail = SerializedScriptValue::create(globalObject, detail, {}, ignoredMessagePorts);
-    if (serializedDetail.hasException())
-        return serializedDetail.releaseException();
-
-    return adoptRef(*new PerformanceMark(name, startTime, serializedDetail.releaseReturnValue()));
+    void* allocation = PerformanceEntryMalloc::tryMalloc(sizeof(PerformanceMark));
+    if (!allocation)
+        return Exception { OutOfMemoryError };
+    return adoptRef(*new (NotNull, allocation) PerformanceMark(name, startTime, WTF::move(serializedDetail)));
 }
 
 PerformanceMark::PerformanceMark(const String& name, double startTime, RefPtr<SerializedScriptValue>&& serializedDetail)

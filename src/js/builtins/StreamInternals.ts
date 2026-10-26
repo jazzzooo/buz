@@ -42,10 +42,6 @@ export function promiseInvokeOrNoopMethodNoCatch(object, method, args) {
   return $shieldingPromiseResolve(method.$apply(object, args));
 }
 
-export function promiseInvokeOrNoopNoCatch(object, key, args) {
-  return $promiseInvokeOrNoopMethodNoCatch(object, object[key], args);
-}
-
 export function promiseInvokeOrNoopMethod(object, method, args) {
   try {
     return $promiseInvokeOrNoopMethodNoCatch(object, method, args);
@@ -54,33 +50,11 @@ export function promiseInvokeOrNoopMethod(object, method, args) {
   }
 }
 
-export function promiseInvokeOrNoop(object, key, args) {
-  try {
-    return $promiseInvokeOrNoopNoCatch(object, key, args);
-  } catch (error) {
-    return Promise.$reject(error);
-  }
-}
-
-export function promiseInvokeOrFallbackOrNoop(object, key1, args1, key2, args2) {
-  try {
-    const method = object[key1];
-    if (method === undefined) return $promiseInvokeOrNoopNoCatch(object, key2, args2);
-    return $shieldingPromiseResolve(method.$apply(object, args1));
-  } catch (error) {
-    return Promise.$reject(error);
-  }
-}
-
 export function validateAndNormalizeQueuingStrategy(size, highWaterMark) {
-  if (size !== undefined && typeof size !== "function") throw new TypeError("size parameter must be a function");
-
-  const newHighWaterMark = $toNumber(highWaterMark);
-
-  if (newHighWaterMark !== newHighWaterMark || newHighWaterMark < 0)
+  if (highWaterMark !== highWaterMark || highWaterMark < 0)
     throw new RangeError("highWaterMark value is negative or not a number");
 
-  return { size: size, highWaterMark: newHighWaterMark };
+  return { size: size, highWaterMark: highWaterMark };
 }
 
 import type Dequeue from "internal/fifo";
@@ -102,9 +76,8 @@ export function dequeueValue(queue) {
   return record.value;
 }
 
-export function enqueueValueWithSize(queue, value, size) {
-  size = $toNumber(size);
-  if (!isFinite(size) || size < 0) throw new RangeError("size has an incorrect value");
+export function enqueueValueWithSize(queue, value, size: number) {
+  if (size !== size || size === Infinity || size < 0) throw new RangeError("size has an incorrect value");
 
   queue.content.push({ value, size });
   queue.size += size;
@@ -121,45 +94,8 @@ export function resetQueue(queue) {
   queue.size = 0;
 }
 
-export function extractSizeAlgorithm(strategy) {
-  const sizeAlgorithm = strategy.size;
-
-  if (sizeAlgorithm === undefined) return () => 1;
-
-  if (typeof sizeAlgorithm !== "function") throw new TypeError("strategy.size must be a function");
-
-  return chunk => {
-    return sizeAlgorithm(chunk);
-  };
-}
-
-export function extractHighWaterMark(strategy, defaultHWM) {
-  const highWaterMark = strategy.highWaterMark;
-
-  if (highWaterMark === undefined) return defaultHWM;
-
-  if (highWaterMark !== highWaterMark || highWaterMark < 0)
-    throw new RangeError("highWaterMark value is negative or not a number");
-
-  return $toNumber(highWaterMark);
-}
-
-export function extractHighWaterMarkFromQueuingStrategyInit(init: { highWaterMark?: number }) {
-  if (!$isObject(init)) throw new TypeError("QueuingStrategyInit argument must be an object.");
-  const { highWaterMark } = init;
-  if (highWaterMark === undefined) throw new TypeError("QueuingStrategyInit.highWaterMark member is required.");
-
-  return $toNumber(highWaterMark);
-}
-
 export function createFulfilledPromise(value) {
   const promise = $newPromise();
   $fulfillPromise(promise, value);
   return promise;
-}
-
-export function toDictionary(value, defaultValue, errorMessage) {
-  if ($isUndefinedOrNull(value)) return defaultValue;
-  if (!$isObject(value)) throw $ERR_INVALID_ARG_TYPE(errorMessage);
-  return value;
 }

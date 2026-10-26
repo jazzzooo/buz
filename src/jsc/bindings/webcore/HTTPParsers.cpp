@@ -31,6 +31,7 @@
  */
 #include "config.h"
 #include "HTTPParsers.h"
+#include "SchemaBindings.h"
 
 #include "CommonAtomStrings.h"
 #include "HTTPHeaderField.h"
@@ -987,13 +988,18 @@ CrossOriginResourcePolicy parseCrossOriginResourcePolicyHeader(StringView header
     return CrossOriginResourcePolicy::Invalid;
 }
 
-extern "C" int Bun__writeHTTPDate(char* buffer, size_t length, uint64_t timestampMs)
+} // namespace WebCore
+
+int Bun::Bindgen::Engine::bunBindgenEngine_date_time_writeHTTPDate(
+    const Bun::Bindgen::Engine::BunBindgenEngine_date_time_writeHTTPDate_Arguments& args)
 {
-    if (timestampMs == 0) {
+    if (args.timestampMs == 0) {
         return 0;
     }
 
-    time_t timestamp = timestampMs / 1000;
+    RELEASE_ASSERT(!args.output.empty());
+
+    time_t timestamp = args.timestampMs / 1000;
     struct tm tstruct = {};
 #ifdef _WIN32
     gmtime_s(&tstruct, &timestamp);
@@ -1007,7 +1013,7 @@ extern "C" int Bun__writeHTTPDate(char* buffer, size_t length, uint64_t timestam
         "Jan", "Feb", "Mar", "Apr", "May", "Jun",
         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
     };
-    return snprintf(buffer, length, "%.3s, %.2u %.3s %.4u %.2u:%.2u:%.2u GMT",
+    return snprintf(reinterpret_cast<char*>(args.output.data()), args.output.size(), "%.3s, %.2u %.3s %.4u %.2u:%.2u:%.2u GMT",
         wday_name[tstruct.tm_wday],
         tstruct.tm_mday % 99,
         mon_name[tstruct.tm_mon],
@@ -1015,6 +1021,4 @@ extern "C" int Bun__writeHTTPDate(char* buffer, size_t length, uint64_t timestam
         tstruct.tm_hour % 99,
         tstruct.tm_min % 99,
         tstruct.tm_sec % 99);
-}
-
 }

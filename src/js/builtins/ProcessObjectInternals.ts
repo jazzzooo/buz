@@ -164,7 +164,8 @@ export function getStdinStream(
   }
 
   const ReadStream = isTTY ? require("node:tty").ReadStream : require("node:fs").ReadStream;
-  const stream = new ReadStream(null, { fd, autoClose: false });
+  const stream = isTTY ? new ReadStream(fd, { autoClose: false }) : new ReadStream(null, { fd, autoClose: false });
+  stream.$bunNativePtr = source;
 
   const originalOn = stream.on;
 
@@ -236,7 +237,7 @@ export function getStdinStream(
           disown();
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       if (err?.code === "ERR_STREAM_RELEASE_LOCK") {
         // The stream was unref()ed. It may be ref()ed again in the future,
         // or maybe it has already been ref()ed again and we just need to
@@ -293,89 +294,85 @@ export function getStdinStream(
 
   return stream;
 }
+export function emitHelper(process: typeof globalThis.process, eventName: string, event: unknown) {
+  return process.emit(eventName, event);
+}
+
+export function setPpid(value: unknown) {
+  if (!$isObject(this)) return false;
+  $Object.$defineProperty(this, "ppid", {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  return true;
+}
+
 export function initializeNextTickQueue(
   process: typeof globalThis.process,
   nextTickQueue,
   drainMicrotasksFn,
   reportUncaughtExceptionFn,
 ) {
-  var queue;
-  var process;
   var nextTickQueue = nextTickQueue;
   var drainMicrotasks = drainMicrotasksFn;
   var reportUncaughtException = reportUncaughtExceptionFn;
+  const enqueue = $bindgenFn("next_tick.schema.zig", "enqueue");
+  const take = $bindgenFn("next_tick.schema.zig", "take");
 
   const { validateFunction } = require("internal/validators");
 
-  var setup;
-  setup = () => {
-    const { FixedQueue } = require("internal/fixed_queue");
-    queue = new FixedQueue();
-
-    function processTicksAndRejections() {
-      var tock;
-      do {
-        while ((tock = queue.shift()) !== null) {
-          var callback = tock.callback;
-          var args = tock.args;
-          var frame = tock.frame;
-          var restore = $getInternalField($asyncContext, 0);
-          $putInternalField($asyncContext, 0, frame);
-          try {
-            if (args === undefined) {
-              callback();
-            } else {
-              switch (args.length) {
-                case 1:
-                  callback(args[0]);
-                  break;
-                case 2:
-                  callback(args[0], args[1]);
-                  break;
-                case 3:
-                  callback(args[0], args[1], args[2]);
-                  break;
-                case 4:
-                  callback(args[0], args[1], args[2], args[3]);
-                  break;
-                default:
-                  callback(...args);
-                  break;
-              }
+  function processTicksAndRejections() {
+    var tock;
+    do {
+      while ((tock = take()) !== null) {
+        var callback = tock[1];
+        var args = tock[2];
+        var frame = tock[3];
+        var receiver = tock[4];
+        var restore = $getInternalField($asyncContext, 0);
+        $putInternalField($asyncContext, 0, frame);
+        try {
+          if (args === undefined) {
+            callback.$call(receiver);
+          } else {
+            switch (args.length) {
+              case 1:
+                callback.$call(receiver, args[0]);
+                break;
+              case 2:
+                callback.$call(receiver, args[0], args[1]);
+                break;
+              case 3:
+                callback.$call(receiver, args[0], args[1], args[2]);
+                break;
+              case 4:
+                callback.$call(receiver, args[0], args[1], args[2], args[3]);
+                break;
+              default:
+                callback.$call(receiver, ...args);
+                break;
             }
-          } catch (e) {
-            reportUncaughtException(e);
-          } finally {
-            $putInternalField($asyncContext, 0, restore);
           }
+        } catch (e) {
+          reportUncaughtException(e);
+        } finally {
+          $putInternalField($asyncContext, 0, restore);
         }
+      }
 
-        drainMicrotasks();
-      } while (!queue.isEmpty());
-    }
+      drainMicrotasks();
+    } while ($getInternalField(nextTickQueue, 0) !== 0);
+  }
 
-    $putInternalField(nextTickQueue, 0, 0);
-    $putInternalField(nextTickQueue, 1, queue);
-    $putInternalField(nextTickQueue, 2, processTicksAndRejections);
-    setup = undefined;
-  };
+  $putInternalField(nextTickQueue, 2, processTicksAndRejections);
 
   function nextTick(cb, ...args) {
     validateFunction(cb, "callback");
-    if (setup) {
-      setup();
-      process = globalThis.process;
-    }
     if (process._exiting) return;
 
-    queue.push({
-      callback: cb,
-      // We want to avoid materializing the args if there are none because it's
-      // a waste of memory and Array.prototype.slice shows up in profiling.
-      args: $argumentCount() > 1 ? args : undefined,
-      frame: $getInternalField($asyncContext, 0),
-    });
-    $putInternalField(nextTickQueue, 0, 1);
+    enqueue(cb, $argumentCount() > 1 ? args : undefined);
   }
 
   return nextTick;
@@ -435,7 +432,7 @@ export function windowsEnv(
       editWindowsEnvVar(k, null);
       return typeof p !== "symbol" ? delete internalEnv[k] : false;
     },
-    defineProperty(_, p, attributes) {
+    defineProperty(_, p, attributes): any {
       const k = String(p).toUpperCase();
       $assert(typeof p === "string"); // proxy is only string and symbol. the symbol would have thrown by now
       if (!(k in internalEnv) && !envMapList.includes(p)) {
@@ -456,7 +453,7 @@ export function windowsEnv(
 
 export function getChannel() {
   const EventEmitter = require("node:events");
-  const setRef = $newZigFunction("node_cluster_binding.zig", "setRef", 1);
+  const setRef = $bindgenFn("NodeCluster.schema.zig", "setRef");
   return new (class Control extends EventEmitter {
     constructor() {
       super();
@@ -470,4 +467,29 @@ export function getChannel() {
       setRef(false);
     }
   })();
+}
+
+export function emptyArray() {
+  return [];
+}
+
+export function kill(pid, signal) {
+  // Abstract equality performs Node's second coercion while preserving the original pid.
+  if (pid != (pid | 0)) {
+    throw $ERR_INVALID_ARG_TYPE("pid", "number", pid);
+  }
+
+  const process = $bindgenFn("ProcessHost.schema.zig", "processObject")();
+  let result;
+  if (signal === (signal | 0)) {
+    result = process._kill(pid, signal);
+  } else {
+    signal ||= "SIGTERM";
+    const signalNumber = $bindgenFn("ProcessHost.schema.zig", "processSignalNumber");
+    if (!signalNumber(signal)) {
+      throw $ERR_UNKNOWN_SIGNAL(`Unknown signal: ${signal}`);
+    }
+    result = process._kill(pid, signalNumber(signal));
+  }
+  return $bindgenFn("ProcessHost.schema.zig", "processKillResult")(result | 0);
 }

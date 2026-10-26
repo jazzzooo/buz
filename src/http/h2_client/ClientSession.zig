@@ -18,7 +18,7 @@ pub const Socket = NewHTTPContext(true).HTTPSocket;
 
 ref_count: RefCount,
 
-hpack: *lshpack.HPACK,
+hpack: Hpack,
 socket: Socket,
 ctx: *NewHTTPContext(true),
 
@@ -48,11 +48,6 @@ pending_attach: std.ArrayListUnmanaged(*HTTPClient) = .empty,
 preface_sent: bool = false,
 settings_received: bool = false,
 goaway_received: bool = false,
-/// Set when the HPACK encoder's dynamic table has diverged from the
-/// server's view (writeRequest failed mid-encode). Existing siblings whose
-/// HEADERS already went out are unaffected, but no new stream may be
-/// opened on this connection.
-encoder_poisoned: bool = false,
 /// True while onData's deliver loop is running. retryFromH2/doRedirect
 /// re-dispatch may try to adopt back onto this same session; blocking
 /// that during delivery prevents `streams` mutation under iteration and
@@ -74,17 +69,12 @@ orphan_header_block: std.ArrayListUnmanaged(u8) = .empty,
 /// alloc/free its own header-block buffer.
 encode_scratch: std.ArrayListUnmanaged(u8) = .empty,
 
-remote_max_frame_size: u24 = wire.DEFAULT_MAX_FRAME_SIZE,
+remote_max_frame_size: u24 = wire.default_max_frame_size,
 remote_max_concurrent_streams: u32 = 100,
-remote_initial_window_size: u32 = wire.DEFAULT_WINDOW_SIZE,
-/// SETTINGS_HEADER_TABLE_SIZE received from the peer that hasn't yet been
-/// acknowledged with a Dynamic Table Size Update (RFC 7541 §6.3) at the
-/// start of a header block. lshpack's encoder doesn't emit that opcode
-/// itself, so writeRequest must prepend it before the first encode call.
-pending_hpack_enc_capacity: ?u32 = null,
+remote_initial_window_size: u32 = wire.default_window_size,
 /// Connection-level send window. Starts at the spec default regardless of
 /// SETTINGS; only WINDOW_UPDATE on stream 0 grows it.
-conn_send_window: i32 = wire.DEFAULT_WINDOW_SIZE,
+conn_send_window: i32 = wire.default_window_size,
 
 /// DATA bytes consumed since the last connection-level WINDOW_UPDATE.
 conn_unacked_bytes: u32 = 0,
@@ -96,7 +86,7 @@ registry_index: u32 = std.math.maxInt(u32),
 pub fn create(ctx: *NewHTTPContext(true), socket: Socket, client: *const HTTPClient) *ClientSession {
     const this = ClientSession.new(.{
         .ref_count = .init(),
-        .hpack = lshpack.HPACK.init(4096),
+        .hpack = Hpack.init(wire.default_header_table_size, wire.default_header_table_size),
         .socket = socket,
         .ctx = ctx,
         .hostname = bun.handleOom(bun.default_allocator.dupe(u8, client.connected_url.hostname)),
@@ -128,10 +118,9 @@ fn deinit(this: *ClientSession) void {
 
 pub fn hasHeadroom(this: *const ClientSession) bool {
     return !this.goaway_received and
-        !this.encoder_poisoned and
         this.fatal_error == null and
         this.streams.count() < this.remote_max_concurrent_streams and
-        this.next_stream_id < wire.MAX_STREAM_ID;
+        this.next_stream_id < wire.max_stream_id;
 }
 
 pub fn matches(this: *const ClientSession, hostname: []const u8, port: u16, ssl_config: ?*SSLConfig) bool {
@@ -161,10 +150,6 @@ pub fn adopt(this: *ClientSession, client: *HTTPClient) void {
         return;
     }
     this.attach(client);
-    // If attach() poisoned the encoder and left the session empty, release
-    // it now — adopt() callers (keep-alive resume, active-session match)
-    // have no tail maybeRelease of their own.
-    if (this.encoder_poisoned) this.maybeRelease();
 }
 
 /// Park a coalesced request until the server's SETTINGS arrive. Abort
@@ -199,13 +184,12 @@ fn drainPending(this: *ClientSession) void {
 pub fn canPool(this: *const ClientSession) bool {
     return this.streams.count() == 0 and
         !this.goaway_received and
-        !this.encoder_poisoned and
         this.fatal_error == null and
         this.expecting_continuation == 0 and
         this.read_buffer.items.len == 0 and
         this.write_buffer.isEmpty() and
         this.remote_max_concurrent_streams > 0 and
-        this.next_stream_id < wire.MAX_STREAM_ID;
+        this.next_stream_id < wire.max_stream_id;
 }
 
 pub fn queue(this: *ClientSession, bytes: []const u8) void {
@@ -216,11 +200,12 @@ pub fn writeFrame(this: *ClientSession, frame_type: wire.FrameType, flags: u8, s
     var header: wire.FrameHeader = .{
         .type = @backingInt(frame_type),
         .flags = flags,
-        .streamIdentifier = stream_id,
+        .streamIdentifier = @intCast(stream_id),
         .length = @intCast(payload.len),
     };
-    std.mem.byteSwapAllFields(wire.FrameHeader, &header);
-    this.queue(std.mem.asBytes(&header)[0..wire.FrameHeader.byteSize]);
+    var encoded_header: [wire.FrameHeader.byteSize]u8 = undefined;
+    header.encode(&encoded_header);
+    this.queue(&encoded_header);
     this.queue(payload);
 }
 
@@ -233,7 +218,7 @@ pub fn attach(this: *ClientSession, client: *HTTPClient) void {
         .id = this.next_stream_id,
         .session = this,
         .client = client,
-        .send_window = @intCast(@min(this.remote_initial_window_size, @as(u32, wire.MAX_WINDOW_SIZE))),
+        .send_window = @intCast(@min(this.remote_initial_window_size, @as(u32, wire.max_window_size))),
     });
     _ = H2.live_streams.fetchAdd(1, .monotonic);
     this.next_stream_id +|= 2;
@@ -247,27 +232,14 @@ pub fn attach(this: *ClientSession, client: *HTTPClient) void {
     this.rearmTimeout();
     const request = client.buildRequest(client.state.original_request_body.len());
     encode.writeRequest(this, client, stream, request) catch |err| {
-        // encodeHeader pushes into the HPACK encoder's dynamic table per
-        // call, so a mid-encode failure leaves entries the server will
-        // never see. Mark the session unusable for future streams and
-        // remove without RST — from the server's view this stream id was
-        // never opened (RST on an idle stream is a connection error per
-        // RFC 9113 §5.1).
-        this.encoder_poisoned = true;
+        // The staged header block was never committed, so the connection's
+        // compression context remains usable. From the server's view this
+        // stream ID was never opened and must not receive RST_STREAM.
         _ = this.streams.swapRemove(stream.id);
         stream.deinit();
         client.h2 = null;
         client.failFromH2(err);
-        // The poisoned session is dead for new work; bounce any waiters
-        // and let maybeRelease() drop the registration so the next fetch
-        // opens a fresh connection instead of waiting for idle-timeout.
-        for (this.pending_attach.items) |c| c.retryAfterH2Coalesce();
-        this.pending_attach.clearRetainingCapacity();
         _ = this.flush() catch {};
-        // Do NOT maybeRelease() here: attach() runs from drainPending()
-        // inside onData (whose tail maybeRelease handles cleanup) and from
-        // adopt() (which calls maybeRelease itself when this leaves the
-        // session empty). Releasing twice would close+deref twice.
         return;
     };
     if (client.verbose != .none) {
@@ -365,8 +337,8 @@ pub fn streamBodyByHttpId(this: *ClientSession, async_http_id: u32, ended: bool)
 }
 
 pub fn writeWindowUpdate(this: *ClientSession, stream_id: u32, increment: u31) void {
-    var value: u32 = @byteSwap(@as(u32, increment));
-    this.writeFrame(.HTTP_FRAME_WINDOW_UPDATE, 0, stream_id, std.mem.asBytes(&value));
+    const value = wire.encodeU32(increment);
+    this.writeFrame(.HTTP_FRAME_WINDOW_UPDATE, 0, stream_id, &value);
 }
 
 fn replenishWindow(this: *ClientSession) void {
@@ -797,9 +769,9 @@ fn applyHeaders(_: *ClientSession, stream: *Stream, client: *HTTPClient) !Header
 const Stream = @import("./Stream.zig");
 const dispatch = @import("./dispatch.zig");
 const encode = @import("./encode.zig");
-const lshpack = @import("../lshpack.zig");
+const Hpack = @import("../Hpack.zig");
 const std = @import("std");
-const wire = @import("../H2FrameParser.zig");
+const wire = @import("../H2Frame.zig");
 
 const H2 = @import("../H2Client.zig");
 const local_initial_window_size = H2.local_initial_window_size;
@@ -807,7 +779,7 @@ const local_initial_window_size = H2.local_initial_window_size;
 const bun = @import("bun");
 const picohttp = bun.picohttp;
 const strings = bun.strings;
-const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
+const SSLConfig = @import("../../runtime/socket/SSLConfig.zig");
 
 const HTTPClient = bun.http;
 const NewHTTPContext = HTTPClient.NewHTTPContext;

@@ -30,6 +30,8 @@ pub const CronExpression = struct {
         TooFewFields,
     };
 
+    pub const NextError = error{InvalidDate};
+
     pub fn errorMessage(e: Error) []const u8 {
         return switch (e) {
             error.TooFewFields => "Invalid cron expression: expected 5 space-separated fields (minute hour day month weekday)",
@@ -97,50 +99,48 @@ pub const CronExpression = struct {
     /// Compute the next UTC time (in ms since epoch) that matches this
     /// expression, strictly after `from_ms`. Returns null if no match found
     /// within 8 years.
-    pub fn next(self: CronExpression, globalObject: *jsc.JSGlobalObject, from_ms: f64) bun.JSError!?f64 {
-        var dt = globalObject.msToGregorianDateTimeUTC(from_ms);
-        const start_year = dt.year;
-        dt.minute += 1;
-        dt.second = 0;
+    pub fn next(self: CronExpression, from_ms: f64) NextError!?f64 {
+        const milliseconds_per_minute = 60_000;
+        const minutes_per_day = 24 * 60;
+        if (std.math.isNan(from_ms) or std.math.isInf(from_ms)) return error.InvalidDate;
+        const next_minute_float = @floor(from_ms / milliseconds_per_minute) + 1;
+        const min_minute: f64 = @floatFromInt(@divTrunc(std.math.minInt(i64), milliseconds_per_minute));
+        const max_minute: f64 = @floatFromInt(@divFloor(std.math.maxInt(i64), milliseconds_per_minute));
+        if (next_minute_float < min_minute or next_minute_float > max_minute)
+            return error.InvalidDate;
 
-        while (dt.year - start_year <= 8) {
-            // Normalize overflow + recompute weekday via a UTC round-trip.
-            dt = globalObject.msToGregorianDateTimeUTC(try globalObject.gregorianDateTimeToMSUTC(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, 0));
+        const first_minute: i64 = @intFromFloat(next_minute_float);
+        var day = @divFloor(first_minute, minutes_per_day);
+        var minute_of_day: i32 = @intCast(@mod(first_minute, minutes_per_day));
+        const start_year = GregorianDate.fromDaysSinceUnixEpoch(day).year;
 
-            if (!bitSet(u16, self.months, @intCast(dt.month))) {
-                dt.month += 1;
-                dt.day = 1;
-                dt.hour = 0;
-                dt.minute = 0;
-                continue;
-            }
-            // POSIX: if both DOM and DOW are restricted (not `*`), either
-            // matching is enough; otherwise the `*` field matches all anyway.
-            const day_ok = bitSet(u32, self.days, @intCast(dt.day));
-            const weekday_ok = bitSet(u8, self.weekdays, @intCast(dt.weekday));
+        while (true) : ({
+            day += 1;
+            minute_of_day = 0;
+        }) {
+            const date = GregorianDate.fromDaysSinceUnixEpoch(day);
+            if (date.year - start_year > 8) return null;
+            if (!bitSet(u16, self.months, date.month)) continue;
+
+            const day_ok = bitSet(u32, self.days, date.day);
+            const weekday_ok = bitSet(u8, self.weekdays, date.weekday);
             const day_match = if (!self.days_is_wildcard and !self.weekdays_is_wildcard)
                 day_ok or weekday_ok
             else
                 day_ok and weekday_ok;
-            if (!day_match) {
-                dt.day += 1;
-                dt.hour = 0;
-                dt.minute = 0;
-                continue;
-            }
-            if (!bitSet(u32, self.hours, @intCast(dt.hour))) {
-                dt.hour += 1;
-                dt.minute = 0;
-                continue;
-            }
-            if (!bitSet(u64, self.minutes, @intCast(dt.minute))) {
-                dt.minute += 1;
-                continue;
-            }
+            if (!day_match) continue;
 
-            return try globalObject.gregorianDateTimeToMSUTC(dt.year, dt.month, dt.day, dt.hour, dt.minute, 0, 0);
+            var candidate = minute_of_day;
+            while (candidate < minutes_per_day) : (candidate += 1) {
+                const hour: u5 = @intCast(@divTrunc(candidate, 60));
+                const minute: u6 = @intCast(@mod(candidate, 60));
+                if (!bitSet(u32, self.hours, hour) or !bitSet(u64, self.minutes, minute)) continue;
+                const absolute_minute = day * minutes_per_day + @as(i64, candidate);
+                const result = std.math.mul(i64, absolute_minute, milliseconds_per_minute) catch
+                    return error.InvalidDate;
+                return @floatFromInt(result);
+            }
         }
-        return null;
     }
 };
 
@@ -258,8 +258,8 @@ fn splitRange(base: []const u8) ?[2][]const u8 {
 fn parseValue(str: []const u8, min: u7, max: u7, kind: NameKind) error{InvalidNumber}!u7 {
     // Try named value first via ComptimeStringMap case-insensitive lookup
     switch (kind) {
-        .weekday => if (weekday_map.getASCIIICaseInsensitive(str)) |v| return v,
-        .month => if (month_map.getASCIIICaseInsensitive(str)) |v| return v,
+        .weekday => if (weekday_map.getCaseInsensitiveASCII(str)) |v| return v,
+        .month => if (month_map.getCaseInsensitiveASCII(str)) |v| return v,
         .none => {},
     }
 
@@ -293,6 +293,6 @@ fn formatBitfield(w: anytype, comptime T: type, bits: T, min: u8, max: u8) void 
 }
 
 const std = @import("std");
+const GregorianDate = @import("../../bun_core/GregorianDate.zig");
 
 const bun = @import("bun");
-const jsc = bun.jsc;

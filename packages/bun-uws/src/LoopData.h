@@ -20,8 +20,6 @@
 
 #include <cstdint>
 #include <ctime>
-#include <functional>
-#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -39,13 +37,38 @@ struct Loop;
 
 struct alignas(16) LoopData {
     friend struct Loop;
+public:
+    static constexpr unsigned int CORK_BUFFER_SIZE = 16 * 1024;
+
+    struct Hook {
+        Hook *next = nullptr;
+        Hook **previous = nullptr;
+        void *context = nullptr;
+        void (*run)(void *) = nullptr;
+    };
+
+    struct HookIteration {
+        Hook *cursor;
+        HookIteration *parent;
+    };
+
+    Hook *hooks = nullptr;
+    HookIteration *hookIteration = nullptr;
+
+    void runHooks() {
+        HookIteration iteration{hooks, hookIteration};
+        hookIteration = &iteration;
+        while (auto *hook = iteration.cursor) {
+            iteration.cursor = hook->next;
+            hook->run(hook->context);
+        }
+        hookIteration = iteration.parent;
+    }
 private:
     std::mutex deferMutex;
     int currentDeferQueue = 0;
     std::vector<MoveOnlyFunction<void()>> deferQueues[2];
 
-    /* Map from void ptr to handler */
-    std::map<void *, MoveOnlyFunction<void(Loop *)>> postHandlers, preHandlers;
 
     /* Cork data: two independent slots so a nested cork (e.g. a resumed async
      * request writing while the outer request is still corked) doesn't force
@@ -59,6 +82,7 @@ private:
     };
 
     CorkSlot corkSlots[2];
+    char corkBuffers[2][CORK_BUFFER_SIZE];
 
     /* 1 = slot 1 was touched most recently, 0 = slot 0. Used to pick the LRU
      * victim when both slots have data and we must force-uncork one. */
@@ -68,21 +92,33 @@ public:
     /* INVALID_CORK_SLOT means "not corked with us". */
     static constexpr int INVALID_CORK_SLOT = -1;
 
+    bool ensureCompression(CompressionError &error) {
+        error = CompressionError::None;
+        if (zlibContext) return true;
+        auto context = ZlibContext::create(error);
+        if (!context) return false;
+        auto inflation = InflationStream::create(CompressOptions::DEDICATED_DECOMPRESSOR, error);
+        if (!inflation) return false;
+        auto deflation = DeflationStream::create(CompressOptions::DEDICATED_COMPRESSOR, error);
+        if (!deflation) return false;
+        zlibContext = context.release();
+        inflationStream = inflation.release();
+        deflationStream = deflation.release();
+        return true;
+    }
+
     LoopData() {
-        corkSlots[0].buffer = new char[CORK_BUFFER_SIZE];
-        corkSlots[1].buffer = new char[CORK_BUFFER_SIZE];
+        corkSlots[0].buffer = corkBuffers[0];
+        corkSlots[1].buffer = corkBuffers[1];
         updateDate();
     }
 
     ~LoopData() {
-        /* If we have had App.ws called with compression we need to clear this */
         if (zlibContext) {
             delete zlibContext;
             delete inflationStream;
             delete deflationStream;
         }
-        delete [] corkSlots[0].buffer;
-        delete [] corkSlots[1].buffer;
     }
 
     /* Returns the slot index this socket is corked in, or INVALID_CORK_SLOT. */
@@ -196,9 +232,6 @@ public:
 
     /* Be silent */
     bool noMark = false;
-
-    /* Good 16k for SSL perf. */
-    static const unsigned int CORK_BUFFER_SIZE = 16 * 1024;
 
     /* Per message deflate data */
     ZlibContext *zlibContext = nullptr;

@@ -38,19 +38,28 @@
 #include <wtf/RefCounted.h>
 #include <wtf/URL.h>
 #include <wtf/URLParser.h>
+#include <wtf/URLParser.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringToIntegerConversion.h>
 
 namespace WebCore {
 using namespace JSC;
+using WTF::URLParser;
 
 // https://urlpattern.spec.whatwg.org/#process-a-base-url-string
-static String processBaseURLString(StringView input, BaseURLStringType type)
+static ExceptionOr<void> processBaseURLString(StringView input, BaseURLStringType type, String& output)
 {
-    if (type != BaseURLStringType::Pattern)
-        return input.toString();
-
-    return URLPatternUtilities::escapePatternString(input);
+    if (type == BaseURLStringType::Pattern) {
+        auto escaped = URLPatternUtilities::escapePatternString(input);
+        if (escaped.hasException())
+            return escaped.releaseException();
+        output = escaped.releaseReturnValue();
+    } else {
+        output = tryMakeString(input);
+        if (output.isNull())
+            return Exception { OutOfMemoryError };
+    }
+    return {};
 }
 
 // https://urlpattern.spec.whatwg.org/#hostname-pattern-is-an-ipv6-address
@@ -77,46 +86,61 @@ static ExceptionOr<URLPatternInit> processInit(URLPatternInit&& init, BaseURLStr
     URL baseURL;
 
     if (!init.baseURL.isNull()) {
-        baseURL = URL(init.baseURL);
-
-        if (!baseURL.isValid())
+        WTF::URL parsed { init.baseURL };
+        if (!parsed.isValid())
             return Exception { ExceptionCode::TypeError, "Invalid baseURL."_s };
+        baseURL = WTF::move(parsed);
 
-        if (init.protocol.isNull())
-            result.protocol = processBaseURLString(baseURL.protocol(), type);
+        if (init.protocol.isNull()) {
+            auto processed = processBaseURLString(baseURL.protocol(), type, result.protocol);
+            if (processed.hasException())
+                return processed.releaseException();
+        }
 
         if (type != BaseURLStringType::Pattern
             && init.protocol.isNull()
             && init.hostname.isNull()
             && init.port.isNull()
-            && init.username.isNull())
-            result.username = processBaseURLString(baseURL.user(), type);
+            && init.username.isNull()) {
+            auto processed = processBaseURLString(baseURL.encodedUser(), type, result.username);
+            if (processed.hasException())
+                return processed.releaseException();
+        }
 
         if (type != BaseURLStringType::Pattern
             && init.protocol.isNull()
             && init.hostname.isNull()
             && init.port.isNull()
             && init.username.isNull()
-            && init.password.isNull())
-            result.password = processBaseURLString(baseURL.password(), type);
+            && init.password.isNull()) {
+            auto processed = processBaseURLString(baseURL.encodedPassword(), type, result.password);
+            if (processed.hasException())
+                return processed.releaseException();
+        }
 
         if (init.protocol.isNull()
             && init.hostname.isNull()) {
-            result.hostname = processBaseURLString(!baseURL.host().isNull() ? baseURL.host() : StringView { emptyString() }, type);
+            auto processed = processBaseURLString(!baseURL.host().isNull() ? baseURL.host() : StringView { emptyString() }, type, result.hostname);
+            if (processed.hasException())
+                return processed.releaseException();
         }
 
         if (init.protocol.isNull()
             && init.hostname.isNull()
             && init.port.isNull()) {
             auto port = baseURL.port();
-            result.port = port ? String::number(*port) : emptyString();
+            result.port = port ? tryMakeString(*port) : emptyString();
+            if (result.port.isNull())
+                return Exception { OutOfMemoryError };
         }
 
         if (init.protocol.isNull()
             && init.hostname.isNull()
             && init.port.isNull()
             && init.pathname.isNull()) {
-            result.pathname = processBaseURLString(baseURL.path(), type);
+            auto processed = processBaseURLString(baseURL.path(), type, result.pathname);
+            if (processed.hasException())
+                return processed.releaseException();
         }
 
         if (init.protocol.isNull()
@@ -124,7 +148,9 @@ static ExceptionOr<URLPatternInit> processInit(URLPatternInit&& init, BaseURLStr
             && init.port.isNull()
             && init.pathname.isNull()
             && init.search.isNull()) {
-            result.search = processBaseURLString(baseURL.hasQuery() ? baseURL.query() : StringView { emptyString() }, type);
+            auto processed = processBaseURLString(baseURL.hasQuery() ? baseURL.query() : StringView { emptyString() }, type, result.search);
+            if (processed.hasException())
+                return processed.releaseException();
         }
 
         if (init.protocol.isNull()
@@ -133,12 +159,14 @@ static ExceptionOr<URLPatternInit> processInit(URLPatternInit&& init, BaseURLStr
             && init.pathname.isNull()
             && init.search.isNull()
             && init.hash.isNull()) {
-            result.hash = processBaseURLString(baseURL.hasFragmentIdentifier() ? baseURL.fragmentIdentifier() : StringView { emptyString() }, type);
+            auto processed = processBaseURLString(baseURL.hasFragmentIdentifier() ? baseURL.fragmentIdentifier() : StringView { emptyString() }, type, result.hash);
+            if (processed.hasException())
+                return processed.releaseException();
         }
     }
 
     if (!init.protocol.isNull()) {
-        auto protocolResult = canonicalizeProtocol(init.protocol, type);
+        auto protocolResult = processProtocol(init.protocol, type);
 
         if (protocolResult.hasException())
             return protocolResult.releaseException();
@@ -146,11 +174,19 @@ static ExceptionOr<URLPatternInit> processInit(URLPatternInit&& init, BaseURLStr
         result.protocol = protocolResult.releaseReturnValue();
     }
 
-    if (!init.username.isNull())
-        result.username = canonicalizeUsername(init.username, type);
+    if (!init.username.isNull()) {
+        auto usernameResult = canonicalizeUsername(init.username, type);
+        if (usernameResult.hasException())
+            return usernameResult.releaseException();
+        result.username = usernameResult.releaseReturnValue();
+    }
 
-    if (!init.password.isNull())
-        result.password = canonicalizePassword(init.password, type);
+    if (!init.password.isNull()) {
+        auto passwordResult = canonicalizePassword(init.password, type);
+        if (passwordResult.hasException())
+            return passwordResult.releaseException();
+        result.password = passwordResult.releaseReturnValue();
+    }
 
     if (!init.hostname.isNull()) {
         auto hostResult = canonicalizeHostname(init.hostname, type);
@@ -174,11 +210,17 @@ static ExceptionOr<URLPatternInit> processInit(URLPatternInit&& init, BaseURLStr
         result.pathname = init.pathname;
 
         if (!baseURL.isNull() && !baseURL.hasOpaquePath() && !isAbsolutePathname(result.pathname, type)) {
-            auto baseURLPath = processBaseURLString(baseURL.path(), type);
+            String baseURLPath;
+            auto processed = processBaseURLString(baseURL.path(), type, baseURLPath);
+            if (processed.hasException())
+                return processed.releaseException();
             size_t slashIndex = baseURLPath.reverseFind('/');
 
-            if (slashIndex != notFound)
-                result.pathname = makeString(StringView { baseURLPath }.left(slashIndex + 1), result.pathname);
+            if (slashIndex != notFound) {
+                result.pathname = tryMakeString(StringView { baseURLPath }.left(slashIndex + 1), result.pathname);
+                if (result.pathname.isNull())
+                    return Exception { OutOfMemoryError };
+            }
         }
         auto pathResult = processPathname(result.pathname, result.protocol, type);
 
@@ -189,7 +231,7 @@ static ExceptionOr<URLPatternInit> processInit(URLPatternInit&& init, BaseURLStr
     }
 
     if (!init.search.isNull()) {
-        auto queryResult = canonicalizeSearch(init.search, type);
+        auto queryResult = processSearch(init.search, type);
 
         if (queryResult.hasException())
             return queryResult.releaseException();
@@ -198,7 +240,7 @@ static ExceptionOr<URLPatternInit> processInit(URLPatternInit&& init, BaseURLStr
     }
 
     if (!init.hash.isNull()) {
-        auto fragmentResult = canonicalizeHash(init.hash, type);
+        auto fragmentResult = processHash(init.hash, type);
 
         if (fragmentResult.hasException())
             return fragmentResult.releaseException();
@@ -210,7 +252,7 @@ static ExceptionOr<URLPatternInit> processInit(URLPatternInit&& init, BaseURLStr
 }
 
 // https://urlpattern.spec.whatwg.org/#url-pattern-create
-ExceptionOr<Ref<URLPattern>> URLPattern::create(ScriptExecutionContext& context, URLPatternInput&& input, String&& baseURL, URLPatternOptions&& options)
+ExceptionOr<std::unique_ptr<URLPattern>> URLPattern::create(ScriptExecutionContext& context, URLPatternInput&& input, String&& baseURL, URLPatternOptions&& options)
 {
     URLPatternInit init;
 
@@ -257,7 +299,10 @@ ExceptionOr<Ref<URLPattern>> URLPattern::create(ScriptExecutionContext& context,
             processedInit.port = emptyString();
     }
 
-    Ref result = adoptRef(*new URLPattern);
+    void* storage;
+    if (!tryFastMalloc(sizeof(URLPattern)).getValue(storage))
+        return Exception { OutOfMemoryError };
+    std::unique_ptr<URLPattern> result(new (NotNull, storage) URLPattern);
 
     auto maybeCompileException = result->compileAllComponents(context, WTF::move(processedInit), options);
     if (maybeCompileException.hasException())
@@ -267,18 +312,12 @@ ExceptionOr<Ref<URLPattern>> URLPattern::create(ScriptExecutionContext& context,
 }
 
 // https://urlpattern.spec.whatwg.org/#urlpattern-initialize
-ExceptionOr<Ref<URLPattern>> URLPattern::create(ScriptExecutionContext& context, std::optional<URLPatternInput>&& input, URLPatternOptions&& options)
+ExceptionOr<std::unique_ptr<URLPattern>> URLPattern::create(ScriptExecutionContext& context, std::optional<URLPatternInput>&& input, URLPatternOptions&& options)
 {
     if (!input)
         input = URLPatternInit {};
 
     return create(context, WTF::move(*input), String {}, WTF::move(options));
-}
-
-// https://urlpattern.spec.whatwg.org/#build-a-url-pattern-from-a-web-idl-value
-ExceptionOr<Ref<URLPattern>> URLPattern::create(ScriptExecutionContext& context, Compatible&& value, const String& baseURL)
-{
-    return switchOn(WTF::move(value), [&](RefPtr<URLPattern>&& pattern) -> ExceptionOr<Ref<URLPattern>> { return pattern.releaseNonNull(); }, [&](URLPatternInit&& init) -> ExceptionOr<Ref<URLPattern>> { return URLPattern::create(context, WTF::move(init), {}, {}); }, [&](String&& string) -> ExceptionOr<Ref<URLPattern>> { return URLPattern::create(context, WTF::move(string), String { baseURL }, {}); });
 }
 
 URLPattern::~URLPattern() = default;
@@ -289,11 +328,7 @@ ExceptionOr<bool> URLPattern::test(ScriptExecutionContext& context, std::optiona
     if (!input)
         input = URLPatternInit {};
 
-    auto maybeResult = match(context, WTF::move(*input), WTF::move(baseURL));
-    if (maybeResult.hasException())
-        return maybeResult.releaseException();
-
-    return !!maybeResult.returnValue();
+    return match(context, WTF::move(*input), WTF::move(baseURL), nullptr);
 }
 
 // https://urlpattern.spec.whatwg.org/#dom-urlpattern-exec
@@ -302,7 +337,13 @@ ExceptionOr<std::optional<URLPatternResult>> URLPattern::exec(ScriptExecutionCon
     if (!input)
         input = URLPatternInit {};
 
-    return match(context, WTF::move(*input), WTF::move(baseURL));
+    URLPatternResult result;
+    auto matched = match(context, WTF::move(*input), WTF::move(baseURL), &result);
+    if (matched.hasException())
+        return matched.releaseException();
+    if (!matched.releaseReturnValue())
+        return { std::nullopt };
+    return { WTF::move(result) };
 }
 
 ExceptionOr<void> URLPattern::compileAllComponents(ScriptExecutionContext& context, URLPatternInit&& processedInit, const URLPatternOptions& options)
@@ -338,7 +379,10 @@ ExceptionOr<void> URLPattern::compileAllComponents(ScriptExecutionContext& conte
 
     URLPatternUtilities::URLPatternStringOptions compileOptions { .ignoreCase = options.ignoreCase };
 
-    auto maybePathnameComponent = m_protocolComponent.matchSpecialSchemeProtocol(context.globalObject())
+    auto matchesSpecialScheme = m_protocolComponent.matchSpecialSchemeProtocol(context.globalObject());
+    if (matchesSpecialScheme.hasException())
+        return matchesSpecialScheme.releaseException();
+    auto maybePathnameComponent = matchesSpecialScheme.releaseReturnValue()
         ? URLPatternUtilities::URLPatternComponent::compile(vm, processedInit.pathname, EncodingCallbackType::Path, URLPatternUtilities::URLPatternStringOptions { "/"_s, "/"_s, options.ignoreCase })
         : URLPatternUtilities::URLPatternComponent::compile(vm, processedInit.pathname, EncodingCallbackType::OpaquePath, compileOptions);
     if (maybePathnameComponent.hasException())
@@ -358,16 +402,31 @@ ExceptionOr<void> URLPattern::compileAllComponents(ScriptExecutionContext& conte
     return {};
 }
 
-static inline void matchHelperAssignInputsFromURL(const URL& input, String& protocol, String& username, String& password, String& hostname, String& port, String& pathname, String& search, String& hash)
+static ExceptionOr<void> matchHelperAssignInputsFromURL(const URL& input, String& protocol, String& username, String& password, String& hostname, String& port, String& pathname, String& search, String& hash)
 {
-    protocol = input.protocol().toString();
-    username = input.user();
-    password = input.password();
-    hostname = input.host().toString();
-    port = input.port() ? String::number(*input.port()) : emptyString();
-    pathname = input.path().toString();
-    search = input.query().toString();
-    hash = input.fragmentIdentifier().toString();
+    struct Component {
+        String& output;
+        StringView input;
+    };
+    const Component components[] {
+        { protocol, input.protocol() },
+        { username, input.encodedUser() },
+        { password, input.encodedPassword() },
+        { hostname, input.host() },
+        { pathname, input.path() },
+        { search, input.query() },
+        { hash, input.fragmentIdentifier() },
+    };
+    for (const auto& component : components) {
+        component.output = tryMakeString(component.input);
+        if (component.output.isNull())
+            return Exception { OutOfMemoryError };
+    }
+    auto portNumber = input.port();
+    port = portNumber ? tryMakeString(*portNumber) : emptyString();
+    if (port.isNull())
+        return Exception { OutOfMemoryError };
+    return {};
 }
 
 static inline void matchHelperAssignInputsFromInit(const URLPatternInit& input, String& protocol, String& username, String& password, String& hostname, String& port, String& pathname, String& search, String& hash)
@@ -383,76 +442,98 @@ static inline void matchHelperAssignInputsFromInit(const URLPatternInit& input, 
 }
 
 // https://urlpattern.spec.whatwg.org/#url-pattern-match
-ExceptionOr<std::optional<URLPatternResult>> URLPattern::match(ScriptExecutionContext& context, Variant<URL, URLPatternInput>&& input, String&& baseURLString) const
+ExceptionOr<bool> URLPattern::match(ScriptExecutionContext& context, URLPatternInput&& input, String&& baseURLString, URLPatternResult* result) const
 {
-    URLPatternResult result;
+    if (result && !result->inputs.tryReserveInitialCapacity(2))
+        return Exception { OutOfMemoryError };
     String protocol, username, password, hostname, port, pathname, search, hash;
 
-    if (URL* inputURL = std::get_if<URL>(&input)) {
-        ASSERT(!inputURL->isEmpty() && inputURL->isValid());
-        matchHelperAssignInputsFromURL(*inputURL, protocol, username, password, hostname, port, pathname, search, hash);
-        result.inputs = Vector<URLPatternInput> { String { inputURL->string() } };
-    } else {
-        URLPatternInput* inputPattern = std::get_if<URLPatternInput>(&input);
-        result.inputs.append(*inputPattern);
+    if (result)
+        result->inputs.unsafeAppendWithoutCapacityCheck(input);
 
-        auto hasError = WTF::switchOn(*inputPattern, [&](const URLPatternInit& value) -> ExceptionOr<bool> {
+    auto hasError = WTF::switchOn(input,
+        [&](const URLPatternInit& value) -> ExceptionOr<bool> {
             if (!baseURLString.isNull())
                 return Exception { ExceptionCode::TypeError, "Base URL string is provided with a URLPatternInit. If URLPatternInit is provided, please use URLPatternInit.baseURL property instead"_s };
 
             URLPatternInit initCopy = value;
             auto maybeResult = processInit(WTF::move(initCopy), BaseURLStringType::URL);
-            if (maybeResult.hasException())
+            if (maybeResult.hasException()) {
+                auto exception = maybeResult.releaseException();
+                if (exception.code() == ExceptionCode::OutOfMemoryError || exception.code() == ExceptionCode::ExistingExceptionError)
+                    return WTF::move(exception);
                 return true;
+            }
 
             matchHelperAssignInputsFromInit(maybeResult.releaseReturnValue(), protocol, username, password, hostname, port, pathname, search, hash);
-            return false; }, [&](const String& value) -> ExceptionOr<bool> {
+            return false;
+        },
+        [&](const String& value) -> ExceptionOr<bool> {
             URL baseURL;
             if (!baseURLString.isNull()) {
-                baseURL = URL { baseURLString };
-                if (!baseURL.isValid())
+                WTF::URL parsed { baseURLString };
+                if (!parsed.isValid())
                     return true;
-                result.inputs.append(baseURLString);
+                baseURL = WTF::move(parsed);
+                if (result)
+                    result->inputs.unsafeAppendWithoutCapacityCheck(baseURLString);
             }
-            URL url { baseURL, value };
+            WTF::URL url { baseURL, value };
             if (!url.isValid())
                 return true;
 
-            matchHelperAssignInputsFromURL(url, protocol, username, password, hostname, port, pathname, search, hash);
-            return false; });
+            auto assigned = matchHelperAssignInputsFromURL(url, protocol, username, password, hostname, port, pathname, search, hash);
+            if (assigned.hasException())
+                return assigned.releaseException();
+            return false;
+        });
 
-        if (hasError.hasException())
-            return hasError.releaseException();
-        if (hasError.returnValue())
-            return { std::nullopt };
-    }
+    if (hasError.hasException())
+        return hasError.releaseException();
+    if (hasError.returnValue())
+        return false;
 
     auto* globalObject = context.globalObject();
     if (!globalObject)
-        return { std::nullopt };
+        return false;
 
     Ref vm = context.vm();
     JSC::JSLockHolder lock(vm);
 
-    auto tryMatch = [&](const URLPatternUtilities::URLPatternComponent& component, String&& input, URLPatternComponentResult& out) -> bool {
-        auto matched = component.componentMatch(globalObject, WTF::move(input));
-        if (!matched)
-            return false;
-        out = WTF::move(*matched);
-        return true;
+    struct ComponentMatch {
+        const URLPatternUtilities::URLPatternComponent& component;
+        String& input;
+        URLPatternComponentResult* output;
     };
+    const ComponentMatch components[] {
+        { m_protocolComponent, protocol, result ? &result->protocol : nullptr },
+        { m_usernameComponent, username, result ? &result->username : nullptr },
+        { m_passwordComponent, password, result ? &result->password : nullptr },
+        { m_hostnameComponent, hostname, result ? &result->hostname : nullptr },
+        { m_pathnameComponent, pathname, result ? &result->pathname : nullptr },
+        { m_portComponent, port, result ? &result->port : nullptr },
+        { m_searchComponent, search, result ? &result->search : nullptr },
+        { m_hashComponent, hash, result ? &result->hash : nullptr },
+    };
+    for (const auto& component : components) {
+        if (!component.output) {
+            auto matched = component.component.test(globalObject, component.input);
+            if (matched.hasException())
+                return matched.releaseException();
+            if (!matched.releaseReturnValue())
+                return false;
+            continue;
+        }
+        auto matched = component.component.componentMatch(globalObject, WTF::move(component.input));
+        if (matched.hasException())
+            return matched.releaseException();
+        auto value = matched.releaseReturnValue();
+        if (!value)
+            return false;
+        *component.output = WTF::move(*value);
+    }
 
-    if (!tryMatch(m_protocolComponent, WTF::move(protocol), result.protocol)
-        || !tryMatch(m_usernameComponent, WTF::move(username), result.username)
-        || !tryMatch(m_passwordComponent, WTF::move(password), result.password)
-        || !tryMatch(m_hostnameComponent, WTF::move(hostname), result.hostname)
-        || !tryMatch(m_pathnameComponent, WTF::move(pathname), result.pathname)
-        || !tryMatch(m_portComponent, WTF::move(port), result.port)
-        || !tryMatch(m_searchComponent, WTF::move(search), result.search)
-        || !tryMatch(m_hashComponent, WTF::move(hash), result.hash))
-        return { std::nullopt };
-
-    return { WTF::move(result) };
+    return true;
 }
 
 // https://urlpattern.spec.whatwg.org/#url-pattern-has-regexp-groups

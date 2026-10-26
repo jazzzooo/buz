@@ -1,5 +1,4 @@
 #include "root.h"
-#include "headers.h"
 
 #include <JavaScriptCore/JSCell.h>
 #include <JavaScriptCore/Structure.h>
@@ -13,34 +12,65 @@
 #include <JavaScriptCore/LazyClassStructure.h>
 #include "JSBakeResponse.h"
 #include "ZigGlobalObject.h"
-#include "ZigGeneratedClasses.h"
-
-#if !OS(WINDOWS)
-#define JSC_CALLCONV "C"
-#else
-#define JSC_CALLCONV "C" SYSV_ABI
-#endif
+#include "SchemaBindings.h"
+#include <wtf/Scope.h>
 
 namespace Bun {
 
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetSymbolFor);
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetType);
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetKey);
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetProps);
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetStore);
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetOwner);
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetDebugInfo);
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetDebugStack);
-static JSC_DECLARE_CUSTOM_GETTER(jsBakeResponsePrototypeGetDebugTask);
+static bool validateBakeResponseStreamingMode(JSC::JSGlobalObject* globalObject, ASCIILiteral displayFunction)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* zigGlobal = static_cast<Zig::GlobalObject*>(globalObject);
+    auto* asyncLocalStorage = zigGlobal->bakeAdditions().getAsyncLocalStorage();
+    if (!asyncLocalStorage)
+        return false;
 
-extern JSC_CALLCONV void* JSC_HOST_CALL_ATTRIBUTES BakeResponseClass__constructForSSR(JSC::JSGlobalObject*, JSC::CallFrame*, int*, JSC::EncodedJSValue);
-extern "C" SYSV_ABI JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES ResponseClass__constructError(JSC::JSGlobalObject*, JSC::CallFrame*);
-extern "C" SYSV_ABI JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES ResponseClass__constructJSON(JSC::JSGlobalObject*, JSC::CallFrame*);
-extern "C" SYSV_ABI JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES BakeResponseClass__constructRender(JSC::JSGlobalObject*, JSC::CallFrame*);
-extern "C" SYSV_ABI JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES BakeResponseClass__constructRedirect(JSC::JSGlobalObject*, JSC::CallFrame*);
-extern JSC_CALLCONV size_t Response__estimatedSize(void* ptr);
+    auto getStore = asyncLocalStorage->getIfPropertyExists(globalObject, JSC::Identifier::fromString(vm, "getStore"_s));
+    RETURN_IF_EXCEPTION(scope, false);
+    if (!getStore) {
+        JSC::throwTypeError(globalObject, scope, "store value must have a \"getStore\" field"_s);
+        return false;
+    }
 
-bool isJSXElement(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* globalObject)
+    auto callData = JSC::getCallData(getStore);
+    if (callData.type == JSC::CallData::Type::None) {
+        JSC::throwTypeError(globalObject, scope, "\"getStore\" must be a function"_s);
+        return false;
+    }
+
+    JSC::MarkedArgumentBuffer arguments;
+    auto store = JSC::call(globalObject, getStore, callData, asyncLocalStorage, arguments);
+    RETURN_IF_EXCEPTION(scope, false);
+    if (!store.isObject()) {
+        JSC::throwTypeError(globalObject, scope, "store value must be an object"_s);
+        return false;
+    }
+
+    auto streaming = store.getObject()->getIfPropertyExists(globalObject, JSC::Identifier::fromString(vm, "streaming"_s));
+    RETURN_IF_EXCEPTION(scope, false);
+    if (!streaming) {
+        JSC::throwTypeError(globalObject, scope, "store value must have a \"streaming\" field"_s);
+        return false;
+    }
+    if (!streaming.isBoolean()) {
+        JSC::throwTypeError(globalObject, scope, "\"streaming\" field must be a boolean"_s);
+        return false;
+    }
+    if (streaming.asBoolean()) {
+        JSC::throwTypeError(globalObject, scope, makeString('"', displayFunction, "\" is not available when `export const streaming = true`"_s));
+        return false;
+    }
+
+    return true;
+}
+
+void Bindgen::Engine::releaseBakeResponseNativeResponse(BunBindgen_Response_Response_Native* response)
+{
+    Bindgen::ZigExports::bunBindgenZig_BakeResponse_releaseNativeResponse(response);
+}
+
+static bool isJSXElement(JSC::JSValue value, JSC::JSGlobalObject* globalObject)
 {
 
     auto* zigGlobal = static_cast<Zig::GlobalObject*>(globalObject);
@@ -51,8 +81,6 @@ bool isJSXElement(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* globalObjec
     // export const REACT_ELEMENT_TYPE: symbol = renameElementSymbol
     //   ? Symbol.for('react.transitional.element')
     //   : REACT_LEGACY_ELEMENT_TYPE;
-
-    JSC::JSValue value = JSC::JSValue::decode(JSValue0);
 
     // TODO: primitive values (strings, numbers, booleans, null, undefined) are also valid
     if (value.isObject()) {
@@ -71,44 +99,63 @@ bool isJSXElement(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* globalObjec
     return false;
 }
 
-extern "C" bool JSC__JSValue__isJSXElement(JSC::EncodedJSValue JSValue0, JSC::JSGlobalObject* globalObject)
+JSC::JSValue Bindgen::Engine::bunBindgenEngine_BakeResponse_createForSSR(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_BakeResponse_createForSSR_Arguments& args)
 {
-    return isJSXElement(JSValue0, globalObject);
-}
-
-extern JSC_CALLCONV JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES BakeResponse__createForSSR(Zig::GlobalObject* globalObject, void* ptr, uint8_t kind)
-{
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto releaseResponseOnFailure = WTF::makeScopeExit([&] {
+        Bindgen::Engine::releaseBakeResponseNativeResponse(args.response);
+    });
     Structure* structure = globalObject->bakeAdditions().JSBakeResponseStructure(globalObject);
+    RETURN_IF_EXCEPTION(scope, {});
 
-    JSBakeResponse* instance = JSBakeResponse::create(globalObject->vm(), globalObject, structure, ptr);
+    JSBakeResponse* instance = JSBakeResponse::create(vm, globalObject, structure);
+    RETURN_IF_EXCEPTION(scope, {});
 
-    if (kind == JSBakeResponseKind::Render) {
-        instance->kind(JSBakeResponseKind::Render);
-    } else if (kind == JSBakeResponseKind::Redirect) {
+    switch (args.kind) {
+    case decltype(args.kind)::redirect:
         instance->kind(JSBakeResponseKind::Redirect);
-    } else {
-        // Should not be called with JSBakeResponseKind::Regular or anything
-        // else
-        UNREACHABLE();
+        break;
+    case decltype(args.kind)::render:
+        instance->kind(JSBakeResponseKind::Render);
+        break;
     }
 
-    instance->setToThrow(globalObject, globalObject->vm());
+    instance->setToThrow(globalObject, vm);
+    RETURN_IF_EXCEPTION(scope, {});
 
-    return JSValue::encode(instance);
+    releaseResponseOnFailure.release();
+    instance->adoptExternalNative(globalObject, args.response);
+    RETURN_IF_EXCEPTION(scope, {});
+
+    return instance;
 }
 
-static const HashTableValue JSBakeResponseConstructorTableValues[] = {
-    { "error"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, ResponseClass__constructError, 0 } },
-    { "json"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, ResponseClass__constructJSON, 0 } },
-
-    { "redirect"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, BakeResponseClass__constructRedirect, 0 } },
-    { "render"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, BakeResponseClass__constructRender, 0 } }
-
-};
-
-JSBakeResponse* JSBakeResponse::create(JSC::VM& vm, Zig::GlobalObject* globalObject, JSC::Structure* structure, void* ctx)
+bool Bindgen::Engine::bunBindgenEngine_BakeResponse_validateStreamingMode(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_BakeResponse_validateStreamingMode_Arguments& args)
 {
-    JSBakeResponse* ptr = new (NotNull, JSC::allocateCell<JSBakeResponse>(vm)) JSBakeResponse(vm, structure, ctx);
+    switch (args.caller) {
+    case decltype(args.caller)::constructor:
+        return validateBakeResponseStreamingMode(&context.globalObject, "new Response(<jsx />, { ... })"_s);
+    case decltype(args.caller)::redirect:
+        return validateBakeResponseStreamingMode(&context.globalObject, "Response.redirect"_s);
+    case decltype(args.caller)::render:
+        return validateBakeResponseStreamingMode(&context.globalObject, "Response.render"_s);
+    }
+    RELEASE_ASSERT_NOT_REACHED();
+}
+
+#define BUN_BINDGEN_OBJECT_SURFACE_JSBakeResponseConstructor
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSBakeResponseConstructor
+
+JSBakeResponse* JSBakeResponse::create(JSC::VM& vm, Zig::GlobalObject* globalObject, JSC::Structure* structure)
+{
+    JSBakeResponse* ptr = new (NotNull, JSC::allocateCell<JSBakeResponse>(vm)) JSBakeResponse(vm, structure);
     ptr->finishCreation(vm);
 
     auto& builtinNames = WebCore::builtinNames(vm);
@@ -155,8 +202,8 @@ JSC::GCClient::IsoSubspace* JSBakeResponse::subspaceForImpl(JSC::VM& vm)
         [](auto& spaces, auto&& space) { spaces.m_subspaceForBakeResponse = std::forward<decltype(space)>(space); });
 }
 
-JSBakeResponse::JSBakeResponse(JSC::VM& vm, JSC::Structure* structure, void* sinkPtr)
-    : Base(vm, structure, sinkPtr)
+JSBakeResponse::JSBakeResponse(JSC::VM& vm, JSC::Structure* structure)
+    : Base(vm, structure, nullptr, nullptr, nullptr, WebCore::clientData(vm), {})
 {
 }
 
@@ -174,8 +221,10 @@ void JSBakeResponse::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 
 DEFINE_VISIT_CHILDREN(JSBakeResponse);
 
-JSC_DECLARE_HOST_FUNCTION(callBakeResponse);
-JSC_DECLARE_HOST_FUNCTION(constructBakeResponse);
+void JSBakeResponse::destroy(JSC::JSCell* cell)
+{
+    destroyCell<JSBakeResponse>(cell);
+}
 
 class JSBakeResponseConstructor final : public JSC::InternalFunction {
 public:
@@ -190,75 +239,6 @@ public:
     }
 
     DECLARE_INFO;
-    // DECLARE_EXPORT_INFO;
-
-    // Must be defined for each specialization class.
-    static JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES construct(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame)
-    {
-        Zig::GlobalObject* globalObject = defaultGlobalObject(lexicalGlobalObject);
-        JSC::VM& vm = globalObject->vm();
-        auto scope = DECLARE_THROW_SCOPE(vm);
-        JSObject* newTarget = asObject(callFrame->newTarget());
-        auto* constructor = globalObject->bakeAdditions().JSBakeResponseConstructor(globalObject);
-        Structure* structure = globalObject->bakeAdditions().JSBakeResponseStructure(globalObject);
-        if (constructor != newTarget) [[unlikely]] {
-            auto* functionGlobalObject = defaultGlobalObject(
-                // ShadowRealm functions belong to a different global object.
-                getFunctionRealm(globalObject, newTarget));
-            RETURN_IF_EXCEPTION(scope, {});
-            structure = InternalFunction::createSubclassStructure(globalObject, newTarget, functionGlobalObject->bakeAdditions().JSBakeResponseStructure(functionGlobalObject));
-            RETURN_IF_EXCEPTION(scope, {});
-        }
-
-        JSBakeResponse* instance = JSBakeResponse::create(vm, globalObject, structure, nullptr);
-
-        int arg_was_jsx = 0;
-        void* ptr = BakeResponseClass__constructForSSR(globalObject, callFrame, &arg_was_jsx, JSValue::encode(instance));
-        if (scope.exception()) [[unlikely]] {
-            ASSERT_WITH_MESSAGE(!ptr, "Memory leak detected: new Response() allocated memory without checking for exceptions.");
-            return JSValue::encode(JSC::jsUndefined());
-        }
-
-        instance->m_ctx = ptr;
-
-        if (arg_was_jsx == 1 && callFrame->argumentCount() > 0) {
-            JSValue arg = callFrame->argument(0);
-            JSValue responseOptions = callFrame->argumentCount() > 1 ? callFrame->argument(1) : JSC::jsUndefined();
-            instance->wrapInnerComponent(globalObject, vm, arg, responseOptions);
-        }
-
-        auto size = Response__estimatedSize(ptr);
-        vm.heap.reportExtraMemoryAllocated(instance, size);
-
-        auto value = JSValue::encode(instance);
-        RELEASE_AND_RETURN(scope, value);
-    }
-
-    static JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES call(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame)
-    {
-        Zig::GlobalObject* globalObject = static_cast<Zig::GlobalObject*>(lexicalGlobalObject);
-        JSC::VM& vm = globalObject->vm();
-        auto scope = DECLARE_THROW_SCOPE(vm);
-
-        Structure* structure = globalObject->bakeAdditions().JSBakeResponseStructure(globalObject);
-        JSBakeResponse* instance = JSBakeResponse::create(vm, globalObject, structure, nullptr);
-
-        void* ptr = BakeResponseClass__constructForSSR(globalObject, callFrame, nullptr, JSValue::encode(instance));
-        if (scope.exception()) [[unlikely]] {
-            ASSERT_WITH_MESSAGE(!ptr, "Memory leak detected: new Response() allocated memory without checking for exceptions.");
-            return JSValue::encode(JSC::jsUndefined());
-        }
-
-        instance->m_ctx = ptr;
-
-        RETURN_IF_EXCEPTION(scope, {});
-
-        auto size = Response__estimatedSize(ptr);
-        vm.heap.reportExtraMemoryAllocated(instance, size);
-
-        RELEASE_AND_RETURN(scope, JSValue::encode(instance));
-    }
-
     template<typename CellType, JSC::SubspaceAccess>
     static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm)
     {
@@ -272,7 +252,7 @@ public:
 
 private:
     JSBakeResponseConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, JSBakeResponseConstructor::call, JSBakeResponseConstructor::construct)
+        : Base(vm, structure, bun_bindgen_host_BakeResponse_constructorCall, bun_bindgen_host_BakeResponse_constructorConstruct)
     {
     }
 
@@ -280,33 +260,102 @@ private:
     {
         Base::finishCreation(vm, 0, "Response"_s);
         putDirectWithoutTransition(vm, vm.propertyNames->prototype, prototype, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::DontDelete | JSC::PropertyAttribute::ReadOnly);
-        reifyStaticProperties(vm, info(), JSBakeResponseConstructorTableValues, *this);
+        bunBindgenObjectSurface_JSBakeResponseConstructor_install(vm, info(), *this);
     }
 };
 
-const JSC::ClassInfo JSBakeResponse::s_info = { "Response"_s, &JSResponse::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSBakeResponse) };
-const JSC::ClassInfo JSBakeResponseConstructor::s_info = { ""_s, &JSC::InternalFunction::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSBakeResponseConstructor) };
-
-Structure* createJSBakeResponseStructure(JSC::VM& vm, Zig::GlobalObject* globalObject, JSObject* prototype)
+static JSC::JSValue constructBakeResponse(
+    Zig::GlobalObject* globalObject,
+    const std::optional<JSC::JSValue>& body,
+    const std::optional<Bindgen::CppAny>& init,
+    JSC::JSObject* newTarget)
 {
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* structure = globalObject->bakeAdditions().JSBakeResponseStructure(globalObject);
+    RETURN_IF_EXCEPTION(scope, {});
 
-    auto structure = JSC::Structure::create(vm, globalObject, prototype, JSC::TypeInfo(JSC::ObjectType, 0), JSBakeResponse::info(), NonArray, 0);
+    if (newTarget) {
+        auto* constructor = globalObject->bakeAdditions().JSBakeResponseConstructor(globalObject);
+        if (constructor != newTarget) [[unlikely]] {
+            auto* functionGlobalObject = defaultGlobalObject(getFunctionRealm(globalObject, newTarget));
+            RETURN_IF_EXCEPTION(scope, {});
+            structure = InternalFunction::createSubclassStructure(
+                globalObject,
+                newTarget,
+                functionGlobalObject->bakeAdditions().JSBakeResponseStructure(functionGlobalObject));
+            RETURN_IF_EXCEPTION(scope, {});
+        }
+    }
 
-    // Unfortunately we cannot use structure->addPropertyTransition as it does
-    // not with with JSC::JSNonFinalObject
+    auto* instance = JSBakeResponse::create(vm, globalObject, structure);
+    RETURN_IF_EXCEPTION(scope, {});
 
-    return structure;
+    bool isJSXBody = body && isJSXElement(*body, globalObject);
+    RETURN_IF_EXCEPTION(scope, {});
+
+    if (isJSXBody) {
+        validateBakeResponseStreamingMode(globalObject, "new Response(<jsx />, { ... })"_s);
+        RETURN_IF_EXCEPTION(scope, {});
+    }
+
+    JSC::MarkedArgumentBuffer responseArguments;
+    responseArguments.append(body.value_or(JSC::jsUndefined()));
+    if (init)
+        init->appendTo(responseArguments);
+    else
+        responseArguments.append(JSC::jsUndefined());
+    auto* responseConstructor = globalObject->BunBindgen_Response_ResponseConstructor();
+    RETURN_IF_EXCEPTION(scope, {});
+    auto constructData = JSC::getConstructData(responseConstructor);
+    auto responseValue = JSC::construct(
+        globalObject,
+        responseConstructor,
+        constructData,
+        JSC::ArgList(responseArguments));
+    RETURN_IF_EXCEPTION(scope, {});
+
+    auto* responseObject = dynamicDowncast<BunBindgen_Response_Response>(responseValue);
+    RELEASE_ASSERT(responseObject);
+    instance->adoptConstructionFrom(*responseObject);
+    RETURN_IF_EXCEPTION(scope, {});
+
+    if (isJSXBody) {
+        instance->wrapInnerComponent(
+            globalObject,
+            vm,
+            *body,
+            init);
+        RETURN_IF_EXCEPTION(scope, {});
+    }
+
+    return instance;
 }
+
+JSC::JSValue Bindgen::Engine::bunBindgenEngine_BakeResponse_construct(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_BakeResponse_construct_Arguments& args)
+{
+    auto* newTarget = args.newTarget ? JSC::asObject(*args.newTarget) : nullptr;
+    return constructBakeResponse(
+        newTarget ? defaultGlobalObject(&context.globalObject) : static_cast<Zig::GlobalObject*>(&context.globalObject),
+        args.body,
+        args.init,
+        newTarget);
+}
+
+const JSC::ClassInfo JSBakeResponse::s_info = { "Response"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSBakeResponse) };
+const JSC::ClassInfo JSBakeResponseConstructor::s_info = { ""_s, &JSC::InternalFunction::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSBakeResponseConstructor) };
 
 void setupJSBakeResponseClassStructure(JSC::LazyClassStructure::Initializer& init)
 {
     auto* zigGlobal = static_cast<Zig::GlobalObject*>(init.global);
-    auto* prototype = JSC::constructEmptyObject(zigGlobal, zigGlobal->JSResponsePrototype());
+    auto* prototype = JSC::constructEmptyObject(zigGlobal, zigGlobal->BunBindgen_Response_ResponsePrototype());
 
     auto* constructorStructure = JSBakeResponseConstructor::createStructure(init.vm, init.global, init.global->functionPrototype());
     auto* constructor = JSBakeResponseConstructor::create(init.vm, constructorStructure, prototype);
 
-    auto* structure = createJSBakeResponseStructure(init.vm, zigGlobal, prototype);
+    auto* structure = JSBakeResponse::createStructure(init.vm, zigGlobal, prototype);
     init.setPrototype(prototype);
     init.setStructure(structure);
     init.setConstructor(constructor);

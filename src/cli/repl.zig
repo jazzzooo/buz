@@ -1,37 +1,4 @@
-//! Bun REPL - A modern, feature-rich Read-Eval-Print Loop
-//!
-//! This is a native Zig implementation of Bun's REPL with advanced TUI features:
-//! - JavaScript syntax highlighting
-//! - Full line editing with cursor movement (Emacs-style keybindings)
-//! - Persistent history with file storage
-//! - Tab completion for properties and commands
-//! - Multi-line input support
-//! - REPL commands (.help, .exit, .clear, .load, .save, .editor)
-//! - Result formatting with util.inspect integration
-//!
-//! This replaces the TypeScript-based REPL for faster startup and better integration.
-
 const Repl = @This();
-
-// ============================================================================
-// C++ Bindings
-// ============================================================================
-
-extern fn Bun__REPL__evaluate(
-    globalObject: *jsc.JSGlobalObject,
-    sourcePtr: [*]const u8,
-    sourceLen: usize,
-    filenamePtr: [*]const u8,
-    filenameLen: usize,
-    exception: *jsc.JSValue,
-) jsc.JSValue;
-
-extern fn Bun__REPL__getCompletions(
-    globalObject: *jsc.JSGlobalObject,
-    targetValue: jsc.JSValue,
-    prefixPtr: [*]const u8,
-    prefixLen: usize,
-) jsc.JSValue;
 // ============================================================================
 // Constants
 // ============================================================================
@@ -545,14 +512,10 @@ fn cmdCopy(repl: *Repl, args: []const u8) ReplResult {
     const code = strings.trim(args, " \t");
 
     if (code.len == 0) {
-        // .copy with no args - copy _ (last result) to clipboard
-        repl.copyValueToClipboard(repl.last_result) catch |err| {
-            if (repl.global) |global| {
-                const exc = global.takeException(err);
-                repl.setLastError(exc);
-                repl.printJSError(exc);
-            }
-        };
+        var result = repl.last_result.cloneRoot();
+        defer if (result) |*value| value.deinit();
+        repl.copyValueToClipboard(if (result) |*value| value else null) catch |err|
+            repl.reportActiveException(err);
         return .skip_eval;
     }
 
@@ -682,13 +645,11 @@ stdin_buf: [256]u8 = @splat(0),
 stdin_buf_start: usize = 0,
 stdin_buf_end: usize = 0,
 
-// JavaScript VM
-vm: ?*jsc.VirtualMachine = null,
-global: ?*jsc.JSGlobalObject = null,
+engine: ?ReplEngine = null,
 
 // Special REPL variables
-last_result: jsc.JSValue = .js_undefined,
-last_error: jsc.JSValue = .js_undefined,
+last_result: bun.bindgen.EngineRoot.Optional = .empty,
+last_error: bun.bindgen.EngineRoot.Optional = .empty,
 
 // Windows: saved console mode for restoration
 original_windows_mode: if (Environment.isWindows) ?bun.windows.DWORD else void = if (Environment.isWindows) null else {},
@@ -710,20 +671,36 @@ pub fn deinit(self: *Repl) void {
     self.history.deinit();
     self.multiline_buffer.deinit();
     self.editor_buffer.deinit();
-    if (!self.last_result.isUndefined()) self.last_result.unprotect();
-    if (!self.last_error.isUndefined()) self.last_error.unprotect();
+    self.last_result.deinit();
+    self.last_error.deinit();
 }
 
-fn setLastResult(self: *Repl, value: jsc.JSValue) void {
-    if (!self.last_result.isUndefined()) self.last_result.unprotect();
-    self.last_result = value;
-    if (!value.isUndefined()) value.protect();
+fn setLastResult(self: *Repl, value: *const bun.bindgen.EngineRoot) bool {
+    const engine = self.engine orelse return false;
+    if (engine.isUndefined(value)) {
+        self.last_result.clear();
+        return true;
+    }
+    self.last_result.setRoot(value);
+    engine.setLastResult(value) catch |err| {
+        self.reportActiveException(err);
+        return false;
+    };
+    return true;
 }
 
-fn setLastError(self: *Repl, value: jsc.JSValue) void {
-    if (!self.last_error.isUndefined()) self.last_error.unprotect();
-    self.last_error = value;
-    if (!value.isUndefined()) value.protect();
+fn reportActiveException(self: *Repl, err: bun.JSError) void {
+    self.reportActiveExceptionTo(err, Output.writer(), self.use_colors);
+}
+
+fn reportActiveExceptionTo(self: *Repl, err: bun.JSError, writer: *std.Io.Writer, colors: bool) void {
+    const engine = self.engine orelse return;
+    var exception = engine.takeException(err) catch |failure| {
+        engine.reportException(failure, writer, colors);
+        return;
+    };
+    defer exception.deinit();
+    self.printJSErrorTo(&exception, writer, colors);
 }
 
 // ============================================================================
@@ -768,20 +745,15 @@ fn restoreTerminal(self: *Repl) void {
     }
 }
 
-/// Global pointer for signal handler to access the VM
-var sigint_vm: ?*jsc.VM = null;
+var interrupt: ReplEngine.Interrupt = .{};
 
 fn sigintHandler(_: std.posix.SIG) callconv(.c) void {
-    if (sigint_vm) |vm| {
-        vm.setExecutionForbidden(true);
-    }
+    interrupt.signal();
 }
 
 /// Temporarily enable SIGINT delivery during blocking promise waits
 fn enableSignalsDuringWait(self: *Repl) void {
-    if (self.vm) |vm| {
-        sigint_vm = vm.jsc_vm;
-    }
+    interrupt.arm(self.engine);
 
     if (Environment.isPosix) {
         // Switch to normal terminal mode (has ISIG) so Ctrl+C generates SIGINT
@@ -801,7 +773,6 @@ fn enableSignalsDuringWait(self: *Repl) void {
 /// Restore raw terminal mode after promise wait
 fn disableSignalsDuringWait(self: *Repl) void {
     _ = self;
-    sigint_vm = null;
 
     if (Environment.isPosix) {
         // Back to raw mode
@@ -815,6 +786,8 @@ fn disableSignalsDuringWait(self: *Repl) void {
         };
         bun.sys.sigaction(std.posix.SIG.INT, &act, null);
     }
+
+    interrupt.disarm();
 }
 
 fn write(_: *Repl, data: []const u8) void {
@@ -1061,116 +1034,48 @@ fn isIncompleteCode(code: []const u8) bool {
 // ============================================================================
 
 fn evaluateAndPrint(self: *Repl, code: []const u8) void {
-    const global = self.global orelse return;
-    const vm = self.vm orelse return;
+    self.evaluateInteractive(code, .terminal);
+}
 
-    // Transform the code using REPL mode (hoists declarations, wraps result in { value: expr })
-    const transformed_code = self.transformForRepl(code) orelse {
-        // Transform failed, try evaluating raw code (for syntax errors, etc.)
+fn awaitInteractive(self: *Repl, engine: ReplEngine, evaluation: *ReplEngine.Evaluation) bun.JSError!ReplEngine.Settlement {
+    if (!try engine.needsAwait(evaluation)) return .fulfilled;
+    self.enableSignalsDuringWait();
+    defer self.disableSignalsDuringWait();
+    return engine.settle(evaluation, &interrupt);
+}
+
+fn evaluateInteractive(self: *Repl, code: []const u8, destination: enum { terminal, clipboard }) void {
+    const engine = self.engine orelse return;
+    const transformed_code = (self.transformForRepl(code) catch |err| return self.reportActiveException(err)) orelse {
         self.evaluateRaw(code);
         return;
     };
     defer self.allocator.free(transformed_code);
 
-    // Evaluate the transformed code
-    var exception: jsc.JSValue = .js_undefined;
-    const result = Bun__REPL__evaluate(
-        global,
-        transformed_code.ptr,
-        transformed_code.len,
-        "[repl]".ptr,
-        "[repl]".len,
-        &exception,
-    );
+    var evaluation = engine.evaluate(transformed_code, "[repl]") catch |err| return self.reportActiveException(err);
+    defer evaluation.deinit();
+    if (evaluation.exception) |*exception| return self.printJSError(exception);
 
-    // Check for exception
-    if (!exception.isUndefined() and !exception.isNull()) {
-        self.setLastError(exception);
-        self.printJSError(exception);
-        return;
-    }
-
-    // Handle async IIFE results - wait for promise to resolve
-    var resolved_result = result;
-    if (result.asPromise()) |promise| {
-        // Mark as handled BEFORE waiting to prevent unhandled rejection output
-        promise.setHandled();
-
-        // Temporarily re-enable signal delivery so Ctrl+C can interrupt
-        // the blocking waitForPromise call
-        self.enableSignalsDuringWait();
-        defer self.disableSignalsDuringWait();
-
-        // Wait for the promise to settle
-        vm.waitForPromise(.{ .normal = promise });
-
-        // If execution was forbidden by SIGINT, clear it and report
-        if (vm.jsc_vm.executionForbidden()) {
-            vm.jsc_vm.setExecutionForbidden(false);
-            global.clearTerminationException();
+    switch (self.awaitInteractive(engine, &evaluation) catch |err| return self.reportActiveException(err)) {
+        .fulfilled => {},
+        .rejected => return self.printJSError(&evaluation.exception.?),
+        .pending, .interrupted => {
             self.print("\n", .{});
             return;
-        }
-
-        // Check promise status after waiting
-        switch (promise.status()) {
-            .fulfilled => {
-                resolved_result = promise.result(vm.jsc_vm);
-            },
-            .rejected => {
-                const rejection = promise.result(vm.jsc_vm);
-                self.setLastError(rejection);
-                // Set _error on the global object
-                global.toJSObject().putDirect(global, "_error", rejection);
-                self.printJSError(rejection);
-                return;
-            },
-            .pending => {
-                // Interrupted by signal or timed out
-                self.print("\n", .{});
-                return;
-            },
-        }
+        },
     }
 
-    // Extract the value from the result wrapper { value: expr }
-    // The REPL transform wraps the last expression in { value: expr }
-    var actual_result = resolved_result;
-    if (resolved_result.isObject()) {
-        // Wrapper is REPL-built { __proto__: null, value: ... } so getOwn shouldn't throw,
-        // but if it does, propagate as a REPL error.
-        const maybe_value = resolved_result.getOwn(global, "value") catch |err| {
-            const exc = global.takeException(err);
-            self.setLastError(exc);
-            self.printJSError(exc);
-            vm.tick();
-            return;
-        };
-        if (maybe_value) |value| {
-            actual_result = value;
-        }
+    engine.unwrap(&evaluation) catch |err| {
+        self.reportActiveException(err);
+        engine.tick();
+        return;
+    };
+    if (!self.setLastResult(&evaluation.result)) return;
+    switch (destination) {
+        .terminal => self.printFormattedValue(&evaluation.result),
+        .clipboard => self.copyValueToClipboard(&evaluation.result) catch |err| self.reportActiveException(err),
     }
-
-    // Store and print result
-    self.setLastResult(actual_result);
-
-    // Set _ to the last result (only if not undefined)
-    if (!actual_result.isUndefined()) {
-        global.toJSObject().putDirect(global, "_", actual_result);
-    }
-
-    if (actual_result.isUndefined()) {
-        if (self.use_colors) {
-            self.print("{s}undefined{s}\n", .{ Color.dim, Color.reset });
-        } else {
-            self.print("undefined\n", .{});
-        }
-    } else {
-        self.printFormattedValue(actual_result);
-    }
-
-    // Tick the event loop to handle any pending work
-    vm.tick();
+    engine.tick();
 }
 
 /// Evaluate a script from `bun repl -e/--eval` or `-p/--print` non-interactively.
@@ -1180,97 +1085,74 @@ fn evaluateAndPrint(self: *Repl, code: []const u8) void {
 /// Returns true if an error occurred (the caller should set exit_code=1 and
 /// skip onBeforeExit); false on success (caller preserves process.exitCode).
 pub fn evalScript(self: *Repl, code: []const u8, print_result: bool) bool {
-    const global = self.global orelse return true;
-    const vm = self.vm orelse return true;
+    const engine = self.engine orelse return true;
 
     const no_color = bun.env_var.NO_COLOR.get();
     self.use_colors = Output.enable_ansi_colors_stdout and !no_color;
     const stderr_colors = Output.enable_ansi_colors_stderr and !no_color;
 
-    // Empty / whitespace-only script: nothing to do (matches `node -e ""`)
     if (strings.trim(code, " \t\n\r").len == 0) {
-        if (print_result) {
-            if (self.use_colors) {
-                self.print("{s}undefined{s}\n", .{ Color.dim, Color.reset });
-            } else {
-                self.print("undefined\n", .{});
-            }
-        }
+        if (print_result) self.printUndefined();
         return false;
     }
 
-    const transformed_code = self.transformForRepl(code) orelse {
-        // Transform failed — fall back to raw evaluation for the error message
-        var exception: jsc.JSValue = .js_undefined;
-        _ = Bun__REPL__evaluate(global, code.ptr, code.len, "[eval]".ptr, "[eval]".len, &exception);
-        if (!exception.isUndefined() and !exception.isNull()) {
+    const transformed_code = (self.transformForRepl(code) catch |err| {
+        self.reportActiveExceptionTo(err, Output.errorWriter(), stderr_colors);
+        return true;
+    }) orelse {
+        var evaluation = engine.evaluate(code, "[eval]") catch |err| {
+            self.reportActiveExceptionTo(err, Output.errorWriter(), stderr_colors);
+            return true;
+        };
+        defer evaluation.deinit();
+        if (evaluation.exception) |*exception| {
             self.printJSErrorTo(exception, Output.errorWriter(), stderr_colors);
         }
         return true;
     };
     defer self.allocator.free(transformed_code);
 
-    var exception: jsc.JSValue = .js_undefined;
-    const result = Bun__REPL__evaluate(
-        global,
-        transformed_code.ptr,
-        transformed_code.len,
-        "[eval]".ptr,
-        "[eval]".len,
-        &exception,
-    );
-
-    if (!exception.isUndefined() and !exception.isNull()) {
+    var evaluation = engine.evaluate(transformed_code, "[eval]") catch |err| {
+        self.reportActiveExceptionTo(err, Output.errorWriter(), stderr_colors);
+        return true;
+    };
+    defer evaluation.deinit();
+    if (evaluation.exception) |*exception| {
         self.printJSErrorTo(exception, Output.errorWriter(), stderr_colors);
         return true;
     }
 
-    // If the transform wrapped in an async IIFE (top-level await), wait for it
-    var resolved_result = result;
-    if (result.asPromise()) |promise| {
-        promise.setHandled();
-        vm.waitForPromise(.{ .normal = promise });
-        switch (promise.status()) {
-            .fulfilled => resolved_result = promise.result(vm.jsc_vm),
-            .rejected => {
-                const rejection = promise.result(vm.jsc_vm);
-                self.printJSErrorTo(rejection, Output.errorWriter(), stderr_colors);
-                return true;
-            },
-            .pending => return true,
-        }
-    }
-
-    // Unwrap the { value: expr } wrapper produced by transformForRepl
-    var actual_result = resolved_result;
-    if (resolved_result.isObject()) {
-        const maybe_value = resolved_result.getOwn(global, "value") catch |err| {
-            const exc = global.takeException(err);
-            self.printJSErrorTo(exc, Output.errorWriter(), stderr_colors);
+    const settlement = engine.settle(&evaluation, null) catch |err| {
+        self.reportActiveExceptionTo(err, Output.errorWriter(), stderr_colors);
+        return true;
+    };
+    switch (settlement) {
+        .fulfilled => {},
+        .rejected => {
+            self.printJSErrorTo(&evaluation.exception.?, Output.errorWriter(), stderr_colors);
             return true;
-        };
-        if (maybe_value) |value| actual_result = value;
+        },
+        .pending, .interrupted => return true,
     }
-    // Protect across tick() in case of GC
-    if (!actual_result.isUndefined()) actual_result.protect();
-    defer if (!actual_result.isUndefined()) actual_result.unprotect();
 
-    // Drain the event loop (timers, I/O, etc.) before printing / exiting
-    vm.tick();
-    while (vm.isEventLoopAlive()) {
-        vm.tick();
-        vm.eventLoop().autoTickActive();
-    }
+    engine.unwrap(&evaluation) catch |err| {
+        self.reportActiveExceptionTo(err, Output.errorWriter(), stderr_colors);
+        return true;
+    };
+    engine.drain();
 
     if (print_result) {
-        if (actual_result.isUndefined()) {
-            if (self.use_colors) {
-                self.print("{s}undefined{s}\n", .{ Color.dim, Color.reset });
-            } else {
-                self.print("undefined\n", .{});
-            }
+        if (engine.isUndefined(&evaluation.result)) {
+            self.printUndefined();
         } else {
-            self.printFormattedValue(actual_result);
+            engine.formatValue(&evaluation.result, Output.writer(), self.use_colors) catch |err| {
+                const js_error = switch (err) {
+                    error.WriteFailed => return true,
+                    else => |failure| failure,
+                };
+                self.reportActiveExceptionTo(js_error, Output.errorWriter(), stderr_colors);
+                return true;
+            };
         }
     }
 
@@ -1278,158 +1160,27 @@ pub fn evalScript(self: *Repl, code: []const u8, print_result: bool) bool {
 }
 
 /// Evaluate code without REPL transforms (fallback for errors)
-/// The C++ Bun__REPL__evaluate handles setting _ and _error
+/// Evaluation handles setting _ and _error.
 fn evaluateRaw(self: *Repl, code: []const u8) void {
-    const global = self.global orelse return;
-
-    var exception: jsc.JSValue = .js_undefined;
-    const result = Bun__REPL__evaluate(
-        global,
-        code.ptr,
-        code.len,
-        "[repl]".ptr,
-        "[repl]".len,
-        &exception,
-    );
-
-    if (!exception.isUndefined() and !exception.isNull()) {
-        self.setLastError(exception);
-        self.printJSError(exception);
-        return;
-    }
-
-    self.setLastResult(result);
-
-    if (!result.isUndefined()) {
-        self.printFormattedValue(result);
-    } else {
-        if (self.use_colors) {
-            self.print("{s}undefined{s}\n", .{ Color.dim, Color.reset });
-        } else {
-            self.print("undefined\n", .{});
-        }
-    }
-
-    if (self.vm) |vm| {
-        vm.tick();
-    }
+    const engine = self.engine orelse return;
+    var evaluation = engine.evaluate(code, "[repl]") catch |err| return self.reportActiveException(err);
+    defer evaluation.deinit();
+    if (evaluation.exception) |*exception| return self.printJSError(exception);
+    if (!self.setLastResult(&evaluation.result)) return;
+    self.printFormattedValue(&evaluation.result);
+    engine.tick();
 }
 
 /// Evaluate code and copy the result to clipboard instead of printing it
 fn evaluateAndCopy(self: *Repl, code: []const u8) void {
-    const global = self.global orelse return;
-    const vm = self.vm orelse return;
-
-    const transformed_code = self.transformForRepl(code) orelse {
-        self.evaluateRaw(code);
-        return;
-    };
-    defer self.allocator.free(transformed_code);
-
-    var exception: jsc.JSValue = .js_undefined;
-    const result = Bun__REPL__evaluate(
-        global,
-        transformed_code.ptr,
-        transformed_code.len,
-        "[repl]".ptr,
-        "[repl]".len,
-        &exception,
-    );
-
-    if (!exception.isUndefined() and !exception.isNull()) {
-        self.setLastError(exception);
-        self.printJSError(exception);
-        return;
-    }
-
-    var resolved_result = result;
-    if (result.asPromise()) |promise| {
-        promise.setHandled();
-        self.enableSignalsDuringWait();
-        defer self.disableSignalsDuringWait();
-        vm.waitForPromise(.{ .normal = promise });
-        if (vm.jsc_vm.executionForbidden()) {
-            vm.jsc_vm.setExecutionForbidden(false);
-            global.clearTerminationException();
-            self.print("\n", .{});
-            return;
-        }
-        switch (promise.status()) {
-            .fulfilled => resolved_result = promise.result(vm.jsc_vm),
-            .rejected => {
-                const rejection = promise.result(vm.jsc_vm);
-                self.setLastError(rejection);
-                self.printJSError(rejection);
-                return;
-            },
-            .pending => return,
-        }
-    }
-
-    var actual_result = resolved_result;
-    if (resolved_result.isObject()) {
-        const maybe_value = resolved_result.getOwn(global, "value") catch |err| {
-            const exc = global.takeException(err);
-            self.setLastError(exc);
-            self.printJSError(exc);
-            vm.tick();
-            return;
-        };
-        if (maybe_value) |value| {
-            actual_result = value;
-        }
-    }
-
-    self.setLastResult(actual_result);
-    if (!actual_result.isUndefined()) {
-        global.toJSObject().putDirect(global, "_", actual_result);
-    }
-
-    self.copyValueToClipboard(actual_result) catch |err| {
-        const exc = global.takeException(err);
-        self.setLastError(exc);
-        self.printJSError(exc);
-    };
-    vm.tick();
-}
-
-/// Format a JS value as a string suitable for clipboard.
-/// Returns null on allocator OOM; propagates JS exceptions (e.g. throwing getters).
-fn valueToClipboardString(self: *Repl, value: jsc.JSValue) bun.JSError!?[]const u8 {
-    const global = self.global orelse return null;
-
-    if (value.isUndefined()) return self.allocator.dupe(u8, "undefined") catch null;
-    if (value.isNull()) return self.allocator.dupe(u8, "null") catch null;
-
-    // For strings, copy the raw string value (not quoted/JSON-ified)
-    if (value.isString()) {
-        const slice = try value.toSlice(global, self.allocator);
-        defer slice.deinit();
-        return self.allocator.dupe(u8, slice.slice()) catch null;
-    }
-
-    // For everything else, use Bun.inspect without colors
-    var array = std.Io.Writer.Allocating.init(self.allocator);
-    defer array.deinit();
-    try jsc.ConsoleObject.format2(.Log, global, @ptrCast(&value), 1, &array.writer, .{
-        .enable_colors = false,
-        .add_newline = false,
-        .flush = false,
-        .quote_strings = true,
-        .ordered_properties = false,
-        .max_depth = 4,
-    });
-    array.writer.flush() catch return null;
-    return self.allocator.dupe(u8, array.written()) catch null;
+    self.evaluateInteractive(code, .clipboard);
 }
 
 /// Copy a JS value to the system clipboard via OSC 52.
 /// Propagates JS exceptions from value formatting; swallows I/O errors.
-fn copyValueToClipboard(self: *Repl, value: jsc.JSValue) bun.JSError!void {
-    const text = (try self.valueToClipboardString(value)) orelse {
-        self.printError("Failed to format value for clipboard\n", .{});
-        return;
-    };
+fn copyValueToClipboard(self: *Repl, value: ?*const bun.bindgen.EngineRoot) bun.JSError!void {
+    const engine = self.engine orelse return;
+    const text = try engine.clipboardText(value, self.allocator);
     defer self.allocator.free(text);
 
     self.copyToClipboardOSC52(text) catch {
@@ -1445,7 +1196,7 @@ fn copyValueToClipboard(self: *Repl, value: jsc.JSValue) bun.JSError!void {
 
 /// Write text to clipboard using OSC 52 escape sequence.
 fn copyToClipboardOSC52(self: *Repl, text: []const u8) !void {
-    var it = strings.ANSIIterator.init(text);
+    var it = bun.api.StringEngine.ANSIIterator.init(text);
     const first = it.next() orelse return;
 
     if (first.len == text.len) {
@@ -1473,8 +1224,9 @@ fn copyToClipboardOSC52(self: *Repl, text: []const u8) !void {
 }
 
 /// Transform code using the REPL parser (hoists declarations, wraps expressions)
-fn transformForRepl(self: *Repl, code: []const u8) ?[]const u8 {
-    const vm = self.vm orelse return null;
+fn transformForRepl(self: *Repl, code: []const u8) bun.OOM!?[]const u8 {
+    const engine = self.engine orelse return null;
+    const transpiler = engine.transpiler();
 
     // Skip empty code
     if (code.len == 0 or strings.trim(code, " \t\n\r").len == 0) {
@@ -1485,7 +1237,7 @@ fn transformForRepl(self: *Repl, code: []const u8) ?[]const u8 {
     // If code starts with { (after whitespace) and doesn't end with ;
     const is_object_literal = isLikelyObjectLiteral(code);
     const processed_code = if (is_object_literal)
-        std.fmt.allocPrint(self.allocator, "({s})", .{code}) catch return null
+        try std.fmt.allocPrint(self.allocator, "({s})", .{code})
     else
         code;
     defer if (is_object_literal) self.allocator.free(processed_code);
@@ -1496,7 +1248,8 @@ fn transformForRepl(self: *Repl, code: []const u8) ?[]const u8 {
     const allocator = arena.allocator();
 
     // Set up parser options with repl_mode enabled
-    var opts = js_parser.Parser.Options.init(vm.transpiler.options.jsx, .tsx);
+    var opts = js_parser.Parser.Options.init(transpiler.options.jsx, .tsx);
+    opts.javascript_semantics = transpiler.engine_capabilities.javascript_semantics;
     opts.repl_mode = true;
     opts.features.dead_code_elimination = false; // REPL needs all code
     opts.features.top_level_await = true; // Enable top-level await in REPL
@@ -1509,10 +1262,7 @@ fn transformForRepl(self: *Repl, code: []const u8) ?[]const u8 {
     // which the REPL transform passes through intact.
 
     // Initialize macro context from transpiler (required for import processing)
-    if (vm.transpiler.macro_context == null) {
-        vm.transpiler.macro_context = bun.ast.Macro.MacroContext.init(&vm.transpiler);
-    }
-    opts.macro_context = &vm.transpiler.macro_context.?;
+    opts.macro_context = try transpiler.ensureMacroContext();
 
     // Create log for errors
     var log = logger.Log.init(arena.backingAllocator());
@@ -1520,18 +1270,24 @@ fn transformForRepl(self: *Repl, code: []const u8) ?[]const u8 {
 
     // Create source
     var source = logger.Source.initPathString("[repl]", processed_code);
-    source.normalizeText(allocator) catch return null;
+    try source.normalizeText(allocator);
 
     // Parse with REPL transforms
     var parser = js_parser.Parser.init(
         opts,
         &log,
         &source,
-        vm.transpiler.options.define,
+        transpiler.options.define,
         allocator,
-    ) catch return null;
+    ) catch |err| switch (@as(anyerror, err)) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
 
-    const parse_result = parser.parse() catch return null;
+    const parse_result = parser.parse() catch |err| switch (@as(anyerror, err)) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
     if (parse_result != .ast) return null;
     const ast = parse_result.ast;
     // Don't call ast.deinit() - the arena handles cleanup
@@ -1556,11 +1312,14 @@ fn transformForRepl(self: *Repl, code: []const u8) ?[]const u8 {
         true, // ascii_only
         .{ .mangled_props = null },
         false, // generate_source_map
-    ) catch return null;
+    ) catch |err| switch (@as(anyerror, err)) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
 
     // Get the written buffer
     const written = buffer_printer.ctx.getWritten();
-    return self.allocator.dupe(u8, written) catch null;
+    return try self.allocator.dupe(u8, written);
 }
 
 /// Check if code looks like an object literal that would be misinterpreted as a block
@@ -1590,45 +1349,36 @@ fn isLikelyObjectLiteral(code: []const u8) bool {
     return true;
 }
 
-fn printJSError(self: *Repl, error_value: jsc.JSValue) void {
+fn printJSError(self: *Repl, error_value: *const bun.bindgen.EngineRoot) void {
     // Interactive REPL writes everything to stdout (single terminal stream).
     self.printJSErrorTo(error_value, Output.writer(), self.use_colors);
 }
 
-fn printJSErrorTo(self: *Repl, error_value: jsc.JSValue, writer: *std.Io.Writer, enable_colors: bool) void {
-    const global = self.global orelse return;
-    // Use .Error level for proper error formatting with Bun.inspect
-    jsc.ConsoleObject.format2(.Error, global, @ptrCast(&error_value), 1, writer, .{
-        .enable_colors = enable_colors,
-        .add_newline = true,
-        .flush = false,
-        .quote_strings = true,
-        .ordered_properties = false,
-        .max_depth = 4,
-    }) catch {
-        // Formatting the error itself threw — clear it to avoid recursion and show a fallback.
-        global.clearException();
-        writer.writeAll("error: [failed to format error]\n") catch {};
+fn printJSErrorTo(self: *Repl, error_value: *const bun.bindgen.EngineRoot, writer: *std.Io.Writer, enable_colors: bool) void {
+    const engine = self.engine orelse return;
+    self.last_error.setRoot(error_value);
+    engine.setLastError(error_value) catch |err| {
+        engine.reportException(err, writer, enable_colors);
+        return;
+    };
+    engine.formatError(error_value, writer, enable_colors);
+}
+
+fn printFormattedValue(self: *Repl, value: *const bun.bindgen.EngineRoot) void {
+    const engine = self.engine orelse return;
+    if (engine.isUndefined(value)) return self.printUndefined();
+    engine.formatValue(value, Output.writer(), self.use_colors) catch |err| switch (err) {
+        error.WriteFailed => {},
+        else => |js_error| self.reportActiveException(js_error),
     };
 }
 
-/// Format and print a JS value using Bun's console formatter (same as console.log)
-fn printFormattedValue(self: *Repl, value: jsc.JSValue) void {
-    const global = self.global orelse return;
-    const writer = Output.writer();
-    jsc.ConsoleObject.format2(.Log, global, @ptrCast(&value), 1, writer, .{
-        .enable_colors = self.use_colors,
-        .add_newline = true,
-        .flush = false,
-        .quote_strings = true,
-        .ordered_properties = false,
-        .max_depth = 4,
-    }) catch |err| {
-        // A getter on the value threw during inspection — show that error.
-        const exc = global.takeException(err);
-        self.setLastError(exc);
-        self.printJSError(exc);
-    };
+fn printUndefined(self: *Repl) void {
+    if (self.use_colors) {
+        self.print("{s}undefined{s}\n", .{ Color.dim, Color.reset });
+    } else {
+        self.print("undefined\n", .{});
+    }
 }
 
 // ============================================================================
@@ -1636,14 +1386,11 @@ fn printFormattedValue(self: *Repl, value: jsc.JSValue) void {
 // ============================================================================
 
 pub fn run(self: *Repl) !void {
-    try self.runWithVM(null);
+    try self.runWithEngine(null);
 }
 
-pub fn runWithVM(self: *Repl, vm: ?*jsc.VirtualMachine) !void {
-    self.vm = vm;
-    if (vm) |v| {
-        self.global = v.global;
-    }
+pub fn runWithEngine(self: *Repl, engine: ?ReplEngine) !void {
+    self.engine = engine;
 
     self.setupTerminal();
     defer self.restoreTerminal();
@@ -1923,8 +1670,7 @@ fn handleTab(self: *Repl) void {
         return;
     }
 
-    // Property completion using JSC
-    const global = self.global orelse {
+    const engine = self.engine orelse {
         // No VM, just insert spaces
         self.line_editor.insert(' ') catch {};
         self.line_editor.insert(' ') catch {};
@@ -1942,26 +1688,14 @@ fn handleTab(self: *Repl) void {
 
     const prefix = line[word_start..];
 
-    // Get completions from global object
-    const completions = Bun__REPL__getCompletions(
-        global,
-        .js_undefined,
-        prefix.ptr,
-        prefix.len,
-    );
-
-    if (completions.isUndefined() or !completions.isArray()) {
-        self.line_editor.insert(' ') catch {};
-        self.line_editor.insert(' ') catch {};
+    var completions = engine.completions(prefix) catch |err| {
+        self.print("\n", .{});
+        self.reportActiveException(err);
         self.refreshLine();
         return;
-    }
-
-    // Get array length
-    const len = completions.getLength(global) catch brk: {
-        global.clearException();
-        break :brk 0;
     };
+    defer completions.deinit();
+    const len = completions.len();
     if (len == 0) {
         self.line_editor.insert(' ') catch {};
         self.line_editor.insert(' ') catch {};
@@ -1970,42 +1704,32 @@ fn handleTab(self: *Repl) void {
     }
 
     if (len == 1) {
-        // Single completion - insert it
-        const item = completions.getIndex(global, 0) catch brk: {
-            global.clearException();
-            break :brk .js_undefined;
+        var iterator = completions.iterator();
+        var item = iterator.next().?;
+        defer item.deinit();
+        const completion = item.value.toUTF8(self.allocator) catch |err| {
+            self.reportActiveException(err);
+            return;
         };
-        if (item.isString()) {
-            const slice = item.toSlice(global, self.allocator) catch {
-                global.clearException();
-                return;
-            };
-            defer slice.deinit();
-            const completion = slice.slice();
-            // Replace the prefix with the completion
-            while (self.line_editor.cursor > word_start) {
-                self.line_editor.backspace();
-            }
-            self.line_editor.insertSlice(completion) catch {};
-            self.refreshLine();
+        defer completion.deinit();
+        while (self.line_editor.cursor > word_start) {
+            self.line_editor.backspace();
         }
+        self.line_editor.insertSlice(completion.slice()) catch {};
+        self.refreshLine();
     } else if (len <= 50) {
         // Multiple completions - show them
         self.print("\n", .{});
-        var i: u32 = 0;
-        while (i < @as(u32, @truncate(len))) : (i += 1) {
-            const item = completions.getIndex(global, i) catch brk: {
-                global.clearException();
-                break :brk .js_undefined;
+        var iterator = completions.iterator();
+        while (iterator.next()) |converted| {
+            var item = converted;
+            defer item.deinit();
+            const completion = item.value.toUTF8(self.allocator) catch |err| {
+                self.reportActiveException(err);
+                break;
             };
-            if (item.isString()) {
-                const slice = item.toSlice(global, self.allocator) catch {
-                    global.clearException();
-                    continue;
-                };
-                defer slice.deinit();
-                self.print("  {s}{s}{s}\n", .{ Color.cyan, slice.slice(), Color.reset });
-            }
+            defer completion.deinit();
+            self.print("  {s}{s}{s}\n", .{ Color.cyan, completion.slice(), Color.reset });
         }
         self.refreshLine();
     } else {
@@ -2034,7 +1758,7 @@ const Output = bun.Output;
 const fmt = bun.fmt;
 const js_parser = bun.js_parser;
 const js_printer = bun.js_printer;
-const jsc = bun.jsc;
+const ReplEngine = @import("./ReplEngine.zig");
 const logger = bun.logger;
 const strings = bun.strings;
 const MimallocArena = bun.allocators.MimallocArena;

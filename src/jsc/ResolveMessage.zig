@@ -1,78 +1,93 @@
 pub const ResolveMessage = struct {
-    pub const js = jsc.Codegen.JSResolveMessage;
-    pub const toJS = js.toJS;
-    pub const fromJS = js.fromJS;
-    pub const fromJSDirect = js.fromJSDirect;
-
-    msg: logger.Msg,
-    allocator: std.mem.Allocator,
-    referrer: ?Fs.Path = null,
+    bindgen_state: bindgen.ClassState = .{},
+    message: logger.OwnedMessage,
+    referrer: logger.OwnedMessage.Bytes,
     logged: bool = false,
 
-    pub fn constructor(globalThis: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!*ResolveMessage {
-        return globalThis.throw("ResolveMessage is not constructable", .{});
+    const Methods = @import("./DiagnosticFormatting.zig").BindingMethods(ResolveMessage, ResolveMessageSchema, "ResolveMessage");
+
+    pub const Binding = ResolveMessageClass;
+    pub const Ref = bindgen.ClassRef(ResolveMessageSchema);
+
+    pub fn loggerMessage(this: *const ResolveMessage) *const logger.OwnedMessage {
+        return &this.message;
     }
 
-    pub fn getCode(this: *ResolveMessage, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-        switch (this.msg.metadata) {
+    pub fn createRef(
+        global: *JSGlobalObject,
+        msg: logger.Msg,
+        referrer: string,
+    ) bun.JSError!Ref {
+        const native = try createNative(msg, referrer);
+        return ResolveMessageClass.adoptNativeRef(native, global);
+    }
+
+    pub fn createNative(
+        msg: logger.Msg,
+        referrer: string,
+    ) bun.OOM!*ResolveMessage {
+        const native = try default_allocator.create(ResolveMessage);
+        errdefer default_allocator.destroy(native);
+        var message = try logger.OwnedMessage.copy(msg);
+        errdefer message.deinit();
+        native.* = .{
+            .message = message,
+            .referrer = try logger.OwnedMessage.copyBytes(referrer),
+        };
+        return native;
+    }
+
+    pub fn adoptResult(native: *ResolveMessage, context: anytype) bun.JSError!Ref {
+        return ResolveMessageClass.adoptResult(native, context);
+    }
+
+    pub fn getCode(
+        this: *ResolveMessage,
+        _: bindgen.CallContext(ResolveMessageCodeSchema),
+        _: bindgen.Args(ResolveMessageCodeSchema),
+    ) bun.JSError!?bindgen.DOMString {
+        const msg = &this.message;
+        switch (msg.metadata) {
             .resolve => |resolve| {
-                const code: []const u8 = brk: {
-                    const specifier = this.msg.metadata.resolve.specifier.slice(this.msg.data.text);
-
-                    break :brk switch (resolve.import_kind) {
-                        // Match Node.js error codes. CommonJS is historic
-                        // before they started prefixing with 'ERR_'
-                        .require => if (bun.strings.hasPrefixComptime(specifier, "node:"))
-                            break :brk "ERR_UNKNOWN_BUILTIN_MODULE"
-                        else
-                            break :brk "MODULE_NOT_FOUND",
-                        // require resolve does not have the UNKNOWN_BUILTIN_MODULE error code
-                        .require_resolve => "MODULE_NOT_FOUND",
-                        .stmt, .dynamic => if (bun.strings.hasPrefixComptime(specifier, "node:"))
-                            break :brk "ERR_UNKNOWN_BUILTIN_MODULE"
-                        else
-                            break :brk "ERR_MODULE_NOT_FOUND",
-
-                        .html_manifest,
-                        .entry_point_run,
-                        .entry_point_build,
-                        .at,
-                        .at_conditional,
-                        .url,
-                        .internal,
-                        .composes,
-                        => "RESOLVE_ERROR",
-                    };
+                const specifier = resolve.specifier.slice(msg.data.text.slice());
+                const code = switch (resolve.import_kind) {
+                    .require => if (bun.strings.hasPrefixComptime(specifier, "node:"))
+                        "ERR_UNKNOWN_BUILTIN_MODULE"
+                    else
+                        "MODULE_NOT_FOUND",
+                    .require_resolve => "MODULE_NOT_FOUND",
+                    .stmt, .dynamic => if (bun.strings.hasPrefixComptime(specifier, "node:"))
+                        "ERR_UNKNOWN_BUILTIN_MODULE"
+                    else
+                        "ERR_MODULE_NOT_FOUND",
+                    .html_manifest,
+                    .entry_point_run,
+                    .entry_point_build,
+                    .at,
+                    .at_conditional,
+                    .url,
+                    .internal,
+                    .composes,
+                    => "RESOLVE_ERROR",
                 };
-
-                var atom = bun.String.createAtomASCII(code);
-                defer atom.deref();
-                return atom.toJS(globalObject);
+                return try bindgen.DOMString.fromUTF8(code);
             },
-            else => return .js_undefined,
+            else => return null,
         }
     }
 
-    // https://github.com/oven-sh/bun/issues/2375#issuecomment-2121530202
-    pub fn getColumn(this: *ResolveMessage, _: *jsc.JSGlobalObject) jsc.JSValue {
-        if (this.msg.data.location) |location| {
-            return jsc.JSValue.jsNumber(@max(location.column - 1, 0));
-        }
+    pub const getColumn = Methods.getColumn;
 
-        return jsc.JSValue.jsNumber(@as(i32, 0));
-    }
+    pub const getLine = Methods.getLine;
 
-    pub fn getLine(this: *ResolveMessage, _: *jsc.JSGlobalObject) jsc.JSValue {
-        if (this.msg.data.location) |location| {
-            return jsc.JSValue.jsNumber(@max(location.line - 1, 0));
-        }
-
-        return jsc.JSValue.jsNumber(@as(i32, 0));
-    }
-
-    pub fn fmt(allocator: std.mem.Allocator, specifier: string, referrer: string, err: anyerror, import_kind: bun.ImportKind) !string {
+    pub fn fmt(
+        allocator: std.mem.Allocator,
+        specifier: string,
+        referrer: string,
+        err: anyerror,
+        import_kind: bun.ImportKind,
+    ) !string {
         if (import_kind != .require_resolve and bun.strings.hasPrefixComptime(specifier, "node:")) {
-            // This matches Node.js exactly.
             return try std.fmt.allocPrint(allocator, "No such built-in module: {s}", .{specifier});
         }
         switch (err) {
@@ -80,170 +95,136 @@ pub const ResolveMessage = struct {
                 if (strings.eqlComptime(referrer, "bun:main")) {
                     return try std.fmt.allocPrint(allocator, "Module not found '{s}'", .{specifier});
                 }
-                if (Resolver.isPackagePath(specifier) and !strings.containsChar(specifier, '/')) {
+                if (resolver.isPackagePath(specifier) and !strings.containsChar(specifier, '/')) {
                     return try std.fmt.allocPrint(allocator, "Cannot find package '{s}' from '{s}'", .{ specifier, referrer });
-                } else {
-                    return try std.fmt.allocPrint(allocator, "Cannot find module '{s}' from '{s}'", .{ specifier, referrer });
                 }
+                return try std.fmt.allocPrint(allocator, "Cannot find module '{s}' from '{s}'", .{ specifier, referrer });
             },
-            error.InvalidDataURL => {
-                return try std.fmt.allocPrint(allocator, "Cannot resolve invalid data URL '{s}' from '{s}'", .{ specifier, referrer });
-            },
-            error.InvalidURL => {
-                return try std.fmt.allocPrint(allocator, "Cannot resolve invalid URL '{s}' from '{s}'", .{ specifier, referrer });
-            },
+            error.InvalidDataURL => return try std.fmt.allocPrint(
+                allocator,
+                "Cannot resolve invalid data URL '{s}' from '{s}'",
+                .{ specifier, referrer },
+            ),
+            error.InvalidURL => return try std.fmt.allocPrint(
+                allocator,
+                "Cannot resolve invalid URL '{s}' from '{s}'",
+                .{ specifier, referrer },
+            ),
             else => {
-                if (Resolver.isPackagePath(specifier)) {
-                    return try std.fmt.allocPrint(allocator, "{s} while resolving package '{s}' from '{s}'", .{ @errorName(err), specifier, referrer });
-                } else {
-                    return try std.fmt.allocPrint(allocator, "{s} while resolving '{s}' from '{s}'", .{ @errorName(err), specifier, referrer });
+                if (resolver.isPackagePath(specifier)) {
+                    return try std.fmt.allocPrint(
+                        allocator,
+                        "{s} while resolving package '{s}' from '{s}'",
+                        .{ @errorName(err), specifier, referrer },
+                    );
                 }
+                return try std.fmt.allocPrint(
+                    allocator,
+                    "{s} while resolving '{s}' from '{s}'",
+                    .{ @errorName(err), specifier, referrer },
+                );
             },
         }
     }
 
-    pub fn toStringFn(this: *ResolveMessage, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-        const text = std.fmt.allocPrint(default_allocator, "ResolveMessage: {s}", .{this.msg.data.text}) catch {
-            return globalThis.throwOutOfMemoryValue();
-        };
-        var str = ZigString.init(text);
-        str.setOutputEncoding();
-        if (str.isUTF8()) {
-            const out = str.toJS(globalThis);
-            default_allocator.free(text);
-            return out;
-        }
+    pub const toString = Methods.toString;
 
-        return str.toExternalValue(globalThis);
-    }
+    pub const inspectCustom = Methods.inspectCustom;
 
-    pub fn toString(
-        // this
-        this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-        _: *jsc.CallFrame,
-    ) bun.JSError!jsc.JSValue {
-        return this.toStringFn(globalThis);
-    }
-
-    pub fn toPrimitive(
-        this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-        callframe: *jsc.CallFrame,
-    ) bun.JSError!jsc.JSValue {
-        const args_ = callframe.arguments_old(1);
-        const args = args_.ptr[0..args_.len];
-        if (args.len > 0) {
-            if (!args[0].isString()) {
-                return jsc.JSValue.jsNull();
-            }
-
-            const str = try args[0].getZigString(globalThis);
-            if (str.eqlComptime("default") or str.eqlComptime("string")) {
-                return this.toStringFn(globalThis);
-            }
-        }
-
-        return jsc.JSValue.jsNull();
-    }
+    pub const toPrimitive = Methods.toPrimitive;
 
     pub fn toJSON(
         this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-        _: *jsc.CallFrame,
-    ) bun.JSError!jsc.JSValue {
-        var object = jsc.JSObject.createEmpty(globalThis, 7);
-        object.putDirect(globalThis, ZigString.static("name"), try bun.String.static("ResolveMessage").toJS(globalThis));
-        object.putDirect(globalThis, ZigString.static("position"), this.getPosition(globalThis));
-        object.putDirect(globalThis, ZigString.static("message"), this.getMessage(globalThis));
-        object.putDirect(globalThis, ZigString.static("level"), this.getLevel(globalThis));
-        object.putDirect(globalThis, ZigString.static("specifier"), this.getSpecifier(globalThis));
-        object.putDirect(globalThis, ZigString.static("importKind"), this.getImportKind(globalThis));
-        object.putDirect(globalThis, ZigString.static("referrer"), this.getReferrer(globalThis));
-        return object.toJS();
-    }
-
-    pub fn create(
-        globalThis: *JSGlobalObject,
-        allocator: std.mem.Allocator,
-        msg: logger.Msg,
-        referrer: string,
-    ) bun.OOM!jsc.JSValue {
-        var resolve_error = try allocator.create(ResolveMessage);
-        resolve_error.* = ResolveMessage{
-            .msg = try msg.clone(allocator),
-            .allocator = allocator,
-            .referrer = Fs.Path.init(try allocator.dupe(u8, referrer)),
+        _: bindgen.CallContext(ResolveMessageToJSONSchema),
+        _: bindgen.Args(ResolveMessageToJSONSchema),
+    ) bun.JSError!bindgen.Return(ResolveMessageToJSONSchema) {
+        const msg = &this.message;
+        var name = try bindgen.DOMString.fromUTF8("ResolveMessage");
+        errdefer name.deinit();
+        var message = try bindgen.DOMString.fromUTF8(msg.data.text.slice());
+        errdefer message.deinit();
+        var specifier = try bindgen.DOMString.fromUTF8(msg.metadata.resolve.specifier.slice(msg.data.text.slice()));
+        errdefer specifier.deinit();
+        var import_kind = try bindgen.DOMString.fromUTF8(msg.metadata.resolve.import_kind.label());
+        errdefer import_kind.deinit();
+        var referrer = try bindgen.DOMString.fromUTF8(this.referrer.slice());
+        errdefer referrer.deinit();
+        return .{
+            .name = name,
+            .position = try bun.api.BuildMessage.generatePosition(msg.data.view().location),
+            .message = message,
+            .level = this.level(),
+            .specifier = specifier,
+            .import_kind = import_kind,
+            .referrer = @as(?bindgen.DOMString, referrer),
         };
-        return resolve_error.toJS(globalThis);
     }
 
-    pub fn getPosition(
-        this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        return bun.api.BuildMessage.generatePositionObject(this.msg, globalThis);
-    }
+    pub const getPosition = Methods.getPosition;
 
-    pub fn getMessage(
-        this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        return ZigString.init(this.msg.data.text).toJS(globalThis);
-    }
+    pub const getMessage = Methods.getMessage;
 
-    pub fn getLevel(
-        this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        return ZigString.init(this.msg.kind.string()).toJS(globalThis);
-    }
+    pub const getLevel = Methods.getLevel;
+
+    const level = Methods.level;
 
     pub fn getSpecifier(
         this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        return ZigString.init(this.msg.metadata.resolve.specifier.slice(this.msg.data.text)).toJS(globalThis);
+        _: bindgen.CallContext(ResolveMessageSpecifierSchema),
+        _: bindgen.Args(ResolveMessageSpecifierSchema),
+    ) bun.JSError!bindgen.DOMString {
+        const msg = &this.message;
+        return bindgen.DOMString.fromUTF8(msg.metadata.resolve.specifier.slice(msg.data.text.slice()));
     }
 
     pub fn getImportKind(
         this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        return ZigString.init(this.msg.metadata.resolve.import_kind.label()).toJS(globalThis);
+        _: bindgen.CallContext(ResolveMessageImportKindSchema),
+        _: bindgen.Args(ResolveMessageImportKindSchema),
+    ) bun.JSError!bindgen.DOMString {
+        return bindgen.DOMString.fromUTF8(this.message.metadata.resolve.import_kind.label());
     }
 
     pub fn getReferrer(
         this: *ResolveMessage,
-        globalThis: *jsc.JSGlobalObject,
-    ) jsc.JSValue {
-        if (this.referrer) |referrer| {
-            return ZigString.init(referrer.text).toJS(globalThis);
-        } else {
-            return jsc.JSValue.jsNull();
-        }
+        _: bindgen.CallContext(ResolveMessageReferrerSchema),
+        _: bindgen.Args(ResolveMessageReferrerSchema),
+    ) bun.JSError!?bindgen.DOMString {
+        return try bindgen.DOMString.fromUTF8(this.referrer.slice());
     }
 
-    pub fn finalize(this: *ResolveMessage) callconv(.c) void {
-        this.msg.deinit(this.allocator);
-        if (this.referrer) |referrer| {
-            this.allocator.free(referrer.text);
-        }
-        this.allocator.destroy(this);
+    pub const destroy = deinit;
+
+    fn deinit(this: *ResolveMessage) void {
+        this.message.deinit();
+        this.referrer.deinit();
+        default_allocator.destroy(this);
     }
 };
 
 const string = []const u8;
 
-const Resolver = @import("../resolver/resolver.zig");
+const resolver = bun.resolver;
 const std = @import("std");
 
 const bun = @import("bun");
-const Fs = bun.fs;
 const default_allocator = bun.default_allocator;
 const logger = bun.logger;
 const strings = bun.strings;
 
 const jsc = bun.jsc;
+const bindgen = bun.bindgen;
 const JSGlobalObject = jsc.JSGlobalObject;
-const ZigString = jsc.ZigString;
+
+const ResolveMessageBindingModule = bindgen.Module("ResolveMessage");
+const ResolveMessageSchema = ResolveMessageBindingModule.class("ResolveMessage");
+const ResolveMessageCodeSchema = ResolveMessageSchema.member("code");
+const ResolveMessageImportKindSchema = ResolveMessageSchema.member("importKind");
+const ResolveMessageReferrerSchema = ResolveMessageSchema.member("referrer");
+const ResolveMessageSpecifierSchema = ResolveMessageSchema.member("specifier");
+const ResolveMessageToJSONSchema = ResolveMessageSchema.member("toJSON");
+const ResolveMessageClass = bindgen.Class(ResolveMessageSchema, ResolveMessage);
+
+comptime {
+    _ = ResolveMessageClass;
+}

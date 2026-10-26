@@ -7,7 +7,7 @@ pub const ConnectingSocket = opaque {
         c.us_connecting_socket_close(this);
     }
 
-    pub fn group(this: *ConnectingSocket) *SocketGroup {
+    pub fn group(this: *ConnectingSocket) ?*SocketGroup {
         return c.us_connecting_socket_group(this);
     }
     pub const rawGroup = group;
@@ -24,8 +24,10 @@ pub const ConnectingSocket = opaque {
         return @ptrCast(@alignCast(c.us_connecting_socket_ext(this)));
     }
 
-    pub fn getError(this: *ConnectingSocket) i32 {
-        return c.us_connecting_socket_get_error(this);
+    pub fn getFailure(this: *ConnectingSocket) uws.ConnectFailure {
+        var failure: uws.ConnectFailure = undefined;
+        c.us_connecting_socket_get_failure(this, &failure);
+        return failure;
     }
 
     pub fn getNativeHandle(this: *ConnectingSocket) ?*anyopaque {
@@ -59,10 +61,10 @@ pub const ConnectingSocket = opaque {
 
 const c = struct {
     pub extern fn us_connecting_socket_close(s: *ConnectingSocket) void;
-    pub extern fn us_connecting_socket_group(s: *ConnectingSocket) *SocketGroup;
+    pub extern fn us_connecting_socket_group(s: *ConnectingSocket) ?*SocketGroup;
     pub extern fn us_connecting_socket_kind(s: *ConnectingSocket) u8;
     pub extern fn us_connecting_socket_ext(s: *ConnectingSocket) *anyopaque;
-    pub extern fn us_connecting_socket_get_error(s: *ConnectingSocket) i32;
+    pub extern fn us_connecting_socket_get_failure(s: *ConnectingSocket, failure: *uws.ConnectFailure) void;
     pub extern fn us_connecting_socket_get_native_handle(s: *ConnectingSocket) ?*anyopaque;
     pub extern fn us_connecting_socket_is_closed(s: *ConnectingSocket) i32;
     pub extern fn us_connecting_socket_is_shut_down(s: *ConnectingSocket) i32;

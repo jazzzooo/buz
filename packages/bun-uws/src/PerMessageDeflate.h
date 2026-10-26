@@ -70,6 +70,8 @@ namespace uWS {
 
 #include <string>
 #include <optional>
+#include <memory>
+#include <new>
 
 #ifdef UWS_USE_LIBDEFLATE
 #include "libdeflate.h"
@@ -78,26 +80,40 @@ namespace uWS {
 
 namespace uWS {
 
+enum class CompressionError { None, OutOfMemory, InitializationFailed };
+
 /* Do not compile this module if we don't want it */
 #if defined(UWS_NO_ZLIB) || defined(UWS_MOCK_ZLIB)
-struct ZlibContext {};
+struct ZlibContext {
+    static std::unique_ptr<ZlibContext> create(CompressionError &error) {
+        auto result = std::unique_ptr<ZlibContext>(new (std::nothrow) ZlibContext);
+        error = result ? CompressionError::None : CompressionError::OutOfMemory;
+        return result;
+    }
+};
 struct InflationStream {
     std::optional<std::string_view> inflate(ZlibContext * /*zlibContext*/, std::string_view compressed, size_t maxPayloadLength, bool /*reset*/) {
         return compressed.substr(0, std::min(maxPayloadLength, compressed.length()));
     }
-    InflationStream(CompressOptions /*compressOptions*/) {
+    static std::unique_ptr<InflationStream> create(CompressOptions, CompressionError &error) {
+        auto result = std::unique_ptr<InflationStream>(new (std::nothrow) InflationStream);
+        error = result ? CompressionError::None : CompressionError::OutOfMemory;
+        return result;
     }
 };
 struct DeflationStream {
     std::string_view deflate(ZlibContext * /*zlibContext*/, std::string_view raw, bool /*reset*/) {
         return raw;
     }
-    DeflationStream(CompressOptions /*compressOptions*/) {
+    static std::unique_ptr<DeflationStream> create(CompressOptions, CompressionError &error) {
+        auto result = std::unique_ptr<DeflationStream>(new (std::nothrow) DeflationStream);
+        error = result ? CompressionError::None : CompressionError::OutOfMemory;
+        return result;
     }
 };
 #else
 
-#define LARGE_BUFFER_SIZE 1024 * 16 // todo: fix this
+static constexpr size_t LARGE_BUFFER_SIZE = 16 * 1024;
 
 struct ZlibContext {
     /* Any returned data is valid until next same-class call.
@@ -105,51 +121,68 @@ struct ZlibContext {
      * by many deflations without modifying the inflation */
     std::string dynamicDeflationBuffer;
     std::string dynamicInflationBuffer;
-    char *deflationBuffer;
-    char *inflationBuffer;
+    char deflationBuffer[LARGE_BUFFER_SIZE];
+    char inflationBuffer[LARGE_BUFFER_SIZE];
 
 #ifdef UWS_USE_LIBDEFLATE
-    libdeflate_decompressor *decompressor;
-    libdeflate_compressor *compressor;
+    libdeflate_decompressor *decompressor = nullptr;
+    libdeflate_compressor *compressor = nullptr;
 #endif
 
-    ZlibContext() {
-        deflationBuffer = (char *) malloc(LARGE_BUFFER_SIZE);
-        inflationBuffer = (char *) malloc(LARGE_BUFFER_SIZE);
+private:
+    ZlibContext() = default;
+public:
+    ZlibContext(const ZlibContext &) = delete;
+    ZlibContext &operator=(const ZlibContext &) = delete;
 
+    static std::unique_ptr<ZlibContext> create(CompressionError &error) {
+        error = CompressionError::OutOfMemory;
+        auto result = std::unique_ptr<ZlibContext>(new (std::nothrow) ZlibContext);
+        if (!result) return nullptr;
 #ifdef UWS_USE_LIBDEFLATE
-        decompressor = libdeflate_alloc_decompressor();
-        compressor = libdeflate_alloc_compressor(6);
+        result->decompressor = libdeflate_alloc_decompressor();
+        if (!result->decompressor) return nullptr;
+        result->compressor = libdeflate_alloc_compressor(6);
+        if (!result->compressor) return nullptr;
 #endif
+        error = CompressionError::None;
+        return result;
     }
 
     ~ZlibContext() {
-        free(deflationBuffer);
-        free(inflationBuffer);
-
 #ifdef UWS_USE_LIBDEFLATE
-        libdeflate_free_decompressor(decompressor);
-        libdeflate_free_compressor(compressor);
+        if (decompressor) libdeflate_free_decompressor(decompressor);
+        if (compressor) libdeflate_free_compressor(compressor);
 #endif
     }
 };
 
 struct DeflationStream {
     z_stream deflationStream = {};
+    bool initialized = false;
 #ifdef UWS_USE_LIBDEFLATE
     unsigned char reset_buffer[4096 + 1];
 #endif
 
-    DeflationStream(CompressOptions compressOptions) {
+private:
+    DeflationStream() = default;
+public:
+    DeflationStream(const DeflationStream &) = delete;
+    DeflationStream &operator=(const DeflationStream &) = delete;
 
-        /* Sliding inflator should be about 44kb by default, less than compressor */
-
-        /* Memory usage is given by 2 ^ (windowBits + 2) + 2 ^ (memLevel + 9) */
+    static std::unique_ptr<DeflationStream> create(CompressOptions compressOptions, CompressionError &error) {
+        error = CompressionError::OutOfMemory;
+        auto stream = std::unique_ptr<DeflationStream>(new (std::nothrow) DeflationStream);
+        if (!stream) return nullptr;
         int windowBits = -(int) ((compressOptions & _COMPRESSOR_MASK) >> 4), memLevel = compressOptions & 0xF;
-
-        //printf("windowBits: %d, memLevel: %d\n", windowBits, memLevel);
-
-        deflateInit2(&deflationStream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, windowBits, memLevel, Z_DEFAULT_STRATEGY);
+        const int result = deflateInit2(&stream->deflationStream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, windowBits, memLevel, Z_DEFAULT_STRATEGY);
+        if (result != Z_OK) {
+            error = result == Z_MEM_ERROR ? CompressionError::OutOfMemory : CompressionError::InitializationFailed;
+            return nullptr;
+        }
+        stream->initialized = true;
+        error = CompressionError::None;
+        return stream;
     }
 
     /* Deflate and optionally reset. You must not deflate an empty string. */
@@ -211,23 +244,39 @@ struct DeflationStream {
     }
 
     ~DeflationStream() {
-        deflateEnd(&deflationStream);
+        if (initialized) deflateEnd(&deflationStream);
     }
 };
 
 struct InflationStream {
     z_stream inflationStream = {};
+    bool initialized = false;
 #ifdef UWS_USE_LIBDEFLATE
     char buf[4096];
 #endif
 
-    InflationStream(CompressOptions compressOptions) {
-        /* Inflation windowBits are the top 8 bits of the 16 bit compressOptions */
-        inflateInit2(&inflationStream, -(compressOptions >> 8));
+private:
+    InflationStream() = default;
+public:
+    InflationStream(const InflationStream &) = delete;
+    InflationStream &operator=(const InflationStream &) = delete;
+
+    static std::unique_ptr<InflationStream> create(CompressOptions compressOptions, CompressionError &error) {
+        error = CompressionError::OutOfMemory;
+        auto stream = std::unique_ptr<InflationStream>(new (std::nothrow) InflationStream);
+        if (!stream) return nullptr;
+        const int result = inflateInit2(&stream->inflationStream, -(compressOptions >> 8));
+        if (result != Z_OK) {
+            error = result == Z_MEM_ERROR ? CompressionError::OutOfMemory : CompressionError::InitializationFailed;
+            return nullptr;
+        }
+        stream->initialized = true;
+        error = CompressionError::None;
+        return stream;
     }
 
     ~InflationStream() {
-        inflateEnd(&inflationStream);
+        if (initialized) inflateEnd(&inflationStream);
     }
 
     /* Zero length inflates are possible and valid */

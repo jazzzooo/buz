@@ -22,24 +22,25 @@
 
 #include "config.h"
 #include "Event.h"
+#include "BunWorkerGlobalScope.h"
 
 // #include "DOMWindow.h"
 // #include "Document.h"
 #include "EventNames.h"
 #include "EventPath.h"
 #include "EventTarget.h"
+#include "JSDOMWrapperCache.h"
+#include "ScriptExecutionContext.h"
+#include "WebCoreJSClientData.h"
+#include <JavaScriptCore/SlotVisitorMacros.h>
 // #include "InspectorInstrumentation.h"
-// #include "Performance.h"
 // #include "UserGestureIndicator.h"
 // #include "WorkerGlobalScope.h"
 #include <wtf/HexNumber.h>
-#include <wtf/TZoneMallocInlines.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/text/TextStream.h>
 
 namespace WebCore {
-
-WTF_MAKE_TZONE_ALLOCATED_IMPL(Event);
 
 ALWAYS_INLINE Event::Event(EventInterface eventInterface, MonotonicTime createTime, const AtomString& type, IsTrusted isTrusted, CanBubble canBubble, IsCancelable cancelable, IsComposed composed)
     : m_isInitialized { !type.isNull() }
@@ -89,19 +90,20 @@ Event::Event(EventInterface eventInterface, const AtomString& eventType, const E
 
 Event::~Event() = default;
 
-Ref<Event> Event::create(const AtomString& type, CanBubble canBubble, IsCancelable isCancelable, IsComposed isComposed)
+RefPtr<Event> Event::tryCreate(const AtomString& type, CanBubble canBubble, IsCancelable isCancelable, IsComposed isComposed)
 {
-    return adoptRef(*new Event(EventInterfaceType, type, canBubble, isCancelable, isComposed));
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(Event)).getValue(allocation))
+        return nullptr;
+    return adoptRef(*new (NotNull, allocation) Event(EventInterfaceType, type, canBubble, isCancelable, isComposed));
 }
 
-Ref<Event> Event::createForBindings()
+RefPtr<Event> Event::tryCreate(const AtomString& type, const EventInit& initializer, IsTrusted isTrusted)
 {
-    return adoptRef(*new Event(EventInterfaceType));
-}
-
-Ref<Event> Event::create(const AtomString& type, const EventInit& initializer, IsTrusted isTrusted)
-{
-    return adoptRef(*new Event(EventInterfaceType, type, initializer, isTrusted));
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(Event)).getValue(allocation))
+        return nullptr;
+    return adoptRef(*new (NotNull, allocation) Event(EventInterfaceType, type, initializer, isTrusted));
 }
 
 void Event::initEvent(const AtomString& eventTypeArg, bool canBubbleArg, bool cancelableArg)
@@ -114,12 +116,10 @@ void Event::initEvent(const AtomString& eventTypeArg, bool canBubbleArg, bool ca
     m_immediatePropagationStopped = false;
     m_wasCanceled = false;
     m_isTrusted = false;
-    m_target = nullptr;
+    setTarget(nullptr);
     m_type = eventTypeArg;
     m_canBubble = canBubbleArg;
     m_cancelable = cancelableArg;
-
-    m_underlyingEvent = nullptr;
 }
 
 void Event::setTarget(RefPtr<EventTarget>&& target)
@@ -127,20 +127,33 @@ void Event::setTarget(RefPtr<EventTarget>&& target)
     if (m_target == target)
         return;
 
-    m_target = WTF::move(target);
+    {
+        Locker locker { m_targetLock };
+        m_target.swap(target);
+    }
+    writeBarrierForTarget(m_target.get());
     if (m_target)
         receivedTarget();
 }
 
 void Event::setCurrentTarget(EventTarget* currentTarget, std::optional<bool> isInShadowTree)
 {
-    m_currentTarget = currentTarget;
+    RefPtr replacement = currentTarget;
+    {
+        Locker locker { m_targetLock };
+        m_currentTarget.swap(replacement);
+    }
+    writeBarrierForTarget(currentTarget);
     m_currentTargetIsInShadowTree = false; // m_currentTargetIsInShadowTree = isInShadowTree ? *isInShadowTree : (is<Node>(currentTarget) && downcast<Node>(*currentTarget).isInShadowTree());
 }
 
 void Event::setEventPath(const EventPath& path)
 {
-    m_eventPath = &path;
+    {
+        Locker locker { m_targetLock };
+        m_eventPath = &path;
+    }
+    writeBarrierForTarget(m_target.get());
 }
 
 Vector<Ref<EventTarget>> Event::composedPath() const
@@ -150,30 +163,39 @@ Vector<Ref<EventTarget>> Event::composedPath() const
     return m_eventPath->computePathUnclosedToTarget(*m_currentTarget);
 }
 
-void Event::setUnderlyingEvent(Event* underlyingEvent)
+void Event::writeBarrierForTarget(EventTarget* target)
 {
-    // Prohibit creation of a cycle by doing nothing if a cycle would be created.
-    for (Event* event = underlyingEvent; event; event = event->underlyingEvent()) {
-        if (event == this)
-            return;
-    }
-    m_underlyingEvent = underlyingEvent;
+    if (!target)
+        return;
+    auto* context = target->scriptExecutionContext();
+    if (!context)
+        return;
+    auto& vm = context->vm();
+    writeBarrierForWrappers(vm, static_cast<JSVMClientData*>(vm.clientData)->wrapperWorlds(), *this);
 }
 
-DOMHighResTimeStamp Event::timeStampForBindings(ScriptExecutionContext& context) const
+template<typename Visitor>
+void Event::visitTargets(Visitor& visitor) const
 {
-    // TODO:
+    Locker locker { m_targetLock };
+    auto visitTarget = [&visitor](EventTarget* target) {
+        if (!target) return;
+        visitor.addOpaqueRoot(target);
+        if (target->eventTargetInterface() == DOMWindowEventTargetInterfaceType)
+            static_cast<WorkerGlobalScope*>(target)->visitGlobalObject(visitor);
+    };
+    visitTarget(m_target.get());
+    visitTarget(m_currentTarget.get());
+    if (m_eventPath)
+        visitTarget(&m_eventPath->target());
+}
+
+template void Event::visitTargets(JSC::AbstractSlotVisitor&) const;
+template void Event::visitTargets(JSC::SlotVisitor&) const;
+
+DOMHighResTimeStamp Event::timeStampForBindings(ScriptExecutionContext&) const
+{
     return 0.0;
-    // Performance* performance = nullptr;
-    // if (is<WorkerGlobalScope>(context))
-    //     performance = &downcast<WorkerGlobalScope>(context).performance();
-    // else if (auto* window = downcast<Document>(context).domWindow())
-    //     performance = &window->performance();
-
-    // if (!performance)
-    //     return 0;
-
-    // return std::max(performance->relativeTimeFromTimeOriginInReducedResolution(m_createTime), 0.);
 }
 
 void Event::resetBeforeDispatch()
@@ -183,7 +205,10 @@ void Event::resetBeforeDispatch()
 
 void Event::resetAfterDispatch()
 {
-    m_eventPath = nullptr;
+    {
+        Locker locker { m_targetLock };
+        m_eventPath = nullptr;
+    }
     setCurrentTarget(nullptr);
     m_eventPhase = NONE;
     m_propagationStopped = false;

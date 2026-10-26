@@ -1,12 +1,10 @@
 #pragma once
 
 #include "root.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/InternalFunction.h>
 
 namespace Bun {
-
-JSC_DECLARE_HOST_FUNCTION(callDiffieHellman);
-JSC_DECLARE_HOST_FUNCTION(constructDiffieHellman);
 
 class JSDiffieHellmanConstructor final : public JSC::InternalFunction {
 public:
@@ -35,7 +33,7 @@ public:
 
 private:
     JSDiffieHellmanConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, callDiffieHellman, constructDiffieHellman)
+        : Base(vm, structure, bun_bindgen_host_NodeCryptoBinding_diffieHellmanConstructorCall, bun_bindgen_host_NodeCryptoBinding_diffieHellmanConstructorConstruct)
     {
     }
 

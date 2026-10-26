@@ -10,7 +10,7 @@ const nodeFsConstants = $processBindingConstants.fs;
 
 var __getOwnPropNames = Object.getOwnPropertyNames;
 
-var __commonJS = (cb, mod: typeof module | undefined = undefined) =>
+var __commonJS = (cb, mod: { exports: any } | undefined = undefined) =>
   function __require2() {
     return (mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports);
   };
@@ -22,6 +22,7 @@ var require_types = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.WASIKillError = exports.WASIExitError = exports.WASIError = void 0;
     var WASIError = class extends Error {
+      declare errno: number;
       constructor(errno) {
         super();
         this.errno = errno;
@@ -30,6 +31,8 @@ var require_types = __commonJS({
     };
     exports.WASIError = WASIError;
     var WASIExitError = class extends Error {
+      // number | null; typed any because the global Error interface declares `code?: string`
+      declare code: any;
       constructor(code) {
         super(`WASI Exit error: ${code}`);
         this.code = code;
@@ -38,6 +41,7 @@ var require_types = __commonJS({
     };
     exports.WASIExitError = WASIExitError;
     var WASIKillError = class extends Error {
+      declare signal: string;
       constructor(signal) {
         super(`WASI Kill signal: ${signal}`);
         this.signal = signal;
@@ -611,8 +615,8 @@ var require_wasi = __commonJS({
     let fs;
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.SOCKET_DEFAULT_RIGHTS = void 0;
-    var log = () => {};
-    var logOpen = () => {};
+    var log: { (...args: unknown[]): void; enabled?: boolean } = () => {};
+    var logOpen: (...args: unknown[]) => void = () => {};
     var SC_OPEN_MAX = 32768;
     var types_1 = require_types();
 
@@ -660,7 +664,7 @@ var require_wasi = __commonJS({
         try {
           return f(...args);
         } catch (err) {
-          let e = err;
+          let e = err as any;
           while (e.prev != null) {
             e = e.prev;
           }
@@ -784,7 +788,31 @@ var require_wasi = __commonJS({
     }
 
     var WASI = class WASI {
-      constructor(wasiConfig = {}) {
+      declare lastStdin: number;
+      declare sleep: (ms: number) => void;
+      declare getStdin: (() => Buffer | null | undefined) | undefined;
+      declare sendStdout: ((data: Uint8Array) => void) | undefined;
+      declare sendStderr: ((data: Uint8Array) => void) | undefined;
+      declare env: Record<string, string>;
+      declare memory: WebAssembly.Memory;
+      declare view: DataView;
+      declare bindings: any;
+      declare FD_MAP: Map<number, any>;
+      declare wasiImport: Record<string, any>;
+      declare stdinBuffer: Buffer | null | undefined;
+
+      constructor(
+        wasiConfig: {
+          args?: string[];
+          env?: Record<string, string>;
+          preopens?: Record<string, string>;
+          bindings?: any;
+          sleep?: (ms: number) => void;
+          getStdin?: () => Buffer | null | undefined;
+          sendStdout?: (data: Uint8Array) => void;
+          sendStderr?: (data: Uint8Array) => void;
+        } = {},
+      ) {
         const defaultConfig = getDefaults();
         this.lastStdin = 0;
         this.sleep = wasiConfig.sleep || defaultConfig.sleep;
@@ -795,8 +823,6 @@ var require_wasi = __commonJS({
         this.env = wasiConfig.env ?? defaultConfig.env;
 
         const args = wasiConfig.args ?? defaultConfig.args;
-        this.memory = void 0;
-        this.view = void 0;
         this.bindings = wasiConfig.bindings || defaultConfig.bindings;
         const bindings = this.bindings;
         fs = bindings.fs;
@@ -883,7 +909,7 @@ var require_wasi = __commonJS({
           }
 
           // Avoid referencing Array because materializing the Array constructor can show up in profiling
-          const buffers = [];
+          const buffers: Uint8Array[] = [];
           buffers.length = iovsLen;
 
           for (let i = 0, ptr = iovs; i < iovsLen; i++, ptr += 8) {
@@ -908,7 +934,7 @@ var require_wasi = __commonJS({
           }
           return buffers;
         };
-        const CHECK_FD = (fd, rights) => {
+        const CHECK_FD = (fd: number, rights: bigint) => {
           const stats = stat(this, fd);
           if (rights !== BigInt(0) && (stats.rights.base & rights) === BigInt(0)) {
             throw new types_1.WASIError(constants_1.WASI_EPERM);
@@ -1120,7 +1146,7 @@ var require_wasi = __commonJS({
             return constants_1.WASI_ESUCCESS;
           }),
           fd_pwrite: wrap((fd, iovs, iovsLen, offset, nwritten) => {
-            const stats = CHECK_FD(fd, constants_1.WASI_RIGHT_FD_WRITE | constants_1.WASI_RIGHT_FD_SEEK);
+            const stats = CHECK_FD(fd, BigInt(constants_1.WASI_RIGHT_FD_WRITE | constants_1.WASI_RIGHT_FD_SEEK));
             let written = 0;
             getiovs(iovs, iovsLen).forEach(iov => {
               let w = 0;
@@ -1165,7 +1191,7 @@ var require_wasi = __commonJS({
             return constants_1.WASI_ESUCCESS;
           }),
           fd_pread: wrap((fd, iovs, iovsLen, offset, nread) => {
-            const stats = CHECK_FD(fd, constants_1.WASI_RIGHT_FD_READ | constants_1.WASI_RIGHT_FD_SEEK);
+            const stats = CHECK_FD(fd, BigInt(constants_1.WASI_RIGHT_FD_READ | constants_1.WASI_RIGHT_FD_SEEK));
             let read = 0;
             outer: for (const iov of getiovs(iovs, iovsLen)) {
               let r = 0;
@@ -1441,13 +1467,16 @@ var require_wasi = __commonJS({
                 fsRightsBase = BigInt(fsRightsBase);
                 fsRightsInheriting = BigInt(fsRightsInheriting);
                 const read =
-                  (fsRightsBase & (constants_1.WASI_RIGHT_FD_READ | constants_1.WASI_RIGHT_FD_READDIR)) !== BigInt(0);
+                  (fsRightsBase & BigInt(constants_1.WASI_RIGHT_FD_READ | constants_1.WASI_RIGHT_FD_READDIR)) !==
+                  BigInt(0);
                 const write =
                   (fsRightsBase &
-                    (constants_1.WASI_RIGHT_FD_DATASYNC |
-                      constants_1.WASI_RIGHT_FD_WRITE |
-                      constants_1.WASI_RIGHT_FD_ALLOCATE |
-                      constants_1.WASI_RIGHT_FD_FILESTAT_SET_SIZE)) !==
+                    BigInt(
+                      constants_1.WASI_RIGHT_FD_DATASYNC |
+                        constants_1.WASI_RIGHT_FD_WRITE |
+                        constants_1.WASI_RIGHT_FD_ALLOCATE |
+                        constants_1.WASI_RIGHT_FD_FILESTAT_SET_SIZE,
+                    )) !==
                   BigInt(0);
                 let noflags;
                 if (write && read) {
@@ -1516,7 +1545,7 @@ var require_wasi = __commonJS({
                 let full;
                 try {
                   full = fs.realpathSync(fullUnresolved);
-                } catch (e) {
+                } catch (e: any) {
                   if (e?.code === "ENOENT") {
                     full = fullUnresolved;
                   } else {
@@ -1650,7 +1679,7 @@ var require_wasi = __commonJS({
                     log(name, { clockid, timeout, absolute });
                   }
                   if (!absolute) {
-                    fd_timeout_ms = timeout / BigInt(1e6);
+                    fd_timeout_ms = Number(timeout / BigInt(1e6));
                   }
                   let e = constants_1.WASI_ESUCCESS;
                   const t = now(clockid);
@@ -1715,7 +1744,6 @@ var require_wasi = __commonJS({
               }
             }
             if (waitTimeNs > 0) {
-              waitTimeNs -= Bun.nanoseconds() - timeOrigin;
               if (waitTimeNs >= 1e6) {
                 if (this.sleep == null && !warnedAboutSleep) {
                   warnedAboutSleep = true;
@@ -1745,8 +1773,8 @@ var require_wasi = __commonJS({
           },
           random_get: (bufPtr, bufLen) => {
             this.refreshMemory();
-            crypto.getRandomValues(this.memory.buffer, bufPtr, bufLen);
-            return bufLen;
+            crypto.getRandomValues(new Uint8Array(this.memory.buffer, bufPtr, bufLen));
+            return constants_1.WASI_ESUCCESS;
           },
           sched_yield() {
             return constants_1.WASI_ESUCCESS;
@@ -1785,12 +1813,13 @@ var require_wasi = __commonJS({
         }
       }
       getState() {
-        return { env: this.env, FD_MAP: this.FD_MAP, bindings: bindings };
+        return { env: this.env, FD_MAP: this.FD_MAP, bindings: this.bindings };
       }
       setState(state) {
         this.env = state.env;
         this.FD_MAP = state.FD_MAP;
-        bindings = state.bindings;
+        this.bindings = state.bindings;
+        fs = state.bindings.fs;
       }
       fstatSync(real_fd) {
         if (real_fd <= 2) {

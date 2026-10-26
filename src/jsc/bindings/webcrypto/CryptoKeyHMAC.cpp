@@ -157,8 +157,8 @@ ExceptionOr<size_t> CryptoKeyHMAC::getKeyLength(const CryptoAlgorithmParameters&
 auto CryptoKeyHMAC::algorithm() const -> KeyAlgorithm
 {
     CryptoHmacKeyAlgorithm result;
-    result.name = CryptoAlgorithmRegistry::singleton().name(algorithmIdentifier());
-    result.hash.name = CryptoAlgorithmRegistry::singleton().name(m_hash);
+    result.name = CryptoAlgorithmRegistry::name(algorithmIdentifier());
+    result.hash.name = CryptoAlgorithmRegistry::name(m_hash);
     result.length = m_key.size() * 8;
     return result;
 }

@@ -2,7 +2,16 @@ const { hideFromStack } = require("internal/shared");
 
 const RegExpPrototypeExec = RegExp.prototype.exec;
 const ArrayIsArray = Array.isArray;
+const ArrayBufferIsView = ArrayBuffer.isView;
+const MathMax = Math.max;
+const NumberIsFinite = Number.isFinite;
+const NumberIsInteger = Number.isInteger;
+const NumberIsNaN = Number.isNaN;
+const ObjectIs = Object.is;
 const ObjectPrototypeHasOwnProperty = Object.prototype.hasOwnProperty;
+const StringPrototypeToLowerCase = String.prototype.toLowerCase;
+const StringPrototypeToUpperCase = String.prototype.toUpperCase;
+const StringPrototypeTrim = String.prototype.trim;
 
 const tokenRegExp = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
 /**
@@ -77,6 +86,142 @@ function validateBoolean(value, name) {
   if (typeof value !== "boolean") throw $ERR_INVALID_ARG_TYPE(name, "boolean", value);
 }
 
+function validateObject(value, name) {
+  if (value === null || typeof value !== "object" || ArrayIsArray(value)) {
+    throw $ERR_INVALID_ARG_TYPE(name, "object", value);
+  }
+}
+
+function validateInteger(value, name, min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER) {
+  if (typeof value !== "number") throw $ERR_INVALID_ARG_TYPE(name, "number", value);
+  min = Number(min);
+  max = MathMax(min, Number(max));
+  if (!NumberIsInteger(value)) throw $ERR_OUT_OF_RANGE(name, "an integer", value);
+  if (value < min || value > max) throw $ERR_OUT_OF_RANGE(name, `>= ${min} and <= ${max}`, value);
+}
+
+function validateNumber(value, name, min?, max?) {
+  if (typeof value !== "number") throw $ERR_INVALID_ARG_TYPE(name, "number", value);
+
+  const minNumber = Number(min);
+  const maxNumber = Number(max);
+  const hasMin = min !== undefined && min !== null;
+  const hasMax = max !== undefined && max !== null;
+  if (
+    (!hasMin || value >= minNumber) &&
+    (!hasMax || value <= maxNumber) &&
+    (!(hasMin || hasMax) || !NumberIsNaN(value))
+  ) {
+    return;
+  }
+
+  if (hasMin && hasMax) throw $ERR_OUT_OF_RANGE(name, `>= ${minNumber} and <= ${maxNumber}`, value);
+  if (hasMin) throw $ERR_OUT_OF_RANGE(name, `>= ${minNumber}`, value);
+  if (hasMax) throw $ERR_OUT_OF_RANGE(name, `<= ${maxNumber}`, value);
+}
+
+function validateFiniteNumber(value, name) {
+  if (value === undefined || NumberIsNaN(value)) return false;
+  if (typeof value !== "number") throw $ERR_INVALID_ARG_TYPE(name, "number", value);
+  if (NumberIsFinite(value)) return true;
+  throw $ERR_OUT_OF_RANGE(name, "a finite number", value);
+}
+
+function checkRangesOrGetDefault(value, name, lower, upper, defaultValue?) {
+  if (!validateFiniteNumber(value, name)) return defaultValue;
+  const lowerNumber = Number(lower);
+  const upperNumber = Number(upper);
+  if (value < lowerNumber || value > upperNumber) {
+    throw $ERR_OUT_OF_RANGE(name, `>= ${lowerNumber} and <= ${upperNumber}`, value);
+  }
+  return value;
+}
+
+function validatePort(port, name = "Port", allowZero = true) {
+  if (typeof port !== "number" && typeof port !== "string") {
+    throw $ERR_SOCKET_BAD_PORT(`${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${port}`);
+  }
+  if (typeof port === "string" && StringPrototypeTrim.$call(port).length === 0) {
+    throw $ERR_SOCKET_BAD_PORT(`${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${port}`);
+  }
+
+  const numericPort = Number(port);
+  if (!NumberIsInteger(numericPort) || numericPort < 0 || numericPort > 0xffff || (numericPort === 0 && !allowZero)) {
+    throw $ERR_SOCKET_BAD_PORT(`${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${port}`);
+  }
+  return port;
+}
+
+function validateAbortSignal(signal, name) {
+  if (signal === undefined) return;
+  if ((typeof signal !== "object" && typeof signal !== "function") || signal === null || !("aborted" in signal)) {
+    throw $ERR_INVALID_ARG_TYPE(name, "AbortSignal", signal);
+  }
+}
+
+function validateArray(value, name, minLength = 0) {
+  if (!ArrayIsArray(value)) throw $ERR_INVALID_ARG_TYPE(name, "Array", value);
+  const minimum = Number(minLength);
+  if (value.length < minimum) throw $ERR_INVALID_ARG_VALUE(name, value, `must be longer than ${minimum}`);
+}
+
+function validateInt32(value, name, min = -2147483648, max = 2147483647) {
+  if (typeof value !== "number") throw $ERR_INVALID_ARG_TYPE(name, "number", value);
+  min = Number(min);
+  max = Number(max);
+  if (!NumberIsInteger(value)) throw $ERR_OUT_OF_RANGE(name, "an integer", value);
+  if (value < min || value > max) throw $ERR_OUT_OF_RANGE(name, `>= ${min} and <= ${max}`, value);
+}
+
+function validateUint32(value, name, positive = false) {
+  if (typeof value !== "number") throw $ERR_INVALID_ARG_TYPE(name, "number", value);
+  if (!NumberIsInteger(value)) throw $ERR_OUT_OF_RANGE(name, "an integer", value);
+  const min = positive ? 1 : 0;
+  if (value < min || value > 0xffffffff) throw $ERR_OUT_OF_RANGE(name, `>= ${min} and <= 4294967295`, value);
+}
+
+function validateSignalName(signal, name = "signal") {
+  validateString(signal, name);
+  const signals = $processBindingConstants.os.signals;
+  if (ObjectPrototypeHasOwnProperty.$call(signals, signal)) return;
+  const uppercase = StringPrototypeToUpperCase.$call(signal);
+  const suffix = ObjectPrototypeHasOwnProperty.$call(signals, uppercase)
+    ? " (signals must use all capital letters)"
+    : "";
+  throw $ERR_UNKNOWN_SIGNAL(`Unknown signal: ${signal}${suffix}`);
+}
+
+function validateEncoding(data, encoding) {
+  if (typeof encoding !== "string" || StringPrototypeToLowerCase.$call(encoding) !== "hex") return;
+  let length = 0;
+  if (typeof data === "string") {
+    length = data.length;
+  } else if (ArrayBufferIsView(data)) {
+    length = "length" in data ? (data as { length: number }).length : data.byteLength;
+  } else if (data instanceof ArrayBuffer) {
+    length = data.byteLength;
+  } else if (data !== null && (typeof data === "object" || typeof data === "function")) {
+    length = Number(data.length) || 0;
+  }
+  if (length % 2 !== 0) {
+    throw $ERR_INVALID_ARG_VALUE("encoding", encoding, `is invalid for data of length ${length}`);
+  }
+}
+
+function validateBuffer(value, name = "buffer") {
+  if (value !== undefined && !ArrayBufferIsView(value)) {
+    throw $ERR_INVALID_ARG_TYPE(name, "Buffer, TypedArray, or DataView", value);
+  }
+}
+
+function validateOneOf(value, name, oneOf) {
+  if (!ArrayIsArray(oneOf)) throw $ERR_INVALID_ARG_TYPE("values", "Array", oneOf);
+  for (let i = 0; i < oneOf.length; i++) {
+    if (ObjectIs(value, oneOf[i])) return;
+  }
+  throw $bindgenFn("ErrorCode.schema.zig", "invalidOneOfError")(name, value, oneOf);
+}
+
 function validateUndefined(value, name) {
   if (value !== undefined) throw $ERR_INVALID_ARG_TYPE(name, "undefined", value);
 }
@@ -87,50 +232,70 @@ function validateInternalField(object, fieldKey, className) {
   }
 }
 
-hideFromStack(validateLinkHeaderValue, validateInternalField);
-hideFromStack(validateString, validateFunction, validateBoolean, validateUndefined);
+hideFromStack(
+  validateLinkHeaderValue,
+  validateInternalField,
+  validateString,
+  validateFunction,
+  validateBoolean,
+  validateUndefined,
+  validateObject,
+  validateInteger,
+  validateNumber,
+  validateFiniteNumber,
+  checkRangesOrGetDefault,
+  validatePort,
+  validateAbortSignal,
+  validateArray,
+  validateInt32,
+  validateUint32,
+  validateSignalName,
+  validateEncoding,
+  validateBuffer,
+  validateOneOf,
+);
 
 export default {
   /** (value, name) */
-  validateObject: $newCppFunction("NodeValidator.cpp", "jsFunction_validateObject", 2),
+  validateObject,
   validateLinkHeaderValue: validateLinkHeaderValue,
   checkIsHttpToken: checkIsHttpToken,
   /** `(value, name, min, max)` */
-  validateInteger: $newCppFunction("NodeValidator.cpp", "jsFunction_validateInteger", 0),
+  validateInteger,
   /** `(value, name, min, max)` */
-  validateNumber: $newCppFunction("NodeValidator.cpp", "jsFunction_validateNumber", 0),
+  validateNumber,
   /** `(value, name)` */
   validateString,
   /** `(number, name)` */
-  validateFiniteNumber: $newCppFunction("NodeValidator.cpp", "jsFunction_validateFiniteNumber", 0),
+  validateFiniteNumber,
   /** `(number, name, lower, upper, def)` */
-  checkRangesOrGetDefault: $newCppFunction("NodeValidator.cpp", "jsFunction_checkRangesOrGetDefault", 0),
+  checkRangesOrGetDefault,
   /** `(value, name)` */
   validateFunction,
   /** `(value, name)` */
   validateBoolean,
   /** `(port, name = 'Port', allowZero = true)` */
-  validatePort: $newCppFunction("NodeValidator.cpp", "jsFunction_validatePort", 0),
+  validatePort,
   /** `(signal, name)` */
-  validateAbortSignal: $newCppFunction("NodeValidator.cpp", "jsFunction_validateAbortSignal", 0),
+  validateAbortSignal,
   /** `(value, name, minLength = 0)` */
-  validateArray: $newCppFunction("NodeValidator.cpp", "jsFunction_validateArray", 0),
+  validateArray,
   /** `(value, name, min = -2147483648, max = 2147483647)` */
-  validateInt32: $newCppFunction("NodeValidator.cpp", "jsFunction_validateInt32", 0),
+  validateInt32,
   /** `(value, name, positive = false)` */
-  validateUint32: $newCppFunction("NodeValidator.cpp", "jsFunction_validateUint32", 0),
+  validateUint32,
   /** `(signal, name = 'signal')` */
-  validateSignalName: $newCppFunction("NodeValidator.cpp", "jsFunction_validateSignalName", 0),
+  validateSignalName,
   /** `(data, encoding)` */
-  validateEncoding: $newCppFunction("NodeValidator.cpp", "jsFunction_validateEncoding", 0),
+  validateEncoding,
   /** `(value, name)` */
-  validatePlainFunction: $newCppFunction("NodeValidator.cpp", "jsFunction_validatePlainFunction", 0),
+  validatePlainFunction: validateFunction,
   /** `(value, name)` */
   validateUndefined,
   /** `(buffer, name = 'buffer')` */
-  validateBuffer: $newCppFunction("NodeValidator.cpp", "jsFunction_validateBuffer", 0),
+  validateBuffer,
   /** `(value, name, oneOf)` */
-  validateOneOf: $newCppFunction("NodeValidator.cpp", "jsFunction_validateOneOf", 0),
+  validateOneOf,
   isUint8Array: value => value instanceof Uint8Array,
   /** `(object, fieldKey, className)` */
   validateInternalField,

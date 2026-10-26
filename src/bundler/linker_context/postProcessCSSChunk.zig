@@ -3,10 +3,8 @@ pub fn postProcessCSSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chun
     const c = ctx.c;
     var j = StringJoiner{
         .allocator = worker.allocator,
-        .watcher = .{
-            .input = chunk.unique_key,
-        },
     };
+    defer j.deinit();
 
     var line_offset: bun.SourceMap.LineColumnOffset.Optional = if (c.options.source_maps != .none) .{ .value = .{} } else .{ .null = {} };
 
@@ -31,27 +29,29 @@ pub fn postProcessCSSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chun
     const compile_results = chunk.compile_results_for_chunk;
 
     var compile_results_for_source_map: std.MultiArrayList(CompileResultForSourceMap) = .{};
-    bun.handleOom(compile_results_for_source_map.setCapacity(worker.allocator, compile_results.len));
+    defer compile_results_for_source_map.deinit(worker.allocator);
+    try compile_results_for_source_map.setCapacity(worker.allocator, compile_results.len);
 
     const sources: []const Logger.Source = c.parse_graph.input_files.items(.source);
-    for (compile_results) |compile_result| {
+    for (compile_results) |*compile_result| {
+        const code = compile_result.code();
         const source_index = compile_result.sourceIndex();
 
         if (c.options.mode == .bundle and !c.options.minify_whitespace and Index.init(source_index).isValid()) {
             if (newline_before_comment) {
-                j.pushStatic("\n");
+                try j.pushStatic("\n");
                 line_offset.advance("\n");
             }
 
             const pretty = sources[source_index].path.pretty;
 
-            j.pushStatic("/* ");
+            try j.pushStatic("/* ");
             line_offset.advance("/* ");
 
-            j.pushStatic(pretty);
+            try j.pushStatic(pretty);
             line_offset.advance(pretty);
 
-            j.pushStatic(" */\n");
+            try j.pushStatic(" */\n");
             line_offset.advance(" */\n");
         }
 
@@ -60,7 +60,7 @@ pub fn postProcessCSSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chun
         }
 
         // Save the offset to the start of the stored JavaScript
-        j.push(compile_result.code(), bun.default_allocator);
+        try j.push(compile_result.takeCode(), bun.default_allocator);
 
         if (compile_result.sourceMapChunk()) |source_map_chunk| {
             if (c.options.source_maps != .none) {
@@ -73,12 +73,12 @@ pub fn postProcessCSSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chun
 
             line_offset.reset();
         } else {
-            line_offset.advance(compile_result.code());
+            line_offset.advance(code);
         }
     }
 
     // Make sure the file ends with a newline
-    j.ensureNewlineAtEnd();
+    try j.ensureNewlineAtEnd();
     // if c.options.UnsupportedCSSFeatures.Has(compat.InlineStyle) {
     //    slashTag = ""
     // }
@@ -89,11 +89,11 @@ pub fn postProcessCSSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chun
     //     j.AddString("\n")
     // }
 
-    chunk.intermediate_output = c.breakOutputIntoPieces(
+    chunk.intermediate_output = try c.breakOutputIntoPieces(
         worker.allocator,
         &j,
-        @as(u32, @truncate(ctx.chunks.len)),
-    ) catch |err| bun.handleOom(err);
+        std.math.cast(u32, ctx.chunks.len) orelse return error.OutOfMemory,
+    );
     // TODO: meta contents
 
     chunk.isolated_hash = c.generateIsolatedHash(chunk);

@@ -11,19 +11,18 @@ pub const Version = struct {
     tag: string,
     buf: MutableString,
     size: u32 = 0,
+    nonce: i128 = 0,
 
     pub fn name(this: Version) ?string {
         if (this.tag.len <= "bun-v".len or !strings.hasPrefixComptime(this.tag, "bun-v")) {
             if (strings.eqlComptime(this.tag, "canary")) {
-                const Cli = @import("./cli.zig");
-
                 return std.fmt.allocPrint(
                     bun.default_allocator,
                     "bun-canary-timestamp-{f}",
                     .{
                         bun.fmt.hexIntLower(
                             bun.hash(
-                                std.mem.asBytes(&Cli.start_time),
+                                std.mem.asBytes(&this.nonce),
                             ),
                         ),
                     },
@@ -58,12 +57,12 @@ pub const Version = struct {
 
     const current_version: string = "bun-v" ++ Global.package_json_version;
 
-    pub export const Bun__githubURL: [*:0]const u8 = std.fmt.comptimePrint("https://github.com/oven-sh/bun/releases/download/bun-v{s}/{s}", .{
+    pub const github_url: [:0]const u8 = std.fmt.comptimePrint("https://github.com/oven-sh/bun/releases/download/bun-v{s}/{s}", .{
         Global.package_json_version,
         zip_filename,
     });
 
-    pub const Bun__githubBaselineURL: [:0]const u8 = std.fmt.comptimePrint("https://github.com/oven-sh/bun/releases/download/bun-v{s}/{s}", .{
+    pub const github_baseline_url: [:0]const u8 = std.fmt.comptimePrint("https://github.com/oven-sh/bun/releases/download/bun-v{s}/{s}", .{
         Global.package_json_version,
         baseline_zip_filename,
     });
@@ -71,15 +70,11 @@ pub const Version = struct {
     pub fn isCurrent(this: Version) bool {
         return strings.eqlComptime(this.tag, current_version);
     }
-
-    pub fn @"export"() void {
-        _ = &Bun__githubURL;
-        _ = &Bun__githubBaselineURL;
-    }
 };
 
 pub const UpgradeCommand = struct {
-    pub const Bun__githubBaselineURL = Version.Bun__githubBaselineURL;
+    pub const github_url = Version.github_url;
+    pub const github_baseline_url = Version.github_baseline_url;
 
     const default_github_headers: string = "Acceptapplication/vnd.github.v3+json";
     var github_repository_url_buf: bun.PathBuffer = undefined;
@@ -90,6 +85,7 @@ pub const UpgradeCommand = struct {
     pub fn getLatestVersion(
         io: std.Io,
         allocator: std.mem.Allocator,
+        javascript_semantics: JavaScriptSemantics,
         env_loader: *DotEnv.Loader,
         refresher: ?*Progress,
         progress: ?*Progress.Node,
@@ -163,6 +159,7 @@ pub const UpgradeCommand = struct {
             headers_buf,
             &metadata_body,
             "",
+            javascript_semantics,
             http_proxy,
             null,
             HTTP.FetchRedirect.follow,
@@ -182,7 +179,7 @@ pub const UpgradeCommand = struct {
         }
 
         var log = logger.Log.init(allocator);
-        defer if (comptime silent) log.deinit();
+        defer log.deinit();
         const source = &logger.Source.initPathString("releases.json", metadata_body.list.items);
         initializeStore();
         var expr = JSON.parseUTF8(source, &log, allocator) catch |err| {
@@ -378,7 +375,7 @@ pub const UpgradeCommand = struct {
             var refresher = Progress{};
             var progress = refresher.start(ctx.io, "Fetching version tags", 0);
 
-            const version = (try getLatestVersion(ctx.io, ctx.allocator, &env_loader, &refresher, progress, use_profile, false)) orelse return;
+            const version = (try getLatestVersion(ctx.io, ctx.allocator, ctx.transpiler_capabilities.javascript_semantics, &env_loader, &refresher, progress, use_profile, false)) orelse return;
 
             progress.end();
             refresher.refresh();
@@ -416,6 +413,7 @@ pub const UpgradeCommand = struct {
             .zip_url = "https://github.com/oven-sh/bun/releases/download/canary/" ++ Version.zip_filename,
             .size = 0,
             .buf = MutableString.initEmpty(bun.default_allocator),
+            .nonce = ctx.start_time,
         };
 
         const zip_url = URL.parse(version.zip_url);
@@ -438,6 +436,7 @@ pub const UpgradeCommand = struct {
                 "",
                 zip_file_buffer,
                 "",
+                ctx.transpiler_capabilities.javascript_semantics,
                 http_proxy,
                 null,
                 HTTP.FetchRedirect.follow,
@@ -552,7 +551,7 @@ pub const UpgradeCommand = struct {
                         .stdout = .inherit,
                         .stderr = .inherit,
                         .windows = if (Environment.isWindows) .{
-                            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                            .loop = (try bun.MiniEventLoop.initGlobal(ctx.io, null, null)).parentEventLoop(),
                         },
                     }) catch |err| {
                         save_dir.deleteFile(ctx.io, tmpname) catch {};
@@ -616,7 +615,7 @@ pub const UpgradeCommand = struct {
                         .stdin = .inherit,
 
                         .windows = if (Environment.isWindows) .{
-                            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                            .loop = (try bun.MiniEventLoop.initGlobal(ctx.io, null, null)).parentEventLoop(),
                         },
                     }) catch |err| {
                         Output.prettyErrorln("<r><red>error:<r> Failed to spawn Expand-Archive on {s} due to error {s}", .{ tmpname, @errorName(err) });
@@ -641,7 +640,7 @@ pub const UpgradeCommand = struct {
                     .stderr = .buffer,
                     .envp = null,
                     .windows = if (Environment.isWindows) .{
-                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                        .loop = (try bun.MiniEventLoop.initGlobal(ctx.io, null, null)).parentEventLoop(),
                     },
                 }) catch |err| {
                     defer save_dir_.deleteTree(ctx.io, version_name) catch {};
@@ -860,7 +859,7 @@ pub const UpgradeCommand = struct {
                     .stderr = .buffer,
                     .envp = envp,
                     .windows = if (Environment.isWindows) .{
-                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                        .loop = (try bun.MiniEventLoop.initGlobal(ctx.io, null, null)).parentEventLoop(),
                     },
                 })) |completions_process| {
                     if (completions_process.unwrap()) |result| result.deinit() else |_| {}
@@ -927,94 +926,6 @@ pub const UpgradeCommand = struct {
     }
 };
 
-pub const upgrade_js_bindings = struct {
-    const jsc = bun.jsc;
-    const JSValue = jsc.JSValue;
-    const ZigString = jsc.ZigString;
-
-    var tempdir_fd: ?bun.FD = null;
-
-    pub fn generate(global: *jsc.JSGlobalObject) jsc.JSValue {
-        const obj = jsc.JSObject.createEmpty(global, 2);
-        const open = ZigString.static("openTempDirWithoutSharingDelete");
-        obj.putDirect(global, open, jsc.JSFunction.create(global, "openTempDirWithoutSharingDelete", jsOpenTempDirWithoutSharingDelete, 1, .{}).toJS());
-        const close = ZigString.static("closeTempDirHandle");
-        obj.putDirect(global, close, jsc.JSFunction.create(global, "closeTempDirHandle", jsCloseTempDirHandle, 1, .{}).toJS());
-        return obj.toJS();
-    }
-
-    /// For testing upgrades when the temp directory has an open handle without FILE_SHARE_DELETE.
-    /// Windows only
-    pub fn jsOpenTempDirWithoutSharingDelete(global: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!bun.jsc.JSValue {
-        if (comptime !Environment.isWindows) return .js_undefined;
-        const w = bun.windows;
-
-        var buf: bun.WPathBuffer = undefined;
-        const tmpdir_path = fs.FileSystem.RealFS.getDefaultTempDir(global.bunVM().io);
-        const path = switch (bun.sys.normalizePathWindows(u8, bun.invalid_fd, tmpdir_path, &buf, .{})) {
-            .err => return .js_undefined,
-            .result => |norm| norm,
-        };
-
-        const path_len_bytes: u16 = @truncate(path.len * 2);
-        var nt_name = w.UNICODE_STRING{
-            .Length = path_len_bytes,
-            .MaximumLength = path_len_bytes,
-            .Buffer = @constCast(path.ptr),
-        };
-
-        var attr = w.OBJECT_ATTRIBUTES{
-            .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
-            .RootDirectory = null,
-            .Attributes = .{},
-            .ObjectName = &nt_name,
-            .SecurityDescriptor = null,
-            .SecurityQualityOfService = null,
-        };
-
-        const flags: u32 = w.STANDARD_RIGHTS_READ | w.FILE_READ_ATTRIBUTES | w.FILE_READ_EA | w.SYNCHRONIZE | w.FILE_TRAVERSE;
-
-        var fd: w.HANDLE = w.INVALID_HANDLE_VALUE;
-        var io: w.IO_STATUS_BLOCK = undefined;
-
-        const rc = w.NtCreateFile(
-            &fd,
-            flags,
-            &attr,
-            &io,
-            null,
-            0,
-            w.FILE_SHARE_READ | w.FILE_SHARE_WRITE,
-            w.FILE_OPEN,
-            w.FILE_DIRECTORY_FILE | w.FILE_SYNCHRONOUS_IO_NONALERT | w.FILE_OPEN_FOR_BACKUP_INTENT,
-            null,
-            0,
-        );
-
-        switch (rc) {
-            .SUCCESS => tempdir_fd = .fromNative(fd),
-            else => {},
-        }
-
-        return .js_undefined;
-    }
-
-    pub fn jsCloseTempDirHandle(_: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {
-        if (comptime !Environment.isWindows) return .js_undefined;
-
-        if (tempdir_fd) |fd| {
-            fd.close();
-        }
-
-        return .js_undefined;
-    }
-};
-
-pub fn @"export"() void {
-    _ = &upgrade_js_bindings;
-    Version.@"export"();
-}
-
 const string = []const u8;
 const stringZ = [:0]const u8;
 
@@ -1022,8 +933,11 @@ const DotEnv = @import("../dotenv/env_loader.zig");
 const fs = @import("../resolver/fs.zig");
 const linker = @import("../bundler/linker.zig");
 const std = @import("std");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 const Archive = @import("../libarchive/libarchive.zig").Archive;
-const Command = @import("./cli.zig").Command;
+const Command = struct {
+    const Context = @import("../options_types/Context.zig").Context;
+};
 const URL = @import("../url/url.zig").URL;
 const which = @import("../which/which.zig").which;
 

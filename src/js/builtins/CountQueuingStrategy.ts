@@ -36,7 +36,3 @@ export function highWaterMark(this: any) {
 export function size() {
   return 1;
 }
-
-export function initializeCountQueuingStrategy(this: any, parameters: any) {
-  $putByIdDirectPrivate(this, "highWaterMark", $extractHighWaterMarkFromQueuingStrategyInit(parameters));
-}

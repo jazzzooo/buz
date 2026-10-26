@@ -126,13 +126,13 @@ pub const ZlibError = error{
 };
 
 const ZlibAllocator = struct {
-    pub fn alloc(_: *anyopaque, items: uInt, len: uInt) callconv(.c) *anyopaque {
+    pub fn alloc(_: *anyopaque, items: uInt, len: uInt) callconv(.c) ?*anyopaque {
         if (bun.heap_breakdown.enabled) {
             const zone = bun.heap_breakdown.getZone("zlib");
-            return zone.malloc_zone_calloc(items, len) orelse bun.outOfMemory();
+            return zone.malloc_zone_calloc(items, len);
         }
 
-        return mimalloc.mi_calloc(items, len) orelse bun.outOfMemory();
+        return mimalloc.mi_calloc(items, len);
     }
 
     pub fn free(_: *anyopaque, data: *anyopaque) callconv(.c) void {
@@ -146,36 +146,65 @@ const ZlibAllocator = struct {
     }
 };
 
+const StreamProgress = struct {
+    code: ReturnCode,
+    read: usize,
+    written: usize,
+};
+
+fn processChunk(comptime compressing: bool, stream: *zStream_struct, input: []const u8, output: []u8, flush: FlushValue) StreamProgress {
+    const input_length: uInt = @intCast(@min(input.len, std.math.maxInt(uInt)));
+    const output_length: uInt = @intCast(@min(output.len, std.math.maxInt(uInt)));
+    stream.next_in = input.ptr;
+    stream.avail_in = input_length;
+    stream.next_out = output.ptr;
+    stream.avail_out = output_length;
+    defer {
+        stream.next_in = null;
+        stream.next_out = null;
+        stream.avail_in = 0;
+        stream.avail_out = 0;
+    }
+    const code = if (compressing) deflate(stream, flush) else inflate(stream, flush);
+    bun.assert(stream.avail_in <= input_length and stream.avail_out <= output_length);
+    return .{
+        .code = code,
+        .read = input_length - stream.avail_in,
+        .written = output_length - stream.avail_out,
+    };
+}
+
 pub const ZlibReaderArrayList = struct {
     const ZlibReader = ZlibReaderArrayList;
 
-    pub const State = enum {
+    pub const State = union(enum) {
         Uninitialized,
         Inflating,
         End,
-        Error,
+        Error: ZlibError,
     };
 
     input: []const u8,
-    list: std.ArrayListUnmanaged(u8),
+    list: *std.ArrayListUnmanaged(u8),
     list_allocator: std.mem.Allocator,
-    list_ptr: *std.ArrayListUnmanaged(u8),
     zlib: zStream_struct,
     allocator: std.mem.Allocator,
-    state: State = State.Uninitialized,
+    state: State = .Uninitialized,
+    total_in: usize = 0,
+    native_active: bool = false,
 
     pub fn deinit(this: *ZlibReader) void {
-        var allocator = this.allocator;
+        const allocator = this.allocator;
         this.end();
         allocator.destroy(this);
     }
 
     pub fn end(this: *ZlibReader) void {
-        // always free with `inflateEnd`
-        if (this.state != State.End) {
+        if (this.native_active) {
             _ = inflateEnd(&this.zlib);
-            this.state = State.End;
+            this.native_active = false;
         }
+        this.state = .End;
     }
 
     pub fn init(
@@ -198,21 +227,20 @@ pub const ZlibReaderArrayList = struct {
         var zlib_reader = try allocator.create(ZlibReader);
         zlib_reader.* = ZlibReader{
             .input = input,
-            .list = list.*,
+            .list = list,
             .list_allocator = list_allocator,
-            .list_ptr = list,
             .allocator = allocator,
             .zlib = undefined,
         };
 
         zlib_reader.zlib = zStream_struct{
-            .next_in = input.ptr,
-            .avail_in = @truncate(input.len),
-            .total_in = @truncate(input.len),
+            .next_in = null,
+            .avail_in = 0,
+            .total_in = 0,
 
-            .next_out = zlib_reader.list.items.ptr,
-            .avail_out = @truncate(zlib_reader.list.items.len),
-            .total_out = @truncate(zlib_reader.list.items.len),
+            .next_out = null,
+            .avail_out = 0,
+            .total_out = 0,
 
             .err_msg = null,
             .alloc_func = ZlibAllocator.alloc,
@@ -227,7 +255,10 @@ pub const ZlibReaderArrayList = struct {
         };
 
         switch (inflateInit2_(&zlib_reader.zlib, options.windowBits, zlibVersion(), @sizeOf(zStream_struct))) {
-            ReturnCode.Ok => return zlib_reader,
+            ReturnCode.Ok => {
+                zlib_reader.native_active = true;
+                return zlib_reader;
+            },
             ReturnCode.MemError => {
                 zlib_reader.deinit();
                 return error.OutOfMemory;
@@ -252,89 +283,52 @@ pub const ZlibReaderArrayList = struct {
         return null;
     }
 
+    pub fn updateBuffers(this: *ZlibReader, input: []const u8, list: *std.ArrayListUnmanaged(u8), list_allocator: std.mem.Allocator) void {
+        bun.assert(this.total_in == this.input.len or this.state == .End or this.state == .Error);
+        this.input = input;
+        this.total_in = 0;
+        this.list = list;
+        this.list_allocator = list_allocator;
+    }
+
     pub fn readAll(this: *ZlibReader, is_done: bool) ZlibError!void {
-        defer {
-            if (this.list.items.len > this.zlib.total_out) {
-                this.list.shrinkRetainingCapacity(this.zlib.total_out);
-            } else if (this.zlib.total_out < this.list.capacity) {
-                this.list.items.len = this.zlib.total_out;
+        if (this.state == .End) return;
+        if (this.state == .Error) return this.state.Error;
+
+        while (true) {
+            if (this.list.unusedCapacitySlice().len == 0) {
+                this.list.ensureUnusedCapacity(this.list_allocator, 4096) catch |err| {
+                    this.state = .{ .Error = err };
+                    return err;
+                };
             }
-            this.list_ptr.* = this.list;
-        }
+            const input = this.input[this.total_in..];
+            const output = this.list.unusedCapacitySlice();
+            const progress = processChunk(false, &this.zlib, input, output, .NoFlush);
+            this.total_in += progress.read;
+            this.list.items.len += progress.written;
+            this.state = .Inflating;
 
-        while (this.state == State.Uninitialized or this.state == State.Inflating) {
-
-            // Before the call of inflate(), the application should ensure
-            // that at least one of the actions is possible, by providing
-            // more input and/or consuming more output, and updating the
-            // next_* and avail_* values accordingly. If the caller of
-            // inflate() does not provide both available input and available
-            // output space, it is possible that there will be no progress
-            // made. The application can consume the uncompressed output
-            // when it wants, for example when the output buffer is full
-            // (avail_out == 0), or after each call of inflate(). If inflate
-            // returns Z_OK and with zero avail_out, it must be called again
-            // after making room in the output buffer because there might be
-            // more output pending.
-
-            // - Decompress more input starting at next_in and update
-            //   next_in and avail_in accordingly. If not all input can be
-            //   processed (because there is not enough room in the output
-            //   buffer), then next_in and avail_in are updated accordingly,
-            //   and processing will resume at this point for the next call
-            //   of inflate().
-
-            // - Generate more output starting at next_out and update
-            //   next_out and avail_out accordingly. inflate() provides as
-            //   much output as possible, until there is no more input data
-            //   or no more space in the output buffer (see below about the
-            //   flush parameter).
-
-            if (this.zlib.avail_out == 0) {
-                const initial = this.list.items.len;
-                try this.list.ensureUnusedCapacity(this.list_allocator, 4096);
-                this.list.expandToCapacity();
-                this.zlib.next_out = @ptrCast(&this.list.items[initial]);
-                this.zlib.avail_out = @truncate(this.list.items.len -| initial);
-            }
-
-            // Try to inflate even if avail_in is 0, as this could be a valid empty gzip stream
-            const rc = inflate(&this.zlib, FlushValue.NoFlush);
-            this.state = State.Inflating;
-
-            switch (rc) {
-                ReturnCode.StreamEnd => {
+            switch (progress.code) {
+                .StreamEnd => {
                     this.end();
                     return;
                 },
-                ReturnCode.MemError => {
-                    this.state = State.Error;
+                .MemError => {
+                    this.state = .{ .Error = error.OutOfMemory };
                     return error.OutOfMemory;
                 },
-                ReturnCode.BufError => {
-                    // BufError with avail_in == 0 means we need more input data
-                    if (this.zlib.avail_in == 0) {
-                        if (is_done) {
-                            // Stream is truncated - we're at EOF but decoder needs more data
-                            this.state = State.Error;
-                            return error.ZlibError;
-                        }
-                        // Not at EOF - we can retry with more data
-                        return error.ShortRead;
+                .Ok, .BufError => {
+                    if (progress.read == 0 and progress.written == 0) {
+                        if (this.total_in == this.input.len and !is_done) return error.ShortRead;
+                        this.state = .{ .Error = error.ZlibError };
+                        return error.ZlibError;
                     }
-                    this.state = State.Error;
+                },
+                else => {
+                    this.state = .{ .Error = error.ZlibError };
                     return error.ZlibError;
                 },
-                ReturnCode.StreamError,
-                ReturnCode.DataError,
-                ReturnCode.NeedDict,
-                ReturnCode.VersionError,
-                ReturnCode.ErrNo,
-                => {
-                    this.state = State.Error;
-                    return error.ZlibError;
-                },
-                ReturnCode.Ok => {},
             }
         }
     }
@@ -579,40 +573,34 @@ pub const NodeMode = enum(u8) {
 pub const ZlibCompressorArrayList = struct {
     const ZlibCompressor = ZlibCompressorArrayList;
 
-    pub const State = enum {
+    pub const State = union(enum) {
         Uninitialized,
         Inflating,
         End,
-        Error,
+        Error: ZlibError,
     };
 
     input: []const u8,
-    list: std.ArrayListUnmanaged(u8),
+    list: *std.ArrayListUnmanaged(u8),
     list_allocator: std.mem.Allocator,
-    list_ptr: *std.ArrayListUnmanaged(u8),
     zlib: zStream_struct,
     allocator: std.mem.Allocator,
-    state: State = State.Uninitialized,
-
-    pub fn alloc(_: *anyopaque, items: uInt, len: uInt) callconv(.c) *anyopaque {
-        return mimalloc.mi_malloc(items * len) orelse unreachable;
-    }
-
-    pub fn free(_: *anyopaque, data: *anyopaque) callconv(.c) void {
-        mimalloc.mi_free(data);
-    }
+    state: State = .Uninitialized,
+    total_in: usize = 0,
+    native_active: bool = false,
 
     pub fn deinit(this: *ZlibCompressor) void {
-        var allocator = this.allocator;
+        const allocator = this.allocator;
         this.end();
         allocator.destroy(this);
     }
 
     pub fn end(this: *ZlibCompressor) void {
-        if (this.state != State.End) {
+        if (this.native_active) {
             _ = deflateEnd(&this.zlib);
-            this.state = State.End;
+            this.native_active = false;
         }
+        this.state = .End;
     }
 
     pub fn init(input: []const u8, list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibCompressor {
@@ -620,28 +608,31 @@ pub const ZlibCompressorArrayList = struct {
     }
 
     pub fn initWithListAllocator(input: []const u8, list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, list_allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibCompressor {
+        const window_bits = if (options.gzip)
+            std.math.add(c_int, options.windowBits, 16) catch return error.InvalidArgument
+        else
+            std.math.sub(c_int, 0, options.windowBits) catch return error.InvalidArgument;
         var zlib_reader = try allocator.create(ZlibCompressor);
         zlib_reader.* = ZlibCompressor{
             .input = input,
-            .list = list.*,
-            .list_ptr = list,
+            .list = list,
             .list_allocator = list_allocator,
             .allocator = allocator,
             .zlib = undefined,
         };
 
         zlib_reader.zlib = zStream_struct{
-            .next_in = input.ptr,
-            .avail_in = @truncate(input.len),
-            .total_in = @truncate(input.len),
+            .next_in = null,
+            .avail_in = 0,
+            .total_in = 0,
 
-            .next_out = zlib_reader.list.items.ptr,
-            .avail_out = @truncate(zlib_reader.list.items.len),
-            .total_out = @truncate(zlib_reader.list.items.len),
+            .next_out = null,
+            .avail_out = 0,
+            .total_out = 0,
 
             .err_msg = null,
-            .alloc_func = ZlibCompressor.alloc,
-            .free_func = ZlibCompressor.free,
+            .alloc_func = ZlibAllocator.alloc,
+            .free_func = ZlibAllocator.free,
 
             .internal_state = null,
             .user_data = zlib_reader,
@@ -655,21 +646,14 @@ pub const ZlibCompressorArrayList = struct {
             &zlib_reader.zlib,
             options.level,
             options.method,
-            if (!options.gzip) -options.windowBits else options.windowBits + 16,
+            window_bits,
             options.memLevel,
             options.strategy,
             zlibVersion(),
             @sizeOf(zStream_struct),
         )) {
             ReturnCode.Ok => {
-                zlib_reader.list.ensureTotalCapacityPrecise(list_allocator, deflateBound(&zlib_reader.zlib, @intCast(input.len))) catch {
-                    zlib_reader.deinit();
-                    return error.OutOfMemory;
-                };
-                zlib_reader.list_ptr.* = zlib_reader.list;
-                zlib_reader.zlib.avail_out = @truncate(zlib_reader.list.capacity);
-                zlib_reader.zlib.next_out = zlib_reader.list.items.ptr;
-
+                zlib_reader.native_active = true;
                 return zlib_reader;
             },
             ReturnCode.MemError => {
@@ -697,78 +681,42 @@ pub const ZlibCompressorArrayList = struct {
     }
 
     pub fn readAll(this: *ZlibCompressor) ZlibError!void {
-        defer {
-            this.list.shrinkRetainingCapacity(this.zlib.total_out);
-            this.list_ptr.* = this.list;
-        }
+        if (this.state == .End) return;
+        if (this.state == .Error) return this.state.Error;
 
-        while (this.state == State.Uninitialized or this.state == State.Inflating) {
-
-            // Before the call of inflate(), the application should ensure
-            // that at least one of the actions is possible, by providing
-            // more input and/or consuming more output, and updating the
-            // next_* and avail_* values accordingly. If the caller of
-            // inflate() does not provide both available input and available
-            // output space, it is possible that there will be no progress
-            // made. The application can consume the uncompressed output
-            // when it wants, for example when the output buffer is full
-            // (avail_out == 0), or after each call of inflate(). If inflate
-            // returns Z_OK and with zero avail_out, it must be called again
-            // after making room in the output buffer because there might be
-            // more output pending.
-
-            // - Decompress more input starting at next_in and update
-            //   next_in and avail_in accordingly. If not all input can be
-            //   processed (because there is not enough room in the output
-            //   buffer), then next_in and avail_in are updated accordingly,
-            //   and processing will resume at this point for the next call
-            //   of inflate().
-
-            // - Generate more output starting at next_out and update
-            //   next_out and avail_out accordingly. inflate() provides as
-            //   much output as possible, until there is no more input data
-            //   or no more space in the output buffer (see below about the
-            //   flush parameter).
-
-            if (this.zlib.avail_out == 0) {
-                const initial = this.list.items.len;
-                try this.list.ensureUnusedCapacity(this.list_allocator, 4096);
-                this.list.expandToCapacity();
-                this.zlib.next_out = @ptrCast(&this.list.items[initial]);
-                this.zlib.avail_out = @truncate(this.list.items.len -| initial);
+        while (true) {
+            if (this.list.unusedCapacitySlice().len == 0) {
+                this.list.ensureUnusedCapacity(this.list_allocator, 4096) catch |err| {
+                    this.state = .{ .Error = err };
+                    return err;
+                };
             }
+            const input = this.input[this.total_in..];
+            const flush: FlushValue = if (input.len <= std.math.maxInt(uInt)) .Finish else .NoFlush;
+            const progress = processChunk(true, &this.zlib, input, this.list.unusedCapacitySlice(), flush);
+            this.total_in += progress.read;
+            this.list.items.len += progress.written;
+            this.state = .Inflating;
 
-            if (this.zlib.avail_out == 0) {
-                return error.ShortRead;
-            }
-
-            const rc = deflate(&this.zlib, FlushValue.Finish);
-            this.state = State.Inflating;
-
-            switch (rc) {
-                ReturnCode.StreamEnd => {
-                    this.list.items.len = this.zlib.total_out;
+            switch (progress.code) {
+                .StreamEnd => {
                     this.end();
-
                     return;
                 },
-                ReturnCode.MemError => {
-                    this.end();
-                    this.state = State.Error;
+                .MemError => {
+                    this.state = .{ .Error = error.OutOfMemory };
                     return error.OutOfMemory;
                 },
-                ReturnCode.StreamError,
-                ReturnCode.DataError,
-                ReturnCode.BufError,
-                ReturnCode.NeedDict,
-                ReturnCode.VersionError,
-                ReturnCode.ErrNo,
-                => {
-                    this.end();
-                    this.state = State.Error;
+                .Ok => {
+                    if (progress.read == 0 and progress.written == 0) {
+                        this.state = .{ .Error = error.ZlibError };
+                        return error.ZlibError;
+                    }
+                },
+                else => {
+                    this.state = .{ .Error = error.ZlibError };
                     return error.ZlibError;
                 },
-                ReturnCode.Ok => {},
             }
         }
     }

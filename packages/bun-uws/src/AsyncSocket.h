@@ -28,6 +28,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <optional>
 
 #include "libusockets.h"
 #include "bun-usockets/src/internal/internal.h"
@@ -39,10 +40,15 @@
 
 namespace uWS {
 
+    enum class WriteStatus { Complete, Backpressure, OutOfMemory, Closed };
+    struct WriteResult {
+        int written;
+        WriteStatus status;
+    };
+
     enum SendBufferAttribute {
         NEEDS_NOTHING,
-        NEEDS_DRAIN,
-        NEEDS_UNCORK
+        NEEDS_DRAIN
     };
 
     template <bool, bool, typename> struct WebSocketContext;
@@ -98,8 +104,14 @@ public:
 
     /* Immediately close socket */
     us_socket_t *close() {
-        this->uncork();
+        if (us_socket_is_closed(reinterpret_cast<us_socket_t *>(this))) return reinterpret_cast<us_socket_t *>(this);
+        this->uncorkWithoutSending();
         return us_socket_close((us_socket_t *) this, 0, nullptr);
+    }
+
+    us_socket_t *closeOnOutOfMemory() {
+        static constexpr char reason[] = "Out of memory while buffering socket output";
+        return us_socket_close((us_socket_t *) this, sizeof(reason) - 1, const_cast<char *>(reason));
     }
 
     void uncorkWithoutSending() {
@@ -128,11 +140,8 @@ public:
         auto *vs = loopData->getCorkSlot(victimSlot);
         void *victim = vs->socket;
         bool victimSsl = vs->ssl;
-        if (victimSsl) {
-            ((AsyncSocket<true> *) victim)->uncork();
-        } else {
-            ((AsyncSocket<false> *) victim)->uncork();
-        }
+        const auto result = victimSsl ? ((AsyncSocket<true> *) victim)->uncork() : ((AsyncSocket<false> *) victim)->uncork();
+        if (result.status == WriteStatus::OutOfMemory || us_socket_is_closed(reinterpret_cast<us_socket_t *>(this))) return;
         loopData->acquireCorkSlot(this, SSL);
     }
 
@@ -141,8 +150,15 @@ public:
         return getLoopData()->findCorkSlot(this) != LoopData::INVALID_CORK_SLOT;
     }
 
+    bool hasPendingOutput() {
+        if (getAsyncSocketData()->buffer.length()) return true;
+        auto *loop = getLoopData();
+        const int slot = loop->findCorkSlot(this);
+        return slot != LoopData::INVALID_CORK_SLOT && loop->getCorkSlot(slot)->offset != 0;
+    }
+
     /* Returns a suitable buffer for temporary assemblation of send data */
-    std::pair<char *, SendBufferAttribute> getSendBuffer(size_t size) {
+    std::optional<std::pair<char *, SendBufferAttribute>> getSendBuffer(size_t size) {
         LoopData *loopData = getLoopData();
         BackPressure &backPressure = getAsyncSocketData()->buffer;
         size_t existingBackpressure = backPressure.length();
@@ -151,16 +167,13 @@ public:
         bool corked = slot != LoopData::INVALID_CORK_SLOT;
         unsigned int currentOffset = corked ? loopData->getCorkSlot(slot)->offset : 0;
 
-        if ((!existingBackpressure) && (corked || loopData->canCork()) && (currentOffset + size <= LoopData::CORK_BUFFER_SIZE)) {
-            if (!corked) {
-                slot = loopData->acquireCorkSlot(this, SSL);
-            }
+        if ((!existingBackpressure) && corked && (size <= LoopData::CORK_BUFFER_SIZE - currentOffset)) {
             auto *s = loopData->getCorkSlot(slot);
             char *sendBuffer = s->buffer + s->offset;
             s->offset += (unsigned int) size;
             ASSERT(s->offset <= LoopData::CORK_BUFFER_SIZE);
             loopData->touchCorkSlot(slot);
-            return {sendBuffer, corked ? SendBufferAttribute::NEEDS_NOTHING : SendBufferAttribute::NEEDS_UNCORK};
+            return std::pair {sendBuffer, SendBufferAttribute::NEEDS_NOTHING};
         } else {
             /* Fallback: move any corked data into the backpressure buffer. */
             unsigned int ourCorkOffset = 0;
@@ -169,22 +182,23 @@ public:
                 auto *s = loopData->getCorkSlot(slot);
                 ourCorkOffset = s->offset;
                 ourCorkBuffer = s->buffer;
-                s->offset = 0;
             }
 
-            backPressure.resize(ourCorkOffset + existingBackpressure + size);
+            constexpr auto maximum = static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max());
+            if (size > maximum - existingBackpressure || ourCorkOffset > maximum - existingBackpressure - size) return std::nullopt;
+            if (!backPressure.tryResizeUninitialized(ourCorkOffset + existingBackpressure + size)) return std::nullopt;
 
             if (ourCorkOffset > 0) {
                 memcpy((char *) backPressure.data() + existingBackpressure, ourCorkBuffer, ourCorkOffset);
+                loopData->getCorkSlot(slot)->offset = 0;
             }
-            return {(char *) backPressure.data() + ourCorkOffset + existingBackpressure, SendBufferAttribute::NEEDS_DRAIN};
+            return std::pair {(char *) backPressure.data() + ourCorkOffset + existingBackpressure, SendBufferAttribute::NEEDS_DRAIN};
         }
     }
 
     /* Returns the user space backpressure. */
     size_t getBufferedAmount() {
-        /* We return the actual amount of bytes in backbuffer, including pendingRemoval */
-        return getAsyncSocketData()->buffer.totalLength();
+        return getAsyncSocketData()->buffer.length();
     }
 
     /* Returns the text representation of an IPv4 or IPv6 address */
@@ -222,70 +236,67 @@ public:
         return addressAsText(getRemoteAddress());
     }
 
-    /**
-    * Flushes the socket buffer by writing as much data as possible to the underlying socket.
-    *
-    * @return The total number of bytes successfully written to the socket
-    */
-    size_t flush() {
-        /* Check if socket is valid for operations */
-        if (us_socket_is_closed((us_socket_t *) this)) {
-            /* Socket is closed, no flushing is possible */
-            return 0;
+private:
+    WriteResult writeToSocket(const char *data, int length) {
+        const auto result = us_socket_write_checked(reinterpret_cast<us_socket_t *>(this), data, length);
+        switch (result.status) {
+        case US_SOCKET_WRITE_COMPLETE: return {result.written, WriteStatus::Complete};
+        case US_SOCKET_WRITE_BACKPRESSURE: return {result.written, WriteStatus::Backpressure};
+        case US_SOCKET_WRITE_CLOSED: return {0, WriteStatus::Closed};
+        case US_SOCKET_WRITE_FAILED:
+            // SSL and native write frames have unwound before close callbacks can destroy socket state.
+            close();
+            return {0, WriteStatus::Closed};
         }
-
-        /* Get the associated asynchronous socket data structure */
-        AsyncSocketData<SSL> *asyncSocketData = getAsyncSocketData();
-        size_t total_written = 0;
-
-        /* Continue flushing as long as we have data in the buffer */
-        while (asyncSocketData->buffer.length()) {
-            /* Get current buffer size */
-            size_t buffer_len = asyncSocketData->buffer.length();
-
-            /* Limit write size to INT_MAX as the underlying socket API uses int for length */
-            int max_flush_len = std::min(buffer_len, (size_t)INT_MAX);
-
-            /* Attempt to write data to the socket */
-            int written = us_socket_write((us_socket_t *) this, asyncSocketData->buffer.data(), max_flush_len);
-            total_written += written;
-
-            /* Check if we couldn't write the entire buffer */
-            if ((unsigned int) written < buffer_len) {
-                /* Remove the successfully written data from the buffer */
-                asyncSocketData->buffer.erase((unsigned int) written);
-
-                /* If we wrote less than we attempted, the socket buffer is likely full
-                * likely is used as an optimization hint to the compiler
-                * since written < buffer_len is very likely to be true
-                */
-                if(written < max_flush_len) {
-                    [[likely]]
-                    /* Cannot write more at this time, return what we've written so far */
-                    return total_written;
-                }
-                /* If we wrote exactly max_flush_len, we might be able to write more, so continue
-                 * This is unlikely to happen, because this would be INT_MAX bytes, which is unlikely to be written in one go
-                 * but we keep this check for completeness
-                 */
-                continue;
-            }
-
-            /* Successfully wrote the entire buffer, clear the buffer */
-            asyncSocketData->buffer.clear();
-        }
-
-        /* Return the total number of bytes written during this flush operation */
-        return total_written;
+        RELEASE_ASSERT_NOT_REACHED();
     }
 
-    /* Write in three levels of prioritization: cork-buffer, syscall, socket-buffer. Always drain if possible.
-     * Returns pair of bytes written (anywhere) and wheter or not this call resulted in the polling for
-     * writable (or we are in a state that implies polling for writable). */
-    std::pair<int, bool> write(const char *src, int length, bool optionally = false, int nextLength = 0) {
-        /* Fake success if closed, simple fix to allow uncork of closed socket to succeed */
+public:
+    [[nodiscard]] WriteStatus flush() {
+        if (us_socket_is_closed(reinterpret_cast<us_socket_t *>(this))) return WriteStatus::Closed;
+        auto &buffer = getAsyncSocketData()->buffer;
+        while (buffer.length()) {
+            const auto length = static_cast<int>(std::min(buffer.length(), static_cast<size_t>(INT_MAX)));
+            const auto result = writeToSocket(buffer.data(), length);
+            if (result.status == WriteStatus::Closed) return WriteStatus::Closed;
+            buffer.erase(static_cast<unsigned int>(result.written));
+            if (result.status == WriteStatus::Backpressure) return WriteStatus::Backpressure;
+        }
+        return WriteStatus::Complete;
+    }
+
+    [[nodiscard]] WriteStatus writeParts(std::initializer_list<std::string_view> parts) {
+        if (us_socket_is_closed(reinterpret_cast<us_socket_t *>(this))) return WriteStatus::Closed;
+        constexpr auto maximum = static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max());
+        size_t length = 0;
+        for (auto part : parts) {
+            if (part.size() > maximum - length) return WriteStatus::OutOfMemory;
+            length += part.size();
+        }
+        if (!length) return WriteStatus::Complete;
+        auto *loop = getLoopData();
+        auto &buffer = getAsyncSocketData()->buffer;
+        const int slot = loop->findCorkSlot(this);
+        const auto cork = slot == LoopData::INVALID_CORK_SLOT ? nullptr : loop->getCorkSlot(slot);
+        if (cork && !buffer.length() && length <= LoopData::CORK_BUFFER_SIZE - cork->offset) {
+            for (auto part : parts) {
+                if (part.empty()) continue;
+                memcpy(cork->buffer + cork->offset, part.data(), part.size());
+                cork->offset += static_cast<unsigned int>(part.size());
+            }
+            loop->touchCorkSlot(slot);
+            return WriteStatus::Complete;
+        }
+        const auto prefix = cork ? std::string_view(cork->buffer, cork->offset) : std::string_view();
+        if (!buffer.tryAppendParts(prefix, parts)) return WriteStatus::OutOfMemory;
+        if (cork) cork->offset = 0;
+        return flush();
+    }
+
+    [[nodiscard]] WriteResult write(const char *src, int length, bool optionally = false, bool skipCork = false) {
+        ASSERT(length >= 0);
         if (us_socket_is_closed((us_socket_t *) this)) {
-            return {length, false};
+            return {0, WriteStatus::Closed};
         }
 
         LoopData *loopData = getLoopData();
@@ -297,7 +308,9 @@ public:
             int max_flush_len = std::min(buffer_len, (size_t)INT_MAX);
 
             /* Write off as much as we can */
-            int written = us_socket_write((us_socket_t *) this, asyncSocketData->buffer.data(), max_flush_len);
+            const auto result = writeToSocket(asyncSocketData->buffer.data(), max_flush_len);
+            if (result.status == WriteStatus::Closed) return {0, WriteStatus::Closed};
+            const int written = result.written;
             /* On failure return, otherwise continue down the function */
             if ((unsigned int) written < buffer_len) {
                 /* Update buffering (todo: we can do better here if we keep track of what happens to this guy later on) */
@@ -305,11 +318,10 @@ public:
 
                 if (optionally) {
                     /* Thankfully we can exit early here */
-                    return {0, true};
+                    return {0, WriteStatus::Backpressure};
                 } else {
-                    /* This path is horrible and points towards erroneous usage */
-                    asyncSocketData->buffer.append(src, (unsigned int) length);
-                    return {length, true};
+                    if (!asyncSocketData->buffer.tryAppend(src, static_cast<size_t>(length))) return {0, WriteStatus::OutOfMemory};
+                    return {length, WriteStatus::Backpressure};
                 }
             }
 
@@ -318,7 +330,7 @@ public:
         }
 
         if (length) {
-            int slot = loopData->findCorkSlot(this);
+            int slot = skipCork ? LoopData::INVALID_CORK_SLOT : loopData->findCorkSlot(this);
             if (slot != LoopData::INVALID_CORK_SLOT) {
                 /* We are corked */
                 auto *s = loopData->getCorkSlot(slot);
@@ -335,65 +347,56 @@ public:
                 }
             } else {
                 /* We are not corked */
-                int written = us_socket_write((us_socket_t *) this, src, length);
+                const auto result = writeToSocket(src, length);
+                if (result.status == WriteStatus::Closed) return {0, WriteStatus::Closed};
+                const int written = result.written;
 
                 /* Did we fail? */
                 if (written < length) {
                     /* If the write was optional then just bail out */
                     if (optionally) {
-                        return {written, true};
+                        return {written, WriteStatus::Backpressure};
                     }
-                    /* Fall back to worst possible case (should be very rare for HTTP) */
-                    /* At least we can reserve room for next chunk if we know it up front */
-                    if (nextLength) {
-                        asyncSocketData->buffer.reserve(asyncSocketData->buffer.length() + (size_t) (length - written + nextLength));
-                    }
-
-                    /* Buffer this chunk */
-                    asyncSocketData->buffer.append(src + written, (size_t) (length - written));
-
-                    /* Return the failure */
-                    return {length, true};
+                    if (!asyncSocketData->buffer.tryAppend(src + written, static_cast<size_t>(length - written))) return {written, WriteStatus::OutOfMemory};
+                    return {length, WriteStatus::Backpressure};
                 }
                 /* Fall through to default return */
             }
         }
 
         /* Default fall through return */
-        return {length, false};
+        return {length, WriteStatus::Complete};
     }
 
-    /* Uncork this socket and flush or buffer any corked and/or passed data. It is essential to remember doing this. */
-    /* It does NOT count bytes written from cork buffer (they are already accounted for in the write call responsible for its corking)! */
-    std::pair<int, bool> uncork(const char *src = nullptr, int length = 0, bool optionally = false) {
+    [[nodiscard]] WriteResult uncork(const char *src = nullptr, int length = 0, bool optionally = false) {
+        if (us_socket_is_closed((us_socket_t *) this)) return {0, WriteStatus::Closed};
         LoopData *loopData = getLoopData();
 
         int slot = loopData->findCorkSlot(this);
         if (slot == LoopData::INVALID_CORK_SLOT) {
-            /* We are not even corked! */
-            return {0, false};
+            return write(src, length, optionally);
         }
 
         auto *s = loopData->getCorkSlot(slot);
         unsigned int offset = s->offset;
         char *buffer = s->buffer;
-        loopData->releaseCorkSlot(slot);
-
         if (offset) {
-            /* Corked data is already accounted for via its write call */
-            auto [written, failed] = write(buffer, (int) offset, false, length);
-
-            if (failed && optionally) {
-                /* We do not need to care for buffering here, write does that */
-                return {0, true};
+            auto result = write(buffer, static_cast<int>(offset), false, true);
+            if (result.status == WriteStatus::OutOfMemory) {
+                const auto remaining = offset - static_cast<unsigned int>(result.written);
+                if (result.written) memmove(buffer, buffer + result.written, remaining);
+                s->offset = remaining;
+                return {0, WriteStatus::OutOfMemory};
             }
-            if (length == 0) {
-                return {written, failed};
-            }
+            if (result.status == WriteStatus::Closed) return {0, WriteStatus::Closed};
+            loopData->releaseCorkSlot(slot);
+            if (result.status == WriteStatus::Backpressure && optionally) return {0, WriteStatus::Backpressure};
+            if (length == 0) return {0, result.status};
+        } else {
+            loopData->releaseCorkSlot(slot);
         }
 
-        /* We should only return with new writes, not things written to cork already */
-        return write(src, length, optionally, 0);
+        return write(src, length, optionally);
     }
 };
 

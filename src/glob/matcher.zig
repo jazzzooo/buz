@@ -52,7 +52,7 @@ const State = struct {
     wildcard: Wildcard = .{},
     globstar: Wildcard = .{},
 
-    brace_depth: u8 = 0,
+    brace_depth: u32 = 0,
 
     inline fn backtrack(self: *State) void {
         self.path_index = self.wildcard.path_index;
@@ -84,7 +84,7 @@ const Wildcard = struct {
     // Using u32 rather than usize for these results in 10% faster performance.
     glob_index: u32 = 0,
     path_index: u32 = 0,
-    brace_depth: u8 = 0,
+    brace_depth: u32 = 0,
 };
 
 /// This function checks returns a boolean value if the pathname `path` matches
@@ -317,7 +317,7 @@ inline fn globMatchImpl(state: *State, glob: []const u8, glob_start: u32, path: 
 }
 
 fn matchBrace(state: *State, glob: []const u8, path: []const u8, brace_stack: *BraceStack) bool {
-    var brace_depth: i16 = 0;
+    var brace_depth: u32 = 0;
     var in_brackets = false;
 
     const open_brace_index = state.glob_index;
@@ -341,7 +341,7 @@ fn matchBrace(state: *State, glob: []const u8, path: []const u8, brace_stack: *B
                     break;
                 }
             },
-            ',' => if (brace_depth == 1) {
+            ',' => if (!in_brackets and brace_depth == 1) {
                 if (matchBraceBranch(state, glob, path, open_brace_index, branch_index, brace_stack)) {
                     return true;
                 }
@@ -377,7 +377,7 @@ fn matchBraceBranch(state: *State, glob: []const u8, path: []const u8, open_brac
 }
 
 fn skipBranch(state: *State, glob: []const u8) void {
-    // TODO: Audit bracket-class scanning and depth overflow while skipping brace branches.
+    // TODO: Audit bracket-class scanning while skipping brace branches.
     var in_brackets = false;
     const end_brace_depth = state.brace_depth - 1;
     while (state.glob_index < glob.len) {

@@ -25,149 +25,190 @@
 
 #include "URLDecomposition.h"
 
-#include <wtf/text/StringToIntegerConversion.h>
+#include <array>
+#include <wtf/URLParser.h>
+#include <wtf/text/MakeString.h>
 
 namespace WebCore {
 
-String URLDecomposition::origin() const
-{
-    auto fullURL = this->fullURL();
+using WTF::URLParser;
 
+static ExceptionOr<String> checkedComponent(String&& value)
+{
+    if (value.isNull())
+        return Exception { OutOfMemoryError };
+    return WTF::move(value);
+}
+
+struct PortDigits {
+    explicit PortDigits(uint16_t port)
+    {
+        do {
+            characters[--start] = static_cast<Latin1Character>('0' + port % 10);
+            port /= 10;
+        } while (port);
+    }
+
+    StringView view() const { return std::span<const Latin1Character>(characters).subspan(start); }
+
+    std::array<Latin1Character, 5> characters;
+    size_t start { characters.size() };
+};
+
+static ExceptionOr<String> serializeHost(const URL& url, bool includeProtocol)
+{
+    const auto port = url.port();
+    const PortDigits digits(port.value_or(0));
+    return checkedComponent(tryMakeString(
+        includeProtocol ? url.protocol() : StringView(""_s),
+        includeProtocol ? "://"_s : ""_s,
+        url.host(),
+        port ? ":"_s : ""_s,
+        port ? digits.view() : StringView(""_s)));
+}
+
+ExceptionOr<String> URLDecomposition::origin() const
+{
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    return origin(result.releaseReturnValue());
+}
+
+ExceptionOr<String> URLDecomposition::origin(const URL& fullURL)
+{
     if (fullURL.protocolIsInHTTPFamily() or fullURL.protocolIsInFTPFamily() or fullURL.protocolIs("ws"_s) or fullURL.protocolIs("wss"_s))
-        return fullURL.protocolHostAndPort();
+        return serializeHost(fullURL, true);
     if (fullURL.protocolIsBlob()) {
-        const String& path = fullURL.path().toString();
-        const URL subUrl { URL {}, path };
-        if (subUrl.isValid()) {
+        const String path = tryMakeString(fullURL.path());
+        if (path.isNull())
+            return Exception { OutOfMemoryError };
+        WTF::URL parsed { path };
+        if (parsed.isValid()) {
+            const auto& subUrl = parsed;
             if (subUrl.protocolIsInHTTPFamily() or subUrl.protocolIsInFTPFamily() or subUrl.protocolIs("ws"_s) or subUrl.protocolIs("wss"_s) or subUrl.protocolIsFile())
-                return subUrl.protocolHostAndPort();
+                return serializeHost(subUrl, true);
         }
     }
-    return "null"_s;
+    return String("null"_s);
 }
 
-String URLDecomposition::protocol() const
+ExceptionOr<String> URLDecomposition::protocol() const
 {
-    auto fullURL = this->fullURL();
-    if (fullURL.protocolIsJavaScript())
-        return "javascript:"_s;
-    return makeString(fullURL.protocol(), ':');
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
+    return checkedComponent(tryMakeString(fullURL.protocol(), ':'));
 }
 
-void URLDecomposition::setProtocol(StringView value)
+ExceptionOr<void> URLDecomposition::setProtocol(StringView value)
 {
-    URL copy = fullURL();
+    auto result = fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    URL copy = result.releaseReturnValue();
     copy.setProtocol(value);
-    setFullURL(copy);
+    return setFullURL(copy);
 }
 
-String URLDecomposition::username() const
+ExceptionOr<String> URLDecomposition::username() const
 {
-    return fullURL().encodedUser().toString();
+    auto result = fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    return checkedComponent(tryMakeString(result.releaseReturnValue().encodedUser()));
 }
 
-void URLDecomposition::setUsername(StringView user)
+ExceptionOr<void> URLDecomposition::setUsername(StringView user)
 {
-    auto fullURL = this->fullURL();
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
     if (fullURL.host().isEmpty() || fullURL.protocolIsFile())
-        return;
+        return {};
     fullURL.setUser(user);
-    setFullURL(fullURL);
+    return setFullURL(fullURL);
 }
 
-String URLDecomposition::password() const
+ExceptionOr<String> URLDecomposition::password() const
 {
-    return fullURL().encodedPassword().toString();
+    auto result = fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    return checkedComponent(tryMakeString(result.releaseReturnValue().encodedPassword()));
 }
 
-void URLDecomposition::setPassword(StringView password)
+ExceptionOr<void> URLDecomposition::setPassword(StringView password)
 {
-    auto fullURL = this->fullURL();
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
     if (fullURL.host().isEmpty() || fullURL.protocolIsFile())
-        return;
+        return {};
     fullURL.setPassword(password);
-    setFullURL(fullURL);
+    return setFullURL(fullURL);
 }
 
-String URLDecomposition::host() const
+ExceptionOr<String> URLDecomposition::host() const
 {
-    return fullURL().hostAndPort();
+    auto result = fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    return serializeHost(result.releaseReturnValue(), false);
 }
 
-static unsigned countASCIIDigits(StringView string)
+ExceptionOr<void> URLDecomposition::setHost(StringView value)
 {
-    unsigned length = string.length();
-    for (unsigned count = 0; count < length; ++count) {
-        if (!isASCIIDigit(string[count]))
-            return count;
-    }
-    return length;
-}
-
-void URLDecomposition::setHost(StringView value)
-{
-    auto fullURL = this->fullURL();
-    if (value.isEmpty() && !fullURL.protocolIsFile() && fullURL.hasSpecialScheme())
-        return;
-
-    size_t separator = value.reverseFind(':');
-    if (!separator)
-        return;
-
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
     if (fullURL.hasOpaquePath())
-        return;
-
-    // No port if no colon or rightmost colon is within the IPv6 section.
-    size_t ipv6Separator = value.reverseFind(']');
-    if (separator == notFound || (ipv6Separator != notFound && ipv6Separator > separator))
-        fullURL.setHost(value);
-    else {
-        // Multiple colons are acceptable only in case of IPv6.
-        if (value.find(':') != separator && ipv6Separator == notFound)
-            return;
-        unsigned portLength = countASCIIDigits(value.substring(separator + 1));
-        if (!portLength) {
-            fullURL.setHost(value.left(separator));
-        } else {
-            auto portNumber = parseInteger<uint16_t>(value.substring(separator + 1, portLength));
-            if (portNumber && WTF::isDefaultPortForProtocol(*portNumber, fullURL.protocol()))
-                fullURL.setHostAndPort(value.left(separator));
-            else
-                fullURL.setHostAndPort(value.left(separator + 1 + portLength));
-        }
-    }
-    if (fullURL.isValid())
-        setFullURL(fullURL);
+        return {};
+    fullURL.setHostAndPort(value);
+    return setFullURL(fullURL);
 }
 
-String URLDecomposition::hostname() const
+ExceptionOr<String> URLDecomposition::hostname() const
 {
-    return fullURL().host().toString();
+    auto result = fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    return checkedComponent(tryMakeString(result.releaseReturnValue().host()));
 }
 
-void URLDecomposition::setHostname(StringView host)
+ExceptionOr<void> URLDecomposition::setHostname(StringView host)
 {
-    auto fullURL = this->fullURL();
-    if (host.isEmpty() && !fullURL.protocolIsFile() && fullURL.hasSpecialScheme())
-        return;
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
     if (fullURL.hasOpaquePath())
-        return;
+        return {};
     fullURL.setHost(host);
-    if (fullURL.isValid())
-        setFullURL(fullURL);
+    return setFullURL(fullURL);
 }
 
-String URLDecomposition::port() const
+ExceptionOr<String> URLDecomposition::port() const
 {
-    auto port = fullURL().port();
+    auto result = fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto port = result.releaseReturnValue().port();
     if (!port)
-        return emptyString();
-    return String::number(*port);
+        return String(emptyString());
+    const PortDigits digits(*port);
+    return checkedComponent(tryMakeString(digits.view()));
 }
 
 // Outer optional is whether we could parse at all. Inner optional is "no port specified".
 std::optional<std::optional<uint16_t>> URLDecomposition::parsePort(StringView string, StringView protocol)
 {
+    if (string.isEmpty())
+        return std::optional<uint16_t> { std::nullopt };
     // https://url.spec.whatwg.org/#port-state with state override given.
     uint32_t port { 0 };
     bool foundDigit = false;
@@ -187,70 +228,84 @@ std::optional<std::optional<uint16_t>> URLDecomposition::parsePort(StringView st
             return std::nullopt;
         break;
     }
-    if (!foundDigit || WTF::isDefaultPortForProtocol(static_cast<uint16_t>(port), protocol))
+    if (!foundDigit)
+        return std::nullopt;
+    if (WTF::isDefaultPortForProtocol(static_cast<uint16_t>(port), protocol))
         return std::optional<uint16_t> { std::nullopt };
     return { { static_cast<uint16_t>(port) } };
 }
 
-void URLDecomposition::setPort(StringView value)
+ExceptionOr<void> URLDecomposition::setPort(StringView value)
 {
-    auto fullURL = this->fullURL();
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
     if (fullURL.host().isEmpty() || fullURL.protocolIsFile())
-        return;
+        return {};
     auto port = parsePort(value, fullURL.protocol());
     if (!port)
-        return;
+        return {};
     fullURL.setPort(*port);
-    setFullURL(fullURL);
+    return setFullURL(fullURL);
 }
 
-String URLDecomposition::pathname() const
+ExceptionOr<String> URLDecomposition::pathname() const
 {
-    return fullURL().path().toString();
+    auto result = fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    return checkedComponent(tryMakeString(result.releaseReturnValue().path()));
 }
 
-void URLDecomposition::setPathname(StringView value)
+ExceptionOr<void> URLDecomposition::setPathname(StringView value)
 {
-    auto fullURL = this->fullURL();
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
     if (fullURL.hasOpaquePath())
-        return;
+        return {};
     fullURL.setPath(value);
-    setFullURL(fullURL);
+    return setFullURL(fullURL);
 }
 
-String URLDecomposition::search() const
+ExceptionOr<String> URLDecomposition::search() const
 {
-    auto fullURL = this->fullURL();
-    return fullURL.query().isEmpty() ? emptyString() : fullURL.queryWithLeadingQuestionMark().toString();
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
+    return checkedComponent(tryMakeString(fullURL.query().isEmpty() ? StringView(""_s) : fullURL.queryWithLeadingQuestionMark()));
 }
 
-void URLDecomposition::setSearch(const String& value)
+ExceptionOr<void> URLDecomposition::setSearch(const String& value)
 {
-    auto fullURL = this->fullURL();
-    if (value.isEmpty()) {
-        // If the given value is the empty string, set url's query to null.
-        fullURL.setQuery({});
-    } else {
-        // Make sure that '#' in the query does not leak to the hash.
-        fullURL.setQuery(makeStringByReplacingAll(value, '#', "%23"_s));
-    }
-    setFullURL(fullURL);
+    auto fullURL = urlForQueryReplacement();
+    fullURL.setQuery(value.isEmpty() ? StringView {} : StringView(value));
+    return setFullURL(fullURL);
 }
 
-String URLDecomposition::hash() const
+ExceptionOr<String> URLDecomposition::hash() const
 {
-    auto fullURL = this->fullURL();
-    return fullURL.fragmentIdentifier().isEmpty() ? emptyString() : fullURL.fragmentIdentifierWithLeadingNumberSign().toString();
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
+    return checkedComponent(tryMakeString(fullURL.fragmentIdentifier().isEmpty() ? StringView(""_s) : fullURL.fragmentIdentifierWithLeadingNumberSign()));
 }
 
-void URLDecomposition::setHash(StringView value)
+ExceptionOr<void> URLDecomposition::setHash(StringView value)
 {
-    auto fullURL = this->fullURL();
+    auto result = this->fullURL();
+    if (result.hasException())
+        return result.releaseException();
+    auto fullURL = result.releaseReturnValue();
     if (value.isEmpty())
         fullURL.removeFragmentIdentifier();
     else
         fullURL.setFragmentIdentifier(value.startsWith('#') ? value.substring(1) : value);
-    setFullURL(fullURL);
+    return setFullURL(fullURL);
 }
 
 }

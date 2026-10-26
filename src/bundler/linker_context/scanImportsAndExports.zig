@@ -1120,7 +1120,7 @@ fn validateComposesFromProperties(
             const local_original_name = v.all_symbols.get(local).?.original_name;
 
             v.log.addMsg(.{
-                .kind = .err,
+                .kind = .warn,
                 .data = Logger.rangeData(
                     &v.all_sources[source_index],
                     range,
@@ -1129,7 +1129,7 @@ fn validateComposesFromProperties(
                         "<r>The value of <b>{s}<r> in the class <b>{s}<r> is undefined.",
                         .{ property_name, local_original_name },
                     ) catch |err| bun.handleOom(err),
-                ).cloneLineText(v.log.clone_line_text, v.log.msgs.allocator) catch |err| bun.handleOom(err),
+                ),
                 .notes = v.allocator.dupe(
                     Logger.Data,
                     &.{

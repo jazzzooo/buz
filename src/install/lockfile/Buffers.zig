@@ -287,7 +287,7 @@ pub fn legacyPackageToDependencyID(this: Buffers, dependency_visited: ?*Bitset, 
     return error.@"Lockfile is missing resolution data";
 }
 
-pub fn load(stream: *Stream, allocator: Allocator, log: *logger.Log, pm_: ?*PackageManager) !Buffers {
+pub fn load(stream: *Stream, allocator: Allocator, log: *logger.Log, pm_: ?*PackageManager, parse_context: Dependency.ParseContext) !Buffers {
     var this = Buffers{};
     var external_dependency_list_: std.ArrayListUnmanaged(Dependency.External) = .empty;
 
@@ -338,7 +338,7 @@ pub fn load(stream: *Stream, allocator: Allocator, log: *logger.Log, pm_: ?*Pack
         .log = log,
         .allocator = allocator,
         .buffer = string_buf,
-        .package_manager = pm_,
+        .parse = parse_context,
     };
 
     this.dependencies.expandToCapacity();

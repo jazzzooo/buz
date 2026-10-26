@@ -38,27 +38,49 @@ pub fn getOrCreate(io: std.Io, loop: *uws.Loop) ?*ClientContext {
 }
 
 /// Find or open a connection to `hostname:port` and queue `client` on it.
-pub fn connect(this: *ClientContext, client: *HTTPClient, hostname: []const u8, port: u16) bool {
+pub fn connect(this: *ClientContext, client: *HTTPClient, hostname: []const u8, port: u16) void {
     const reject = client.flags.reject_unauthorized;
     for (this.sessions.items) |s| {
         if (s.matches(hostname, port, reject) and s.hasHeadroom()) {
             log("reuse session {s}:{d}", .{ hostname, port });
-            s.enqueue(client);
-            return true;
+            s.enqueue(client) catch |failure| client.failFromH2(failure);
+            return;
         }
     }
 
-    const host_z = bun.handleOom(bun.default_allocator.dupeSentinel(u8, hostname, 0));
-    const session = ClientSession.new(.{
+    const host_z = bun.default_allocator.dupeSentinel(u8, hostname, 0) catch |failure| {
+        client.failFromH2(failure);
+        return;
+    };
+    const session = bun.default_allocator.create(ClientSession) catch |failure| {
+        bun.default_allocator.free(host_z);
+        client.failFromH2(failure);
+        return;
+    };
+    session.* = .{
         .qsocket = null,
         .hostname = host_z,
         .port = port,
         .reject_unauthorized = reject,
-    });
+    };
+    const registry_index = std.math.cast(u32, this.sessions.items.len) orelse {
+        session.deref();
+        client.failFromH2(error.OutOfMemory);
+        return;
+    };
+    this.sessions.append(bun.default_allocator, session) catch |failure| {
+        session.deref();
+        client.failFromH2(failure);
+        return;
+    };
+    session.registry_index = registry_index;
+    session.enqueue(client) catch |failure| {
+        this.unregister(session);
+        session.deref();
+        client.failFromH2(failure);
+        return;
+    };
     _ = H3.live_sessions.fetchAdd(1, .monotonic);
-    session.registry_index = @intCast(this.sessions.items.len);
-    bun.handleOom(this.sessions.append(bun.default_allocator, session));
-    session.enqueue(client);
 
     switch (this.qctx.connect(host_z.ptr, port, host_z.ptr, reject, session)) {
         .socket => |qs| {
@@ -68,16 +90,22 @@ pub fn connect(this: *ClientContext, client: *HTTPClient, hostname: []const u8, 
         },
         .pending => |pending| {
             log("connect {s}:{d} (dns pending)", .{ hostname, port });
-            PendingConnect.register(session, pending, this.qctx.loop());
+            PendingConnect.register(session, pending, this.qctx.loop()) catch |failure| {
+                pending.cancel();
+                PendingConnect.failSession(session, failure);
+                return;
+            };
+        },
+        .out_of_memory => {
+            PendingConnect.failSession(session, error.OutOfMemory);
+            return;
         },
         .err => {
             log("connect {s}:{d} failed", .{ hostname, port });
-            this.unregister(session);
             PendingConnect.failSession(session, error.ConnectionRefused);
-            return false;
+            return;
         },
     }
-    return true;
 }
 
 pub fn unregister(this: *ClientContext, session: *ClientSession) void {

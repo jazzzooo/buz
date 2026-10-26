@@ -24,8 +24,6 @@
 
 #pragma once
 
-#include "DOMWrapperWorld.h"
-#include "JSDOMWrapper.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/SlotVisitor.h>
 #include <JavaScriptCore/WeakInlines.h>
@@ -56,8 +54,6 @@ private:
     JSC::JSValue m_nonCell {};
     JSC::Weak<JSC::JSCell> m_cell {};
 };
-
-JSC::JSValue cachedPropertyValue(JSC::ThrowScope&, JSC::JSGlobalObject&, const JSDOMObject& owner, JSValueInWrappedObject& cacheSlot, const auto&);
 
 inline JSValueInWrappedObject::JSValueInWrappedObject(JSC::JSValue value)
 {
@@ -105,19 +101,6 @@ inline void JSValueInWrappedObject::clear()
 {
     m_nonCell = {};
     m_cell.clear();
-}
-
-inline JSC::JSValue cachedPropertyValue(JSC::ThrowScope& throwScope, JSC::JSGlobalObject& lexicalGlobalObject, const JSDOMObject& owner, JSValueInWrappedObject& cachedValue, const auto& function)
-{
-    if (cachedValue && isWorldCompatible(lexicalGlobalObject, cachedValue.getValue()))
-        return cachedValue.getValue();
-
-    auto value = function(throwScope);
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    cachedValue.set(lexicalGlobalObject.vm(), &owner, cloneAcrossWorlds(lexicalGlobalObject, owner, value));
-    ASSERT(isWorldCompatible(lexicalGlobalObject, cachedValue.getValue()));
-    return cachedValue.getValue();
 }
 
 } // namespace WebCore

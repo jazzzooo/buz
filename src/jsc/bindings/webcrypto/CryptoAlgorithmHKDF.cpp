@@ -45,35 +45,29 @@ CryptoAlgorithmIdentifier CryptoAlgorithmHKDF::identifier() const
     return s_identifier;
 }
 
-void CryptoAlgorithmHKDF::deriveBits(const CryptoAlgorithmParameters& parameters, Ref<CryptoKey>&& baseKey, size_t length, VectorCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext& context, WorkQueue& workQueue)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithmHKDF::deriveBits(const CryptoAlgorithmParameters& parameters, Ref<CryptoKey>&& baseKey, size_t length)
 {
     if (!length || length % 8) {
-        exceptionCallback(OperationError, ""_s);
-        return;
+        return Exception { OperationError, ""_s };
     }
 
-    dispatchOperationInWorkQueue(workQueue, context, WTF::move(callback), WTF::move(exceptionCallback),
-        [parameters = crossThreadCopy(downcast<CryptoAlgorithmHkdfParams>(parameters)), baseKey = WTF::move(baseKey), length] {
-            return platformDeriveBits(parameters, downcast<CryptoKeyRaw>(baseKey.get()), length);
-        });
+    const auto& operation_parameters = downcast<CryptoAlgorithmHkdfParams>(parameters);
+    return platformDeriveBits(operation_parameters, downcast<CryptoKeyRaw>(baseKey.get()), length);
 }
 
-void CryptoAlgorithmHKDF::importKey(CryptoKeyFormat format, KeyData&& data, const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages, KeyCallback&& callback, ExceptionCallback&& exceptionCallback)
+ExceptionOr<Ref<CryptoKey>> CryptoAlgorithmHKDF::importKey(CryptoKeyFormat format, KeyData&& data, const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages)
 {
     if (format != CryptoKeyFormat::Raw) {
-        exceptionCallback(NotSupportedError, ""_s);
-        return;
+        return Exception { NotSupportedError, ""_s };
     }
     if (usages & (CryptoKeyUsageEncrypt | CryptoKeyUsageDecrypt | CryptoKeyUsageSign | CryptoKeyUsageVerify | CryptoKeyUsageWrapKey | CryptoKeyUsageUnwrapKey)) {
-        exceptionCallback(SyntaxError, ""_s);
-        return;
+        return Exception { SyntaxError, ""_s };
     }
     if (extractable) {
-        exceptionCallback(SyntaxError, ""_s);
-        return;
+        return Exception { SyntaxError, ""_s };
     }
 
-    callback(CryptoKeyRaw::create(parameters.identifier, WTF::move(std::get<Vector<uint8_t>>(data)), usages));
+    return Ref<CryptoKey> { CryptoKeyRaw::create(parameters.identifier, WTF::move(std::get<Vector<uint8_t>>(data)), usages) };
 }
 
 ExceptionOr<size_t> CryptoAlgorithmHKDF::getKeyLength(const CryptoAlgorithmParameters&)

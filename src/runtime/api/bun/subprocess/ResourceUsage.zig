@@ -1,74 +1,122 @@
 const ResourceUsage = @This();
 
-pub const js = jsc.Codegen.JSResourceUsage;
-pub const toJS = ResourceUsage.js.toJS;
-pub const fromJS = ResourceUsage.js.fromJS;
-pub const fromJSDirect = ResourceUsage.js.fromJSDirect;
+const std = @import("std");
 
+bindgen_state: bindgen.ClassState = .{},
 rusage: Rusage,
 
-pub fn create(rusage: *const Rusage, globalObject: *JSGlobalObject) bun.JSError!JSValue {
-    return bun.new(ResourceUsage, .{ .rusage = rusage.* }).toJS(globalObject);
+pub fn create(rusage: *const Rusage, context: anytype) bun.JSError!ResourceUsageRef {
+    const resource_usage = bun.new(ResourceUsage, .{ .rusage = rusage.* });
+    return ResourceUsageClass.adoptResult(resource_usage, context);
 }
 
-pub fn getCPUTime(this: *ResourceUsage, globalObject: *JSGlobalObject) bun.JSError!JSValue {
-    var cpu = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
+pub fn getCPUTime(
+    this: *ResourceUsage,
+    context: bindgen.CallContext(CPUTimeSchema),
+    _: bindgen.Args(CPUTimeSchema),
+) bun.JSError!bindgen.Return(CPUTimeSchema) {
+    _ = context;
     const rusage = this.rusage;
 
-    const usrTime = try JSValue.fromTimevalNoTruncate(globalObject, rusage.utime.usec, rusage.utime.sec);
-    const sysTime = try JSValue.fromTimevalNoTruncate(globalObject, rusage.stime.usec, rusage.stime.sec);
+    const user = timevalMicroseconds(rusage.utime);
+    const system = timevalMicroseconds(rusage.stime);
+    const total = std.math.add(i64, user, system) catch unreachable;
 
-    cpu.putDirect(globalObject, jsc.ZigString.static("user"), usrTime);
-    cpu.putDirect(globalObject, jsc.ZigString.static("system"), sysTime);
-    cpu.putDirect(globalObject, jsc.ZigString.static("total"), JSValue.bigIntSum(globalObject, usrTime, sysTime));
-
-    return cpu.toJS();
+    return .{ .user = user, .system = system, .total = total };
 }
 
-pub fn getMaxRSS(this: *ResourceUsage, _: *JSGlobalObject) JSValue {
-    return jsc.JSValue.jsNumber(this.rusage.maxrss);
+fn timevalMicroseconds(value: anytype) i64 {
+    const seconds = std.math.mul(i64, value.sec, std.time.us_per_s) catch unreachable;
+    return std.math.add(i64, seconds, value.usec) catch unreachable;
 }
 
-pub fn getSharedMemorySize(this: *ResourceUsage, _: *JSGlobalObject) JSValue {
-    return jsc.JSValue.jsNumber(this.rusage.ixrss);
+pub fn getMaxRSS(
+    this: *ResourceUsage,
+    _: bindgen.CallContext(MaxRSSSchema),
+    _: bindgen.Args(MaxRSSSchema),
+) bun.JSError!f64 {
+    return @floatFromInt(this.rusage.maxrss);
 }
 
-pub fn getSwapCount(this: *ResourceUsage, _: *JSGlobalObject) JSValue {
-    return jsc.JSValue.jsNumber(this.rusage.nswap);
+pub fn getSharedMemorySize(
+    this: *ResourceUsage,
+    _: bindgen.CallContext(SharedMemorySizeSchema),
+    _: bindgen.Args(SharedMemorySizeSchema),
+) bun.JSError!f64 {
+    return @floatFromInt(this.rusage.ixrss);
 }
 
-pub fn getOps(this: *ResourceUsage, globalObject: *JSGlobalObject) JSValue {
-    var ops = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
-    ops.putDirect(globalObject, jsc.ZigString.static("in"), jsc.JSValue.jsNumber(this.rusage.inblock));
-    ops.putDirect(globalObject, jsc.ZigString.static("out"), jsc.JSValue.jsNumber(this.rusage.oublock));
-    return ops.toJS();
+pub fn getSwapCount(
+    this: *ResourceUsage,
+    _: bindgen.CallContext(SwapCountSchema),
+    _: bindgen.Args(SwapCountSchema),
+) bun.JSError!f64 {
+    return @floatFromInt(this.rusage.nswap);
 }
 
-pub fn getMessages(this: *ResourceUsage, globalObject: *JSGlobalObject) JSValue {
-    var msgs = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
-    msgs.putDirect(globalObject, jsc.ZigString.static("sent"), jsc.JSValue.jsNumber(this.rusage.msgsnd));
-    msgs.putDirect(globalObject, jsc.ZigString.static("received"), jsc.JSValue.jsNumber(this.rusage.msgrcv));
-    return msgs.toJS();
+pub fn getOps(
+    this: *ResourceUsage,
+    _: bindgen.CallContext(OpsSchema),
+    _: bindgen.Args(OpsSchema),
+) bun.JSError!bindgen.Return(OpsSchema) {
+    return .{
+        .input = @floatFromInt(this.rusage.inblock),
+        .output = @floatFromInt(this.rusage.oublock),
+    };
 }
 
-pub fn getSignalCount(this: *ResourceUsage, _: *JSGlobalObject) JSValue {
-    return jsc.JSValue.jsNumber(this.rusage.nsignals);
+pub fn getMessages(
+    this: *ResourceUsage,
+    _: bindgen.CallContext(MessagesSchema),
+    _: bindgen.Args(MessagesSchema),
+) bun.JSError!bindgen.Return(MessagesSchema) {
+    return .{
+        .sent = @floatFromInt(this.rusage.msgsnd),
+        .received = @floatFromInt(this.rusage.msgrcv),
+    };
 }
 
-pub fn getContextSwitches(this: *ResourceUsage, globalObject: *JSGlobalObject) JSValue {
-    var ctx = jsc.JSObject.createEmptyWithNullPrototype(globalObject);
-    ctx.putDirect(globalObject, jsc.ZigString.static("voluntary"), jsc.JSValue.jsNumber(this.rusage.nvcsw));
-    ctx.putDirect(globalObject, jsc.ZigString.static("involuntary"), jsc.JSValue.jsNumber(this.rusage.nivcsw));
-    return ctx.toJS();
+pub fn getSignalCount(
+    this: *ResourceUsage,
+    _: bindgen.CallContext(SignalCountSchema),
+    _: bindgen.Args(SignalCountSchema),
+) bun.JSError!f64 {
+    return @floatFromInt(this.rusage.nsignals);
 }
 
-pub fn finalize(this: *ResourceUsage) callconv(.c) void {
+pub fn getContextSwitches(
+    this: *ResourceUsage,
+    _: bindgen.CallContext(ContextSwitchesSchema),
+    _: bindgen.Args(ContextSwitchesSchema),
+) bun.JSError!bindgen.Return(ContextSwitchesSchema) {
+    return .{
+        .voluntary = @floatFromInt(this.rusage.nvcsw),
+        .involuntary = @floatFromInt(this.rusage.nivcsw),
+    };
+}
+
+pub fn destroy(this: *ResourceUsage) void {
     bun.destroy(this);
 }
 
 const bun = @import("bun");
 const Rusage = bun.spawn.Rusage;
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+const bindgen = bun.bindgen;
+
+const BindingModule = bindgen.Module("ResourceUsage");
+const ResourceUsageSchema = BindingModule.class("ResourceUsage");
+const ResourceUsageRef = bindgen.ClassRef(ResourceUsageSchema);
+const ContextSwitchesSchema = ResourceUsageSchema.member("contextSwitches");
+const CPUTimeSchema = ResourceUsageSchema.member("cpuTime");
+const MaxRSSSchema = ResourceUsageSchema.member("maxRSS");
+const MessagesSchema = ResourceUsageSchema.member("messages");
+const OpsSchema = ResourceUsageSchema.member("ops");
+const SharedMemorySizeSchema = ResourceUsageSchema.member("shmSize");
+const SignalCountSchema = ResourceUsageSchema.member("signalCount");
+const SwapCountSchema = ResourceUsageSchema.member("swapCount");
+const ResourceUsageClass = bindgen.Class(ResourceUsageSchema, ResourceUsage);
+
+comptime {
+    _ = ResourceUsageClass;
+}

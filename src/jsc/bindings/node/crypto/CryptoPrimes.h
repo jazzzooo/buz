@@ -1,66 +1,57 @@
 #pragma once
 
 #include "root.h"
-#include "helpers.h"
 #include "ncrypto.h"
+#include "Bindgen/NativeResult.h"
+#include <wtf/FastMalloc.h>
 
 namespace Bun {
 
 struct CheckPrimeJobCtx {
-    CheckPrimeJobCtx(ncrypto::BignumPointer candidate, int32_t checks);
-    ~CheckPrimeJobCtx();
+    CheckPrimeJobCtx(std::span<const uint8_t> candidate, int32_t checks);
+    ~CheckPrimeJobCtx() = default;
 
-    void runTask(JSC::JSGlobalObject* lexicalGlobalObject);
-    void runFromJS(JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSValue callback);
-    void deinit();
+    void runTask();
+    Bindgen::NativeAllocationResult<std::optional<bool>> takeResult();
 
     int32_t m_checks;
     ncrypto::BignumPointer m_candidate;
 
-    bool m_result { false };
+    std::optional<bool> m_result;
+    bool m_allocationFailed { false };
 
-    WTF_MAKE_TZONE_ALLOCATED(CheckPrimeJobCtx);
+    void operator delete(void* allocation) { WTF::fastFree(allocation); }
 };
 
-// Opaque struct created zig land
-struct CheckPrimeJob {
-    static CheckPrimeJob* create(JSC::JSGlobalObject*, ncrypto::BignumPointer candidate, int32_t checks, JSC::JSValue callback);
-    static void createAndSchedule(JSC::JSGlobalObject* globalObject, ncrypto::BignumPointer candidate, int32_t checks, JSC::JSValue callback);
-
-    void schedule();
+enum class GeneratePrimeJobStatus : uint8_t {
+    Success,
+    InvalidAdd,
+    InvalidRem,
+    OperationFailed,
 };
 
 struct GeneratePrimeJobCtx {
-    GeneratePrimeJobCtx(int32_t size, bool safe, ncrypto::BignumPointer prime, ncrypto::BignumPointer add, ncrypto::BignumPointer rem, bool bigint);
-    ~GeneratePrimeJobCtx();
+    GeneratePrimeJobCtx(
+        int32_t size,
+        bool safe,
+        std::optional<std::span<const uint8_t>> add,
+        std::optional<std::span<const uint8_t>> rem);
+    ~GeneratePrimeJobCtx() = default;
 
-    void runTask(JSC::JSGlobalObject* lexicalGlobalObject);
-    void runFromJS(JSC::JSGlobalObject* lexicalGlobalObject, JSC::JSValue callback);
-    void deinit();
+    GeneratePrimeJobStatus status() const;
+    void runTask();
+    Bindgen::NativeAllocationResult<std::optional<WTF::Vector<uint8_t>>> takeResult();
 
     int32_t m_size;
     bool m_safe;
-    bool m_bigint;
     ncrypto::BignumPointer m_add;
     ncrypto::BignumPointer m_rem;
     ncrypto::BignumPointer m_prime;
+    GeneratePrimeJobStatus m_status { GeneratePrimeJobStatus::Success };
+    bool m_hasResult { false };
+    bool m_allocationFailed { false };
 
-    WTF_MAKE_TZONE_ALLOCATED(GeneratePrimeJobCtx);
+    void operator delete(void* allocation) { WTF::fastFree(allocation); }
 };
-
-// Opaque struct created zig land
-struct GeneratePrimeJob {
-    static GeneratePrimeJob* create(JSC::JSGlobalObject*, int32_t size, bool safe, ncrypto::BignumPointer prime, ncrypto::BignumPointer add, ncrypto::BignumPointer rem, bool bigint, JSC::JSValue callback);
-    static void createAndSchedule(JSC::JSGlobalObject*, int32_t size, bool safe, ncrypto::BignumPointer prime, ncrypto::BignumPointer add, ncrypto::BignumPointer rem, bool bigint, JSC::JSValue callback);
-
-    static JSC::JSValue result(JSC::JSGlobalObject*, JSC::ThrowScope&, const ncrypto::BignumPointer& prime, bool bigint);
-
-    void schedule();
-};
-
-JSC_DECLARE_HOST_FUNCTION(jsCheckPrime);
-JSC_DECLARE_HOST_FUNCTION(jsCheckPrimeSync);
-JSC_DECLARE_HOST_FUNCTION(jsGeneratePrime);
-JSC_DECLARE_HOST_FUNCTION(jsGeneratePrimeSync);
 
 } // namespace Bun

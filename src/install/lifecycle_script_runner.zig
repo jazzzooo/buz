@@ -55,7 +55,7 @@ pub const LifecycleScriptSubprocess = struct {
         }
     }
 
-    pub fn eventLoop(this: *const LifecycleScriptSubprocess) *jsc.AnyEventLoop {
+    pub fn eventLoop(this: *const LifecycleScriptSubprocess) *RuntimeLoop {
         return &this.manager.event_loop;
     }
 
@@ -220,7 +220,7 @@ pub const LifecycleScriptSubprocess = struct {
             .cwd = cwd,
 
             .windows = if (Environment.isWindows) .{
-                .loop = jsc.EventLoopHandle.init(&manager.event_loop),
+                .loop = manager.event_loop.parentEventLoop(),
             },
 
             .stream = false,
@@ -230,9 +230,10 @@ pub const LifecycleScriptSubprocess = struct {
         this.started_at = bun.timespec.now(.allow_mocked_time).ns();
         this.manager.active_lifecycle_scripts.insert(this);
         var spawned = try (try bun.spawn.spawnProcess(&spawn_options, @ptrCast(&argv), this.envp)).unwrap();
+        defer spawned.close();
 
         if (comptime Environment.isPosix) {
-            if (spawned.stdout) |stdout| {
+            if (spawned.stdout.takeOwnedFd()) |stdout| {
                 if (!spawned.memfds[1]) {
                     this.stdout.setParent(this);
                     _ = bun.sys.setNonblocking(stdout);
@@ -248,7 +249,7 @@ pub const LifecycleScriptSubprocess = struct {
                     this.stdout.startMemfd(stdout);
                 }
             }
-            if (spawned.stderr) |stderr| {
+            if (spawned.stderr.takeOwnedFd()) |stderr| {
                 if (!spawned.memfds[2]) {
                     this.stderr.setParent(this);
                     _ = bun.sys.setNonblocking(stderr);
@@ -266,11 +267,13 @@ pub const LifecycleScriptSubprocess = struct {
             }
         } else if (comptime Environment.isWindows) {
             if (spawned.stdout == .buffer) {
+                this.stdout.source = .{ .pipe = spawned.stdout.take().buffer };
                 this.stdout.parent = this;
                 this.remaining_fds += 1;
                 try this.stdout.startWithCurrentPipe().unwrap();
             }
             if (spawned.stderr == .buffer) {
+                this.stderr.source = .{ .pipe = spawned.stderr.take().buffer };
                 this.stderr.parent = this;
                 this.remaining_fds += 1;
                 try this.stderr.startWithCurrentPipe().unwrap();
@@ -279,7 +282,7 @@ pub const LifecycleScriptSubprocess = struct {
 
         const event_loop = &this.manager.event_loop;
         var process = spawned.toProcess(
-            event_loop,
+            event_loop.runtimeLoopHandle(),
             false,
         );
 
@@ -604,6 +607,6 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 const Global = bun.Global;
 const Output = bun.Output;
-const jsc = bun.jsc;
+const RuntimeLoop = @import("../event_loop/RuntimeLoop.zig").RuntimeLoop;
 const Process = bun.spawn.Process;
 const Store = bun.install.Store;

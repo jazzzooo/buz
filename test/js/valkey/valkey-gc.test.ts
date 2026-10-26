@@ -186,7 +186,7 @@ test.concurrent("RedisClient survives subscribe() + close() against a server tha
 // client is then garbage collected. `updatePollRef` could be reached after
 // the JS wrapper was finalized, and `subscriptionCallbackMap()` would hit
 // `orelse unreachable` because `this_value.tryGet()` returns null for a
-// finalized JSRef.
+// finalized wrapper reference.
 
 test.concurrent("RedisClient survives GC after a command throws during argument validation", async () => {
   const src = `

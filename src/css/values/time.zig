@@ -106,7 +106,7 @@ pub const Time = union(Tag) {
         };
     }
 
-    pub fn tryFromToken(token: *const css.Token) css.Maybe(Time, void) {
+    pub fn tryFromToken(token: *const css.Token) css.Outcome(Time, void) {
         switch (token.*) {
             .dimension => |*dim| {
                 // todo_stuff.match_ignore_ascii_case

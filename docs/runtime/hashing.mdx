@@ -162,7 +162,7 @@ Bun.hash(arr.buffer);
 Bun.hash(new DataView(arr.buffer));
 ```
 
-Optionally, an integer seed can be specified as the second parameter. For 64-bit hashes seeds above `Number.MAX_SAFE_INTEGER` should be given as BigInt to avoid loss of precision.
+Optionally, an integer seed can be specified as the second parameter. Number seeds must be safe integers; use a BigInt for larger values. Seeds are reduced modulo the algorithm's 32-bit or 64-bit seed width, including negative seeds. Fractional, non-finite, and unsafe Number seeds throw.
 
 ```ts
 Bun.hash("some data here", 1234);

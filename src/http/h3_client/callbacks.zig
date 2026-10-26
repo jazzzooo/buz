@@ -78,9 +78,7 @@ fn onStreamOpen(s: *quic.Stream, is_client: c_int) callconv(.c) void {
     stream.qstream = s;
     s.ext(Stream).* = stream;
     log("stream_open", .{});
-    encode.writeRequest(session, stream, s) catch |err| {
-        session.fail(stream, err);
-    };
+    s.wantWrite(true);
 }
 
 fn onStreamHeaders(s: *quic.Stream) callconv(.c) void {
@@ -126,7 +124,11 @@ fn onStreamData(s: *quic.Stream, data: [*]const u8, len: c_uint, fin: c_int) cal
 
 fn onStreamWritable(s: *quic.Stream) callconv(.c) void {
     const stream = s.ext(Stream).* orelse return;
-    encode.drainSendBody(stream, s);
+    switch (stream.request_state) {
+        .headers => encode.writeRequest(stream.session, stream, s) catch |err| stream.session.fail(stream, err),
+        .body => encode.drainSendBody(stream, s) catch |err| stream.session.fail(stream, err),
+        .done => {},
+    }
 }
 
 fn onStreamClose(s: *quic.Stream) callconv(.c) void {

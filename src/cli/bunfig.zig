@@ -13,7 +13,7 @@ pub const Bunfig = struct {
         log: *logger.Log,
         allocator: std.mem.Allocator,
         bunfig: *api.TransformOptions,
-        ctx: Command.Context,
+        ctx: Context,
 
         fn addError(this: *Parser, loc: logger.Loc, comptime text: string) !void {
             this.log.addErrorOpts(text, .{
@@ -176,7 +176,7 @@ pub const Bunfig = struct {
             }
         }
 
-        pub fn parse(this: *Parser, comptime cmd: Command.Tag) !void {
+        pub fn parse(this: *Parser, comptime cmd: CommandTag) !void {
             bun.analytics.Features.bunfig += 1;
 
             const json = this.json;
@@ -822,7 +822,7 @@ pub const Bunfig = struct {
                             this.source,
                         ) catch |err| switch (err) {
                             error.OutOfMemory => |oom| return oom,
-                            error.UnexpectedExpr, error.InvalidRegExp => return error.@"Invalid Bunfig",
+                            error.UnexpectedExpr => return error.@"Invalid Bunfig",
                         };
                     }
 
@@ -834,7 +834,7 @@ pub const Bunfig = struct {
                             this.source,
                         ) catch |err| switch (err) {
                             error.OutOfMemory => |oom| return oom,
-                            error.UnexpectedExpr, error.InvalidRegExp => return error.@"Invalid Bunfig",
+                            error.UnexpectedExpr => return error.@"Invalid Bunfig",
                         };
                     }
                 }
@@ -1153,7 +1153,7 @@ pub const Bunfig = struct {
                         this.ctx.debug.macros = .{ .disable = {} };
                     }
                 } else {
-                    this.ctx.debug.macros = .{ .map = PackageJSON.parseMacrosJSON(allocator, expr, this.log, this.source) };
+                    this.ctx.debug.macros = .{ .map = try PackageJSON.parseMacrosJSON(allocator, expr, this.log, this.source) };
                 }
                 bun.analytics.Features.macros += 1;
             }
@@ -1250,7 +1250,7 @@ pub const Bunfig = struct {
         }
     };
 
-    pub fn parse(allocator: std.mem.Allocator, source: *const logger.Source, ctx: Command.Context, comptime cmd: Command.Tag) !void {
+    pub fn parse(allocator: std.mem.Allocator, source: *const logger.Source, ctx: Context, comptime cmd: CommandTag) !void {
         const log_count = ctx.log.errors + ctx.log.warnings;
 
         const expr = if (strings.eqlComptime(std.fs.path.extension(source.path.text), ".toml")) TOML.parse(source, ctx.log, allocator, true) catch |err| {
@@ -1288,9 +1288,9 @@ const string = []const u8;
 const options = @import("../bundler/options.zig");
 const resolver = @import("../resolver/resolver.zig");
 const std = @import("std");
-const Command = @import("./cli.zig").Command;
+const Context = @import("../options_types/Context.zig").Context;
+const CommandTag = @import("../options_types/CommandTag.zig").Tag;
 const PackageJSON = @import("../resolver/package_json.zig").PackageJSON;
-const TestCommand = @import("./test_command.zig").TestCommand;
 const URL = @import("../url/url.zig").URL;
 
 const bun = @import("bun");

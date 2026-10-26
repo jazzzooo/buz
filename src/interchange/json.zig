@@ -152,7 +152,7 @@ fn JSONLikeParser_(
                 .t_string_literal => {
                     var str: E.String = try p.lexer.toEString();
                     if (comptime force_utf8) {
-                        str.toUTF8(p.allocator) catch unreachable;
+                        try str.toUTF8(p.allocator);
                     }
 
                     try p.lexer.next();
@@ -190,7 +190,7 @@ fn JSONLikeParser_(
                             }
                         }
 
-                        exprs.append(try p.parseExpr(false, force_utf8)) catch unreachable;
+                        try exprs.append(try p.parseExpr(false, force_utf8));
                     }
 
                     if (p.lexer.has_newline_before) {
@@ -241,18 +241,18 @@ fn JSONLikeParser_(
 
                             // Warn about duplicate keys
                             if (duplicate_get_or_put.found_existing) {
-                                p.log.addRangeWarningFmt(p.source(), key_range, p.allocator, "Duplicate key \"{s}\" in object literal", .{try str.string(p.allocator)}) catch unreachable;
+                                try p.log.addRangeWarningFmt(p.source(), key_range, p.allocator, "Duplicate key \"{s}\" in object literal", .{try str.string(p.allocator)});
                             }
                         }
 
                         try p.lexer.expect(.t_colon);
                         const value = try p.parseExpr(false, force_utf8);
-                        properties.append(G.Property{
+                        try properties.append(G.Property{
                             .key = key,
                             .value = value,
                             .kind = js_ast.G.Property.Kind.normal,
                             .initializer = null,
-                        }) catch unreachable;
+                        });
                     }
 
                     if (p.lexer.has_newline_before) {
@@ -284,7 +284,7 @@ fn JSONLikeParser_(
 
             if (p.lexer.token == closer) {
                 if (comptime !opts.allow_trailing_commas) {
-                    p.log.addRangeError(p.source(), comma_range, "JSON does not support trailing commas") catch unreachable;
+                    try p.log.addRangeError(p.source(), comma_range, "JSON does not support trailing commas");
                 }
                 return false;
             }
@@ -475,7 +475,7 @@ pub const PackageJSONVersionChecker = struct {
 
         if (p.lexer.token == closer) {
             if (comptime !opts.allow_trailing_commas) {
-                p.log.addRangeError(p.source(), comma_range, "JSON does not support trailing commas") catch unreachable;
+                try p.log.addRangeError(p.source(), comma_range, "JSON does not support trailing commas");
             }
             return false;
         }

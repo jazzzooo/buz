@@ -2,140 +2,123 @@
 #include "JSNodeHTTPServerSocket.h"
 #include "JSSocketAddressDTO.h"
 #include "ZigGlobalObject.h"
-#include "ZigGeneratedClasses.h"
+#include "SchemaBindings.h"
 #include "helpers.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <wtf/text/WTFString.h>
-
-extern "C" EncodedJSValue us_socket_buffered_js_write(void* socket, bool is_ssl, bool ended, us_socket_stream_buffer_t* streamBuffer, JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue data, JSC::EncodedJSValue encoding);
-extern "C" uint64_t uws_res_get_remote_address_info(void* res, const char** dest, int* port, bool* is_ipv6);
-extern "C" uint64_t uws_res_get_local_address_info(void* res, const char** dest, int* port, bool* is_ipv6);
+#include "_libusockets.h"
 
 namespace Bun {
 
 using namespace JSC;
 using namespace WebCore;
 
-// Declare custom getters/setters and host functions
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterOnClose);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterOnDrain);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterClosed);
-JSC_DECLARE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterOnClose);
-JSC_DECLARE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterOnDrain);
-JSC_DECLARE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterOnData);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterOnData);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterBytesWritten);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionNodeHTTPServerSocketClose);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionNodeHTTPServerSocketWrite);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionNodeHTTPServerSocketEnd);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterResponse);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterRemoteAddress);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterLocalAddress);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterDuplex);
-JSC_DECLARE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterDuplex);
-JSC_DECLARE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterIsSecureEstablished);
-
-JSC_DEFINE_CUSTOM_SETTER(noOpSetter, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue value, JSC::PropertyName propertyName))
-{
-    return false;
-}
-
 const JSC::ClassInfo JSNodeHTTPServerSocketPrototype::s_info = { "NodeHTTPServerSocket"_s, &Base::s_info, nullptr, nullptr,
     CREATE_METHOD_TABLE(JSNodeHTTPServerSocketPrototype) };
 
-static const JSC::HashTableValue JSNodeHTTPServerSocketPrototypeTableValues[] = {
-    { "onclose"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterOnClose, jsNodeHttpServerSocketSetterOnClose } },
-    { "ondrain"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterOnDrain, jsNodeHttpServerSocketSetterOnDrain } },
-    { "ondata"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterOnData, jsNodeHttpServerSocketSetterOnData } },
-    { "bytesWritten"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterBytesWritten, noOpSetter } },
-    { "closed"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::ReadOnly), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterClosed, noOpSetter } },
-    { "response"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::ReadOnly), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterResponse, noOpSetter } },
-    { "duplex"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterDuplex, jsNodeHttpServerSocketSetterDuplex } },
-    { "remoteAddress"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::ReadOnly), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterRemoteAddress, noOpSetter } },
-    { "localAddress"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::ReadOnly), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterLocalAddress, noOpSetter } },
-    { "close"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | JSC::PropertyAttribute::DontEnum), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsFunctionNodeHTTPServerSocketClose, 0 } },
-    { "write"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | JSC::PropertyAttribute::DontEnum), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsFunctionNodeHTTPServerSocketWrite, 2 } },
-    { "end"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | JSC::PropertyAttribute::DontEnum), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsFunctionNodeHTTPServerSocketEnd, 0 } },
-    { "secureEstablished"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor | JSC::PropertyAttribute::ReadOnly), JSC::NoIntrinsic, { JSC::HashTableValue::GetterSetterType, jsNodeHttpServerSocketGetterIsSecureEstablished, noOpSetter } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_JSNodeHTTPServerSocketPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSNodeHTTPServerSocketPrototype
 
 void JSNodeHTTPServerSocketPrototype::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
-    reifyStaticProperties(vm, info(), JSNodeHTTPServerSocketPrototypeTableValues, *this);
+    bunBindgenObjectSurface_JSNodeHTTPServerSocketPrototype_install(vm, info(), *this);
     this->structure()->setMayBePrototype(true);
 }
 
-// Implementation of host functions
-JSC_DEFINE_HOST_FUNCTION(jsFunctionNodeHTTPServerSocketClose, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+static JSNodeHTTPServerSocket* serverSocket(JSC::JSValue value)
 {
-    auto* thisObject = dynamicDowncast<JSNodeHTTPServerSocket>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        return JSValue::encode(JSC::jsUndefined());
-    }
-    if (thisObject->isClosed()) {
-        return JSValue::encode(JSC::jsUndefined());
-    }
+    auto* socket = dynamicDowncast<JSNodeHTTPServerSocket>(value);
+    RELEASE_ASSERT(socket);
+    return socket;
+}
+
+static JSNodeHTTPServerSocket* serverSocket(const std::optional<JSC::JSValue>& value)
+{
+    return value ? serverSocket(*value) : nullptr;
+}
+
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketClose(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketClose_Arguments& args)
+{
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (!thisObject) [[unlikely]]
+        return;
+    if (thisObject->isClosed())
+        return;
     thisObject->close();
-
-    return JSValue::encode(JSC::jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionNodeHTTPServerSocketWrite, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+bool Bindgen::Engine::bunBindgenEngine_NodeHTTP_serverSocketIsWritable(
+    Bindgen::EngineCallContext&,
+    const Bindgen::Engine::BunBindgenEngine_NodeHTTP_serverSocketIsWritable_Arguments& args)
 {
-    auto* thisObject = dynamicDowncast<JSNodeHTTPServerSocket>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        return JSValue::encode(JSC::jsNumber(0));
-    }
+    auto* thisObject = serverSocket(args.socket);
+    return !thisObject->isClosed() && !thisObject->ended;
+}
+
+Bun::Bindgen::NodeHTTPServerSocketWriteResult Bindgen::Engine::bunBindgenEngine_NodeHTTP_serverSocketWriteBytes(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_NodeHTTP_serverSocketWriteBytes_Arguments& args)
+{
+    Bun::Bindgen::NodeHTTPServerSocketWriteResult result;
+    auto* thisObject = serverSocket(args.socket);
     if (thisObject->isClosed() || thisObject->ended) {
-        return JSValue::encode(JSC::jsNumber(0));
+        result.set_closed(0);
+        return result;
     }
-
-    return us_socket_buffered_js_write(thisObject->socket, thisObject->is_ssl, thisObject->ended, &thisObject->streamBuffer, globalObject, JSValue::encode(callFrame->argument(0)), JSValue::encode(callFrame->argument(1)));
+    result.set_written(Bun::Bindgen::ZigExports::bunBindgenZig_Socket_socketBufferedWrite(
+        &context.globalObject, thisObject->socket, thisObject->ended, thisObject->streamBuffer.get(), args.data));
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionNodeHTTPServerSocketEnd, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+std::optional<bool> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketEnd(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketEnd_Arguments& args)
 {
-    auto* thisObject = dynamicDowncast<JSNodeHTTPServerSocket>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        return JSValue::encode(JSC::jsUndefined());
-    }
-    if (thisObject->isClosed()) {
-        return JSValue::encode(JSC::jsUndefined());
-    }
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (!thisObject) [[unlikely]]
+        return std::nullopt;
+    if (thisObject->isClosed())
+        return std::nullopt;
 
     thisObject->ended = true;
-    auto bufferedSize = thisObject->streamBuffer.bufferedSize();
+    auto bufferedSize = thisObject->bufferedSize();
     if (bufferedSize == 0) {
-        return us_socket_buffered_js_write(thisObject->socket, thisObject->is_ssl, thisObject->ended, &thisObject->streamBuffer, globalObject, JSValue::encode(JSC::jsUndefined()), JSValue::encode(JSC::jsUndefined()));
+        return Bun::Bindgen::ZigExports::bunBindgenZig_Socket_socketBufferedWrite(
+            &context.globalObject, thisObject->socket, thisObject->ended, thisObject->streamBuffer.get(), {});
     }
-    return JSValue::encode(JSC::jsUndefined());
+    return std::nullopt;
 }
 
-// Implementation of custom getters
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterIsSecureEstablished, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetSecureEstablished(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetSecureEstablished_Arguments& args)
 {
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    return JSValue::encode(JSC::jsBoolean(thisObject->isAuthorized()));
+    return serverSocket(args.bindingThis)->isAuthorized();
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterDuplex, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetDuplex(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetDuplex_Arguments& args)
 {
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    if (thisObject->m_duplex) {
-        return JSValue::encode(thisObject->m_duplex.get());
-    }
-    return JSValue::encode(JSC::jsNull());
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (thisObject->m_duplex)
+        return thisObject->m_duplex.get();
+    return std::nullopt;
 }
 
-JSC_DEFINE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterDuplex, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, JSC::PropertyName propertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketSetDuplex(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketSetDuplex_Arguments& args)
 {
-    auto& vm = globalObject->vm();
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    JSValue value = JSC::JSValue::decode(encodedValue);
-    if (auto* object = value.getObject()) {
-        thisObject->m_duplex.set(vm, thisObject, object);
+    auto& vm = context.globalObject.vm();
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (args.value.is_object()) {
+        thisObject->m_duplex.set(vm, thisObject, args.value.object().getObject());
     } else {
         thisObject->m_duplex.clear();
     }
@@ -143,188 +126,191 @@ JSC_DEFINE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterDuplex, (JSC::JSGlobalObjec
     return true;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterRemoteAddress, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetRemoteAddress(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetRemoteAddress_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = globalObject->vm();
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
+    auto* thisObject = serverSocket(args.bindingThis);
     if (thisObject->m_remoteAddress) {
-        return JSValue::encode(thisObject->m_remoteAddress.get());
+        return thisObject->m_remoteAddress.get();
     }
 
     us_socket_t* socket = thisObject->socket;
     if (!socket) {
-        return JSValue::encode(JSC::jsNull());
+        return std::nullopt;
     }
 
     const char* address = nullptr;
     int port = 0;
     bool is_ipv6 = false;
 
-    uws_res_get_remote_address_info(socket, &address, &port, &is_ipv6);
+    uws_res_get_remote_address_info(reinterpret_cast<uws_res_t*>(socket), &address, &port, &is_ipv6);
 
     if (address == nullptr) {
-        return JSValue::encode(JSC::jsNull());
+        return std::nullopt;
     }
 
     auto addressString = WTF::String::fromUTF8(address);
     if (addressString.isEmpty()) {
-        return JSValue::encode(JSC::jsNull());
+        return std::nullopt;
     }
 
     auto* object = JSSocketAddressDTO::create(defaultGlobalObject(globalObject), jsString(vm, addressString), port, is_ipv6);
     thisObject->m_remoteAddress.set(vm, thisObject, object);
-    return JSValue::encode(object);
+    return object;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterLocalAddress, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetLocalAddress(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetLocalAddress_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = globalObject->vm();
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
+    auto* thisObject = serverSocket(args.bindingThis);
     if (thisObject->m_localAddress) {
-        return JSValue::encode(thisObject->m_localAddress.get());
+        return thisObject->m_localAddress.get();
     }
 
     us_socket_t* socket = thisObject->socket;
     if (!socket) {
-        return JSValue::encode(JSC::jsNull());
+        return std::nullopt;
     }
 
     const char* address = nullptr;
     int port = 0;
     bool is_ipv6 = false;
 
-    uws_res_get_local_address_info(socket, &address, &port, &is_ipv6);
+    uws_res_get_local_address_info(reinterpret_cast<uws_res_t*>(socket), &address, &port, &is_ipv6);
 
     if (address == nullptr) {
-        return JSValue::encode(JSC::jsNull());
+        return std::nullopt;
     }
 
     auto addressString = WTF::String::fromUTF8(address);
     if (addressString.isEmpty()) {
-        return JSValue::encode(JSC::jsNull());
+        return std::nullopt;
     }
 
     auto* object = JSSocketAddressDTO::create(defaultGlobalObject(globalObject), jsString(vm, addressString), port, is_ipv6);
     thisObject->m_localAddress.set(vm, thisObject, object);
-    return JSValue::encode(object);
+    return object;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterOnClose, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetOnClose(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetOnClose_Arguments& args)
 {
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (thisObject->functionToCallOnClose)
+        return thisObject->functionToCallOnClose.get();
 
-    if (thisObject->functionToCallOnClose) {
-        return JSValue::encode(thisObject->functionToCallOnClose.get());
-    }
-
-    return JSValue::encode(JSC::jsUndefined());
+    return std::nullopt;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterOnDrain, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetOnDrain(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetOnDrain_Arguments& args)
 {
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (thisObject->functionToCallOnDrain)
+        return thisObject->functionToCallOnDrain.get();
 
-    if (thisObject->functionToCallOnDrain) {
-        return JSValue::encode(thisObject->functionToCallOnDrain.get());
-    }
-
-    return JSValue::encode(JSC::jsUndefined());
+    return std::nullopt;
 }
 
-JSC_DEFINE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterOnDrain, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, JSC::PropertyName propertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketSetOnDrain(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketSetOnDrain_Arguments& args)
 {
-    auto& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    JSValue value = JSC::JSValue::decode(encodedValue);
-
-    if (value.isUndefined() || value.isNull()) {
+    auto& vm = context.globalObject.vm();
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (args.value.is_undefined_value() || args.value.is_null_value()) {
         thisObject->functionToCallOnDrain.clear();
         return true;
     }
 
-    if (!value.isCallable()) {
+    if (!args.value.is_callable()) {
         return false;
     }
 
-    thisObject->functionToCallOnDrain.set(vm, thisObject, value.getObject());
+    thisObject->functionToCallOnDrain.set(vm, thisObject, args.value.callable().getObject());
     return true;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterOnData, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetOnData(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetOnData_Arguments& args)
 {
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (thisObject->functionToCallOnData)
+        return thisObject->functionToCallOnData.get();
 
-    if (thisObject->functionToCallOnData) {
-        return JSValue::encode(thisObject->functionToCallOnData.get());
-    }
-
-    return JSValue::encode(JSC::jsUndefined());
+    return std::nullopt;
 }
 
-JSC_DEFINE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterOnData, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, JSC::PropertyName propertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketSetOnData(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketSetOnData_Arguments& args)
 {
-    auto& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    JSValue value = JSC::JSValue::decode(encodedValue);
-
-    if (value.isUndefined() || value.isNull()) {
+    auto& vm = context.globalObject.vm();
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (args.value.is_undefined_value() || args.value.is_null_value()) {
         thisObject->functionToCallOnData.clear();
         return true;
     }
 
-    if (!value.isCallable()) {
+    if (!args.value.is_callable()) {
         return false;
     }
 
-    thisObject->functionToCallOnData.set(vm, thisObject, value.getObject());
+    thisObject->functionToCallOnData.set(vm, thisObject, args.value.callable().getObject());
     return true;
 }
 
-JSC_DEFINE_CUSTOM_SETTER(jsNodeHttpServerSocketSetterOnClose, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::EncodedJSValue encodedValue, JSC::PropertyName propertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketSetOnClose(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketSetOnClose_Arguments& args)
 {
-    auto& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    JSValue value = JSC::JSValue::decode(encodedValue);
-
-    if (value.isUndefined() || value.isNull()) {
+    auto& vm = context.globalObject.vm();
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (args.value.is_undefined_value() || args.value.is_null_value()) {
         thisObject->functionToCallOnClose.clear();
         return true;
     }
 
-    if (!value.isCallable()) {
+    if (!args.value.is_callable()) {
         return false;
     }
 
-    thisObject->functionToCallOnClose.set(vm, thisObject, value.getObject());
+    thisObject->functionToCallOnClose.set(vm, thisObject, args.value.callable().getObject());
     return true;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterClosed, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName propertyName))
+bool Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetClosed(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetClosed_Arguments& args)
 {
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    return JSValue::encode(JSC::jsBoolean(thisObject->isClosed()));
+    return serverSocket(args.bindingThis)->isClosed();
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterBytesWritten, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName propertyName))
+double Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetBytesWritten(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetBytesWritten_Arguments& args)
 {
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    return JSValue::encode(JSC::jsNumber(thisObject->streamBuffer.totalBytesWritten()));
+    return static_cast<double>(serverSocket(args.bindingThis)->totalBytesWritten());
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsNodeHttpServerSocketGetterResponse, (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName propertyName))
+std::optional<JSC::JSValue> Bindgen::Cpp::bunBindgenCpp_NodeHTTP_serverSocketGetResponse(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_serverSocketGetResponse_Arguments& args)
 {
-    auto* thisObject = uncheckedDowncast<JSNodeHTTPServerSocket>(JSC::JSValue::decode(thisValue));
-    if (!thisObject->currentResponseObject) {
-        return JSValue::encode(JSC::jsNull());
-    }
+    auto* thisObject = serverSocket(args.bindingThis);
+    if (!thisObject->currentResponseObject)
+        return std::nullopt;
 
-    return JSValue::encode(thisObject->currentResponseObject.get());
+    return thisObject->currentResponseObject.get();
 }
 
 } // namespace Bun

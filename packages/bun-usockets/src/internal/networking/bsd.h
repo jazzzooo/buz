@@ -226,7 +226,9 @@ LIBUS_SOCKET_DESCRIPTOR bsd_create_listen_socket(const char *host, int port, int
 LIBUS_SOCKET_DESCRIPTOR bsd_create_listen_socket_unix(const char *path, size_t pathlen, int options, int* error);
 
 /* Creates an UDP socket bound to the hostname and port */
-LIBUS_SOCKET_DESCRIPTOR bsd_create_udp_socket(const char *host, int port, int options, int *err);
+struct us_udp_error_t;
+LIBUS_SOCKET_DESCRIPTOR bsd_create_udp_socket(const char *host, int port, int options, struct us_udp_error_t *err);
+int bsd_socket_error(LIBUS_SOCKET_DESCRIPTOR fd);
 int bsd_connect_udp_socket(LIBUS_SOCKET_DESCRIPTOR fd, const char *host, int port);
 int bsd_disconnect_udp_socket(LIBUS_SOCKET_DESCRIPTOR fd);
 

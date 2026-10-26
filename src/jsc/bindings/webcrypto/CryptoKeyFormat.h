@@ -25,16 +25,13 @@
 
 #pragma once
 
+#include "SchemaBindingsEnumerations.h"
+
 #if ENABLE(WEB_CRYPTO)
 
 namespace WebCore {
 
-enum class CryptoKeyFormat {
-    Raw,
-    Spki,
-    Pkcs8,
-    Jwk
-};
+using CryptoKeyFormat = Bun::Bindgen::SubtleCryptoKeyFormat;
 
 }
 

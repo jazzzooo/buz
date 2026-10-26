@@ -40,19 +40,8 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
             socket: Socket = .detached,
         };
 
-        /// Shared embedded group for this channel. Uses `.dynamic` kind +
-        /// per-Owner vtable because the test-parallel channel is an
-        /// internal-only one-off whose ext type (`*Self`) varies by Owner —
-        /// not worth a `SocketKind` value of its own. The per-file isolation
-        /// swap skips `rare.test_parallel_ipc_group` so the coordinator link
-        /// survives.
-        fn ensurePosixGroup(vm: *jsc.VirtualMachine) *uws.SocketGroup {
-            const g = vm.rareData().testParallelIPCGroup(vm);
-            // First Owner to call wins the vtable; coordinator and worker run
-            // in separate processes so there's never more than one Owner type
-            // sharing this group.
-            if (g.vtable == null) g.vtable = uws.vtable.make(PosixHandlers);
-            return g;
+        pub fn socketVTable() *const uws.SocketGroup.VTable {
+            return uws.vtable.make(PosixHandlers);
         }
 
         // -- Windows (uv.Pipe) ---------------------------------------------
@@ -71,10 +60,12 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
 
         // -- adopt ---------------------------------------------------------
 
+        pub const AdoptContext = if (Environment.isWindows) void else *uws.SocketGroup;
+
         /// Adopt a duplex fd into the channel and start reading. POSIX: the
         /// socketpair end. Windows: the inherited named-pipe end (worker side).
-        pub fn adopt(self: *Self, vm: *jsc.VirtualMachine, fd: bun.FD) bool {
-            if (Environment.isWindows) {
+        pub fn adopt(self: *Self, context: AdoptContext, fd: bun.FD) bool {
+            if (comptime Environment.isWindows) {
                 // ipc=true matches ipc.zig windowsConfigureClient. With ipc=true
                 // libuv wraps reads/writes in its own framing; both ends use it
                 // so the wrapping is transparent and our payload bytes pass
@@ -93,22 +84,26 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
                     pipe.closeAndDestroy();
                     return false;
                 };
-                if (!self.adoptPipe(vm, pipe)) {
+                if (!self.adoptPipe(pipe)) {
                     pipe.closeAndDestroy();
                     return false;
                 }
                 return true;
+            } else {
+                bun.assert(context.vtable == socketVTable());
+                const sock = switch (Socket.fromFd(context, .dynamic, fd, Self, self, null, true)) {
+                    .socket => |socket| socket,
+                    .failed => |failure| {
+                        bun.Output.debugWarn("Channel.adopt: socket adoption failed: {any}", .{failure});
+                        // The caller retains the inherited endpoint when adoption fails.
+                        _ = fd.closeAllowingStandardIo(null);
+                        return false;
+                    },
+                };
+                self.backend.socket = sock;
+                sock.setTimeout(0);
+                return true;
             }
-            const g = ensurePosixGroup(vm);
-            const sock = Socket.fromFd(g, .dynamic, fd, Self, self, null, true) orelse {
-                // us_socket_from_fd does NOT take ownership on failure; leaving
-                // the inherited IPC endpoint open keeps the peer process alive.
-                fd.close();
-                return false;
-            };
-            self.backend.socket = sock;
-            sock.setTimeout(0);
-            return true;
         }
 
         /// Windows-only: adopt a `uv.Pipe` already initialized by spawn (the
@@ -123,7 +118,7 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
         /// is closed explicitly in `close()` / `deinit()`, and both sides exit
         /// via Global.exit / drive() returning, so the extra ref never holds
         /// the process open.
-        pub fn adoptPipe(self: *Self, _: *jsc.VirtualMachine, pipe: *uv.Pipe) bool {
+        pub fn adoptPipe(self: *Self, pipe: *uv.Pipe) bool {
             if (comptime !Environment.isWindows) @compileError("adoptPipe is Windows-only");
             pipe.readStart(self, WindowsHandlers.onAlloc, WindowsHandlers.onError, WindowsHandlers.onRead).unwrap() catch |e| {
                 bun.Output.debugWarn("Channel.adoptPipe: readStart failed: {s}", .{@errorName(e)});
@@ -342,5 +337,4 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const jsc = bun.jsc;
 const uws = bun.uws;

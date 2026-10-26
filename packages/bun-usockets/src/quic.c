@@ -12,6 +12,7 @@
 #include <openssl/x509v3.h>
 
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
@@ -23,9 +24,6 @@
 #include <ws2tcpip.h>
 #endif
 
-extern SSL_CTX *us_ssl_ctx_build_raw(
-    struct us_bun_socket_context_options_t options,
-    enum create_bun_socket_error_t *err);
 extern X509_STORE *us_get_default_ca_store(void);
 
 #define US_QUIC_READ_BUF (16 * 1024)
@@ -58,11 +56,7 @@ struct us_quic_socket_context_s {
     int is_client;
     unsigned int conn_count;
     unsigned int conn_ext_size;
-    /* Stream bytes written since the last process_conns. Once this exceeds
-     * roughly one full sendmmsg(64) batch, flush immediately instead of
-     * waiting for loop_post — keeps large bodies streaming while small
-     * responses still batch. */
-    unsigned int pending_write_bytes;
+    int pending_write;
     struct us_quic_socket_context_s *next; /* loop->data.quic_head list */
     unsigned int stream_ext_size;
     /* Listen sockets stay reachable as lsquic peer_ctx after the UDP fd
@@ -141,18 +135,12 @@ struct us_quic_stream_s {
  * free the stream while a method is still touching it.
  */
 
-#ifdef LIBUS_USE_LIBUV
-static void us_quic_on_timer(struct us_timer_t *t) {
-    us_quic_loop_process(us_timer_loop(t));
-}
-#endif
-
 void us_quic_loop_process(struct us_loop_t *loop) {
     int min_diff = 0, have_tick = 0;
     for (us_quic_socket_context_t *ctx = loop->data.quic_head; ctx; ctx = ctx->next) {
         if (ctx->processing || !ctx->engine) continue;
         ctx->processing = 1;
-        ctx->pending_write_bytes = 0;
+        ctx->pending_write = 0;
         lsquic_engine_process_conns(ctx->engine);
         ctx->processing = 0;
         int diff;
@@ -168,10 +156,12 @@ void us_quic_loop_process(struct us_loop_t *loop) {
     loop->data.quic_next_tick_us = have_tick ? (min_diff < 0 ? 0 : min_diff) : -1;
 #ifdef LIBUS_USE_LIBUV
     if (have_tick) {
-        if (!loop->data.quic_timer)
-            loop->data.quic_timer = us_create_timer(loop, 1, 0);
-        int ms = min_diff <= 0 ? 1 : (min_diff + 999) / 1000;
-        us_timer_set(loop->data.quic_timer, us_quic_on_timer, ms, 0);
+        int ms = min_diff <= 0 ? 1 : (int)(((int64_t)min_diff + 999) / 1000);
+        struct us_poll_error_t failure;
+        // The loop owns this initialized libuv timer and its fixed callback.
+        if (us_internal_timer_set(loop->data.quic_timer, ms, 0, &failure) != 0) {
+            BUN_PANIC("cannot arm a live loop's QUIC timer");
+        }
     }
 #endif
 }
@@ -181,7 +171,7 @@ void us_quic_loop_process(struct us_loop_t *loop) {
  * pointer walk and return. */
 void us_quic_loop_flush_if_pending(struct us_loop_t *loop) {
     for (us_quic_socket_context_t *ctx = loop->data.quic_head; ctx; ctx = ctx->next) {
-        if (ctx->pending_write_bytes && !ctx->processing) {
+        if (ctx->pending_write && !ctx->processing) {
             us_quic_loop_process(loop);
             return;
         }
@@ -669,7 +659,7 @@ us_quic_socket_context_t *us_create_quic_socket_context(
     unsigned int ext_size, unsigned int idle_timeout_s)
 {
     enum create_bun_socket_error_t ssl_err = 0;
-    SSL_CTX *ssl = us_ssl_ctx_build_raw(options, &ssl_err);
+    SSL_CTX *ssl = us_ssl_ctx_from_options(options, &ssl_err);
     if (!ssl) return NULL;
     us_quic_prepare_ssl_ctx(ssl);
 
@@ -729,7 +719,7 @@ int us_quic_socket_context_add_server_name(us_quic_socket_context_t *ctx,
     const char *hostname, struct us_bun_socket_context_options_t options)
 {
     enum create_bun_socket_error_t ssl_err = 0;
-    SSL_CTX *ssl = us_ssl_ctx_build_raw(options, &ssl_err);
+    SSL_CTX *ssl = us_ssl_ctx_from_options(options, &ssl_err);
     if (!ssl) return -1;
     us_quic_prepare_ssl_ctx(ssl);
     if (ctx->sni_count == ctx->sni_cap) {
@@ -833,7 +823,7 @@ us_quic_listen_socket_t *us_quic_socket_context_listen(
     if (!ls) return NULL;
     ls->ctx = ctx;
 
-    int err = 0;
+    struct us_udp_error_t err = {0};
     ls->udp = us_create_udp_socket(ctx->loop,
         us_quic_udp_on_data, us_quic_udp_on_drain, us_quic_udp_on_close, NULL,
         host, (unsigned short) port, flags, &err, ls);
@@ -899,18 +889,19 @@ DEF_CB(on_stream_close, void (*cb)(us_quic_stream_t *))
 
 int us_quic_stream_write(us_quic_stream_t *s, const char *data, unsigned int len) {
     if (!s->stream) return -1;
+    if (len > INT_MAX) len = INT_MAX;
     ssize_t w = lsquic_stream_write(s->stream, data, len);
     if (w >= 0 && (unsigned int) w < len) lsquic_stream_wantwrite(s->stream, 1);
     /* lsquic_stream_write only buffers; without a flush the connection isn't
      * marked tickable and small writes sit until an unrelated alarm fires.
      * flush() schedules the buffered bytes for the next process_conns — it
      * doesn't force a packet per call, so back-to-back writes still coalesce.
-     * pending_write_bytes is the gate for drainQuicIfNecessary / loop_pre.
+     * pending_write is the gate for drainQuicIfNecessary / loop_pre.
      * Don't call us_quic_loop_process here — process_conns inside an
      * Http3Response method could free this stream via on_close. */
     if (w > 0) {
-        lsquic_stream_flush(s->stream);
-        s->ctx->pending_write_bytes += (unsigned int) w;
+        s->ctx->pending_write = 1;
+        if (lsquic_stream_flush(s->stream) < 0) return -1;
     }
     return (int) w;
 }
@@ -923,28 +914,30 @@ void us_quic_stream_want_write(us_quic_stream_t *s, int want) {
     if (s->stream) lsquic_stream_wantwrite(s->stream, want);
 }
 
-int us_quic_stream_send_informational(us_quic_stream_t *s, const char *status3) {
-    if (!s->stream) return -1;
-    char buf[10];
-    memcpy(buf, ":status", 7);
-    memcpy(buf + 7, status3, 3);
-    struct lsxpack_header xh;
-    lsxpack_header_set_offset2(&xh, buf, 0, 7, 7, 3);
-    lsquic_http_headers_t lh = { .count = 1, .headers = &xh };
-    return lsquic_stream_send_headers(s->stream, &lh, 0);
+us_quic_header_status_t us_quic_stream_send_informational(us_quic_stream_t *s, const char *status3) {
+    const struct us_quic_header_t header = { ":status", 7, status3, 3, -1 };
+    return us_quic_stream_send_headers(s, &header, 1, 0);
 }
 
-int us_quic_stream_send_headers(us_quic_stream_t *s,
+us_quic_header_status_t us_quic_stream_send_headers(us_quic_stream_t *s,
     const struct us_quic_header_t *headers, unsigned int count, int end_stream)
 {
-    if (!s->stream) return -1;
+    if (!s->stream) return US_QUIC_HEADERS_STREAM_ERROR;
+    if (count > INT_MAX) return US_QUIC_HEADERS_INVALID;
 
     /* lsxpack_header addresses name+value as offsets into a single buffer,
      * so each pair has to be contiguous. The caller hands us arbitrary
      * pointers, so flatten here. */
     size_t total = 0;
-    for (unsigned int i = 0; i < count; i++)
-        total += headers[i].name_len + headers[i].value_len;
+    for (unsigned int i = 0; i < count; i++) {
+        const struct us_quic_header_t *h = &headers[i];
+        if (!h->name_len || h->name_len > LSXPACK_MAX_STRLEN || h->value_len > LSXPACK_MAX_STRLEN
+            || h->qpack_index < -1 || h->qpack_index > 98)
+            return US_QUIC_HEADERS_INVALID;
+        size_t pair_size = (size_t) h->name_len + h->value_len;
+        if (pair_size > SIZE_MAX - total) return US_QUIC_HEADERS_OUT_OF_MEMORY;
+        total += pair_size;
+    }
 
     char stackbuf[1024];
     char *buf = total <= sizeof(stackbuf) ? stackbuf : (char *) malloc(total);
@@ -954,36 +947,45 @@ int us_quic_stream_send_headers(us_quic_stream_t *s,
     if (!buf || !xh) {
         if (buf != stackbuf) free(buf);
         if (xh != stackh) free(xh);
-        return -1;
+        return US_QUIC_HEADERS_OUT_OF_MEMORY;
     }
 
     size_t off = 0;
     for (unsigned int i = 0; i < count; i++) {
         const struct us_quic_header_t *h = &headers[i];
         memcpy(buf + off, h->name, h->name_len);
-        memcpy(buf + off + h->name_len, h->value, h->value_len);
-        lsxpack_header_set_offset2(&xh[i], buf, off, h->name_len,
-            off + h->name_len, h->value_len);
+        if (h->value_len) memcpy(buf + off + h->name_len, h->value, h->value_len);
+        lsxpack_header_set_offset2(&xh[i], buf + off, 0, h->name_len,
+            h->name_len, h->value_len);
         if (h->qpack_index >= 0) {
             xh[i].qpack_index = (uint8_t) h->qpack_index;
             xh[i].flags = LSXPACK_QPACK_IDX;
         }
-        off += h->name_len + h->value_len;
+        off += (size_t) h->name_len + h->value_len;
     }
 
     lsquic_http_headers_t lh = { .count = (int) count, .headers = xh };
     int r = lsquic_stream_send_headers(s->stream, &lh, end_stream);
     if (buf != stackbuf) free(buf);
     if (xh != stackh) free(xh);
-    if (end_stream && r == 0) lsquic_stream_shutdown(s->stream, 1);
+    if (r != 0) {
+        /* Header encoding can advance connection-wide QPACK state before failing. */
+        lsquic_conn_abort(lsquic_stream_conn(s->stream));
+        s->ctx->pending_write = 1;
+        return US_QUIC_HEADERS_STREAM_ERROR;
+    }
+    if (end_stream && us_quic_stream_shutdown(s) < 0) return US_QUIC_HEADERS_STREAM_ERROR;
     /* Mark the context dirty so drainQuicIfNecessary picks up header-only
      * responses (204/304) that never call us_quic_stream_write. */
-    if (r == 0) s->ctx->pending_write_bytes += (unsigned int) total + 1;
-    return r;
+    s->ctx->pending_write = 1;
+    return US_QUIC_HEADERS_SUCCESS;
 }
 
-void us_quic_stream_shutdown(us_quic_stream_t *s) {
-    if (s->stream) lsquic_stream_shutdown(s->stream, 1);
+int us_quic_stream_shutdown(us_quic_stream_t *s) {
+    if (!s->stream) return -1;
+    const int result = lsquic_stream_shutdown(s->stream, 1);
+    s->ctx->pending_write = 1;
+    return result;
 }
 
 /* lsquic_stream_write buffers until a full packet or shutdown; force the
@@ -991,16 +993,22 @@ void us_quic_stream_shutdown(us_quic_stream_t *s) {
 void us_quic_stream_flush(us_quic_stream_t *s) {
     if (s->stream) {
         lsquic_stream_flush(s->stream);
-        s->ctx->pending_write_bytes++;
+        s->ctx->pending_write = 1;
     }
 }
 
 void us_quic_stream_shutdown_read(us_quic_stream_t *s) {
-    if (s->stream) lsquic_stream_shutdown(s->stream, 0);
+    if (s->stream) {
+        lsquic_stream_shutdown(s->stream, 0);
+        s->ctx->pending_write = 1;
+    }
 }
 
 void us_quic_stream_close(us_quic_stream_t *s) {
-    if (s->stream) lsquic_stream_close(s->stream);
+    if (s->stream) {
+        lsquic_stream_close(s->stream);
+        s->ctx->pending_write = 1;
+    }
 }
 
 /* From lsquic_stream.h (not in the public header). */
@@ -1014,7 +1022,10 @@ void lsquic_stream_maybe_reset(struct lsquic_stream *, uint64_t error_code, int)
  * the wire-level "I'm cancelling this send" and lets the server treat it
  * as a stream-level cancellation rather than a malformed message. */
 void us_quic_stream_reset(us_quic_stream_t *s) {
-    if (s->stream) lsquic_stream_maybe_reset(s->stream, 0x10C, 1);
+    if (s->stream) {
+        lsquic_stream_maybe_reset(s->stream, 0x10C, 1);
+        s->ctx->pending_write = 1;
+    }
 }
 
 int us_quic_stream_has_unacked(us_quic_stream_t *s) {
@@ -1191,12 +1202,12 @@ static us_quic_listen_socket_t *us_quic_client_endpoint(us_quic_socket_context_t
     us_quic_listen_socket_t *ls = (us_quic_listen_socket_t *) calloc(1, sizeof(*ls));
     if (!ls) return NULL;
     ls->ctx = ctx;
-    int err = 0;
+    struct us_udp_error_t err = {0};
     ls->udp = us_create_udp_socket(ctx->loop,
         us_quic_udp_on_data, us_quic_udp_on_drain, us_quic_udp_on_close, NULL,
         "::", 0, 0, &err, ls);
     if (!ls->udp) {
-        err = 0;
+        err = (struct us_udp_error_t){0};
         ls->udp = us_create_udp_socket(ctx->loop,
             us_quic_udp_on_data, us_quic_udp_on_drain, us_quic_udp_on_close, NULL,
             "0.0.0.0", 0, 0, &err, ls);
@@ -1214,6 +1225,7 @@ static us_quic_listen_socket_t *us_quic_client_endpoint(us_quic_socket_context_t
 static us_quic_socket_t *us_quic_connect_addr(us_quic_socket_context_t *ctx,
     const struct sockaddr *peer, const char *sni, int reject_unauthorized)
 {
+    errno = 0;
     us_quic_listen_socket_t *ls = us_quic_client_endpoint(ctx);
     if (!ls) return NULL;
 
@@ -1230,6 +1242,7 @@ static us_quic_socket_t *us_quic_connect_addr(us_quic_socket_context_t *ctx,
         memcpy(&m->sin6_addr.s6_addr[12], &p4->sin_addr, 4);
         peer = (const struct sockaddr *) m;
     } else if (ls->local.ss_family != peer->sa_family) {
+        errno = EAFNOSUPPORT;
         return NULL;
     }
 
@@ -1238,38 +1251,39 @@ static us_quic_socket_t *us_quic_connect_addr(us_quic_socket_context_t *ctx,
         sni, 0, NULL, 0, NULL, 0);
     if (!conn) return NULL;
     us_quic_socket_t *qs = (us_quic_socket_t *) lsquic_conn_get_ctx(conn);
-    if (qs) {
-        qs->reject_unauthorized = reject_unauthorized;
-        if (sni) {
-            qs->hostname = strdup(sni);
-            if (!qs->hostname) {
-                lsquic_conn_close(conn);
-                return NULL;
-            }
+    if (!qs) {
+        lsquic_conn_close(conn);
+        errno = ENOMEM;
+        return NULL;
+    }
+    qs->reject_unauthorized = reject_unauthorized;
+    if (sni) {
+        qs->hostname = strdup(sni);
+        if (!qs->hostname) {
+            lsquic_conn_close(conn);
+            errno = ENOMEM;
+            return NULL;
         }
     }
     /* Don't us_quic_process here — the caller hasn't written its session
      * pointer into the conn ext yet, and process_conns can fire on_hsk_done /
-     * on_conn_closed with that slot still NULL. pending_write_bytes++ ensures
+     * on_conn_closed with that slot still NULL. Marking pending_write ensures
      * loop_pre sends the Initial flight on the very next tick. */
-    ctx->pending_write_bytes++;
+    ctx->pending_write = 1;
     return qs;
 }
 
-/* `host` may be an IP literal or hostname. IP literals and cached lookups
- * connect synchronously (return 1 with *out_qs set). Uncached hostnames
- * return 0 and stash a pending-connect record; the caller must register a
- * DNS callback that invokes us_quic_pending_connect_resolved(). -1 on error. */
 /* Walk the resolved address list and connect to the first reachable entry.
  * lsquic_engine_connect succeeds even for addresses the kernel can't route
  * (the ENETUNREACH only surfaces in packets_out later), so probe each entry
  * with a throwaway UDP connect() — that does a route lookup and fails fast on
  * v6 results when the host has no v6 route, letting us fall through to A. */
 static us_quic_socket_t *us_quic_connect_result(us_quic_socket_context_t *ctx,
-    struct addrinfo_result *res, int port, const char *sni, int reject_unauthorized)
+    const struct addrinfo *addresses, int port, const char *sni, int reject_unauthorized)
 {
-    for (struct addrinfo *ai = &res->entries->info; ai; ai = ai->ai_next) {
-        struct sockaddr_storage peer;
+    errno = 0;
+    for (const struct addrinfo *ai = addresses; ai; ai = ai->ai_next) {
+        struct sockaddr_storage peer = { 0 };
         memcpy(&peer, ai->ai_addr, ai->ai_addrlen);
         if (peer.ss_family == AF_INET)
             ((struct sockaddr_in *) &peer)->sin_port = htons((unsigned short) port);
@@ -1302,6 +1316,7 @@ static us_quic_socket_t *us_quic_connect_result(us_quic_socket_context_t *ctx,
         us_quic_socket_t *qs = us_quic_connect_addr(ctx, (struct sockaddr *) &peer,
             sni, reject_unauthorized);
         if (qs) return qs;
+        if (errno == ENOMEM) return NULL;
     }
     return NULL;
 }
@@ -1311,7 +1326,7 @@ struct us_quic_pending_connect_s {
     char *sni;
     int port;
     int reject_unauthorized;
-    struct addrinfo_request *ai_req;
+    BunDNSRequest *ai_req;
     void *user;
 };
 
@@ -1328,63 +1343,73 @@ int us_quic_socket_context_connect(
     if (us_quic_resolve(host, port, &peer_ss) == 0) {
         *out_qs = us_quic_connect_addr(ctx, (struct sockaddr *) &peer_ss, sni,
             reject_unauthorized);
-        return *out_qs ? 1 : -1;
+        return *out_qs ? US_QUIC_CONNECT_READY : errno == ENOMEM ? US_QUIC_CONNECT_OUT_OF_MEMORY : US_QUIC_CONNECT_FAILED;
     }
 
-    struct addrinfo_request *ai_req = NULL;
-    int cached = Bun__addrinfo_get(ctx->loop, host, (uint16_t) port, &ai_req) == 0;
-    if (cached) {
-        struct addrinfo_result *res = Bun__addrinfo_getRequestResult(ai_req);
-        if (res->error || !res->entries) {
-            Bun__addrinfo_freeRequest(ai_req, 1);
-            return -1;
+    BunDNSRequest *ai_req = NULL;
+    uint8_t lookup_status = bun_dns_lookup(ctx->loop, host, (uint16_t) port, &ai_req);
+    if (lookup_status == BUN_DNS_OUT_OF_MEMORY) return US_QUIC_CONNECT_OUT_OF_MEMORY;
+    if (lookup_status != BUN_DNS_READY && lookup_status != BUN_DNS_PENDING) return US_QUIC_CONNECT_FAILED;
+    if (lookup_status == BUN_DNS_READY) {
+        const struct addrinfo *addresses = NULL;
+        int error = bun_dns_result(ai_req, &addresses);
+        if (error || !addresses) {
+            bun_dns_release(ai_req, 1);
+            return error == EAI_MEMORY ? US_QUIC_CONNECT_OUT_OF_MEMORY : US_QUIC_CONNECT_FAILED;
         }
-        *out_qs = us_quic_connect_result(ctx, res, port, sni, reject_unauthorized);
-        Bun__addrinfo_freeRequest(ai_req, *out_qs == NULL);
-        return *out_qs ? 1 : -1;
+        *out_qs = us_quic_connect_result(ctx, addresses, port, sni, reject_unauthorized);
+        int status = *out_qs ? US_QUIC_CONNECT_READY : errno == ENOMEM ? US_QUIC_CONNECT_OUT_OF_MEMORY : US_QUIC_CONNECT_FAILED;
+        bun_dns_release(ai_req, *out_qs == NULL);
+        return status;
     }
 
     struct us_quic_pending_connect_s *pc = calloc(1, sizeof(*pc));
-    if (!pc) { Bun__addrinfo_freeRequest(ai_req, 1); return -1; }
+    if (!pc) {
+        bun_dns_release(ai_req, 0);
+        return US_QUIC_CONNECT_OUT_OF_MEMORY;
+    }
     pc->ctx = ctx;
     pc->sni = sni ? strdup(sni) : NULL;
     if (sni && !pc->sni) {
-        Bun__addrinfo_freeRequest(ai_req, 1);
+        bun_dns_release(ai_req, 0);
         free(pc);
-        return -1;
+        return US_QUIC_CONNECT_OUT_OF_MEMORY;
     }
     pc->port = port;
     pc->reject_unauthorized = reject_unauthorized;
     pc->ai_req = ai_req;
     pc->user = user;
     *out_pending = pc;
-    return 0;
+    return US_QUIC_CONNECT_PENDING;
 }
 
 void *us_quic_pending_connect_user(struct us_quic_pending_connect_s *pc) {
     return pc->user;
 }
 
-struct addrinfo_request *us_quic_pending_connect_addrinfo(
+BunDNSRequest *us_quic_pending_connect_addrinfo(
     struct us_quic_pending_connect_s *pc) { return pc->ai_req; }
 
-us_quic_socket_t *us_quic_pending_connect_resolved(
-    struct us_quic_pending_connect_s *pc)
+int us_quic_pending_connect_resolved(
+    struct us_quic_pending_connect_s *pc, us_quic_socket_t **out_socket)
 {
-    us_quic_socket_t *qs = NULL;
-    struct addrinfo_result *res = Bun__addrinfo_getRequestResult(pc->ai_req);
-    if (!res->error && res->entries) {
-        qs = us_quic_connect_result(pc->ctx, res, pc->port, pc->sni,
+    *out_socket = NULL;
+    const struct addrinfo *addresses = NULL;
+    int error = bun_dns_result(pc->ai_req, &addresses);
+    int status = error == EAI_MEMORY ? US_QUIC_CONNECT_OUT_OF_MEMORY : US_QUIC_CONNECT_FAILED;
+    if (!error && addresses) {
+        *out_socket = us_quic_connect_result(pc->ctx, addresses, pc->port, pc->sni,
             pc->reject_unauthorized);
+        status = *out_socket ? US_QUIC_CONNECT_READY : errno == ENOMEM ? US_QUIC_CONNECT_OUT_OF_MEMORY : US_QUIC_CONNECT_FAILED;
     }
-    Bun__addrinfo_freeRequest(pc->ai_req, qs == NULL);
+    bun_dns_release(pc->ai_req, *out_socket == NULL);
     free(pc->sni);
     free(pc);
-    return qs;
+    return status;
 }
 
 void us_quic_pending_connect_cancel(struct us_quic_pending_connect_s *pc) {
-    Bun__addrinfo_freeRequest(pc->ai_req, 1);
+    bun_dns_release(pc->ai_req, 0);
     free(pc->sni);
     free(pc);
 }
@@ -1392,7 +1417,7 @@ void us_quic_pending_connect_cancel(struct us_quic_pending_connect_s *pc) {
 void us_quic_socket_make_stream(us_quic_socket_t *s) {
     if (!s->conn) return;
     lsquic_conn_make_stream(s->conn);
-    s->ctx->pending_write_bytes++;
+    s->ctx->pending_write = 1;
 }
 
 unsigned us_quic_socket_streams_avail(us_quic_socket_t *s) {

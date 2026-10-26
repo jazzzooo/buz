@@ -121,7 +121,18 @@ Stream._uint8ArrayToBuffer = function _uint8ArrayToBuffer(chunk) {
   return new $Buffer(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 };
 
+// Stream is typed as the assembled node:stream namespace: internal/stream.ts
+// attaches the module-level members onto this constructor at startup.
 export default { Stream, prependListener } as unknown as {
-  Stream: typeof import("node:stream").Stream;
+  Stream: typeof import("node:stream") &
+    (new (opts?: any) => import("node:stream").Stream) & {
+      _isArrayBufferView: typeof import("node:util/types").isArrayBufferView;
+      _isUint8Array: typeof import("node:util/types").isUint8Array;
+      _uint8ArrayToBuffer: (chunk: ArrayBufferView) => Buffer;
+      isDestroyed: (stream: any) => boolean | null;
+      isDisturbed: (stream: unknown) => boolean | undefined;
+      destroy: (stream: unknown, err?: Error | null) => unknown;
+      eos: any;
+    };
   prependListener: typeof prependListener;
 };

@@ -32,6 +32,7 @@
 #include "URLPatternInit.h"
 #include "URLPatternParser.h"
 #include "URLPatternTokenizer.h"
+#include <wtf/text/MakeString.h>
 
 namespace WebCore {
 using namespace JSC;
@@ -102,14 +103,14 @@ bool URLPatternConstructorStringParser::isAuthoritySlashesNext() const
 }
 
 // https://urlpattern.spec.whatwg.org/#make-a-component-string
-String URLPatternConstructorStringParser::makeComponentString() const
+StringView URLPatternConstructorStringParser::componentString() const
 {
     const auto& token = m_tokenList[m_tokenIndex];
 
     auto componentStartToken = getSafeToken(m_componentStart);
     auto componentStartIndex = *componentStartToken.index;
 
-    return m_input.substring(componentStartIndex, *token.index - componentStartIndex).toString();
+    return StringView(m_input).substring(componentStartIndex, *token.index - componentStartIndex);
 }
 
 static inline void setInitComponentFromState(URLPatternInit& init, URLPatternConstructorStringParserState state, String&& componentString)
@@ -150,23 +151,30 @@ ExceptionOr<void> URLPatternConstructorStringParser::computeProtocolMatchSpecial
     Ref vm = context.vm();
     JSC::JSLockHolder lock(vm);
 
-    auto maybeProtocolComponent = URLPatternUtilities::URLPatternComponent::compile(vm, makeComponentString(), EncodingCallbackType::Protocol, URLPatternUtilities::URLPatternStringOptions {});
+    auto maybeProtocolComponent = URLPatternUtilities::URLPatternComponent::compile(vm, componentString(), EncodingCallbackType::Protocol, URLPatternUtilities::URLPatternStringOptions {});
     if (maybeProtocolComponent.hasException())
         return maybeProtocolComponent.releaseException();
 
     auto protocolComponent = maybeProtocolComponent.releaseReturnValue();
-    m_protocolMatchesSpecialSchemeFlag = protocolComponent.matchSpecialSchemeProtocol(context.globalObject());
+    auto matchesSpecialScheme = protocolComponent.matchSpecialSchemeProtocol(context.globalObject());
+    if (matchesSpecialScheme.hasException())
+        return matchesSpecialScheme.releaseException();
+    m_protocolMatchesSpecialSchemeFlag = matchesSpecialScheme.releaseReturnValue();
 
     return {};
 }
 
 // https://urlpattern.spec.whatwg.org/#change-state
-void URLPatternConstructorStringParser::changeState(URLPatternConstructorStringParserState newState, size_t skip)
+ExceptionOr<void> URLPatternConstructorStringParser::changeState(URLPatternConstructorStringParserState newState, size_t skip)
 {
     if (m_state != URLPatternConstructorStringParserState::Init
         && m_state != URLPatternConstructorStringParserState::Authority
-        && m_state != URLPatternConstructorStringParserState::Done)
-        setInitComponentFromState(m_result, m_state, makeComponentString());
+        && m_state != URLPatternConstructorStringParserState::Done) {
+        auto component = tryMakeString(componentString());
+        if (component.isNull())
+            return Exception { OutOfMemoryError };
+        setInitComponentFromState(m_result, m_state, WTF::move(component));
+    }
 
     if (m_state != URLPatternConstructorStringParserState::Init && newState != URLPatternConstructorStringParserState::Done) {
         // Set init's hostname to empty if conditions are met.
@@ -198,9 +206,10 @@ void URLPatternConstructorStringParser::changeState(URLPatternConstructorStringP
     m_tokenIndex += skip;
     m_componentStart = m_tokenIndex;
     m_tokenIncrement = 0;
+    return {};
 }
 
-void URLPatternConstructorStringParser::updateState(ScriptExecutionContext& context)
+ExceptionOr<void> URLPatternConstructorStringParser::updateState(ScriptExecutionContext& context)
 {
     switch (m_state) {
     case URLPatternConstructorStringParserState::Init:
@@ -215,7 +224,7 @@ void URLPatternConstructorStringParser::updateState(ScriptExecutionContext& cont
         if (isNonSpecialPatternCharacter(m_tokenIndex, ':')) {
             auto maybeMatchesSpecialSchemeProtocol = computeProtocolMatchSpecialSchemeFlag(context);
             if (maybeMatchesSpecialSchemeProtocol.hasException())
-                break; // FIXME: Return exceptions.
+                return maybeMatchesSpecialSchemeProtocol.releaseException();
             auto nextState = URLPatternConstructorStringParserState::Pathname;
             auto skip = 1;
             if (isAuthoritySlashesNext()) {
@@ -223,7 +232,7 @@ void URLPatternConstructorStringParser::updateState(ScriptExecutionContext& cont
                 skip = 3;
             } else if (m_protocolMatchesSpecialSchemeFlag)
                 nextState = URLPatternConstructorStringParserState::Authority;
-            changeState(nextState, skip);
+            return changeState(nextState, skip);
         }
         break;
     case URLPatternConstructorStringParserState::Authority:
@@ -239,15 +248,15 @@ void URLPatternConstructorStringParser::updateState(ScriptExecutionContext& cont
     case URLPatternConstructorStringParserState::Username:
         // Look for password prefix.
         if (isNonSpecialPatternCharacter(m_tokenIndex, ':'))
-            changeState(URLPatternConstructorStringParserState::Password, 1);
+            return changeState(URLPatternConstructorStringParserState::Password, 1);
         // Look for identity terminator.
         else if (isNonSpecialPatternCharacter(m_tokenIndex, '@'))
-            changeState(URLPatternConstructorStringParserState::Hostname, 1);
+            return changeState(URLPatternConstructorStringParserState::Hostname, 1);
         break;
     case URLPatternConstructorStringParserState::Password:
         // Look for identity terminator.
         if (isNonSpecialPatternCharacter(m_tokenIndex, '@'))
-            changeState(URLPatternConstructorStringParserState::Hostname, 1);
+            return changeState(URLPatternConstructorStringParserState::Hostname, 1);
         break;
     case URLPatternConstructorStringParserState::Hostname:
         // Look for an IPv6 open.
@@ -258,38 +267,38 @@ void URLPatternConstructorStringParser::updateState(ScriptExecutionContext& cont
             --m_hostnameIPv6BracketDepth;
         // Look for port prefix.
         else if (isNonSpecialPatternCharacter(m_tokenIndex, ':') && !m_hostnameIPv6BracketDepth)
-            changeState(URLPatternConstructorStringParserState::Port, 1);
+            return changeState(URLPatternConstructorStringParserState::Port, 1);
         // Look for pathname start.
         else if (isNonSpecialPatternCharacter(m_tokenIndex, '/'))
-            changeState(URLPatternConstructorStringParserState::Pathname, 0);
+            return changeState(URLPatternConstructorStringParserState::Pathname, 0);
         // Look for search prefix.
         else if (isSearchPrefix())
-            changeState(URLPatternConstructorStringParserState::Search, 1);
+            return changeState(URLPatternConstructorStringParserState::Search, 1);
         // Look for hash prefix.
         else if (isNonSpecialPatternCharacter(m_tokenIndex, '#'))
-            changeState(URLPatternConstructorStringParserState::Hash, 1);
+            return changeState(URLPatternConstructorStringParserState::Hash, 1);
         break;
     case URLPatternConstructorStringParserState::Port:
         // Look for pathname start.
         if (isNonSpecialPatternCharacter(m_tokenIndex, '/'))
-            changeState(URLPatternConstructorStringParserState::Pathname, 0);
+            return changeState(URLPatternConstructorStringParserState::Pathname, 0);
         else if (isSearchPrefix())
-            changeState(URLPatternConstructorStringParserState::Search, 1);
+            return changeState(URLPatternConstructorStringParserState::Search, 1);
         // Look for hash prefix.
         else if (isNonSpecialPatternCharacter(m_tokenIndex, '#'))
-            changeState(URLPatternConstructorStringParserState::Hash, 1);
+            return changeState(URLPatternConstructorStringParserState::Hash, 1);
         break;
     case URLPatternConstructorStringParserState::Pathname:
         if (isSearchPrefix())
-            changeState(URLPatternConstructorStringParserState::Search, 1);
+            return changeState(URLPatternConstructorStringParserState::Search, 1);
         // Look for hash prefix.
         else if (isNonSpecialPatternCharacter(m_tokenIndex, '#'))
-            changeState(URLPatternConstructorStringParserState::Hash, 1);
+            return changeState(URLPatternConstructorStringParserState::Hash, 1);
         break;
     case URLPatternConstructorStringParserState::Search:
         // Look for hash prefix.
         if (isNonSpecialPatternCharacter(m_tokenIndex, '#'))
-            changeState(URLPatternConstructorStringParserState::Hash, 1);
+            return changeState(URLPatternConstructorStringParserState::Hash, 1);
         break;
     case URLPatternConstructorStringParserState::Hash:
         break;
@@ -299,9 +308,10 @@ void URLPatternConstructorStringParser::updateState(ScriptExecutionContext& cont
     default:
         break;
     }
+    return {};
 }
 
-void URLPatternConstructorStringParser::performParse(ScriptExecutionContext& context)
+ExceptionOr<void> URLPatternConstructorStringParser::performParse(ScriptExecutionContext& context)
 {
     while (m_tokenIndex < m_tokenList.size()) {
         m_tokenIncrement = 1;
@@ -309,12 +319,15 @@ void URLPatternConstructorStringParser::performParse(ScriptExecutionContext& con
         if (m_tokenList[m_tokenIndex].type == URLPatternUtilities::TokenType::End) {
             if (m_state == URLPatternConstructorStringParserState::Init) {
                 rewind();
+                ExceptionOr<void> changed;
                 if (isNonSpecialPatternCharacter(m_tokenIndex, '#'))
-                    changeState(URLPatternConstructorStringParserState::Hash, 1);
+                    changed = changeState(URLPatternConstructorStringParserState::Hash, 1);
                 else if (isSearchPrefix())
-                    changeState(URLPatternConstructorStringParserState::Search, 1);
+                    changed = changeState(URLPatternConstructorStringParserState::Search, 1);
                 else
-                    changeState(URLPatternConstructorStringParserState::Pathname, 0);
+                    changed = changeState(URLPatternConstructorStringParserState::Pathname, 0);
+                if (changed.hasException())
+                    return changed.releaseException();
 
                 m_tokenIndex += m_tokenIncrement;
                 continue;
@@ -326,7 +339,9 @@ void URLPatternConstructorStringParser::performParse(ScriptExecutionContext& con
                 continue;
             }
 
-            changeState(URLPatternConstructorStringParserState::Done, 0);
+            auto changed = changeState(URLPatternConstructorStringParserState::Done, 0);
+            if (changed.hasException())
+                return changed.releaseException();
             break;
         }
 
@@ -345,11 +360,14 @@ void URLPatternConstructorStringParser::performParse(ScriptExecutionContext& con
             }
         }
 
-        updateState(context);
+        auto updated = updateState(context);
+        if (updated.hasException())
+            return updated.releaseException();
         m_tokenIndex += m_tokenIncrement;
     }
     if (!m_result.hostname.isNull() && m_result.port.isNull())
         m_result.port = emptyString();
+    return {};
 }
 
 // https://urlpattern.spec.whatwg.org/#parse-a-constructor-string
@@ -360,9 +378,11 @@ ExceptionOr<URLPatternInit> URLPatternConstructorStringParser::parse(ScriptExecu
         return maybeTokenList.releaseException();
     m_tokenList = maybeTokenList.releaseReturnValue();
 
-    performParse(context);
+    auto parsed = performParse(context);
+    if (parsed.hasException())
+        return parsed.releaseException();
 
-    return URLPatternInit { m_result };
+    return WTF::move(m_result);
 }
 
 }

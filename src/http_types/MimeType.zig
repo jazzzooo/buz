@@ -238,109 +238,61 @@ fn initComptime(comptime str: string, t: Category) MimeType {
     };
 }
 
-pub fn init(str_: string, allocator: ?std.mem.Allocator, allocated: ?*bool) MimeType {
-    var str = str_;
-    if (std.mem.indexOfScalar(u8, str, '/')) |slash| {
-        const category_ = str[0..slash];
+const Classification = union(enum) {
+    canonical: MimeType,
+    custom: Category,
+};
 
-        if (category_.len == 0 or category_[0] == '*' or str.len <= slash + 1) {
-            return other;
-        }
+fn classify(input: bun.TextView) Classification {
+    if (input.indexOfAsciiChar('/')) |slash| {
+        const category = input.substringWithLen(0, slash);
+        if (category.isEmpty() or category.hasPrefixComptime("*") or input.len() <= slash + 1)
+            return .{ .canonical = other };
 
-        str = str[slash + 1 ..];
+        var subtype = input.substring(slash + 1);
+        if (subtype.indexOfAsciiChar(';')) |semicolon|
+            subtype = subtype.substringWithLen(0, semicolon);
 
-        if (std.mem.indexOfScalar(u8, str, ';')) |semicolon| {
-            str = str[0..semicolon];
-        }
-
-        switch (category_.len) {
+        switch (category.len()) {
             "application".len => {
-                if (strings.eqlComptimeIgnoreLen(category_, "application")) {
-                    if (strings.eqlComptime(str, "json") or strings.eqlComptime(str, "geo+json")) {
-                        return json;
-                    }
-                }
-
-                if (strings.eqlComptime(str, "octet-stream")) {
-                    return other;
-                }
-
-                if (strings.eqlComptime(str, "wasm")) {
-                    return wasm;
-                }
-
-                if (allocated != null and allocator != null) allocated.?.* = true;
-                return MimeType{
-                    .value = if (allocator) |a| bun.handleOom(a.dupe(u8, str_)) else str_,
-                    .category = .application,
-                };
+                if (category.eqlBytes("application") and (subtype.eqlBytes("json") or subtype.eqlBytes("geo+json")))
+                    return .{ .canonical = json };
+                if (subtype.eqlBytes("octet-stream")) return .{ .canonical = other };
+                if (subtype.eqlBytes("wasm")) return .{ .canonical = wasm };
+                return .{ .custom = .application };
             },
             "font".len => {
-                if (strings.eqlComptimeIgnoreLen(category_, "font")) {
-                    if (allocated != null and allocator != null) allocated.?.* = true;
-                    return MimeType{
-                        .value = if (allocator) |a| bun.handleOom(a.dupe(u8, str_)) else str_,
-                        .category = .font,
-                    };
-                }
-
-                if (strings.eqlComptimeIgnoreLen(category_, "text")) {
-                    if (strings.eqlComptime(str, "css")) {
-                        return css;
-                    }
-
-                    if (strings.eqlComptime(str, "html")) {
-                        return html;
-                    }
-
-                    if (strings.eqlComptime(str, "javascript")) {
-                        return javascript;
-                    }
-
-                    if (strings.eqlComptime(str, "plain")) {
-                        return text;
-                    }
-
-                    if (allocated != null and allocator != null) allocated.?.* = true;
-                    return MimeType{
-                        .value = if (allocator) |a| bun.handleOom(a.dupe(u8, str_)) else str_,
-                        .category = .text,
-                    };
+                if (category.eqlBytes("font")) return .{ .custom = .font };
+                if (category.eqlBytes("text")) {
+                    if (subtype.eqlBytes("css")) return .{ .canonical = css };
+                    if (subtype.eqlBytes("html")) return .{ .canonical = html };
+                    if (subtype.eqlBytes("javascript")) return .{ .canonical = javascript };
+                    if (subtype.eqlBytes("plain")) return .{ .canonical = text };
+                    return .{ .custom = .text };
                 }
             },
             "image".len => {
-                if (strings.eqlComptimeIgnoreLen(category_, "image")) {
-                    if (allocated != null and allocator != null) allocated.?.* = true;
-                    return MimeType{
-                        .value = if (allocator) |a| bun.handleOom(a.dupe(u8, str_)) else str_,
-                        .category = .image,
-                    };
-                }
-
-                if (strings.eqlComptimeIgnoreLen(category_, "audio")) {
-                    if (allocated != null and allocator != null) allocated.?.* = true;
-                    return MimeType{
-                        .value = if (allocator) |a| bun.handleOom(a.dupe(u8, str_)) else str_,
-                        .category = .audio,
-                    };
-                }
-
-                if (strings.eqlComptimeIgnoreLen(category_, "video")) {
-                    if (allocated != null and allocator != null) allocated.?.* = true;
-                    return MimeType{
-                        .value = if (allocator) |a| bun.handleOom(a.dupe(u8, str_)) else str_,
-                        .category = .video,
-                    };
-                }
+                if (category.eqlBytes("image")) return .{ .custom = .image };
+                if (category.eqlBytes("audio")) return .{ .custom = .audio };
+                if (category.eqlBytes("video")) return .{ .custom = .video };
             },
             else => {},
         }
     }
+    return .{ .custom = .other };
+}
 
-    if (allocated != null and allocator != null) allocated.?.* = true;
-    return MimeType{
-        .value = if (allocator) |a| bun.handleOom(a.dupe(u8, str_)) else str_,
-        .category = .other,
+pub fn init(value: string) MimeType {
+    return switch (classify(.{ .utf8 = value })) {
+        .canonical => |mime| mime,
+        .custom => |category| .{ .value = value, .category = category },
+    };
+}
+
+pub fn categoryForText(value: bun.TextView) Category {
+    return switch (classify(value)) {
+        .canonical => |mime| mime.category,
+        .custom => |category| category,
     };
 }
 
@@ -363,10 +315,7 @@ pub const all = @import("./mime_type_list_enum.zig").MimeTypeList.all;
 // TODO: do a comptime static hash map for this
 // its too many branches to use ComptimeStringMap
 pub fn byName(name: []const u8) MimeType {
-    return MimeType.init(name, null, null);
-}
-pub fn deinit(mimeType: MimeType, allocator: std.mem.Allocator) void {
-    allocator.free(mimeType.value);
+    return MimeType.init(name);
 }
 pub const extensions = ComptimeStringMap(Table, .{
     .{ "123", .@"application/vnd.lotus-1-2-3" },

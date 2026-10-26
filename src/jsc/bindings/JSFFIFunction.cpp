@@ -13,7 +13,7 @@
  * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -24,115 +24,58 @@
  */
 
 #include "root.h"
+#include "SchemaBindings.h"
 #include "JSFFIFunction.h"
-
+#include "ZigGlobalObject.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/VM.h>
-#include "ScriptExecutionContext.h"
-#include "ZigGlobalObject.h"
 
-#include <JavaScriptCore/CallData.h>
-#include <JavaScriptCore/DOMJITAbstractHeap.h>
-#include "DOMJITIDLConvert.h"
-#include "DOMJITIDLType.h"
-#include "DOMJITIDLTypeFilter.h"
-#include "DOMJITHelpers.h"
-
-class FFICallbackState final : public ThreadSafeRefCounted<FFICallbackState> {
-
-    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(FFICallbackState);
-
-public:
-    static Ref<FFICallbackState> create(JSC::JSFunction* function, Zig::GlobalObject* globalObject, std::span<const int32_t> argumentTypes)
-    {
-        return adoptRef(*new FFICallbackState(function, globalObject, argumentTypes));
-    }
-
-    ~FFICallbackState() = default;
-
-    JSC::JSFunction* function() const { return m_function.get(); }
-    Zig::GlobalObject* globalObject() const { return m_globalObject.get(); }
-    WebCore::ScriptExecutionContextIdentifier contextIdentifier() const { return m_contextIdentifier; }
-    const WTF::Vector<int32_t>& argumentTypes() const { return m_argumentTypes; }
-
-private:
-    FFICallbackState(JSC::JSFunction* function, Zig::GlobalObject* globalObject, std::span<const int32_t> argumentTypes)
-        : m_function(globalObject->vm(), function)
-        , m_globalObject(globalObject->vm(), globalObject)
-        , m_contextIdentifier(globalObject->scriptExecutionContext()->identifier())
-        , m_argumentTypes(argumentTypes)
-    {
-    }
-
-    JSC::Strong<JSC::JSFunction, JSC::ShouldStrongDestructorGrabLock::Yes> m_function;
-    JSC::Strong<Zig::GlobalObject, JSC::ShouldStrongDestructorGrabLock::Yes> m_globalObject;
-    WebCore::ScriptExecutionContextIdentifier m_contextIdentifier;
-    WTF::Vector<int32_t> m_argumentTypes;
-};
-
-extern "C" void FFICallbackState_deref(FFICallbackState* state)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_js_functions_bindingFunctionCreate(
+    EngineCallContext& context,
+    const BunBindgenEngine_js_functions_bindingFunctionCreate_Arguments& args)
 {
-    state->deref();
+    return JSC::JSFunction::create(context.globalObject.vm(), &context.globalObject, args.argumentCount, args.symbolName, args.function, JSC::ImplementationVisibility::Public);
 }
 
-extern "C" FFICallbackState* Bun__createFFICallbackState(
-    Zig::GlobalObject* globalObject,
-    JSC::EncodedJSValue callbackFn,
-    const int32_t* argumentTypes,
-    size_t argumentCount)
+void Bun::Bindgen::Engine::bunBindgenEngine_FFI_ffiLibraryInstallSymbols(
+    EngineCallContext& context,
+    const BunBindgenEngine_FFI_ffiLibraryInstallSymbols_Arguments& args)
 {
-    auto* callbackFunction = uncheckedDowncast<JSC::JSFunction>(JSC::JSValue::decode(callbackFn));
-    auto state = FFICallbackState::create(callbackFunction, globalObject, std::span { argumentTypes, argumentCount });
-    return &state.leakRef();
+    auto* globalObject = &context.globalObject;
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto library = context.classValue(args.library);
+    auto* symbols = JSC::constructEmptyObject(
+        globalObject,
+        globalObject->objectPrototype(),
+        std::min(args.symbols.size(), static_cast<size_t>(JSC::JSFinalObject::maxInlineCapacity)));
+    RETURN_IF_EXCEPTION(scope, void());
+    for (const auto& symbol : args.symbols) {
+        auto function = Bun::Bindgen::ZigExports::bunBindgenZig_FFI_adoptForeignFunction(globalObject, library, symbol.index);
+        RETURN_IF_EXCEPTION(scope, void());
+        symbols->putDirect(vm, JSC::Identifier::fromString(vm, symbol.name), function);
+        RETURN_IF_EXCEPTION(scope, void());
+    }
+    bun_bindgen_class_FFI_FFI_slot_symbolsValue_set_value(globalObject, library, symbols);
 }
 
-extern "C" Zig::JSFFIFunction* Bun__CreateFFIFunctionWithData(Zig::GlobalObject* globalObject, const ZigString* symbolName, unsigned argCount, Zig::FFIFunction functionPointer, void* data)
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_js_functions_bindingFunctionCreateWithData(
+    EngineCallContext& context,
+    const BunBindgenEngine_js_functions_bindingFunctionCreateWithData_Arguments& args)
 {
-    auto& vm = JSC::getVM(globalObject);
-    Zig::JSFFIFunction* function = Zig::JSFFIFunction::create(vm, globalObject, argCount, symbolName != nullptr ? Zig::toStringCopy(*symbolName) : String(), functionPointer, JSC::NoIntrinsic);
-    function->dataPtr = data;
+    auto* globalObject = defaultGlobalObject(&context.globalObject);
+    auto* function = Zig::JSFFIFunction::create(globalObject->vm(), globalObject, args.argumentCount, args.symbolName, args.function);
+    function->dataPtr = args.data;
     return function;
 }
 
-extern "C" JSC::EncodedJSValue Bun__CreateFFIFunctionWithDataValue(Zig::GlobalObject* globalObject, const ZigString* symbolName, unsigned argCount, Zig::FFIFunction functionPointer, void* data)
+void Bun::Bindgen::Engine::bunBindgenEngine_js_functions_bindingFunctionClearData(
+    EngineCallContext&,
+    const BunBindgenEngine_js_functions_bindingFunctionClearData_Arguments& args)
 {
-    return JSC::JSValue::encode(Bun__CreateFFIFunctionWithData(globalObject, symbolName, argCount, functionPointer, data));
-}
-
-extern "C" void* Bun__FFIFunction_getDataPtr(JSC::EncodedJSValue jsValue)
-{
-
-    Zig::JSFFIFunction* function = dynamicDowncast<Zig::JSFFIFunction>(JSC::JSValue::decode(jsValue));
-    if (!function)
-        return nullptr;
-
-    return function->dataPtr;
-}
-
-extern "C" void Bun__FFIFunction_setDataPtr(JSC::EncodedJSValue jsValue, void* ptr)
-{
-
-    Zig::JSFFIFunction* function = dynamicDowncast<Zig::JSFFIFunction>(JSC::JSValue::decode(jsValue));
-    if (!function)
-        return;
-
-    function->dataPtr = ptr;
-}
-
-extern "C" JSC::EncodedJSValue Bun__CreateFFIFunctionValue(Zig::GlobalObject* globalObject, const ZigString* symbolName, unsigned argCount, Zig::FFIFunction functionPointer, bool addPtrField, void* symbolFromDynamicLibrary)
-{
-    if (addPtrField) {
-        auto* function = Zig::JSFFIFunction::createForFFI(globalObject->vm(), globalObject, argCount, symbolName != nullptr ? Zig::toStringCopy(*symbolName) : String(), reinterpret_cast<Bun::CFFIFunction>(functionPointer));
-        auto& vm = JSC::getVM(globalObject);
-        // We should only expose the "ptr" field when it's a JSCallback for bun:ffi.
-        // Not for internal usages of this function type.
-        // We should also consider a separate JSFunction type for our usage to not have this branch in the first place...
-        function->putDirect(vm, JSC::Identifier::fromString(vm, String("ptr"_s)), JSC::jsNumber(std::bit_cast<double>(functionPointer)), JSC::PropertyAttribute::ReadOnly | 0);
-        function->symbolFromDynamicLibrary = symbolFromDynamicLibrary;
-        return JSC::JSValue::encode(function);
-    }
-
-    return Bun__CreateFFIFunctionWithDataValue(globalObject, symbolName, argCount, functionPointer, nullptr);
+    auto* function = dynamicDowncast<Zig::JSFFIFunction>(args.function);
+    RELEASE_ASSERT(function);
+    function->dataPtr = nullptr;
 }
 
 namespace Zig {
@@ -140,186 +83,18 @@ using namespace JSC;
 
 const ClassInfo JSFFIFunction::s_info = { "Function"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSFFIFunction) };
 
-JSFFIFunction::JSFFIFunction(VM& vm, NativeExecutable* executable, JSGlobalObject* globalObject, Structure* structure, CFFIFunction&& function)
+JSFFIFunction::JSFFIFunction(VM& vm, NativeExecutable* executable, JSGlobalObject* globalObject, Structure* structure)
     : Base(vm, executable, globalObject, structure)
-    , m_function(WTF::move(function))
 {
-    // used in NAPI
-    dataPtr = nullptr;
 }
 
-template<typename Visitor>
-void JSFFIFunction::visitChildrenImpl(JSCell* cell, Visitor& visitor)
+JSFFIFunction* JSFFIFunction::create(VM& vm, Zig::GlobalObject* globalObject, unsigned length, const String& name, NativeFunction nativeFunction)
 {
-    JSFFIFunction* thisObject = uncheckedDowncast<JSFFIFunction>(cell);
-    ASSERT_GC_OBJECT_INHERITS(thisObject, info());
-    Base::visitChildren(thisObject, visitor);
-}
-
-DEFINE_VISIT_CHILDREN(JSFFIFunction);
-
-JSFFIFunction* JSFFIFunction::create(VM& vm, Zig::GlobalObject* globalObject, unsigned length, const String& name, FFIFunction FFIFunction, Intrinsic intrinsic, NativeFunction nativeConstructor)
-{
-    NativeExecutable* executable = vm.getHostFunction(FFIFunction, ImplementationVisibility::Public, intrinsic, FFIFunction, nullptr, length, name);
+    NativeExecutable* executable = vm.getHostFunction(nativeFunction, ImplementationVisibility::Public, NoIntrinsic, callHostFunctionAsConstructor, nullptr, length, name);
     Structure* structure = globalObject->FFIFunctionStructure();
-    JSFFIFunction* function = new (NotNull, allocateCell<JSFFIFunction>(vm)) JSFFIFunction(vm, executable, globalObject, structure, reinterpret_cast<CFFIFunction>(WTF::move(FFIFunction)));
+    JSFFIFunction* function = new (NotNull, allocateCell<JSFFIFunction>(vm)) JSFFIFunction(vm, executable, globalObject, structure);
     function->finishCreation(vm);
     return function;
 }
 
-#if OS(WINDOWS)
-
-JSC_DEFINE_HOST_FUNCTION(JSFFIFunction::trampoline, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
-{
-    const auto* function = uncheckedDowncast<JSFFIFunction>(callFrame->jsCallee());
-    return function->function()(globalObject, callFrame);
-}
-
-#endif
-
-JSFFIFunction* JSFFIFunction::createForFFI(VM& vm, Zig::GlobalObject* globalObject, unsigned length, const String& name, CFFIFunction FFIFunction)
-{
-#if OS(WINDOWS)
-    NativeExecutable* executable = vm.getHostFunction(trampoline, ImplementationVisibility::Public, NoIntrinsic, trampoline, nullptr, length, name);
-#else
-    NativeExecutable* executable = vm.getHostFunction(FFIFunction, ImplementationVisibility::Public, NoIntrinsic, FFIFunction, nullptr, length, name);
-#endif
-    Structure* structure = globalObject->FFIFunctionStructure();
-    JSFFIFunction* function = new (NotNull, allocateCell<JSFFIFunction>(vm)) JSFFIFunction(vm, executable, globalObject, structure, reinterpret_cast<CFFIFunction>(WTF::move(FFIFunction)));
-    function->finishCreation(vm);
-    return function;
-}
-
-} // namespace JSC
-
-static ALWAYS_INLINE JSC::EncodedJSValue callFFICallback(FFICallbackState& state, Zig::GlobalObject* globalObject, const JSC::ArgList& arguments)
-{
-    auto* function = state.function();
-    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
-    auto result = JSC::profiledCall(globalObject, JSC::ProfilingReason::API, function, JSC::getCallData(function), JSC::jsUndefined(), arguments);
-    RETURN_IF_EXCEPTION(scope, JSC::JSValue::encode(JSC::jsNull()));
-    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(result));
-}
-
-static ALWAYS_INLINE JSC::EncodedJSValue callFFICallback(FFICallbackState& state, const JSC::ArgList& arguments)
-{
-    return callFFICallback(state, state.globalObject(), arguments);
-}
-
-extern "C" JSC::EncodedJSValue
-FFI_Callback_call(FFICallbackState& state, size_t argCount, JSC::EncodedJSValue* args)
-{
-    JSC::MarkedArgumentBuffer arguments;
-    for (size_t i = 0; i < argCount; ++i)
-        arguments.appendWithCrashOnOverflow(JSC::JSValue::decode(args[i]));
-    return callFFICallback(state, arguments);
-}
-
-extern "C" JSC::EncodedJSValue Bun__FFI__decodeThreadsafeCallbackArgument(Zig::GlobalObject*, int32_t abiType, uint64_t bits);
-
-extern "C" void
-FFI_Callback_threadsafe_call(FFICallbackState& state, size_t argCount, const uint64_t* args)
-{
-    Ref protectedState { state };
-    WTF::Vector<uint64_t, 8> arguments(std::span { args, argCount });
-
-    WebCore::ScriptExecutionContext::postTaskTo(protectedState->contextIdentifier(),
-        [arguments = WTF::move(arguments), protectedState = WTF::move(protectedState)](WebCore::ScriptExecutionContext& ctx) mutable {
-            auto* globalObject = uncheckedDowncast<Zig::GlobalObject>(ctx.jsGlobalObject());
-            const auto& argumentTypes = protectedState->argumentTypes();
-            ASSERT(argumentTypes.size() == arguments.size());
-            if (argumentTypes.size() != arguments.size())
-                return;
-
-            auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
-            JSC::MarkedArgumentBuffer jsArguments;
-            for (size_t i = 0; i < arguments.size(); ++i) {
-                auto argument = Bun__FFI__decodeThreadsafeCallbackArgument(globalObject, argumentTypes[i], arguments[i]);
-                RETURN_IF_EXCEPTION(scope, );
-                jsArguments.appendWithCrashOnOverflow(JSC::JSValue::decode(argument));
-            }
-
-            scope.release();
-            (void)callFFICallback(protectedState.get(), globalObject, jsArguments);
-        });
-}
-
-extern "C" JSC::EncodedJSValue
-FFI_Callback_call_0(FFICallbackState& state, size_t, JSC::EncodedJSValue*)
-{
-    return callFFICallback(state, JSC::ArgList());
-}
-
-extern "C" JSC::EncodedJSValue
-FFI_Callback_call_1(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
-{
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(JSC::JSValue::decode(args[0]));
-    return callFFICallback(state, arguments);
-}
-
-extern "C" JSC::EncodedJSValue
-FFI_Callback_call_2(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
-{
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(JSC::JSValue::decode(args[0]));
-    arguments.append(JSC::JSValue::decode(args[1]));
-    return callFFICallback(state, arguments);
-}
-
-extern "C" JSC::EncodedJSValue FFI_Callback_call_3(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
-{
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(JSC::JSValue::decode(args[0]));
-    arguments.append(JSC::JSValue::decode(args[1]));
-    arguments.append(JSC::JSValue::decode(args[2]));
-    return callFFICallback(state, arguments);
-}
-
-extern "C" JSC::EncodedJSValue FFI_Callback_call_4(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
-{
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(JSC::JSValue::decode(args[0]));
-    arguments.append(JSC::JSValue::decode(args[1]));
-    arguments.append(JSC::JSValue::decode(args[2]));
-    arguments.append(JSC::JSValue::decode(args[3]));
-    return callFFICallback(state, arguments);
-}
-
-extern "C" JSC::EncodedJSValue FFI_Callback_call_5(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
-{
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(JSC::JSValue::decode(args[0]));
-    arguments.append(JSC::JSValue::decode(args[1]));
-    arguments.append(JSC::JSValue::decode(args[2]));
-    arguments.append(JSC::JSValue::decode(args[3]));
-    arguments.append(JSC::JSValue::decode(args[4]));
-    return callFFICallback(state, arguments);
-}
-
-extern "C" JSC::EncodedJSValue
-FFI_Callback_call_6(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
-{
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(JSC::JSValue::decode(args[0]));
-    arguments.append(JSC::JSValue::decode(args[1]));
-    arguments.append(JSC::JSValue::decode(args[2]));
-    arguments.append(JSC::JSValue::decode(args[3]));
-    arguments.append(JSC::JSValue::decode(args[4]));
-    arguments.append(JSC::JSValue::decode(args[5]));
-    return callFFICallback(state, arguments);
-}
-
-extern "C" JSC::EncodedJSValue
-FFI_Callback_call_7(FFICallbackState& state, size_t, JSC::EncodedJSValue* args)
-{
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(JSC::JSValue::decode(args[0]));
-    arguments.append(JSC::JSValue::decode(args[1]));
-    arguments.append(JSC::JSValue::decode(args[2]));
-    arguments.append(JSC::JSValue::decode(args[3]));
-    arguments.append(JSC::JSValue::decode(args[4]));
-    arguments.append(JSC::JSValue::decode(args[5]));
-    arguments.append(JSC::JSValue::decode(args[6]));
-    return callFFICallback(state, arguments);
-}
+} // namespace Zig

@@ -6,24 +6,29 @@
 #include "EventTarget.h"
 #include "ContextDestructionObserver.h"
 #include "ExceptionOr.h"
+#include <JavaScriptCore/WriteBarrier.h>
 #include <wtf/URL.h>
 #include <wtf/HashSet.h>
 #include <wtf/Lock.h>
 
 namespace WebCore {
 
-class WorkerGlobalScope : public RefCounted<WorkerGlobalScope>, public EventTargetWithInlineData {
+class WorkerGlobalScope : public RefCounted<WorkerGlobalScope>, public EventTargetWithInlineData, private ContextDestructionObserver {
     WTF_MAKE_TZONE_ALLOCATED(WorkerGlobalScope);
 
-    uint32_t m_messageEventCount { 0 };
+    bool m_hasMessageActivity { false };
+    mutable Lock m_globalLock;
+    JSC::WriteBarrier<JSC::JSGlobalObject> m_globalObject;
 
     static void onDidChangeListenerImpl(EventTarget&, const AtomString&, OnDidChangeListenerKind);
+    void releaseMessageActivity(ScriptExecutionContext*);
 
 public:
     WorkerGlobalScope(ScriptExecutionContext* context)
         : EventTargetWithInlineData()
-        , m_context(context)
+        , ContextDestructionObserver(context)
     {
+        m_globalObject.setWithoutWriteBarrier(context->globalObject());
         this->onDidChangeListener = &onDidChangeListenerImpl;
     }
 
@@ -38,11 +43,14 @@ public:
     ~WorkerGlobalScope() = default;
 
     EventTargetInterface eventTargetInterface() const final { return EventTargetInterface::DOMWindowEventTargetInterfaceType; }
-    ScriptExecutionContext* scriptExecutionContext() const final { return m_context; }
+    ScriptExecutionContext* scriptExecutionContext() const final { return ContextDestructionObserver::scriptExecutionContext(); }
     void refEventTarget() final { ref(); }
     void derefEventTarget() final { deref(); }
     void eventListenersDidChange() final {}
 
-    ScriptExecutionContext* m_context;
+    JSC::JSGlobalObject* globalObject() const;
+    void detachGlobalObject();
+    void contextDestroyed(ScriptExecutionContext&) final;
+    template<typename Visitor> void visitGlobalObject(Visitor&) const;
 };
 }

@@ -26,7 +26,8 @@
 
 #pragma once
 
-#include "Node.h"
+#include <cstddef>
+#include <type_traits>
 
 namespace WebCore {
 

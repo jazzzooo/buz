@@ -989,7 +989,10 @@ pub const PackageInstaller = struct {
                 const context: TaskCallbackContext = .{
                     .dependency_install_context = .{
                         .tree_id = this.current_tree_id,
-                        .path = bun.handleOom(this.node_modules.path.clone()),
+                        .path = this.node_modules.path.clone() catch |err| {
+                            this.failPreparation(is_pending_package_install, log_level, err, "Failed to retain installation path");
+                            return;
+                        },
                         .dependency_id = dependency_id,
                     },
                 };
@@ -1001,7 +1004,10 @@ pub const PackageInstaller = struct {
                             resolution,
                             context,
                             patch_name_and_version_hash,
-                        );
+                        ) catch |err| {
+                            context.dependency_install_context.path.deinit();
+                            this.failPreparation(is_pending_package_install, log_level, err, "Failed to prepare Git checkout");
+                        };
                     },
                     .github => {
                         const url = this.manager.allocGitHubURL(&resolution.value.github);
@@ -1011,7 +1017,6 @@ pub const PackageInstaller = struct {
                             package_id,
                             url,
                             context,
-                            patch_name_and_version_hash,
                         ) catch |err| switch (err) {
                             error.OutOfMemory => bun.outOfMemory(),
                             error.InvalidURL => this.failWithInvalidUrl(
@@ -1035,7 +1040,6 @@ pub const PackageInstaller = struct {
                             package_id,
                             resolution.value.remote_tarball.slice(this.lockfile.buffers.string_bytes.items),
                             context,
-                            patch_name_and_version_hash,
                         ) catch |err| switch (err) {
                             error.OutOfMemory => bun.outOfMemory(),
                             error.InvalidURL => this.failWithInvalidUrl(
@@ -1063,7 +1067,6 @@ pub const PackageInstaller = struct {
                             resolution.value.npm.version,
                             resolution.value.npm.url.slice(this.lockfile.buffers.string_bytes.items),
                             context,
-                            patch_name_and_version_hash,
                         ) catch |err| switch (err) {
                             error.OutOfMemory => bun.outOfMemory(),
                             error.InvalidURL => this.failWithInvalidUrl(
@@ -1088,16 +1091,24 @@ pub const PackageInstaller = struct {
             // into cache, then install into node_modules
             if (installer.patch) |patch| {
                 if (installer.patchedPackageMissingFromCache(this.manager, package_id)) {
+                    const install_path = this.node_modules.path.clone() catch |err| {
+                        this.failPreparation(is_pending_package_install, log_level, err, "Failed to retain patch installation path");
+                        return;
+                    };
                     const task = PatchTask.newApplyPatchHash(
                         this.manager,
                         package_id,
                         patch.contents_hash,
                         patch_name_and_version_hash.?,
-                    );
+                    ) catch |err| {
+                        install_path.deinit();
+                        this.failPreparation(is_pending_package_install, log_level, err, "Failed to prepare package patch");
+                        return;
+                    };
                     task.callback.apply.install_context = .{
                         .dependency_id = dependency_id,
                         .tree_id = this.current_tree_id,
-                        .path = bun.handleOom(this.node_modules.path.clone()),
+                        .path = install_path,
                     };
                     this.manager.enqueuePatchTask(task);
                     return;
@@ -1429,6 +1440,18 @@ pub const PackageInstaller = struct {
                 }
             }
         }
+    }
+
+    fn failPreparation(
+        this: *PackageInstaller,
+        comptime is_pending_package_install: bool,
+        log_level: Options.LogLevel,
+        err: anyerror,
+        comptime message: []const u8,
+    ) void {
+        if (log_level != .silent) Output.err(err, message, .{});
+        this.summary.fail += 1;
+        this.completeDependencyInstall(this.current_tree_id, !is_pending_package_install, log_level);
     }
 
     fn failWithInvalidUrl(

@@ -24,31 +24,26 @@
  *
  */
 
-// MessagePort is a thin EventTarget wrapper over MessagePortPipe.
-//
-// The pipe owns the cross-thread queue and wakeup coalescing; this class
-// owns the JS-facing state (started/closed/detached, listener bookkeeping,
-// event-loop ref) and translates between pipe callbacks and DOM events.
-
 #pragma once
 
-// Marker used by MessagePortPipe.cpp so that, when the verification harness
-// reverts src/ to origin/main (leaving MessagePortPipe.{h,cpp} behind as new
-// untracked files), the pipe's translation unit compiles to nothing instead
-// of referencing symbols that only exist on this branch's MessagePort.
-#define BUN_MESSAGEPORT_USES_PIPE 1
-
 #include "ContextDestructionObserver.h"
+#include "Bindgen/NativeResult.h"
 #include "EventTarget.h"
 #include "ExceptionOr.h"
 #include "MessagePortPipe.h"
 #include "MessageWithMessagePorts.h"
-#include <wtf/WeakPtr.h>
+#include <atomic>
+#include <optional>
+#include <span>
+#include <wtf/FastMalloc.h>
 
 namespace JSC {
-class CallFrame;
 class JSObject;
 class JSValue;
+}
+
+namespace Bun {
+struct NativeEventLoopSignal;
 }
 
 namespace WebCore {
@@ -57,14 +52,48 @@ class WebCoreOpaqueRoot;
 
 struct StructuredSerializeOptions;
 
-DECLARE_ALLOCATOR_WITH_HEAP_IDENTIFIER(MessagePort);
-
-class MessagePort final : public ContextDestructionObserver, public EventTarget, public ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr<MessagePort> {
+class MessagePort final : public ContextDestructionObserver, public EventTarget, public ThreadSafeRefCounted<MessagePort> {
     WTF_MAKE_NONCOPYABLE(MessagePort);
-    WTF_MAKE_TZONE_ALLOCATED(MessagePort);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(MessagePort);
 
 public:
-    static Ref<MessagePort> create(ScriptExecutionContext&, Ref<MessagePortPipe>&&, uint8_t side);
+    class PreparedTransfer {
+        WTF_MAKE_NONCOPYABLE(PreparedTransfer);
+
+    public:
+        PreparedTransfer(PreparedTransfer&&) noexcept;
+        ExceptionOr<void> validate() const;
+        ExceptionOr<Vector<TransferredMessagePort>> commit();
+        Vector<TransferredMessagePort> commitValidated();
+
+    private:
+        friend class MessagePort;
+        PreparedTransfer(Vector<RefPtr<MessagePort>>&&, Vector<TransferredMessagePort>&&);
+        Vector<RefPtr<MessagePort>> m_ports;
+        Vector<TransferredMessagePort> m_transferred;
+        bool m_consumed { false };
+    };
+
+    class PreparedMessage {
+        WTF_MAKE_NONCOPYABLE(PreparedMessage);
+
+    public:
+        PreparedMessage(PreparedMessage&&) noexcept = default;
+        ExceptionOr<void> validateForCommit(JSC::JSGlobalObject&) const;
+        ExceptionOr<MessageWithMessagePorts> commit(JSC::JSGlobalObject&);
+        // No JavaScript may run between validation and commit.
+        MessageWithMessagePorts commitValidated(JSC::VM&);
+
+    private:
+        friend class MessagePort;
+        PreparedMessage(SerializedScriptValue::Prepared&&, PreparedTransfer&&);
+        SerializedScriptValue::Prepared m_serialized;
+        PreparedTransfer m_ports;
+    };
+
+    static ExceptionOr<PreparedMessage> prepareMessage(JSC::JSGlobalObject&, JSC::JSValue, Vector<JSC::Strong<JSC::JSObject>>&& transfer);
+
+    static ExceptionOr<Ref<MessagePort>> tryCreate(ScriptExecutionContext&, Ref<MessagePortPipe>&&, uint8_t side);
     virtual ~MessagePort();
 
     ExceptionOr<void> postMessage(JSC::JSGlobalObject&, JSC::JSValue message, StructuredSerializeOptions&&);
@@ -73,25 +102,19 @@ public:
     void close();
 
     // Transfer machinery.
-    static ExceptionOr<Vector<TransferredMessagePort>> disentanglePorts(Vector<RefPtr<MessagePort>>&&);
-    static Vector<RefPtr<MessagePort>> entanglePorts(ScriptExecutionContext&, Vector<TransferredMessagePort>&&);
-    static Ref<MessagePort> entangle(ScriptExecutionContext&, TransferredMessagePort&&);
-    TransferredMessagePort disentangle();
+    static ExceptionOr<PreparedTransfer> prepareTransfer(std::span<const RefPtr<MessagePort>>, const MessagePortPipe* excludedPipe = nullptr);
+    static ExceptionOr<Vector<RefPtr<MessagePort>>> entanglePorts(ScriptExecutionContext&, std::span<TransferredMessagePort>);
 
     bool started() const { return m_started; }
-    bool isDetached() const { return m_isDetached; }
+    bool isDetached() const { return !isEntangled(); }
 
-    // Called by the pipe on this port's context thread with one dequeued message.
     void dispatchOneMessage(ScriptExecutionContext&, MessageWithMessagePorts&&);
-
-    // Only here for JSMessagePortCustom's GC optimization; always null.
-    MessagePort* locallyEntangledPort() { return nullptr; }
 
     MessagePortPipe* pipe() const { return m_pipe.ptr(); }
     uint8_t side() const { return m_side; }
 
-    void ref() const { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::ref(); }
-    void deref() const { ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::deref(); }
+    void ref() const { ThreadSafeRefCounted::ref(); }
+    void deref() const { ThreadSafeRefCounted::deref(); }
 
     // EventTarget.
     EventTargetInterface eventTargetInterface() const final { return MessagePortEventTargetInterfaceType; }
@@ -101,37 +124,50 @@ public:
     void dispatchEvent(Event&) final;
 
     // node:worker_threads receiveMessageOnPort — synchronous single pop.
-    JSValue tryTakeMessage(JSGlobalObject*);
+    std::optional<JSValue> tryTakeMessage(JSGlobalObject*);
 
     bool hasPendingActivity() const;
 
-    void jsRef(JSGlobalObject*);
-    void jsUnref(JSGlobalObject*);
+    void jsRef();
+    void jsUnref();
     bool jsHasRef() { return m_hasRef; }
 
 private:
+    TransferredMessagePort disentangle();
     MessagePort(ScriptExecutionContext&, Ref<MessagePortPipe>&&, uint8_t side);
+    // A prepared receiver retains its pipe but does not yet own the endpoint.
+    static ExceptionOr<Ref<MessagePort>> tryAllocate(ScriptExecutionContext&, Ref<MessagePortPipe>&&, uint8_t side);
+    ExceptionOr<void> prepareDelivery();
+    void closeDelivery();
+    void queueCloseEvent();
+    void dispatchCloseEvent(ScriptExecutionContext&);
+    void stop();
 
-    bool addEventListener(const AtomString& eventType, Ref<EventListener>&&, const AddEventListenerOptions&) final;
-    bool removeEventListener(const AtomString& eventType, EventListener&, const EventListenerOptions&) final;
+    void eventListenersDidChange() final;
+    void setRef(bool, ScriptExecutionContext*);
 
-    void contextDestroyed() final;
+    void contextDestroyed(ScriptExecutionContext&) final;
 
-    bool isEntangled() const { return !m_isDetached; }
+    bool isEntangled() const { return m_deliveryState.load(std::memory_order_relaxed) == DeliveryState::Entangled; }
 
     // Held for the port's entire lifetime — never nulled — so that the GC
     // thread's hasPendingActivity() can dereference it without racing the
-    // mutator. close()/disentangle() flip pipe-side state bits instead.
+    // mutator. close()/disentangle() update delivery and pipe-side state instead.
     const Ref<MessagePortPipe> m_pipe;
     const uint8_t m_side { 0 };
+    class DeliveryTarget;
+    RefPtr<DeliveryTarget> m_deliveryTarget;
+    RefPtr<MessagePortPipe::Wakeup> m_wakeup;
+    RefPtr<MessagePortContext> m_deliveryContext;
+    Bun::NativeEventLoopSignal* m_deliverySignal { nullptr };
 
     bool m_started { false };
-    bool m_isDetached { false };
-    bool m_hasMessageEventListener { false };
+    enum class DeliveryState : uint8_t { Detached, Entangled, ClosePending };
+    std::atomic<DeliveryState> m_deliveryState { DeliveryState::Detached };
+    std::atomic<bool> m_hasMessageEventListener { false };
+    std::atomic<bool> m_hasCloseEventListener { false };
     bool m_hasRef { false };
 
-    uint32_t m_messageEventCount { 0 };
-    static void onDidChangeListenerImpl(EventTarget& self, const AtomString& eventType, OnDidChangeListenerKind kind);
 };
 
 WebCoreOpaqueRoot root(MessagePort*);

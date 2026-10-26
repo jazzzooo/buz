@@ -1,15 +1,12 @@
 pub const ExecCommand = struct {
     pub fn exec(ctx: Command.Context) !void {
         const script = ctx.positionals[1];
-        // this is a hack: make dummy bundler so we can use its `.runEnvLoader()` function to populate environment variables probably should split out the functionality
-        var bundle = try bun.Transpiler.init(
-            ctx.allocator,
-            ctx.io,
-            ctx.log,
-            try @import("../jsc/config.zig").configureTransformOptionsForBunVM(ctx.allocator, ctx.args),
-            null,
-        );
-        try bundle.runEnvLoader(bundle.options.env.disable_default_env_files);
+        const env_map = try ctx.allocator.create(bun.DotEnv.Map);
+        env_map.* = bun.DotEnv.Map.init(ctx.allocator);
+        const env = try ctx.allocator.create(bun.DotEnv.Loader);
+        env.* = bun.DotEnv.Loader.init(env_map, ctx.allocator);
+        env.quiet = !ctx.log.level.atLeast(.info);
+        try env.loadCurrentDirectory(ctx.io, ctx.args.env_files, ctx.args.disable_default_env_files);
         var buf: bun.PathBuffer = undefined;
         const cwd = switch (bun.sys.getcwd(&buf)) {
             .result => |p| p,
@@ -18,7 +15,7 @@ pub const ExecCommand = struct {
                 Global.exit(1);
             },
         };
-        const mini = bun.jsc.MiniEventLoop.initGlobal(ctx.io, bundle.env, cwd);
+        const mini = try bun.MiniEventLoop.initGlobal(ctx.io, env, cwd);
         const parts: []const []const u8 = &[_][]const u8{
             cwd,
             "[eval]",

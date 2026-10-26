@@ -31,6 +31,8 @@
 #include "EventOptions.h"
 #include "ExceptionOr.h"
 #include "ScriptWrappable.h"
+#include <wtf/FastMalloc.h>
+#include <wtf/Lock.h>
 #include <wtf/MonotonicTime.h>
 #include <wtf/TypeCasts.h>
 #include <wtf/text/AtomString.h>
@@ -46,7 +48,7 @@ class EventTarget;
 class ScriptExecutionContext;
 
 class Event : public ScriptWrappable, public RefCounted<Event> {
-    WTF_MAKE_TZONE_ALLOCATED(Event);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(Event);
 
 public:
     using IsTrusted = EventIsTrusted;
@@ -61,9 +63,8 @@ public:
         BUBBLING_PHASE = 3
     };
 
-    WEBCORE_EXPORT static Ref<Event> create(const AtomString& type, CanBubble, IsCancelable, IsComposed = IsComposed::No);
-    static Ref<Event> createForBindings();
-    static Ref<Event> create(const AtomString& type, const EventInit&, IsTrusted = IsTrusted::No);
+    WEBCORE_EXPORT static RefPtr<Event> tryCreate(const AtomString& type, CanBubble, IsCancelable, IsComposed = IsComposed::No);
+    static RefPtr<Event> tryCreate(const AtomString& type, const EventInit&, IsTrusted = IsTrusted::No);
 
     virtual ~Event();
 
@@ -125,8 +126,7 @@ public:
     bool cancelBubble() const { return propagationStopped(); }
     void setCancelBubble(bool);
 
-    Event* underlyingEvent() const { return m_underlyingEvent.get(); }
-    void setUnderlyingEvent(Event*);
+    template<typename Visitor> void visitTargets(Visitor&) const;
 
     // Returns true if the dispatch flag is set.
     // https://dom.spec.whatwg.org/#dispatch-flag
@@ -149,6 +149,7 @@ private:
     explicit Event(EventInterface, MonotonicTime createTime, const AtomString& type, IsTrusted, CanBubble, IsCancelable, IsComposed);
 
     void setCanceledFlagIfPossible();
+    void writeBarrierForTarget(EventTarget*);
 
     unsigned m_isInitialized : 1;
     unsigned m_canBubble : 1;
@@ -174,7 +175,7 @@ private:
     RefPtr<EventTarget> m_target;
     MonotonicTime m_createTime;
 
-    RefPtr<Event> m_underlyingEvent;
+    mutable Lock m_targetLock;
 };
 
 inline void Event::preventDefault()

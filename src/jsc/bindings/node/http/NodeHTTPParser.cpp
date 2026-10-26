@@ -218,22 +218,20 @@ void HTTPParser::save()
     }
 }
 
-JSValue HTTPParser::remove(JSGlobalObject* globalObject, JSCell* thisParser)
+void HTTPParser::remove(JSGlobalObject* globalObject, JSCell* thisParser)
 {
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     if (JSConnectionsList* connections = m_connectionsList.get()) {
         connections->pop(globalObject, thisParser);
-        RETURN_IF_EXCEPTION(scope, {});
+        RETURN_IF_EXCEPTION(scope, void());
         connections->popActive(globalObject, thisParser);
-        RETURN_IF_EXCEPTION(scope, {});
+        RETURN_IF_EXCEPTION(scope, void());
     }
-
-    return jsUndefined();
 }
 
-JSValue HTTPParser::initialize(JSGlobalObject* globalObject, JSCell* thisParser, llhttp_type_t type, uint64_t maxHttpHeaderSize, uint32_t lenientFlags, JSConnectionsList* connections)
+void HTTPParser::initialize(JSGlobalObject* globalObject, JSCell* thisParser, llhttp_type_t type, uint64_t maxHttpHeaderSize, uint32_t lenientFlags, JSConnectionsList* connections)
 {
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -251,51 +249,36 @@ JSValue HTTPParser::initialize(JSGlobalObject* globalObject, JSCell* thisParser,
         // Important: Push into the lists AFTER setting the last_message_start_
         // otherwise std::set.erase will fail later.
         connections->push(globalObject, thisParser);
-        RETURN_IF_EXCEPTION(scope, {});
+        RETURN_IF_EXCEPTION(scope, void());
         connections->pushActive(globalObject, thisParser);
-        RETURN_IF_EXCEPTION(scope, {});
+        RETURN_IF_EXCEPTION(scope, void());
     } else {
         m_connectionsList.clear();
     }
 
-    return jsUndefined();
 }
 
-JSValue HTTPParser::pause()
+void HTTPParser::pause()
 {
     llhttp_pause(&m_parserData);
-    return jsUndefined();
 }
 
-JSValue HTTPParser::resume()
+void HTTPParser::resume()
 {
     llhttp_resume(&m_parserData);
-    return jsUndefined();
 }
 
-JSValue HTTPParser::getCurrentBuffer(JSGlobalObject* lexicalGlobalObject) const
+std::span<const uint8_t> HTTPParser::getCurrentBuffer() const
 {
-    auto& vm = lexicalGlobalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
-
-    JSUint8Array* buffer = JSUint8Array::create(lexicalGlobalObject, globalObject->JSBufferSubclassStructure(), m_currentBufferLen);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    memcpy(buffer->vector(), m_currentBufferData, m_currentBufferLen);
-
-    return buffer;
+    return { reinterpret_cast<const uint8_t*>(m_currentBufferData), m_currentBufferLen };
 }
 
-JSValue HTTPParser::duration() const
+double HTTPParser::duration() const
 {
-    if (m_lastMessageStart == 0) {
-        return jsNumber(0);
-    }
+    if (m_lastMessageStart == 0)
+        return 0;
 
-    double duration = (uv_hrtime() - m_lastMessageStart) / 1e6;
-
-    return jsNumber(duration);
+    return (uv_hrtime() - m_lastMessageStart) / 1e6;
 }
 
 bool HTTPParser::lessThan(HTTPParser& other) const

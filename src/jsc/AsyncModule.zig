@@ -1,25 +1,71 @@
 const debug = Output.scoped(.AsyncModule, .hidden);
+const AsyncModuleBindings = bun.bindgen.Module("AsyncModule");
+const PromiseBindings = bun.bindgen.Module("promises");
+const FulfillAsyncModuleSchema = AsyncModuleBindings.engineShim("fulfill");
+const CreateAsyncModuleErrorSchema = AsyncModuleBindings.engineShim("createError");
+const PromiseRejectAsHandledSchema = PromiseBindings.engineShim("promiseRejectAsHandled");
+const PromiseRejectSchema = PromiseBindings.engineShim("promiseReject");
+const CreateErrorSchema = bun.bindgen.Module("errors").engineShim("createError");
 
 const string = []const u8;
+
+const AsyncModuleError = struct {
+    message: []const u8,
+    name: []const u8,
+    url: ?[]const u8,
+    pkg: []const u8,
+    specifier: []const u8,
+    source_url: []const u8,
+    line: i32,
+    line_text: ?[]const u8,
+    column: i32,
+    referrer: ?[]const u8,
+};
+
+fn createAsyncModuleError(scope: *bun.bindgen.FocusedEngineScope, data: AsyncModuleError) @TypeOf(scope.engine(CreateAsyncModuleErrorSchema)).Return {
+    const operation = scope.engine(CreateAsyncModuleErrorSchema);
+    const Input = @FieldType(@TypeOf(operation).Args, "data");
+    const fields = @typeInfo(Input).@"struct".field_names;
+    var owned_strings: [fields.len]bun.bindgen.DOMString = @splat(.empty());
+    defer for (&owned_strings) |*text| text.deinit();
+    var input: Input = undefined;
+    inline for (fields, 0..) |field, index| {
+        const value = @field(data, field);
+        @field(input, field) = switch (@TypeOf(value)) {
+            i32 => value,
+            []const u8 => text: {
+                owned_strings[index] = try bun.bindgen.DOMString.fromUTF8(value);
+                break :text owned_strings[index].operand();
+            },
+            ?[]const u8 => if (value) |bytes| text: {
+                owned_strings[index] = try bun.bindgen.DOMString.fromUTF8(bytes);
+                break :text owned_strings[index].operand();
+            } else null,
+            else => @compileError("unsupported async-module error field: " ++ field),
+        };
+    }
+    return operation.call(.{ .data = input });
+}
 
 pub const AsyncModule = struct {
     // This is all the state used by the printer to print the module
     parse_result: ParseResult,
-    promise: jsc.Strong.Optional = .empty,
+    promise: bun.bindgen.PromiseRoot.Optional = .empty,
     path: Fs.Path,
     specifier: string = "",
     referrer: string = "",
     string_buf: []u8 = &[_]u8{},
-    fd: ?FD = null,
+    watch_source: bool,
     package_json: ?*PackageJSON = null,
     loader: api.Loader,
-    hash: u32 = std.math.maxInt(u32),
     globalThis: *JSGlobalObject = undefined,
     arena: *bun.ArenaAllocator,
+    source_buffer: ?bun.MutableString = null,
+    transpiler_cache: ?bun.js_parser.RuntimeTranspilerCache = null,
 
     // This is the specific state for making it async
     poll_ref: Async.KeepAlive = .{},
-    any_task: jsc.AnyTask = undefined,
+    delivery_task: jsc.AnyTaskWithExtraContext = .{},
 
     pub const Id = u32;
 
@@ -39,30 +85,86 @@ pub const AsyncModule = struct {
 
     pub const Queue = struct {
         map: Map = .empty,
-        scheduled: u32 = 0,
+        scheduled: usize = 0,
+        closed: bool = false,
+        // Package-manager callbacks can remove the module while polling is on the stack.
+        polling: ?*AsyncModule = null,
+        polling_removed: bool = false,
+        wake_pending: std.atomic.Value(bool) = .init(false),
+        wake_task: jsc.AnyTaskWithExtraContext = .{},
+        wake_loop: ?*jsc.EventLoop = null,
+        running_tasks: bool = false,
+        poll_again: bool = false,
 
-        pub const Map = std.ArrayListUnmanaged(AsyncModule);
+        pub const Map = std.ArrayListUnmanaged(*AsyncModule);
 
-        pub fn enqueue(this: *Queue, globalObject: *JSGlobalObject, opts: anytype) void {
-            debug("enqueue: {s}", .{opts.specifier});
-            var module = AsyncModule.init(opts, globalObject) catch unreachable;
-            module.poll_ref.ref(this.vm());
-
-            this.map.append(this.vm().allocator, module) catch unreachable;
-            this.vm().packageManager().drainDependencyList();
+        pub fn initWakeHandler(this: *Queue) PackageManager.WakeHandler {
+            bun.assert(this.wake_loop == null);
+            this.wake_loop = this.vm().eventLoop();
+            this.wake_task = .{
+                .ctx = .init(this),
+                .callback = deliverWake,
+                .on_cancel = cancelWake,
+            };
+            return .{
+                .context = .init(this),
+                .handler = onWakeHandler,
+                .onDependencyError = onDependencyError,
+            };
         }
 
-        pub fn onDependencyError(ctx: *anyopaque, dependency: Dependency, root_dependency_id: Install.DependencyID, err: anyerror) void {
-            var this = bun.cast(*Queue, ctx);
+        pub fn enqueue(this: *Queue, globalObject: *JSGlobalObject, opts: anytype) bun.JSError!void {
+            debug("enqueue: {s}", .{opts.specifier});
+            bun.assert(!this.closed);
+            try this.map.ensureUnusedCapacity(this.vm().allocator, 1);
+            const module = try AsyncModule.create(opts, globalObject);
+            if (module.parse_result.source.contents_is_recycled) {
+                const fs = &this.vm().transpiler.resolver.caches.fs;
+                const buffer = fs.sharedBuffer();
+                module.source_buffer = buffer.*;
+                fs.resetSharedBuffer(buffer);
+            }
+            module.poll_ref.ref(this.vm());
+
+            this.map.appendAssumeCapacity(module);
+            this.vm().packageManager().drainDependencyList();
+            if (!this.closed) this.scheduleWake();
+        }
+
+        pub fn close(this: *Queue) void {
+            if (this.closed) return;
+            this.closed = true;
+            this.vm().transpiler.resolver.onWakePackageManager = .{};
+            if (this.vm().transpiler.resolver.package_manager) |manager| manager.detachWakeHandler();
+            if (this.wake_loop) |loop| {
+                _ = loop.cancelNativeTask(&this.wake_task);
+                this.wake_pending.store(false, .release);
+            }
+            for (this.map.items) |module| this.retire(module);
+            this.map.deinit(this.vm().allocator);
+            this.map = .empty;
+        }
+
+        fn retire(this: *Queue, module: *AsyncModule) void {
+            if (this.polling == module) {
+                this.polling_removed = true;
+            } else {
+                module.destroy();
+            }
+        }
+
+        pub fn onDependencyError(ctx: PackageManager.WakeHandler.Context, dependency: Dependency, root_dependency_id: Install.DependencyID, err: anyerror) void {
+            const this = ctx.get(*Queue);
+            if (this.closed) return;
             debug("onDependencyError: {s}", .{this.vm().packageManager().lockfile.str(&dependency.name)});
 
-            var modules: []AsyncModule = this.map.items;
             var i: usize = 0;
-            outer: for (modules) |module_| {
-                var module = module_;
+            outer: while (i < this.map.items.len) {
+                const module = this.map.items[i];
                 const root_dependency_ids = module.parse_result.pending_imports.items(.root_dependency_id);
                 for (root_dependency_ids, 0..) |dep, dep_i| {
                     if (dep != root_dependency_id) continue;
+                    _ = this.map.orderedRemove(i);
                     module.resolveError(
                         this.vm(),
                         module.parse_result.pending_imports.items(.import_record_id)[dep_i],
@@ -72,33 +174,76 @@ pub const AsyncModule = struct {
                             .url = "",
                             .version = dependency.version,
                         },
-                    ) catch unreachable;
+                    ) catch |failure| module.reportFailure(failure);
+                    this.retire(module);
                     continue :outer;
                 }
 
-                modules[i] = module;
                 i += 1;
             }
-            this.map.items.len = i;
         }
-        pub fn onWakeHandler(ctx: *anyopaque, _: *PackageManager) void {
+        pub fn onWakeHandler(ctx: PackageManager.WakeHandler.Context, _: *PackageManager) void {
             debug("onWake", .{});
-            var this = bun.cast(*Queue, ctx);
-            this.vm().enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(this));
+            const this = ctx.get(*Queue);
+            this.scheduleWake();
+        }
+
+        fn scheduleWake(this: *Queue) void {
+            if (!this.wake_pending.swap(true, .acq_rel)) {
+                this.wake_loop.?.enqueueNativeTaskConcurrent(&this.wake_task);
+            }
+        }
+
+        fn deliverWake(ctx: jsc.AnyTaskWithExtraContext.Context, _: *anyopaque) void {
+            const this = ctx.get(*Queue);
+            this.wake_pending.store(false, .release);
+            this.onPoll();
+        }
+
+        fn cancelWake(ctx: jsc.AnyTaskWithExtraContext.Context) void {
+            const this = ctx.get(*Queue);
+            this.close();
         }
 
         pub fn onPoll(this: *Queue) void {
+            if (this.closed) return;
+            if (this.running_tasks) {
+                this.poll_again = true;
+                return;
+            }
+            this.running_tasks = true;
+            this.poll_again = false;
+            defer {
+                this.running_tasks = false;
+                if (this.poll_again and !this.closed) this.scheduleWake();
+            }
             debug("onPoll", .{});
-            this.runTasks();
+            this.runTasks() catch |err| {
+                this.failPending(err);
+                return;
+            };
             this.pollModules();
         }
 
-        pub fn runTasks(this: *Queue) void {
+        fn failPending(this: *Queue, err: anyerror) void {
+            var modules = this.map;
+            this.map = .empty;
+            defer modules.deinit(this.vm().allocator);
+            for (modules.items) |module| {
+                if (!this.closed) {
+                    module.rejectInstallFailure(err) catch |failure| module.reportFailure(failure);
+                }
+                this.retire(module);
+            }
+            this.vm().packageManager().endProgressBar();
+        }
+
+        fn runTasks(this: *Queue) !void {
             var pm = this.vm().packageManager();
 
             if (Output.enable_ansi_colors_stderr) {
                 pm.startProgressBarIfNone();
-                pm.runTasks(
+                try pm.runTasks(
                     *Queue,
                     this,
                     .{
@@ -110,9 +255,9 @@ pub const AsyncModule = struct {
                     },
                     true,
                     PackageManager.Options.LogLevel.default,
-                ) catch unreachable;
+                );
             } else {
-                pm.runTasks(
+                try pm.runTasks(
                     *Queue,
                     this,
                     .{
@@ -123,7 +268,7 @@ pub const AsyncModule = struct {
                     },
                     true,
                     PackageManager.Options.LogLevel.default_no_progress,
-                ) catch unreachable;
+                );
             }
         }
 
@@ -137,12 +282,12 @@ pub const AsyncModule = struct {
             err: anyerror,
             url: []const u8,
         ) void {
+            if (this.closed) return;
             debug("onPackageManifestError: {s}", .{name});
 
-            var modules: []AsyncModule = this.map.items;
             var i: usize = 0;
-            outer: for (modules) |module_| {
-                var module = module_;
+            outer: while (i < this.map.items.len) {
+                const module = this.map.items[i];
                 const tags = module.parse_result.pending_imports.items(.tag);
                 for (tags, 0..) |tag, tag_i| {
                     if (tag == .resolve) {
@@ -154,6 +299,7 @@ pub const AsyncModule = struct {
 
                         const versions = module.parse_result.pending_imports.items(.dependency);
 
+                        _ = this.map.orderedRemove(i);
                         module.resolveError(
                             this.vm(),
                             module.parse_result.pending_imports.items(.import_record_id)[tag_i],
@@ -163,15 +309,14 @@ pub const AsyncModule = struct {
                                 .url = url,
                                 .version = versions[tag_i],
                             },
-                        ) catch unreachable;
+                        ) catch |failure| module.reportFailure(failure);
+                        this.retire(module);
                         continue :outer;
                     }
                 }
 
-                modules[i] = module;
                 i += 1;
             }
-            this.map.items.len = i;
         }
 
         pub fn onPackageDownloadError(
@@ -182,17 +327,18 @@ pub const AsyncModule = struct {
             err: anyerror,
             url: []const u8,
         ) void {
+            if (this.closed) return;
             debug("onPackageDownloadError: {s}", .{name});
 
-            const resolution_ids = this.vm().packageManager().lockfile.buffers.resolutions.items;
-            var modules: []AsyncModule = this.map.items;
             var i: usize = 0;
-            outer: for (modules) |module_| {
-                var module = module_;
+            outer: while (i < this.map.items.len) {
+                const module = this.map.items[i];
+                const resolution_ids = this.vm().packageManager().lockfile.buffers.resolutions.items;
                 const record_ids = module.parse_result.pending_imports.items(.import_record_id);
                 const root_dependency_ids = module.parse_result.pending_imports.items(.root_dependency_id);
                 for (root_dependency_ids, 0..) |dependency_id, import_id| {
                     if (resolution_ids[dependency_id] != package_id) continue;
+                    _ = this.map.orderedRemove(i);
                     module.downloadError(
                         this.vm(),
                         record_ids[import_id],
@@ -202,29 +348,28 @@ pub const AsyncModule = struct {
                             .err = err,
                             .url = url,
                         },
-                    ) catch unreachable;
+                    ) catch |failure| module.reportFailure(failure);
+                    this.retire(module);
                     continue :outer;
                 }
 
-                modules[i] = module;
                 i += 1;
             }
-            this.map.items.len = i;
         }
 
         pub fn pollModules(this: *Queue) void {
+            if (this.closed or this.polling != null) return;
             var pm = this.vm().packageManager();
             if (pm.pending_tasks.load(.monotonic) > 0) return;
 
-            var modules: []AsyncModule = this.map.items;
             var i: usize = 0;
 
-            for (modules) |mod| {
-                var module = mod;
+            while (i < this.map.items.len) {
+                const module = this.map.items[i];
+                this.polling = module;
+                this.polling_removed = false;
                 var tags = module.parse_result.pending_imports.items(.tag);
                 const root_dependency_ids = module.parse_result.pending_imports.items(.root_dependency_id);
-                // var esms = module.parse_result.pending_imports.items(.esm);
-                // var versions = module.parse_result.pending_imports.items(.dependency);
                 var done_count: usize = 0;
                 for (tags, 0..) |tag, tag_i| {
                     const root_id = root_dependency_ids[tag_i];
@@ -267,6 +412,7 @@ pub const AsyncModule = struct {
                             const current_tasks = pm.total_tasks;
                             // so if enqueuing all the dependencies produces no new tasks, we are done.
                             pm.enqueueDependencyList(package.dependencies);
+                            if (this.polling_removed) break;
                             if (current_tasks == pm.total_tasks) {
                                 tags[tag_i] = .done;
                                 done_count += 1;
@@ -282,15 +428,22 @@ pub const AsyncModule = struct {
                     }
                 }
 
+                this.polling = null;
+                if (this.polling_removed) {
+                    module.destroy();
+                    if (this.closed) return;
+                    i = 0;
+                    continue;
+                }
+                i = std.mem.indexOfScalar(*AsyncModule, this.map.items, module).?;
                 if (done_count == tags.len) {
+                    _ = this.map.orderedRemove(i);
                     module.done(this.vm());
                 } else {
-                    modules[i] = module;
                     i += 1;
                 }
             }
-            this.map.items.len = i;
-            if (i == 0) {
+            if (this.map.items.len == 0) {
                 // ensure we always end the progress bar
                 this.vm().packageManager().endProgressBar();
             }
@@ -310,73 +463,147 @@ pub const AsyncModule = struct {
         }
     };
 
-    pub fn init(opts: anytype, globalObject: *JSGlobalObject) !AsyncModule {
-        // var stmt_blocks = js_ast.Stmt.Data.toOwnedSlice();
-        // var expr_blocks = js_ast.Expr.Data.toOwnedSlice();
-        const this_promise = JSValue.createInternalPromise(globalObject);
-        const promise = jsc.Strong.Optional.create(this_promise, globalObject);
+    fn create(opts: anytype, globalObject: *JSGlobalObject) bun.JSError!*AsyncModule {
+        if (opts.parse_result.runtime_transpiler_cache) |cache| {
+            bun.assert(cache.entry == null and cache.output_code == null);
+        }
+        const module = try globalObject.bunVM().allocator.create(AsyncModule);
+        errdefer globalObject.bunVM().allocator.destroy(module);
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(globalObject);
+        defer scope.deinit();
+        const created = try scope.engineIn("promises", "promiseCreate").call(.{});
+        var returned_promise = try created.toOwned();
+        errdefer returned_promise.deinit();
+        var promise: bun.bindgen.PromiseRoot.Optional = .empty;
+        errdefer promise.deinit();
+        try promise.set(created.operand(&scope).asPromise());
 
-        var buf = bun.StringBuilder{};
-        buf.count(opts.referrer);
-        buf.count(opts.specifier);
-        buf.count(opts.path.text);
-
-        try buf.allocate(bun.default_allocator);
-        opts.promise_ptr.?.* = this_promise.asInternalPromise().?;
+        var buffer_length: usize = 0;
+        for ([_][]const u8{
+            opts.referrer,
+            opts.specifier,
+            opts.path.text,
+            opts.path.pretty,
+            opts.path.namespace,
+            opts.parse_result.source.path.text,
+            opts.parse_result.source.path.pretty,
+            opts.parse_result.source.path.namespace,
+        }) |text| {
+            buffer_length = std.math.add(usize, buffer_length, text.len) catch return error.OutOfMemory;
+        }
+        var buf = try bun.StringBuilder.initCapacity(bun.default_allocator, buffer_length);
         const referrer = buf.append(opts.referrer);
         const specifier = buf.append(opts.specifier);
-        const path = Fs.Path.init(buf.append(opts.path.text));
+        const path = copyPath(&buf, opts.path);
+        const source_path = copyPath(&buf, opts.parse_result.source.path);
 
-        return AsyncModule{
+        module.* = .{
             .parse_result = opts.parse_result,
             .promise = promise,
             .path = path,
             .specifier = specifier,
             .referrer = referrer,
-            .fd = opts.fd,
+            .watch_source = opts.watch_source,
             .package_json = opts.package_json,
             .loader = opts.loader.toAPI(),
             .string_buf = buf.allocatedSlice(),
-            // .stmt_blocks = stmt_blocks,
-            // .expr_blocks = expr_blocks,
             .globalThis = globalObject,
             .arena = opts.arena,
+            .transpiler_cache = if (opts.parse_result.runtime_transpiler_cache) |cache| cache.* else null,
         };
+        module.parse_result.source.path = source_path;
+        module.parse_result.input_fd = null;
+        module.parse_result.runtime_transpiler_cache = if (module.transpiler_cache) |*cache| cache else null;
+        opts.promise_ptr.?.* = returned_promise.take();
+        return module;
+    }
+
+    fn copyPath(buf: *bun.StringBuilder, path: Fs.Path) Fs.Path {
+        var copy = path;
+        copy.text = buf.append(path.text);
+        copy.pretty = buf.append(path.pretty);
+        copy.namespace = buf.append(path.namespace);
+        return copy;
     }
 
     pub fn done(this: *AsyncModule, jsc_vm: *VirtualMachine) void {
-        var clone = jsc_vm.allocator.create(AsyncModule) catch unreachable;
-        clone.* = this.*;
         jsc_vm.modules.scheduled += 1;
-        clone.any_task = jsc.AnyTask.New(AsyncModule, onDone).init(clone);
-        jsc_vm.enqueueTask(jsc.Task.init(&clone.any_task));
+        this.delivery_task = jsc.AnyTaskWithExtraContext.New(AsyncModule, void, onDone).init(this);
+        this.delivery_task.on_cancel = cancelDelivery;
+        jsc_vm.eventLoop().enqueueNativeTask(&this.delivery_task);
     }
 
-    pub fn onDone(this: *AsyncModule) void {
-        jsc.markBinding(@src());
-        var jsc_vm = this.globalThis.bunVM();
-        jsc_vm.modules.scheduled -= 1;
-        if (jsc_vm.modules.scheduled == 0) {
-            jsc_vm.packageManager().endProgressBar();
-        }
+    fn finishDelivery(this: *AsyncModule) void {
+        const vm = this.globalThis.bunVM();
+        vm.modules.scheduled -= 1;
+        if (vm.modules.scheduled == 0) vm.packageManager().endProgressBar();
+    }
+
+    fn cancelDelivery(context: jsc.AnyTaskWithExtraContext.Context) void {
+        const this = context.get(*AsyncModule);
+        this.finishDelivery();
+        this.destroy();
+    }
+
+    pub fn onDone(this: *AsyncModule, _: *void) void {
+        defer this.destroy();
+        this.finishDelivery();
+        this.finishLoading() catch |err| this.reportFailure(err);
+    }
+
+    fn reportFailure(this: *AsyncModule, err: bun.JSError) void {
+        this.rejectFailure(err) catch |failure| this.globalThis.reportActiveExceptionAsUnhandled(failure);
+    }
+
+    fn rejectFailure(this: *AsyncModule, failure: bun.JSError) bun.JSError!void {
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(this.globalThis);
+        defer scope.deinit();
+        const reason = try scope.takeThrownException(failure);
+        const promise = (try this.promise.view(&scope)) orelse @panic("async module lost its pending promise");
+        try scope.engine(PromiseRejectSchema).call(.{ .promise = promise.operand(&scope), .value = reason.operand(&scope).asEngine() });
+    }
+
+    fn rejectInstallFailure(this: *AsyncModule, failure: anyerror) bun.JSError!void {
+        if (failure == error.OutOfMemory) return this.rejectFailure(error.OutOfMemory);
+        const message = try std.fmt.allocPrint(bun.default_allocator, "Failed to install dependencies for \"{s}\": {s}", .{ this.specifier, @errorName(failure) });
+        defer bun.default_allocator.free(message);
+        var bound_message = try bun.bindgen.DOMString.fromUTF8(message);
+        defer bound_message.deinit();
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(this.globalThis);
+        defer scope.deinit();
+        const reason = try scope.engine(CreateErrorSchema).call(.{ .message = bound_message.operand() });
+        try scope.engine(PromiseRejectSchema).call(.{ .promise = this.promise.operand(&scope) orelse @panic("async module has no pending promise"), .value = reason.operand(&scope).asEngine() });
+    }
+
+    fn finishLoading(this: *AsyncModule) bun.JSError!void {
+        const jsc_vm = this.globalThis.bunVM();
         var log = logger.Log.init(jsc_vm.allocator);
         defer log.deinit();
-        var errorable: jsc.ErrorableResolvedSource = undefined;
-        this.poll_ref.unref(jsc_vm);
+        var bound_specifier = try bun.bindgen.DOMString.fromUTF8(this.specifier);
+        const specifier_string = bound_specifier.takeBunString();
+        defer specifier_string.deref();
+        var result: jsc.ResolvedSourceResult = undefined;
         outer: {
-            errorable = jsc.ErrorableResolvedSource.ok(this.resumeLoadingModule(&log) catch |err| {
+            result = jsc.ResolvedSourceResult.ok(this.resumeLoadingModule(&log) catch |err| {
                 switch (err) {
+                    error.OutOfMemory, error.JSTerminated => |failure| return failure,
                     error.JSError => {
-                        errorable = .err(error.JSError, this.globalThis.takeError(error.JSError));
+                        result = .fail(try jsc.ModuleLoaderEngine.takeFailureAsRoot(this.globalThis, error.JSError));
                         break :outer;
                     },
                     else => {
-                        VirtualMachine.processFetchLog(
+                        var bound_referrer = try bun.bindgen.DOMString.fromUTF8(this.referrer);
+                        const referrer_string = bound_referrer.takeBunString();
+                        defer referrer_string.deref();
+                        try VirtualMachine.processFetchLog(
                             this.globalThis,
-                            bun.String.init(this.specifier),
-                            bun.String.init(this.referrer),
+                            specifier_string,
+                            referrer_string,
                             &log,
-                            &errorable,
+                            &result,
                             err,
                         );
                         break :outer;
@@ -385,77 +612,83 @@ pub const AsyncModule = struct {
             });
         }
 
-        var spec = bun.String.init(ZigString.init(this.specifier).withEncoding());
-        var ref = bun.String.init(ZigString.init(this.referrer).withEncoding());
-        bun.jsc.fromJSHostCallGeneric(this.globalThis, @src(), Bun__onFulfillAsyncModule, .{
+        defer result.deinit();
+        try fulfillFetchPromise(
             this.globalThis,
-            this.promise.get().?,
-            &errorable,
-            &spec,
-            &ref,
-        }) catch {};
-        this.deinit();
-        jsc_vm.allocator.destroy(this);
+            &this.promise,
+            &result,
+            specifier_string,
+        );
+    }
+
+    fn fulfillFetchPromise(
+        globalThis: *JSGlobalObject,
+        promise: *const bun.bindgen.PromiseRoot.Optional,
+        result: *jsc.ResolvedSourceResult,
+        specifier: bun.String,
+    ) bun.JSError!void {
+        var bound_specifier = bun.bindgen.DOMString.fromBunString(specifier.dupeRef()) catch
+            return globalThis.throwOutOfMemory();
+        defer bound_specifier.deinit();
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(globalThis);
+        defer scope.deinit();
+        var engine_args: bun.bindgen.Args(FulfillAsyncModuleSchema) = .{
+            .promise = promise.operand(&scope) orelse @panic("async module has no pending promise"),
+            .result = result.takeWireAs(bun.bindgen.EngineTransferredArgumentType(FulfillAsyncModuleSchema, "result"), &scope) catch
+                return globalThis.throwOutOfMemory(),
+            .specifier = bound_specifier.operand(),
+        };
+        try scope.engine(FulfillAsyncModuleSchema).call(&engine_args);
     }
 
     pub fn fulfill(
         globalThis: *JSGlobalObject,
-        promise: JSValue,
+        promise: *const bun.bindgen.PromiseRoot.Optional,
         resolved_source: *ResolvedSource,
         err: ?anyerror,
         specifier_: bun.String,
         referrer_: bun.String,
         log: *logger.Log,
     ) bun.JSError!void {
-        jsc.markBinding(@src());
+        defer log.deinit();
+        defer resolved_source.deinit();
         var specifier = specifier_;
         var referrer = referrer_;
-        var scope: jsc.TopExceptionScope = undefined;
-        scope.init(globalThis, @src());
         defer {
             specifier.deref();
             referrer.deref();
-            scope.deinit();
         }
 
-        var errorable: jsc.ErrorableResolvedSource = undefined;
+        var result: jsc.ResolvedSourceResult = undefined;
         if (err) |e| {
-            defer {
-                if (resolved_source.source_code_needs_deref) {
-                    resolved_source.source_code_needs_deref = false;
-                    resolved_source.source_code.deref();
-                }
-            }
-
-            if (e == error.JSError) {
-                errorable = jsc.ErrorableResolvedSource.err(error.JSError, globalThis.takeError(error.JSError));
+            if (e == error.JSError or e == error.OutOfMemory) {
+                result = .fail(try jsc.ModuleLoaderEngine.takeFailureAsRoot(globalThis, @errorCast(e)));
+            } else if (e == error.JSTerminated) {
+                return error.JSTerminated;
             } else {
-                VirtualMachine.processFetchLog(
+                try VirtualMachine.processFetchLog(
                     globalThis,
                     specifier,
                     referrer,
                     log,
-                    &errorable,
+                    &result,
                     e,
                 );
             }
         } else {
-            errorable = jsc.ErrorableResolvedSource.ok(resolved_source.*);
+            result = jsc.ResolvedSourceResult.ok(resolved_source.*);
+            resolved_source.* = .{};
         }
-        log.deinit();
+        defer result.deinit();
 
         debug("fulfill: {f}", .{specifier});
 
-        try bun.jsc.fromJSHostCallGeneric(globalThis, @src(), Bun__onFulfillAsyncModule, .{
-            globalThis,
-            promise,
-            &errorable,
-            &specifier,
-            &referrer,
-        });
+        try fulfillFetchPromise(globalThis, promise, &result, specifier);
     }
 
     pub fn resolveError(this: *AsyncModule, vm: *VirtualMachine, import_record_id: u32, result: PackageResolveError) !void {
+        if (result.err == error.OutOfMemory) return error.OutOfMemory;
         const globalThis = this.globalThis;
 
         const msg: []u8 = try switch (result.err) {
@@ -524,31 +757,30 @@ pub const AsyncModule = struct {
             else => "PackageResolveError",
         };
 
-        const error_instance = try ZigString.init(msg).withEncoding().toErrorInstance(globalThis);
-        if (result.url.len > 0)
-            error_instance.putDirect(globalThis, ZigString.static("url"), ZigString.init(result.url).withEncoding().toJS(globalThis));
-        error_instance.putDirect(globalThis, ZigString.static("name"), ZigString.init(name).withEncoding().toJS(globalThis));
-        error_instance.putDirect(globalThis, ZigString.static("pkg"), ZigString.init(result.name).withEncoding().toJS(globalThis));
-        error_instance.putDirect(globalThis, ZigString.static("specifier"), ZigString.init(this.specifier).withEncoding().toJS(globalThis));
         const location = logger.rangeData(&this.parse_result.source, this.parse_result.ast.import_records.at(import_record_id).range, "").location.?;
-        error_instance.putDirect(globalThis, ZigString.static("sourceURL"), ZigString.init(this.parse_result.source.path.text).withEncoding().toJS(globalThis));
-        error_instance.putDirect(globalThis, ZigString.static("line"), JSValue.jsNumber(location.line));
-        if (location.line_text) |line_text| {
-            error_instance.putDirect(globalThis, ZigString.static("lineText"), ZigString.init(line_text).withEncoding().toJS(globalThis));
-        }
-        error_instance.putDirect(globalThis, ZigString.static("column"), JSValue.jsNumber(location.column));
-        if (this.referrer.len > 0 and !strings.eqlComptime(this.referrer, "undefined")) {
-            error_instance.putDirect(globalThis, ZigString.static("referrer"), ZigString.init(this.referrer).withEncoding().toJS(globalThis));
-        }
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(globalThis);
+        defer scope.deinit();
+        const error_value = try createAsyncModuleError(&scope, .{
+            .message = msg,
+            .name = name,
+            .url = if (result.url.len > 0) result.url else null,
+            .pkg = result.name,
+            .specifier = this.specifier,
+            .source_url = this.parse_result.source.path.text,
+            .line = location.line,
+            .line_text = location.line_text,
+            .column = location.column,
+            .referrer = if (this.referrer.len > 0 and !strings.eqlComptime(this.referrer, "undefined")) this.referrer else null,
+        });
 
-        const promise_value = this.promise.swap();
-        var promise = promise_value.asInternalPromise().?;
-        promise_value.ensureStillAlive();
-        this.poll_ref.unref(vm);
-        this.deinit();
-        promise.rejectAsHandled(globalThis, error_instance.toJS()) catch {};
+        try scope.engine(PromiseRejectAsHandledSchema).call(.{
+            .promise = this.promise.operand(&scope) orelse @panic("async module has no pending promise"),
+            .value = error_value.operand(&scope).asEngine(),
+        });
     }
     pub fn downloadError(this: *AsyncModule, vm: *VirtualMachine, import_record_id: u32, result: PackageDownloadError) !void {
+        if (result.err == error.OutOfMemory) return error.OutOfMemory;
         const globalThis = this.globalThis;
 
         const msg_args = .{
@@ -616,37 +848,32 @@ pub const AsyncModule = struct {
             else => "TarballDownloadError",
         };
 
-        const error_instance = try ZigString.init(msg).withEncoding().toErrorInstance(globalThis);
-        if (result.url.len > 0)
-            error_instance.putDirect(globalThis, ZigString.static("url"), ZigString.init(result.url).withEncoding().toJS(globalThis));
-        error_instance.putDirect(globalThis, ZigString.static("name"), ZigString.init(name).withEncoding().toJS(globalThis));
-        error_instance.putDirect(globalThis, ZigString.static("pkg"), ZigString.init(result.name).withEncoding().toJS(globalThis));
-        if (this.specifier.len > 0 and !strings.eqlComptime(this.specifier, "undefined")) {
-            error_instance.putDirect(globalThis, ZigString.static("referrer"), ZigString.init(this.specifier).withEncoding().toJS(globalThis));
-        }
-
         const location = logger.rangeData(&this.parse_result.source, this.parse_result.ast.import_records.at(import_record_id).range, "").location.?;
-        error_instance.putDirect(globalThis, ZigString.static("specifier"), ZigString.init(
-            this.parse_result.ast.import_records.at(import_record_id).path.text,
-        ).withEncoding().toJS(globalThis));
-        error_instance.putDirect(globalThis, ZigString.static("sourceURL"), ZigString.init(this.parse_result.source.path.text).withEncoding().toJS(globalThis));
-        error_instance.putDirect(globalThis, ZigString.static("line"), JSValue.jsNumber(location.line));
-        if (location.line_text) |line_text| {
-            error_instance.putDirect(globalThis, ZigString.static("lineText"), ZigString.init(line_text).withEncoding().toJS(globalThis));
-        }
-        error_instance.putDirect(globalThis, ZigString.static("column"), JSValue.jsNumber(location.column));
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(globalThis);
+        defer scope.deinit();
+        const error_value = try createAsyncModuleError(&scope, .{
+            .message = msg,
+            .name = name,
+            .url = if (result.url.len > 0) result.url else null,
+            .pkg = result.name,
+            .specifier = this.parse_result.ast.import_records.at(import_record_id).path.text,
+            .source_url = this.parse_result.source.path.text,
+            .line = location.line,
+            .line_text = location.line_text,
+            .column = location.column,
+            .referrer = if (this.specifier.len > 0 and !strings.eqlComptime(this.specifier, "undefined")) this.specifier else null,
+        });
 
-        const promise_value = this.promise.swap();
-        var promise = promise_value.asInternalPromise().?;
-        promise_value.ensureStillAlive();
-        this.poll_ref.unref(vm);
-        this.deinit();
-        promise.rejectAsHandled(globalThis, error_instance.toJS()) catch {};
+        try scope.engine(PromiseRejectAsHandledSchema).call(.{
+            .promise = this.promise.operand(&scope) orelse @panic("async module has no pending promise"),
+            .value = error_value.operand(&scope).asEngine(),
+        });
     }
 
     pub fn resumeLoadingModule(this: *AsyncModule, log: *logger.Log) !ResolvedSource {
         debug("resumeLoadingModule: {s}", .{this.specifier});
-        var parse_result = this.parse_result;
+        const parse_result = &this.parse_result;
         const path = this.path;
         var jsc_vm = VirtualMachine.get();
         const specifier = this.specifier;
@@ -667,14 +894,12 @@ pub const AsyncModule = struct {
         // - node_modules bundle won't be properly
         try jsc_vm.transpiler.linker.link(
             path,
-            &parse_result,
+            parse_result,
             jsc_vm.origin,
             .absolute_path,
             false,
             true,
         );
-        this.parse_result = parse_result;
-
         var printer = VirtualMachine.source_code_printer.?.*;
         printer.ctx.reset();
 
@@ -682,7 +907,7 @@ pub const AsyncModule = struct {
             var mapper = jsc_vm.sourceMapHandler(&printer);
             defer VirtualMachine.source_code_printer.?.* = printer;
             _ = try jsc_vm.transpiler.printWithSourceMap(
-                parse_result,
+                parse_result.*,
                 @TypeOf(&printer),
                 &printer,
                 .esm_ascii,
@@ -696,19 +921,13 @@ pub const AsyncModule = struct {
         }
 
         if (jsc_vm.isWatcherEnabled()) {
-            var resolved_source = jsc_vm.refCountedResolvedSource(printer.ctx.written, bun.String.init(specifier), path.text, null, false);
+            const specifier_string = bun.String.cloneUTF8(specifier);
+            defer specifier_string.deref();
+            var resolved_source = jsc_vm.refCountedResolvedSource(printer.ctx.written, specifier_string, path.text, null, false);
 
-            if (parse_result.input_fd) |fd_| {
+            if (this.watch_source) {
                 if (std.fs.path.isAbsolute(path.text) and !strings.contains(path.text, "node_modules")) {
-                    _ = jsc_vm.bun_watcher.addFile(
-                        fd_,
-                        path.text,
-                        this.hash,
-                        options.Loader.fromAPI(this.loader),
-                        .invalid,
-                        this.package_json,
-                        true,
-                    );
+                    _ = jsc_vm.bun_watcher.addFileByPathSlow(path.text, options.Loader.fromAPI(this.loader), this.package_json);
                 }
             }
 
@@ -718,32 +937,29 @@ pub const AsyncModule = struct {
         }
 
         return ResolvedSource{
-            .allocator = null,
             .source_code = bun.String.cloneLatin1(printer.ctx.getWritten()),
-            .specifier = String.init(specifier),
-            .source_url = String.init(path.text),
+            .source_url = String.cloneUTF8(path.text),
             .is_commonjs_module = parse_result.ast.has_commonjs_export_names or parse_result.ast.exports_kind == .cjs,
         };
     }
 
-    pub fn deinit(this: *AsyncModule) void {
+    fn destroy(this: *AsyncModule) void {
+        const vm = this.globalThis.bunVM();
+        this.poll_ref.unref(vm);
         this.promise.deinit();
-        this.parse_result.deinit();
+        // The arena owns the AST; pending imports and recycled file storage have separate owners.
+        bun.resolver.PendingResolution.deinitListItems(this.parse_result.pending_imports, bun.default_allocator);
+        this.parse_result.pending_imports.deinit(bun.default_allocator);
+        if (this.source_buffer) |*buffer| buffer.deinit();
+        if (this.transpiler_cache) |*cache| {
+            if (cache.output_code) |output_code| output_code.deref();
+            bun.assert(cache.entry == null);
+        }
         this.arena.deinit();
-        this.globalThis.bunVM().allocator.destroy(this.arena);
-        // bun.default_allocator.free(this.stmt_blocks);
-        // bun.default_allocator.free(this.expr_blocks);
-
+        vm.allocator.destroy(this.arena);
         bun.default_allocator.free(this.string_buf);
+        vm.allocator.destroy(this);
     }
-
-    extern "c" fn Bun__onFulfillAsyncModule(
-        globalObject: *JSGlobalObject,
-        promiseValue: JSValue,
-        res: *jsc.ErrorableResolvedSource,
-        specifier: *bun.String,
-        referrer: *bun.String,
-    ) void;
 };
 
 const Dependency = @import("../install/dependency.zig");
@@ -759,7 +975,6 @@ const PackageManager = @import("../install/install.zig").PackageManager;
 const bun = @import("bun");
 const Async = bun.Async;
 const Environment = bun.Environment;
-const FD = bun.FD;
 const Output = bun.Output;
 const String = bun.String;
 const logger = bun.logger;
@@ -769,7 +984,5 @@ const api = bun.schema.api;
 
 const jsc = bun.jsc;
 const JSGlobalObject = bun.jsc.JSGlobalObject;
-const JSValue = bun.jsc.JSValue;
 const ResolvedSource = bun.jsc.ResolvedSource;
 const VirtualMachine = bun.jsc.VirtualMachine;
-const ZigString = bun.jsc.ZigString;

@@ -23,13 +23,12 @@
  */
 
 export function initializeReadableStreamBYOBReader(this, stream) {
-  if (!$isReadableStream(stream)) throw new TypeError("ReadableStreamBYOBReader needs a ReadableStream");
   if (!$isReadableByteStreamController($getByIdDirectPrivate(stream, "readableStreamController")))
     throw new TypeError("ReadableStreamBYOBReader needs a ReadableByteStreamController");
   if ($isReadableStreamLocked(stream)) throw new TypeError("ReadableStream is locked");
 
-  $readableStreamReaderGenericInitialize(this, stream);
   $putByIdDirectPrivate(this, "readIntoRequests", $createFIFO());
+  $readableStreamReaderGenericInitialize(this, stream);
 
   return this;
 }
@@ -43,20 +42,24 @@ export function cancel(this, reason) {
   return $readableStreamReaderGenericCancel(this, reason);
 }
 
-export function read(this, view: DataView) {
+export function read(this, view: ArrayBufferView, minimum: number) {
   if (!$isReadableStreamBYOBReader(this)) return Promise.$reject($ERR_INVALID_THIS("ReadableStreamBYOBReader"));
+
+  let info;
+  try {
+    info = $bindgenFn("WebCoreStreams.schema.zig", "byteStreamViewInfo")(view);
+  } catch (error) {
+    return Promise.$reject(error);
+  }
+  if (info.byteLength === 0) return Promise.$reject(new TypeError("The BYOB view must not be empty"));
+  if (minimum === 0) return Promise.$reject(new TypeError("The BYOB minimum must be greater than zero"));
+  if (minimum > info.byteLength / info.elementSize)
+    return Promise.$reject(new RangeError("The BYOB minimum exceeds the view length"));
 
   if (!$getByIdDirectPrivate(this, "ownerReadableStream"))
     return Promise.$reject($ERR_INVALID_STATE_TypeError("The reader is not attached to a stream"));
 
-  if (!$isObject(view)) return Promise.$reject($ERR_INVALID_ARG_TYPE("view", "Buffer, TypedArray, or DataView", view));
-
-  if (!ArrayBuffer.$isView(view))
-    return Promise.$reject($ERR_INVALID_ARG_TYPE("view", "Buffer, TypedArray, or DataView", view));
-
-  if (view.byteLength === 0) return Promise.$reject($makeTypeError("Provided view cannot have a 0 byteLength"));
-
-  return $readableStreamBYOBReaderRead(this, view);
+  return $readableStreamBYOBReaderRead(this, info, minimum);
 }
 
 export function releaseLock(this) {
@@ -64,10 +67,7 @@ export function releaseLock(this) {
 
   if (!$getByIdDirectPrivate(this, "ownerReadableStream")) return;
 
-  if ($getByIdDirectPrivate(this, "readIntoRequests")?.isNotEmpty())
-    throw new TypeError("There are still pending read requests, cannot release the lock");
-
-  $readableStreamReaderGenericRelease(this);
+  $readableStreamBYOBReaderRelease(this);
 }
 
 $getter;

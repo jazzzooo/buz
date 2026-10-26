@@ -1,233 +1,263 @@
-const RefCount = bun.ptr.ThreadSafeRefCount(@This(), "ref_count", deinit, .{});
-pub const new = bun.TrivialNew(@This());
+const BlockList = @This();
+
+const RefCount = bun.ptr.RefCount(BlockList, "ref_count", deinit, .{});
 pub const ref = RefCount.ref;
 pub const deref = RefCount.deref;
-
-pub const fromJS = js.fromJS;
-pub const toJS = js.toJS;
+pub const derefDeferred = RefCount.derefDeferred;
+pub const destroyAfterDeferred = RefCount.destroyAfterDeferred;
+pub const getConstructor = BlockListClass.constructor;
 
 ref_count: RefCount = .init(),
-globalThis: *jsc.JSGlobalObject,
-da_rules: std.array_list.Managed(Rule),
-mutex: std.Io.Mutex = .init,
+bindgen_state: bindgen.ClassState = .{},
+da_rules: RuleList,
 
-/// We cannot lock/unlock a mutex
-estimated_size: std.atomic.Value(u32) = .init(0),
-
-pub fn constructor(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!*@This() {
-    _ = callFrame;
-    const ptr = @This().new(.{
-        .globalThis = globalThis,
-        .da_rules = .init(bun.default_allocator),
-    });
-    return ptr;
+pub fn construct(
+    _: bindgen.CallContext(BlockListConstructorSchema),
+    _: bindgen.Args(BlockListConstructorSchema),
+) bun.JSError!*BlockList {
+    return create();
 }
 
-/// May be called from any thread.
-pub fn estimatedSize(this: *@This()) usize {
-    return (@sizeOf(@This()) + this.estimated_size.load(.seq_cst)) / @max(this.ref_count.get(), 1);
+fn create() bun.OOM!*BlockList {
+    const rule_list = try bun.default_allocator.create(RuleListType);
+    errdefer bun.default_allocator.destroy(rule_list);
+    rule_list.* = .{};
+    const this = try bun.default_allocator.create(BlockList);
+    this.* = .{ .da_rules = .adopt(rule_list) };
+    return this;
 }
 
-pub fn finalize(this: *@This()) void {
-    this.deref();
+pub fn memoryUsage(this: *const BlockList, _: bun.bindgen.MemoryUsageContext(.vm)) usize {
+    const storage = this.da_rules.get();
+    const io = bun.current_runtime.io();
+    storage.mutex.lockUncancelable(io);
+    defer storage.mutex.unlock(io);
+    const shared_bytes = (@sizeOf(RuleListType) + storage.count * @sizeOf(RuleNode)) / @max(storage.ref_count.get(), 1);
+    return (@sizeOf(BlockList) + shared_bytes) / @max(this.ref_count.get(), 1);
 }
 
-pub fn deinit(this: *@This()) void {
+fn deinit(this: *BlockList) void {
     this.da_rules.deinit();
     bun.destroy(this);
 }
 
-pub fn isBlockList(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    _ = globalThis;
-    const value = callframe.argumentsAsArray(1)[0];
-    return .jsBoolean(value.as(@This()) != null);
+pub fn isBlockList(
+    _: bindgen.CallContext(BlockListIsBlockListSchema),
+    args: bindgen.Args(BlockListIsBlockListSchema),
+) bun.JSError!bool {
+    return args.value != null;
 }
 
-pub fn addAddress(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const arguments = callframe.argumentsAsArray(2);
-    const address_js, var family_js = arguments;
-    if (family_js.isUndefined()) family_js = try bun.String.static("ipv4").toJS(globalThis);
-    const address = if (address_js.as(SocketAddress)) |sa| sa._addr else blk: {
-        try validators.validateString(globalThis, address_js, "address", .{});
-        try validators.validateString(globalThis, family_js, "family", .{});
-        break :blk (try SocketAddress.initFromAddrFamily(globalThis, address_js, family_js))._addr;
+pub fn addAddress(
+    this: *BlockList,
+    context: bindgen.CallContext(BlockListAddAddressSchema),
+    args: bindgen.Args(BlockListAddAddressSchema),
+) bindgen.CallError(BlockListAddAddressSchema)!void {
+    const address = switch (args.address) {
+        .socket_address => |value| value.get(SocketAddress).value.raw,
+        .string => |value| try parseAddress(context, value, try familyValue(context, args.family)),
     };
 
-    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
-    defer this.mutex.unlock(this.globalThis.bunVM().io);
-    try this.da_rules.insert(0, .{ .addr = address });
-    _ = this.estimated_size.fetchAdd(@sizeOf(Rule), .monotonic);
-    return .js_undefined;
+    try this.insert(.{ .addr = address });
 }
 
-pub fn addRange(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const arguments = callframe.argumentsAsArray(3);
-    const start_js, const end_js, var family_js = arguments;
-    if (family_js.isUndefined()) family_js = try bun.String.static("ipv4").toJS(globalThis);
-    const start = if (start_js.as(SocketAddress)) |sa| sa._addr else blk: {
-        try validators.validateString(globalThis, start_js, "start", .{});
-        try validators.validateString(globalThis, family_js, "family", .{});
-        break :blk (try SocketAddress.initFromAddrFamily(globalThis, start_js, family_js))._addr;
+pub fn addRange(
+    this: *BlockList,
+    context: bindgen.CallContext(BlockListAddRangeSchema),
+    args: bindgen.Args(BlockListAddRangeSchema),
+) bindgen.CallError(BlockListAddRangeSchema)!void {
+    const family = if (std.meta.activeTag(args.start) == .string or std.meta.activeTag(args.end) == .string)
+        try familyValue(context, args.family)
+    else
+        SocketAddress.AF.INET;
+    const start = switch (args.start) {
+        .socket_address => |value| value.get(SocketAddress).value.raw,
+        .string => |value| try parseAddress(context, value, family),
     };
-    const end = if (end_js.as(SocketAddress)) |sa| sa._addr else blk: {
-        try validators.validateString(globalThis, end_js, "end", .{});
-        try validators.validateString(globalThis, family_js, "family", .{});
-        break :blk (try SocketAddress.initFromAddrFamily(globalThis, end_js, family_js))._addr;
+    const end = switch (args.end) {
+        .socket_address => |value| value.get(SocketAddress).value.raw,
+        .string => |value| try parseAddress(context, value, family),
     };
     if (_compare(&start, &end)) |ord| {
         if (ord.compare(.gt)) {
-            return globalThis.throwInvalidArgumentValueCustom("start", start_js, "must come before end");
+            return context.fail(.start_after_end, {});
         }
     }
-    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
-    defer this.mutex.unlock(this.globalThis.bunVM().io);
-    try this.da_rules.insert(0, .{ .range = .{ .start = start, .end = end } });
-    _ = this.estimated_size.fetchAdd(@sizeOf(Rule), .monotonic);
-    return .js_undefined;
+    try this.insert(.{ .range = .{ .start = start, .end = end } });
 }
 
-pub fn addSubnet(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const arguments = callframe.argumentsAsArray(3);
-    const network_js, const prefix_js, var family_js = arguments;
-    if (family_js.isUndefined()) family_js = try bun.String.static("ipv4").toJS(globalThis);
-    const network = if (network_js.as(SocketAddress)) |sa| sa._addr else blk: {
-        try validators.validateString(globalThis, network_js, "network", .{});
-        try validators.validateString(globalThis, family_js, "family", .{});
-        break :blk (try SocketAddress.initFromAddrFamily(globalThis, network_js, family_js))._addr;
+pub fn addSubnet(
+    this: *BlockList,
+    context: bindgen.CallContext(BlockListAddSubnetSchema),
+    args: bindgen.Args(BlockListAddSubnetSchema),
+) bindgen.CallError(BlockListAddSubnetSchema)!void {
+    const network = switch (args.network) {
+        .socket_address => |value| value.get(SocketAddress).value.raw,
+        .string => |value| try parseAddress(context, value, try familyValue(context, args.family)),
     };
-    var prefix: u8 = 0;
-    switch (network.sin.family) {
-        std.posix.AF.INET => prefix = @intCast(try validators.validateInt32(globalThis, prefix_js, "prefix", .{}, 0, 32)),
-        std.posix.AF.INET6 => prefix = @intCast(try validators.validateInt32(globalThis, prefix_js, "prefix", .{}, 0, 128)),
-        else => {},
+    const converted_prefix = try args.prefix.convert(context);
+    const prefix_max: u8 = if (network.sin.family == std.posix.AF.INET) 32 else 128;
+    const prefix_value = converted_prefix.value;
+    if (prefix_value < 0 or prefix_value > prefix_max) {
+        var message_buffer: [128]u8 = undefined;
+        const message = std.fmt.bufPrint(
+            &message_buffer,
+            "The value of \"prefix\" is out of range. It must be >= 0 and <= {d}. Received {d}",
+            .{ prefix_max, prefix_value },
+        ) catch unreachable;
+        return context.fail(.prefix_out_of_range, try bindgen.DOMString.fromUTF8(message));
     }
-    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
-    defer this.mutex.unlock(this.globalThis.bunVM().io);
-    try this.da_rules.insert(0, .{ .subnet = .{ .network = network, .prefix = prefix } });
-    _ = this.estimated_size.fetchAdd(@sizeOf(Rule), .monotonic);
-    return .js_undefined;
+    const prefix: u8 = @intCast(prefix_value);
+    try this.insert(.{ .subnet = .{ .network = network, .prefix = prefix } });
 }
 
-pub fn check(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const arguments = callframe.argumentsAsArray(2);
-    const address_js, var family_js = arguments;
-    if (family_js.isUndefined()) family_js = try bun.String.static("ipv4").toJS(globalThis);
-    const address = &(if (address_js.as(SocketAddress)) |sa| sa._addr else blk: {
-        try validators.validateString(globalThis, address_js, "address", .{});
-        try validators.validateString(globalThis, family_js, "family", .{});
-        break :blk (SocketAddress.initFromAddrFamily(globalThis, address_js, family_js) catch |err| {
-            bun.debugAssert(err == error.JSError);
-            globalThis.clearException();
-            return .false;
-        })._addr;
-    });
-    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
-    defer this.mutex.unlock(this.globalThis.bunVM().io);
-    for (this.da_rules.items) |*item| {
+fn insert(this: *BlockList, rule: Rule) bun.OOM!void {
+    const node = try bun.default_allocator.create(RuleNode);
+    errdefer bun.default_allocator.destroy(node);
+    const storage = this.da_rules.get();
+    const io = bun.current_runtime.io();
+    storage.mutex.lockUncancelable(io);
+    defer storage.mutex.unlock(io);
+    const count = std.math.add(usize, storage.count, 1) catch return error.OutOfMemory;
+    node.* = .{ .rule = rule, .next = storage.head };
+    storage.head = .init(node);
+    storage.count = count;
+}
+
+fn snapshot(this: *const BlockList, allocator: std.mem.Allocator) bun.OOM![]Rule {
+    const storage = this.da_rules.get();
+    const io = bun.current_runtime.io();
+    storage.mutex.lockUncancelable(io);
+    defer storage.mutex.unlock(io);
+    const result = try allocator.alloc(Rule, storage.count);
+    var next = storage.head.getOptional();
+    for (result) |*rule| {
+        const node = next orelse unreachable;
+        rule.* = node.rule;
+        next = node.next.getOptional();
+    }
+    bun.assert(next == null);
+    return result;
+}
+
+pub fn check(
+    this: *BlockList,
+    context: bindgen.CallContext(BlockListCheckSchema),
+    args: bindgen.Args(BlockListCheckSchema),
+) bun.JSError!bool {
+    var parsed_address: SocketAddress.sockaddr = undefined;
+    const address = switch (args.address) {
+        .socket_address => |value| &value.get(SocketAddress).value.raw,
+        .string => |value| blk: {
+            parsed_address = (SocketAddress.initFromAddressFamily(value, try familyValue(context, args.family)) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidAddress => return false,
+            }).value.raw;
+            break :blk &parsed_address;
+        },
+    };
+    const storage = this.da_rules.get();
+    const io = bun.current_runtime.io();
+    storage.mutex.lockUncancelable(io);
+    defer storage.mutex.unlock(io);
+    var next = storage.head.getOptional();
+    while (next) |node| : (next = node.next.getOptional()) {
+        const item = &node.rule;
         switch (item.*) {
             .addr => |*a| {
                 const order = _compare(address, a) orelse continue;
-                if (order.compare(.eq)) return .true;
+                if (order.compare(.eq)) return true;
             },
             .range => |*r| {
                 const os = _compare(address, &r.start) orelse continue;
                 const oe = _compare(address, &r.end) orelse continue;
-                if (os.compare(.gte) and oe.compare(.lte)) return .true;
+                if (os.compare(.gte) and oe.compare(.lte)) return true;
             },
             .subnet => |*s| {
                 if (address.as_v4()) |ip_addr| if (s.network.as_v4()) |subnet_addr| {
-                    if (s.prefix == 32) if (ip_addr == subnet_addr) (return .true) else continue;
-                    const one: u32 = 1;
-                    const mask_addr = ((one << @intCast(s.prefix)) - 1) << @intCast(32 - s.prefix);
+                    const mask_addr: u32 = if (s.prefix == 0) 0 else @as(u32, std.math.maxInt(u32)) << @intCast(32 - s.prefix);
                     const ip_net: u32 = @byteSwap(ip_addr) & mask_addr;
                     const subnet_net: u32 = @byteSwap(subnet_addr) & mask_addr;
-                    if (ip_net == subnet_net) return .true;
+                    if (ip_net == subnet_net) return true;
                 };
                 if (address.sin.family == std.posix.AF.INET6 and s.network.sin.family == std.posix.AF.INET6) {
                     const ip_addr: u128 = @bitCast(address.sin6.addr);
                     const subnet_addr: u128 = @bitCast(s.network.sin6.addr);
-                    if (s.prefix == 128) if (ip_addr == subnet_addr) (return .true) else continue;
-                    const one: u128 = 1;
-                    const mask_addr = ((one << @intCast(s.prefix)) - 1) << @intCast(128 - s.prefix);
+                    const mask_addr: u128 = if (s.prefix == 0) 0 else @as(u128, std.math.maxInt(u128)) << @intCast(128 - s.prefix);
                     const ip_net: u128 = @byteSwap(ip_addr) & mask_addr;
                     const subnet_net: u128 = @byteSwap(subnet_addr) & mask_addr;
-                    if (ip_net == subnet_net) return .true;
+                    if (ip_net == subnet_net) return true;
                 }
             },
         }
     }
-    return .false;
+    return false;
 }
 
-pub fn rules(this: *@This(), globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+fn parseAddress(context: anytype, address: bindgen.DOMStringView, family: SocketAddress.AF) bun.bindgen.CallError(@TypeOf(context))!sockaddr {
+    const parsed = SocketAddress.initFromAddressFamily(address, family) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidAddress => return context.fail(.invalid_address, {}),
+    };
+    return parsed.value.raw;
+}
 
-    // GC must be able to visit
-    var array = try jsc.JSArray.createEmpty(globalThis, 0);
+pub fn rules(
+    this: *BlockList,
+    _: bindgen.CallContext(BlockListRulesSchema),
+    _: bindgen.Args(BlockListRulesSchema),
+) bun.JSError!bindgen.Return(BlockListRulesSchema) {
+    var arena = bun.ArenaAllocator.init(bun.default_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var values: std.ArrayListUnmanaged([]const u8) = .empty;
 
-    this.mutex.lockUncancelable(this.globalThis.bunVM().io);
-    defer this.mutex.unlock(this.globalThis.bunVM().io);
-    for (this.da_rules.items) |*rule| {
-        switch (rule.*) {
-            .addr => |*a| {
+    const rule_snapshot = try this.snapshot(allocator);
+    try values.ensureTotalCapacity(allocator, rule_snapshot.len);
+    for (rule_snapshot) |*rule| {
+        const value = switch (rule.*) {
+            .addr => |*a| value: {
                 var buf: [SocketAddress.inet.INET6_ADDRSTRLEN]u8 = @splat(0);
-                try array.push(globalThis, try bun.String.createFormatForJS(globalThis, "Address: {s} {s}", .{ a.family().upper(), a.fmt(&buf) }));
+                break :value try std.fmt.allocPrint(allocator, "Address: {s} {s}", .{ a.family().upper(), a.fmt(&buf) });
             },
-            .range => |*r| {
+            .range => |*r| value: {
                 var buf_s: [SocketAddress.inet.INET6_ADDRSTRLEN]u8 = @splat(0);
                 var buf_e: [SocketAddress.inet.INET6_ADDRSTRLEN]u8 = @splat(0);
-                try array.push(globalThis, try bun.String.createFormatForJS(globalThis, "Range: {s} {s}-{s}", .{ r.start.family().upper(), r.start.fmt(&buf_s), r.end.fmt(&buf_e) }));
+                break :value try std.fmt.allocPrint(allocator, "Range: {s} {s}-{s}", .{ r.start.family().upper(), r.start.fmt(&buf_s), r.end.fmt(&buf_e) });
             },
-            .subnet => |*s| {
+            .subnet => |*s| value: {
                 var buf: [SocketAddress.inet.INET6_ADDRSTRLEN]u8 = @splat(0);
-                try array.push(globalThis, try bun.String.createFormatForJS(globalThis, "Subnet: {s} {s}/{d}", .{ s.network.family().upper(), s.network.fmt(&buf), s.prefix }));
+                break :value try std.fmt.allocPrint(allocator, "Subnet: {s} {s}/{d}", .{ s.network.family().upper(), s.network.fmt(&buf), s.prefix });
             },
-        }
+        };
+        values.appendAssumeCapacity(value);
     }
-    return array.toJS();
+    return try bindgen.Return(BlockListRulesSchema).fromUTF8Slices(values.items);
 }
 
-pub fn onStructuredCloneSerialize(this: *@This(), globalThis: *jsc.JSGlobalObject, ctx: *anyopaque, writeBytes: *const fn (*anyopaque, ptr: [*]const u8, len: u32) callconv(jsc.conv) void) void {
-    this.mutex.lockUncancelable(globalThis.bunVM().io);
-    defer this.mutex.unlock(globalThis.bunVM().io);
-    this.ref();
-    var writer: StructuredCloneWriter = .{ .ctx = ctx, .impl = writeBytes };
-    writer.interface.writeInt(usize, @intFromPtr(this), .little) catch unreachable;
+fn familyValue(context: anytype, family: anytype) bun.JSError!SocketAddress.AF {
+    const value = family orelse return .INET;
+    const converted = try value.convert(context);
+    return switch (converted.value) {
+        .ipv4 => .INET,
+        .ipv6 => .INET6,
+    };
 }
 
-const StructuredCloneWriter = struct {
-    ctx: *anyopaque,
-    impl: *const fn (*anyopaque, ptr: [*]const u8, len: u32) callconv(jsc.conv) void,
-    interface: std.Io.Writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+pub fn structuredCloneShare(
+    this: *const BlockList,
+    _: bindgen.StructuredCloneContext(BlockListSchema),
+) bun.JSError!RuleList {
+    return this.da_rules.clone();
+}
 
-    fn drain(interface: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
-        const this: *@This() = @fieldParentPtr("interface", interface);
-        for (data[0 .. data.len - 1]) |bytes| this.impl(this.ctx, bytes.ptr, @truncate(bytes.len));
-        for (0..splat) |_| {
-            const bytes = data[data.len - 1];
-            this.impl(this.ctx, bytes.ptr, @truncate(bytes.len));
-        }
-        return std.Io.Writer.countSplat(data, splat);
-    }
-};
-
-pub fn onStructuredCloneDeserialize(globalThis: *jsc.JSGlobalObject, ptr: *[*]u8, end: [*]u8) bun.JSError!jsc.JSValue {
-    const total_length: usize = @intFromPtr(end) - @intFromPtr(ptr.*);
-    var reader = std.Io.Reader.fixed(ptr.*[0..total_length]);
-
-    const int = reader.takeInt(usize, .little) catch return globalThis.throw("BlockList.onStructuredCloneDeserialize failed", .{});
-
-    // Advance the pointer by the number of bytes consumed
-    ptr.* = ptr.* + reader.seek;
-
-    const this: *@This() = @ptrFromInt(int);
-    // A single SerializedScriptValue can be deserialized multiple times
-    // (e.g. BroadcastChannel fan-out), so each wrapper must own its own ref
-    // instead of adopting the one taken in serialize. The serialize ref is
-    // what keeps the backing alive while the pointer sits in the byte buffer;
-    // SerializedScriptValue has no destroy hook for Bun-native tags, so that
-    // ref is retained until a buffer-level deref exists (preferable to UAF).
-    this.ref();
-    return this.toJS(globalThis);
+pub fn structuredCloneFromShared(
+    _: bindgen.StructuredCloneContext(BlockListSchema),
+    shared: bindgen.BorrowedNative(RuleListType, .any),
+) bun.JSError!*BlockList {
+    const this = try bun.default_allocator.create(BlockList);
+    this.* = .{ .da_rules = .init(shared.get()) };
+    return this;
 }
 
 pub const Rule = union(enum) {
@@ -247,11 +277,53 @@ fn _compare_ipv6(l: *const sockaddr.in6, r: *const sockaddr.in6) std.math.Order 
 }
 
 const std = @import("std");
-const validators = @import("../util/validators.zig");
-
 const bun = @import("bun");
-const jsc = bun.jsc;
-const js = jsc.Codegen.JSBlockList;
+const bindgen = bun.bindgen;
 
-const SocketAddress = bun.jsc.GeneratedClassesList.SocketAddress;
+const RuleNode = struct {
+    rule: Rule,
+    next: bindgen.OwnedNative(RuleNode, .any) = .empty,
+
+    pub fn destroy(first: *RuleNode) void {
+        var next: ?*RuleNode = first;
+        while (next) |node| {
+            next = node.next.takeOptional();
+            bun.default_allocator.destroy(node);
+        }
+    }
+};
+
+pub const RuleListType = struct {
+    const RuleRefCount = bun.ptr.ThreadSafeRefCount(@This(), "ref_count", destroy, .{});
+    pub const ref = RuleRefCount.ref;
+    pub const deref = RuleRefCount.deref;
+
+    ref_count: RuleRefCount = .init(),
+    mutex: std.Io.Mutex = .init,
+    head: bindgen.OwnedNative(RuleNode, .any) = .empty,
+    count: usize = 0,
+
+    fn destroy(list: *@This()) void {
+        list.head.deinit();
+        bun.destroy(list);
+    }
+};
+const RuleList = bindgen.RefNative(RuleListType, .any);
+
+const SocketAddress = @import("../../socket/SocketAddress.zig");
+const BlockListBindingModule = bindgen.Module("BlockList");
+const BlockListSchema = BlockListBindingModule.class("BlockList");
+const BlockListConstructorSchema = BlockListSchema.constructor();
+const BlockListAddAddressSchema = BlockListSchema.member("addAddress");
+const BlockListAddRangeSchema = BlockListSchema.member("addRange");
+const BlockListAddSubnetSchema = BlockListSchema.member("addSubnet");
+const BlockListCheckSchema = BlockListSchema.member("check");
+const BlockListRulesSchema = BlockListSchema.member("rules");
+const BlockListIsBlockListSchema = BlockListSchema.member("isBlockList");
+const BlockListClass = bindgen.Class(BlockListSchema, BlockList);
+
 const sockaddr = SocketAddress.sockaddr;
+
+comptime {
+    _ = BlockListClass;
+}

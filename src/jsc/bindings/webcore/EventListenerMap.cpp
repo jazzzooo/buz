@@ -33,17 +33,52 @@
 #include "config.h"
 #include "EventListenerMap.h"
 
-#include "AddEventListenerOptions.h"
-#include "Event.h"
-#include "EventTarget.h"
-#include "JSEventListener.h"
-#include <wtf/MainThread.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/Vector.h>
 
 namespace WebCore {
 
 EventListenerMap::EventListenerMap() = default;
+
+EventListenerMap::~EventListenerMap()
+{
+    ASSERT(!m_dispatchCursors);
+}
+
+EventListenerMap::DispatchCursor::DispatchCursor(EventListenerMap& map, const AtomString& eventType)
+    : m_map(map)
+    , m_eventType(eventType)
+{
+    m_map.releaseAssertOrSetThreadUID();
+    Locker locker { m_map.m_lock };
+    if (auto* listeners = m_map.find(eventType))
+        m_end = listeners->size();
+    m_next = m_map.m_dispatchCursors;
+    if (m_next)
+        m_next->m_previous = this;
+    m_map.m_dispatchCursors = this;
+}
+
+EventListenerMap::DispatchCursor::~DispatchCursor()
+{
+    Locker locker { m_map.m_lock };
+    if (m_previous)
+        m_previous->m_next = m_next;
+    else
+        m_map.m_dispatchCursors = m_next;
+    if (m_next)
+        m_next->m_previous = m_previous;
+}
+
+RefPtr<RegisteredEventListener> EventListenerMap::DispatchCursor::next()
+{
+    Locker locker { m_map.m_lock };
+    if (m_position == m_end)
+        return nullptr;
+    auto* listeners = m_map.find(m_eventType);
+    RELEASE_ASSERT(listeners && m_position < m_end && m_end <= listeners->size());
+    return (*listeners)[m_position++];
+}
 
 bool EventListenerMap::containsCapturing(const AtomString& eventType) const
 {
@@ -73,15 +108,28 @@ bool EventListenerMap::containsActive(const AtomString& eventType) const
 
 void EventListenerMap::clear()
 {
-    releaseAssertOrSetThreadUID();
-    Locker locker { m_lock };
+    takeAll();
+}
 
-    for (auto& entry : m_entries) {
+EventListenerMap::Entries EventListenerMap::takeAll()
+{
+    releaseAssertOrSetThreadUID();
+    Entries removed;
+    {
+        Locker locker { m_lock };
+        for (auto* cursor = m_dispatchCursors; cursor; cursor = cursor->m_next) {
+            cursor->m_position = 0;
+            cursor->m_end = 0;
+        }
+        removed = WTF::move(m_entries);
+    }
+
+    for (auto& entry : removed) {
         for (auto& listener : entry.second)
             listener->markAsRemoved();
     }
 
-    m_entries.clear();
+    return removed;
 }
 
 Vector<AtomString> EventListenerMap::eventTypes() const
@@ -101,69 +149,72 @@ static inline size_t findListener(const EventListenerVector& listeners, EventLis
     return notFound;
 }
 
-void EventListenerMap::replace(const AtomString& eventType, EventListener& oldListener, Ref<EventListener>&& newListener, const RegisteredEventListener::Options& options)
+Bun::Bindgen::NativeAllocationResult<RegisteredEventListener*> EventListenerMap::add(const AtomString& eventType, Ref<EventListener>&& listener, const RegisteredEventListener::Options& options)
 {
     releaseAssertOrSetThreadUID();
     Locker locker { m_lock };
 
-    auto* listeners = find(eventType);
-    ASSERT(listeners);
-    size_t index = findListener(*listeners, oldListener, options.capture);
-    ASSERT(index != notFound);
-    auto& registeredListener = listeners->at(index);
-    registeredListener->markAsRemoved();
-    registeredListener = RegisteredEventListener::create(WTF::move(newListener), options);
-}
-
-RegisteredEventListener* EventListenerMap::add(const AtomString& eventType, Ref<EventListener>&& listener, const RegisteredEventListener::Options& options)
-{
-    releaseAssertOrSetThreadUID();
-    Locker locker { m_lock };
-
-    if (auto* listeners = find(eventType)) {
+    if (auto* listeners = findMutable(eventType)) {
         if (findListener(*listeners, listener, options.capture) != notFound)
             return nullptr; // Duplicate listener.
-        auto registeredListener = RegisteredEventListener::create(WTF::move(listener), options);
-        auto* result = registeredListener.ptr();
-        listeners->append(WTF::move(registeredListener));
+        auto registeredListener = RegisteredEventListener::tryCreate(WTF::move(listener), options);
+        if (!registeredListener)
+            return Bun::Bindgen::nativeAllocationFailure();
+        auto* result = registeredListener.get();
+        if (!listeners->tryAppend(WTF::move(registeredListener)))
+            return Bun::Bindgen::nativeAllocationFailure();
         return result;
     }
 
-    auto registeredListener = RegisteredEventListener::create(WTF::move(listener), options);
-    auto* result = registeredListener.ptr();
-    m_entries.append({ eventType, EventListenerVector { WTF::move(registeredListener) } });
+    auto registeredListener = RegisteredEventListener::tryCreate(WTF::move(listener), options);
+    if (!registeredListener)
+        return Bun::Bindgen::nativeAllocationFailure();
+    auto* result = registeredListener.get();
+    EventListenerVector listeners;
+    if (!listeners.tryAppend(WTF::move(registeredListener)))
+        return Bun::Bindgen::nativeAllocationFailure();
+    if (!m_entries.tryAppend(std::make_pair(eventType, WTF::move(listeners))))
+        return Bun::Bindgen::nativeAllocationFailure();
     return result;
-}
-
-static bool removeListenerFromVector(EventListenerVector& listeners, EventListener& listener, bool useCapture)
-{
-    size_t indexOfRemovedListener = findListener(listeners, listener, useCapture);
-    if (indexOfRemovedListener == notFound) [[unlikely]]
-        return false;
-
-    listeners[indexOfRemovedListener]->markAsRemoved();
-    listeners.removeAt(indexOfRemovedListener);
-    return true;
 }
 
 bool EventListenerMap::remove(const AtomString& eventType, EventListener& listener, bool useCapture)
 {
     releaseAssertOrSetThreadUID();
-    Locker locker { m_lock };
-
-    for (unsigned i = 0; i < m_entries.size(); ++i) {
-        if (m_entries[i].first == eventType) {
-            bool wasRemoved = removeListenerFromVector(m_entries[i].second, listener, useCapture);
-            if (m_entries[i].second.isEmpty())
+    RefPtr<RegisteredEventListener> removed;
+    {
+        Locker locker { m_lock };
+        for (size_t i = 0; i < m_entries.size(); ++i) {
+            if (m_entries[i].first != eventType)
+                continue;
+            auto& listeners = m_entries[i].second;
+            const size_t index = findListener(listeners, listener, useCapture);
+            if (index == notFound)
+                return false;
+            removed = WTF::move(listeners[index]);
+            // Insertions never extend a cursor's original snapshot boundary.
+            for (auto* cursor = m_dispatchCursors; cursor; cursor = cursor->m_next) {
+                if (cursor->m_eventType != eventType)
+                    continue;
+                if (index < cursor->m_position)
+                    --cursor->m_position;
+                if (index < cursor->m_end)
+                    --cursor->m_end;
+            }
+            listeners.removeAt(index);
+            if (listeners.isEmpty())
                 m_entries.removeAt(i);
-            return wasRemoved;
+            break;
         }
     }
 
-    return false;
+    if (!removed)
+        return false;
+    removed->markAsRemoved();
+    return true;
 }
 
-EventListenerVector* EventListenerMap::find(const AtomString& eventType)
+EventListenerVector* EventListenerMap::findMutable(const AtomString& eventType)
 {
     for (auto& entry : m_entries) {
         if (entry.first == eventType)
@@ -171,49 +222,6 @@ EventListenerVector* EventListenerMap::find(const AtomString& eventType)
     }
 
     return nullptr;
-}
-
-static void removeFirstListenerCreatedFromMarkup(EventListenerVector& listenerVector)
-{
-    bool foundListener = listenerVector.removeFirstMatching([](const auto& registeredListener) {
-        if (JSEventListener::wasCreatedFromMarkup(registeredListener->callback())) {
-            registeredListener->markAsRemoved();
-            return true;
-        }
-        return false;
-    });
-    ASSERT_UNUSED(foundListener, foundListener);
-}
-
-void EventListenerMap::removeFirstEventListenerCreatedFromMarkup(const AtomString& eventType)
-{
-    releaseAssertOrSetThreadUID();
-    Locker locker { m_lock };
-
-    for (unsigned i = 0; i < m_entries.size(); ++i) {
-        if (m_entries[i].first == eventType) {
-            removeFirstListenerCreatedFromMarkup(m_entries[i].second);
-            if (m_entries[i].second.isEmpty())
-                m_entries.removeAt(i);
-            return;
-        }
-    }
-}
-
-static void copyListenersNotCreatedFromMarkupToTarget(const AtomString& eventType, EventListenerVector& listenerVector, EventTarget* target)
-{
-    for (auto& registeredListener : listenerVector) {
-        // Event listeners created from markup have already been transfered to the shadow tree during cloning.
-        if (JSEventListener::wasCreatedFromMarkup(registeredListener->callback()))
-            continue;
-        target->addEventListener(eventType, registeredListener->callback(), registeredListener->useCapture());
-    }
-}
-
-void EventListenerMap::copyEventListenersNotCreatedFromMarkupToTarget(EventTarget* target)
-{
-    for (auto& entry : m_entries)
-        copyListenersNotCreatedFromMarkupToTarget(entry.first, entry.second, target);
 }
 
 } // namespace WebCore

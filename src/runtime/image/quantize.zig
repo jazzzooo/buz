@@ -46,7 +46,7 @@ const Box = struct {
     }
 };
 
-extern fn bun_image_nearest_palette(palette: [*]const u8, k: u32, r: i32, g: i32, b: i32, a: i32) u32;
+const image = @import("image-ffi");
 
 pub const Options = struct {
     max_colors: u16,
@@ -56,9 +56,11 @@ pub const Options = struct {
     dither: bool = false,
 };
 
-pub fn quantize(rgba: []const u8, w: u32, h: u32, opts: Options) error{OutOfMemory}!Result {
+pub fn quantize(rgba: []const u8, w: u32, h: u32, opts: Options) error{ InvalidDimensions, OutOfMemory }!Result {
     const max_colors = opts.max_colors;
-    const n: u32 = @intCast(rgba.len / 4);
+    const size = try codecs.rgbaByteLength(w, h);
+    if (rgba.len != size) return error.InvalidDimensions;
+    const n = std.math.cast(u32, size / 4) orelse return error.InvalidDimensions;
     const want: u16 = @max(1, @min(max_colors, 256));
 
     // `order` is a permutation of pixel indices that we partition in-place;
@@ -120,7 +122,7 @@ pub fn quantize(rgba: []const u8, w: u32, h: u32, opts: Options) error{OutOfMemo
         // highway-dispatched kernel so it runs under the best -march.
         for (0..n) |px| {
             const p = rgba[px * 4 ..][0..4];
-            indices[px] = @intCast(bun_image_nearest_palette(palette.ptr, k, p[0], p[1], p[2], p[3]));
+            indices[px] = image.bun_image_nearest_palette(palette.ptr, k, p[0], p[1], p[2], p[3]);
         }
     }
 
@@ -176,14 +178,14 @@ fn mapFloydSteinberg(
             var cand: [4]i32 = undefined;
             inline for (0..4) |c| cand[c] = @as(i32, rgba[px * 4 + c]) + cur[off + c];
 
-            const idx: u8 = @intCast(bun_image_nearest_palette(
+            const idx = image.bun_image_nearest_palette(
                 palette.ptr,
                 k,
-                clamp255(cand[0]),
-                clamp255(cand[1]),
-                clamp255(cand[2]),
-                clamp255(cand[3]),
-            ));
+                @intCast(clamp255(cand[0])),
+                @intCast(clamp255(cand[1])),
+                @intCast(clamp255(cand[2])),
+                @intCast(clamp255(cand[3])),
+            );
             indices[px] = idx;
 
             inline for (0..4) |c| {
@@ -232,3 +234,4 @@ fn shrink(rgba: []const u8, order: []const u32, lo: u32, hi: u32) Box {
 
 const bun = @import("bun");
 const std = @import("std");
+const codecs = @import("./codecs.zig");

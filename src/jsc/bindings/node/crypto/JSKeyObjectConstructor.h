@@ -1,12 +1,10 @@
 #pragma once
 
 #include "root.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/InternalFunction.h>
 
 namespace Bun {
-
-JSC_DECLARE_HOST_FUNCTION(callKeyObject);
-JSC_DECLARE_HOST_FUNCTION(constructKeyObject);
 
 class JSKeyObjectConstructor final : public JSC::InternalFunction {
 public:
@@ -35,7 +33,7 @@ public:
 
 private:
     JSKeyObjectConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, callKeyObject, constructKeyObject)
+        : Base(vm, structure, bun_bindgen_host_NodeCryptoBinding_keyObjectConstructorCall, bun_bindgen_host_NodeCryptoBinding_keyObjectConstructorConstruct)
     {
     }
 

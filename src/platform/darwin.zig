@@ -29,73 +29,42 @@ pub const nocancel = struct {
     pub extern "c" fn @"ppoll$NOCANCEL"(fds: [*]std.posix.pollfd, nfds: c_int, timeout: ?*const std.posix.timespec, sigmask: ?*const std.posix.sigset_t) isize;
 };
 
-pub const OSLog = opaque {
-    pub const Category = enum(u8) {
-        PointsOfInterest = 0,
-        Dynamicity = 1,
-        SizeAndThroughput = 2,
-        TimeProfile = 3,
-        SystemReporting = 4,
-        UserCustom = 5,
-    };
+pub const OSLog = struct {
+    handle: *perf_c.BunPerfLog,
 
-    // Common subsystems that Instruments recognizes
-    pub const Subsystem = struct {
-        pub const Network = "com.apple.network";
-        pub const FileIO = "com.apple.disk_io";
-        pub const Graphics = "com.apple.graphics";
-        pub const Memory = "com.apple.memory";
-        pub const Performance = "com.apple.performance";
-    };
-
-    extern "C" fn os_log_create(subsystem: ?[*:0]const u8, category: ?[*:0]const u8) ?*OSLog;
-
-    pub fn init() ?*OSLog {
-        return os_log_create("com.bun.bun", "PointsOfInterest");
+    pub fn init() ?OSLog {
+        return .{ .handle = perf_c.bun_perf_log() orelse return null };
     }
 
-    // anything except 0 and ~0 is a valid signpost id
-    var signpost_id_counter = std.atomic.Value(u64).init(1);
-
-    pub fn signpost(log: *OSLog, name: i32) Signpost {
+    pub fn signpost(log: OSLog, name: i32) Signpost {
         return .{
-            .id = signpost_id_counter.fetchAdd(1, .monotonic),
+            .id = perf_c.bun_perf_signpost_id(log.handle),
             .name = name,
             .log = log,
         };
     }
 
-    const SignpostType = enum(u8) {
-        Event = 0,
-        IntervalBegin = 1,
-        IntervalEnd = 2,
-    };
-
-    pub extern "C" fn Bun__signpost_emit(log: *OSLog, id: u64, signpost_type: SignpostType, name: i32, category: u8) void;
-
     pub const Signpost = struct {
         id: u64,
         name: i32,
-        log: *OSLog,
+        log: OSLog,
 
-        pub fn emit(this: *const Signpost, category: Category) void {
-            Bun__signpost_emit(this.log, this.id, .Event, this.name, @backingInt(category));
+        pub fn emit(this: *const Signpost) void {
+            perf_c.bun_perf_signpost_emit(this.log.handle, this.id, perf_c.BUN_PERF_EVENT, this.name);
         }
 
         pub const Interval = struct {
             signpost: Signpost,
-            category: Category,
 
             pub fn end(this: *const Interval) void {
-                Bun__signpost_emit(this.signpost.log, this.signpost.id, .IntervalEnd, this.signpost.name, @backingInt(this.category));
+                perf_c.bun_perf_signpost_emit(this.signpost.log.handle, this.signpost.id, perf_c.BUN_PERF_INTERVAL_END, this.signpost.name);
             }
         };
 
-        pub fn interval(this: Signpost, category: Category) Interval {
-            Bun__signpost_emit(this.log, this.id, .IntervalBegin, this.name, @backingInt(category));
+        pub fn interval(this: Signpost) Interval {
+            perf_c.bun_perf_signpost_emit(this.log.handle, this.id, perf_c.BUN_PERF_INTERVAL_BEGIN, this.name);
             return Interval{
                 .signpost = this,
-                .category = category,
             };
         }
     };
@@ -103,3 +72,4 @@ pub const OSLog = opaque {
 
 const bun = @import("bun");
 const std = @import("std");
+const perf_c = @import("perf-ffi");

@@ -1,104 +1,5 @@
-extern "c" fn highway_char_frequency(
-    text: [*]const u8,
-    text_len: usize,
-    freqs: [*]i32,
-    delta: i32,
-) void;
-
-extern "c" fn highway_index_of_char(
-    haystack: [*]const u8,
-    haystack_len: usize,
-    needle: u8,
-) usize;
-
-extern "c" fn highway_index_of_interesting_character_in_string_literal(
-    noalias text: [*]const u8,
-    text_len: usize,
-    quote: u8,
-) usize;
-
-extern "c" fn highway_index_of_newline_or_non_ascii(
-    noalias haystack: [*]const u8,
-    haystack_len: usize,
-) usize;
-
-extern "c" fn highway_index_of_newline_or_non_ascii_or_ansi(
-    noalias haystack: [*]const u8,
-    haystack_len: usize,
-) usize;
-
-extern "c" fn highway_index_of_newline_or_non_ascii_or_hash_or_at(
-    noalias haystack: [*]const u8,
-    haystack_len: usize,
-) usize;
-
-extern "c" fn highway_index_of_space_or_newline_or_non_ascii(
-    noalias haystack: [*]const u8,
-    haystack_len: usize,
-) usize;
-
-extern "c" fn highway_contains_newline_or_non_ascii_or_quote(
-    noalias text: [*]const u8,
-    text_len: usize,
-) bool;
-
-extern "c" fn highway_index_of_needs_escape_for_javascript_string(
-    noalias text: [*]const u8,
-    text_len: usize,
-    quote_char: u8,
-) usize;
-
-extern "c" fn highway_index_of_any_char(
-    noalias text: [*]const u8,
-    text_len: usize,
-    noalias chars: [*]const u8,
-    chars_len: usize,
-) usize;
-
-extern "c" fn highway_fill_with_skip_mask(
-    mask: [*]const u8,
-    mask_len: usize,
-    output: [*]u8,
-    input: [*]const u8,
-    length: usize,
-    skip_mask: bool,
-) void;
-
-extern "c" fn highway_xxhash3_64(
-    input: [*]const u8,
-    len: usize,
-    seed: u64,
-) u64;
-
 pub fn xxHash3(seed: u64, input: string) u64 {
-    return highway_xxhash3_64(input.ptr, input.len, seed);
-}
-
-/// Count frequencies of [a-zA-Z0-9_$] characters in a string
-/// Updates the provided frequency array with counts (adds delta for each occurrence)
-pub fn scanCharFrequency(text: string, freqs: *[64]i32, delta: i32) void {
-    if (text.len == 0 or delta == 0) {
-        return;
-    }
-
-    if (comptime !Environment.isNative) {
-        for (text) |char| switch (char) {
-            'a'...'z' => freqs[char - 'a'] += delta,
-            'A'...'Z' => freqs[char - 'A' + 26] += delta,
-            '0'...'9' => freqs[char - '0' + 52] += delta,
-            '_' => freqs[62] += delta,
-            '$' => freqs[63] += delta,
-            else => {},
-        };
-        return;
-    }
-
-    highway_char_frequency(
-        text.ptr,
-        text.len,
-        freqs.ptr,
-        delta,
-    );
+    return c.highway_xxhash3_64(input.ptr, input.len, seed);
 }
 
 pub fn indexOfChar(haystack: string, needle: u8) ?usize {
@@ -107,7 +8,7 @@ pub fn indexOfChar(haystack: string, needle: u8) ?usize {
     }
 
     const result = if (comptime Environment.isNative)
-        highway_index_of_char(haystack.ptr, haystack.len, needle)
+        c.highway_index_of_char(haystack.ptr, haystack.len, needle)
     else for (haystack, 0..) |char, index| {
         if (char == needle) break index;
     } else haystack.len;
@@ -127,7 +28,7 @@ pub fn indexOfInterestingCharacterInStringLiteral(slice: string, quote_type: u8)
     }
 
     const result = if (comptime Environment.isNative)
-        highway_index_of_interesting_character_in_string_literal(slice.ptr, slice.len, quote_type)
+        c.highway_index_of_interesting_character_in_string_literal(slice.ptr, slice.len, quote_type)
     else for (slice, 0..) |char, index| {
         if (char == quote_type or char == '\\' or char < 0x20 or char > 0x7e) break index;
     } else slice.len;
@@ -140,10 +41,10 @@ pub fn indexOfInterestingCharacterInStringLiteral(slice: string, quote_type: u8)
 }
 
 pub fn indexOfNewlineOrNonASCII(haystack: string) ?usize {
-    bun.debugAssert(haystack.len > 0);
+    if (haystack.len == 0) return null;
 
     const result = if (comptime Environment.isNative)
-        highway_index_of_newline_or_non_ascii(haystack.ptr, haystack.len)
+        c.highway_index_of_newline_or_non_ascii(haystack.ptr, haystack.len)
     else for (haystack, 0..) |char, index| {
         if (char > 127 or char < 0x20) break index;
     } else haystack.len;
@@ -161,28 +62,6 @@ pub fn indexOfNewlineOrNonASCII(haystack: string) ?usize {
     return result;
 }
 
-pub fn indexOfNewlineOrNonASCIIOrANSI(haystack: string) ?usize {
-    bun.debugAssert(haystack.len > 0);
-
-    const result = if (comptime Environment.isNative)
-        highway_index_of_newline_or_non_ascii_or_ansi(haystack.ptr, haystack.len)
-    else for (haystack, 0..) |char, index| {
-        if (char > 127 or char < 0x20) break index;
-    } else haystack.len;
-
-    if (result == haystack.len) {
-        return null;
-    }
-    if (comptime Environment.isDebug) {
-        const haystack_char = haystack[result];
-        if (!(haystack_char > 127 or haystack_char < 0x20 or haystack_char == '\r' or haystack_char == '\n')) {
-            @panic("Invalid character found in indexOfNewlineOrNonASCIIOrANSI");
-        }
-    }
-
-    return result;
-}
-
 /// Checks if the string contains any newlines, non-ASCII characters, or quotes
 pub fn containsNewlineOrNonASCIIOrQuote(text: string) bool {
     if (text.len == 0) {
@@ -194,20 +73,20 @@ pub fn containsNewlineOrNonASCIIOrQuote(text: string) bool {
         return false;
     }
 
-    return highway_contains_newline_or_non_ascii_or_quote(text.ptr, text.len);
+    return c.highway_contains_newline_or_non_ascii_or_quote(text.ptr, text.len) != 0;
 }
 
 /// Finds the first character that needs escaping in a JavaScript string
 /// Looks for characters above ASCII (> 127), control characters (< 0x20),
 /// backslash characters (`\`), the quote character itself, and for backtick
 /// strings also the dollar sign (`$`)
-pub fn indexOfNeedsEscapeForJavaScriptString(slice: string, quote_char: u8) ?u32 {
+pub fn indexOfNeedsEscapeForJavaScriptString(slice: string, quote_char: u8) ?usize {
     if (slice.len == 0) {
         return null;
     }
 
     const result = if (comptime Environment.isNative)
-        highway_index_of_needs_escape_for_javascript_string(slice.ptr, slice.len, quote_char)
+        c.highway_index_of_needs_escape_for_javascript_string(slice.ptr, slice.len, quote_char)
     else for (slice, 0..) |char, index| {
         if (char >= 127 or char < 0x20 or char == '\\' or char == quote_char or (quote_char == '`' and char == '$')) break index;
     } else slice.len;
@@ -223,7 +102,7 @@ pub fn indexOfNeedsEscapeForJavaScriptString(slice: string, quote_char: u8) ?u32
         }
     }
 
-    return @truncate(result);
+    return result;
 }
 
 pub fn indexOfAnyChar(haystack: string, chars: string) ?usize {
@@ -232,7 +111,7 @@ pub fn indexOfAnyChar(haystack: string, chars: string) ?usize {
     }
 
     const result = if (comptime Environment.isNative)
-        highway_index_of_any_char(haystack.ptr, haystack.len, chars.ptr, chars.len)
+        c.highway_index_of_any_char(haystack.ptr, haystack.len, chars.ptr, chars.len)
     else find: for (haystack, 0..) |haystack_char, index| {
         for (chars) |char| {
             if (haystack_char == char) break :find index;
@@ -246,8 +125,8 @@ pub fn indexOfAnyChar(haystack: string, chars: string) ?usize {
     if (comptime Environment.isDebug) {
         const haystack_char = haystack[result];
         var found = false;
-        for (chars) |c| {
-            if (c == haystack_char) {
+        for (chars) |character| {
+            if (character == haystack_char) {
                 found = true;
                 break;
             }
@@ -260,41 +139,58 @@ pub fn indexOfAnyChar(haystack: string, chars: string) ?usize {
     return result;
 }
 
-extern "c" fn highway_copy_u16_to_u8(
-    input: [*]align(1) const u16,
-    count: usize,
-    output: [*]u8,
-) void;
-
 pub fn copyU16ToU8(input: []align(1) const u16, output: []u8) void {
+    if (input.len > std.math.maxInt(usize) / 2) @panic("uint16 copy input is too long");
+    if (input.len > output.len) @panic("uint16 copy destination is too short");
     if (comptime !Environment.isNative) {
-        for (input, output) |in, *out| out.* = @truncate(in);
+        const input_address = @intFromPtr(input.ptr);
+        const output_address = @intFromPtr(output.ptr);
+        const prefix = if (output_address > input_address and output_address - input_address < input.len * 2)
+            @min(output_address - input_address, input.len)
+        else
+            0;
+        var end = prefix;
+        while (end > 0) {
+            end -= 1;
+            output[end] = @truncate(input[end]);
+        }
+        for (prefix..input.len) |index| output[index] = @truncate(input[index]);
         return;
     }
-    highway_copy_u16_to_u8(input.ptr, input.len, output.ptr);
+    c.highway_copy_u16_to_u8(input.ptr, input.len, output.ptr);
 }
 
 /// Apply a WebSocket mask to data using SIMD acceleration
 /// If skip_mask is true, data is copied without masking
 pub fn fillWithSkipMask(mask: [4]u8, output: []u8, input: []const u8, skip_mask: bool) void {
+    if (input.len > output.len) @panic("mask destination is too short");
     if (input.len == 0) {
         return;
     }
 
     if (comptime !Environment.isNative) {
-        for (input, output, 0..) |in, *out, index| {
+        const input_address = @intFromPtr(input.ptr);
+        const output_address = @intFromPtr(output.ptr);
+        if (output_address > input_address and output_address - input_address < input.len) {
+            var end = input.len;
+            while (end > 0) {
+                end -= 1;
+                output[end] = if (skip_mask) input[end] else input[end] ^ mask[end % mask.len];
+            }
+            return;
+        }
+        for (input, output[0..input.len], 0..) |in, *out, index| {
             out.* = if (skip_mask) in else in ^ mask[index % mask.len];
         }
         return;
     }
 
-    highway_fill_with_skip_mask(
+    c.highway_fill_with_skip_mask(
         &mask,
-        4,
         output.ptr,
         input.ptr,
         input.len,
-        skip_mask,
+        @intFromBool(skip_mask),
     );
 }
 
@@ -310,7 +206,7 @@ pub fn indexOfNewlineOrNonASCIIOrHashOrAt(haystack: string) ?usize {
     }
 
     const result = if (comptime Environment.isNative)
-        highway_index_of_newline_or_non_ascii_or_hash_or_at(haystack.ptr, haystack.len)
+        c.highway_index_of_newline_or_non_ascii_or_hash_or_at(haystack.ptr, haystack.len)
     else for (haystack, 0..) |char, index| {
         if (char == '#' or char == '@' or char < 0x20 or char > 127) break index;
     } else haystack.len;
@@ -331,7 +227,7 @@ pub fn indexOfSpaceOrNewlineOrNonASCII(haystack: string) ?usize {
     }
 
     const result = if (comptime Environment.isNative)
-        highway_index_of_space_or_newline_or_non_ascii(haystack.ptr, haystack.len)
+        c.highway_index_of_space_or_newline_or_non_ascii(haystack.ptr, haystack.len)
     else for (haystack, 0..) |char, index| {
         if (char <= ' ' or char > 127) break index;
     } else haystack.len;
@@ -349,4 +245,4 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const strings = bun.strings;
+const c = @import("highway-ffi");

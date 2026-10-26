@@ -1,4 +1,5 @@
 #include "root.h"
+#include "SchemaBindings.h"
 
 enum class X86CPUFeature : uint8_t {
     sse42 = 1,
@@ -145,7 +146,8 @@ static uint8_t aarch64_cpu_features()
 
 #endif
 
-extern "C" uint8_t bun_cpu_features()
+uint8_t Bun::Bindgen::Engine::bunBindgenEngine_CPUFeatures_detect(
+    const BunBindgenEngine_CPUFeatures_detect_Arguments&)
 {
 #if CPU(X86_64)
     return x86_cpu_features();

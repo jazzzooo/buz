@@ -18,6 +18,18 @@ const kOnConstructed = Symbol("kOnConstructed");
 
 const kIsClosedPromise = SymbolFor("nodejs.webstream.isClosedPromise");
 const kControllerErrorFunction = SymbolFor("nodejs.webstream.controllerErrorFunction");
+const isNativeReadableStream = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isReadableStream>(
+  "NativeTypePredicates.schema.zig",
+  "isReadableStream",
+);
+const isNativeWritableStream = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isWritableStream>(
+  "NativeTypePredicates.schema.zig",
+  "isWritableStream",
+);
+const isNativeTransformStream = $bindgenFn<typeof BunNativeBindings.NativeTypePredicates.isTransformStream>(
+  "NativeTypePredicates.schema.zig",
+  "isTransformStream",
+);
 
 const kState = Symbol("kState");
 const kObjectMode = 1 << 0;
@@ -75,22 +87,22 @@ function isNodeStream(obj) {
 }
 
 function isReadableStream(obj) {
-  return $inheritsReadableStream(obj);
+  return isNativeReadableStream(obj);
 }
 
 function isWritableStream(obj) {
-  return $inheritsWritableStream(obj);
+  return isNativeWritableStream(obj);
 }
 
 function isTransformStream(obj) {
-  return $inheritsTransformStream(obj);
+  return isNativeTransformStream(obj);
 }
 
 function isWebStream(obj) {
   return isReadableStream(obj) || isWritableStream(obj) || isTransformStream(obj);
 }
 
-function isIterable(obj, isAsync) {
+function isIterable(obj, isAsync?) {
   if (obj == null) return false;
   if (isAsync === true) return typeof obj[SymbolAsyncIterator] === "function";
   if (isAsync === false) return typeof obj[SymbolIterator] === "function";

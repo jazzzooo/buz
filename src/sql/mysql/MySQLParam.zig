@@ -8,4 +8,4 @@ pub const Param = struct {
 };
 
 const ColumnDefinition41 = @import("./protocol/ColumnDefinition41.zig");
-const types = @import("./MySQLTypes.zig");
+const types = @import("mysql_domain").types;

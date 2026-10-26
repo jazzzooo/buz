@@ -1,12 +1,10 @@
-//! `bun test --coverage` option struct, extracted from `cli/test_command.zig`
-//! so `options_types/Context.zig` (and `cli/cli.zig` `TestOptions`) can hold
-//! it without depending on `cli/`.
+//! Coverage configuration shared by CLI parsing and reporting.
 
 pub const CodeCoverageOptions = struct {
     skip_test_files: bool = !bun.Environment.allow_assert,
     reporters: Reporters = .{ .text = true, .lcov = false },
     reports_directory: []const u8 = "coverage",
-    fractions: bun.SourceMap.coverage.Fraction = .{},
+    fractions: CoverageFraction = .{},
     ignore_sourcemap: bool = false,
     enabled: bool = false,
     fail_on_low_coverage: bool = false,
@@ -24,3 +22,4 @@ pub const Reporters = struct {
 };
 
 const bun = @import("bun");
+const CoverageFraction = @import("../sourcemap/CoverageFraction.zig").Fraction;

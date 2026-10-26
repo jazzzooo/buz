@@ -1,5 +1,7 @@
 const TextDecoder = @This();
 
+bindgen_state: bindgen.ClassState = .{},
+
 // used for utf8 decoding
 buffered: struct {
     buf: [3]u8 = @splat(0),
@@ -13,83 +15,46 @@ buffered: struct {
 // used for utf16 decoding
 lead_byte: ?u8 = null,
 lead_surrogate: ?u16 = null,
+bom_seen: bool = false,
+streaming: bool = false,
+codec: ?bindgen.Return(TextCodecCreateSchema) = null,
+pending_input: bindgen.OwnedBytes = .empty(),
 
 ignore_bom: bool = false,
 fatal: bool = false,
 encoding: EncodingLabel = EncodingLabel.@"UTF-8",
 
-pub const js = jsc.Codegen.JSTextDecoder;
-pub const toJS = js.toJS;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
-
-pub const new = bun.TrivialNew(TextDecoder);
-
-pub fn finalize(this: *TextDecoder) void {
+pub fn destroy(this: *TextDecoder) void {
+    if (this.codec) |*codec| codec.deinit();
+    this.pending_input.deinit();
     bun.destroy(this);
 }
 
 pub fn getIgnoreBOM(
     this: *TextDecoder,
-    _: *jsc.JSGlobalObject,
-) jsc.JSValue {
-    return jsc.JSValue.jsBoolean(this.ignore_bom);
+    _: bindgen.CallContext(TextDecoderIgnoreBOMSchema),
+    _: bindgen.Args(TextDecoderIgnoreBOMSchema),
+) bun.JSError!bool {
+    return this.ignore_bom;
 }
 
 pub fn getFatal(
     this: *TextDecoder,
-    _: *jsc.JSGlobalObject,
-) jsc.JSValue {
-    return jsc.JSValue.jsBoolean(this.fatal);
+    _: bindgen.CallContext(TextDecoderFatalSchema),
+    _: bindgen.Args(TextDecoderFatalSchema),
+) bun.JSError!bool {
+    return this.fatal;
 }
 
 pub fn getEncoding(
     this: *TextDecoder,
-    globalThis: *jsc.JSGlobalObject,
-) jsc.JSValue {
-    return ZigString.init(EncodingLabel.getLabel(this.encoding)).toJS(globalThis);
-}
-const Vector16 = @Vector(16, u16);
-const max_16_ascii: Vector16 = @splat(@as(u16, 127));
-
-fn processCodeUnitUTF16(
-    this: *TextDecoder,
-    output: *std.ArrayListUnmanaged(u16),
-    saw_error: *bool,
-    code_unit: u16,
-) error{OutOfMemory}!void {
-    if (this.lead_surrogate) |lead_surrogate| {
-        this.lead_surrogate = null;
-
-        if (strings.u16IsTrail(code_unit)) {
-            // TODO: why is this here?
-            // const code_point = strings.u16GetSupplementary(lead_surrogate, code_unit);
-            try output.appendSlice(
-                bun.default_allocator,
-                &.{ lead_surrogate, code_unit },
-            );
-            return;
-        }
-        try output.append(bun.default_allocator, strings.unicode_replacement);
-        saw_error.* = true;
-    }
-
-    if (strings.u16IsLead(code_unit)) {
-        this.lead_surrogate = code_unit;
-        return;
-    }
-
-    if (strings.u16IsTrail(code_unit)) {
-        try output.append(bun.default_allocator, strings.unicode_replacement);
-        saw_error.* = true;
-        return;
-    }
-
-    try output.append(bun.default_allocator, code_unit);
-    return;
+    _: bindgen.CallContext(TextDecoderEncodingSchema),
+    _: bindgen.Args(TextDecoderEncodingSchema),
+) bun.JSError!bindgen.DOMString {
+    return bindgen.DOMString.fromUTF8(EncodingLabel.getLabel(this.encoding));
 }
 
-pub fn codeUnitFromBytesUTF16(
+fn codeUnitFromBytesUTF16(
     first: u16,
     second: u16,
     comptime big_endian: bool,
@@ -100,266 +65,313 @@ pub fn codeUnitFromBytesUTF16(
         first | (second << 8);
 }
 
-pub fn decodeUTF16(
+fn decodeUTF16(
     this: *TextDecoder,
     bytes: []const u8,
     comptime big_endian: bool,
     comptime flush: bool,
-) error{OutOfMemory}!struct { std.ArrayListUnmanaged(u16), bool } {
+) error{OutOfMemory}!union(enum) {
+    decoded: std.ArrayListUnmanaged(u16),
+    invalid: []const u8,
+} {
     var output: std.ArrayListUnmanaged(u16) = .empty;
+    errdefer output.deinit(bun.default_allocator);
     try output.ensureTotalCapacity(bun.default_allocator, @divFloor(bytes.len, 2));
 
     var remain = bytes;
-    var saw_error = false;
-
-    if (this.lead_byte) |lead_byte| {
-        if (remain.len > 0) {
-            this.lead_byte = null;
-
-            try this.processCodeUnitUTF16(
-                &output,
-                &saw_error,
-                codeUnitFromBytesUTF16(@intCast(lead_byte), @intCast(remain[0]), big_endian),
-            );
+    while (remain.len > 0) {
+        const first = this.lead_byte orelse first: {
+            const byte = remain[0];
             remain = remain[1..];
+            break :first byte;
+        };
+        this.lead_byte = null;
+        if (remain.len == 0) {
+            this.lead_byte = first;
+            break;
         }
-    }
-
-    var i: usize = 0;
-
-    while (i < remain.len -| 1) {
-        try this.processCodeUnitUTF16(
-            &output,
-            &saw_error,
-            codeUnitFromBytesUTF16(@intCast(remain[i]), @intCast(remain[i + 1]), big_endian),
-        );
-        i += 2;
-    }
-
-    if (remain.len != 0 and i == remain.len - 1) {
-        this.lead_byte = remain[i];
-    } else {
-        bun.assertWithLocation(i == remain.len, @src());
+        const code_unit = codeUnitFromBytesUTF16(first, remain[0], big_endian);
+        if (this.lead_surrogate) |lead_surrogate| {
+            this.lead_surrogate = null;
+            if (strings.u16IsTrail(code_unit)) {
+                remain = remain[1..];
+                try output.appendSlice(bun.default_allocator, &.{ lead_surrogate, code_unit });
+                continue;
+            }
+            if (this.fatal) {
+                this.lead_byte = first;
+                output.deinit(bun.default_allocator);
+                return .{ .invalid = remain };
+            }
+            try output.append(bun.default_allocator, strings.unicode_replacement);
+        }
+        remain = remain[1..];
+        if (strings.u16IsLead(code_unit)) {
+            this.lead_surrogate = code_unit;
+        } else if (strings.u16IsTrail(code_unit)) {
+            if (this.fatal) {
+                output.deinit(bun.default_allocator);
+                return .{ .invalid = remain };
+            }
+            try output.append(bun.default_allocator, strings.unicode_replacement);
+        } else {
+            try output.append(bun.default_allocator, code_unit);
+        }
     }
 
     if (comptime flush) {
         if (this.lead_byte != null or this.lead_surrogate != null) {
             this.lead_byte = null;
             this.lead_surrogate = null;
+            if (this.fatal) {
+                output.deinit(bun.default_allocator);
+                return .{ .invalid = "" };
+            }
             try output.append(bun.default_allocator, strings.unicode_replacement);
-            saw_error = true;
-            return .{ output, saw_error };
         }
     }
 
-    return .{ output, saw_error };
+    return .{ .decoded = output };
 }
 
-pub fn decode(this: *TextDecoder, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
-    const arguments = callframe.arguments_old(2).slice();
+pub fn decode(
+    this: *TextDecoder,
+    context: bindgen.CallContext(TextDecoderDecodeSchema),
+    args: bindgen.Args(TextDecoderDecodeSchema),
+) bindgen.CallError(TextDecoderDecodeSchema)!bindgen.Return(TextDecoderDecodeSchema) {
+    const stream = if (args.options) |options| options.stream else false;
+    const input = if (args.input != null) try args.bytes.?.convert(context) else null;
+    var input_slice = if (input) |*value|
+        value.value.unsafePtr("decodeSlice consumes the entry-frame copy before the binding returns")
+    else
+        "";
+    var joined: ?[]u8 = null;
+    defer if (joined) |bytes| bun.default_allocator.free(bytes);
+    if (this.streaming and !this.pending_input.isEmpty()) {
+        const pending = this.pending_input.slice();
+        const length = std.math.add(usize, pending.len, input_slice.len) catch return error.OutOfMemory;
+        const bytes = try bun.default_allocator.alloc(u8, length);
+        @memcpy(bytes[0..pending.len], pending);
+        @memcpy(bytes[pending.len..], input_slice);
+        joined = bytes;
+        input_slice = bytes;
+    }
+    var pending_input = bindgen.OwnedBytes.empty();
+    defer pending_input.deinit();
 
-    // Evaluate options.stream before reading the input bytes. Reading `stream`
-    // can invoke a user-defined getter that detaches/transfers the input's
-    // ArrayBuffer; capturing the byte pointer before that getter runs leaves
-    // `decodeSlice` reading through a stale pointer into memory that may have
-    // been freed or reused. Node.js reads options first as well.
-    const stream = stream: {
-        if (arguments.len > 1 and arguments[1].isObject()) {
-            if (try arguments[1].fastGet(globalThis, .stream)) |stream_value| {
-                break :stream stream_value.toBoolean();
-            }
+    const buffered = this.buffered;
+    const lead_byte = this.lead_byte;
+    const lead_surrogate = this.lead_surrogate;
+    const bom_seen = this.bom_seen;
+    const streaming = this.streaming;
+    if (!streaming) {
+        if (this.codec) |*codec| context.engineIn("text_codecs", "textCodecReset").call(.{ .codec = codec });
+        this.buffered.len = 0;
+        this.lead_byte = null;
+        this.lead_surrogate = null;
+        this.bom_seen = false;
+    }
+    this.streaming = stream;
+    const result = switch (!stream) {
+        inline else => |flush| this.decodeSlice(context, input_slice, flush, &pending_input),
+    } catch |err| {
+        if (err == error.OutOfMemory) {
+            this.buffered = buffered;
+            this.lead_byte = lead_byte;
+            this.lead_surrogate = lead_surrogate;
+            this.bom_seen = bom_seen;
+            this.streaming = streaming;
+        } else {
+            this.pending_input.deinit();
+            this.pending_input = pending_input.take();
         }
-
-        break :stream false;
+        return err;
     };
-
-    const input_slice = input_slice: {
-        if (arguments.len == 0 or arguments[0].isUndefined()) {
-            break :input_slice "";
-        }
-
-        if (arguments[0].asArrayBuffer(globalThis)) |array_buffer| {
-            break :input_slice array_buffer.slice();
-        }
-
-        return globalThis.throwInvalidArguments("TextDecoder.decode expects an ArrayBuffer or TypedArray", .{});
-    };
-
-    return switch (!stream) {
-        inline else => |flush| this.decodeSlice(globalThis, input_slice, flush),
+    this.pending_input.deinit();
+    this.pending_input = pending_input.take();
+    return switch (result) {
+        .decoded => |value| value,
+        .invalid => {
+            const message = if (this.encoding == .@"UTF-8")
+                try bindgen.DOMString.fromUTF8("Invalid byte sequence")
+            else
+                try bindgen.DOMString.fromBunString(try bun.String.createFormat(
+                    "The encoded data was not valid {s} data",
+                    .{switch (this.encoding) {
+                        .@"UTF-16LE", .@"UTF-16BE" => @tagName(this.encoding),
+                        else => EncodingLabel.getLabel(this.encoding),
+                    }},
+                ));
+            return context.fail(.invalid_encoded_data, message);
+        },
     };
 }
 
-pub fn decodeWithoutTypeChecks(this: *TextDecoder, globalThis: *jsc.JSGlobalObject, uint8array: *jsc.JSUint8Array) bun.JSError!JSValue {
-    return this.decodeSlice(globalThis, uint8array.slice(), false);
+fn stripInitialBOM(this: *TextDecoder, output: *std.ArrayListUnmanaged(u16)) void {
+    if (this.ignore_bom or this.bom_seen or output.items.len == 0) return;
+    this.bom_seen = true;
+    if (output.items[0] == 0xfeff) {
+        std.mem.copyForwards(u16, output.items, output.items[1..]);
+        output.items.len -= 1;
+    }
 }
 
-fn decodeSlice(this: *TextDecoder, globalThis: *jsc.JSGlobalObject, buffer_slice: []const u8, comptime flush: bool) bun.JSError!JSValue {
-    const TextCodec = @import("../../jsc/TextCodec.zig").TextCodec;
-
+fn decodeSlice(
+    this: *TextDecoder,
+    context: bindgen.CallContext(TextDecoderDecodeSchema),
+    buffer_slice: []const u8,
+    comptime flush: bool,
+    pending_input: *bindgen.OwnedBytes,
+) bun.JSError!union(enum) {
+    decoded: bindgen.DOMString,
+    invalid,
+} {
     switch (this.encoding) {
         EncodingLabel.latin1 => {
             if (strings.isAllASCII(buffer_slice)) {
-                return ZigString.init(buffer_slice).toJS(globalThis);
+                return .{ .decoded = try bindgen.DOMString.fromUTF8(buffer_slice) };
             }
 
-            // It's unintuitive that we encode Latin1 as UTF16 even though the engine natively supports Latin1 strings...
-            // However, this is also what WebKit seems to do.
-            //
-            // => The reason we need to encode it is because TextDecoder "latin1" is actually CP1252, while WebKit latin1 is 8-bit utf-16
+            // The latin1 label denotes Windows-1252, which includes code points above U+00FF.
             const out_length = strings.elementLengthCP1252IntoUTF16(buffer_slice);
             const bytes = try bun.default_allocator.alloc(u16, out_length);
 
             const out = strings.copyCP1252IntoUTF16(bytes, buffer_slice);
-            return ZigString.toExternalU16(bytes.ptr, out.written, globalThis);
+            return .{ .decoded = try bindgen.DOMString.fromBunString(
+                bun.String.createExternalGloballyAllocatedWithLength(.utf16, bytes, out.written),
+            ) };
         },
         EncodingLabel.@"UTF-8" => {
             const input, const deinit = input: {
-                const maybe_without_bom = if (!this.ignore_bom and strings.hasPrefixComptime(buffer_slice, "\xef\xbb\xbf"))
-                    buffer_slice[3..]
-                else
-                    buffer_slice;
-
                 if (this.buffered.len > 0) {
                     defer this.buffered.len = 0;
-                    const joined = try bun.default_allocator.alloc(u8, maybe_without_bom.len + this.buffered.len);
+                    const length = std.math.add(usize, buffer_slice.len, this.buffered.len) catch return error.OutOfMemory;
+                    const joined = try bun.default_allocator.alloc(u8, length);
                     @memcpy(joined[0..this.buffered.len], this.buffered.slice());
-                    @memcpy(joined[this.buffered.len..][0..maybe_without_bom.len], maybe_without_bom);
+                    @memcpy(joined[this.buffered.len..][0..buffer_slice.len], buffer_slice);
                     break :input .{ joined, true };
                 }
 
-                break :input .{ maybe_without_bom, false };
+                break :input .{ buffer_slice, false };
             };
+            defer if (deinit) bun.default_allocator.free(input);
 
-            const maybe_decode_result = switch (this.fatal) {
-                inline else => |fail_if_invalid| strings.toUTF16AllocMaybeBuffered(bun.default_allocator, input, fail_if_invalid, flush) catch |err| {
-                    if (deinit) bun.default_allocator.free(input);
-                    if (comptime fail_if_invalid) {
-                        if (err == error.InvalidByteSequence) {
-                            return globalThis.ERR(.ENCODING_INVALID_ENCODED_DATA, "Invalid byte sequence", .{}).throw();
-                        }
-                    }
-
-                    bun.assert(err == error.OutOfMemory);
-                    return globalThis.throwOutOfMemory();
+            const decode_result = switch (this.fatal) {
+                inline else => |fail_if_invalid| try strings.toUTF16AllocMaybeBuffered(bun.default_allocator, input, fail_if_invalid, flush),
+            };
+            switch (decode_result) {
+                .invalid => |remaining| {
+                    pending_input.* = try bindgen.OwnedBytes.fromSlice(remaining);
+                    return .invalid;
                 },
-            };
-
-            if (maybe_decode_result) |decode_result| {
-                if (deinit) bun.default_allocator.free(input);
-                const decoded, const leftover, const leftover_len = decode_result;
-                bun.assert(this.buffered.len == 0);
-                if (comptime !flush) {
-                    if (leftover_len != 0) {
-                        this.buffered.buf = leftover;
-                        this.buffered.len = leftover_len;
+                .decoded => |value| {
+                    var decoded = value.output;
+                    bun.assert(this.buffered.len == 0);
+                    if (comptime !flush) {
+                        this.buffered.buf = value.buffered;
+                        this.buffered.len = value.buffered_len;
                     }
-                }
-                return ZigString.toExternalU16(decoded.ptr, decoded.len, globalThis);
+                    this.stripInitialBOM(&decoded);
+                    return .{ .decoded = try bindgen.DOMString.fromBunString(
+                        bun.String.createExternalGloballyAllocatedWithLength(.utf16, decoded.allocatedSlice(), decoded.items.len),
+                    ) };
+                },
+                .ascii => {},
             }
 
             bun.debugAssert(input.len == 0 or !deinit);
 
-            // Experiment: using mimalloc directly is slightly slower
-            return ZigString.init(input).toJS(globalThis);
+            if (input.len > 0) this.bom_seen = true;
+            return .{ .decoded = try bindgen.DOMString.fromUTF8(input) };
         },
 
         inline .@"UTF-16LE", .@"UTF-16BE" => |utf16_encoding| {
-            const bom = if (comptime utf16_encoding == .@"UTF-16LE") "\xff\xfe" else "\xfe\xff";
-            const input = if (!this.ignore_bom and strings.hasPrefixComptime(buffer_slice, bom))
-                buffer_slice[2..]
-            else
-                buffer_slice;
+            var decoded = switch (try this.decodeUTF16(buffer_slice, utf16_encoding == .@"UTF-16BE", flush)) {
+                .decoded => |output| output,
+                .invalid => |remaining| {
+                    pending_input.* = try bindgen.OwnedBytes.fromSlice(remaining);
+                    return .invalid;
+                },
+            };
 
-            var decoded, const saw_error = try this.decodeUTF16(input, utf16_encoding == .@"UTF-16BE", flush);
-
-            if (saw_error and this.fatal) {
-                decoded.deinit(bun.default_allocator);
-                return globalThis.ERR(.ENCODING_INVALID_ENCODED_DATA, "The encoded data was not valid {s} data", .{@tagName(utf16_encoding)}).throw();
-            }
-
-            if (decoded.items.len == 0) {
-                decoded.deinit(bun.default_allocator);
-                return ZigString.Empty.toJS(globalThis);
-            }
-
-            // Transfer ownership of the backing allocation to JSC; freed via
-            // free_global_string -> mi_free when the string is collected.
-            return ZigString.toExternalU16(decoded.items.ptr, decoded.items.len, globalThis);
+            this.stripInitialBOM(&decoded);
+            return .{ .decoded = try bindgen.DOMString.fromBunString(
+                bun.String.createExternalGloballyAllocatedWithLength(.utf16, decoded.allocatedSlice(), decoded.items.len),
+            ) };
         },
 
         // Handle all other encodings using WebKit's TextCodec
         else => {
-            const encoding_name = EncodingLabel.getLabel(this.encoding);
-
-            // Create codec if we don't have one cached
-            // Note: In production, we might want to cache these per-encoding
-            const codec = TextCodec.create(encoding_name) orelse {
-                // Fallback to empty string if codec creation fails
-                return ZigString.init("").toJS(globalThis);
-            };
-            defer codec.deinit();
-
-            // Handle BOM stripping if needed
-            if (!this.ignore_bom) {
-                codec.stripBOM();
+            var decoded = try context.engineIn("text_codecs", "textCodecDecode").call(.{
+                .codec = &this.codec.?,
+                .data = bun.bindgen.BytesOperand.fromSlice(buffer_slice),
+                .flush = flush,
+                .stopOnError = this.fatal,
+            });
+            var result = decoded.result.takeBunString();
+            if (decoded.sawError and this.fatal) {
+                result.deref();
+                return .invalid;
             }
 
-            // Decode the data
-            const result = codec.decode(buffer_slice, flush, this.fatal);
-            defer result.result.deref();
-
-            // Check for errors if fatal mode is enabled
-            if (result.sawError and this.fatal) {
-                return globalThis.ERR(.ENCODING_INVALID_ENCODED_DATA, "The encoded data was not valid {s} data", .{encoding_name}).throw();
-            }
-
-            // Return the decoded string
-            return result.result.toJS(globalThis);
+            return .{ .decoded = try bindgen.DOMString.fromBunString(result) };
         },
     }
 }
 
-pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*TextDecoder {
-    const encoding_value, const options_value = callframe.argumentsAsArray(2);
-
+pub fn construct(
+    context: bindgen.CallContext(TextDecoderConstructorSchema),
+    args: bindgen.Args(TextDecoderConstructorSchema),
+) bindgen.CallError(TextDecoderConstructorSchema)!*TextDecoder {
     var decoder = TextDecoder{};
-
-    if (encoding_value.isString()) {
-        var str = try encoding_value.toSlice(globalThis, bun.default_allocator);
-        defer str.deinit();
-
-        if (EncodingLabel.which(str.slice())) |label| {
-            decoder.encoding = label;
-        } else {
-            return globalThis.ERR(.ENCODING_NOT_SUPPORTED, "Unsupported encoding label \"{s}\"", .{str.slice()}).throw();
-        }
-    } else if (encoding_value.isUndefined()) {
-        // default to utf-8
-        decoder.encoding = EncodingLabel.@"UTF-8";
+    var encoding = try args.encoding.toUTF8(bun.default_allocator);
+    defer encoding.deinit();
+    if (EncodingLabel.which(encoding.slice())) |label| {
+        decoder.encoding = label;
     } else {
-        return globalThis.throwInvalidArguments("TextDecoder(encoding) label is invalid", .{});
+        const message = try bun.String.createFormat(
+            "Unsupported encoding label \"{s}\"",
+            .{encoding.slice()},
+        );
+        return context.fail(
+            .unsupported_encoding,
+            try bindgen.DOMString.fromBunString(message),
+        );
     }
 
-    if (!options_value.isUndefined()) {
-        if (!options_value.isObject()) {
-            return globalThis.throwInvalidArguments("TextDecoder(options) is invalid", .{});
-        }
-
-        if (try options_value.get(globalThis, "fatal")) |fatal| {
-            decoder.fatal = fatal.toBoolean();
-        }
-
-        if (try options_value.get(globalThis, "ignoreBOM")) |ignoreBOM| {
-            if (ignoreBOM.isBoolean()) {
-                decoder.ignore_bom = ignoreBOM.asBoolean();
-            } else {
-                return globalThis.throwInvalidArguments("TextDecoder(options) ignoreBOM is invalid. Expected boolean value", .{});
-            }
-        }
+    if (args.options) |options| {
+        decoder.fatal = options.fatal;
+        decoder.ignore_bom = options.ignore_bom;
     }
 
-    return TextDecoder.new(decoder);
+    const codec_encoding: ?bindgen.EngineArgumentType(TextCodecCreateSchema, "encoding") = switch (decoder.encoding) {
+        .@"UTF-8", .@"UTF-16LE", .@"UTF-16BE", .@"windows-1252" => null,
+        .IBM866 => .ibm866,
+        .@"ISO-8859-3" => .iso_8859_3,
+        .@"ISO-8859-6" => .iso_8859_6,
+        .@"ISO-8859-7" => .iso_8859_7,
+        .@"ISO-8859-8", .@"ISO-8859-8-I" => .iso_8859_8,
+        .@"KOI8-U" => .koi8_u,
+        .@"windows-874" => .windows_874,
+        .@"windows-1253" => .windows_1253,
+        .@"windows-1255" => .windows_1255,
+        .@"windows-1257" => .windows_1257,
+        .Big5 => .big5,
+        .@"EUC-JP" => .euc_jp,
+        .@"ISO-2022-JP" => .iso_2022_jp,
+        .Shift_JIS => .shift_jis,
+        .@"EUC-KR" => .euc_kr,
+        .@"x-user-defined" => .user_defined,
+        .GBK => .gbk,
+        .GB18030 => .gb18030,
+    };
+    if (codec_encoding) |value| decoder.codec = try context.engineIn("text_codecs", "textCodecCreate").call(.{
+        .encoding = value,
+    });
+    errdefer if (decoder.codec) |*codec| codec.deinit();
+    const result = try bun.default_allocator.create(TextDecoder);
+    result.* = decoder;
+    return result;
 }
 
 const std = @import("std");
@@ -367,10 +379,19 @@ const std = @import("std");
 const bun = @import("bun");
 const strings = bun.strings;
 
-const jsc = bun.jsc;
-const ArrayBuffer = jsc.ArrayBuffer;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSUint8Array = jsc.JSUint8Array;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
-const EncodingLabel = jsc.WebCore.EncodingLabel;
+const bindgen = bun.bindgen;
+const EncodingLabel = @import("./EncodingLabel.zig").EncodingLabel;
+
+const TextDecoderBindingModule = bindgen.Module("TextDecoder");
+const TextDecoderSchema = TextDecoderBindingModule.class("TextDecoder");
+const TextDecoderConstructorSchema = TextDecoderSchema.constructor();
+const TextDecoderDecodeSchema = TextDecoderSchema.member("decode");
+const TextDecoderEncodingSchema = TextDecoderSchema.member("encoding");
+const TextDecoderFatalSchema = TextDecoderSchema.member("fatal");
+const TextDecoderIgnoreBOMSchema = TextDecoderSchema.member("ignoreBOM");
+const TextDecoderClass = bindgen.Class(TextDecoderSchema, TextDecoder);
+const TextCodecCreateSchema = bindgen.Module("text_codecs").engineShim("textCodecCreate");
+
+comptime {
+    _ = TextDecoderClass;
+}

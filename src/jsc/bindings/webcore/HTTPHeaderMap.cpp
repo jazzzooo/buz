@@ -139,18 +139,33 @@ void HTTPHeaderMap::setUncommonHeader(const String& name, const String& value)
         m_uncommonHeaders[index].value = value;
 }
 
-void HTTPHeaderMap::setUncommonHeaderCloneName(const StringView name, const String& value)
+bool HTTPHeaderMap::trySet(const String& name, const String& value)
+{
+    HTTPHeaderName commonName;
+    if (findHTTPHeaderName(name, commonName))
+        return trySet(commonName, value);
+    auto index = indexOf(name);
+    if (setIndex(index, value))
+        return true;
+    return m_uncommonHeaders.tryAppend(UncommonHeader { name, value });
+}
+
+bool HTTPHeaderMap::trySetUncommonHeaderCloneName(StringView name, const String& value)
 {
     auto index = m_uncommonHeaders.findIf([&](auto& header) {
         return equalIgnoringASCIICase(header.key, name);
     });
     if (index == notFound) {
+        RELEASE_ASSERT(name.is8Bit());
         std::span<Latin1Character> ptr;
-        auto nameCopy = WTF::String::createUninitialized(name.length(), ptr);
+        auto nameImpl = WTF::StringImpl::tryCreateUninitialized(name.length(), ptr);
+        if (!nameImpl)
+            return false;
         memcpy(ptr.data(), name.span8().data(), name.length());
-        m_uncommonHeaders.append(UncommonHeader { nameCopy, value });
+        return m_uncommonHeaders.tryAppend(UncommonHeader { String(WTF::move(nameImpl)), value });
     } else
         m_uncommonHeaders[index].value = value;
+    return true;
 }
 
 void HTTPHeaderMap::add(const String& name, const String& value)
@@ -167,6 +182,21 @@ void HTTPHeaderMap::add(const String& name, const String& value)
         m_uncommonHeaders.append(UncommonHeader { name, value });
     else
         m_uncommonHeaders[index].value = makeString(m_uncommonHeaders[index].value, ", "_s, value);
+}
+
+bool HTTPHeaderMap::tryAdd(const String& name, const String& value)
+{
+    HTTPHeaderName commonName;
+    if (findHTTPHeaderName(name, commonName))
+        return tryAdd(commonName, value);
+    auto index = indexOf(name);
+    if (!index.isValid())
+        return m_uncommonHeaders.tryAppend(UncommonHeader { name, value });
+    auto combined = tryMakeString(getIndex(index), ", "_s, value);
+    if (combined.isNull())
+        return false;
+    m_uncommonHeaders[index.index].value = WTF::move(combined);
+    return true;
 }
 
 void HTTPHeaderMap::append(const String& name, const String& value)
@@ -295,6 +325,21 @@ void HTTPHeaderMap::set(HTTPHeaderName name, const String& value)
         m_commonHeaders[index].value = value;
 }
 
+bool HTTPHeaderMap::trySet(HTTPHeaderName name, const String& value)
+{
+    if (name == HTTPHeaderName::SetCookie) {
+        if (m_setCookieHeaders.isEmpty())
+            return m_setCookieHeaders.tryAppend(value);
+        m_setCookieHeaders[0] = value;
+        m_setCookieHeaders.shrink(1);
+        return true;
+    }
+    auto index = indexOf(name);
+    if (setIndex(index, value))
+        return true;
+    return m_commonHeaders.tryAppend(CommonHeader { name, value });
+}
+
 bool HTTPHeaderMap::setIndex(HTTPHeaderMap::HeaderIndex index, const String& value)
 {
     if (!index.isValid())
@@ -345,6 +390,20 @@ void HTTPHeaderMap::add(HTTPHeaderName name, const String& value)
         m_commonHeaders[index].value = makeString(m_commonHeaders[index].value, name == HTTPHeaderName::Cookie ? "; "_s : ", "_s, value);
     else
         m_commonHeaders.append(CommonHeader { name, value });
+}
+
+bool HTTPHeaderMap::tryAdd(HTTPHeaderName name, const String& value)
+{
+    if (name == HTTPHeaderName::SetCookie)
+        return m_setCookieHeaders.tryAppend(value);
+    auto index = m_commonHeaders.findIf([&](auto& header) { return header.key == name; });
+    if (index == notFound)
+        return m_commonHeaders.tryAppend(CommonHeader { name, value });
+    auto combined = tryMakeString(m_commonHeaders[index].value, name == HTTPHeaderName::Cookie ? "; "_s : ", "_s, value);
+    if (combined.isNull())
+        return false;
+    m_commonHeaders[index].value = WTF::move(combined);
+    return true;
 }
 
 } // namespace WebCore

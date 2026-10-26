@@ -29,12 +29,12 @@
 #include "NetworkLoadMetrics.h"
 #include "ResourceLoadTiming.h"
 #include "ServerTiming.h"
+#include <span>
 #include <wtf/URL.h>
 
 namespace WebCore {
 
 class CachedResource;
-class PerformanceServerTiming;
 class ResourceResponse;
 class ResourceLoadTiming;
 class SecurityOrigin;
@@ -54,7 +54,7 @@ public:
     const ResourceLoadTiming& resourceLoadTiming() const { return m_resourceLoadTiming; }
     const NetworkLoadMetrics& networkLoadMetrics() const { return m_networkLoadMetrics; }
     NetworkLoadMetrics& networkLoadMetrics() { return m_networkLoadMetrics; }
-    Vector<Ref<PerformanceServerTiming>> populateServerTiming() const;
+    std::span<const ServerTiming> serverTiming() const { return m_isSameOriginRequest ? m_serverTiming.span() : std::span<const ServerTiming> {}; }
     bool isSameOriginRequest() const { return m_isSameOriginRequest; }
     ResourceTiming isolatedCopy() const&;
     ResourceTiming isolatedCopy() &&;

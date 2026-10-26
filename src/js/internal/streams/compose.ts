@@ -86,7 +86,7 @@ export default function compose(...streams) {
     readableObjectMode: !!tail?.readableObjectMode,
     writable,
     readable,
-  });
+  } as import("node:stream").DuplexOptions & { writable?: boolean; readable?: boolean });
 
   if (writable) {
     if (isNodeStream(head)) {
@@ -112,7 +112,7 @@ export default function compose(...streams) {
       });
     } else if (isWebStream(head)) {
       const writable = isTransformStream(head) ? head.writable : head;
-      const writer = writable.getWriter();
+      const writer = (writable as WritableStream).getWriter();
 
       d._write = async function (chunk, encoding, callback) {
         try {
@@ -175,7 +175,7 @@ export default function compose(...streams) {
       };
     } else if (isWebStream(tail)) {
       const readable = isTransformStream(tail) ? tail.readable : tail;
-      const reader = readable.getReader();
+      const reader = (readable as ReadableStream).getReader();
       d._read = async function () {
         while (true) {
           try {

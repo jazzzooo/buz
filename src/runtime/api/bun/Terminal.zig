@@ -3,25 +3,13 @@
 //! This module provides a Terminal class that creates a PTY master/slave pair,
 //! allowing JavaScript code to interact with terminal-based programs.
 //!
-//! Lifecycle:
-//! - Starts with weak JSRef (allows GC if user doesn't hold reference)
-//! - Upgrades to strong when actively reading/writing
-//! - Downgrades to weak on EOF from master_fd
-//! - Callbacks are stored via `values` in classes.ts, accessed via js.gc
-
 const Terminal = @This();
 
 const log = bun.Output.scoped(.Terminal, .hidden);
 
-// Generated bindings
-pub const js = jsc.Codegen.JSTerminal;
-pub const toJS = js.toJS;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
-
 // Reference counting for Terminal
 // Refs are held by:
-// 1. JS side (released in finalize)
+// 1. JS binding
 // 2. Reader (released in onReaderDone/onReaderError)
 // 3. Writer (released in onWriterClose)
 const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
@@ -51,9 +39,6 @@ hpcon: if (Environment.isWindows) ?bun.windows.HPCON else void = if (Environment
 cols: u16,
 rows: u16,
 
-/// Terminal name (e.g., "xterm-256color")
-term_name: jsc.ZigString.Slice,
-
 /// Event loop handle for callbacks
 event_loop_handle: jsc.EventLoopHandle,
 
@@ -66,10 +51,9 @@ writer: IOWriter = .{},
 /// Reader for receiving data from the terminal
 reader: IOReader = IOReader.init(@This()),
 
-/// This value reference for GC tracking
-/// - weak: allows GC when idle
-/// - strong: prevents GC when actively connected
-this_value: jsc.JSRef = jsc.JSRef.empty(),
+normal_termios: if (Environment.isPosix) ?Termios else void = if (Environment.isPosix) null else {},
+
+binding: ?*JSBinding = null,
 
 /// State flags
 flags: Flags = .{},
@@ -77,9 +61,9 @@ flags: Flags = .{},
 pub const Flags = packed struct(u8) {
     closed: bool = false,
     finalized: bool = false,
+    raw_mode: bool = false,
     _padding: bool = false,
     reader_started: bool = false,
-    connected: bool = false,
     reader_done: bool = false,
     writer_done: bool = false,
     /// Set when an inline-created terminal has been attached to a subprocess
@@ -101,63 +85,46 @@ pub const Poll = IOWriter;
 
 pub const IOReader = bun.io.BufferedReader;
 
+fn takeOptionalCallback(
+    comptime CallbackType: type,
+    source: *?bindgen.Callback(CallbackType),
+) ?bindgen.Callback(CallbackType) {
+    const callback = if (source.*) |*value| value.take() else return null;
+    source.* = null;
+    return callback;
+}
+
 /// Options for creating a Terminal
 pub const Options = struct {
     cols: u16 = 80,
     rows: u16 = 24,
-    term_name: jsc.ZigString.Slice = .{},
-    data_callback: ?JSValue = null,
-    exit_callback: ?JSValue = null,
-    drain_callback: ?JSValue = null,
+    term_name: bun.String.Slice = .{},
+    data_callback: ?bindgen.Callback(TerminalDataCallbackType) = null,
+    exit_callback: ?bindgen.Callback(TerminalExitCallbackType) = null,
+    drain_callback: ?bindgen.Callback(TerminalDrainCallbackType) = null,
 
     /// Maximum length for terminal name (e.g., "xterm-256color")
     /// Longest known terminfo names are ~23 chars; 128 allows for custom terminals
     pub const max_term_name_len = 128;
 
-    /// Parse terminal options from a JS object
-    pub fn parseFromJS(globalObject: *jsc.JSGlobalObject, js_options: JSValue) bun.JSError!Options {
-        var options = Options{};
-        errdefer options.deinit();
-
-        if (try js_options.getOptional(globalObject, "cols", i32)) |n| {
-            if (n > 0 and n <= 65535) options.cols = @intCast(n);
-        }
-
-        if (try js_options.getOptional(globalObject, "rows", i32)) |n| {
-            if (n > 0 and n <= 65535) options.rows = @intCast(n);
-        }
-
-        if (try js_options.getOptional(globalObject, "name", jsc.ZigString.Slice)) |slice| {
-            if (slice.len > max_term_name_len) {
-                slice.deinit();
-                return globalObject.throw("Terminal name too long (max {d} characters)", .{max_term_name_len});
-            }
-            options.term_name = slice;
-        }
-
-        if (try js_options.getOptional(globalObject, "data", JSValue)) |v| {
-            if (v.isCell() and v.isCallable()) {
-                options.data_callback = v.withAsyncContextIfNeeded(globalObject);
-            }
-        }
-
-        if (try js_options.getOptional(globalObject, "exit", JSValue)) |v| {
-            if (v.isCell() and v.isCallable()) {
-                options.exit_callback = v.withAsyncContextIfNeeded(globalObject);
-            }
-        }
-
-        if (try js_options.getOptional(globalObject, "drain", JSValue)) |v| {
-            if (v.isCell() and v.isCallable()) {
-                options.drain_callback = v.withAsyncContextIfNeeded(globalObject);
-            }
-        }
-
-        return options;
+    pub fn fromBindgen(generated: anytype) bun.JSError!Options {
+        var result: Options = .{
+            .cols = generated.cols,
+            .rows = generated.rows,
+            .term_name = try generated.name.toUTF8(bun.default_allocator),
+        };
+        errdefer result.deinit();
+        result.data_callback = if (generated.data) |callback| try callback.toOwned() else null;
+        result.exit_callback = if (generated.exit) |callback| try callback.toOwned() else null;
+        result.drain_callback = if (generated.drain) |callback| try callback.toOwned() else null;
+        return result;
     }
 
     pub fn deinit(this: *Options) void {
         this.term_name.deinit();
+        if (this.data_callback) |*callback| callback.deinit();
+        if (this.exit_callback) |*callback| callback.deinit();
+        if (this.drain_callback) |*callback| callback.deinit();
         this.* = .{};
     }
 };
@@ -165,33 +132,211 @@ pub const Options = struct {
 /// Result from creating a Terminal
 pub const CreateResult = struct {
     terminal: *Terminal,
-    js_value: jsc.JSValue,
+    reference: Ref,
 };
 
-const InitError = CreatePtyError || error{ WriterStartFailed, ReaderStartFailed };
+pub const InitError = CreatePtyError || bun.OOM || error{ WriterStartFailed, ReaderStartFailed };
 
-/// Internal initialization - shared by constructor and createFromSpawn
-fn initTerminal(
+pub const JSBinding = struct {
+    const BindingRefCount = bun.ptr.RefCount(@This(), "ref_count", bindingDeinit, .{});
+
+    pub const ref = BindingRefCount.ref;
+    pub const deref = BindingRefCount.deref;
+    pub const derefDeferred = BindingRefCount.derefDeferred;
+    pub const destroyAfterDeferred = BindingRefCount.destroyAfterDeferred;
+
+    ref_count: BindingRefCount = .init(),
+    bindgen_state: bindgen.ClassState = .{},
+    terminal: bindgen.RefNative(Terminal, .vm),
+    data_callback: ?bindgen.Callback(TerminalDataCallbackType) = null,
+    drain_callback: ?bindgen.Callback(TerminalDrainCallbackType) = null,
+    exit_callback: ?bindgen.Callback(TerminalExitCallbackType) = null,
+    awaiting_initial_wrapper: bool = true,
+    weak_wrapper: bindgen.ClassWrapperHandle(TerminalClassSchema, .weak) = .empty,
+
+    pub fn construct(
+        context: bindgen.CallContext(TerminalConstructorSchema),
+        args: bindgen.Args(TerminalConstructorSchema),
+    ) bindgen.CallError(TerminalConstructorSchema)!*JSBinding {
+        const options_argument = args.options orelse return context.fail(.missing_options, {});
+        var options = try Options.fromBindgen(&options_argument);
+        defer options.deinit();
+        if (options.term_name.length() > Options.max_term_name_len) return context.fail(.name_too_long, {});
+
+        const binding = initTerminal(context.viewToken().globalObject(), &options) catch |err| return switch (err) {
+            error.OpenPtyFailed => context.fail(.open_pty_failed, {}),
+            error.DupFailed => context.fail(.dup_failed, {}),
+            error.NotSupported => context.fail(.not_supported, {}),
+            error.WriterStartFailed => context.fail(.writer_start_failed, {}),
+            error.ReaderStartFailed => context.fail(.reader_start_failed, {}),
+            error.OutOfMemory => error.OutOfMemory,
+        };
+        return binding;
+    }
+
+    pub fn hasPendingActivity(this: *const JSBinding) bool {
+        const terminal = this.terminal.get();
+        return !terminal.flags.finalized and terminal.flags.reader_started and !terminal.flags.reader_done;
+    }
+
+    pub fn bindAsyncDisposeNative(
+        this: *JSBinding,
+        _: bindgen.CallContext(TerminalAsyncDisposeNativeSchema),
+        _: bindgen.Args(TerminalAsyncDisposeNativeSchema),
+    ) bun.JSError!void {
+        this.terminal.get().asyncDispose();
+    }
+
+    pub fn bindClose(
+        this: *JSBinding,
+        _: bindgen.CallContext(TerminalCloseSchema),
+        _: bindgen.Args(TerminalCloseSchema),
+    ) bun.JSError!void {
+        this.terminal.get().close();
+    }
+
+    pub fn bindGetClosed(
+        this: *JSBinding,
+        _: bindgen.CallContext(TerminalClosedSchema),
+        _: bindgen.Args(TerminalClosedSchema),
+    ) bun.JSError!bool {
+        return this.terminal.get().getClosed();
+    }
+
+    fn FlagProperty(comptime name: []const u8, comptime field: TermiosFlag) type {
+        const Getter = TerminalClassSchema.memberKind(name, .getter);
+        const Setter = TerminalClassSchema.memberKind(name, .setter);
+        return struct {
+            fn get(
+                this: *JSBinding,
+                _: bindgen.CallContext(Getter),
+                _: bindgen.Args(Getter),
+            ) bun.JSError!u32 {
+                return this.terminal.get().getTermiosFlag(field);
+            }
+
+            fn set(
+                this: *JSBinding,
+                context: bindgen.CallContext(Setter),
+                args: bindgen.Args(Setter),
+            ) bun.JSError!void {
+                const terminal = this.terminal.get();
+                if (!terminal.canSetTermiosFlag()) return;
+                const value = try args.value.convert(context);
+                terminal.setTermiosFlag(field, value.value);
+            }
+        };
+    }
+
+    pub const bindGetControlFlags = FlagProperty("controlFlags", .cflag).get;
+    pub const bindSetControlFlags = FlagProperty("controlFlags", .cflag).set;
+    pub const bindGetInputFlags = FlagProperty("inputFlags", .iflag).get;
+    pub const bindSetInputFlags = FlagProperty("inputFlags", .iflag).set;
+    pub const bindGetLocalFlags = FlagProperty("localFlags", .lflag).get;
+    pub const bindSetLocalFlags = FlagProperty("localFlags", .lflag).set;
+    pub const bindGetOutputFlags = FlagProperty("outputFlags", .oflag).get;
+    pub const bindSetOutputFlags = FlagProperty("outputFlags", .oflag).set;
+
+    pub fn bindRef(
+        this: *JSBinding,
+        _: bindgen.CallContext(TerminalRefSchema),
+        _: bindgen.Args(TerminalRefSchema),
+    ) bun.JSError!void {
+        this.terminal.get().doRef();
+    }
+
+    pub fn bindResize(
+        this: *JSBinding,
+        context: bindgen.CallContext(TerminalResizeSchema),
+        args: bindgen.Args(TerminalResizeSchema),
+    ) bindgen.CallError(TerminalResizeSchema)!void {
+        try this.terminal.get().resize(context, args.cols, args.rows);
+    }
+
+    pub fn bindSetRawMode(
+        this: *JSBinding,
+        context: bindgen.CallContext(TerminalSetRawModeSchema),
+        args: bindgen.Args(TerminalSetRawModeSchema),
+    ) bindgen.CallError(TerminalSetRawModeSchema)!void {
+        try this.terminal.get().setRawMode(context, args.enabled orelse false);
+    }
+
+    pub fn bindUnref(
+        this: *JSBinding,
+        _: bindgen.CallContext(TerminalUnrefSchema),
+        _: bindgen.Args(TerminalUnrefSchema),
+    ) bun.JSError!void {
+        this.terminal.get().doUnref();
+    }
+
+    pub fn bindWrite(
+        this: *JSBinding,
+        context: bindgen.CallContext(TerminalWriteSchema),
+        args: bindgen.Args(TerminalWriteSchema),
+    ) bindgen.CallError(TerminalWriteSchema)!u64 {
+        return this.terminal.get().write(context, args.data);
+    }
+
+    pub fn wrapperCreated(this: *JSBinding, wrapper: bindgen.ClassRefView(TerminalClassSchema)) bun.JSError!void {
+        if (!this.awaiting_initial_wrapper) return;
+        var receiver = try wrapper.toOwned();
+        defer receiver.deinit();
+        const weak_wrapper = try TerminalClass.WeakWrapper.initView(wrapper);
+        this.awaiting_initial_wrapper = false;
+        const terminal = this.terminal.get();
+        this.weak_wrapper.deinit();
+        this.weak_wrapper = weak_wrapper;
+        attachCallback(TerminalDataCallbackSlot, &this.data_callback, &receiver);
+        attachCallback(TerminalDrainCallbackSlot, &this.drain_callback, &receiver);
+        attachCallback(TerminalExitCallbackSlot, &this.exit_callback, &receiver);
+        if (!terminal.flags.closed and !terminal.flags.reader_done) terminal.reader.read();
+    }
+
+    fn attachCallback(comptime Slot: type, callback: anytype, receiver: anytype) void {
+        if (callback.*) |*value| {
+            Slot.setOwnedCallbackOnOwned(receiver, value);
+            value.deinit();
+            callback.* = null;
+        }
+    }
+
+    fn wrapperRef(this: *const JSBinding) bun.JSError!?Ref {
+        return this.weak_wrapper.toOwned();
+    }
+
+    fn bindingDeinit(this: *JSBinding) void {
+        const terminal = this.terminal.get();
+        if (terminal.binding == this) terminal.binding = null;
+        terminal.flags.finalized = true;
+        terminal.closeInternal();
+        this.weak_wrapper.deinit();
+        if (this.data_callback) |*callback| callback.deinit();
+        if (this.drain_callback) |*callback| callback.deinit();
+        if (this.exit_callback) |*callback| callback.deinit();
+        this.terminal.deinit();
+        bun.destroy(this);
+    }
+};
+
+pub fn initTerminal(
     globalObject: *jsc.JSGlobalObject,
-    /// term_name ownership is transferred to the Terminal struct on success or
-    /// any error after createPty; cleared in-place once moved.
     options: *Options,
-    /// If provided, use this JSValue; otherwise create one via toJS
-    existing_js_value: ?jsc.JSValue,
-) InitError!CreateResult {
-    // Create PTY
-    const pty_result = try createPty(options.cols, options.rows);
-
-    // Use default term name if empty
-    const term_name = if (options.term_name.len > 0)
-        options.term_name
-    else
-        jsc.ZigString.Slice.fromUTF8NeverFree("xterm-256color");
-    // Ownership moves to the struct below; clear so caller's options.deinit()
-    // doesn't double-free on the WriterStartFailed/ReaderStartFailed paths.
-    options.term_name = .{};
-
-    const terminal = bun.new(Terminal, .{
+) InitError!*JSBinding {
+    const resources = resources: {
+        const terminal = try bun.default_allocator.create(Terminal);
+        errdefer bun.default_allocator.destroy(terminal);
+        const binding = try bun.default_allocator.create(JSBinding);
+        errdefer bun.default_allocator.destroy(binding);
+        break :resources .{
+            .terminal = terminal,
+            .binding = binding,
+            .pty = try createPty(options.cols, options.rows),
+        };
+    };
+    const terminal = resources.terminal;
+    const binding = resources.binding;
+    const pty_result = resources.pty;
+    terminal.* = .{
         .ref_count = .init(),
         .master_fd = pty_result.master,
         .read_fd = pty_result.read_fd,
@@ -200,10 +345,16 @@ fn initTerminal(
         .hpcon = if (comptime Environment.isWindows) pty_result.hpcon else {},
         .cols = if (Environment.isWindows) @intCast(clampToCoord(options.cols)) else options.cols,
         .rows = if (Environment.isWindows) @intCast(clampToCoord(options.rows)) else options.rows,
-        .term_name = term_name,
         .event_loop_handle = jsc.EventLoopHandle.init(globalObject.bunVM().eventLoop()),
         .globalThis = globalObject,
-    });
+    };
+    binding.* = .{
+        .terminal = .adopt(terminal),
+        .data_callback = takeOptionalCallback(TerminalDataCallbackType, &options.data_callback),
+        .drain_callback = takeOptionalCallback(TerminalDrainCallbackType, &options.drain_callback),
+        .exit_callback = takeOptionalCallback(TerminalExitCallbackType, &options.exit_callback),
+    };
+    terminal.binding = binding;
 
     // Set reader parent
     terminal.reader.setParent(terminal);
@@ -214,7 +365,7 @@ fn initTerminal(
     // Start writer with the write fd - adds a ref
     switch (terminal.writer.start(pty_result.write_fd, .{ .ofd_ownership = .exclusive })) {
         .result => terminal.ref(),
-        .err => {
+        .err => |err| {
             // Pre-set writer_done so onWriterClose's deref is skipped and the
             // struct isn't freed mid-closeInternal.
             terminal.flags.writer_done = true;
@@ -223,21 +374,20 @@ fn initTerminal(
             terminal.write_fd.close();
             terminal.write_fd = bun.invalid_fd;
             terminal.closeInternal();
-            terminal.deref();
+            binding.bindingDeinit();
+            if (err.getErrno() == .NOMEM) return error.OutOfMemory;
             return error.WriterStartFailed;
         },
     }
 
     // Start reader with the read fd - adds a ref
     switch (terminal.reader.start(pty_result.read_fd, true)) {
-        .err => {
-            // Reader never started: closeInternal skips reader.close() but
-            // runs writer.close() → onWriterClose → deref (2→1). Then drop
-            // the initial ref (1→0).
-            terminal.read_fd.close();
+        .err => |err| {
+            if (comptime Environment.isWindows) terminal.read_fd.close();
             terminal.read_fd = bun.invalid_fd;
             terminal.closeInternal();
-            terminal.deref();
+            binding.bindingDeinit();
+            if (err.getErrno() == .NOMEM) return error.OutOfMemory;
             return error.ReaderStartFailed;
         },
         .result => {
@@ -255,70 +405,36 @@ fn initTerminal(
         },
     }
 
-    // Start reading data
-    terminal.reader.read();
-
-    // Get or create the JS wrapper
-    const this_value = existing_js_value orelse terminal.toJS(globalObject);
-
-    // Store the this_value (JSValue wrapper) - start with strong ref since we're actively reading.
-    // The JS-side ref is the one taken by RefCount.init() above; released in finalize().
-    terminal.this_value = jsc.JSRef.initStrong(this_value, globalObject);
-
-    // Store callbacks via generated gc setters (prevents GC of callbacks while terminal is alive)
-    // Note: callbacks were already validated in parseFromJS() and may be wrapped in AsyncContextFrame
-    // by withAsyncContextIfNeeded(), so we don't re-check isCallable() here
-    if (options.data_callback) |cb| {
-        js.gc.set(.data, this_value, globalObject, cb);
-    }
-    if (options.exit_callback) |cb| {
-        js.gc.set(.exit, this_value, globalObject, cb);
-    }
-    if (options.drain_callback) |cb| {
-        js.gc.set(.drain, this_value, globalObject, cb);
-    }
-
-    return .{ .terminal = terminal, .js_value = this_value };
+    return binding;
 }
 
-/// Constructor for Terminal - called from JavaScript
-/// With constructNeedsThis: true, we receive the JSValue wrapper directly
-pub fn constructor(
-    globalObject: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-    this_value: jsc.JSValue,
-) bun.JSError!*Terminal {
-    const args = callframe.argumentsAsArray(1);
-    const js_options = args[0];
-
-    if (!js_options.isObject()) {
-        return globalObject.throw("Terminal constructor requires an options object", .{});
-    }
-
-    var options = try Options.parseFromJS(globalObject, js_options);
-
-    const result = initTerminal(globalObject, &options, this_value) catch |err| {
-        options.deinit();
-        return switch (err) {
-            error.OpenPtyFailed => globalObject.throw("Failed to open PTY", .{}),
-            error.DupFailed => globalObject.throw("Failed to duplicate PTY file descriptor", .{}),
-            error.NotSupported => globalObject.throw("PTY not supported on this platform", .{}),
-            error.WriterStartFailed => globalObject.throw("Failed to start terminal writer", .{}),
-            error.ReaderStartFailed => globalObject.throw("Failed to start terminal reader", .{}),
-        };
-    };
-
-    return result.terminal;
-}
-
-/// Create a Terminal from Bun.spawn options (not from JS constructor)
-/// Returns the Terminal and its JS wrapper value
-/// The slave_fd should be used for the subprocess's stdin/stdout/stderr
 pub fn createFromSpawn(
     globalObject: *jsc.JSGlobalObject,
     options: *Options,
-) InitError!CreateResult {
-    return initTerminal(globalObject, options, null);
+) (InitError || bun.JSError)!CreateResult {
+    const binding = try initTerminal(globalObject, options);
+    const terminal = binding.terminal.get();
+    const reference = try TerminalClass.adoptNativeRef(binding, globalObject);
+    return .{ .terminal = terminal, .reference = reference };
+}
+
+pub const Handle = struct {
+    binding: TerminalClass.Handle,
+
+    pub fn get(this: *const Handle) *Terminal {
+        return this.binding.get().terminal.get();
+    }
+
+    pub fn deinit(this: *Handle) void {
+        this.binding.deinit();
+    }
+};
+
+pub const Ref = bindgen.ClassRef(TerminalClassSchema);
+
+pub fn wrapperRef(this: *Terminal) bun.JSError!?Ref {
+    const binding = this.binding orelse return null;
+    return binding.wrapperRef();
 }
 
 /// Get the slave fd for subprocess to use
@@ -746,125 +862,76 @@ inline fn clampToCoord(v: u16) i16 {
 }
 
 /// Check if terminal is closed
-pub fn getClosed(this: *Terminal, _: *jsc.JSGlobalObject) JSValue {
-    return JSValue.jsBoolean(this.flags.closed);
+pub fn getClosed(this: *Terminal) bool {
+    return this.flags.closed;
 }
 
-fn getTermiosFlag(this: *Terminal, comptime field: enum { iflag, oflag, lflag, cflag }) JSValue {
-    if (comptime !Environment.isPosix) return JSValue.jsNumber(0);
-    if (this.flags.closed or this.master_fd == bun.invalid_fd) return JSValue.jsNumber(0);
-    const termios_data = getTermios(this.master_fd) orelse return JSValue.jsNumber(0);
-    const flag = @field(termios_data, @tagName(field));
-    const Int = @typeInfo(@TypeOf(flag)).@"struct".backing_integer.?;
-    return JSValue.jsNumber(@as(f64, @floatFromInt(@as(Int, @bitCast(flag)))));
+const TermiosFlag = enum { iflag, oflag, lflag, cflag };
+
+fn getTermiosFlag(this: *Terminal, comptime field: TermiosFlag) u32 {
+    if (comptime Environment.isPosix) {
+        if (this.flags.closed or this.master_fd == bun.invalid_fd) return 0;
+        const termios_data = getTermios(this.master_fd) orelse return 0;
+        const flag = @field(termios_data, @tagName(field));
+        const Int = @typeInfo(@TypeOf(flag)).@"struct".backing_integer.?;
+        return @intCast(@as(Int, @bitCast(flag)));
+    }
+    return 0;
 }
 
-fn setTermiosFlag(this: *Terminal, globalObject: *jsc.JSGlobalObject, comptime field: enum { iflag, oflag, lflag, cflag }, value: JSValue) bun.JSError!void {
-    if (comptime !Environment.isPosix) return;
-    if (this.flags.closed or this.master_fd == bun.invalid_fd) return;
-    const num = try value.coerce(f64, globalObject);
-    var termios_data = getTermios(this.master_fd) orelse return;
-    const FlagType = @TypeOf(@field(termios_data, @tagName(field)));
-    const Int = @typeInfo(FlagType).@"struct".backing_integer.?;
-    const max_val: f64 = @floatFromInt(std.math.maxInt(Int));
-    const clamped = @max(0, @min(num, max_val));
-    @field(termios_data, @tagName(field)) = @bitCast(@as(Int, @intFromFloat(clamped)));
-    _ = setTermios(this.master_fd, &termios_data);
+fn canSetTermiosFlag(this: *const Terminal) bool {
+    return Environment.isPosix and !this.flags.closed and this.master_fd != bun.invalid_fd;
 }
 
-pub fn getInputFlags(this: *Terminal, _: *jsc.JSGlobalObject) JSValue {
-    return this.getTermiosFlag(.iflag);
-}
-pub fn setInputFlags(this: *Terminal, globalObject: *jsc.JSGlobalObject, value: JSValue) bun.JSError!void {
-    try this.setTermiosFlag(globalObject, .iflag, value);
-}
-pub fn getOutputFlags(this: *Terminal, _: *jsc.JSGlobalObject) JSValue {
-    return this.getTermiosFlag(.oflag);
-}
-pub fn setOutputFlags(this: *Terminal, globalObject: *jsc.JSGlobalObject, value: JSValue) bun.JSError!void {
-    try this.setTermiosFlag(globalObject, .oflag, value);
-}
-pub fn getLocalFlags(this: *Terminal, _: *jsc.JSGlobalObject) JSValue {
-    return this.getTermiosFlag(.lflag);
-}
-pub fn setLocalFlags(this: *Terminal, globalObject: *jsc.JSGlobalObject, value: JSValue) bun.JSError!void {
-    try this.setTermiosFlag(globalObject, .lflag, value);
-}
-pub fn getControlFlags(this: *Terminal, _: *jsc.JSGlobalObject) JSValue {
-    return this.getTermiosFlag(.cflag);
-}
-pub fn setControlFlags(this: *Terminal, globalObject: *jsc.JSGlobalObject, value: JSValue) bun.JSError!void {
-    try this.setTermiosFlag(globalObject, .cflag, value);
+fn setTermiosFlag(this: *Terminal, comptime field: TermiosFlag, value: u32) void {
+    if (comptime Environment.isPosix) {
+        if (!this.canSetTermiosFlag()) return;
+        var termios_data = getTermios(this.master_fd) orelse return;
+        const FlagType = @TypeOf(@field(termios_data, @tagName(field)));
+        const Int = @typeInfo(FlagType).@"struct".backing_integer.?;
+        @field(termios_data, @tagName(field)) = @bitCast(@as(Int, value));
+        _ = setTermios(this.master_fd, &termios_data);
+    }
 }
 
 /// Write data to the terminal
 pub fn write(
     this: *Terminal,
-    globalObject: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!JSValue {
+    context: anytype,
+    data: anytype,
+) bun.bindgen.CallError(@TypeOf(context))!u64 {
     if (this.flags.closed) {
-        return globalObject.throw("Terminal is closed", .{});
+        return context.fail(.terminal_closed, {});
     }
 
-    const args = callframe.argumentsAsArray(1);
-    const data = args[0];
-
-    if (data.isUndefinedOrNull()) {
-        return globalObject.throw("write() requires data argument", .{});
-    }
-
-    // Get bytes to write using StringOrBuffer
-    const string_or_buffer = try jsc.Node.StringOrBuffer.fromJS(globalObject, bun.default_allocator, data) orelse {
-        return globalObject.throw("write() argument must be a string or ArrayBuffer", .{});
-    };
+    const string_or_buffer = try bun.api.node.StringOrBuffer.fromBindgen(data, .utf8);
     defer string_or_buffer.deinit();
 
     const bytes = string_or_buffer.slice();
 
     if (bytes.len == 0) {
-        return JSValue.jsNumber(0);
+        return 0;
     }
 
     // Write using the streaming writer
-    const write_result = this.writer.write(bytes);
+    const write_result = try this.writer.write(bytes);
     return switch (write_result) {
-        .done => |amt| JSValue.jsNumber(@as(i32, @intCast(amt))),
-        .wrote => |amt| JSValue.jsNumber(@as(i32, @intCast(amt))),
-        // On Windows the streaming writer buffers and returns .pending=0; the
-        // bytes were accepted, so report bytes.len to match POSIX semantics.
-        .pending => |amt| JSValue.jsNumber(@as(i32, @intCast(if (Environment.isWindows) bytes.len else amt))),
-        .err => |err| globalObject.throwValue(try err.toJS(globalObject)),
+        .done => |amt| @intCast(amt),
+        .wrote, .pending => @intCast(bytes.len),
+        .err => |err| context.fail(.system, try bindgen.SystemError.fromSysError(err)),
     };
 }
 
 /// Resize the terminal
 pub fn resize(
     this: *Terminal,
-    globalObject: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!JSValue {
+    context: anytype,
+    new_cols: u16,
+    new_rows: u16,
+) bun.bindgen.CallError(@TypeOf(context))!void {
     if (this.flags.closed) {
-        return globalObject.throw("Terminal is closed", .{});
+        return context.fail(.terminal_closed, {});
     }
-
-    const args = callframe.argumentsAsArray(2);
-
-    const new_cols: u16 = blk: {
-        if (args[0].isNumber()) {
-            const n = args[0].toInt32();
-            if (n > 0 and n <= 65535) break :blk @intCast(n);
-        }
-        return globalObject.throw("resize() requires valid cols argument", .{});
-    };
-
-    const new_rows: u16 = blk: {
-        if (args[1].isNumber()) {
-            const n = args[1].toInt32();
-            if (n > 0 and n <= 65535) break :blk @intCast(n);
-        }
-        return globalObject.throw("resize() requires valid rows argument", .{});
-    };
 
     if (comptime Environment.isPosix) {
         const ioctl_c = struct {
@@ -889,7 +956,7 @@ pub fn resize(
 
         const ioctl_result = ioctl_c.ioctl(this.master_fd.cast(), ioctl_c.TIOCSWINSZ, &winsize);
         if (ioctl_result != 0) {
-            return globalObject.throw("Failed to resize terminal", .{});
+            return context.fail(.resize_failed, {});
         }
     }
 
@@ -898,39 +965,76 @@ pub fn resize(
             const size = bun.windows.COORD{ .X = clampToCoord(new_cols), .Y = clampToCoord(new_rows) };
             const hr = bun.windows.ResizePseudoConsole(hpcon, size);
             if (hr < 0) {
-                return globalObject.throw("Failed to resize terminal", .{});
+                return context.fail(.resize_failed, {});
             }
         }
     }
 
     this.cols = if (Environment.isWindows) @intCast(clampToCoord(new_cols)) else new_cols;
     this.rows = if (Environment.isWindows) @intCast(clampToCoord(new_rows)) else new_rows;
-
-    return .js_undefined;
 }
 
 /// Set raw mode on the terminal
 pub fn setRawMode(
     this: *Terminal,
-    globalObject: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!JSValue {
+    context: anytype,
+    enabled: bool,
+) bun.bindgen.CallError(@TypeOf(context))!void {
     if (this.flags.closed) {
-        return globalObject.throw("Terminal is closed", .{});
+        return context.fail(.terminal_closed, {});
     }
 
-    const args = callframe.argumentsAsArray(1);
-    const enabled = args[0].toBoolean();
-
     if (comptime Environment.isPosix) {
-        // Use the existing TTY mode function
-        const tty_result = bun.tty.setMode(this.master_fd.cast(), if (enabled) .raw else .normal);
-        if (tty_result != 0) {
-            return globalObject.throw("Failed to set raw mode", .{});
+        if (enabled == this.flags.raw_mode) return;
+        if (enabled) {
+            const normal = getTermios(this.master_fd) orelse {
+                return context.fail(.raw_mode_failed, {});
+            };
+            var raw = normal;
+            makeTermiosRaw(&raw);
+            if (!setTermiosAt(this.master_fd, .DRAIN, &raw)) {
+                return context.fail(.raw_mode_failed, {});
+            }
+            this.normal_termios = normal;
+        } else if (this.normal_termios) |normal| {
+            if (!setTermiosAt(this.master_fd, .DRAIN, &normal)) {
+                return context.fail(.raw_mode_failed, {});
+            }
+            this.normal_termios = null;
+        } else {
+            return;
         }
     }
 
-    return .js_undefined;
+    this.flags.raw_mode = enabled;
+}
+
+fn makeTermiosRaw(termios_p: *Termios) void {
+    if (comptime Environment.isPosix) {
+        termios_p.iflag.BRKINT = false;
+        termios_p.iflag.ICRNL = false;
+        termios_p.iflag.INPCK = false;
+        termios_p.iflag.ISTRIP = false;
+        termios_p.iflag.IXON = false;
+        termios_p.oflag.ONLCR = true;
+        termios_p.cflag.CSIZE = .CS8;
+        termios_p.lflag.ECHO = false;
+        termios_p.lflag.ICANON = false;
+        termios_p.lflag.IEXTEN = false;
+        termios_p.lflag.ISIG = false;
+        termios_p.cc[@backingInt(std.c.V.MIN)] = 1;
+        termios_p.cc[@backingInt(std.c.V.TIME)] = 0;
+    }
+}
+
+fn restoreTermios(this: *Terminal) void {
+    if (comptime Environment.isPosix) {
+        if (this.normal_termios) |normal| {
+            _ = setTermiosAt(this.master_fd, .NOW, &normal);
+            this.normal_termios = null;
+        }
+    }
+    this.flags.raw_mode = false;
 }
 /// POSIX termios struct for terminal flags manipulation
 const Termios = if (Environment.isPosix) std.posix.termios else void;
@@ -941,23 +1045,25 @@ fn getTermios(fd: bun.FD) ?Termios {
     return std.posix.tcgetattr(fd.cast()) catch null;
 }
 
-/// Set terminal attributes using tcsetattr (TCSANOW = immediate)
-fn setTermios(fd: bun.FD, termios_p: *const Termios) bool {
+fn setTermiosAt(fd: bun.FD, action: std.posix.TCSA, termios_p: *const Termios) bool {
     if (comptime !Environment.isPosix) return false;
-    std.posix.tcsetattr(fd.cast(), .NOW, termios_p.*) catch return false;
+    std.posix.tcsetattr(fd.cast(), action, termios_p.*) catch return false;
     return true;
 }
 
+/// Set terminal attributes using tcsetattr (TCSANOW = immediate)
+fn setTermios(fd: bun.FD, termios_p: *const Termios) bool {
+    return setTermiosAt(fd, .NOW, termios_p);
+}
+
 /// Reference the terminal to keep the event loop alive
-pub fn doRef(this: *Terminal, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {
+pub fn doRef(this: *Terminal) void {
     this.updateRef(true);
-    return .js_undefined;
 }
 
 /// Unreference the terminal
-pub fn doUnref(this: *Terminal, _: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {
+pub fn doUnref(this: *Terminal) void {
     this.updateRef(false);
-    return .js_undefined;
 }
 
 fn updateRef(this: *Terminal, add: bool) void {
@@ -966,33 +1072,26 @@ fn updateRef(this: *Terminal, add: bool) void {
 }
 
 /// Close the terminal
-pub fn close(
-    this: *Terminal,
-    _: *jsc.JSGlobalObject,
-    _: *jsc.CallFrame,
-) bun.JSError!JSValue {
+pub fn close(this: *Terminal) void {
     this.closeInternal();
-    return .js_undefined;
 }
 
 /// Async dispose for "using" syntax
-pub fn asyncDispose(
-    this: *Terminal,
-    globalObject: *jsc.JSGlobalObject,
-    _: *jsc.CallFrame,
-) bun.JSError!JSValue {
+pub fn asyncDispose(this: *Terminal) void {
     // After dispose the caller must not see further data/exit callbacks.
     // closeInternal on Windows leaves the reader draining off-thread, so
-    // suppress callbacks and downgrade the JSRef so the wrapper is
-    // GC-eligible once the caller's reference is dropped.
-    this.this_value.downgrade();
     this.flags.finalized = true;
     this.closeInternal();
-    return jsc.JSPromise.resolvedPromiseValue(globalObject, .js_undefined);
+}
+
+pub fn abortCreation(this: *Terminal) void {
+    this.flags.finalized = true;
+    this.closeInternal();
 }
 
 pub fn closeInternal(this: *Terminal) void {
     if (this.flags.closed) return;
+    this.restoreTermios();
     this.flags.closed = true;
 
     // Close writer (closes write_fd)
@@ -1044,17 +1143,20 @@ fn onWriterClose(this: *Terminal) void {
 
 fn onWriterReady(this: *Terminal) void {
     log("onWriterReady", .{});
-    // Call drain callback
-    const this_jsvalue = this.this_value.tryGet() orelse return;
-    if (js.gc.get(.drain, this_jsvalue)) |callback| {
-        const globalThis = this.globalThis;
-        globalThis.bunVM().eventLoop().runCallback(
-            callback,
-            globalThis,
-            this_jsvalue,
-            &.{this_jsvalue},
-        );
-    }
+    if (this.flags.finalized) return;
+    const binding = this.binding orelse return;
+    var receiver = (binding.weak_wrapper.toOwned() catch |err| return this.globalThis.reportActiveExceptionAsUnhandled(err)) orelse return;
+    defer receiver.deinit();
+    var callback = (TerminalDrainCallbackSlot.ownedCallback(&receiver) catch |err|
+        return this.globalThis.reportActiveExceptionAsUnhandled(err)) orelse return;
+    defer callback.deinit();
+    var invocation: @TypeOf(callback).Invocation = undefined;
+    callback.beginInvocation(&invocation);
+    defer invocation.deinit();
+    invocation.dispatch(.{
+        .bindingThis = receiver.operand(&invocation),
+        .terminal = receiver.operand(&invocation),
+    });
 }
 
 fn onWriterError(this: *Terminal, err: bun.sys.Error) void {
@@ -1068,17 +1170,16 @@ fn onWriterError(this: *Terminal, err: bun.sys.Error) void {
 
 fn onWrite(this: *Terminal, amount: usize, status: bun.io.WriteStatus) void {
     log("onWrite: {} bytes, status: {any}", .{ amount, status });
-    _ = this;
+    if (status == .drained and !this.writer.hasPendingData()) {
+        this.onWriterReady();
+    }
 }
 
 // IOReader callbacks
 pub fn onReaderDone(this: *Terminal) void {
     log("onReaderDone", .{});
-    // EOF from master - downgrade to weak ref to allow GC
     // Skip JS interactions if already finalized (happens when close() is called during finalize)
     if (!this.flags.finalized) {
-        this.flags.connected = false;
-        this.this_value.downgrade();
         // exit_code 0 = clean EOF on PTY stream (not subprocess exit code)
         this.callExitCallback(0, null);
     }
@@ -1091,11 +1192,8 @@ pub fn onReaderDone(this: *Terminal) void {
 
 pub fn onReaderError(this: *Terminal, err: bun.sys.Error) void {
     log("onReaderError: {any}", .{err});
-    // Error - downgrade to weak ref to allow GC
     // Skip JS interactions if already finalized
     if (!this.flags.finalized) {
-        this.flags.connected = false;
-        this.this_value.downgrade();
         // exit_code 1 = I/O error on PTY stream (not subprocess exit code)
         this.callExitCallback(1, null);
     }
@@ -1110,21 +1208,32 @@ pub fn onReaderError(this: *Terminal, err: bun.sys.Error) void {
 /// Note: exit_code is PTY-level (0=EOF, 1=error), NOT the subprocess exit code.
 /// The signal parameter is only populated if a signal caused the PTY close.
 fn callExitCallback(this: *Terminal, exit_code: i32, signal: ?bun.SignalCode) void {
-    const this_jsvalue = this.this_value.tryGet() orelse return;
-    const callback = js.gc.get(.exit, this_jsvalue) orelse return;
+    const binding = this.binding orelse return;
+    var receiver = (binding.weak_wrapper.toOwned() catch |err| return this.globalThis.reportActiveExceptionAsUnhandled(err)) orelse return;
+    defer receiver.deinit();
+    var callback = (TerminalExitCallbackSlot.ownedCallback(&receiver) catch |err|
+        return this.globalThis.reportActiveExceptionAsUnhandled(err)) orelse return;
+    defer callback.deinit();
 
     const globalThis = this.globalThis;
-    const signal_value: JSValue = if (signal) |s|
-        jsc.ZigString.init(s.name() orelse "unknown").toJS(globalThis)
+    var signal_value: ?bindgen.DOMString = if (signal) |value|
+        bindgen.DOMString.fromUTF8(value.name() orelse "unknown") catch |err| {
+            globalThis.reportUncaughtExceptionFromError(err);
+            return;
+        }
     else
-        JSValue.jsNull();
+        null;
+    defer if (signal_value) |*value| value.deinit();
 
-    globalThis.bunVM().eventLoop().runCallback(
-        callback,
-        globalThis,
-        this_jsvalue,
-        &.{ this_jsvalue, JSValue.jsNumber(exit_code), signal_value },
-    );
+    var invocation: @TypeOf(callback).Invocation = undefined;
+    callback.beginInvocation(&invocation);
+    defer invocation.deinit();
+    invocation.dispatch(.{
+        .bindingThis = receiver.operand(&invocation),
+        .terminal = receiver.operand(&invocation),
+        .exit_code = exit_code,
+        .signal = if (signal_value) |*value| value.operand() else null,
+    });
 }
 
 // Called when data is available from the reader
@@ -1135,32 +1244,26 @@ pub fn onReadChunk(this: *Terminal, chunk: []const u8, has_more: bun.io.ReadStat
 
     if (this.flags.finalized) return true;
 
-    // First data received - upgrade to strong ref (connected)
-    if (!this.flags.connected) {
-        this.flags.connected = true;
-        this.this_value.upgrade(this.globalThis);
-    }
-
-    const this_jsvalue = this.this_value.tryGet() orelse return true;
-    const callback = js.gc.get(.data, this_jsvalue) orelse return true;
-
-    const globalThis = this.globalThis;
-    const duped = bun.default_allocator.dupe(u8, chunk) catch |err| {
-        log("Terminal data allocation OOM: chunk_size={d}, error={any}", .{ chunk.len, err });
+    const binding = this.binding orelse return true;
+    var receiver = (binding.weak_wrapper.toOwned() catch |err| {
+        this.globalThis.reportActiveExceptionAsUnhandled(err);
         return true;
-    };
-    const data = jsc.MarkedArrayBuffer.fromBytes(
-        duped,
-        bun.default_allocator,
-        .Uint8Array,
-    ).toNodeBuffer(globalThis);
+    }) orelse return true;
+    defer receiver.deinit();
+    var callback = (TerminalDataCallbackSlot.ownedCallback(&receiver) catch |err| {
+        this.globalThis.reportActiveExceptionAsUnhandled(err);
+        return true;
+    }) orelse return true;
+    defer callback.deinit();
 
-    globalThis.bunVM().eventLoop().runCallback(
-        callback,
-        globalThis,
-        this_jsvalue,
-        &.{ this_jsvalue, data },
-    );
+    var invocation: @TypeOf(callback).Invocation = undefined;
+    callback.beginInvocation(&invocation);
+    defer invocation.deinit();
+    invocation.dispatch(.{
+        .bindingThis = receiver.operand(&invocation),
+        .terminal = receiver.operand(&invocation),
+        .data = bindgen.BytesOperand.fromSlice(chunk),
+    });
 
     return true; // Continue reading
 }
@@ -1186,20 +1289,9 @@ fn deinit(this: *Terminal) void {
     // closeInternal() checks flags.closed and returns early on subsequent calls,
     // so this is safe even if finalize() already called it
     this.closeInternal();
-    this.term_name.deinit();
     this.reader.deinit();
     this.writer.deinit();
     bun.destroy(this);
-}
-
-/// Finalize - called by GC when object is collected
-pub fn finalize(this: *Terminal) callconv(.c) void {
-    log("finalize", .{});
-    jsc.markBinding(@src());
-    this.this_value.finalize();
-    this.flags.finalized = true;
-    this.closeInternal();
-    this.deref();
 }
 
 const std = @import("std");
@@ -1208,5 +1300,41 @@ const bun = @import("bun");
 const Environment = bun.Environment;
 
 const jsc = bun.jsc;
+const bindgen = bun.bindgen;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+
+const TerminalBindings = bindgen.Module("Terminal");
+const TerminalClassSchema = TerminalBindings.class("Terminal");
+const TerminalClass = bindgen.Class(TerminalClassSchema, JSBinding);
+const TerminalConstructorSchema = TerminalClassSchema.constructor();
+const TerminalOptionsSchema = TerminalConstructorSchema.args[0].ArgumentType;
+const TerminalDataCallbackType = optionalDictionaryFieldChild(TerminalOptionsSchema, "data");
+const TerminalDrainCallbackType = optionalDictionaryFieldChild(TerminalOptionsSchema, "drain");
+const TerminalExitCallbackType = optionalDictionaryFieldChild(TerminalOptionsSchema, "exit");
+const TerminalDataCallbackSlot = TerminalClass.CachedSlot("dataCallback");
+const TerminalDrainCallbackSlot = TerminalClass.CachedSlot("drainCallback");
+const TerminalExitCallbackSlot = TerminalClass.CachedSlot("exitCallback");
+const TerminalAsyncDisposeNativeSchema = TerminalClassSchema.memberKind("__asyncDispose", .method);
+const TerminalCloseSchema = TerminalClassSchema.memberKind("close", .method);
+const TerminalClosedSchema = TerminalClassSchema.memberKind("closed", .getter);
+const TerminalRefSchema = TerminalClassSchema.memberKind("ref", .method);
+const TerminalResizeSchema = TerminalClassSchema.memberKind("resize", .method);
+const TerminalSetRawModeSchema = TerminalClassSchema.memberKind("setRawMode", .method);
+const TerminalUnrefSchema = TerminalClassSchema.memberKind("unref", .method);
+const TerminalWriteSchema = TerminalClassSchema.memberKind("write", .method);
+
+comptime {
+    _ = TerminalClass;
+}
+
+fn optionalDictionaryFieldChild(comptime Dictionary: type, comptime field_name: []const u8) type {
+    inline for (Dictionary.dictionary_fields) |Field| {
+        if (std.mem.eql(u8, Field.field_name, field_name)) {
+            if (Field.FieldType.kind != .optional) {
+                @compileError("binding dictionary field '" ++ field_name ++ "' is not optional");
+            }
+            return Field.FieldType.child;
+        }
+    }
+    @compileError("binding dictionary has no field named '" ++ field_name ++ "'");
+}

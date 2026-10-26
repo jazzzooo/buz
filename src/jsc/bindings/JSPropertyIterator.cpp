@@ -4,6 +4,7 @@
 #include "ZigGlobalObject.h"
 #include "JavaScriptCore/JSType.h"
 #include "JavaScriptCore/EnumerationMode.h"
+#include "JavaScriptCore/Error.h"
 #include "JavaScriptCore/ExceptionScope.h"
 #include "JavaScriptCore/ThrowScope.h"
 #include "JavaScriptCore/JSCJSValue.h"
@@ -11,17 +12,16 @@
 #include "JavaScriptCore/PropertyNameArray.h"
 #include "wtf/Assertions.h"
 #include "wtf/FastMalloc.h"
-#include "headers-handwritten.h"
-#include "ObjectBindings.h"
+#include "SchemaBindings.h"
 
 namespace Bun {
 using namespace JSC;
 
 class JSPropertyIterator {
 public:
-    JSPropertyIterator(JSC::VM& m_vm, RefPtr<JSC::PropertyNameArray> m_properties)
-        : vm(m_vm)
-        , properties(m_properties)
+    JSPropertyIterator(JSC::VM& vm, RefPtr<JSC::PropertyNameArray>&& properties)
+        : properties(WTF::move(properties))
+        , vm(vm)
     {
     }
 
@@ -30,19 +30,22 @@ public:
     bool isSpecialProxy = false;
     static JSPropertyIterator* create(JSC::VM& vm, RefPtr<JSC::PropertyNameArray> data)
     {
-        return new JSPropertyIterator(vm, data);
+        void* storage = nullptr;
+        if (!WTF::tryFastMalloc(sizeof(JSPropertyIterator)).getValue(storage))
+            return nullptr;
+        return new (NotNull, storage) JSPropertyIterator(vm, WTF::move(data));
     }
 
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(JSPropertyIterator);
 };
 
-extern "C" JSPropertyIterator* Bun__JSPropertyIterator__create(JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue encodedValue, size_t* count, bool own_properties_only, bool only_non_index_properties)
+Bindgen::Engine::BunBindgenEngine_property_iterators_propertyIteratorCreate_Return Bindgen::Engine::bunBindgenEngine_property_iterators_propertyIteratorCreate(
+    EngineCallContext& context,
+    const BunBindgenEngine_property_iterators_propertyIteratorCreate_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
-    JSC::JSValue value = JSValue::decode(encodedValue);
-    JSC::JSObject* object = value.getObject();
-    ASSERT(object);
-    ASSERT(count);
+    auto* object = JSC::asObject(args.value);
 
     auto scope = DECLARE_THROW_SCOPE(vm);
     JSC::PropertyNameArrayBuilder array(vm, PropertyNameMode::StringsAndSymbols, PrivateSymbolMode::Exclude);
@@ -63,23 +66,27 @@ extern "C" JSPropertyIterator* Bun__JSPropertyIterator__create(JSC::JSGlobalObje
                     globalObject,
                     array,
                     DontEnumPropertiesMode::Exclude);
-                RETURN_IF_EXCEPTION(scope, nullptr);
+                RETURN_IF_EXCEPTION(scope, {});
 
-                *count = array.size();
                 if (array.size() == 0) {
-                    return nullptr;
+                    return { .iterator = std::nullopt, .count = 0 };
                 }
 
+                auto count = array.size();
                 auto* iter = JSPropertyIterator::create(vm, array.releaseData());
+                if (!iter) {
+                    throwOutOfMemoryError(globalObject, scope);
+                    return {};
+                }
                 iter->isSpecialProxy = true;
-                return iter;
+                return { .iterator = iter, .count = count };
             }
         }
     }
 #endif
 
-    if (own_properties_only) {
-        if (only_non_index_properties) {
+    if (args.ownPropertiesOnly) {
+        if (args.onlyNonIndexProperties) {
             object->getOwnNonIndexPropertyNames(globalObject, array, DontEnumPropertiesMode::Exclude);
         } else {
             object->methodTable()->getOwnPropertyNames(object, globalObject, array, DontEnumPropertiesMode::Exclude);
@@ -87,20 +94,27 @@ extern "C" JSPropertyIterator* Bun__JSPropertyIterator__create(JSC::JSGlobalObje
     } else {
         object->getPropertyNames(globalObject, array, DontEnumPropertiesMode::Exclude);
     }
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    RETURN_IF_EXCEPTION(scope, {});
 
-    *count = array.size();
     if (array.size() == 0) {
-        return nullptr;
+        return { .iterator = std::nullopt, .count = 0 };
     }
 
-    return JSPropertyIterator::create(vm, array.releaseData());
+    auto count = array.size();
+    auto* iter = JSPropertyIterator::create(vm, array.releaseData());
+    if (!iter) {
+        throwOutOfMemoryError(globalObject, scope);
+        return {};
+    }
+    return { .iterator = iter, .count = count };
 }
 
-extern "C" size_t Bun__JSPropertyIterator__getLongestPropertyName(JSPropertyIterator* iter, JSC::JSGlobalObject* globalObject, JSC::JSObject* object)
+size_t Bindgen::Engine::bunBindgenEngine_property_iterators_propertyIteratorGetLongestPropertyName(
+    EngineCallContext&,
+    const BunBindgenEngine_property_iterators_propertyIteratorGetLongestPropertyName_Arguments& args)
 {
     size_t longest = 0;
-    for (const auto& prop : iter->properties->propertyNameVector()) {
+    for (const auto& prop : args.iterator->properties->propertyNameVector()) {
         if (prop.length() > longest) {
             longest = prop.length();
         }
@@ -109,86 +123,101 @@ extern "C" size_t Bun__JSPropertyIterator__getLongestPropertyName(JSPropertyIter
     return longest;
 }
 
-static EncodedJSValue getOwnProxyObject(JSPropertyIterator* iter, JSObject* object, const JSC::Identifier& prop, BunString* propertyName)
+static std::optional<JSValue> getOwnProxyObject(JSPropertyIterator* iter, JSObject* object, const JSC::Identifier& prop)
 {
     auto& vm = iter->vm;
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     PropertySlot slot(object, PropertySlot::InternalMethodType::GetOwnProperty, nullptr);
     auto* globalObject = object->globalObject();
-    if (!object->methodTable()->getOwnPropertySlot(object, globalObject, prop, slot)) {
-        return {};
-    }
-    RETURN_IF_EXCEPTION(scope, {});
+    bool found = object->methodTable()->getOwnPropertySlot(object, globalObject, prop, slot);
+    RETURN_IF_EXCEPTION(scope, std::nullopt);
+    if (!found)
+        return std::nullopt;
 
     JSValue result = slot.getValue(globalObject, prop);
-    RETURN_IF_EXCEPTION(scope, {});
+    RETURN_IF_EXCEPTION(scope, std::nullopt);
 
-    *propertyName = Bun::toString(prop.impl());
-    return JSValue::encode(result);
+    return result;
 }
 
-extern "C" EncodedJSValue Bun__JSPropertyIterator__getNameAndValue(JSPropertyIterator* iter, JSC::JSGlobalObject* globalObject, JSC::JSObject* object, BunString* propertyName, size_t i)
+Bindgen::Engine::BunBindgenEngine_property_iterators_propertyIteratorGetNameAndValue_Return Bindgen::Engine::bunBindgenEngine_property_iterators_propertyIteratorGetNameAndValue(
+    EngineCallContext& context,
+    const BunBindgenEngine_property_iterators_propertyIteratorGetNameAndValue_Arguments& args)
 {
+    using Return = BunBindgenEngine_property_iterators_propertyIteratorGetNameAndValue_Return;
+    using Entry = Return::value_type;
+    auto* iter = args.iterator;
+    auto* globalObject = &context.globalObject;
+    auto* object = JSC::asObject(args.object);
     auto& vm = iter->vm;
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    const auto& prop = iter->properties->propertyNameVector()[i];
+    const auto& prop = iter->properties->propertyNameVector()[args.index];
+    JSValue result;
     if (iter->isSpecialProxy) [[unlikely]] {
-        RELEASE_AND_RETURN(scope, getOwnProxyObject(iter, object, prop, propertyName));
+        auto proxyResult = getOwnProxyObject(iter, object, prop);
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        if (!proxyResult)
+            return std::nullopt;
+        result = *proxyResult;
+    } else {
+        PropertySlot slot(object, PropertySlot::InternalMethodType::Get);
+        bool found = object->getPropertySlot(globalObject, prop, slot);
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        if (!found)
+            return std::nullopt;
+
+        result = slot.getValue(globalObject, prop);
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
     }
 
-    // This has to be get because we may need to call on prototypes
-    // If we meant for this to only run for own keys, the property name would not be included in the array.
-    PropertySlot slot(object, PropertySlot::InternalMethodType::Get);
-    if (!object->getPropertySlot(globalObject, prop, slot)) {
-        RELEASE_AND_RETURN(scope, {});
-    }
-    RETURN_IF_EXCEPTION(scope, {});
-
-    JSValue result = slot.getValue(globalObject, prop);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    *propertyName = Bun::toString(prop.impl());
-    return JSValue::encode(result);
+    Entry entry {};
+    entry.name = prop.string().string();
+    entry.value = result;
+    return entry;
 }
 
-extern "C" EncodedJSValue Bun__JSPropertyIterator__getNameAndValueNonObservable(JSPropertyIterator* iter, JSC::JSGlobalObject* globalObject, JSC::JSObject* object, BunString* propertyName, size_t i)
+Bindgen::Engine::BunBindgenEngine_property_iterators_propertyIteratorGetNameAndValueNonObservable_Return Bindgen::Engine::bunBindgenEngine_property_iterators_propertyIteratorGetNameAndValueNonObservable(
+    EngineCallContext& context,
+    const BunBindgenEngine_property_iterators_propertyIteratorGetNameAndValueNonObservable_Arguments& args)
 {
+    using Return = BunBindgenEngine_property_iterators_propertyIteratorGetNameAndValueNonObservable_Return;
+    using Entry = Return::value_type;
+    auto* iter = args.iterator;
+    auto* globalObject = &context.globalObject;
+    auto* object = JSC::asObject(args.object);
     auto& vm = iter->vm;
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    const auto& prop = iter->properties->propertyNameVector()[i];
+    const auto& prop = iter->properties->propertyNameVector()[args.index];
+    JSValue result;
     if (iter->isSpecialProxy) [[unlikely]] {
-        RELEASE_AND_RETURN(scope, getOwnProxyObject(iter, object, prop, propertyName));
+        auto proxyResult = getOwnProxyObject(iter, object, prop);
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        if (!proxyResult)
+            return std::nullopt;
+        result = *proxyResult;
+    } else {
+        PropertySlot slot(object, PropertySlot::InternalMethodType::VMInquiry, vm.ptr());
+        auto has = object->getNonIndexPropertySlot(globalObject, prop, slot);
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
+        if (!has || !slot.isCacheableValue() || slot.isTaintedByOpaqueObject())
+            return std::nullopt;
+
+        result = slot.getPureResult();
+        RETURN_IF_EXCEPTION(scope, std::nullopt);
     }
 
-    PropertySlot slot(object, PropertySlot::InternalMethodType::VMInquiry, vm.ptr());
-    auto has = object->getNonIndexPropertySlot(globalObject, prop, slot);
-    RETURN_IF_EXCEPTION(scope, {});
-    if (!has) {
-        return {};
-    }
-    if (slot.isAccessor() || slot.isCustom()) {
-        return {};
-    }
-
-    JSValue result = slot.getPureResult();
-    RETURN_IF_EXCEPTION(scope, {});
-
-    *propertyName = Bun::toString(prop.impl());
-    return JSValue::encode(result);
+    Entry entry {};
+    entry.name = prop.string().string();
+    entry.value = result;
+    return entry;
 }
 
-extern "C" void Bun__JSPropertyIterator__getName(JSPropertyIterator* iter, BunString* propertyName, size_t i)
+void Bindgen::Engine::propertyIteratorRelease(JSPropertyIterator* iterator)
 {
-    const auto& prop = iter->properties->propertyNameVector()[i];
-    *propertyName = Bun::toString(prop.impl());
-}
-
-extern "C" void Bun__JSPropertyIterator__deinit(JSPropertyIterator* iter)
-{
-    delete iter;
+    delete iterator;
 }
 
 }

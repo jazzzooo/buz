@@ -93,6 +93,9 @@ global_dir: ?std.Io.Dir = null,
 global_link_dir_path: string = "",
 
 onWake: WakeHandler = .{},
+// Background wake delivery must finish before the VM-owned callback is detached.
+wake_mutex: std.Io.Mutex = .init,
+wake_closed: bool = false,
 ci_mode: bun.LazyBool(computeIsContinuousIntegration, @This(), "ci_mode") = .{},
 
 peer_dependencies: bun.LinearFifo(DependencyID, .Dynamic) = .init(default_allocator),
@@ -100,7 +103,8 @@ peer_dependencies: bun.LinearFifo(DependencyID, .Dynamic) = .init(default_alloca
 // name hash from alias package name -> aliased package dependency version info
 known_npm_aliases: NpmAliasMap = .{},
 
-event_loop: jsc.AnyEventLoop,
+event_loop: RuntimeLoop,
+javascript_semantics: JavaScriptSemantics,
 io: std.Io,
 
 // During `installPackages` we learn exactly what dependencies from --trust
@@ -320,6 +324,7 @@ pub var configureEnvForScriptsOnce = bun.once(struct {
             log_level != .silent,
             false,
         );
+        errdefer this_transpiler.feature_flags.deinit();
 
         const init_cwd_entry = try this.env.map.getOrPutWithoutValue("INIT_CWD");
         if (!init_cwd_entry.found_existing) {
@@ -352,10 +357,16 @@ pub var configureEnvForScriptsOnce = bun.once(struct {
             } else brk: {
                 const current_path = this.env.get("PATH") orelse "";
                 var PATH = try std.array_list.Managed(u8).initCapacity(bun.default_allocator, current_path.len);
+                var owns_path = true;
+                defer if (owns_path) PATH.deinit();
                 try PATH.appendSlice(current_path);
                 var bun_path: string = "";
-                RunCommand.createFakeTemporaryNodeExecutable(this.io, &PATH, &bun_path) catch break :brk;
+                RunCommand.createFakeTemporaryNodeExecutable(this.io, &PATH, &bun_path) catch |err| switch (err) {
+                    error.OutOfMemory, error.Canceled => return err,
+                    else => break :brk,
+                };
                 try this.env.map.put("PATH", PATH.items);
+                owns_path = false;
                 _ = try this.env.loadNodeJSConfig(this_transpiler.fs, bun.handleOom(bun.default_allocator.dupe(u8, bun_path)));
             }
         }
@@ -377,24 +388,15 @@ pub fn computeIsContinuousIntegration(this: *PackageManager) bool {
 }
 
 pub const WakeHandler = struct {
-    // handler: fn (ctx: *anyopaque, pm: *PackageManager) void = undefined,
-    // onDependencyError: fn (ctx: *anyopaque, Dependency, PackageID, anyerror) void = undefined,
-    handler: *const anyopaque = undefined,
-    onDependencyError: *const anyopaque = undefined,
-    context: ?*anyopaque = null,
-
-    pub inline fn getHandler(t: @This()) *const fn (ctx: *anyopaque, pm: *PackageManager) void {
-        return bun.cast(*const fn (ctx: *anyopaque, pm: *PackageManager) void, t.handler);
-    }
-
-    pub inline fn getonDependencyError(t: @This()) *const fn (ctx: *anyopaque, Dependency, DependencyID, anyerror) void {
-        return bun.cast(*const fn (ctx: *anyopaque, Dependency, DependencyID, anyerror) void, t.handler);
-    }
+    pub const Context = bun.bindgen.NativeCallbackContext(.vm);
+    handler: *const fn (ctx: Context, pm: *PackageManager) void = undefined,
+    onDependencyError: *const fn (ctx: Context, Dependency, DependencyID, anyerror) void = undefined,
+    context: ?Context = null,
 };
 
 pub fn failRootResolution(this: *PackageManager, dependency: *const Dependency, dependency_id: DependencyID, err: anyerror) void {
     if (this.onWake.context) |ctx| {
-        this.onWake.getonDependencyError()(
+        this.onWake.onDependencyError(
             ctx,
             dependency.*,
             dependency_id,
@@ -404,11 +406,28 @@ pub fn failRootResolution(this: *PackageManager, dependency: *const Dependency, 
 }
 
 pub fn wake(this: *PackageManager) void {
+    this.wake_mutex.lockUncancelable(this.io);
+    defer this.wake_mutex.unlock(this.io);
+    if (this.wake_closed) return;
     if (this.onWake.context) |ctx| {
-        this.onWake.getHandler()(ctx, this);
+        this.onWake.handler(ctx, this);
+    } else {
+        this.event_loop.wakeup();
     }
+}
 
-    this.event_loop.wakeup();
+pub fn setWakeHandler(this: *PackageManager, handler: WakeHandler) void {
+    this.wake_mutex.lockUncancelable(this.io);
+    defer this.wake_mutex.unlock(this.io);
+    bun.assert(!this.wake_closed);
+    this.onWake = handler;
+}
+
+pub fn detachWakeHandler(this: *PackageManager) void {
+    this.wake_mutex.lockUncancelable(this.io);
+    defer this.wake_mutex.unlock(this.io);
+    this.wake_closed = true;
+    this.onWake = .{};
 }
 
 pub fn sleepUntil(this: *PackageManager, closure: anytype, comptime isDoneFn: anytype) void {
@@ -512,8 +531,9 @@ var ensureTempNodeGypScriptOnce = bun.once(struct {
     }
 }.run);
 
-fn httpThreadOnInitError(err: HTTP.InitError, opts: HTTP.HTTPThread.InitOpts) noreturn {
+fn httpThreadOnInitError(err: anyerror, opts: HTTP.HTTPThread.InitOpts) noreturn {
     switch (err) {
+        error.OutOfMemory => bun.outOfMemory(),
         error.LoadCAFile => {
             var path_buf: if (Environment.isWindows) bun.PathBuffer else void = undefined;
             const normalized = if (comptime Environment.isWindows)
@@ -535,6 +555,7 @@ fn httpThreadOnInitError(err: HTTP.InitError, opts: HTTP.HTTPThread.InitOpts) no
         error.FailedToOpenSocket => {
             Output.errGeneric("failed to start HTTP client thread", .{});
         },
+        else => Output.err(err, "failed to initialize HTTP client thread", .{}),
     }
     Global.crash();
 }
@@ -774,7 +795,7 @@ pub fn init(
     };
 
     try env.loadProcess();
-    try env.load(root_dir, &[_][]u8{}, .production, false);
+    try env.load(ctx.io, root_dir, &[_][]u8{}, .production, false);
 
     initializeStore();
 
@@ -852,12 +873,13 @@ pub fn init(
         .root_package_json_file = root_package_json_file,
         // .progress
         .event_loop = .{
-            .mini = jsc.MiniEventLoop.init(
+            .mini = try MiniEventLoop.init(
                 ctx.io,
                 bun.default_allocator,
                 bun.cli.Cli.pinnedThreads().backgroundExecutor(),
             ),
         },
+        .javascript_semantics = ctx.transpiler_capabilities.javascript_semantics,
         .io = ctx.io,
         .original_package_json_path = original_package_json_path,
         .workspace_package_json_cache = workspace_package_json_cache,
@@ -867,7 +889,7 @@ pub fn init(
     };
     errdefer manager.background_tasks.deinit();
     manager.event_loop.mini.attachBackgroundTasks(&manager.background_tasks);
-    manager.event_loop.loop().internal_loop_data.setParentEventLoop(bun.jsc.EventLoopHandle.init(&manager.event_loop));
+    manager.event_loop.loop().internal_loop_data.setParent(manager.event_loop.parentEventLoop());
     manager.lockfile = try ctx.allocator.create(Lockfile);
 
     {
@@ -881,7 +903,7 @@ pub fn init(
         try manager.folders.put(manager.allocator, FolderResolution.hash(normalized), .{ .package_id = 0 });
     }
 
-    jsc.MiniEventLoop.global = &manager.event_loop.mini;
+    MiniEventLoop.global = &manager.event_loop.mini;
     if (!manager.options.enable.cache) {
         manager.options.enable.manifest_cache = false;
         manager.options.enable.manifest_cache_control = false;
@@ -974,6 +996,8 @@ pub fn initWithRuntime(
     bun_install: ?*Api.BunInstall,
     allocator: std.mem.Allocator,
     io: std.Io,
+    event_loop: RuntimeLoop,
+    javascript_semantics: JavaScriptSemantics,
     cli: CommandLineArguments,
     env: *DotEnv.Loader,
 ) !*PackageManager {
@@ -1018,9 +1042,8 @@ pub fn initWithRuntime(
         .background_tasks = .init(bun.cli.Cli.pinnedThreads().backgroundExecutor()),
         .lockfile = undefined,
         .root_package_json_file = undefined,
-        .event_loop = .{
-            .js = jsc.VirtualMachine.get().eventLoop(),
-        },
+        .event_loop = event_loop,
+        .javascript_semantics = javascript_semantics,
         .original_package_json_path = original_package_json_path[0..original_package_json_path.len :0],
         .subcommand = .install,
     };
@@ -1082,6 +1105,7 @@ pub fn initWithRuntime(
     if (root_dir.hasComptimeQuery("bun.lockb")) {
         switch (manager.lockfile.loadFromCwd(
             manager,
+            Dependency.ParseContext.fromPackageManager(manager),
             allocator,
             log,
             true,
@@ -1244,6 +1268,9 @@ const updatePackageJSONAndInstall = @import("./PackageManager/updatePackageJSONA
 
 const lifecycle = @import("./PackageManager/PackageManagerLifecycle.zig");
 const LifecycleScriptTimeLog = lifecycle.LifecycleScriptTimeLog;
+const RuntimeLoop = @import("../event_loop/RuntimeLoop.zig").RuntimeLoop;
+const MiniEventLoop = @import("../event_loop/MiniEventLoop.zig");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 
 const bun = @import("bun");
 const DotEnv = bun.DotEnv;
@@ -1258,7 +1285,6 @@ const RunCommand = bun.RunCommand;
 const BackgroundTaskGroup = bun.BackgroundTaskGroup;
 const URL = bun.URL;
 const default_allocator = bun.default_allocator;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 const transpiler = bun.transpiler;

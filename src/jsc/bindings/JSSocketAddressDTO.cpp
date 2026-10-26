@@ -3,6 +3,14 @@
 #include "JavaScriptCore/JSObjectInlines.h"
 #include "JavaScriptCore/ObjectConstructor.h"
 #include "JavaScriptCore/JSCast.h"
+#include "SchemaBindings.h"
+#include "BindgenCustom.h"
+#include "ErrorCode.h"
+#if OS(WINDOWS)
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
 
 using namespace JSC;
 
@@ -67,17 +75,35 @@ Structure* createStructure(VM& vm, JSGlobalObject* globalObject)
 } // namespace JSSocketAddress
 } // namespace Bun
 
-extern "C" JSC::EncodedJSValue JSSocketAddressDTO__create(JSGlobalObject* globalObject, EncodedJSValue address, uint16_t port, bool isIPv6)
+namespace Bun::Bindgen::Custom {
+SocketAddressFamily bunBindgenSocketAddressFamily(JSC::JSGlobalObject& global, const SocketAddressFamilyInput& input, WTF::ASCIILiteral name)
 {
-    VM& vm = globalObject->vm();
-    auto* global = uncheckedDowncast<Zig::GlobalObject>(globalObject);
-
-    auto* af = isIPv6 ? global->commonStrings().IPv6String(global) : global->commonStrings().IPv4String(global);
-
-    JSObject* thisObject = constructEmptyObject(vm, global->JSSocketAddressDTOStructure());
-    thisObject->putDirectOffset(vm, Bun::JSSocketAddressDTO::addressOffset, JSValue::decode(address));
-    thisObject->putDirectOffset(vm, Bun::JSSocketAddressDTO::familyOffset, af);
-    thisObject->putDirectOffset(vm, Bun::JSSocketAddressDTO::portOffset, jsNumber(port));
-
-    return JSValue::encode(thisObject);
+    auto scope = DECLARE_THROW_SCOPE(global.vm());
+    if (input.is_string()) {
+        const auto& text = input.string();
+        if (equalIgnoringASCIICase(text, "ipv4"_s)) {
+            scope.release();
+            return SocketAddressFamily::ipv4;
+        }
+        if (equalIgnoringASCIICase(text, "ipv6"_s)) {
+            scope.release();
+            return SocketAddressFamily::ipv6;
+        }
+        auto value = JSC::jsString(global.vm(), text);
+        RETURN_IF_EXCEPTION(scope, SocketAddressFamily::ipv4);
+        Bun::ERR::INVALID_ARG_PROPERTY_VALUE(scope, &global, name, value, "'ipv4' or 'ipv6'"_s);
+    } else {
+        int32_t number = input.number();
+        if (number == AF_INET) {
+            scope.release();
+            return SocketAddressFamily::ipv4;
+        }
+        if (number == AF_INET6) {
+            scope.release();
+            return SocketAddressFamily::ipv6;
+        }
+        Bun::ERR::INVALID_ARG_PROPERTY_VALUE(scope, &global, name, JSC::jsNumber(number), "AF_INET or AF_INET6"_s);
+    }
+    return SocketAddressFamily::ipv4;
+}
 }

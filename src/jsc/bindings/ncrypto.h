@@ -24,38 +24,15 @@
 #include <openssl/x509.h>
 #include <cstddef>
 #include <functional>
-#include <list>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-#ifndef OPENSSL_NO_ENGINE
-#include <openssl/engine.h>
-#endif // !OPENSSL_NO_ENGINE
-// The FIPS-related functions are only available
-// when the OpenSSL itself was compiled with FIPS support.
-#if defined(OPENSSL_FIPS) && OPENSSL_VERSION_MAJOR < 3
-#include <openssl/fips.h>
-#endif // OPENSSL_FIPS
-
-#if OPENSSL_VERSION_MAJOR >= 3
-#define OSSL3_CONST const
-#else
-#define OSSL3_CONST
-#endif
 
 #ifdef __GNUC__
 #define NCRYPTO_MUST_USE_RESULT __attribute__((warn_unused_result))
 #else
 #define NCRYPTO_MUST_USE_RESULT
-#endif
-
-#ifdef OPENSSL_IS_BORINGSSL
-// Boringssl has opted to use size_t for some size related
-// APIs while Openssl is still using ints
-using OPENSSL_SIZE_T = size_t;
-#else
-using OPENSSL_SIZE_T = int;
 #endif
 
 namespace ncrypto {
@@ -104,72 +81,32 @@ static constexpr int kX509NameFlagsMultiline = ASN1_STRFLGS_ESC_2253 | ASN1_STRF
 // ============================================================================
 // Error handling utilities
 
-// Capture the current OpenSSL Error Stack. The stack will be ordered such
-// that the error currently at the top of the stack is at the end of the
-// list and the error at the bottom of the stack is at the beginning.
-class CryptoErrorList final {
-public:
-    enum class Option { NONE,
-        CAPTURE_ON_CONSTRUCT };
-    CryptoErrorList(Option option = Option::CAPTURE_ON_CONSTRUCT);
-
-    void capture();
-
-    // Add an error message to the end of the stack.
-    void add(WTF::String message);
-
-    inline const WTF::String& peek_back() const { return errors_.back(); }
-    inline size_t size() const { return errors_.size(); }
-    inline bool empty() const { return errors_.empty(); }
-
-    inline auto begin() const noexcept { return errors_.begin(); }
-    inline auto end() const noexcept { return errors_.end(); }
-    inline auto rbegin() const noexcept { return errors_.rbegin(); }
-    inline auto rend() const noexcept { return errors_.rend(); }
-
-    std::optional<WTF::String> pop_back();
-    std::optional<WTF::String> pop_front();
-
-private:
-    std::list<WTF::String> errors_;
-};
-
 // Forcibly clears the error stack on destruction. This stops stale errors
 // from popping up later in the lifecycle of crypto operations where they
 // would cause spurious failures. It is a rather blunt method, though, and
 // ERR_clear_error() isn't necessarily cheap.
-//
-// If created with a pointer to a CryptoErrorList, the current OpenSSL error
-// stack will be captured before clearing the error.
 class ClearErrorOnReturn final {
 public:
-    ClearErrorOnReturn(CryptoErrorList* errors = nullptr);
+    ClearErrorOnReturn();
     ~ClearErrorOnReturn();
     NCRYPTO_DISALLOW_COPY_AND_MOVE(ClearErrorOnReturn)
     NCRYPTO_DISALLOW_NEW_DELETE()
 
     int peekError();
-
-private:
-    CryptoErrorList* errors_;
 };
+
+bool takeAllocationFailure();
 
 // Pop errors from OpenSSL's error stack that were added between when this
 // was constructed and destructed.
-//
-// If created with a pointer to a CryptoErrorList, the current OpenSSL error
-// stack will be captured before resetting the error to the mark.
 class MarkPopErrorOnReturn final {
 public:
-    MarkPopErrorOnReturn(CryptoErrorList* errors = nullptr);
+    MarkPopErrorOnReturn();
     ~MarkPopErrorOnReturn();
     NCRYPTO_DISALLOW_COPY_AND_MOVE(MarkPopErrorOnReturn)
     NCRYPTO_DISALLOW_NEW_DELETE()
 
     int peekError();
-
-private:
-    CryptoErrorList* errors_;
 };
 
 // TODO(@jasnell): Eventually replace with std::expected when we are able to
@@ -208,7 +145,6 @@ using DeleteFnPtr = typename FunctionDeleter<T, function>::Pointer;
 
 using PKCS8Pointer = DeleteFnPtr<PKCS8_PRIV_KEY_INFO, PKCS8_PRIV_KEY_INFO_free>;
 using RSAPointer = DeleteFnPtr<RSA, RSA_free>;
-using SSLSessionPointer = DeleteFnPtr<SSL_SESSION, SSL_SESSION_free>;
 
 class BIOPointer;
 class BignumPointer;
@@ -218,8 +154,6 @@ class DHPointer;
 class ECKeyPointer;
 class EVPKeyPointer;
 class EVPMDCtxPointer;
-class SSLCtxPointer;
-class SSLPointer;
 class X509View;
 class X509Pointer;
 class ECDSASigPointer;
@@ -338,12 +272,6 @@ public:
     static const Cipher FromNid(int nid);
     static const Cipher FromCtx(const CipherCtxPointer& ctx);
 
-    using CipherNameCallback = WTF::Function<void(WTF::StringView name)>;
-
-    // Iterates the known ciphers if the underlying implementation
-    // is able to do so.
-    static void ForEach(CipherNameCallback&& callback);
-
     // Utilities to get various ciphers by type. If the underlying
     // implementation does not support the requested cipher, then
     // the result will be an empty Cipher object whose bool operator
@@ -399,11 +327,11 @@ private:
 class Dsa final {
 public:
     Dsa();
-    Dsa(OSSL3_CONST DSA* dsa);
+    Dsa(DSA* dsa);
     NCRYPTO_DISALLOW_COPY_AND_MOVE(Dsa)
 
     inline operator bool() const { return dsa_ != nullptr; }
-    inline operator OSSL3_CONST DSA*() const { return dsa_; }
+    inline operator DSA*() const { return dsa_; }
 
     const BIGNUM* getP() const;
     const BIGNUM* getQ() const;
@@ -411,7 +339,7 @@ public:
     size_t getDivisorLength() const;
 
 private:
-    OSSL3_CONST DSA* dsa_;
+    DSA* dsa_;
 };
 
 // ============================================================================
@@ -420,11 +348,11 @@ private:
 class Rsa final {
 public:
     Rsa();
-    Rsa(OSSL3_CONST RSA* rsa);
+    Rsa(RSA* rsa);
     NCRYPTO_DISALLOW_COPY_AND_MOVE(Rsa)
 
     inline operator bool() const { return rsa_ != nullptr; }
-    inline operator OSSL3_CONST RSA*() const { return rsa_; }
+    inline operator RSA*() const { return rsa_; }
 
     struct PublicKey {
         const BIGNUM* n;
@@ -456,23 +384,14 @@ public:
         BignumPointer&& dq,
         BignumPointer&& qi);
 
-    using CipherParams = Cipher::CipherParams;
-
-    static DataPointer encrypt(const EVPKeyPointer& key,
-        const CipherParams& params,
-        const Buffer<const void> in);
-    static DataPointer decrypt(const EVPKeyPointer& key,
-        const CipherParams& params,
-        const Buffer<const void> in);
-
 private:
-    OSSL3_CONST RSA* rsa_;
+    RSA* rsa_;
 };
 
 class Ec final {
 public:
     Ec();
-    Ec(OSSL3_CONST EC_KEY* key);
+    Ec(EC_KEY* key);
     NCRYPTO_DISALLOW_COPY_AND_MOVE(Ec)
 
     const EC_GROUP* getGroup() const;
@@ -481,10 +400,10 @@ public:
     static int GetCurveIdFromName(const char* name);
 
     inline operator bool() const { return ec_ != nullptr; }
-    inline operator OSSL3_CONST EC_KEY*() const { return ec_; }
+    inline operator EC_KEY*() const { return ec_; }
 
 private:
-    OSSL3_CONST EC_KEY* ec_ = nullptr;
+    EC_KEY* ec_ = nullptr;
 };
 
 // A managed pointer to a buffer of data. When destroyed the underlying
@@ -493,17 +412,6 @@ class DataPointer final {
 public:
     static DataPointer Alloc(size_t len);
     static DataPointer Copy(const Buffer<const void>& buffer);
-
-    // Attempts to allocate the buffer space using the secure heap, if
-    // supported/enabled. If the secure heap is disabled, then this
-    // ends up being equivalent to Alloc(len). Note that allocation
-    // will fail if there is not enough free space remaining in the
-    // secure heap space.
-    static DataPointer SecureAlloc(size_t len);
-
-    // If the secure heap is enabled, returns the amount of data that
-    // has been allocated from the heap.
-    static size_t GetSecureHeapUsed();
 
     static DataPointer FromSpan(std::span<const uint8_t> span)
     {
@@ -515,20 +423,9 @@ public:
         return {};
     }
 
-    enum class InitSecureHeapResult {
-        FAILED,
-        UNABLE_TO_MEMORY_MAP,
-        OK,
-    };
-
-    // Attempt to initialize the secure heap. The secure heap is not
-    // supported on all operating systems and whenever boringssl is
-    // used.
-    static InitSecureHeapResult TryInitSecureHeap(size_t amount, size_t min);
-
     DataPointer() = default;
-    explicit DataPointer(void* data, size_t len, bool secure = false);
-    explicit DataPointer(const Buffer<void>& buffer, bool secure = false);
+    explicit DataPointer(void* data, size_t len);
+    explicit DataPointer(const Buffer<void>& buffer);
     DataPointer(DataPointer&& other) noexcept;
     DataPointer& operator=(DataPointer&& other) noexcept;
     NCRYPTO_DISALLOW_COPY(DataPointer)
@@ -567,12 +464,9 @@ public:
         };
     }
 
-    bool isSecure() const { return secure_; }
-
 private:
     void* data_ = nullptr;
     size_t len_ = 0;
-    bool secure_ = false;
 };
 
 class BIOPointer final {
@@ -580,7 +474,6 @@ class BIOPointer final {
 
 public:
     static BIOPointer NewMem();
-    static BIOPointer NewSecMem();
     static BIOPointer New(const BIO_METHOD* method);
     static BIOPointer New(const void* data, size_t len);
     static BIOPointer New(const BIGNUM* bn);
@@ -671,9 +564,7 @@ public:
     size_t encodeInto(unsigned char* out) const;
     size_t encodePaddedInto(unsigned char* out, size_t size) const;
 
-    using PrimeCheckCallback = WTF::Function<bool(int, int)>;
-    int isPrime(int checks,
-        PrimeCheckCallback&& cb = defaultPrimeCheckCallback) const;
+    int isPrime(int checks) const;
     struct PrimeConfig {
         int bits;
         bool safe = false;
@@ -681,17 +572,9 @@ public:
         const BignumPointer& rem;
     };
 
-    static BignumPointer NewPrime(
-        const PrimeConfig& params,
-        PrimeCheckCallback cb = defaultPrimeCheckCallback);
-
-    bool generate(const PrimeConfig& params,
-        PrimeCheckCallback cb = defaultPrimeCheckCallback) const;
+    bool generate(const PrimeConfig& params) const;
 
     static BignumPointer New();
-    static BignumPointer NewSecure();
-    static BignumPointer NewSub(const BignumPointer& a, const BignumPointer& b);
-    static BignumPointer NewLShift(size_t length);
 
     static DataPointer Encode(const BIGNUM* bn);
     static DataPointer EncodePadded(const BIGNUM* bn, size_t size);
@@ -701,14 +584,11 @@ public:
     static int GetBitCount(const BIGNUM* bn);
     static int GetByteCount(const BIGNUM* bn);
     static unsigned long GetWord(const BIGNUM* bn); // NOLINT(runtime/int)
-    static const BIGNUM* One();
 
     BignumPointer clone();
 
 private:
     DeleteFnPtr<BIGNUM, BN_clear_free> bn_;
-
-    static bool defaultPrimeCheckCallback(int, int) { return 1; }
 };
 
 class CipherCtxPointer final {
@@ -783,8 +663,6 @@ public:
     void reset(EVP_PKEY_CTX* ctx = nullptr);
     EVP_PKEY_CTX* release();
 
-    bool initForDerive(const EVPKeyPointer& peer);
-    DataPointer derive() const;
 
     bool initForParamgen();
     bool setDhParameters(int prime_size, uint32_t generator);
@@ -799,13 +677,10 @@ public:
     bool setRsaPssKeygenMd(const Digest& md);
     bool setRsaPssKeygenMgf1Md(const Digest& md);
     bool setRsaPssSaltlen(int salt_len);
-    bool setRsaImplicitRejection();
     bool setRsaOaepLabel(DataPointer&& data);
 
     bool setSignatureMd(const EVPMDCtxPointer& md);
 
-    bool publicCheck() const;
-    bool privateCheck() const;
 
     bool verify(const Buffer<const unsigned char>& sig,
         const Buffer<const unsigned char>& data);
@@ -821,7 +696,6 @@ public:
 
     EVPKeyPointer paramgen() const;
 
-    bool initForEncrypt();
     bool initForDecrypt();
     bool initForKeygen();
     int initForVerify();
@@ -905,8 +779,10 @@ public:
             : AsymmetricKeyEncodingConfig(output_key_object, format, type)
         {
         }
-        PrivateKeyEncodingConfig(const PrivateKeyEncodingConfig&);
-        PrivateKeyEncodingConfig& operator=(const PrivateKeyEncodingConfig&);
+        PrivateKeyEncodingConfig(const PrivateKeyEncodingConfig&) = delete;
+        PrivateKeyEncodingConfig& operator=(const PrivateKeyEncodingConfig&) = delete;
+        PrivateKeyEncodingConfig(PrivateKeyEncodingConfig&&) noexcept = default;
+        PrivateKeyEncodingConfig& operator=(PrivateKeyEncodingConfig&&) noexcept = default;
     };
 
     static ParseKeyResult TryParsePublicKey(
@@ -952,7 +828,6 @@ public:
     size_t rawPrivateKeySize() const;
     DataPointer rawPublicKey() const;
     DataPointer rawPrivateKey() const;
-    BIOPointer derPublicKey() const;
 
     Result<BIOPointer, bool> writePrivateKey(
         const PrivateKeyEncodingConfig& config) const;
@@ -1020,25 +895,13 @@ public:
         UNABLE_TO_CHECK_GENERATOR = DH_UNABLE_TO_CHECK_GENERATOR,
         NOT_SUITABLE_GENERATOR = DH_NOT_SUITABLE_GENERATOR,
         Q_NOT_PRIME = DH_CHECK_Q_NOT_PRIME,
-#ifndef OPENSSL_IS_BORINGSSL
-        // Boringssl does not define the DH_CHECK_INVALID_[Q or J]_VALUE
-        INVALID_Q = DH_CHECK_INVALID_Q_VALUE,
-        INVALID_J = DH_CHECK_INVALID_J_VALUE,
-#endif
         CHECK_FAILED = 512,
     };
     CheckResult check();
 
     enum class CheckPublicKeyResult {
         NONE,
-#ifndef OPENSSL_IS_BORINGSSL
-        // Boringssl does not define DH_R_CHECK_PUBKEY_TOO_SMALL or TOO_LARGE
-        TOO_SMALL = DH_R_CHECK_PUBKEY_TOO_SMALL,
-        TOO_LARGE = DH_R_CHECK_PUBKEY_TOO_LARGE,
-        INVALID = DH_R_CHECK_PUBKEY_INVALID,
-#else
         INVALID = DH_R_INVALID_PUBKEY,
-#endif
         CHECK_FAILED = 512,
     };
     // Check to see if the given public key is suitable for this DH instance.
@@ -1068,134 +931,8 @@ struct StackOfX509Deleter {
 };
 using StackOfX509 = std::unique_ptr<STACK_OF(X509), StackOfX509Deleter>;
 
-class SSLCtxPointer final {
-    WTF_MAKE_TZONE_ALLOCATED(SSLCtxPointer);
-
-public:
-    SSLCtxPointer() = default;
-    explicit SSLCtxPointer(SSL_CTX* ctx);
-    SSLCtxPointer(SSLCtxPointer&& other) noexcept;
-    SSLCtxPointer& operator=(SSLCtxPointer&& other) noexcept;
-    NCRYPTO_DISALLOW_COPY(SSLCtxPointer)
-    ~SSLCtxPointer();
-
-    inline bool operator==(std::nullptr_t) const noexcept
-    {
-        return ctx_ == nullptr;
-    }
-    inline operator bool() const { return ctx_ != nullptr; }
-    inline SSL_CTX* get() const { return ctx_.get(); }
-    void reset(SSL_CTX* ctx = nullptr);
-    void reset(const SSL_METHOD* method);
-    SSL_CTX* release();
-
-    bool setGroups(const char* groups);
-    void setStatusCallback(auto callback)
-    {
-        if (!ctx_) return;
-        SSL_CTX_set_tlsext_status_cb(get(), callback);
-        SSL_CTX_set_tlsext_status_arg(get(), nullptr);
-    }
-
-    bool setCipherSuites(WTF::StringView ciphers);
-
-    static SSLCtxPointer NewServer();
-    static SSLCtxPointer NewClient();
-    static SSLCtxPointer New(const SSL_METHOD* method = TLS_method());
-
-private:
-    DeleteFnPtr<SSL_CTX, SSL_CTX_free> ctx_;
-};
-
-class SSLPointer final {
-    WTF_MAKE_TZONE_ALLOCATED(SSLPointer);
-
-public:
-    SSLPointer() = default;
-    explicit SSLPointer(SSL* ssl);
-    SSLPointer(SSLPointer&& other) noexcept;
-    SSLPointer& operator=(SSLPointer&& other) noexcept;
-    NCRYPTO_DISALLOW_COPY(SSLPointer)
-    ~SSLPointer();
-
-    inline bool operator==(std::nullptr_t) noexcept { return ssl_ == nullptr; }
-    inline operator bool() const { return ssl_ != nullptr; }
-    inline SSL* get() const { return ssl_.get(); }
-    inline operator SSL*() const { return ssl_.get(); }
-    void reset(SSL* ssl = nullptr);
-    SSL* release();
-
-    bool setSession(const SSLSessionPointer& session);
-    bool setSniContext(const SSLCtxPointer& ctx) const;
-
-    const WTF::StringView getClientHelloAlpn() const;
-    const WTF::StringView getClientHelloServerName() const;
-
-    std::optional<const WTF::String> getServerName() const;
-    X509View getCertificate() const;
-    EVPKeyPointer getPeerTempKey() const;
-    const SSL_CIPHER* getCipher() const;
-    bool isServer() const;
-
-    std::optional<WTF::StringView> getCipherName() const;
-    std::optional<WTF::StringView> getCipherStandardName() const;
-    std::optional<WTF::StringView> getCipherVersion() const;
-
-    std::optional<uint32_t> verifyPeerCertificate() const;
-
-    void getCiphers(WTF::Function<void(const WTF::StringView)>&& cb) const;
-
-    static SSLPointer New(const SSLCtxPointer& ctx);
-    static std::optional<const WTF::String> GetServerName(const SSL* ssl);
-
-private:
-    DeleteFnPtr<SSL, SSL_free> ssl_;
-};
-
-class X509Name final {
-    WTF_MAKE_TZONE_ALLOCATED(X509Name);
-
-public:
-    X509Name();
-    explicit X509Name(const X509_NAME* name);
-    NCRYPTO_DISALLOW_COPY_AND_MOVE(X509Name)
-
-    inline operator const X509_NAME*() const { return name_; }
-    inline operator bool() const { return name_ != nullptr; }
-    inline const X509_NAME* get() const { return name_; }
-    inline size_t size() const { return total_; }
-
-    class Iterator final {
-    public:
-        Iterator(const X509Name& name, int pos);
-        Iterator(const Iterator& other) = default;
-        Iterator(Iterator&& other) = default;
-        Iterator& operator=(const Iterator& other) = delete;
-        Iterator& operator=(Iterator&& other) = delete;
-        Iterator& operator++();
-        operator bool() const;
-        bool operator==(const Iterator& other) const;
-        bool operator!=(const Iterator& other) const;
-        std::pair<WTF::String, WTF::String> operator*() const;
-
-    private:
-        const X509Name& name_;
-        int loc_;
-    };
-
-    inline Iterator begin() const { return Iterator(*this, 0); }
-    inline Iterator end() const { return Iterator(*this, total_); }
-
-private:
-    const X509_NAME* name_;
-    int total_;
-};
-
 class X509View final {
 public:
-    static X509View From(const SSLPointer& ssl);
-    static X509View From(const SSLCtxPointer& ctx);
-
     X509View() = default;
     inline explicit X509View(const X509* cert)
         : cert_(cert)
@@ -1215,16 +952,12 @@ public:
     BIOPointer toPEM() const;
     BIOPointer toDER() const;
 
-    const X509Name getSubjectName() const;
-    const X509Name getIssuerName() const;
     BIOPointer getSubject() const;
     BIOPointer getSubjectAltName() const;
     BIOPointer getIssuer() const;
     BIOPointer getInfoAccess() const;
     BIOPointer getValidFrom() const;
     BIOPointer getValidTo() const;
-    int64_t getValidFromTime() const;
-    int64_t getValidToTime() const;
     DataPointer getSerialNumber() const;
     Result<EVPKeyPointer, int> getPublicKey() const;
     StackOfASN1 getKeyUsage() const;
@@ -1250,14 +983,6 @@ public:
     CheckMatch checkEmail(const std::span<const char> email, int flags) const;
     CheckMatch checkIp(const char* ip, int flags) const;
 
-    using UsageCallback = WTF::Function<void(std::span<const char>)>;
-    bool enumUsages(UsageCallback&& callback) const;
-
-    template<typename T>
-    using KeyCallback = WTF::Function<bool(const T& t)>;
-    bool ifRsa(KeyCallback<Rsa>&& callback) const;
-    bool ifEc(KeyCallback<Ec>&& callback) const;
-
 private:
     const X509* cert_ = nullptr;
 };
@@ -1267,9 +992,6 @@ class X509Pointer final {
 
 public:
     static Result<X509Pointer, int> Parse(Buffer<const unsigned char> buffer);
-    static X509Pointer IssuerFrom(const SSLPointer& ssl, const X509View& view);
-    static X509Pointer IssuerFrom(const SSL_CTX* ctx, const X509View& view);
-    static X509Pointer PeerFrom(const SSLPointer& ssl);
 
     X509Pointer() = default;
     explicit X509Pointer(X509* cert);
@@ -1288,9 +1010,6 @@ public:
 
     X509View view() const;
     operator X509View() const { return view(); }
-
-    static WTF::ASCIILiteral ErrorCode(int32_t err);
-    static std::optional<WTF::ASCIILiteral> ErrorReason(int32_t err);
 
 private:
     DeleteFnPtr<X509, X509_free> cert_;
@@ -1322,7 +1041,7 @@ public:
 
     bool setParams(BignumPointer&& r, BignumPointer&& s);
 
-    Buffer<unsigned char> encode() const;
+    DataPointer encode() const;
 
 private:
     DeleteFnPtr<ECDSA_SIG, ECDSA_SIG_free> sig_;
@@ -1499,52 +1218,9 @@ private:
     DeleteFnPtr<HMAC_CTX, HMAC_CTX_free> ctx_;
 };
 
-#ifndef OPENSSL_NO_ENGINE
-class EnginePointer final {
-public:
-    EnginePointer() = default;
-
-    explicit EnginePointer(ENGINE* engine_, bool finish_on_exit = false);
-    EnginePointer(EnginePointer&& other) noexcept;
-    EnginePointer& operator=(EnginePointer&& other) noexcept;
-    NCRYPTO_DISALLOW_COPY(EnginePointer)
-    ~EnginePointer();
-
-    inline operator bool() const { return engine != nullptr; }
-    inline ENGINE* get() { return engine; }
-    inline void setFinishOnExit() { finish_on_exit = true; }
-
-    void reset(ENGINE* engine_ = nullptr, bool finish_on_exit_ = false);
-
-    bool setAsDefault(uint32_t flags, CryptoErrorList* errors = nullptr);
-    bool init(bool finish_on_exit = false);
-    EVPKeyPointer loadPrivateKey(const WTF::StringView key_name);
-
-    // Release ownership of the ENGINE* pointer.
-    ENGINE* release();
-
-    // Retrieve an OpenSSL Engine instance by name. If the name does not
-    // identify a valid named engine, the returned EnginePointer will be
-    // empty.
-    static EnginePointer getEngineByName(const WTF::StringView name,
-        CryptoErrorList* errors = nullptr);
-
-    // Call once when initializing OpenSSL at startup for the process.
-    static void initEnginesOnce();
-
-private:
-    ENGINE* engine = nullptr;
-    bool finish_on_exit = false;
-};
-#endif // !OPENSSL_NO_ENGINE
-
 // ============================================================================
 // FIPS
 bool isFipsEnabled();
-
-bool setFipsEnabled(bool enabled, CryptoErrorList* errors);
-
-bool testFipsEnabled();
 
 // ============================================================================
 // Various utilities
@@ -1591,22 +1267,6 @@ DataPointer hkdf(const Digest& md,
     const Buffer<const unsigned char>& key,
     const Buffer<const unsigned char>& info,
     const Buffer<const unsigned char>& salt,
-    size_t length);
-
-bool checkScryptParams(uint64_t N, uint64_t r, uint64_t p, uint64_t maxmem);
-
-DataPointer scrypt(const Buffer<const char>& pass,
-    const Buffer<const unsigned char>& salt,
-    uint64_t N,
-    uint64_t r,
-    uint64_t p,
-    uint64_t maxmem,
-    size_t length);
-
-DataPointer pbkdf2(const Digest& md,
-    const Buffer<const char>& pass,
-    const Buffer<const unsigned char>& salt,
-    uint32_t iterations,
     size_t length);
 
 // ============================================================================

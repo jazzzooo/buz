@@ -7,7 +7,7 @@ pub const CSRF = @This();
 pub const DEFAULT_EXPIRATION_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// Default HMAC algorithm used for token signing
-pub const DEFAULT_ALGORITHM: jsc.API.Bun.Crypto.EVP.Algorithm = .sha256;
+pub const DEFAULT_ALGORITHM: EVP.Algorithm = .sha256;
 
 /// Error types for CSRF operations
 pub const Error = error{
@@ -26,7 +26,7 @@ pub const GenerateOptions = struct {
     /// Format to encode the token in
     encoding: TokenFormat = .base64url,
     /// Algorithm to use for signing
-    algorithm: jsc.API.Bun.Crypto.EVP.Algorithm = DEFAULT_ALGORITHM,
+    algorithm: EVP.Algorithm = DEFAULT_ALGORITHM,
 };
 
 /// Options for validating CSRF tokens
@@ -40,7 +40,7 @@ pub const VerifyOptions = struct {
     /// Encoding to use for the token
     encoding: TokenFormat = .base64url,
     /// Algorithm to use for signing
-    algorithm: jsc.API.Bun.Crypto.EVP.Algorithm = DEFAULT_ALGORITHM,
+    algorithm: EVP.Algorithm = DEFAULT_ALGORITHM,
 };
 
 /// Token encoding format
@@ -48,31 +48,18 @@ pub const TokenFormat = enum {
     base64,
     base64url,
     hex,
-
-    pub fn toNodeEncoding(self: TokenFormat) jsc.Node.Encoding {
-        return switch (self) {
-            .base64 => .base64,
-            .base64url => .base64url,
-            .hex => .hex,
-        };
-    }
 };
 
 /// Generate a new CSRF token
 ///
 /// Parameters:
 /// - options: Configuration for token generation
-/// - vm: The jsc virtual machine context
-///
-/// Returns: A string.Slice containing the encoded token
+/// Returns: the signed token bytes written into `out_buffer`.
 pub fn generate(
     options: GenerateOptions,
-    out_buffer: *[512]u8,
+    nonce: [16]u8,
+    out_buffer: *[boring.EVP_MAX_MD_SIZE + 32]u8,
 ) ![]u8 {
-    // Generate nonce from entropy
-    var nonce: [16]u8 = @splat(0);
-    bun.csprng(&nonce);
-
     // Current timestamp in milliseconds
     const timestamp = bun.timespec.realNow().ms();
     const timestamp_u64: u64 = @bitCast(@as(i64, timestamp));
@@ -212,13 +199,9 @@ pub fn verify(options: VerifyOptions) bool {
     ) == 0;
 }
 
-pub const csrf__generate = @import("../runtime/api/csrf_jsc.zig").csrf__generate;
-pub const csrf__verify = @import("../runtime/api/csrf_jsc.zig").csrf__verify;
-
 const hmac = @import("../sha_hmac/hmac.zig");
+const EVP = @import("../crypto/EVP.zig");
 const std = @import("std");
-const string = @import("../string/string.zig");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 const boring = bun.BoringSSL.c;

@@ -4,8 +4,6 @@ pub const ContentsOrFd = union(enum) {
         file: FD,
     },
     contents: string,
-
-    const Tag = @typeInfo(ContentsOrFd).@"union".tag_type.?;
 };
 
 pub const ParseTask = @This();
@@ -19,6 +17,7 @@ loader: ?Loader = null,
 jsx: options.JSX.Pragma,
 source_index: Index = Index.invalid,
 task: Executor.Task = .{ .callback = &taskCallback },
+result: Result = undefined,
 stage: ParseTaskStage = .needs_source_code,
 
 tree_shaking: bool = false,
@@ -38,14 +37,15 @@ const ParseTaskStage = union(enum) {
 
 /// The information returned to the Bundler thread when a parse finishes.
 pub const Result = struct {
-    task: EventLoop.Task,
     ctx: *BundleV2,
+    result_node: @import("./ResultQueue.zig").Node = .{},
     value: Value,
     watcher_data: WatcherData,
     /// This is used for native onBeforeParsePlugins to store
     /// a function pointer and context pointer to free the
     /// returned source code by the plugin.
     external: CacheEntry.ExternalFreeFunction = .none,
+    next_external: ?*Result = null,
 
     pub const Value = union(enum) {
         success: Success,
@@ -342,38 +342,34 @@ fn getAST(
             const root = (try resolver.caches.json.parseJSON(log, source, allocator, if (v == .jsonc) .jsonc else .json, true)) orelse Expr.init(E.Object, E.Object{}, Logger.Loc.Empty);
             return JSAst.init((try js_parser.newLazyExportAST(allocator, transpiler.options.define, opts, log, root, source, "")).?);
         },
-        .toml => {
-            const trace = bun.perf.trace("Bundler.ParseTOML");
+        inline .toml, .yaml, .json5 => |kind| {
+            const trace = bun.perf.trace(switch (kind) {
+                .toml => "Bundler.ParseTOML",
+                .yaml => "Bundler.ParseYAML",
+                .json5 => "Bundler.ParseJSON5",
+                else => unreachable,
+            });
             defer trace.end();
             var temp_log = bun.logger.Log.init(allocator);
-            defer {
-                bun.handleOom(temp_log.cloneToWithRecycled(log, true));
-                temp_log.msgs.clearAndFree();
-            }
-            const root = try TOML.parse(source, &temp_log, allocator, false);
-            return JSAst.init((try js_parser.newLazyExportAST(allocator, transpiler.options.define, opts, &temp_log, root, source, "")).?);
-        },
-        .yaml => {
-            const trace = bun.perf.trace("Bundler.ParseYAML");
-            defer trace.end();
-            var temp_log = bun.logger.Log.init(allocator);
-            defer {
-                bun.handleOom(temp_log.cloneToWithRecycled(log, true));
-                temp_log.msgs.clearAndFree();
-            }
-            const root = try YAML.parse(source, &temp_log, allocator);
-            return JSAst.init((try js_parser.newLazyExportAST(allocator, transpiler.options.define, opts, &temp_log, root, source, "")).?);
-        },
-        .json5 => {
-            const trace = bun.perf.trace("Bundler.ParseJSON5");
-            defer trace.end();
-            var temp_log = bun.logger.Log.init(allocator);
-            defer {
-                bun.handleOom(temp_log.cloneToWithRecycled(log, true));
-                temp_log.msgs.clearAndFree();
-            }
-            const root = try JSON5.parse(source, &temp_log, allocator);
-            return JSAst.init((try js_parser.newLazyExportAST(allocator, transpiler.options.define, opts, &temp_log, root, source, "")).?);
+            defer temp_log.deinit();
+            temp_log.level = log.level;
+            const root = (switch (kind) {
+                .toml => TOML.parse(source, &temp_log, allocator, false),
+                .yaml => YAML.parse(source, &temp_log, allocator),
+                .json5 => JSON5.parse(source, &temp_log, allocator),
+                else => unreachable,
+            }) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                try temp_log.appendTo(log);
+                return err;
+            };
+            const ast = js_parser.newLazyExportAST(allocator, transpiler.options.define, opts, &temp_log, root, source, "") catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                try temp_log.appendTo(log);
+                return err;
+            };
+            try temp_log.appendTo(log);
+            return JSAst.init(ast.?);
         },
         .text => {
             const root = Expr.init(E.String, E.String{
@@ -384,12 +380,13 @@ fn getAST(
             return ast;
         },
         .md => {
-            const html = bun.md.renderToHtml(source.contents, allocator) catch {
-                log.addError(
+            const html = bun.md.renderToHtml(source.contents, allocator) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                try log.addError(
                     source,
                     Logger.Loc.Empty,
                     "Failed to render markdown to HTML",
-                ) catch |err| bun.handleOom(err);
+                );
                 return error.ParserError;
             };
             const root = Expr.init(E.String, E.String{
@@ -554,20 +551,15 @@ fn getAST(
             // make css ast
             var import_records = BabyList(ImportRecord){};
             const source_code = source.contents;
-            var temp_log = bun.logger.Log.init(allocator);
-            defer {
-                bun.handleOom(temp_log.appendToMaybeRecycled(log, source));
-            }
-
             const css_module_suffix = ".module.css";
             const enable_css_modules = source.path.pretty.len > css_module_suffix.len and
                 strings.eqlComptime(source.path.pretty[source.path.pretty.len - css_module_suffix.len ..], css_module_suffix);
             const parser_options = if (enable_css_modules) init: {
-                var parseropts = bun.css.ParserOptions.default(allocator, &temp_log);
+                var parseropts = bun.css.ParserOptions.default(allocator, log);
                 parseropts.filename = std.fs.path.basename(source.path.pretty);
                 parseropts.css_modules = bun.css.CssModuleConfig{};
                 break :init parseropts;
-            } else bun.css.ParserOptions.default(allocator, &temp_log);
+            } else bun.css.ParserOptions.default(allocator, log);
 
             var css_ast, var extra = switch (bun.css.BundlerStyleSheet.parseBundler(
                 allocator,
@@ -578,7 +570,7 @@ fn getAST(
             )) {
                 .result => |v| v,
                 .err => |e| {
-                    try e.addToLogger(&temp_log, source, allocator);
+                    try e.addToLogger(log, source, allocator);
                     return error.SyntaxError;
                 },
             };
@@ -595,7 +587,7 @@ fn getAST(
                 .targets = bun.css.Targets.forBundlerTarget(transpiler.options.target),
                 .unused_symbols = .{},
             }, &extra).asErr()) |e| {
-                try e.addToLogger(&temp_log, source, allocator);
+                try e.addToLogger(log, source, allocator);
                 return error.MinifyError;
             }
             if (css_ast.local_scope.count() > 0) {
@@ -604,7 +596,7 @@ fn getAST(
             // If this is a css module, the final exports object wil be set in `generateCodeForLazyExport`.
             const root = Expr.init(E.Object, E.Object{}, Logger.Loc{ .start = 0 });
             const css_ast_heap = bun.create(allocator, bun.css.BundlerStyleSheet, css_ast);
-            var ast = JSAst.init((try js_parser.newLazyExportASTImpl(allocator, transpiler.options.define, opts, &temp_log, root, source, "", extra.symbols)).?);
+            var ast = JSAst.init((try js_parser.newLazyExportASTImpl(allocator, transpiler.options.define, opts, log, root, source, "", extra.symbols)).?);
             ast.css = css_ast_heap;
             ast.import_records = import_records;
             return ast;
@@ -630,7 +622,7 @@ fn getAST(
                 // is done on the bundler thread.
                 try std.fmt.allocPrint(
                     allocator,
-                    bun.bake.DevServer.asset_prefix ++ "/{s}{s}",
+                    DevServerProtocol.asset_prefix ++ "/{s}{s}",
                     .{
                         &std.fmt.bytesToHex(std.mem.asBytes(&content_hash), .lower),
                         std.fs.path.extension(source.path.text),
@@ -661,7 +653,6 @@ fn getCodeForParseTaskWithoutPlugins(
     resolver: *Resolver,
     allocator: std.mem.Allocator,
     file_path: *Fs.Path,
-    loader: Loader,
 ) !CacheEntry {
     return switch (task.contents_or_fd) {
         .fd => |contents| brk: {
@@ -698,12 +689,7 @@ fn getCodeForParseTaskWithoutPlugins(
             }
 
             break :brk resolver.caches.fs.readFileWithAllocator(
-                // TODO: this allocator may be wrong for native plugins
-                if (loader.shouldCopyForBundling())
-                    // The OutputFile will own the memory for the contents
-                    bun.default_allocator
-                else
-                    allocator,
+                allocator,
                 resolver.io,
                 transpiler.fs,
                 file_path.text,
@@ -751,12 +737,11 @@ fn getCodeForParseTask(
     allocator: std.mem.Allocator,
     file_path: *Fs.Path,
     loader: *Loader,
-    from_plugin: *bool,
 ) !CacheEntry {
     const might_have_on_parse_plugins = brk: {
         if (task.source_index.isRuntime()) break :brk false;
-        const plugin = task.ctx.plugins orelse break :brk false;
-        if (!plugin.hasOnBeforeParsePlugins()) break :brk false;
+        const plugin_host = task.ctx.plugin_host orelse break :brk false;
+        if (!plugin_host.hasOnBeforeParsePlugins()) break :brk false;
 
         if (strings.eqlComptime(file_path.namespace, "node")) {
             break :brk false;
@@ -765,10 +750,8 @@ fn getCodeForParseTask(
     };
 
     if (!might_have_on_parse_plugins) {
-        return getCodeForParseTaskWithoutPlugins(task, log, transpiler, resolver, allocator, file_path, loader.*);
+        return getCodeForParseTaskWithoutPlugins(task, log, transpiler, resolver, allocator, file_path);
     }
-
-    var should_continue_running: i32 = 1;
 
     var ctx = OnBeforeParsePlugin{
         .task = task,
@@ -779,13 +762,13 @@ fn getCodeForParseTask(
         .file_path = file_path,
         .loader = loader,
         .deferred_error = null,
-        .should_continue_running = &should_continue_running,
+        .should_continue_running = true,
     };
 
-    return try ctx.run(task.ctx.plugins.?, from_plugin);
+    return try ctx.run(task.ctx.plugin_host.?);
 }
 
-const OnBeforeParsePlugin = struct {
+pub const OnBeforeParsePlugin = struct {
     task: *ParseTask,
     log: *Logger.Log,
     transpiler: *Transpiler,
@@ -794,7 +777,7 @@ const OnBeforeParsePlugin = struct {
     file_path: *Fs.Path,
     loader: *Loader,
     deferred_error: ?anyerror = null,
-    should_continue_running: *i32,
+    should_continue_running: bool,
 
     result: ?*OnBeforeParseResult = null,
 
@@ -814,7 +797,7 @@ const OnBeforeParsePlugin = struct {
         bun.assert(@alignOf(BunLogOptions) == @alignOf(headers.BunLogOptions));
     }
 
-    const OnBeforeParseArguments = extern struct {
+    pub const OnBeforeParseArguments = extern struct {
         struct_size: usize = @sizeOf(OnBeforeParseArguments),
         context: *OnBeforeParsePlugin,
         path_ptr: ?[*]const u8 = "",
@@ -866,18 +849,17 @@ const OnBeforeParsePlugin = struct {
             return "";
         }
 
-        pub fn append(this: *const BunLogOptions, log: *Logger.Log, namespace: string) void {
-            const allocator = log.msgs.allocator;
+        pub fn append(this: *const BunLogOptions, log: *Logger.Log, namespace: string) bun.OOM!void {
             const source_line_text = this.sourceLineText();
             const location = Logger.Location.init(
                 this.path(),
                 namespace,
                 @max(this.line, -1),
                 @max(this.column, -1),
-                @max(this.column_end - this.column, 0),
-                if (source_line_text.len > 0) bun.handleOom(allocator.dupe(u8, source_line_text)) else null,
+                @intCast(@max(@as(i64, this.column_end) - this.column, 0)),
+                if (source_line_text.len > 0) source_line_text else null,
             );
-            var msg = Logger.Msg{ .data = .{ .location = location, .text = bun.handleOom(allocator.dupe(u8, this.message())) } };
+            var msg = Logger.Msg{ .data = .{ .location = location, .text = this.message() } };
             switch (this.level) {
                 .err => msg.kind = .err,
                 .warn => msg.kind = .warn,
@@ -885,12 +867,7 @@ const OnBeforeParsePlugin = struct {
                 .debug => msg.kind = .debug,
                 else => {},
             }
-            if (msg.kind == .err) {
-                log.errors += 1;
-            } else if (msg.kind == .warn) {
-                log.warnings += 1;
-            }
-            bun.handleOom(log.addMsg(msg));
+            try log.addMsg(msg);
         }
 
         pub fn logFn(
@@ -899,7 +876,10 @@ const OnBeforeParsePlugin = struct {
         ) callconv(.c) void {
             const args = args_ orelse return;
             const log_options = log_options_ orelse return;
-            log_options.append(args.context.log, args.context.file_path.namespace);
+            log_options.append(args.context.log, args.context.file_path.namespace) catch |err| {
+                args.context.deferred_error = err;
+                args.context.should_continue_running = false;
+            };
         }
     };
 
@@ -912,7 +892,7 @@ const OnBeforeParsePlugin = struct {
         result: OnBeforeParseResult,
     };
 
-    const OnBeforeParseResult = extern struct {
+    pub const OnBeforeParseResult = extern struct {
         struct_size: usize = @sizeOf(OnBeforeParseResult),
         source_ptr: ?[*]const u8 = null,
         source_len: usize = 0,
@@ -938,7 +918,7 @@ const OnBeforeParsePlugin = struct {
     pub fn fetchSourceCode(args: *OnBeforeParseArguments, result: *OnBeforeParseResult) callconv(.c) i32 {
         debug("fetchSourceCode", .{});
         const this = args.context;
-        if (this.log.errors > 0 or this.deferred_error != null or this.should_continue_running.* != 1) {
+        if (this.log.errors > 0 or this.deferred_error != null or !this.should_continue_running) {
             return 1;
         }
 
@@ -953,11 +933,9 @@ const OnBeforeParsePlugin = struct {
             this.resolver,
             this.allocator,
             this.file_path,
-
-            result.loader,
         ) catch |err| {
             this.deferred_error = err;
-            this.should_continue_running.* = 0;
+            this.should_continue_running = false;
             return 1;
         };
         result.source_ptr = entry.contents.ptr;
@@ -971,8 +949,9 @@ const OnBeforeParsePlugin = struct {
         return 0;
     }
 
-    pub export fn OnBeforeParseResult__reset(this: *OnBeforeParseResult) void {
+    fn reset(this: *OnBeforeParseResult) void {
         const wrapper = this.getWrapper();
+        releaseUserContext(this);
         this.loader = wrapper.loader;
         if (wrapper.original_source) |src_ptr| {
             const src = src_ptr[0..wrapper.original_source_len];
@@ -984,24 +963,47 @@ const OnBeforeParsePlugin = struct {
         }
     }
 
-    pub export fn OnBeforeParsePlugin__isDone(this: *OnBeforeParsePlugin) i32 {
-        if (this.should_continue_running.* != 1) {
-            return 1;
+    fn releaseUserContext(result: *OnBeforeParseResult) void {
+        const context = result.user_context;
+        const release = result.free_user_context;
+        result.user_context = null;
+        result.free_user_context = null;
+        if (context != null) {
+            if (release) |free| free(context);
+        }
+    }
+
+    fn isDone(this: *OnBeforeParsePlugin) bool {
+        if (!this.should_continue_running) {
+            return true;
         }
 
-        const result = this.result orelse return 1;
+        const result = this.result orelse return true;
         // The first plugin to set the source wins.
         // But, we must check that they actually modified it
         // since fetching the source stores it inside `result.source_ptr`
         if (result.source_ptr != null) {
             const wrapper: *OnBeforeParseResultWrapper = result.getWrapper();
-            return @intFromBool(result.source_ptr.? != wrapper.original_source.?);
+            return result.source_ptr != wrapper.original_source;
         }
 
-        return 0;
+        return false;
     }
 
-    pub fn run(this: *OnBeforeParsePlugin, plugin: *jsc.API.JSBundler.Plugin, from_plugin: *bool) !CacheEntry {
+    fn bindResultReset(
+        args: bun.bindgen.Args(OnBeforeParseResultResetSchema),
+    ) bun.bindgen.Return(OnBeforeParseResultResetSchema) {
+        const result: *OnBeforeParseResult = @ptrCast(@alignCast(args.result));
+        reset(result);
+    }
+
+    fn bindIsDone(
+        args: bun.bindgen.Args(OnBeforeParsePluginIsDoneSchema),
+    ) bun.bindgen.Return(OnBeforeParsePluginIsDoneSchema) {
+        return args.plugin.isDone();
+    }
+
+    pub fn run(this: *OnBeforeParsePlugin, plugin_host: PluginHost) !CacheEntry {
         var args = OnBeforeParseArguments{
             .context = this,
             .path_ptr = this.file_path.text.ptr,
@@ -1020,71 +1022,60 @@ const OnBeforeParsePlugin = struct {
         };
 
         this.result = &wrapper.result;
-        const count = plugin.callOnBeforeParsePlugins(
+        defer {
+            this.result = null;
+            releaseUserContext(&wrapper.result);
+        }
+        const namespace = if (bun.strings.eqlComptime(this.file_path.namespace, "file"))
+            ""
+        else
+            this.file_path.namespace;
+        const count = try plugin_host.callOnBeforeParsePlugins(
             this,
-            if (bun.strings.eqlComptime(this.file_path.namespace, "file"))
-                &bun.String.empty
-            else
-                &bun.String.init(this.file_path.namespace),
-
-            &bun.String.init(this.file_path.text),
+            namespace,
+            this.file_path.text,
             &args,
             &wrapper.result,
-            this.should_continue_running,
         );
         if (comptime Environment.enable_logs)
             debug("callOnBeforeParsePlugins({s}:{s}) = {d}", .{ this.file_path.namespace, this.file_path.text, count });
         if (count > 0) {
             if (this.deferred_error) |err| {
-                if (wrapper.result.free_user_context) |free_user_context| {
-                    free_user_context(wrapper.result.user_context);
-                }
-
                 return err;
             }
 
             // If the plugin sets the `free_user_context` function pointer, it _must_ set the `user_context` pointer.
             // Otherwise this is just invalid behavior.
             if (wrapper.result.user_context == null and wrapper.result.free_user_context != null) {
-                var msg = Logger.Msg{ .data = .{ .location = null, .text = bun.default_allocator.dupe(
-                    u8,
+                try this.log.addError(
+                    null,
+                    Logger.Loc.Empty,
                     "Native plugin set the `free_plugin_source_code_context` field without setting the `plugin_source_code_context` field.",
-                ) catch |err| bun.handleOom(err) } };
-                msg.kind = .err;
-                args.context.log.errors += 1;
-                bun.handleOom(args.context.log.addMsg(msg));
+                );
                 return error.InvalidNativePlugin;
             }
 
             if (this.log.errors > 0) {
-                if (wrapper.result.free_user_context) |free_user_context| {
-                    free_user_context(wrapper.result.user_context);
-                }
-
                 return error.SyntaxError;
             }
 
             if (wrapper.result.source_ptr) |ptr| {
-                if (wrapper.result.free_user_context != null) {
-                    this.task.external_free_function = .{
-                        .ctx = wrapper.result.user_context,
-                        .function = wrapper.result.free_user_context,
-                    };
-                }
-                from_plugin.* = true;
+                const release: CacheEntry.ExternalFreeFunction = .{
+                    .ctx = @ptrCast(wrapper.result.user_context),
+                    .function = wrapper.result.free_user_context,
+                };
+                wrapper.result.user_context = null;
+                wrapper.result.free_user_context = null;
+                if (release.function != null) this.task.external_free_function = release;
                 this.loader.* = wrapper.result.loader;
                 return .{
                     .contents = ptr[0..wrapper.result.source_len],
-                    .external_free_function = .{
-                        .ctx = wrapper.result.user_context,
-                        .function = wrapper.result.free_user_context,
-                    },
                     .fd = wrapper.original_source_fd,
                 };
             }
         }
 
-        return try getCodeForParseTaskWithoutPlugins(this.task, this.log, this.transpiler, this.resolver, this.allocator, this.file_path, this.loader.*);
+        return try getCodeForParseTaskWithoutPlugins(this.task, this.log, this.transpiler, this.resolver, this.allocator, this.file_path);
     }
 };
 
@@ -1102,8 +1093,10 @@ fn getSourceCode(
     var file_path = task.path;
     var loader = task.loader orelse file_path.loader(&transpiler.options.loaders) orelse options.Loader.file;
 
-    var contents_came_from_plugin: bool = false;
-    return try getCodeForParseTask(task, log, transpiler, resolver, allocator, &file_path, &loader, &contents_came_from_plugin);
+    const entry = try getCodeForParseTask(task, log, transpiler, resolver, allocator, &file_path, &loader);
+    task.path = file_path;
+    task.loader = loader;
+    return entry;
 }
 
 fn runWithSourceCode(
@@ -1120,29 +1113,6 @@ fn runWithSourceCode(
     const resolver: *Resolver = &transpiler.resolver;
     const file_path = &task.path;
     const loader = task.loader orelse file_path.loader(&transpiler.options.loaders) orelse options.Loader.file;
-
-    // WARNING: Do not change the variant of `task.contents_or_fd` from
-    // `.fd` to `.contents` (or back) after this point!
-    //
-    // When `task.contents_or_fd == .fd`, `entry.contents` is an owned string.
-    // When `task.contents_or_fd == .contents`, `entry.contents` is NOT owned! Freeing it here will cause a double free!
-    //
-    // Changing from `.contents` to `.fd` will cause a double free.
-    // This was the case in the situation where the ParseTask receives its `.contents` from an onLoad plugin, which caused it to be
-    // allocated by `bun.default_allocator` and then freed in `BundleV2.deinit` (and also by `entry.deinit(allocator)` below).
-    const debug_original_variant_check: if (bun.Environment.isDebug) ContentsOrFd.Tag else void =
-        if (bun.Environment.isDebug) @as(ContentsOrFd.Tag, task.contents_or_fd);
-    errdefer {
-        if (comptime bun.Environment.isDebug) {
-            if (@as(ContentsOrFd.Tag, task.contents_or_fd) != debug_original_variant_check) {
-                std.debug.panic("BUG: `task.contents_or_fd` changed in a way that will cause a double free or memory to leak!\n\n    Original = {s}\n    New = {s}\n", .{
-                    @tagName(debug_original_variant_check),
-                    @tagName(task.contents_or_fd),
-                });
-            }
-        }
-        if (task.contents_or_fd == .fd) entry.deinit(allocator);
-    }
 
     const will_close_file_descriptor = task.contents_or_fd == .fd and
         entry.fd.isValid() and
@@ -1205,10 +1175,11 @@ fn runWithSourceCode(
     const output_format = transpiler.options.output_format;
 
     var opts = js_parser.Parser.Options.init(task.jsx, loader);
+    opts.javascript_semantics = transpiler.engine_capabilities.javascript_semantics;
     opts.bundle = true;
     opts.warn_about_unbundled_modules = false;
     opts.allow_unresolved = &transpiler.options.allow_unresolved;
-    opts.macro_context = &transpiler.macro_context.?;
+    opts.macro_context = try transpiler.ensureMacroContext();
     opts.package_version = task.package_version;
 
     opts.features.allow_runtime = !source.index.isRuntime();
@@ -1304,7 +1275,7 @@ fn runWithSourceCode(
     return .{
         .ast = ast,
         .source = source.*,
-        .log = log.*,
+        .log = log.take(),
         .use_directive = use_directive,
         .unique_key_for_additional_file = unique_key_for_additional_file.key,
         .side_effects = task.side_effects,
@@ -1330,16 +1301,26 @@ pub fn runInBackground(this: *ParseTask) void {
 
     var step: ParseTask.Result.Error.Step = .pending;
     var log = Logger.Log.init(worker.allocator);
+    defer log.deinit();
     bun.assert(this.source_index.isValid()); // forgot to set source_index
 
     const value: ParseTask.Result.Value = value: {
+        if (this.ctx.isCancelRequested()) {
+            break :value .{ .err = .{
+                .err = error.Canceled,
+                .step = step,
+                .log = log.take(),
+                .source_index = this.source_index,
+                .target = this.known_target,
+            } };
+        }
         if (this.stage == .needs_source_code) {
             this.stage = .{
                 .needs_parse = getSourceCode(this, worker, &log) catch |err| {
                     break :value .{ .err = .{
                         .err = err,
                         .step = step,
-                        .log = log,
+                        .log = log.take(),
                         .source_index = this.source_index,
                         .target = this.known_target,
                     } };
@@ -1350,7 +1331,7 @@ pub fn runInBackground(this: *ParseTask) void {
                 break :value .{ .err = .{
                     .err = error.SyntaxError,
                     .step = step,
-                    .log = log,
+                    .log = log.take(),
                     .source_index = this.source_index,
                     .target = this.known_target,
                 } };
@@ -1362,7 +1343,8 @@ pub fn runInBackground(this: *ParseTask) void {
             }
         }
 
-        if (runWithSourceCode(this, worker, &step, &log, &this.stage.needs_parse)) |ast| {
+        if (runWithSourceCode(this, worker, &step, &log, &this.stage.needs_parse)) |parsed| {
+            var ast = parsed;
             // When using HMR, always flag asts with errors as parse failures.
             // Not done outside of the dev server out of fear of breaking existing code.
             if (this.ctx.transpiler.options.dev_server != null and ast.log.hasErrors()) {
@@ -1370,7 +1352,7 @@ pub fn runInBackground(this: *ParseTask) void {
                     .err = .{
                         .err = error.SyntaxError,
                         .step = .parse,
-                        .log = ast.log,
+                        .log = ast.log.take(),
                         .source_index = this.source_index,
                         .target = this.known_target,
                     },
@@ -1380,7 +1362,6 @@ pub fn runInBackground(this: *ParseTask) void {
             break :value .{ .success = ast };
         } else |err| {
             if (err == error.EmptyAST) {
-                log.deinit();
                 break :value .{ .empty = .{
                     .source_index = this.source_index,
                 } };
@@ -1389,18 +1370,16 @@ pub fn runInBackground(this: *ParseTask) void {
             break :value .{ .err = .{
                 .err = err,
                 .step = step,
-                .log = log,
+                .log = log.take(),
                 .source_index = this.source_index,
                 .target = this.known_target,
             } };
         }
     };
 
-    const result = bun.handleOom(bun.default_allocator.create(Result));
-
+    const result = &this.result;
     result.* = .{
         .ctx = this.ctx,
-        .task = .{},
         .value = value,
         .external = this.external_free_function,
         .watcher_data = switch (this.contents_or_fd) {
@@ -1408,32 +1387,15 @@ pub fn runInBackground(this: *ParseTask) void {
             .contents => .none,
         },
     };
+    this.external_free_function = .none;
 
-    switch (worker.ctx.loop().*) {
-        .js => |jsc_event_loop| {
-            jsc_event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.fromCallback(result, onComplete));
-        },
-        .mini => |*mini| {
-            mini.enqueueTaskConcurrentWithExtraCtx(
-                Result,
-                BundleV2,
-                result,
-                BundleV2.onParseTaskComplete,
-                .task,
-            );
-        },
-    }
-}
-
-pub fn onComplete(result: *Result) void {
-    BundleV2.onParseTaskComplete(result, result.ctx);
+    this.ctx.onParseAsync(result);
 }
 
 pub const Ref = bun.ast.Ref;
 
 pub const Index = bun.ast.Index;
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 
 const string = []const u8;
@@ -1446,6 +1408,7 @@ const runtime = @import("../js_parser/runtime.zig");
 const std = @import("std");
 const URL = @import("../url/url.zig").URL;
 const CacheEntry = @import("./cache.zig").Fs.Entry;
+const DevServerProtocol = @import("../bake/DevServerProtocol.zig");
 
 const Logger = @import("../logger/logger.zig");
 const Loc = Logger.Loc;
@@ -1457,13 +1420,23 @@ const options = @import("./options.zig");
 const Loader = options.Loader;
 
 const bun = @import("bun");
+const JSBundlerPluginBindings = bun.bindgen.Module("JSBundlerPlugin");
+const OnBeforeParseResultResetSchema = JSBundlerPluginBindings.nativeExport("onBeforeParseResultReset");
+const OnBeforeParsePluginIsDoneSchema = JSBundlerPluginBindings.nativeExport("onBeforeParsePluginIsDone");
+const OnBeforeParseResultResetBinding = bun.bindgen.Fn(OnBeforeParseResultResetSchema, OnBeforeParsePlugin.bindResultReset);
+const OnBeforeParsePluginIsDoneBinding = bun.bindgen.Fn(OnBeforeParsePluginIsDoneSchema, OnBeforeParsePlugin.bindIsDone);
+
+comptime {
+    _ = OnBeforeParseResultResetBinding;
+    _ = OnBeforeParsePluginIsDoneBinding;
+}
+
 const Environment = bun.Environment;
 const FD = bun.FD;
 const FeatureFlags = bun.FeatureFlags;
 const ImportRecord = bun.ImportRecord;
 const Output = bun.Output;
 const Transpiler = bun.Transpiler;
-const bake = bun.bake;
 const base64 = bun.base64;
 const default_allocator = bun.default_allocator;
 const js_parser = bun.js_parser;
@@ -1483,9 +1456,7 @@ const Symbol = js_ast.Symbol;
 
 const bundler = bun.bundle_v2;
 const BundleV2 = bundler.BundleV2;
+const PluginHost = bundler.PluginHost;
 const ContentHasher = bundler.ContentHasher;
 const UseDirective = bundler.UseDirective;
 const targetFromHashbang = bundler.targetFromHashbang;
-
-const jsc = bun.jsc;
-const EventLoop = bun.jsc.AnyEventLoop;

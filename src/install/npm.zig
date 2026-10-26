@@ -34,55 +34,26 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
     var print_buf = std.array_list.Managed(u8).init(allocator);
     defer print_buf.deinit();
 
-    var headers: http.HeaderBuilder = .{};
+    var headers: http.Headers = .{ .allocator = allocator };
+    defer headers.deinit();
 
     {
-        headers.count("accept", "*/*");
-        headers.count("accept-encoding", "gzip,deflate");
+        try headers.append("accept", "*/*");
+        try headers.append("accept-encoding", "gzip,deflate");
 
         try appendManagedFmt(&print_buf, "Bearer {s}", .{registry.token});
-        headers.count("authorization", print_buf.items);
+        try headers.append("authorization", print_buf.items);
         print_buf.clearRetainingCapacity();
 
-        // no otp needed, just use auth-type from options
-        headers.count("npm-auth-type", auth_type);
-        headers.count("npm-command", "whoami");
-
-        try appendManagedFmt(&print_buf, "{s} {s} {s} workspaces/{}{s}{s}", .{
-            Global.user_agent,
-            Global.os_name,
-            Global.arch_name,
-            // TODO: figure out how npm determines workspaces=true
-            false,
-            if (ci_name != null) " ci/" else "",
-            ci_name orelse "",
-        });
-        headers.count("user-agent", print_buf.items);
-        print_buf.clearRetainingCapacity();
-
-        headers.count("Connection", "keep-alive");
-        headers.count("Host", registry.url.host);
-    }
-
-    try headers.allocate(allocator);
-
-    {
-        headers.append("accept", "*/*");
-        headers.append("accept-encoding", "gzip/deflate");
-
-        try appendManagedFmt(&print_buf, "Bearer {s}", .{registry.token});
-        headers.append("authorization", print_buf.items);
-        print_buf.clearRetainingCapacity();
-
-        headers.append("npm-auth-type", auth_type);
-        headers.append("npm-command", "whoami");
+        try headers.append("npm-auth-type", auth_type);
+        try headers.append("npm-command", "whoami");
 
         try appendManagedFmt(&print_buf, "{s} {s} {s} workspaces/{}{s}{s}", .{ Global.user_agent, Global.os_name, Global.arch_name, false, if (ci_name != null) " ci/" else "", ci_name orelse "" });
-        headers.append("user-agent", print_buf.items);
+        try headers.append("user-agent", print_buf.items);
         print_buf.clearRetainingCapacity();
 
-        headers.append("Connection", "keep-alive");
-        headers.append("Host", registry.url.host);
+        try headers.append("Connection", "keep-alive");
+        try headers.append("Host", registry.url.host);
     }
 
     try appendManagedFmt(&print_buf, "{s}/-/whoami", .{
@@ -98,9 +69,10 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
         .GET,
         url,
         headers.entries,
-        headers.content.ptr.?[0..headers.content.len],
+        headers.buf.items,
         &response_buf,
         "",
+        manager.javascript_semantics,
         null,
         null,
         .follow,
@@ -135,6 +107,7 @@ pub fn whoami(allocator: std.mem.Allocator, manager: *PackageManager) WhoamiErro
     }
 
     var log = logger.Log.init(allocator);
+    defer log.deinit();
     const source = &logger.Source.initPathString("???", response_buf.list.items);
     const json = JSON.parseUTF8(source, &log, allocator) catch |err| {
         switch (err) {
@@ -164,6 +137,7 @@ pub fn responseError(
 ) OOM!noreturn {
     const message = message: {
         var log = logger.Log.init(allocator);
+        defer log.deinit();
         const source = &logger.Source.initPathString("???", response_body.list.items);
         const json = JSON.parseUTF8(source, &log, allocator) catch |err| {
             switch (err) {
@@ -455,6 +429,7 @@ pub const Registry = struct {
             new_etag,
             @as(u32, @truncate(@as(u64, @intCast(@max(0, bun.realSeconds(package_manager.io)))))) + 300,
             is_extended_manifest,
+            package_manager.javascript_semantics,
         )) |package| {
             if (package_manager.options.enable.manifest_cache) {
                 PackageManifest.Serializer.saveAsync(
@@ -689,8 +664,6 @@ pub const OperatingSystem = enum(u16) {
     pub fn negatable(this: OperatingSystem) Negatable(OperatingSystem) {
         return .{ .added = this, .removed = .none };
     }
-
-    pub const jsFunctionOperatingSystemIsMatch = @import("../install_jsc/npm_jsc.zig").operatingSystemIsMatch;
 };
 
 pub const Libc = enum(u8) {
@@ -782,8 +755,6 @@ pub const Architecture = enum(u16) {
     pub fn negatable(this: Architecture) Negatable(Architecture) {
         return .{ .added = this, .removed = .none };
     }
-
-    pub const jsFunctionArchitectureIsMatch = @import("../install_jsc/npm_jsc.zig").architectureIsMatch;
 };
 
 pub const PackageVersion = extern struct {
@@ -1308,8 +1279,6 @@ pub const PackageManifest = struct {
         }
     };
 
-    pub const bindings = @import("../install_jsc/npm_jsc.zig").ManifestBindings;
-
     pub fn str(self: *const PackageManifest, external: *const ExternalString) string {
         return external.slice(self.string_buf);
     }
@@ -1714,6 +1683,7 @@ pub const PackageManifest = struct {
         etag: []const u8,
         public_max_age: u32,
         is_extended_manifest: bool,
+        javascript_semantics: JavaScriptSemantics,
     ) !?PackageManifest {
         const source = &logger.Source.initPathString(expected_name, json_buffer);
         initializeStore();
@@ -1724,12 +1694,8 @@ pub const PackageManifest = struct {
             source,
             log,
             arena.allocator(),
-        ) catch {
-            // don't use the arena memory!
-            var cloned_log: logger.Log = .init(bun.default_allocator);
-            try log.cloneToWithRecycled(&cloned_log, true);
-            log.* = cloned_log;
-
+        ) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             return null;
         };
 
@@ -2512,7 +2478,7 @@ pub const PackageManifest = struct {
                     if (json.asProperty("time")) |time_obj| {
                         if (time_obj.expr.get(version_name)) |publish_time_expr| {
                             if (publish_time_expr.asString(allocator)) |publish_time_str| {
-                                if (bun.jsc.wtf.parseES5Date(publish_time_str) catch null) |time| {
+                                if (javascript_semantics.parseES5Date(publish_time_str)) |time| {
                                     package_version.publish_timestamp_ms = time;
                                 }
                             }
@@ -2737,6 +2703,7 @@ const VersionSlice = @import("./install.zig").VersionSlice;
 const initializeStore = @import("./install.zig").initializeMiniStore;
 
 const bun = @import("bun");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 const Environment = bun.Environment;
 const Global = bun.Global;
 const HTTPClient = bun.http;

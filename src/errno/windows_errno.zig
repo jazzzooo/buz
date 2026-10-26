@@ -961,7 +961,7 @@ pub const SystemErrno = enum(u16) {
         return @fromBackingInt(@intCast(code));
     }
 
-    fn fromUv(code: c_int) SystemErrno {
+    pub fn fromUv(code: c_int) SystemErrno {
         return @fromBackingInt(@intCast(@backingInt(uv.translateUVErrorToE(code))));
     }
 

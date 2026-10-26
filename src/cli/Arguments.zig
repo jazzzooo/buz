@@ -395,7 +395,7 @@ pub fn loadConfig(allocator: std.mem.Allocator, user_config_path_: ?string, ctx:
 pub fn loadConfigWithCmdArgs(
     comptime cmd: Command.Tag,
     allocator: std.mem.Allocator,
-    args: clap.Args(clap.Help, cmd.params()),
+    args: clap.Args(clap.Help, Command.tagParams(cmd)),
     ctx: Command.Context,
 ) OOM!void {
     return try loadConfig(allocator, args.option("--config"), ctx, comptime cmd);
@@ -403,7 +403,7 @@ pub fn loadConfigWithCmdArgs(
 
 pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: Command.Tag) !Api.TransformOptions {
     var diag = clap.Diagnostic{};
-    const params_to_parse = comptime cmd.params();
+    const params_to_parse = comptime Command.tagParams(cmd);
 
     var args = clap.parse(clap.Help, params_to_parse, .{
         .diagnostic = &diag,
@@ -416,13 +416,13 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
     }) catch |err| {
         // Report useful error and exit
         diag.report(Output.errorWriter(), err) catch {};
-        cmd.printHelp(false);
+        Command.tagPrintHelp(cmd, false);
         Global.exit(1);
     };
 
     const print_help = args.flag("--help");
     if (print_help) {
-        cmd.printHelp(true);
+        Command.tagPrintHelp(cmd, true);
         Output.flush();
         Global.exit(0);
     }
@@ -598,18 +598,6 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
         }
         if (args.option("--test-name-pattern")) |namePattern| {
             ctx.test_options.test_filter_pattern = namePattern;
-            const regex = RegularExpression.init(bun.String.fromBytes(namePattern), RegularExpression.Flags.none) catch {
-                Output.prettyErrorln(
-                    "<r><red>error<r>: --test-name-pattern expects a valid regular expression but received {f}",
-                    .{
-                        bun.fmt.QuotedFormatter{
-                            .text = namePattern,
-                        },
-                    },
-                );
-                Global.exit(1);
-            };
-            ctx.test_options.test_filter_regex = @ptrCast(regex);
         }
         if (args.option("--changed")) |since| {
             ctx.test_options.changed = since;
@@ -1010,18 +998,14 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
             }
         }
 
-        if (args.flag("--no-deprecation")) {
-            Bun__Node__ProcessNoDeprecation = true;
-        }
-        if (args.flag("--throw-deprecation")) {
-            Bun__Node__ProcessThrowDeprecation = true;
-        }
+        ctx.runtime_options.no_deprecation = args.flag("--no-deprecation");
+        ctx.runtime_options.throw_deprecation = args.flag("--throw-deprecation");
         if (args.option("--title")) |title| {
-            CLI.Bun__Node__ProcessTitle = title;
+            const new_title = bun.handleOom(bun.default_allocator.dupe(u8, title));
+            if (CLI.process_title) |old_title| bun.default_allocator.free(old_title);
+            CLI.process_title = new_title;
         }
-        if (args.flag("--zero-fill-buffers")) {
-            Bun__Node__ZeroFillBuffers = true;
-        }
+        ctx.runtime_options.zero_fill_buffers = args.flag("--zero-fill-buffers");
         const use_system_ca = args.flag("--use-system-ca");
         const use_openssl_ca = args.flag("--use-openssl-ca");
         const use_bundled_ca = args.flag("--use-bundled-ca");
@@ -1034,19 +1018,16 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
 
         // CLI overrides env var (NODE_USE_SYSTEM_CA)
         if (use_bundled_ca) {
-            Bun__Node__CAStore = .bundled;
+            ca_store = .bundled;
         } else if (use_openssl_ca) {
-            Bun__Node__CAStore = .openssl;
+            ca_store = .openssl;
         } else if (use_system_ca) {
-            Bun__Node__CAStore = .system;
+            ca_store = .system;
         } else {
             if (bun.env_var.NODE_USE_SYSTEM_CA.get()) {
-                Bun__Node__CAStore = .system;
+                ca_store = .system;
             }
         }
-
-        // Back-compat boolean used by native code until fully migrated
-        Bun__Node__UseSystemCA = (Bun__Node__CAStore == .system);
     }
 
     if (opts.port != null and opts.origin == null) {
@@ -1589,7 +1570,7 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
 
         if (opts.define) |define| {
             if (define.keys.len > 0)
-                bun.jsc.RuntimeTranspilerCache.is_disabled = true;
+                bun.js_parser.RuntimeTranspilerCache.is_disabled = true;
         }
     }
 
@@ -1695,13 +1676,12 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
     return opts;
 }
 
-export var Bun__Node__ZeroFillBuffers = false;
-export var Bun__Node__ProcessNoDeprecation = false;
-export var Bun__Node__ProcessThrowDeprecation = false;
+pub const CAStore = enum(u8) { bundled, openssl, system };
+pub var ca_store: CAStore = .bundled;
 
-pub const BunCAStore = enum(u8) { bundled, openssl, system };
-pub export var Bun__Node__CAStore: BunCAStore = .bundled;
-pub export var Bun__Node__UseSystemCA = false;
+pub fn useSystemCA() bool {
+    return ca_store == .system;
+}
 
 const string = []const u8;
 
@@ -1722,7 +1702,6 @@ const options = bun.options;
 const resolve_path = bun.path;
 const strings = bun.strings;
 const Api = bun.schema.api;
-const RegularExpression = bun.jsc.RegularExpression;
 
 const CLI = bun.cli;
 const Command = CLI.Command;

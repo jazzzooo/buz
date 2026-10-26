@@ -28,28 +28,32 @@
 #include "SourceID.h"
 #include <wtf/GenericHashKey.h>
 #include <wtf/HashMap.h>
+#include <wtf/Hasher.h>
 #include <wtf/Vector.h>
 
 namespace JSC {
 
 class FunctionHasExecutedCache {
 public:
+    enum class RangeKind { Function, Program };
+    enum class IncludeProgramRanges { No, Yes };
+
     struct FunctionRange {
-        FunctionRange() {}
         friend bool operator==(const FunctionRange&, const FunctionRange&) = default;
         unsigned hash() const
         {
-            return m_start * m_end;
+            return computeHash(m_start, m_end, static_cast<unsigned>(m_kind));
         }
 
         unsigned m_start;
         unsigned m_end;
+        RangeKind m_kind;
     };
 
     bool hasExecutedAtOffset(SourceID, unsigned offset);
-    void insertUnexecutedRange(SourceID, unsigned start, unsigned end);
-    void removeUnexecutedRange(SourceID, unsigned start, unsigned end);
-    Vector<std::tuple<bool, unsigned, unsigned>> getFunctionRanges(SourceID);
+    void insertUnexecutedRange(SourceID, unsigned start, unsigned end, RangeKind = RangeKind::Function);
+    void removeUnexecutedRange(SourceID, unsigned start, unsigned end, RangeKind = RangeKind::Function);
+    Vector<std::tuple<bool, unsigned, unsigned>> getFunctionRanges(SourceID, IncludeProgramRanges = IncludeProgramRanges::Yes);
 
 private:
     using RangeMap = UncheckedKeyHashMap<GenericHashKey<FunctionRange>, bool>;

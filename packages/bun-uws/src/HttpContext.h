@@ -28,74 +28,20 @@
 #include "SocketKinds.h"
 
 #include <string>
-#include <map>
+#include <new>
 #include <string_view>
 #include <iostream>
 #include "MoveOnlyFunction.h"
 #include "HttpParser.h"
 #include <span>
 #include <array>
+#include <algorithm>
 #include <mutex>
 
 
 namespace uWS {
 
-namespace detail {
-
-template <typename T, typename... Args>
-[[nodiscard]] constexpr auto makeArray(T&& el0, Args&&... values) noexcept {
-    return std::array<std::decay_t<T>, 1 + sizeof...(Args)>{
-        std::forward<T>(el0), std::forward<Args>(values)...
-    };
-}
-
-static constexpr auto supportedHttpMethods = makeArray<std::string_view>(
-    "ACL",
-    "BIND",
-    "CHECKOUT",
-    "CONNECT",
-    "COPY",
-    "DELETE",
-    "GET",
-    "HEAD",
-    "LINK",
-    "LOCK",
-    "M-SEARCH",
-    "MERGE",
-    "MKACTIVITY",
-    "MKADDRESSBOOK",
-    "MKCALENDAR",
-    "MKCOL",
-    "MOVE",
-    "NOTIFY",
-    "OPTIONS",
-    "PATCH",
-    "POST",
-    "PROPFIND",
-    "PROPPATCH",
-    "PURGE",
-    "PUT",
-    "QUERY",
-    "REBIND",
-    "REPORT",
-    "SEARCH",
-    "SOURCE",
-    "SUBSCRIBE",
-    "TRACE",
-    "UNBIND",
-    "UNLINK",
-    "UNLOCK",
-    "UNSUBSCRIBE"
-);
-
-} // namespace detail
-
-template<bool> struct HttpResponse;
-
-/* Real heap-allocated owner of one HTTP server's socket group + router state.
- * Replaces the old reinterpret_cast over us_socket_context_t — `group.ext`
- * points back to `this` so socket handlers recover the typed context via
- * `(HttpContext<SSL>*) us_socket_group_ext(us_socket_group(s))`. */
+/* The socket group's ext points to its HTTP context owner. */
 template <bool SSL>
 struct HttpContext {
     template<bool> friend struct TemplatedApp;
@@ -158,7 +104,7 @@ private:
             if(httpContextData->flags.rejectUnauthorized) {
                 if(!success || verify_error.error != 0) {
                     // we failed to handshake, close the socket
-                    us_socket_close(s, 0, nullptr);
+                    us_socket_close(static_cast<us_socket_t *>(s), 0, nullptr);
                     return;
                 }
             }
@@ -214,8 +160,8 @@ private:
                 httpContextData->onSocketData(httpResponseData->socketData, SSL, s, "", 0, true);
             }
             if(httpResponseData->inStream) {
-                httpResponseData->inStream(reinterpret_cast<HttpResponse<SSL> *>(s), "", 0, true, httpResponseData->userData);
-                httpResponseData->inStream = nullptr;
+                const auto callback = httpResponseData->inStream.take();
+                callback(reinterpret_cast<HttpResponse<SSL> *>(s), "", 0, true);
             }
         }
 
@@ -228,8 +174,9 @@ private:
             httpContextData->onSocketClosed(httpResponseData->socketData, SSL, s);
         }
         /* Signal broken HTTP request only if we have a pending request */
-        if (httpResponseData->onAborted != nullptr && httpResponseData->userData != nullptr) {
-            httpResponseData->onAborted((HttpResponse<SSL> *)s, httpResponseData->userData);
+        if (httpResponseData->onAborted) {
+            const auto callback = httpResponseData->onAborted.take();
+            callback((HttpResponse<SSL> *)s);
         }
 
 
@@ -299,6 +246,8 @@ private:
 
             /* Mark pending request and emit it */
             httpResponseData->state = HttpResponseData<SSL>::HTTP_RESPONSE_PENDING;
+            httpResponseData->webSocketCompressionEnabled = true;
+            httpResponseData->webSocketStatusWritten = false;
 
 
             /* Mark this response as connectionClose if ancient or connection: close */
@@ -308,22 +257,17 @@ private:
 
             httpResponseData->fromAncientRequest = httpRequest->isAncient();
 
-            /* Select the router based on SNI (only possible for SSL) */
-            auto *selectedRouter = &httpContextData->router;
-            if constexpr (SSL) {
-                void *domainRouter = us_socket_server_name_userdata((struct us_socket_t *) s);
-                if (domainRouter) {
-                    selectedRouter = (decltype(selectedRouter)) domainRouter;
-                }
-            }
-
-            /* Route the method and URL */
-            selectedRouter->getUserData() = {(HttpResponse<SSL> *) s, httpRequest};
-            if (!selectedRouter->route(httpRequest->getCaseSensitiveMethod(), httpRequest->getUrl())) {
-                /* We have to force close this socket as we have no handler for it */
-                us_socket_close((us_socket_t *) s, 0, nullptr);
+            const auto requestHandler = httpContextData->requestHandler;
+            if (!requestHandler) {
+                us_socket_close(static_cast<us_socket_t *>(s), 0, nullptr);
                 return nullptr;
             }
+            if (!httpContextData->flags.usingCustomExpectHandler && httpRequest->getHeader("expect") == "100-continue") {
+                const auto status = reinterpret_cast<HttpResponse<SSL> *>(s)->writeContinue();
+                if (status == WriteStatus::OutOfMemory) return reinterpret_cast<AsyncSocket<SSL> *>(s)->closeOnOutOfMemory();
+                if (status == WriteStatus::Closed) return nullptr;
+            }
+            requestHandler(reinterpret_cast<HttpResponse<SSL> *>(s), httpRequest);
 
             /* First of all we need to check if this socket was deleted due to upgrade */
             if (httpContextData->upgradedWebSocket) {
@@ -357,10 +301,14 @@ private:
             return s;
 
         }, [httpResponseData, httpContextData](void *user, std::string_view data, bool fin) -> void * {
-
+            auto *socket = static_cast<us_socket_t *>(user);
+            auto *group = us_socket_group(socket);
 
             if (httpResponseData->isConnectRequest && httpResponseData->socketData && httpContextData->onSocketData) {
                 httpContextData->onSocketData(httpResponseData->socketData, SSL, (struct us_socket_t *) user, data.data(), data.length(), fin);
+                if (us_socket_is_closed(socket) || us_socket_group(socket) != group || us_socket_is_shut_down(socket)) {
+                    return nullptr;
+                }
             }
             /* We always get an empty chunk even if there is no data */
             if (httpResponseData->inStream) {
@@ -380,23 +328,13 @@ private:
                 }
 
                 /* We might respond in the handler, so do not change timeout after this */
-                httpResponseData->inStream(static_cast<HttpResponse<SSL>*>(user), data.data(), data.length(), fin, httpResponseData->userData);
+                const auto callback = fin ? httpResponseData->inStream.take() : httpResponseData->inStream;
+                callback(static_cast<HttpResponse<SSL>*>(user), data.data(), data.length(), fin);
 
-                /* Was the socket closed? */
-                if (us_socket_is_closed((struct us_socket_t *) user)) {
+                if (us_socket_is_closed(socket) || us_socket_group(socket) != group || us_socket_is_shut_down(socket)) {
                     return nullptr;
                 }
 
-                /* We absolutely have to terminate parsing if shutdown */
-                if (us_socket_is_shut_down((us_socket_t *) user)) {
-                    return nullptr;
-                }
-
-                /* If we were given the last data chunk, reset data handler to ensure following
-                 * requests on the same socket won't trigger any previously registered behavior */
-                if (fin) {
-                    httpResponseData->inStream = nullptr;
-                }
             }
             return user;
         });
@@ -420,24 +358,31 @@ private:
         auto returnedData = result.returnedData;
         /* We need to uncork in all cases, except for nullptr (closed socket, or upgraded socket) */
         if (returnedData != nullptr) {
+            auto *returnedSocket = reinterpret_cast<us_socket_t *>(returnedData);
+            if (us_socket_is_closed(returnedSocket)) return returnedSocket;
+            auto *asyncSocket = reinterpret_cast<AsyncSocket<SSL> *>(returnedData);
             /* We don't want open sockets to keep the event loop alive between HTTP requests */
             us_socket_unref((us_socket_t *) returnedData);
 
-            /* Timeout on uncork failure */
-            auto [written, failed] = ((AsyncSocket<SSL> *) returnedData)->uncork();
-            if (written > 0 || failed) {
+            const bool hadPendingOutput = asyncSocket->hasPendingOutput();
+            const auto uncorked = asyncSocket->uncork();
+            if (uncorked.status == WriteStatus::OutOfMemory) return asyncSocket->closeOnOutOfMemory();
+            if (uncorked.status == WriteStatus::Closed) return returnedSocket;
+            auto *response = reinterpret_cast<HttpResponse<SSL> *>(returnedSocket);
+            const auto *responseData = response->getHttpResponseData();
+            if (hadPendingOutput || uncorked.status == WriteStatus::Backpressure) {
                 /* All Http sockets timeout by this, and this behavior match the one in HttpResponse::cork */
-                ((HttpResponse<SSL> *) s)->resetTimeout();
+                response->resetTimeout();
             }
 
             /* We need to check if we should close this socket here now */
-            if (httpResponseData->state & HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE) {
-                if ((httpResponseData->state & HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
-                    if (((AsyncSocket<SSL> *) s)->getBufferedAmount() == 0) {
-                        ((AsyncSocket<SSL> *) s)->shutdown();
+            if (responseData->state & HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE) {
+                if ((responseData->state & HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
+                    if (!asyncSocket->hasPendingOutput()) {
+                        asyncSocket->shutdown();
                         /* We need to force close after sending FIN since we want to hinder
                          * clients from keeping to send their huge data */
-                        ((AsyncSocket<SSL> *) s)->close();
+                        return asyncSocket->close();
                     }
                 }
             }
@@ -448,12 +393,14 @@ private:
         if (httpContextData->upgradedWebSocket) {
             /* This path is only for upgraded websockets */
             AsyncSocket<SSL> *asyncSocket = (AsyncSocket<SSL> *) httpContextData->upgradedWebSocket;
+            httpContextData->upgradedWebSocket = nullptr;
 
-            /* Uncork here as well (note: what if we failed to uncork and we then pub/sub before we even upgraded?) */
-            auto [written, failed] = asyncSocket->uncork();
+            const auto uncorked = asyncSocket->uncork();
+            if (uncorked.status == WriteStatus::OutOfMemory) return asyncSocket->closeOnOutOfMemory();
+            if (uncorked.status == WriteStatus::Closed) return reinterpret_cast<us_socket_t *>(asyncSocket);
 
             /* If we succeeded in uncorking, check if we have sent WebSocket FIN */
-            if (!failed) {
+            if (uncorked.status == WriteStatus::Complete) {
                 WebSocketData *webSocketData = (WebSocketData *) asyncSocket->getAsyncSocketData();
                 if (webSocketData->isShuttingDown) {
                     /* In that case, also send TCP FIN (this is similar to what we have in ws drain handler) */
@@ -461,21 +408,22 @@ private:
                 }
             }
 
-            /* Reset upgradedWebSocket before we return */
-            httpContextData->upgradedWebSocket = nullptr;
-
             /* Return the new upgraded websocket */
             return (us_socket_t *) asyncSocket;
         }
 
-        /* It is okay to uncork a closed socket and we need to */
-        ((AsyncSocket<SSL> *) s)->uncork();
+        if (!us_socket_is_closed(s)) {
+            auto *asyncSocket = reinterpret_cast<AsyncSocket<SSL> *>(s);
+            if (asyncSocket->uncork().status == WriteStatus::OutOfMemory) return asyncSocket->closeOnOutOfMemory();
+        }
 
         /* We cannot return nullptr to the underlying stack in any case */
         return s;
     }
 
     static us_socket_t *onWritable(us_socket_t *s) {
+        if (us_socket_is_closed(s)) return s;
+        auto *httpGroup = us_socket_group(s);
         auto *asyncSocket = reinterpret_cast<AsyncSocket<SSL> *>(s);
         auto *httpResponseData = reinterpret_cast<HttpResponseData<SSL> *>(asyncSocket->getAsyncSocketData());
 
@@ -483,7 +431,7 @@ private:
         size_t bufferedAmount = asyncSocket->getBufferedAmount();
         if (bufferedAmount > 0) {
             /* Try to flush pending data from the socket's buffer to the network */
-            asyncSocket->flush();
+            if (asyncSocket->flush() == WriteStatus::Closed) return s;
             /* Check if there's still data waiting to be sent after flush attempt */
             if (asyncSocket->getBufferedAmount() > 0) {
                 /* Socket buffer is not completely empty yet
@@ -504,6 +452,7 @@ private:
 
         if (httpResponseData->isConnectRequest && httpResponseData->socketData && httpContextData->onSocketDrain) {
             httpContextData->onSocketDrain(httpResponseData->socketData, SSL, (struct us_socket_t *) s);
+            if (us_socket_is_closed(s) || us_socket_group(s) != httpGroup) return s;
         }
         /* Ask the developer to write data and return success (true) or failure (false), OR skip sending anything and return success (true). */
         if (httpResponseData->onWritable) {
@@ -513,6 +462,7 @@ private:
             /* We expect the developer to return whether or not write was successful (true).
              * If write was never called, the developer should still return true so that we may drain. */
             bool success = httpResponseData->callOnWritable(reinterpret_cast<HttpResponse<SSL> *>(asyncSocket), httpResponseData->offset);
+            if (us_socket_is_closed(s) || us_socket_group(s) != httpGroup) return s;
 
             /* The developer indicated that their onWritable failed. */
             if (!success) {
@@ -523,18 +473,21 @@ private:
             /* We need to drain any remaining buffered data if success == true*/
         }
 
-        /* Drain any socket buffer, this might empty our backpressure and thus finish the request */
-        asyncSocket->flush();
+        const auto flushed = asyncSocket->uncork();
+        if (flushed.status == WriteStatus::OutOfMemory) return asyncSocket->closeOnOutOfMemory();
+        if (flushed.status == WriteStatus::Closed) return s;
+        const bool drained = !asyncSocket->hasPendingOutput();
+        httpResponseData->isIdle = !(httpResponseData->state & HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) && drained;
 
         /* Should we close this connection after a response - and is this response really done? */
         if (httpResponseData->state & HttpResponseData<SSL>::HTTP_CONNECTION_CLOSE) {
             if ((httpResponseData->state & HttpResponseData<SSL>::HTTP_RESPONSE_PENDING) == 0) {
-                if (asyncSocket->getBufferedAmount() == 0) {
+                if (drained) {
 
                     asyncSocket->shutdown();
                     /* We need to force close after sending FIN since we want to hinder
                      * clients from keeping to send their huge data */
-                    asyncSocket->close();
+                    return asyncSocket->close();
                 }
             }
         }
@@ -560,7 +513,8 @@ private:
         HttpResponseData<SSL> *httpResponseData = reinterpret_cast<HttpResponseData<SSL> *>(asyncSocket->getAsyncSocketData());
 
         if (httpResponseData->onTimeout) {
-            httpResponseData->onTimeout((HttpResponse<SSL> *)s, httpResponseData->userData);
+            const auto callback = httpResponseData->onTimeout.take();
+            callback((HttpResponse<SSL> *)s);
         }
         return asyncSocket->close();
     }
@@ -581,10 +535,12 @@ private:
     };
 
 public:
-    /* Construct a new HttpContext using specified loop. SSL_CTX is built and
-     * owned by TemplatedApp; we only learn about it at listen() time. */
+    static constexpr size_t socketExtensionSize = std::max(sizeof(HttpResponseData<SSL>), sizeof(WebSocketData) + sizeof(void *));
+
+    /* TemplatedApp owns the SSL_CTX reference used at listen() time. */
     static HttpContext *create(Loop *loop, bool requestCert = false, bool rejectUnauthorized = false) {
-        HttpContext *httpContext = new HttpContext;
+        HttpContext *httpContext = new (std::nothrow) HttpContext;
+        if (!httpContext) return nullptr;
         us_socket_group_init(&httpContext->group, (us_loop_t *) loop, &httpVTable, httpContext);
         if (requestCert && rejectUnauthorized) {
             httpContext->data.flags.rejectUnauthorized = true;
@@ -602,79 +558,11 @@ public:
         getSocketContextData()->filterHandlers.emplace_back(std::move(filterHandler));
     }
 
-    /* Register an HTTP route handler acording to URL pattern */
-    void onHttp(std::string_view method, std::string_view pattern, MoveOnlyFunction<void(HttpResponse<SSL> *, HttpRequest *)> &&handler, bool upgrade = false) {
-        HttpContextData<SSL> *httpContextData = getSocketContextData();
-
-        std::span<const std::string_view> methods;
-        std::string method_buffer;
-        std::string_view method_sv_buffer;
-        // When it's NOT node:http, allow the uWS default precedence ordering.
-        if (method == "*" && !httpContextData->flags.useStrictMethodValidation) {
-            methods = detail::supportedHttpMethods;
-        } else {
-            method_buffer = std::string(method);
-            method_sv_buffer = std::string_view(method_buffer);
-            methods = {&method_sv_buffer, 1};
-        }
-
-        uint32_t priority = method == "*" ? httpContextData->currentRouter->LOW_PRIORITY : (upgrade ? httpContextData->currentRouter->HIGH_PRIORITY : httpContextData->currentRouter->MEDIUM_PRIORITY);
-
-        /* If we are passed nullptr then remove this */
-        if (!handler) {
-            for (const auto &method : methods) {
-                httpContextData->currentRouter->remove(method, pattern, priority);
-            }
-            return;
-        }
-
-        /* Record this route's parameter offsets */
-        std::map<std::string, unsigned short, std::less<>> parameterOffsets;
-        unsigned short offset = 0;
-        for (unsigned int i = 0; i < pattern.length(); i++) {
-            if (pattern[i] == ':') {
-                i++;
-                unsigned int start = i;
-                while (i < pattern.length() && pattern[i] != '/') {
-                    i++;
-                }
-                parameterOffsets[std::string(pattern.data() + start, i - start)] = offset;
-                offset++;
-            }
-        }
-
-
-
-        httpContextData->currentRouter->add(methods, pattern, [handler = std::move(handler), parameterOffsets = std::move(parameterOffsets), httpContextData](auto *r) mutable {
-            auto user = r->getUserData();
-            user.httpRequest->setYield(false);
-            user.httpRequest->setParameters(r->getParameters());
-            user.httpRequest->setParameterOffsets(&parameterOffsets);
-
-            if (!httpContextData->flags.usingCustomExpectHandler) {
-                /* Middleware? Automatically respond to expectations */
-                std::string_view expect = user.httpRequest->getHeader("expect");
-                if (expect.length() && expect == "100-continue") {
-                    user.httpResponse->writeContinue();
-                }
-            }
-
-            handler(user.httpResponse, user.httpRequest);
-
-            /* If any handler yielded, the router will keep looking for a suitable handler. */
-            if (user.httpRequest->getYield()) {
-                return false;
-            }
-            return true;
-        }, priority);
-    }
-
     /* Listen to port using this HttpContext. ssl_ctx may be nullptr for plain HTTP. */
-    us_listen_socket_t *listen(struct ssl_ctx_st *sslCtx, const char *host, int port, int options) {
-        int error = 0;
+    us_listen_socket_t *listen(struct ssl_ctx_st *sslCtx, const char *host, int port, int options, us_listen_error_t *error) {
         /* HTTP clients always send first (the request, or ClientHello for TLS), so defer
          * accept() until data arrives and dispatch the read immediately after accept. */
-        auto socket = us_socket_group_listen(&group, socketKind(), sslCtx, host, port, options | LIBUS_LISTEN_DEFER_ACCEPT, sizeof(HttpResponseData<SSL>), &error);
+        auto socket = us_socket_group_listen(&group, socketKind(), sslCtx, host, port, options | LIBUS_LISTEN_DEFER_ACCEPT, socketExtensionSize, error);
         // we dont depend on libuv ref for keeping it alive
         if (socket) {
           us_socket_unref(&socket->s);
@@ -683,9 +571,8 @@ public:
     }
 
     /* Listen to unix domain socket using this HttpContext */
-    us_listen_socket_t *listen_unix(struct ssl_ctx_st *sslCtx, const char *path, size_t pathlen, int options) {
-        int error = 0;
-        auto* socket = us_socket_group_listen_unix(&group, socketKind(), sslCtx, path, pathlen, options, sizeof(HttpResponseData<SSL>), &error);
+    us_listen_socket_t *listen_unix(struct ssl_ctx_st *sslCtx, const char *path, size_t pathlen, int options, us_listen_error_t *error) {
+        auto* socket = us_socket_group_listen_unix(&group, socketKind(), sslCtx, path, pathlen, options, socketExtensionSize, error);
         // we dont depend on libuv ref for keeping it alive
         if (socket) {
             us_socket_unref(&socket->s);

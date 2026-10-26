@@ -16,44 +16,47 @@ pub const Ctx = union(enum) {
         }
     }
 };
-var is_enabled = std.atomic.Value(bool).init(false);
+var is_enabled = false;
 const InitState = enum(u8) { uninitialized, initializing, initialized };
 var is_enabled_state = std.atomic.Value(InitState).init(.uninitialized);
 fn isEnabledOnMacOSOnce() void {
     if (bun.env_var.DYLD_ROOT_PATH.get() != null or bun.feature_flag.BUN_INSTRUMENTS.get()) {
-        is_enabled.store(true, .seq_cst);
+        is_enabled = true;
     }
 }
 
 fn isEnabledOnLinuxOnce() void {
     if (bun.feature_flag.BUN_TRACE.get()) {
-        is_enabled.store(true, .seq_cst);
+        is_enabled = true;
     }
 }
 
 fn isEnabledOnce() void {
     if (comptime bun.Environment.isMac) {
         isEnabledOnMacOSOnce();
-        if (Darwin.get() == null) {
-            is_enabled.store(false, .seq_cst);
+        if (is_enabled and Darwin.get() == null) {
+            is_enabled = false;
         }
     } else if (comptime bun.Environment.isLinux) {
         isEnabledOnLinuxOnce();
-        if (!Linux.isSupported()) {
-            is_enabled.store(false, .seq_cst);
+        if (is_enabled and !Linux.isSupported()) {
+            is_enabled = false;
         }
     }
 }
 
 pub fn isEnabled() bool {
-    const state = is_enabled_state.load(.acquire);
-    if (state == .uninitialized and
-        is_enabled_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire) == null)
-    {
-        isEnabledOnce();
-        is_enabled_state.store(.initialized, .release);
+    var state = is_enabled_state.load(.acquire);
+    if (state == .uninitialized) {
+        if (is_enabled_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire)) |actual| {
+            state = actual;
+        } else {
+            isEnabledOnce();
+            is_enabled_state.store(.initialized, .release);
+            state = .initialized;
+        }
     }
-    return is_enabled.load(.seq_cst);
+    return state == .initialized and is_enabled;
 }
 
 /// Trace an event using the system profiler (Instruments).
@@ -104,7 +107,7 @@ pub const Darwin = struct {
 
     pub fn init(comptime name: i32) @This() {
         return .{
-            .interval = os_log.?.signpost(name).interval(.PointsOfInterest),
+            .interval = os_log.?.signpost(name).interval(),
         };
     }
 
@@ -112,10 +115,10 @@ pub const Darwin = struct {
         this.interval.end();
     }
 
-    var os_log: ?*OSLog = null;
+    var os_log: ?OSLog = null;
     var os_log_state = std.atomic.Value(InitState).init(.uninitialized);
 
-    pub fn get() ?*OSLog {
+    pub fn get() ?OSLog {
         var state = os_log_state.load(.acquire);
         if (state == .uninitialized) {
             if (os_log_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire)) |actual| {
@@ -135,29 +138,39 @@ pub const Linux = struct {
     start_time: u64,
     event: PerfEvent,
 
-    var is_initialized = std.atomic.Value(bool).init(false);
     var init_state = std.atomic.Value(InitState).init(.uninitialized);
 
-    extern "c" fn Bun__linux_trace_init() c_int;
-    extern "c" fn Bun__linux_trace_close() void;
-    extern "c" fn Bun__linux_trace_emit(event_name: [*:0]const u8, duration_ns: i64) c_int;
+    var trace_fd: ?std.c.fd_t = null;
 
     fn initOnce() void {
-        const result = Bun__linux_trace_init();
-        is_initialized.store(result != 0, .monotonic);
+        const paths = [_][*:0]const u8{
+            "/sys/kernel/tracing/trace_marker",
+            "/sys/kernel/debug/tracing/trace_marker",
+        };
+        for (paths) |path| {
+            while (true) {
+                const fd = std.c.open(path, .{ .ACCMODE = .WRONLY, .CLOEXEC = true });
+                if (fd >= 0) {
+                    trace_fd = fd;
+                    return;
+                }
+                if (std.c._errno().* != @backingInt(std.c.E.INTR)) break;
+            }
+        }
     }
 
     pub fn isSupported() bool {
-        const state = init_state.load(.acquire);
-        if (state == .uninitialized and
-            init_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire) == null)
-        {
-            initOnce();
-            init_state.store(.initialized, .release);
-        } else if (state == .initializing) {
-            return false;
+        var state = init_state.load(.acquire);
+        if (state == .uninitialized) {
+            if (init_state.cmpxchgStrong(.uninitialized, .initializing, .acq_rel, .acquire)) |actual| {
+                state = actual;
+            } else {
+                initOnce();
+                init_state.store(.initialized, .release);
+                state = .initialized;
+            }
         }
-        return is_initialized.load(.monotonic);
+        return state == .initialized and trace_fd != null;
     }
 
     pub fn init(event: PerfEvent) @This() {
@@ -172,7 +185,13 @@ pub const Linux = struct {
 
         const duration = bun.timespec.now(.force_real_time).ns() -| this.start_time;
 
-        _ = Bun__linux_trace_emit(@tagName(this.event).ptr, @intCast(duration));
+        var buffer: [256]u8 = undefined;
+        const event = std.fmt.bufPrint(&buffer, "C|{d}|{s}|{d}\n", .{
+            std.c.getpid(), @tagName(this.event), duration,
+        }) catch return;
+        while (std.c.write(trace_fd.?, event.ptr, event.len) < 0) {
+            if (std.c._errno().* != @backingInt(std.c.E.INTR)) return;
+        }
     }
 };
 

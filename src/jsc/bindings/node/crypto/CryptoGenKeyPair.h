@@ -2,12 +2,10 @@
 
 #include "root.h"
 #include "ncrypto.h"
-#include "KeyObject.h"
+#include <wtf/FastMalloc.h>
+#include <wtf/Vector.h>
 
 namespace Bun {
-
-JSC_DECLARE_HOST_FUNCTION(jsGenerateKeyPair);
-JSC_DECLARE_HOST_FUNCTION(jsGenerateKeyPairSync);
 
 struct KeyEncodingConfig {
     ncrypto::EVPKeyPointer::PublicKeyEncodingConfig publicKeyEncoding;
@@ -16,26 +14,29 @@ struct KeyEncodingConfig {
 
 struct KeyPairJobCtx {
 public:
-    KeyPairJobCtx(ncrypto::EVPKeyPointer::PublicKeyEncodingConfig publicKeyEncoding, ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig privateKeyEncoding)
-        : m_publicKeyEncoding(publicKeyEncoding)
-        , m_privateKeyEncoding(privateKeyEncoding)
+    KeyPairJobCtx(KeyEncodingConfig&& config)
+        : m_publicKeyEncoding(config.publicKeyEncoding)
+        , m_privateKeyEncoding(WTF::move(config.privateKeyEncoding))
     {
     }
 
-    void runTask(JSC::JSGlobalObject* globalObject, ncrypto::EVPKeyCtxPointer& ctx);
-    void runFromJS(JSC::JSGlobalObject* globalObject, JSC::JSValue callback);
-    void deinit();
+    virtual ~KeyPairJobCtx() = default;
 
-    int err() const { return m_opensslError; };
+    void runTask();
+    virtual ncrypto::EVPKeyCtxPointer setup() = 0;
+
+    bool allocationFailed() const { return m_allocationFailed; }
+    std::span<const uint32_t> errors() const { return m_errors.span(); }
 
     ncrypto::EVPKeyPointer::PublicKeyEncodingConfig m_publicKeyEncoding;
     ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig m_privateKeyEncoding;
 
-    // keyObj is set after work is done
-    KeyObject m_keyObj;
-    int m_opensslError = 0;
-};
+    ncrypto::EVPKeyPointer m_key;
 
-KeyEncodingConfig parseKeyEncodingConfig(JSC::JSGlobalObject*, JSC::ThrowScope&, JSC::JSValue keyTypeValue, JSC::JSValue optionsValue);
+private:
+    WTF::Vector<uint32_t> m_errors;
+    bool m_hasRun { false };
+    bool m_allocationFailed { false };
+};
 
 } // namespace Bun

@@ -9,13 +9,17 @@ using namespace JSC;
 
 const ClassInfo JSConnectionsListConstructor::s_info = { "ConnectionsList"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSConnectionsListConstructor) };
 
-JSC_DEFINE_HOST_FUNCTION(callConnectionsList, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_connectionsListConstructorCall(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_connectionsListConstructorCall_Arguments&)
 {
-    return JSValue::encode(jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(constructConnectionsList, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeHTTP_connectionsListConstructorConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_connectionsListConstructorConstruct_Arguments&)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     VM& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
@@ -28,7 +32,7 @@ JSC_DEFINE_HOST_FUNCTION(constructConnectionsList, (JSGlobalObject * lexicalGlob
     JSSet* activeConnections = JSSet::create(vm, lexicalGlobalObject->setStructure());
     RETURN_IF_EXCEPTION(scope, {});
 
-    return JSValue::encode(JSConnectionsList::create(vm, globalObject, structure, allConnections, activeConnections));
+    return JSConnectionsList::create(vm, globalObject, structure, allConnections, activeConnections);
 }
 
 } // namespace Bun

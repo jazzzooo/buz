@@ -4,23 +4,27 @@
 #include "DOMIsoSubspaces.h"
 #include "ZigGlobalObject.h"
 #include "ErrorCode.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/JSCJSValueInlines.h>
 #include <JavaScriptCore/VMTrapsInlines.h>
 #include <JavaScriptCore/LazyClassStructureInlines.h>
 #include <JavaScriptCore/FunctionPrototype.h>
+#include <JavaScriptCore/GetterSetter.h>
 #include <JavaScriptCore/ObjectPrototype.h>
 #include "JSDOMExceptionHandling.h"
 
 namespace Bun {
 
-JSC_DECLARE_HOST_FUNCTION(jsDiffieHellmanGetter_verifyError);
-
 const JSC::ClassInfo JSDiffieHellman::s_info = { "DiffieHellman"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSDiffieHellman) };
+
+#define BUN_BINDGEN_OBJECT_SURFACE_JSDiffieHellmanInstance
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSDiffieHellmanInstance
 
 void JSDiffieHellman::finishCreation(JSC::VM& vm, JSC::JSGlobalObject* globalObject)
 {
     Base::finishCreation(vm);
-    JSC_NATIVE_GETTER("verifyError"_s, jsDiffieHellmanGetter_verifyError, PropertyAttribute::ReadOnly | PropertyAttribute::Accessor);
+    bunBindgenObjectSurface_JSDiffieHellmanInstance_install(vm, info(), *this);
 
     m_sizeForGC = this->m_dh.size();
     vm.heap.reportExtraMemoryAllocated(this, m_sizeForGC);
@@ -52,26 +56,24 @@ void setupDiffieHellmanClassStructure(JSC::LazyClassStructure::Initializer& init
     init.setConstructor(constructor);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsDiffieHellmanGetter_verifyError, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+int32_t Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanVerifyError(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanVerifyError_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSValue thisValue = callFrame->thisValue();
-
-    JSDiffieHellman* thisObject = dynamicDowncast<JSDiffieHellman>(thisValue);
-    if (!thisObject) [[unlikely]] {
-        throwVMTypeError(globalObject, scope);
-        return {};
-    }
-
-    auto& dh = thisObject->getImpl();
+    auto* receiver = dynamicDowncast<JSDiffieHellman>(args.bindingThis);
+    RELEASE_ASSERT(receiver);
+    auto& dh = receiver->getImpl();
     auto result = dh.check();
     if (result == ncrypto::DHPointer::CheckResult::CHECK_FAILED) {
-        return Bun::ERR::CRYPTO_OPERATION_FAILED(scope, globalObject, "Checking DH parameters failed"_s);
+        Bun::ERR::CRYPTO_OPERATION_FAILED(scope, globalObject, "Checking DH parameters failed"_s);
+        return 0;
     }
 
-    return JSC::JSValue::encode(JSC::jsNumber(static_cast<int>(result)));
+    return static_cast<int32_t>(result);
 }
 
 } // namespace Bun

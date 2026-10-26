@@ -48,8 +48,6 @@ pub const Format = enum {
         .{ "internal_bake_dev", .internal_bake_dev },
     });
 
-    pub const fromJS = @import("../bundler_jsc/options_jsc.zig").formatFromJS;
-
     pub fn fromString(slice: []const u8) ?Format {
         return Map.getWithEql(slice, bun.strings.eqlComptime);
     }

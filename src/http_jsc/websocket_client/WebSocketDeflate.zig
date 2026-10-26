@@ -74,14 +74,14 @@ const MAX_DECOMPRESSED_SIZE: usize = 128 * 1024 * 1024;
 // DEFLATE trailer bytes added by Z_SYNC_FLUSH
 const DEFLATE_TRAILER = [_]u8{ 0x00, 0x00, 0xff, 0xff };
 
-pub fn init(allocator: std.mem.Allocator, params: Params, rare_data: *jsc.RareData) !*PerMessageDeflate {
+pub fn init(allocator: std.mem.Allocator, params: Params, rare_data: *RareData) !*PerMessageDeflate {
     const self = try allocator.create(PerMessageDeflate);
     self.* = .{
         .allocator = allocator,
         .params = params,
         .compress_stream = std.mem.zeroes(zlib.z_stream),
         .decompress_stream = std.mem.zeroes(zlib.z_stream),
-        .rare_data = rare_data.websocketDeflate(),
+        .rare_data = rare_data,
     };
 
     // Initialize compressor (deflate)
@@ -98,7 +98,7 @@ pub fn init(allocator: std.mem.Allocator, params: Params, rare_data: *jsc.RareDa
     );
     if (compress_err != .Ok) {
         allocator.destroy(self);
-        return error.DeflateInitFailed;
+        return if (compress_err == .MemError) error.OutOfMemory else error.DeflateInitFailed;
     }
 
     // Initialize decompressor (inflate)
@@ -111,7 +111,7 @@ pub fn init(allocator: std.mem.Allocator, params: Params, rare_data: *jsc.RareDa
     if (decompress_err != .Ok) {
         _ = zlib.deflateEnd(&self.compress_stream);
         allocator.destroy(self);
-        return error.InflateInitFailed;
+        return if (decompress_err == .MemError) error.OutOfMemory else error.InflateInitFailed;
     }
 
     return self;
@@ -223,6 +223,5 @@ pub fn compress(self: *PerMessageDeflate, in_buf: []const u8, out: *std.array_li
 const std = @import("std");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 const libdeflate = bun.libdeflate;
 const zlib = bun.zlib;

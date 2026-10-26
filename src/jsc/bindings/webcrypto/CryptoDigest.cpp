@@ -70,8 +70,9 @@ namespace PAL {
 
 struct CryptoDigestContext {
     virtual ~CryptoDigestContext() = default;
-    virtual void addBytes(const void* input, size_t length) = 0;
-    virtual Vector<uint8_t> computeHash() = 0;
+    virtual bool addBytes(const void* input, size_t length) = 0;
+    virtual size_t digestLength() const = 0;
+    virtual bool computeHash(std::span<uint8_t>) = 0;
 };
 
 template<typename SHAContext, typename SHAFunctions>
@@ -80,7 +81,10 @@ struct CryptoDigestContextImpl : public CryptoDigestContext {
 
     static std::unique_ptr<CryptoDigestContext> create()
     {
-        return makeUnique<CryptoDigestContextImpl>();
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(CryptoDigestContextImpl)).getValue(allocation))
+            return nullptr;
+        return std::unique_ptr<CryptoDigestContext>(new (NotNull, allocation) CryptoDigestContextImpl);
     }
 
     CryptoDigestContextImpl()
@@ -88,16 +92,17 @@ struct CryptoDigestContextImpl : public CryptoDigestContext {
         SHAFunctions::init(&m_context);
     }
 
-    void addBytes(const void* input, size_t length) override
+    bool addBytes(const void* input, size_t length) override
     {
-        SHAFunctions::update(&m_context, input, length);
+        return SHAFunctions::update(&m_context, input, length) == 1;
     }
 
-    Vector<uint8_t> computeHash() override
+    size_t digestLength() const override { return SHAFunctions::digestLength; }
+
+    bool computeHash(std::span<uint8_t> output) override
     {
-        Vector<uint8_t> result(SHAFunctions::digestLength);
-        SHAFunctions::final(result.begin(), &m_context);
-        return result;
+        RELEASE_ASSERT(output.size() == digestLength());
+        return SHAFunctions::final(output.data(), &m_context) == 1;
     }
 
 private:
@@ -109,30 +114,33 @@ struct CryptoDigestContextEVP : public CryptoDigestContext {
 
     static std::unique_ptr<CryptoDigestContext> create(const EVP_MD* md)
     {
-        return makeUnique<CryptoDigestContextEVP>(md);
+        void* allocation;
+        if (!WTF::tryFastMalloc(sizeof(CryptoDigestContextEVP)).getValue(allocation))
+            return nullptr;
+        auto context = std::unique_ptr<CryptoDigestContextEVP>(new (NotNull, allocation) CryptoDigestContextEVP);
+        if (EVP_DigestInit_ex(&context->m_context, md, nullptr) != 1)
+            return nullptr;
+        return context;
     }
 
-    explicit CryptoDigestContextEVP(const EVP_MD* md)
+    CryptoDigestContextEVP()
     {
         EVP_MD_CTX_init(&m_context);
-        int rc = EVP_DigestInit_ex(&m_context, md, nullptr);
-        ASSERT_UNUSED(rc, rc == 1);
     }
 
     ~CryptoDigestContextEVP() override { EVP_MD_CTX_cleanup(&m_context); }
 
-    void addBytes(const void* input, size_t length) override
+    bool addBytes(const void* input, size_t length) override
     {
-        int rc = EVP_DigestUpdate(&m_context, input, length);
-        ASSERT_UNUSED(rc, rc == 1);
+        return EVP_DigestUpdate(&m_context, input, length) == 1;
     }
 
-    Vector<uint8_t> computeHash() override
+    size_t digestLength() const override { return EVP_MD_CTX_size(&m_context); }
+
+    bool computeHash(std::span<uint8_t> output) override
     {
-        Vector<uint8_t> result(EVP_MD_CTX_size(&m_context));
-        int rc = EVP_DigestFinal_ex(&m_context, result.begin(), nullptr);
-        ASSERT_UNUSED(rc, rc == 1);
-        return result;
+        RELEASE_ASSERT(output.size() == digestLength());
+        return EVP_DigestFinal_ex(&m_context, output.data(), nullptr) == 1;
     }
 
 private:
@@ -149,48 +157,59 @@ CryptoDigest::~CryptoDigest()
 
 std::unique_ptr<CryptoDigest> CryptoDigest::create(CryptoDigest::Algorithm algorithm)
 {
-    std::unique_ptr<CryptoDigest> digest(new CryptoDigest);
+    void* allocation;
+    if (!WTF::tryFastMalloc(sizeof(CryptoDigest)).getValue(allocation))
+        return nullptr;
+    auto digest = std::unique_ptr<CryptoDigest>(new (NotNull, allocation) CryptoDigest);
 
     switch (algorithm) {
     case CryptoDigest::Algorithm::SHA_1:
         digest->m_context = CryptoDigestContextImpl<SHA_CTX, SHA1Functions>::create();
-        return digest;
+        break;
     case CryptoDigest::Algorithm::SHA_224:
         digest->m_context = CryptoDigestContextImpl<SHA256_CTX, SHA224Functions>::create();
-        return digest;
+        break;
     case CryptoDigest::Algorithm::SHA_256:
         digest->m_context = CryptoDigestContextImpl<SHA256_CTX, SHA256Functions>::create();
-        return digest;
+        break;
     case CryptoDigest::Algorithm::SHA_384:
         digest->m_context = CryptoDigestContextImpl<SHA512_CTX, SHA384Functions>::create();
-        return digest;
+        break;
     case CryptoDigest::Algorithm::SHA_512:
         digest->m_context = CryptoDigestContextImpl<SHA512_CTX, SHA512Functions>::create();
-        return digest;
+        break;
     case CryptoDigest::Algorithm::SHA3_256:
         digest->m_context = CryptoDigestContextEVP::create(EVP_sha3_256());
-        return digest;
+        break;
     case CryptoDigest::Algorithm::SHA3_384:
         digest->m_context = CryptoDigestContextEVP::create(EVP_sha3_384());
-        return digest;
+        break;
     case CryptoDigest::Algorithm::SHA3_512:
         digest->m_context = CryptoDigestContextEVP::create(EVP_sha3_512());
-        return digest;
+        break;
     }
 
-    return nullptr;
+    if (!digest->m_context)
+        return nullptr;
+    return digest;
 }
 
-void CryptoDigest::addBytes(const void* input, size_t length)
+bool CryptoDigest::addBytes(const void* input, size_t length)
 {
     ASSERT(m_context);
-    m_context->addBytes(input, length);
+    return m_context->addBytes(input, length);
 }
 
-Vector<uint8_t> CryptoDigest::computeHash()
+size_t CryptoDigest::digestLength() const
 {
     ASSERT(m_context);
-    return m_context->computeHash();
+    return m_context->digestLength();
+}
+
+bool CryptoDigest::computeHash(std::span<uint8_t> output)
+{
+    ASSERT(m_context);
+    return m_context->computeHash(output);
 }
 
 } // namespace PAL

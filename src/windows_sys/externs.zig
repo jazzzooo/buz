@@ -280,8 +280,6 @@ pub extern "kernel32" fn SetEndOfFile(hFile: HANDLE) callconv(.winapi) BOOL;
 
 pub extern "kernel32" fn GetProcessTimes(in_hProcess: HANDLE, out_lpCreationTime: *FILETIME, out_lpExitTime: *FILETIME, out_lpKernelTime: *FILETIME, out_lpUserTime: *FILETIME) callconv(.winapi) BOOL;
 
-pub extern fn windows_enable_stdio_inheritance() void;
-
 const std = @import("std");
 
 const win32 = std.os.windows;

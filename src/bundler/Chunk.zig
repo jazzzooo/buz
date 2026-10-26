@@ -350,7 +350,7 @@ pub const Chunk = struct {
 
                                         const output_file = files.last().?.output_file;
 
-                                        break :brk graph.additional_output_files.items[output_file].dest_path;
+                                        break :brk graph.additional_output_paths[output_file];
                                     },
                                     .chunk => chunks[index].final_rel_path,
                                     .scb => chunks[entry_point_chunks_for_scb[index]].final_rel_path,
@@ -450,7 +450,7 @@ pub const Chunk = struct {
                                             shift.before.advance(unique_key_for_additional_files[index]);
                                         }
 
-                                        break :brk graph.additional_output_files.items[output_file].dest_path;
+                                        break :brk graph.additional_output_paths[output_file];
                                     },
                                     .chunk => brk: {
                                         const piece_chunk = chunks[index];
@@ -825,7 +825,6 @@ pub const Ref = bun.ast.Ref;
 
 pub const Index = bun.ast.Index;
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 

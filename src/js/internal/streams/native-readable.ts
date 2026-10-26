@@ -6,7 +6,7 @@
 // Bun, `fromWeb` is able to check if the stream is backed by a native handle,
 // to which it will take this path.
 const Readable = require("internal/streams/readable");
-const transferToNativeReadable = $newCppFunction("ReadableStream.cpp", "jsFunctionTransferToNativeReadableStream", 1);
+const transferToNativeReadable = $bindgenFn("NativeReadable.schema.zig", "transfer");
 const { errorOrDestroy } = require("internal/streams/destroy");
 
 const kRefCount = Symbol("refCount");
@@ -23,8 +23,7 @@ let dynamicallyAdjustChunkSize = (_?) => (
   (dynamicallyAdjustChunkSize = () => _)
 );
 
-type NativeReadable = typeof import("node:stream").Readable &
-  typeof import("node:stream").Stream & {
+type NativeReadable = import("node:stream").Readable & {
     push: (chunk: any) => void;
     $bunNativePtr?: NativePtr;
     [kRefCount]: number;
@@ -33,7 +32,10 @@ type NativeReadable = typeof import("node:stream").Readable &
     [kHighWaterMark]: number;
     [kHasResized]: boolean;
     [kRemainingChunk]: Buffer;
+    [kConstructed]: boolean;
     debugId: number;
+    ref(): void;
+    unref(): void;
   };
 
 interface NativePtr {
@@ -50,10 +52,8 @@ let debugId = 0;
 
 function constructNativeReadable(readableStream: ReadableStream, options): NativeReadable {
   $assert(typeof readableStream === "object" && readableStream instanceof ReadableStream, "Invalid readable stream");
-  const bunNativePtr = (readableStream as any).$bunNativePtr;
-  $assert(typeof bunNativePtr === "object", "Invalid native ptr");
 
-  const stream = new Readable(options);
+  const stream = new Readable(options) as NativeReadable;
   stream._read = read;
   stream._destroy = destroy;
 
@@ -61,7 +61,6 @@ function constructNativeReadable(readableStream: ReadableStream, options): Nativ
     stream.debugId = ++debugId;
   }
 
-  stream.$bunNativePtr = bunNativePtr;
   stream[kRefCount] = 0;
   stream[kConstructed] = false;
   stream[kPendingRead] = false;
@@ -76,32 +75,12 @@ function constructNativeReadable(readableStream: ReadableStream, options): Nativ
 
   stream.ref = ref;
   stream.unref = unref;
-  if (process.platform === "win32") {
-    // Only used by node:tty on Windows
-    stream.$start = ensureConstructed;
-  }
-
-  // https://github.com/oven-sh/bun/pull/12801
-  // https://github.com/oven-sh/bun/issues/9555
-  // There may be a ReadableStream.Strong handle to the ReadableStream.
-  // We can't update those handles to point to the NativeReadable from JS
-  // So we instead mark it as no longer usable, and create a new NativeReadable
-  transferToNativeReadable(readableStream);
+  stream.$bunNativePtr = transferToNativeReadable(readableStream);
+  $assert(stream.$bunNativePtr === undefined || typeof stream.$bunNativePtr === "object", "Invalid transferred source");
 
   $debug(`[${stream.debugId}] constructed!`);
 
   return stream;
-}
-
-function ensureConstructed(this: NativeReadable, cb: null | (() => void)) {
-  $debug(`[${this.debugId}] ensureConstructed`);
-  if (this[kConstructed]) return;
-  this[kConstructed] = true;
-  const ptr = this.$bunNativePtr;
-  if (!ptr) return;
-  $assert(typeof ptr.start === "function", "NativeReadable.start is not a function");
-  ptr.start(this[kHighWaterMark]);
-  if (cb) cb();
 }
 
 // maxToRead can be the highWaterMark (by default) or the remaining amount of the stream to read

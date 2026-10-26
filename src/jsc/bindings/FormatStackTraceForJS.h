@@ -46,7 +46,6 @@ class OrdinalNumber;
 
 namespace Zig {
 class GlobalObject;
-class JSCStackTrace;
 } // namespace Zig
 
 using JSC::EncodedJSValue;
@@ -70,15 +69,6 @@ WTF::String formatStackTrace(
     WTF::Vector<JSC::StackFrame>& stackTrace,
     JSC::JSObject* errorInstance);
 
-// JSC Host Functions - Error constructor methods
-JSC_DECLARE_HOST_FUNCTION(errorConstructorFuncCaptureStackTrace);
-JSC_DECLARE_HOST_FUNCTION(errorConstructorFuncAppendStackTrace);
-JSC_DECLARE_HOST_FUNCTION(jsFunctionDefaultErrorPrepareStackTrace);
-
-// JSC Custom Accessors - error.stack getter/setter
-JSC_DECLARE_CUSTOM_GETTER(errorInstanceLazyStackCustomGetter);
-JSC_DECLARE_CUSTOM_SETTER(errorInstanceLazyStackCustomSetter);
-
 // Internal wrapper functions for JSC error info callbacks
 WTF::String computeErrorInfoWrapperToString(JSC::VM& vm, WTF::Vector<JSC::StackFrame>& stackTrace, unsigned int& line_in, unsigned int& column_in, WTF::String& sourceURL, void* bunErrorData);
 JSC::JSValue computeErrorInfoWrapperToJSValue(JSC::VM& vm, WTF::Vector<JSC::StackFrame>& stackTrace, unsigned int& line_in, unsigned int& column_in, WTF::String& sourceURL, JSC::JSObject* errorInstance, void* bunErrorData);
@@ -91,7 +81,8 @@ namespace Zig {
 void createCallSitesFromFrames(
     Zig::GlobalObject* globalObject,
     JSC::JSGlobalObject* lexicalGlobalObject,
-    Zig::JSCStackTrace& stackTrace,
-    JSC::MarkedArgumentBuffer& callSites);
+    const WTF::Vector<JSC::StackFrame>& stackTrace,
+    JSC::MarkedArgumentBuffer& callSites,
+    WTF::Vector<size_t>& visibleFrameIndices);
 
 } // namespace Zig

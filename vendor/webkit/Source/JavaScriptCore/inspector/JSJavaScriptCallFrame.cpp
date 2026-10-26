@@ -81,6 +81,7 @@ JSValue JSJavaScriptCallFrame::evaluateWithScopeExtension(JSGlobalObject* global
     NakedPtr<Exception> exception;
     JSObject* scopeExtension = callFrame->argument(1).getObject();
     JSValue result = impl().evaluateWithScopeExtension(vm, script, scopeExtension, exception);
+    RETURN_IF_EXCEPTION(scope, { });
     if (exception)
         throwException(globalObject, scope, exception);
 
@@ -113,10 +114,15 @@ static JSValue valueForScopeLocation(JSGlobalObject* globalObject, const Debugge
 
     // Debugger.Location protocol object.
     VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
     JSObject* result = constructEmptyObject(globalObject);
+    RETURN_IF_EXCEPTION(scope, { });
     result->putDirect(vm, Identifier::fromString(vm, "scriptId"_s), jsString(vm, String::number(location.sourceID)));
+    RETURN_IF_EXCEPTION(scope, { });
     result->putDirect(vm, Identifier::fromString(vm, "lineNumber"_s), jsNumber(location.line));
+    RETURN_IF_EXCEPTION(scope, { });
     result->putDirect(vm, Identifier::fromString(vm, "columnNumber"_s), jsNumber(location.column));
+    RETURN_IF_EXCEPTION(scope, { });
     return result;
 }
 
@@ -131,14 +137,21 @@ JSValue JSJavaScriptCallFrame::scopeDescriptions(JSGlobalObject* globalObject)
 
     int index = 0;
     JSArray* array = constructEmptyArray(globalObject, nullptr);
+    RETURN_IF_EXCEPTION(throwScope, { });
 
     DebuggerScope::iterator end = scopeChain->end();
     for (DebuggerScope::iterator iter = scopeChain->begin(); iter != end; ++iter) {
         DebuggerScope* scope = iter.get();
         JSObject* description = constructEmptyObject(globalObject);
+        RETURN_IF_EXCEPTION(throwScope, { });
         description->putDirect(vm, Identifier::fromString(vm, "type"_s), valueForScopeType(scope));
+        RETURN_IF_EXCEPTION(throwScope, { });
         description->putDirect(vm, Identifier::fromString(vm, "name"_s), jsString(vm, scope->name()));
-        description->putDirect(vm, Identifier::fromString(vm, "location"_s), valueForScopeLocation(globalObject, scope->location()));
+        RETURN_IF_EXCEPTION(throwScope, { });
+        auto location = valueForScopeLocation(globalObject, scope->location());
+        RETURN_IF_EXCEPTION(throwScope, { });
+        description->putDirect(vm, Identifier::fromString(vm, "location"_s), location);
+        RETURN_IF_EXCEPTION(throwScope, { });
         array->putDirectIndex(globalObject, index++, description);
         RETURN_IF_EXCEPTION(throwScope, JSValue());
     }
@@ -197,7 +210,7 @@ JSValue JSJavaScriptCallFrame::scopeChain(JSGlobalObject* globalObject) const
         return { };
     }
 
-    return constructArray(this->realm(), static_cast<ArrayAllocationProfile*>(nullptr), list);
+    RELEASE_AND_RETURN(scope, constructArray(this->realm(), static_cast<ArrayAllocationProfile*>(nullptr), list));
 }
 
 JSValue JSJavaScriptCallFrame::thisObject(JSGlobalObject* globalObject) const

@@ -153,6 +153,7 @@ pub fn NewParser_(
 
         has_top_level_return: bool = false,
         has_import_meta: bool = false,
+        import_meta_url: ?[]const u8 = null,
         has_es_module_syntax: bool = false,
         top_level_await_keyword: logger.Range = logger.Range.None,
         fn_or_arrow_data_parse: FnOrArrowDataParse = FnOrArrowDataParse{},
@@ -228,9 +229,7 @@ pub fn NewParser_(
         commonjs_named_exports: js_ast.Ast.CommonJSNamedExports = .empty,
         commonjs_named_exports_deoptimized: bool = false,
         commonjs_module_exports_assigned_deoptimized: bool = false,
-        commonjs_named_exports_needs_conversion: u32 = std.math.maxInt(u32),
         had_commonjs_named_exports_this_visit: bool = false,
-        commonjs_replacement_stmts: StmtNodeList = &.{},
 
         parse_pass_symbol_uses: ParsePassSymbolUsageType = undefined,
 
@@ -461,6 +460,9 @@ pub fn NewParser_(
         require_resolve_transposer: RequireResolveTransposer,
 
         const_values: js_ast.Ast.ConstValuesMap = .{},
+        // Aggregate macro values are substituted only into compile-time macro arguments.
+        macro_values: js_ast.Ast.ConstValuesMap = .{},
+        is_macro_argument: bool = false,
 
         // These are backed by stack fallback allocators in _parse, and are uninitialized until then.
         binary_expression_stack: ListManaged(BinaryExpressionVisitor) = undefined,
@@ -928,20 +930,20 @@ pub fn NewParser_(
             }
         }
 
-        pub fn recordExportedBinding(noalias p: *P, binding: Binding) void {
+        pub fn recordExportedBinding(noalias p: *P, binding: Binding) anyerror!void {
             switch (binding.data) {
                 .b_missing => {},
                 .b_identifier => |ident| {
-                    p.recordExport(binding.loc, p.symbols.items[ident.ref.innerIndex()].original_name, ident.ref) catch unreachable;
+                    try p.recordExport(binding.loc, p.symbols.items[ident.ref.innerIndex()].original_name, ident.ref);
                 },
                 .b_array => |array| {
                     for (array.items) |prop| {
-                        p.recordExportedBinding(prop.binding);
+                        try p.recordExportedBinding(prop.binding);
                     }
                 },
                 .b_object => |obj| {
                     for (obj.properties) |prop| {
-                        p.recordExportedBinding(prop.value);
+                        try p.recordExportedBinding(prop.value);
                     }
                 },
             }
@@ -996,22 +998,22 @@ pub fn NewParser_(
             }
         }
 
-        pub fn logArrowArgErrors(noalias p: *P, errors: *DeferredArrowArgErrors) void {
+        pub fn logArrowArgErrors(noalias p: *P, errors: *const DeferredArrowArgErrors) bun.OOM!void {
             if (errors.invalid_expr_await.len > 0) {
                 const r = errors.invalid_expr_await;
-                p.log.addRangeError(p.source, r, "Cannot use an \"await\" expression here") catch unreachable;
+                try p.log.addRangeError(p.source, r, "Cannot use an \"await\" expression here");
             }
 
             if (errors.invalid_expr_yield.len > 0) {
                 const r = errors.invalid_expr_yield;
-                p.log.addRangeError(p.source, r, "Cannot use a \"yield\" expression here") catch unreachable;
+                try p.log.addRangeError(p.source, r, "Cannot use a \"yield\" expression here");
             }
         }
 
-        pub fn keyNameForError(noalias p: *P, key: *const js_ast.Expr) string {
+        pub fn keyNameForError(noalias p: *P, key: *const js_ast.Expr) bun.OOM!string {
             switch (key.data) {
                 .e_string => {
-                    return key.data.e_string.string(p.allocator) catch unreachable;
+                    return key.data.e_string.string(p.allocator);
                 },
                 .e_private_identifier => |private| {
                     return p.loadNameFromRef(private.ref);
@@ -1026,7 +1028,13 @@ pub fn NewParser_(
         pub fn handleIdentifier(noalias p: *P, loc: logger.Loc, ident: E.Identifier, original_name: ?string, opts: IdentifierOpts) Expr {
             const ref = ident.ref;
 
-            if (p.options.features.inlining) {
+            if (p.options.features.inlining and opts.assign_target == .none and !opts.is_delete_target) {
+                if (p.is_macro_argument) {
+                    if (p.macro_values.get(ref)) |replacement| {
+                        p.ignoreUsage(ref);
+                        return replacement;
+                    }
+                }
                 if (p.const_values.get(ref)) |replacement| {
                     p.ignoreUsage(ref);
                     return replacement;
@@ -1171,9 +1179,12 @@ pub fn NewParser_(
             const import_record_i = p.addImportRecordByRange(.stmt, logger.Range.None, import_path);
 
             var declared_symbols = DeclaredSymbol.List{};
+            errdefer declared_symbols.deinit(allocator);
             try declared_symbols.ensureTotalCapacity(allocator, 2);
 
-            var stmts = try allocator.alloc(Stmt, 1);
+            const stmts = try allocator.alloc(Stmt, 1);
+            errdefer allocator.free(stmts);
+            try parts.ensureUnusedCapacity(1);
 
             declared_symbols.appendAssumeCapacity(
                 DeclaredSymbol{ .ref = p.bun_app_namespace_ref, .is_top_level = true },
@@ -1188,6 +1199,7 @@ pub fn NewParser_(
                     .name = LocRef{ .ref = p.response_ref, .loc = logger.Loc{} },
                 },
             });
+            errdefer allocator.free(clause_items);
 
             declared_symbols.appendAssumeCapacity(DeclaredSymbol{
                 .ref = p.response_ref,
@@ -1219,18 +1231,18 @@ pub fn NewParser_(
                 logger.Loc{},
             );
 
-            var import_records = try allocator.alloc(u32, 1);
+            const import_records = try allocator.alloc(u32, 1);
             import_records[0] = import_record_i;
 
             // This import is placed in a part before the main code, however
             // the bundler ends up re-ordering this to be after... The order
             // does not matter as ESM imports are always hoisted.
-            parts.append(js_ast.Part{
+            parts.appendAssumeCapacity(js_ast.Part{
                 .stmts = stmts,
                 .declared_symbols = declared_symbols,
                 .import_record_indices = bun.BabyList(u32).fromOwnedSlice(import_records),
                 .tag = .runtime,
-            }) catch unreachable;
+            });
         }
 
         pub fn generateImportStmt(
@@ -1239,7 +1251,6 @@ pub fn NewParser_(
             imports: anytype,
             parts: *ListManaged(js_ast.Part),
             symbols: anytype,
-            additional_stmt: ?Stmt,
             comptime prefix: string,
             comptime is_internal: bool,
         ) anyerror!void {
@@ -1249,15 +1260,17 @@ pub fn NewParser_(
             if (comptime is_internal)
                 import_record.path.namespace = "runtime";
             import_record.flags.is_internal = is_internal;
-            const import_path_identifier = try fs.nonUniqueNameString(import_record.path.text, allocator);
-            var namespace_identifier = try allocator.alloc(u8, import_path_identifier.len + prefix.len);
+            const namespace_identifier = try std.fmt.allocPrint(allocator, "{s}{f}", .{ prefix, fs.fmtIdentifier(import_record.path.text) });
+            errdefer allocator.free(namespace_identifier);
             const clause_items = try allocator.alloc(js_ast.ClauseItem, imports.len);
-            var stmts = try allocator.alloc(Stmt, 1 + if (additional_stmt != null) @as(usize, 1) else @as(usize, 0));
+            errdefer allocator.free(clause_items);
+            const stmts = try allocator.alloc(Stmt, 1);
+            errdefer allocator.free(stmts);
             var declared_symbols = DeclaredSymbol.List{};
-            try declared_symbols.ensureTotalCapacity(allocator, imports.len + 1);
-            bun.copy(u8, namespace_identifier, prefix);
-            bun.copy(u8, namespace_identifier[prefix.len..], import_path_identifier);
-
+            errdefer declared_symbols.deinit(allocator);
+            const declared_count = std.math.add(usize, imports.len, 1) catch return error.OutOfMemory;
+            try declared_symbols.ensureTotalCapacity(allocator, declared_count);
+            try parts.ensureUnusedCapacity(1);
             const namespace_ref = try p.newSymbol(.other, namespace_identifier);
             declared_symbols.appendAssumeCapacity(.{
                 .ref = namespace_ref,
@@ -1305,22 +1318,18 @@ pub fn NewParser_(
                 },
                 logger.Loc{},
             );
-            if (additional_stmt) |add| {
-                stmts[1] = add;
-            }
-
-            var import_records = try allocator.alloc(@TypeOf(import_record_i), 1);
+            const import_records = try allocator.alloc(@TypeOf(import_record_i), 1);
             import_records[0] = import_record_i;
 
             // This import is placed in a part before the main code, however
             // the bundler ends up re-ordering this to be after... The order
             // does not matter as ESM imports are always hoisted.
-            parts.append(js_ast.Part{
+            parts.appendAssumeCapacity(js_ast.Part{
                 .stmts = stmts,
                 .declared_symbols = declared_symbols,
                 .import_record_indices = bun.BabyList(u32).fromOwnedSlice(import_records),
                 .tag = .runtime,
-            }) catch unreachable;
+            });
         }
 
         pub fn generateReactRefreshImport(
@@ -1360,13 +1369,20 @@ pub fn NewParser_(
 
             const Item = if (hot_module_reloading) B.Object.Property else js_ast.ClauseItem;
 
-            const len = 1 + @as(usize, @intFromBool(p.react_refresh.register_used)) +
-                @as(usize, @intFromBool(p.react_refresh.signature_used));
-            var items = try List(Item).initCapacity(allocator, len);
+            var import_count: usize = 0;
+            for (clauses) |entry| import_count += @intFromBool(entry.enabled);
+            const declared_count = std.math.add(usize, import_count, 1) catch return error.OutOfMemory;
+            var items = try List(Item).initCapacity(allocator, import_count);
+            errdefer items.deinit(allocator);
 
             const stmts = try allocator.alloc(Stmt, 1);
+            errdefer allocator.free(stmts);
             var declared_symbols = DeclaredSymbol.List{};
-            try declared_symbols.ensureTotalCapacity(allocator, len);
+            errdefer declared_symbols.deinit(allocator);
+            try declared_symbols.ensureTotalCapacity(allocator, declared_count);
+            try parts.ensureUnusedCapacity(1);
+            var import_records = try bun.BabyList(u32).fromSlice(allocator, &.{import_record_index});
+            errdefer import_records.deinit(allocator);
 
             const namespace_ref = try p.newSymbol(.other, "RefreshRuntime");
             declared_symbols.appendAssumeCapacity(.{
@@ -1418,15 +1434,15 @@ pub fn NewParser_(
                     .is_single_line = false,
                 }, logger.Loc.Empty);
 
-            try parts.append(.{
+            parts.appendAssumeCapacity(.{
                 .stmts = stmts,
                 .declared_symbols = declared_symbols,
-                .import_record_indices = try bun.BabyList(u32).fromSlice(allocator, &.{import_record_index}),
+                .import_record_indices = import_records,
                 .tag = .runtime,
             });
         }
 
-        pub fn substituteSingleUseSymbolInStmt(noalias p: *P, stmt: Stmt, ref: Ref, replacement: Expr) bool {
+        pub fn substituteSingleUseSymbolInStmt(noalias p: *P, stmt: Stmt, ref: Ref, replacement: Expr) anyerror!bool {
             const expr: *Expr = brk: {
                 switch (stmt.data) {
                     .s_expr => |exp| {
@@ -1486,7 +1502,7 @@ pub fn NewParser_(
                         defer p.is_revisit_for_substitution = prev_substituting;
                         // O(n^2) and we will need to think more carefully about
                         // this once we implement syntax compression
-                        expr.* = p.visitExpr(result);
+                        expr.* = try p.visitExpr(result);
                     } else {
                         expr.* = result;
                     }
@@ -1915,6 +1931,14 @@ pub fn NewParser_(
         }
 
         pub fn prepareForVisitPass(noalias p: *P) anyerror!void {
+            if (p.options.framework != null or (p.options.bundle and p.options.output_format == .cjs)) {
+                p.import_meta_url = if (comptime bun.Environment.isWasm)
+                    try std.fmt.allocPrint(p.allocator, "file://{s}", .{p.source.path.text})
+                else if (p.options.javascript_semantics) |semantics|
+                    try semantics.fileURLFromPath(p.allocator, p.source.path.text)
+                else
+                    null;
+            }
             {
                 var i: usize = 0;
                 p.scope_order_to_visit = try p.allocator.alloc(ScopeOrder, p.scopes_in_order.items.len);
@@ -1937,17 +1961,17 @@ pub fn NewParser_(
             p.has_es_module_syntax = p.has_es_module_syntax or p.esm_import_keyword.len > 0 or p.esm_export_keyword.len > 0 or p.top_level_await_keyword.len > 0;
 
             if (p.lexer.jsx_pragma.jsx()) |factory| {
-                p.options.jsx.factory = options.JSX.Pragma.memberListToComponentsIfDifferent(p.allocator, p.options.jsx.factory, factory.text) catch unreachable;
+                p.options.jsx.factory = try options.JSX.Pragma.memberListToComponentsIfDifferent(p.allocator, p.options.jsx.factory, factory.text);
             }
 
             if (p.lexer.jsx_pragma.jsxFrag()) |fragment| {
-                p.options.jsx.fragment = options.JSX.Pragma.memberListToComponentsIfDifferent(p.allocator, p.options.jsx.fragment, fragment.text) catch unreachable;
+                p.options.jsx.fragment = try options.JSX.Pragma.memberListToComponentsIfDifferent(p.allocator, p.options.jsx.fragment, fragment.text);
             }
 
             if (p.lexer.jsx_pragma.jsxImportSource()) |import_source| {
                 p.options.jsx.classic_import_source = import_source.text;
                 p.options.jsx.package_name = p.options.jsx.classic_import_source;
-                p.options.jsx.setImportSource(p.allocator);
+                try p.options.jsx.setImportSource(p.allocator);
             }
 
             if (p.lexer.jsx_pragma.jsxRuntime()) |runtime| {
@@ -1972,7 +1996,7 @@ pub fn NewParser_(
                 p.module_scope.recursiveSetStrictMode(js_ast.StrictModeKind.implicit_strict_mode_top_level_await);
             }
 
-            p.hoistSymbols(p.module_scope);
+            try p.hoistSymbols(p.module_scope);
 
             var generated_symbols_count: u32 = 3;
 
@@ -2063,27 +2087,16 @@ pub fn NewParser_(
             return p.options.bundle or p.options.features.minify_identifiers;
         }
 
-        fn hoistSymbols(noalias p: *P, scope: *js_ast.Scope) void {
+        fn hoistSymbols(noalias p: *P, scope: *js_ast.Scope) bun.OOM!void {
             if (!scope.kindStopsHoisting()) {
                 var iter = scope.members.iterator();
                 const allocator = p.allocator;
-                var symbols = p.symbols.items;
-
-                defer {
-                    if (comptime Environment.allow_assert) {
-                        // we call `.newSymbol` in this function
-                        // we need to avoid using a potentially re-sized array
-                        // so we assert that the array is in sync
-                        assert(symbols.ptr == p.symbols.items.ptr);
-                        assert(symbols.len == p.symbols.items.len);
-                    }
-                }
 
                 // Check for collisions that would prevent to hoisting "var" symbols up to the enclosing function scope
                 if (scope.parent) |parent_scope| {
                     nextMember: while (iter.next()) |res| {
                         var value = res.value_ptr.*;
-                        var symbol: *Symbol = &symbols[value.ref.innerIndex()];
+                        var symbol: *Symbol = &p.symbols.items[value.ref.innerIndex()];
 
                         const name = symbol.original_name;
                         var hash: ?u64 = null;
@@ -2091,13 +2104,13 @@ pub fn NewParser_(
                         if (parent_scope.kind == .catch_binding and symbol.kind != .hoisted) {
                             hash = Scope.getMemberHash(name);
                             if (parent_scope.getMemberWithHash(name, hash.?)) |existing_member| {
-                                p.log.addSymbolAlreadyDeclaredError(
+                                try p.log.addSymbolAlreadyDeclaredError(
                                     p.allocator,
                                     p.source,
                                     symbol.original_name,
                                     value.loc,
                                     existing_member.loc,
-                                ) catch unreachable;
+                                );
                                 continue;
                             }
                         }
@@ -2137,12 +2150,11 @@ pub fn NewParser_(
                             //   }
                             //   f();
                             //
-                            const hoisted_ref = p.newSymbol(.hoisted, symbol.original_name) catch unreachable;
-                            symbols = p.symbols.items;
-                            bun.handleOom(scope.generated.append(p.allocator, hoisted_ref));
-                            p.hoisted_ref_for_sloppy_mode_block_fn.put(p.allocator, value.ref, hoisted_ref) catch unreachable;
+                            const hoisted_ref = try p.newSymbol(.hoisted, symbol.original_name);
+                            try scope.generated.append(p.allocator, hoisted_ref);
+                            try p.hoisted_ref_for_sloppy_mode_block_fn.put(p.allocator, value.ref, hoisted_ref);
                             value.ref = hoisted_ref;
-                            symbol = &symbols[hoisted_ref.innerIndex()];
+                            symbol = &p.symbols.items[hoisted_ref.innerIndex()];
                             is_sloppy_mode_block_level_fn_stmt = true;
                         }
 
@@ -2166,7 +2178,7 @@ pub fn NewParser_(
                             }
 
                             if (_scope.getMemberWithHash(name, hash.?)) |member_in_scope| {
-                                var existing_symbol: *Symbol = &symbols[member_in_scope.ref.innerIndex()];
+                                const existing_symbol: *Symbol = &p.symbols.items[member_in_scope.ref.innerIndex()];
                                 const existing_kind = existing_symbol.kind;
 
                                 // We can hoist the symbol from the child scope into the symbol in
@@ -2182,7 +2194,7 @@ pub fn NewParser_(
                                 {
                                     // Silently merge this symbol into the existing symbol
                                     symbol.link = member_in_scope.ref;
-                                    const entry = _scope.getOrPutMemberWithHash(p.allocator, name, hash.?) catch unreachable;
+                                    const entry = try _scope.getOrPutMemberWithHash(p.allocator, name, hash.?);
                                     entry.value_ptr.* = member_in_scope;
                                     entry.key_ptr.* = name;
                                     continue :nextMember;
@@ -2196,19 +2208,16 @@ pub fn NewParser_(
                                     if (symbol.kind != .catch_identifier and symbol.kind != .hoisted_function) {
                                         if (!is_sloppy_mode_block_level_fn_stmt) {
                                             const r = js_lexer.rangeOfIdentifier(p.source, value.loc);
-                                            var notes = allocator.alloc(logger.Data, 1) catch unreachable;
-                                            notes[0] =
-                                                logger.rangeData(
-                                                    p.source,
-                                                    r,
-                                                    std.fmt.allocPrint(
-                                                        allocator,
-                                                        "{s} was originally declared here",
-                                                        .{name},
-                                                    ) catch unreachable,
-                                                );
-
-                                            p.log.addRangeErrorFmtWithNotes(p.source, js_lexer.rangeOfIdentifier(p.source, member_in_scope.loc), allocator, notes, "{s} has already been declared", .{name}) catch unreachable;
+                                            try p.log.addRangeErrorFmtWithNote(
+                                                p.source,
+                                                js_lexer.rangeOfIdentifier(p.source, member_in_scope.loc),
+                                                allocator,
+                                                "{s} has already been declared",
+                                                .{name},
+                                                "{s} was originally declared here",
+                                                .{name},
+                                                r,
+                                            );
                                         } else if (_scope == scope.parent) {
                                             // Never mind about this, turns out it's not needed after all
                                             _ = p.hoisted_ref_for_sloppy_mode_block_fn.remove(original_member_ref);
@@ -2220,13 +2229,13 @@ pub fn NewParser_(
                                 // If this is a catch identifier, silently merge the existing symbol
                                 // into this symbol but continue hoisting past this catch scope
                                 existing_symbol.link = value.ref;
-                                const entry = _scope.getOrPutMemberWithHash(p.allocator, name, hash.?) catch unreachable;
+                                const entry = try _scope.getOrPutMemberWithHash(p.allocator, name, hash.?);
                                 entry.value_ptr.* = value;
                                 entry.key_ptr.* = name;
                             }
 
                             if (_scope.kindStopsHoisting()) {
-                                const entry = _scope.getOrPutMemberWithHash(allocator, name, hash.?) catch unreachable;
+                                const entry = try _scope.getOrPutMemberWithHash(allocator, name, hash.?);
                                 entry.value_ptr.* = value;
                                 entry.key_ptr.* = name;
                                 break;
@@ -2241,61 +2250,45 @@ pub fn NewParser_(
             {
                 const children = scope.children.slice();
                 for (children) |child| {
-                    p.hoistSymbols(child);
+                    try p.hoistSymbols(child);
                 }
             }
         }
 
-        inline fn nextScopeInOrderForVisitPass(p: *P) ScopeOrder {
-            const head = p.scope_order_to_visit[0];
-            p.scope_order_to_visit = p.scope_order_to_visit[1..p.scope_order_to_visit.len];
-            return head;
-        }
-
         pub fn pushScopeForVisitPass(noalias p: *P, kind: js_ast.Scope.Kind, loc: logger.Loc) anyerror!void {
-            const order = p.nextScopeInOrderForVisitPass();
+            const order = p.scope_order_to_visit[0];
 
             // Sanity-check that the scopes generated by the first and second passes match
             if (bun.Environment.allow_assert and
-                order.loc.start != loc.start or order.scope.kind != kind)
+                (order.loc.start != loc.start or order.scope.kind != kind))
             {
                 p.log.level = .verbose;
 
-                bun.handleOom(p.log.addDebugFmt(p.source, loc, p.allocator, "Expected this scope (.{s})", .{@tagName(kind)}));
-                bun.handleOom(p.log.addDebugFmt(p.source, order.loc, p.allocator, "Found this scope (.{s})", .{@tagName(order.scope.kind)}));
+                try p.log.addDebugFmt(p.source, loc, p.allocator, "Expected this scope (.{s})", .{@tagName(kind)});
+                try p.log.addDebugFmt(p.source, order.loc, p.allocator, "Found this scope (.{s})", .{@tagName(order.scope.kind)});
 
                 p.panic("Scope mismatch while visiting", .{});
             }
 
-            p.current_scope = order.scope;
-
             try p.scopes_for_current_part.append(p.allocator, order.scope);
+            p.current_scope = order.scope;
+            p.scope_order_to_visit = p.scope_order_to_visit[1..];
         }
 
         pub fn pushScopeForParsePass(noalias p: *P, comptime kind: js_ast.Scope.Kind, loc: logger.Loc) !usize {
-            var parent: *Scope = p.current_scope;
+            const parent = p.current_scope;
             const allocator = p.allocator;
-            var scope = try allocator.create(Scope);
+            const scope = try allocator.create(Scope);
+            errdefer allocator.destroy(scope);
 
             scope.* = Scope{
                 .kind = kind,
                 .label_ref = null,
                 .parent = parent,
                 .generated = .{},
+                .strict_mode = parent.strict_mode,
             };
-
-            try parent.children.append(allocator, scope);
-            scope.strict_mode = parent.strict_mode;
-
-            p.current_scope = scope;
-
-            if (comptime kind == .with) {
-                // "with" statements change the default from ESModule to CommonJS at runtime.
-                // "with" statements are not allowed in strict mode.
-                if (p.options.features.commonjs_at_runtime) {
-                    p.has_with_scope = true;
-                }
-            }
+            errdefer scope.members.deinit(allocator);
 
             if (comptime Environment.isDebug) {
                 // Enforce that scope locations are strictly increasing to help catch bugs
@@ -2309,8 +2302,8 @@ pub fn NewParser_(
                     if (p.scopes_in_order.items[last_i]) |prev_scope| {
                         if (prev_scope.loc.start >= loc.start) {
                             p.log.level = .verbose;
-                            bun.handleOom(p.log.addDebugFmt(p.source, prev_scope.loc, p.allocator, "Previous Scope", .{}));
-                            bun.handleOom(p.log.addDebugFmt(p.source, loc, p.allocator, "Next Scope", .{}));
+                            try p.log.addDebugFmt(p.source, prev_scope.loc, p.allocator, "Previous Scope", .{});
+                            try p.log.addDebugFmt(p.source, loc, p.allocator, "Next Scope", .{});
                             p.panic("Scope location {d} must be greater than {d}", .{ loc.start, prev_scope.loc.start });
                         }
                     }
@@ -2338,8 +2331,12 @@ pub fn NewParser_(
 
             // Remember the length in case we call popAndDiscardScope() later
             const scope_index = p.scopes_in_order.items.len;
-            try p.scopes_in_order.append(allocator, ScopeOrder{ .loc = loc, .scope = scope });
-            // Output.print("\nLoc: {d}\n", .{loc.start});
+            try parent.children.ensureUnusedCapacity(allocator, 1);
+            try p.scopes_in_order.ensureUnusedCapacity(allocator, 1);
+            parent.children.appendAssumeCapacity(scope);
+            p.scopes_in_order.appendAssumeCapacity(ScopeOrder{ .loc = loc, .scope = scope });
+            p.current_scope = scope;
+            if (kind == .with and p.options.features.commonjs_at_runtime) p.has_with_scope = true;
             return scope_index;
         }
 
@@ -2347,7 +2344,7 @@ pub fn NewParser_(
         // from expression to binding should be written to "invalidLog" instead. That
         // way we can potentially keep this as an expression if it turns out it's not
         // needed as a binding after all.
-        fn convertExprToBinding(noalias p: *P, expr: ExprNodeIndex, invalid_loc: *LocList) ?Binding {
+        fn convertExprToBinding(noalias p: *P, expr: ExprNodeIndex, invalid_loc: *LocList) bun.OOM!?Binding {
             switch (expr.data) {
                 .e_missing => {
                     return null;
@@ -2357,21 +2354,22 @@ pub fn NewParser_(
                 },
                 .e_array => |ex| {
                     if (ex.comma_after_spread) |spread| {
-                        invalid_loc.append(.{
+                        try invalid_loc.append(.{
                             .loc = spread,
                             .kind = .spread,
-                        }) catch unreachable;
+                        });
                     }
 
                     if (ex.is_parenthesized) {
-                        invalid_loc.append(.{
+                        try invalid_loc.append(.{
                             .loc = p.source.rangeOfOperatorBefore(expr.loc, "(").loc,
                             .kind = .parentheses,
-                        }) catch unreachable;
+                        });
                     }
 
                     // p.markSyntaxFeature(Destructing)
-                    var items = List(js_ast.ArrayBinding).initCapacity(p.allocator, ex.items.len) catch unreachable;
+                    var items = try List(js_ast.ArrayBinding).initCapacity(p.allocator, ex.items.len);
+                    errdefer items.deinit(p.allocator);
                     var is_spread = false;
                     for (ex.items.slice(), 0..) |_, i| {
                         var item = ex.items.ptr[i];
@@ -2379,7 +2377,7 @@ pub fn NewParser_(
                             is_spread = true;
                             item = item.data.e_spread.value;
                         }
-                        const res = p.convertExprToBindingAndInitializer(&item, invalid_loc, is_spread);
+                        const res = try p.convertExprToBindingAndInitializer(item, invalid_loc, is_spread);
 
                         items.appendAssumeCapacity(js_ast.ArrayBinding{
                             // It's valid for it to be missing
@@ -2399,18 +2397,19 @@ pub fn NewParser_(
                 },
                 .e_object => |ex| {
                     if (ex.comma_after_spread) |sp| {
-                        invalid_loc.append(.{ .loc = sp, .kind = .spread }) catch unreachable;
+                        try invalid_loc.append(.{ .loc = sp, .kind = .spread });
                     }
 
                     if (ex.is_parenthesized) {
-                        invalid_loc.append(.{ .loc = p.source.rangeOfOperatorBefore(expr.loc, "(").loc, .kind = .parentheses }) catch unreachable;
+                        try invalid_loc.append(.{ .loc = p.source.rangeOfOperatorBefore(expr.loc, "(").loc, .kind = .parentheses });
                     }
                     // p.markSyntaxFeature(compat.Destructuring, p.source.RangeOfOperatorAfter(expr.Loc, "{"))
 
-                    var properties = List(B.Property).initCapacity(p.allocator, ex.properties.len) catch unreachable;
+                    var properties = try List(B.Property).initCapacity(p.allocator, ex.properties.len);
+                    errdefer properties.deinit(p.allocator);
                     for (ex.properties.slice()) |*item| {
                         if (item.flags.contains(.is_method) or item.kind == .get or item.kind == .set) {
-                            invalid_loc.append(.{
+                            try invalid_loc.append(.{
                                 .loc = item.key.?.loc,
                                 .kind = if (item.flags.contains(.is_method))
                                     InvalidLoc.Tag.method
@@ -2418,13 +2417,12 @@ pub fn NewParser_(
                                     InvalidLoc.Tag.getter
                                 else
                                     InvalidLoc.Tag.setter,
-                            }) catch unreachable;
+                            });
                             continue;
                         }
-                        const value = &item.value.?;
-                        const tup = p.convertExprToBindingAndInitializer(value, invalid_loc, false);
-                        const initializer = tup.expr orelse item.initializer;
                         const is_spread = item.kind == .spread or item.flags.contains(.is_spread);
+                        const tup = try p.convertExprToBindingAndInitializer(item.value.?, invalid_loc, is_spread);
+                        const initializer = tup.expr orelse item.initializer;
                         properties.appendAssumeCapacity(B.Property{
                             .flags = Flags.Property.init(.{
                                 .is_spread = is_spread,
@@ -2442,35 +2440,30 @@ pub fn NewParser_(
                     }, expr.loc);
                 },
                 else => {
-                    invalid_loc.append(.{ .loc = expr.loc, .kind = .unknown }) catch unreachable;
+                    try invalid_loc.append(.{ .loc = expr.loc, .kind = .unknown });
                     return null;
                 },
             }
-
-            return null;
         }
 
-        pub fn convertExprToBindingAndInitializer(noalias p: *P, _expr: *ExprNodeIndex, invalid_log: *LocList, is_spread: bool) ExprBindingTuple {
+        pub fn convertExprToBindingAndInitializer(noalias p: *P, value: ExprNodeIndex, invalid_log: *LocList, is_spread: bool) bun.OOM!ExprBindingTuple {
             var initializer: ?ExprNodeIndex = null;
-            var expr = _expr;
-            // zig syntax is sometimes painful
-            switch (expr.*.data) {
+            var expr = value;
+            switch (expr.data) {
                 .e_binary => |bin| {
                     if (bin.op == .bin_assign) {
                         initializer = bin.right;
-                        expr = &bin.left;
+                        expr = bin.left;
                     }
                 },
                 else => {},
             }
 
-            const bind = p.convertExprToBinding(expr.*, invalid_log);
+            const bind = try p.convertExprToBinding(expr, invalid_log);
             if (initializer) |initial| {
                 const equalsRange = p.source.rangeOfOperatorBefore(initial.loc, "=");
                 if (is_spread) {
-                    p.log.addRangeError(p.source, equalsRange, "A rest argument cannot have a default initializer") catch unreachable;
-                } else {
-                    // p.markSyntaxFeature();
+                    try invalid_log.append(.{ .loc = equalsRange.loc, .kind = .rest_initializer });
                 }
             }
             return ExprBindingTuple{ .binding = bind, .expr = initializer };
@@ -2493,17 +2486,17 @@ pub fn NewParser_(
             }
         }
 
-        pub fn logExprErrors(noalias p: *P, noalias errors: *DeferredErrors) void {
+        pub fn logExprErrors(noalias p: *P, noalias errors: *const DeferredErrors) bun.OOM!void {
             if (errors.invalid_expr_default_value) |r| {
-                p.log.addRangeError(
+                try p.log.addRangeError(
                     p.source,
                     r,
                     "Unexpected \"=\"",
-                ) catch unreachable;
+                );
             }
 
             if (errors.invalid_expr_after_question) |r| {
-                p.log.addRangeErrorFmt(p.source, r, p.allocator, "Unexpected {s}", .{p.source.contents[r.loc.i()..r.endI()]}) catch unreachable;
+                try p.log.addRangeErrorFmt(p.source, r, p.allocator, "Unexpected {s}", .{p.source.contents[r.loc.i()..r.endI()]});
             }
 
             // if (errors.array_spread_feature) |err| {
@@ -2820,24 +2813,30 @@ pub fn NewParser_(
         }
 
         pub fn newSymbol(p: *P, kind: Symbol.Kind, identifier: string) !Ref {
-            const inner_index: Ref.Int = @truncate(p.symbols.items.len);
-            try p.symbols.append(Symbol{
+            const inner_index = std.math.cast(@FieldType(Ref, "inner_index"), p.symbols.items.len) orelse return error.OutOfMemory;
+            const source_index = std.math.cast(@FieldType(Ref, "source_index"), p.source.index.get()) orelse return error.OutOfMemory;
+            try p.symbols.ensureUnusedCapacity(1);
+            if (is_typescript_enabled) {
+                try p.ts_use_counts.ensureUnusedCapacity(p.allocator, 1);
+            }
+
+            p.symbols.appendAssumeCapacity(Symbol{
                 .kind = kind,
                 .original_name = identifier,
             });
 
             if (is_typescript_enabled) {
-                try p.ts_use_counts.append(p.allocator, 0);
+                p.ts_use_counts.appendAssumeCapacity(0);
             }
 
             return Ref{
                 .inner_index = inner_index,
-                .source_index = @intCast(p.source.index.get()),
+                .source_index = source_index,
                 .tag = .symbol,
             };
         }
 
-        pub fn defaultNameForExpr(p: *P, expr: Expr, loc: logger.Loc) LocRef {
+        pub fn defaultNameForExpr(p: *P, expr: Expr, loc: logger.Loc) bun.OOM!LocRef {
             switch (expr.data) {
                 .e_function => |func_container| {
                     if (func_container.func.name) |_name| {
@@ -2864,27 +2863,20 @@ pub fn NewParser_(
                 else => {},
             }
 
-            return createDefaultName(p, loc) catch unreachable;
+            return createDefaultName(p, loc);
         }
 
         pub fn discardScopesUpTo(p: *P, scope_index: usize) void {
-            // Remove any direct children from their parent
             const scope = p.current_scope;
-            var children = scope.children;
-            defer scope.children = children;
-
-            for (p.scopes_in_order.items[scope_index..]) |_child| {
-                const child = _child orelse continue;
-
-                if (child.scope.parent == p.current_scope) {
-                    var i: usize = children.len - 1;
-                    while (i >= 0) {
-                        if (children.mut(i).* == child.scope) {
-                            _ = children.orderedRemove(i);
-                            break;
-                        }
-                        i -= 1;
-                    }
+            var i = p.scopes_in_order.items.len;
+            while (i > scope_index) {
+                i -= 1;
+                const child = p.scopes_in_order.items[i] orelse continue;
+                if (child.scope.parent == scope) {
+                    // Direct children created since the checkpoint form an ordered suffix.
+                    bun.assert(scope.children.len > 0);
+                    bun.assert(scope.children.ptr[scope.children.len - 1] == child.scope);
+                    scope.children.len -= 1;
                 }
             }
 
@@ -2973,7 +2965,7 @@ pub fn NewParser_(
         // Generate a TypeScript namespace object for this namespace's scope. If this
         // namespace is another block that is to be merged with an existing namespace,
         // use that earlier namespace's object instead.
-        pub fn getOrCreateExportedNamespaceMembers(p: *P, name: []const u8, is_export: bool, is_enum_scope: bool) *js_ast.TSNamespaceScope {
+        pub fn getOrCreateExportedNamespaceMembers(p: *P, name: []const u8, is_export: bool, is_enum_scope: bool) bun.OOM!*js_ast.TSNamespaceScope {
             const map = brk: {
 
                 // Merge with a sibling namespace from the same scope
@@ -2998,11 +2990,13 @@ pub fn NewParser_(
             };
 
             if (map) |existing| {
-                return bun.create(p.allocator, js_ast.TSNamespaceScope, .{
+                const scope = try p.allocator.create(js_ast.TSNamespaceScope);
+                scope.* = .{
                     .exported_members = existing,
                     .is_enum_scope = is_enum_scope,
                     .arg_ref = Ref.None,
-                });
+                };
+                return scope;
             }
 
             // Otherwise, generate a new namespace object
@@ -3012,7 +3006,7 @@ pub fn NewParser_(
                 scope: js_ast.TSNamespaceScope,
             };
 
-            var pair = bun.handleOom(p.allocator.create(Pair));
+            const pair = try p.allocator.create(Pair);
             pair.map = .{};
             pair.scope = .{
                 .exported_members = &pair.map,
@@ -3036,14 +3030,14 @@ pub fn NewParser_(
                 .legacy_octal_literal => "Legacy octal literals",
                 .legacy_octal_escape => "Legacy octal escape sequences",
                 .if_else_function_stmt => "Function declarations inside if statements",
-                // else => {
-                //     text = "This feature";
-                // },
             };
+            defer if (feature == .eval_or_arguments or feature == .reserved_word) p.allocator.free(text);
 
             const scope = p.current_scope;
             if (p.isStrictMode()) {
                 var why: string = "";
+                var owned_why: ?[]u8 = null;
+                defer if (owned_why) |message| p.allocator.free(message);
                 var where: logger.Range = logger.Range.None;
                 switch (scope.strict_mode) {
                     .implicit_strict_mode_import => {
@@ -3059,16 +3053,20 @@ pub fn NewParser_(
                         why = "All code inside a class is implicitly in strict mode";
                         where = p.enclosing_class_keyword;
                     },
+                    .explicit_strict_mode => {
+                        try p.log.addRangeErrorFmt(p.source, r, p.allocator, "{s} cannot be used in strict mode", .{text});
+                        return;
+                    },
                     else => {},
                 }
                 if (why.len == 0) {
-                    why = try std.fmt.allocPrint(p.allocator, "This file is implicitly in strict mode because of the \"{s}\" keyword here", .{p.source.textForRange(where)});
+                    owned_why = try std.fmt.allocPrint(p.allocator, "This file is implicitly in strict mode because of the \"{s}\" keyword here", .{p.source.textForRange(where)});
+                    why = owned_why.?;
                 }
-                var notes = try p.allocator.alloc(logger.Data, 1);
-                notes[0] = logger.rangeData(p.source, where, why);
-                try p.log.addRangeErrorWithNotes(p.source, r, try std.fmt.allocPrint(p.allocator, "{s} cannot be used in strict mode", .{text}), notes);
+                var notes = [_]logger.Data{logger.rangeData(p.source, where, why)};
+                try p.log.addRangeErrorFmtWithNotes(p.source, r, p.allocator, &notes, "{s} cannot be used in strict mode", .{text});
             } else if (!can_be_transformed and p.isStrictModeOutputFormat()) {
-                try p.log.addRangeError(p.source, r, try std.fmt.allocPrint(p.allocator, "{s} cannot be used with the ESM output format due to strict mode", .{text}));
+                try p.log.addRangeErrorFmt(p.source, r, p.allocator, "{s} cannot be used with the ESM output format due to strict mode", .{text});
             }
         }
 
@@ -3199,22 +3197,22 @@ pub fn NewParser_(
             return ref;
         }
 
-        pub fn validateFunctionName(p: *P, func: G.Fn, kind: FunctionKind) void {
+        pub fn validateFunctionName(p: *P, func: G.Fn, kind: FunctionKind) bun.OOM!void {
             if (func.name) |name| {
                 const original_name = p.symbols.items[name.ref.?.innerIndex()].original_name;
 
                 if (func.flags.contains(.is_async) and strings.eqlComptime(original_name, "await")) {
-                    p.log.addRangeError(
+                    try p.log.addRangeError(
                         p.source,
                         js_lexer.rangeOfIdentifier(p.source, name.loc),
                         "An async function cannot be named \"await\"",
-                    ) catch unreachable;
+                    );
                 } else if (kind == .expr and func.flags.contains(.is_generator) and strings.eqlComptime(original_name, "yield")) {
-                    p.log.addRangeError(
+                    try p.log.addRangeError(
                         p.source,
                         js_lexer.rangeOfIdentifier(p.source, name.loc),
-                        "An generator function expression cannot be named \"yield\"",
-                    ) catch unreachable;
+                        "A generator function expression cannot be named \"yield\"",
+                    );
                 }
             }
         }
@@ -3229,12 +3227,12 @@ pub fn NewParser_(
                 },
                 .b_array => |bind| {
                     for (bind.items) |*item| {
-                        p.declareBinding(kind, &item.binding, opts) catch unreachable;
+                        try p.declareBinding(kind, &item.binding, opts);
                     }
                 },
                 .b_object => |bind| {
                     for (bind.properties) |*prop| {
-                        p.declareBinding(kind, &prop.value, opts) catch unreachable;
+                        try p.declareBinding(kind, &prop.value, opts);
                     }
                 },
             }
@@ -3247,27 +3245,33 @@ pub fn NewParser_(
                 }
             }
 
-            if (@intFromPtr(p.source.contents.ptr) <= @intFromPtr(name.ptr) and (@intFromPtr(name.ptr) + name.len) <= (@intFromPtr(p.source.contents.ptr) + p.source.contents.len)) {
-                return Ref.initSourceEnd(.{
-                    .source_index = @intCast(@intFromPtr(name.ptr) - @intFromPtr(p.source.contents.ptr)),
-                    .inner_index = @intCast(name.len),
-                    .tag = .source_contents_slice,
-                });
-            } else {
-                const inner_index: u31 = @intCast(p.allocated_names.items.len);
-                try p.allocated_names.append(p.allocator, name);
-                return Ref.init(
-                    inner_index,
-                    p.source.index.get(),
-                    false,
-                );
+            const source_address = @intFromPtr(p.source.contents.ptr);
+            const name_address = @intFromPtr(name.ptr);
+            if (name_address >= source_address) {
+                const offset = name_address - source_address;
+                if (offset <= p.source.contents.len and name.len <= p.source.contents.len - offset) {
+                    if (std.math.cast(Ref.Int, offset)) |source_index| {
+                        if (std.math.cast(Ref.Int, name.len)) |inner_index| {
+                            return .{
+                                .source_index = source_index,
+                                .inner_index = inner_index,
+                                .tag = .source_contents_slice,
+                            };
+                        }
+                    }
+                }
             }
+
+            const inner_index = std.math.cast(Ref.Int, p.allocated_names.items.len) orelse return error.OutOfMemory;
+            const source_index = std.math.cast(Ref.Int, p.source.index.get()) orelse return error.OutOfMemory;
+            try p.allocated_names.append(p.allocator, name);
+            return .{ .inner_index = inner_index, .source_index = source_index, .tag = .allocated_name };
         }
 
         pub fn loadNameFromRef(p: *P, ref: Ref) string {
             return switch (ref.tag) {
                 .symbol => p.symbols.items[ref.innerIndex()].original_name,
-                .source_contents_slice => p.source.contents[ref.sourceIndex() .. ref.sourceIndex() + ref.innerIndex()],
+                .source_contents_slice => p.source.contents[ref.sourceIndex() .. @as(usize, ref.sourceIndex()) + ref.innerIndex()],
                 .allocated_name => p.allocated_names.items[ref.innerIndex()],
                 else => @panic("Internal error: JS parser tried to load an invalid name from a Ref"),
             };
@@ -3415,11 +3419,11 @@ pub fn NewParser_(
             return value;
         }
 
-        fn memberExpression(p: *P, loc: logger.Loc, initial_value: Expr, parts: []const []const u8) Expr {
+        fn memberExpression(p: *P, loc: logger.Loc, initial_value: Expr, parts: []const []const u8) anyerror!Expr {
             var value = initial_value;
 
             for (parts) |part| {
-                if (p.maybeRewritePropertyAccess(
+                if (try p.maybeRewritePropertyAccess(
                     loc,
                     value,
                     part,
@@ -4490,7 +4494,7 @@ pub fn NewParser_(
             return p.options.features.replace_exports.contains(symbol_name);
         }
 
-        pub fn injectReplacementExport(p: *P, stmts: *StmtList, name_ref: Ref, loc: logger.Loc, replacement: *const RuntimeFeatures.ReplaceableExport) bool {
+        pub fn injectReplacementExport(p: *P, stmts: *StmtList, name_ref: Ref, loc: logger.Loc, replacement: *const RuntimeFeatures.ReplaceableExport) anyerror!bool {
             switch (replacement.*) {
                 .delete => return false,
                 .replace => |value| {
@@ -4505,7 +4509,7 @@ pub fn NewParser_(
                         },
                         loc,
                     );
-                    p.visitAndAppendStmt(stmts, &local) catch unreachable;
+                    try p.visitAndAppendStmt(stmts, &local);
                     return count != stmts.items.len;
                 },
                 .inject => |with| {
@@ -4526,17 +4530,17 @@ pub fn NewParser_(
                         },
                         loc,
                     );
-                    p.visitAndAppendStmt(stmts, &local) catch unreachable;
+                    try p.visitAndAppendStmt(stmts, &local);
                     return count != stmts.items.len;
                 },
             }
         }
 
-        pub fn replaceDeclAndPossiblyRemove(p: *P, decl: *G.Decl, replacement: *const RuntimeFeatures.ReplaceableExport) bool {
+        pub fn replaceDeclAndPossiblyRemove(p: *P, decl: *G.Decl, replacement: *const RuntimeFeatures.ReplaceableExport) anyerror!bool {
             switch (replacement.*) {
                 .delete => return false,
                 .replace => |value| {
-                    decl.*.value = p.visitExpr(value);
+                    decl.*.value = try p.visitExpr(value);
                     return true;
                 },
                 .inject => |with| {
@@ -4545,7 +4549,7 @@ pub fn NewParser_(
                             B.Identifier{ .ref = p.declareSymbol(.other, decl.binding.loc, with.name) catch unreachable },
                             decl.binding.loc,
                         ),
-                        .value = p.visitExpr(Expr{ .data = with.value.data, .loc = if (decl.value != null) decl.value.?.loc else decl.binding.loc }),
+                        .value = try p.visitExpr(Expr{ .data = with.value.data, .loc = if (decl.value != null) decl.value.?.loc else decl.binding.loc }),
                     };
                     return true;
                 },
@@ -4758,6 +4762,18 @@ pub fn NewParser_(
             stmts.append(closure) catch unreachable;
         }
 
+        pub fn classPropertyTarget(p: *P, target: Expr, prop: Property) Expr {
+            const key = prop.key.?;
+            if (!prop.flags.contains(.is_computed) and key.data == .e_string and key.data.e_string.isUTF8()) {
+                return p.newExpr(E.Dot{
+                    .target = target,
+                    .name = key.data.e_string.slice(p.allocator),
+                    .name_loc = key.loc,
+                }, key.loc);
+            }
+            return p.newExpr(E.Index{ .target = target, .index = key }, key.loc);
+        }
+
         pub fn lowerClass(
             noalias p: *P,
             stmtorexpr: js_ast.StmtOrExpr,
@@ -4953,18 +4969,7 @@ pub fn NewParser_(
                                 target = p.newExpr(E.This{}, prop.key.?.loc);
                             }
 
-                            if (prop.flags.contains(.is_computed) or prop.key.?.data == .e_number) {
-                                target = p.newExpr(E.Index{
-                                    .target = target,
-                                    .index = prop.key.?,
-                                }, prop.key.?.loc);
-                            } else {
-                                target = p.newExpr(E.Dot{
-                                    .target = target,
-                                    .name = prop.key.?.data.e_string.data,
-                                    .name_loc = prop.key.?.loc,
-                                }, prop.key.?.loc);
-                            }
+                            target = p.classPropertyTarget(target, prop.*);
 
                             // remove fields with decorators from class body. Move static members outside of class.
                             if (prop.flags.contains(.is_static)) {
@@ -5504,12 +5509,12 @@ pub fn NewParser_(
                 },
                 .b_array => |arr| {
                     for (arr.items) |item| {
-                        extractDeclsForBinding(item.binding, decls) catch unreachable;
+                        try extractDeclsForBinding(item.binding, decls);
                     }
                 },
                 .b_object => |obj| {
                     for (obj.properties) |prop| {
-                        extractDeclsForBinding(prop.value, decls) catch unreachable;
+                        try extractDeclsForBinding(prop.value, decls);
                     }
                 },
             }
@@ -5519,38 +5524,27 @@ pub fn NewParser_(
             return p.newExpr(E.Dot{ .name = exports_string_name, .name_loc = loc, .target = p.newExpr(E.Identifier{ .ref = p.module_ref }, loc) }, loc);
         }
 
-        // This code is tricky.
-        // - Doing it incorrectly will cause segfaults.
-        // - Doing it correctly drastically affects runtime performance while parsing larger files
-        // The key is in how we remove scopes from the list
-        // If we do an orderedRemove, it gets very slow.
-        // swapRemove is fast. But a little more dangerous.
-        // Instead, we just tombstone it.
-        pub fn popAndFlattenScope(p: *P, scope_index: usize) void {
+        // Tombstones preserve the parse-order indices of nested scopes for the visit pass.
+        pub fn popAndFlattenScope(p: *P, scope_index: usize) bun.OOM!void {
             // Move up to the parent scope
-            var to_flatten = p.current_scope;
-            var parent = to_flatten.parent.?;
+            const to_flatten = p.current_scope;
+            const parent = to_flatten.parent.?;
+            const last = parent.children.len - 1;
+            if (comptime Environment.allow_assert) assert(parent.children.ptr[last] == to_flatten);
+            try parent.children.ensureUnusedCapacity(p.allocator, to_flatten.children.len -| 1);
             p.current_scope = parent;
 
-            // Erase this scope from the order. This will shift over the indices of all
-            // the scopes that were created after us. However, we shouldn't have to
-            // worry about other code with outstanding scope indices for these scopes.
-            // These scopes were all created in between this scope's push and pop
-            // operations, so they should all be child scopes and should all be popped
-            // by the time we get here.
             p.scopes_in_order.items[scope_index] = null;
             // Decrement the length so that in code with lots of scopes, we use
             // less memory and do less work
             p.scopes_in_order.items.len -= @as(usize, @intFromBool(p.scopes_in_order.items.len == scope_index + 1));
 
             // Remove the last child from the parent scope
-            const last = parent.children.len - 1;
-            if (comptime Environment.allow_assert) assert(parent.children.ptr[last] == to_flatten);
-            parent.children.len -|= 1;
+            parent.children.len = last;
 
             for (to_flatten.children.slice()) |item| {
                 item.parent = parent;
-                bun.handleOom(parent.children.append(p.allocator, item));
+                parent.children.appendAssumeCapacity(item);
             }
         }
 
@@ -5561,18 +5555,19 @@ pub fn NewParser_(
         }
 
         pub fn generateTempRefWithScope(p: *P, default_name: ?string, scope: *Scope) Ref {
+            const ref = p.generateTempSymbol(default_name, scope);
+            bun.handleOom(p.temp_refs_to_declare.append(p.allocator, .{ .ref = ref }));
+            return ref;
+        }
+
+        /// Creates a temporary symbol whose declaration is emitted by the caller.
+        pub fn generateTempSymbol(p: *P, default_name: ?string, scope: *Scope) Ref {
             const name = (if (p.willUseRenamer()) default_name else null) orelse brk: {
                 p.temp_ref_count += 1;
                 break :brk bun.handleOom(std.fmt.allocPrint(p.allocator, "__bun_temp_ref_{x}$", .{p.temp_ref_count}));
             };
             const ref = bun.handleOom(p.newSymbol(.other, name));
-
-            p.temp_refs_to_declare.append(p.allocator, .{
-                .ref = ref,
-            }) catch |err| bun.handleOom(err);
-
             bun.handleOom(scope.generated.append(p.allocator, ref));
-
             return ref;
         }
 
@@ -5584,26 +5579,33 @@ pub fn NewParser_(
 
             const InlinedEnumValue = js_ast.InlinedEnumValue;
             var map: js_ast.Ast.TsEnumsMap = .{};
-            try map.ensureTotalCapacity(allocator, @intCast(p.top_level_enums.items.len));
+            errdefer {
+                for (map.values()) |*inner| inner.deinit(allocator);
+                map.deinit(allocator);
+            }
+            try map.ensureTotalCapacity(allocator, p.top_level_enums.items.len);
             for (p.top_level_enums.items) |ref| {
+                if (map.contains(ref)) continue;
                 const entry = p.ref_to_ts_namespace_member.getEntry(ref).?;
                 const namespace = entry.value_ptr.namespace;
                 var inner_map: bun.StringHashMapUnmanaged(InlinedEnumValue) = .{};
-                try inner_map.ensureTotalCapacity(allocator, @intCast(namespace.count()));
+                errdefer inner_map.deinit(allocator);
+                const capacity = std.math.cast(u32, namespace.count()) orelse return error.OutOfMemory;
+                try inner_map.ensureTotalCapacity(allocator, capacity);
                 for (namespace.keys(), namespace.values()) |key, val| {
                     switch (val.data) {
                         .enum_number => |num| inner_map.putAssumeCapacityNoClobber(
                             key,
-                            InlinedEnumValue.encode(.{ .number = num }),
+                            .{ .number = num },
                         ),
                         .enum_string => |str| inner_map.putAssumeCapacityNoClobber(
                             key,
-                            InlinedEnumValue.encode(.{ .string = str }),
+                            .{ .string = str },
                         ),
                         else => continue,
                     }
                 }
-                map.putAssumeCapacity(entry.key_ptr.*, inner_map);
+                map.putAssumeCapacityNoClobber(ref, inner_map);
             }
             return map;
         }
@@ -6185,6 +6187,7 @@ pub fn NewParser_(
 
             const bundling = p.options.bundle;
             var parts_end: usize = @as(usize, @intFromBool(bundling));
+            ImportScanner.removeUnusedImportEquals(P, p, parts.items);
 
             // When bundling with HMR, we need every module to be just a
             // single part, as we later wrap each module into a function,
@@ -6199,11 +6202,12 @@ pub fn NewParser_(
                     .last_part = &parts.items[parts.items.len - 1],
                     .is_in_node_modules = p.source.path.isNodeModule(),
                 };
+                defer hmr_transform_ctx.deinit(p.allocator);
                 try hmr_transform_ctx.stmts.ensureTotalCapacity(p.allocator, prealloc_count: {
                     // get a estimate on how many statements there are going to be
-                    var count: usize = 0;
-                    for (parts.items) |part| count += part.stmts.len;
-                    break :prealloc_count count + 2;
+                    var count: usize = 2;
+                    for (parts.items) |part| count = std.math.add(usize, count, part.stmts.len) catch return error.OutOfMemory;
+                    break :prealloc_count count;
                 });
 
                 for (parts.items) |part| {
@@ -6216,10 +6220,7 @@ pub fn NewParser_(
                 // Handle import paths after the whole file has been visited because we need
                 // symbol usage counts to be able to remove unused type-only imports in
                 // TypeScript code.
-                while (true) {
-                    var kept_import_equals = false;
-                    var removed_import_equals = false;
-
+                {
                     const begin = parts_end;
                     // Potentially remove some statements, then filter out parts to remove any
                     // with no statements
@@ -6229,8 +6230,6 @@ pub fn NewParser_(
                         p.declared_symbols.clearRetainingCapacity();
 
                         const result = try ImportScanner.scan(P, p, part.stmts, wrap_mode != .none, false, {});
-                        kept_import_equals = kept_import_equals or result.kept_import_equals;
-                        removed_import_equals = removed_import_equals or result.removed_import_equals;
 
                         part.stmts = result.stmts;
                         if (part.stmts.len > 0) {
@@ -6241,31 +6240,23 @@ pub fn NewParser_(
                                 part.can_be_removed_if_unused = false;
                             }
                             if (part.declared_symbols.len() == 0) {
-                                part.declared_symbols = p.declared_symbols.clone(p.allocator) catch unreachable;
+                                part.declared_symbols = try p.declared_symbols.clone(p.allocator);
                             } else {
-                                part.declared_symbols.appendList(p.allocator, p.declared_symbols) catch unreachable;
+                                try part.declared_symbols.appendList(p.allocator, p.declared_symbols);
                             }
 
                             if (part.import_record_indices.len == 0) {
-                                part.import_record_indices = .fromOwnedSlice(bun.handleOom(
-                                    p.allocator.dupe(u32, p.import_records_for_current_part.items),
-                                ));
+                                part.import_record_indices = .fromOwnedSlice(try p.allocator.dupe(u32, p.import_records_for_current_part.items));
                             } else {
-                                part.import_record_indices.appendSlice(
+                                try part.import_record_indices.appendSlice(
                                     p.allocator,
                                     p.import_records_for_current_part.items,
-                                ) catch |err| bun.handleOom(err);
+                                );
                             }
 
                             parts.items[parts_end] = part;
                             parts_end += 1;
                         }
-                    }
-
-                    // We need to iterate multiple times if an import-equals statement was
-                    // removed and there are more import-equals statements that may be removed
-                    if (!kept_import_equals or !removed_import_equals) {
-                        break;
                     }
                 }
 
@@ -6298,7 +6289,8 @@ pub fn NewParser_(
                 //   })
                 //
                 //  which is then called in `evaluateCommonJSModuleOnce`
-                var args = bun.handleOom(allocator.alloc(Arg, 5 + @as(usize, @intFromBool(p.has_import_meta))));
+                const args = try allocator.alloc(Arg, 5 + @as(usize, @intFromBool(p.has_import_meta)));
+                errdefer allocator.free(args);
                 args[0..5].* = .{
                     Arg{ .binding = p.b(B.Identifier{ .ref = p.exports_ref }, logger.Loc.Empty) },
                     Arg{ .binding = p.b(B.Identifier{ .ref = p.require_ref }, logger.Loc.Empty) },
@@ -6307,13 +6299,13 @@ pub fn NewParser_(
                     Arg{ .binding = p.b(B.Identifier{ .ref = p.dirname_ref }, logger.Loc.Empty) },
                 };
                 if (p.has_import_meta) {
-                    p.import_meta_ref = bun.handleOom(p.newSymbol(.other, "$Bun_import_meta"));
+                    p.import_meta_ref = try p.newSymbol(.other, "$Bun_import_meta");
                     args[5] = Arg{ .binding = p.b(B.Identifier{ .ref = p.import_meta_ref }, logger.Loc.Empty) };
                 }
 
                 var total_stmts_count: usize = 0;
                 for (parts.items) |part| {
-                    total_stmts_count += part.stmts.len;
+                    total_stmts_count = std.math.add(usize, total_stmts_count, part.stmts.len) catch return error.OutOfMemory;
                 }
 
                 const preserve_strict_mode = p.module_scope.strict_mode == .explicit_strict_mode and
@@ -6321,9 +6313,10 @@ pub fn NewParser_(
                         parts.items[0].stmts.len > 0 and
                         parts.items[0].stmts[0].data == .s_directive);
 
-                total_stmts_count += @as(usize, @intCast(@intFromBool(preserve_strict_mode)));
+                total_stmts_count = std.math.add(usize, total_stmts_count, @intFromBool(preserve_strict_mode)) catch return error.OutOfMemory;
 
-                const stmts_to_copy = bun.handleOom(allocator.alloc(Stmt, total_stmts_count));
+                const stmts_to_copy = try allocator.alloc(Stmt, total_stmts_count);
+                errdefer allocator.free(stmts_to_copy);
                 {
                     var remaining_stmts = stmts_to_copy;
                     if (preserve_strict_mode) {
@@ -6357,7 +6350,8 @@ pub fn NewParser_(
                     logger.Loc.Empty,
                 );
 
-                var top_level_stmts = bun.handleOom(p.allocator.alloc(Stmt, 1));
+                const top_level_stmts = try p.allocator.alloc(Stmt, 1);
+                errdefer p.allocator.free(top_level_stmts);
                 top_level_stmts[0] = p.s(
                     S.SExpr{
                         .value = wrapper,
@@ -6365,9 +6359,9 @@ pub fn NewParser_(
                     logger.Loc.Empty,
                 );
 
-                try parts.ensureUnusedCapacity(1);
+                try parts.ensureTotalCapacity(1);
                 parts.items.len = 1;
-                parts.items[0].stmts = top_level_stmts;
+                parts.items[0] = .{ .stmts = top_level_stmts };
             }
 
             // REPL mode transforms
@@ -6376,7 +6370,11 @@ pub fn NewParser_(
             }
 
             var top_level_symbols_to_parts = js_ast.Ast.TopLevelSymbolToParts{};
-            var top_level = &top_level_symbols_to_parts;
+            errdefer {
+                for (top_level_symbols_to_parts.values()) |*indices| indices.deinit(p.allocator);
+                top_level_symbols_to_parts.deinit(p.allocator);
+            }
+            const top_level = &top_level_symbols_to_parts;
 
             if (p.options.bundle) {
                 const Ctx = struct {
@@ -6385,7 +6383,7 @@ pub fn NewParser_(
                     symbols: []const js_ast.Symbol,
                     part_index: u32,
 
-                    pub fn next(ctx: @This(), input: Ref) void {
+                    pub fn next(ctx: @This(), input: Ref) bun.OOM!void {
                         // If this symbol was merged, use the symbol at the end of the
                         // linked list in the map. This is the case for multiple "var"
                         // declarations with the same name, for example.
@@ -6395,12 +6393,12 @@ pub fn NewParser_(
                             ref = symbol_ref.link;
                         }
 
-                        var entry = ctx.top_level_symbols_to_parts.getOrPut(ctx.allocator, ref) catch unreachable;
+                        const entry = try ctx.top_level_symbols_to_parts.getOrPut(ctx.allocator, ref);
                         if (!entry.found_existing) {
                             entry.value_ptr.* = .{};
                         }
 
-                        bun.handleOom(entry.value_ptr.append(ctx.allocator, @as(u32, @truncate(ctx.part_index))));
+                        try entry.value_ptr.append(ctx.allocator, ctx.part_index);
                     }
                 };
 
@@ -6411,22 +6409,22 @@ pub fn NewParser_(
                         .allocator = p.allocator,
                         .top_level_symbols_to_parts = top_level,
                         .symbols = p.symbols.items,
-                        .part_index = @as(u32, @truncate(part_index)),
+                        .part_index = std.math.cast(u32, part_index) orelse return error.OutOfMemory,
                     };
 
-                    DeclaredSymbol.forEachTopLevelSymbol(decls, ctx, Ctx.next);
+                    try DeclaredSymbol.forEachTopLevelSymbol(decls, ctx, Ctx.next);
                 }
 
                 // Pulling in the exports of this module always pulls in the export part
 
                 {
-                    var entry = top_level.getOrPut(p.allocator, p.exports_ref) catch unreachable;
+                    const entry = try top_level.getOrPut(p.allocator, p.exports_ref);
 
                     if (!entry.found_existing) {
                         entry.value_ptr.* = .{};
                     }
 
-                    bun.handleOom(entry.value_ptr.append(p.allocator, js_ast.namespace_export_part_index));
+                    try entry.value_ptr.append(p.allocator, js_ast.namespace_export_part_index);
                 }
             }
 
@@ -6438,14 +6436,14 @@ pub fn NewParser_(
                 // When code splitting is enabled, always create wrapper_ref to match esbuild behavior.
                 // Otherwise, use needsWrapperRef() to optimize away unnecessary wrappers.
                 if (p.options.bundle and (p.options.code_splitting or p.needsWrapperRef(parts.items))) {
-                    break :brk p.newSymbol(
+                    break :brk try p.newSymbol(
                         .other,
-                        std.fmt.allocPrint(
+                        try std.fmt.allocPrint(
                             p.allocator,
                             "require_{f}",
                             .{p.source.fmtIdentifier()},
-                        ) catch |err| bun.handleOom(err),
-                    ) catch |err| bun.handleOom(err);
+                        ),
+                    );
                 }
 
                 break :brk Ref.None;
@@ -6472,7 +6470,7 @@ pub fn NewParser_(
                 // now in the parser because we want it to be done in parallel per file and
                 // we're already executing code in parallel here
                 .nested_scope_slot_counts = if (p.options.features.minify_identifiers)
-                    renamer.assignNestedScopeSlots(p.allocator, p.module_scope, p.symbols.items)
+                    try renamer.assignNestedScopeSlots(p.allocator, p.module_scope, p.symbols.items)
                 else
                     js_ast.SlotCounts{},
 

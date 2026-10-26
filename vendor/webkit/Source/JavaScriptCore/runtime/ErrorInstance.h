@@ -115,6 +115,7 @@ public:
     void setColumn(unsigned column) { m_lineColumn.column = column; }
     void setStackFrames(VM& vm, WTF::Vector<JSC::StackFrame>&& stackFrames);
     bool hasMaterializedErrorInfo() const { return m_errorInfoMaterialized; }
+    bool isMaterializingErrorInfo() const { return m_errorInfoMaterializing; }
 
 #endif
 
@@ -154,6 +155,7 @@ protected:
 
 #if USE(BUN_JSC_ADDITIONS)
     void* m_bunErrorData { nullptr };
+    bool m_errorInfoMaterializing { false };
 #endif
 
     SourceAppender m_sourceAppender { nullptr };

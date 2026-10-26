@@ -7,8 +7,8 @@ pub const Set = struct {
         return Set{
             .js = JavaScript.init(allocator),
             .fs = Fs{
-                .shared_buffer = MutableString.init(allocator, 0) catch unreachable,
-                .macro_shared_buffer = MutableString.init(allocator, 0) catch unreachable,
+                .shared_buffer = MutableString.initEmpty(allocator),
+                .macro_shared_buffer = MutableString.initEmpty(allocator),
             },
             .json = Json{},
         };
@@ -24,21 +24,22 @@ pub const Fs = struct {
         external_free_function: ExternalFreeFunction = .none,
 
         pub const ExternalFreeFunction = struct {
-            ctx: ?*anyopaque,
+            pub const PluginSourceContext = opaque {};
+            ctx: ?*PluginSourceContext,
             function: ?*const fn (?*anyopaque) callconv(.c) void,
 
             pub const none: ExternalFreeFunction = .{ .ctx = null, .function = null };
 
             pub fn call(this: *const @This()) void {
                 if (this.function) |func| {
-                    func(this.ctx);
+                    func(@ptrCast(this.ctx));
                 }
             }
         };
 
         pub fn deinit(entry: *Entry, allocator: std.mem.Allocator) void {
             if (entry.external_free_function.function) |func| {
-                func(entry.external_free_function.ctx);
+                func(@ptrCast(entry.external_free_function.ctx));
             } else if (entry.contents.len > 0) {
                 allocator.free(entry.contents);
                 entry.contents = "";
@@ -83,11 +84,8 @@ pub const Fs = struct {
     }
 
     pub fn deinit(c: *Fs) void {
-        var iter = c.entries.iterator();
-        while (iter.next()) |entry| {
-            entry.value.deinit(c.entries.allocator);
-        }
-        c.entries.deinit();
+        c.shared_buffer.deinit();
+        c.macro_shared_buffer.deinit();
     }
 
     pub fn readFile(
@@ -186,24 +184,27 @@ pub const JavaScript = struct {
         defines: *Define,
         log: *logger.Log,
         source: *const logger.Source,
-    ) anyerror!?js_ast.Result {
+    ) bun.OOM!?js_ast.Result {
         var temp_log = logger.Log.init(allocator);
+        defer temp_log.deinit();
         temp_log.level = log.level;
-        var parser = js_parser.Parser.init(opts, &temp_log, source, defines, allocator) catch {
-            temp_log.appendToMaybeRecycled(log, source) catch {};
+        var parser = js_parser.Parser.init(opts, &temp_log, source, defines, allocator) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            try temp_log.appendTo(log);
             return null;
         };
 
         const result = parser.parse() catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             if (temp_log.errors == 0) {
-                log.addRangeError(source, parser.lexer.range(), @errorName(err)) catch unreachable;
+                try temp_log.addRangeError(source, parser.lexer.range(), @errorName(err));
             }
 
-            temp_log.appendToMaybeRecycled(log, source) catch {};
+            try temp_log.appendTo(log);
             return null;
         };
 
-        temp_log.appendToMaybeRecycled(log, source) catch {};
+        try temp_log.appendTo(log);
         return result;
     }
 
@@ -221,11 +222,18 @@ pub const JavaScript = struct {
         }
 
         var temp_log = logger.Log.init(allocator);
-        defer temp_log.appendToMaybeRecycled(log, source) catch {};
-
-        var parser = js_parser.Parser.init(opts, &temp_log, source, defines, allocator) catch return;
-
-        return try parser.scanImports(scan_pass_result);
+        defer temp_log.deinit();
+        var parser = js_parser.Parser.init(opts, &temp_log, source, defines, allocator) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            try temp_log.appendTo(log);
+            return;
+        };
+        parser.scanImports(scan_pass_result) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            try temp_log.appendTo(log);
+            return err;
+        };
+        try temp_log.appendTo(log);
     }
 };
 
@@ -233,16 +241,19 @@ pub const Json = struct {
     pub fn init(_: std.mem.Allocator) Json {
         return Json{};
     }
-    fn parse(_: *@This(), log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator, comptime func: anytype, comptime force_utf8: bool) anyerror!?js_ast.Expr {
+    fn parse(_: *@This(), log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator, comptime func: anytype, comptime force_utf8: bool) bun.OOM!?js_ast.Expr {
         var temp_log = logger.Log.init(allocator);
-        defer {
-            temp_log.appendToMaybeRecycled(log, source) catch {};
-        }
-        return func(source, &temp_log, allocator, force_utf8) catch handler: {
-            break :handler null;
+        defer temp_log.deinit();
+        temp_log.level = log.level;
+        const result = func(source, &temp_log, allocator, force_utf8) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            try temp_log.appendTo(log);
+            return null;
         };
+        try temp_log.appendTo(log);
+        return result;
     }
-    pub fn parseJSON(cache: *@This(), log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator, mode: enum { json, jsonc }, comptime force_utf8: bool) anyerror!?js_ast.Expr {
+    pub fn parseJSON(cache: *@This(), log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator, mode: enum { json, jsonc }, comptime force_utf8: bool) bun.OOM!?js_ast.Expr {
         // tsconfig.* and jsconfig.* files are JSON files, but they are not valid JSON files.
         // They are JSON files with comments and trailing commas.
         // Sometimes tooling expects this to work.
@@ -253,14 +264,76 @@ pub const Json = struct {
         return try parse(cache, log, source, allocator, json_parser.parse, force_utf8);
     }
 
-    pub fn parsePackageJSON(cache: *@This(), log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator, comptime force_utf8: bool) anyerror!?js_ast.Expr {
+    pub fn parsePackageJSON(cache: *@This(), log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator, comptime force_utf8: bool) bun.OOM!?js_ast.Expr {
         return try parse(cache, log, source, allocator, json_parser.parseTSConfig, force_utf8);
     }
 
-    pub fn parseTSConfig(cache: *@This(), log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator) anyerror!?js_ast.Expr {
+    pub fn parseTSConfig(cache: *@This(), log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator) bun.OOM!?js_ast.Expr {
         return try parse(cache, log, source, allocator, json_parser.parseTSConfig, true);
     }
 };
+
+test "macro allocation failure propagates through nested expression visitors" {
+    const Context = js_ast.Macro.Context;
+    const Stub = struct {
+        header: Context.Header = .{ .operations = &operations },
+        calls: usize = 0,
+
+        const operations: Context.Operations = .{
+            .destroy = destroy,
+            .get_remap = getRemap,
+            .set_javascript_object = setJavascriptObject,
+            .call = call,
+        };
+
+        fn destroy(_: *Context) void {}
+        fn getRemap(_: *const Context, _: string) ?@import("../resolver/package_json.zig").MacroImportReplacementMap {
+            return null;
+        }
+        fn setJavascriptObject(_: *Context, _: *const bun.bindgen.Root) void {}
+        fn call(context: *Context, _: std.mem.Allocator, _: string, _: string, _: *logger.Log, _: *const logger.Source, _: logger.Range, _: js_ast.Expr, _: string) anyerror!js_ast.Expr {
+            const header: *Context.Header = @ptrCast(@alignCast(context));
+            const this: *@This() = @fieldParentPtr("header", header);
+            this.calls += 1;
+            return error.OutOfMemory;
+        }
+    };
+
+    for ([_][]const u8{
+        "value();",
+        "const f = () => value();",
+        "function f() { return value(); }",
+        "class C { field = value(); }",
+        "class C { static { value(); } }",
+        "const { [value()]: item } = {};",
+        "console.log((1 + value()) * 2);",
+        "function f(arg = value()) {}",
+        "for (let item = value(); false;) {}",
+        "try { value(); } catch {}",
+        "try {} finally { value(); }",
+        "value`text`;",
+    }) |body| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var ast_memory: js_ast.ASTMemoryAllocator = undefined;
+        var ast_scope = ast_memory.enter(allocator);
+        defer ast_scope.exit();
+        var log = logger.Log.init(std.testing.allocator);
+        defer log.deinit();
+        const defines = try Define.init(allocator, null, null, false, false);
+        defer defines.deinit();
+        var stub: Stub = .{};
+        var opts = js_parser.Parser.Options.init(.{}, .js);
+        opts.macro_context = @ptrCast(&stub.header);
+        const code = try std.fmt.allocPrint(allocator, "import {{ value }} from \"macro:fixture\"; {s}", .{body});
+        const source = logger.Source.initPathString("input.js", code);
+        const cache: JavaScript = .{};
+        try std.testing.expectError(error.OutOfMemory, cache.parse(allocator, opts, defines, &log, &source));
+        try std.testing.expectEqual(@as(usize, 1), stub.calls);
+        try std.testing.expectEqual(@as(u32, 0), log.errors);
+    }
+}
 
 const string = []const u8;
 

@@ -20,7 +20,7 @@ command script import -c lldb_webkit.py
 command script import -c bun_pretty_printer.py
 
 command script delete btjs
-command alias btjs p {printf("gathering btjs trace...\n");printf("%s\n", (char*)dumpBtjsTrace())}
+command alias btjs p {char* trace = (char*)dumpBtjsTrace(); printf("%s\n", trace ? trace : "Unable to allocate stack trace"); (void)freeBtjsTrace(trace);}
 
 # do not pass SIGHUP on to child process. it is often not the real error and the stop point will be nonsensical.
 process handle -p false -s false -n true SIGHUP

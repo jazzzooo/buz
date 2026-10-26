@@ -65,7 +65,7 @@ function escapeZigIdentifier(name: string): string {
   return `@"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-function escapeZigString(str: string): string {
+function escapeZigLiteral(str: string): string {
   return str
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
@@ -327,7 +327,7 @@ export function generateCompactStringTable(
         position: u${positionBits},
     };
     
-    const _bytes = "${escapeZigString(packedData)}";
+    const _bytes = "${escapeZigLiteral(packedData)}";
     const _lengths = [_]${findSmallestIntType(Math.max(...uniqueLengths))}{${uniqueLengths.join(", ")}};
     const _group_start_offsets = [_]${findSmallestIntType(Math.max(...groupStartOffsets))}{${groupStartOffsets.join(", ")}};
     

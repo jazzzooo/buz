@@ -2350,7 +2350,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             };
                             break :scalar .{ .number = @floatFromInt(unsigned) };
                         }
-                        const float = bun.jsc.wtf.parseDouble(number) catch {
+                        const float = bun.parseDouble(number) catch {
                             return;
                         };
 

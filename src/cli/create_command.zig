@@ -1,13 +1,6 @@
 var bun_path_buf: bun.PathBuffer = undefined;
 
 const target_nextjs_version = "12.2.3";
-pub var initialized_store = false;
-pub fn initializeStore() void {
-    if (initialized_store) return;
-    initialized_store = true;
-    js_ast.Expr.Data.Store.create();
-    js_ast.Stmt.Data.Store.create();
-}
 
 const skip_dirs: []const []const u8 = &.{
     "node_modules",
@@ -109,7 +102,7 @@ fn execTask(allocator: std.mem.Allocator, task_: string, cwd: string, _: string,
         .stdin = .inherit,
 
         .windows = if (Environment.isWindows) .{
-            .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+            .loop = (bun.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null) catch return).parentEventLoop(),
         },
     }) catch return;
 }
@@ -324,7 +317,8 @@ pub const CreateCommand = struct {
 
                 const file_buf = try ctx.allocator.alloc(u8, 16384);
 
-                var tarball_buf_list = std.ArrayListUnmanaged(u8){ .capacity = file_buf.len, .items = file_buf };
+                var tarball_buf_list = std.ArrayListUnmanaged(u8){ .capacity = file_buf.len, .items = file_buf[0..0] };
+                defer tarball_buf_list.deinit(ctx.allocator);
                 var gunzip = try Zlib.ZlibReaderArrayList.init(tarball_bytes.list.items, &tarball_buf_list, ctx.allocator);
                 defer gunzip.deinit();
                 try gunzip.readAll(true);
@@ -1433,7 +1427,7 @@ pub const CreateCommand = struct {
                 .stdin = .inherit,
 
                 .windows = if (Environment.isWindows) .{
-                    .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                    .loop = (try bun.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)).parentEventLoop(),
                 },
             });
             _ = try process.unwrap();
@@ -1590,7 +1584,7 @@ pub const CreateCommand = struct {
                     .stdout = .inherit,
                     .stderr = .inherit,
                     .windows = if (Environment.isWindows) .{
-                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                        .loop = (try bun.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)).parentEventLoop(),
                     },
                 });
                 _ = child.unwrap() catch {};
@@ -1634,7 +1628,7 @@ pub const CreateCommand = struct {
         const create_options = try CreateOptions.parse(ctx);
         const positionals = create_options.positionals;
         if (positionals.len == 0) {
-            bun.cli.Command.Tag.printHelp(.CreateCommand, false);
+            bun.cli.Command.tagPrintHelp(.CreateCommand, false);
             Global.crash();
         }
 
@@ -1776,21 +1770,7 @@ pub const Example = struct {
     description: string,
     local: bool = false,
 
-    pub const Tag = enum {
-        unknown,
-        github_repository,
-        official,
-        local_folder,
-        jslike_file,
-
-        const ExtensionTagMap = bun.ComptimeStringMap(Tag, .{
-            .{ ".tsx", .jslike_file },
-            .{ ".jsx", .jslike_file },
-        });
-        pub fn fromFileExtension(extension: string) ?Tag {
-            return ExtensionTagMap.get(extension);
-        }
-    };
+    pub const Tag = @import("./create/ExampleTag.zig").Tag;
 
     const examples_url: string = "https://registry.npmjs.org/bun-examples-all/latest";
     var url: URL = undefined;
@@ -1960,6 +1940,7 @@ pub const Example = struct {
             headers_buf,
             mutable,
             "",
+            ctx.transpiler_capabilities.javascript_semantics,
             http_proxy,
             null,
             HTTP.FetchRedirect.follow,
@@ -2037,6 +2018,7 @@ pub const Example = struct {
             "",
             mutable,
             "",
+            ctx.transpiler_capabilities.javascript_semantics,
             http_proxy,
             null,
             HTTP.FetchRedirect.follow,
@@ -2118,6 +2100,7 @@ pub const Example = struct {
             "",
             mutable,
             "",
+            ctx.transpiler_capabilities.javascript_semantics,
             http_proxy,
             null,
             HTTP.FetchRedirect.follow,
@@ -2160,6 +2143,7 @@ pub const Example = struct {
             "",
             mutable,
             "",
+            ctx.transpiler_capabilities.javascript_semantics,
             http_proxy,
             null,
             HTTP.FetchRedirect.follow,
@@ -2336,7 +2320,7 @@ const GitHandler = struct {
                     .stdout = .inherit,
                     .stderr = .inherit,
                     .windows = if (Environment.isWindows) .{
-                        .loop = bun.jsc.EventLoopHandle.init(bun.jsc.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)),
+                        .loop = (try bun.MiniEventLoop.initGlobal(bun.cli.Cli.io, null, null)).parentEventLoop(),
                     },
                 });
                 _ = try process.unwrap();
@@ -2360,7 +2344,8 @@ const Zlib = @import("../zlib/zlib.zig");
 const fs = @import("../resolver/fs.zig");
 const resolve_path = @import("../paths/resolve_path.zig");
 const std = @import("std");
-const Command = @import("./cli.zig").Command;
+const initializeStore = @import("./create/ASTStore.zig").initialize;
+const Command = bun.cli.Command;
 const NPMClient = @import("./which_npm_client.zig").NPMClient;
 const URL = @import("../url/url.zig").URL;
 const which = @import("../which/which.zig").which;

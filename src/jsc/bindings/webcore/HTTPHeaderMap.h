@@ -95,14 +95,6 @@ public:
 
                 return key;
             }
-            String asciiLowerCaseName() const
-            {
-                if (keyAsHTTPHeaderName) {
-                    return WTF::httpHeaderNameStringImpl(keyAsHTTPHeaderName.value());
-                }
-
-                return key.convertToASCIILowercase();
-            }
         };
 
         const KeyValue *get() const
@@ -139,7 +131,7 @@ public:
         {
             if (it == m_table.commonHeaders().end())
                 return false;
-            m_keyValue.key = httpHeaderNameString(it->key).toStringWithoutCopying();
+            m_keyValue.key = WTF::httpHeaderNameDefaultCaseStringImpl(it->key);
             m_keyValue.keyAsHTTPHeaderName = it->key;
             m_keyValue.value = it->value;
             return true;
@@ -168,7 +160,7 @@ public:
     WEBCORE_EXPORT HTTPHeaderMap isolatedCopy() &&;
 
     bool isEmpty() const { return m_commonHeaders.isEmpty() && m_uncommonHeaders.isEmpty() && m_setCookieHeaders.isEmpty(); }
-    int size() const { return m_commonHeaders.size() + m_uncommonHeaders.size() + m_setCookieHeaders.size(); }
+    size_t size() const { return static_cast<size_t>(m_commonHeaders.size()) + m_uncommonHeaders.size() + m_setCookieHeaders.size(); }
 
     void clear()
     {
@@ -185,6 +177,8 @@ public:
     WEBCORE_EXPORT String get(const StringView name) const;
     WEBCORE_EXPORT void set(const String &name, const String &value);
     WEBCORE_EXPORT void add(const String &name, const String &value);
+    [[nodiscard]] bool trySet(const String& name, const String& value);
+    [[nodiscard]] bool tryAdd(const String& name, const String& value);
     WEBCORE_EXPORT void append(const String &name, const String &value);
     WEBCORE_EXPORT bool contains(const StringView) const;
     WEBCORE_EXPORT int64_t indexOf(StringView name) const;
@@ -209,6 +203,8 @@ public:
     WEBCORE_EXPORT String get(HTTPHeaderName) const;
     void set(HTTPHeaderName, const String &value);
     void add(HTTPHeaderName, const String &value);
+    [[nodiscard]] bool trySet(HTTPHeaderName, const String& value);
+    [[nodiscard]] bool tryAdd(HTTPHeaderName, const String& value);
     bool addIfNotPresent(HTTPHeaderName, const String &);
     WEBCORE_EXPORT bool contains(HTTPHeaderName) const;
     WEBCORE_EXPORT bool remove(HTTPHeaderName);
@@ -263,7 +259,7 @@ public:
     template<class Encoder> void encode(Encoder &) const;
     template<class Decoder> [[nodiscard]] static bool decode(Decoder &, HTTPHeaderMap &);
     void setUncommonHeader(const String &name, const String &value);
-    void setUncommonHeaderCloneName(const StringView name, const String &value);
+    [[nodiscard]] bool trySetUncommonHeaderCloneName(StringView name, const String& value);
 
 private:
     WEBCORE_EXPORT String getUncommonHeader(const StringView name) const;

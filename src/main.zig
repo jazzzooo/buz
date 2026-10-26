@@ -3,19 +3,36 @@ pub const std_options = std.Options{
     .enable_segfault_handler = false,
 };
 
+pub const debug = struct {
+    pub fn getDebugInfoAllocator() std.mem.Allocator {
+        // Stack capture frees temporary unwind buffers on every call.
+        return std.heap.smp_allocator;
+    }
+};
+
 pub const io_mode = .blocking;
 
 comptime {
     _bun.assert(builtin.target.cpu.arch.endian() == .little);
 }
 
-extern fn bun_warn_avx_missing(url: [*:0]const u8) void;
-
 pub extern "c" var _environ: ?*anyopaque;
 pub extern "c" var environ: ?*anyopaque;
 
-pub fn main(init: std.process.Init) void {
-    _bun.crash_handler.init(init.io);
+pub fn main(init: std.process.Init.Minimal) void {
+    const use_safe_allocator = builtin.mode == .debug or builtin.mode == .safe;
+    var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    defer if (use_safe_allocator) {
+        _ = safe_allocator.deinit();
+    };
+    const allocator = if (use_safe_allocator) safe_allocator.allocator() else std.heap.c_allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{
+        .argv0 = .init(init.args),
+        .environ = init.environ,
+    });
+    defer threaded.deinit();
+    const io = threaded.io();
+    _bun.crash_handler.init(io);
 
     if (Environment.isPosix) {
         var act: _bun.sys.Sigaction = .{
@@ -42,35 +59,43 @@ pub fn main(init: std.process.Init) void {
         );
     }
 
-    _bun.handleOom(_bun.initEnviron(init.minimal.environ, init.environ_map));
+    _bun.handleOom(_bun.initEnviron(init.environ));
     if (Environment.isWindows) {
         environ = @ptrCast(@constCast(_bun.environ.ptr));
         _environ = @ptrCast(@constCast(_bun.environ.ptr));
     }
 
-    _bun.start_time = @intCast(std.Io.Clock.awake.now(init.io).nanoseconds);
-    _bun.initSelfExePath(init.io) catch |err| {
+    _bun.start_time = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+    _bun.initSelfExePath(io) catch |err| {
         Output.panic("Failed to resolve the executable path: {s}\n", .{@errorName(err)});
     };
-    _bun.initArgv(init.minimal.args) catch |err| {
+    _bun.initArgv(init.args) catch |err| {
         Output.panic("Failed to initialize argv: {s}\n", .{@errorName(err)});
     };
 
-    Output.Source.Stdio.init(init.io);
+    Output.Source.Stdio.init(io);
     defer Output.flush();
     if (Environment.isX64 and Environment.enableSIMD and Environment.isPosix) {
-        bun_warn_avx_missing(_bun.cli.UpgradeCommand.Bun__githubBaselineURL.ptr);
+        if (!_bun.crash_handler.CPUFeatures.detect().avx) {
+            Output.prettyErrorln("warn: CPU lacks AVX support, strange crashes may occur. Reinstall Bun or use *-baseline build:\n  {s}", .{_bun.cli.UpgradeCommand.github_baseline_url});
+            Output.flush();
+        }
     }
 
     _bun.StackCheck.configureThread();
+    _bun.ParentDeathWatchdogEngine.install();
     _bun.ParentDeathWatchdog.install();
 
-    _bun.cli.Cli.start(_bun.default_allocator, init.io);
+    _bun.cli.Cli.start(
+        _bun.default_allocator,
+        io,
+        _bun.CliEngine.capabilities(.{
+            .javascript_semantics = _bun.jsc.JavaScriptSemanticsEngine.javascript_semantics,
+            .macro_context_factory = _bun.api.MacroIntegration.context_factory,
+            .bytecode_generator = _bun.BundlerEngine.bytecode_generator,
+        }),
+    );
     _bun.Global.exit(0);
-}
-
-pub export fn Bun__panic(msg: [*]const u8, len: usize) noreturn {
-    Output.panic("{s}", .{msg[0..len]});
 }
 
 // -- Zig Standard Library Additions --

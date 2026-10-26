@@ -91,7 +91,14 @@ pub const PosixLoop = extern struct {
     }
 
     pub fn get() *Loop {
+        registerProcessExitHook();
         return c.uws_get_loop();
+    }
+
+    pub fn ensure() anyerror!*Loop {
+        registerProcessExitHook();
+        var failure: uws.PollFailure = .{};
+        return c.uws_ensure_loop(null, &failure) orelse return failure.toZigError();
     }
 
     /// Packetize HTTP/3 stream writes that happened since the last
@@ -102,14 +109,18 @@ pub const PosixLoop = extern struct {
         c.us_quic_loop_flush_if_pending(this);
     }
 
-    pub fn create(comptime Handler: anytype) *Loop {
-        return c.us_create_loop(
+    pub fn create(comptime Handler: anytype) CreateResult {
+        registerProcessExitHook();
+        var failure: uws.PollFailure = .{};
+        const loop = c.us_create_loop(
             null,
             Handler.wakeup,
             if (@hasDecl(Handler, "pre")) Handler.pre else null,
             if (@hasDecl(Handler, "post")) Handler.post else null,
             0,
-        ).?;
+            &failure,
+        ) orelse return .{ .failed = failure };
+        return .{ .loop = loop };
     }
 
     pub fn wakeup(this: *PosixLoop) void {
@@ -156,39 +167,6 @@ pub const PosixLoop = extern struct {
         c.uws_loop_defer(this, user_data, Handler.callback);
     }
 
-    fn NewHandler(comptime UserType: type, comptime callback_fn: fn (UserType) void) type {
-        return struct {
-            loop: *Loop,
-            pub fn removePost(handler: @This()) void {
-                return c.uws_loop_removePostHandler(handler.loop, callback);
-            }
-            pub fn removePre(handler: @This()) void {
-                return c.uws_loop_removePostHandler(handler.loop, callback);
-            }
-            pub fn callback(data: *anyopaque, _: *Loop) callconv(.c) void {
-                callback_fn(@as(UserType, @ptrCast(@alignCast(data))));
-            }
-        };
-    }
-
-    pub fn addPostHandler(this: *PosixLoop, comptime UserType: type, ctx: UserType, comptime callback: fn (UserType) void) NewHandler(UserType, callback) {
-        const Handler = NewHandler(UserType, callback);
-
-        c.uws_loop_addPostHandler(this, ctx, Handler.callback);
-        return Handler{
-            .loop = this,
-        };
-    }
-
-    pub fn addPreHandler(this: *PosixLoop, comptime UserType: type, ctx: UserType, comptime callback: fn (UserType) void) NewHandler(UserType, callback) {
-        const Handler = NewHandler(UserType, callback);
-
-        c.uws_loop_addPreHandler(this, ctx, Handler.callback);
-        return Handler{
-            .loop = this,
-        };
-    }
-
     pub fn run(this: *PosixLoop) void {
         c.us_loop_run(this);
     }
@@ -221,7 +199,14 @@ pub const WindowsLoop = extern struct {
     }
 
     pub fn get() *WindowsLoop {
-        return c.uws_get_loop_with_native(bun.windows.libuv.Loop.get());
+        registerProcessExitHook();
+        return c.uws_get_loop();
+    }
+
+    pub fn ensure() anyerror!*WindowsLoop {
+        registerProcessExitHook();
+        var failure: uws.PollFailure = .{};
+        return c.uws_ensure_loop(try bun.windows.libuv.Loop.ensure(), &failure) orelse return failure.toZigError();
     }
 
     pub fn iterationNumber(this: *const WindowsLoop) u64 {
@@ -259,14 +244,18 @@ pub const WindowsLoop = extern struct {
         c.us_quic_loop_flush_if_pending(this);
     }
 
-    pub fn create(comptime Handler: anytype) *WindowsLoop {
-        return c.us_create_loop(
+    pub fn create(comptime Handler: anytype) CreateResult {
+        registerProcessExitHook();
+        var failure: uws.PollFailure = .{};
+        const loop = c.us_create_loop(
             null,
             Handler.wakeup,
             if (@hasDecl(Handler, "pre")) Handler.pre else null,
             if (@hasDecl(Handler, "post")) Handler.post else null,
             0,
-        ).?;
+            &failure,
+        ) orelse return .{ .failed = failure };
+        return .{ .loop = loop };
     }
 
     pub fn run(this: *WindowsLoop) void {
@@ -330,14 +319,29 @@ pub const WindowsLoop = extern struct {
 };
 
 pub const Loop = if (bun.Environment.isWindows) WindowsLoop else PosixLoop;
+pub const CreateResult = union(enum) { loop: *Loop, failed: uws.PollFailure };
+
+var process_exit_hook_registered = std.atomic.Value(bool).init(false);
+
+fn registerProcessExitHook() void {
+    if (process_exit_hook_registered.cmpxchgStrong(false, true, .seq_cst, .seq_cst) == null) {
+        ProcessLifecycle.addBeforeExitCallback(&markProcessExiting);
+    }
+}
+
+fn markProcessExiting() callconv(.c) void {
+    c.uws_mark_process_exiting();
+}
 
 const c = struct {
+    pub extern fn uws_mark_process_exiting() void;
     pub extern fn us_create_loop(
         hint: ?*anyopaque,
         wakeup_cb: ?*const fn (*Loop) callconv(.c) void,
         pre_cb: ?*const fn (*Loop) callconv(.c) void,
         post_cb: ?*const fn (*Loop) callconv(.c) void,
         ext_size: c_uint,
+        failure: *uws.PollFailure,
     ) ?*Loop;
     pub extern fn us_loop_free(loop: ?*Loop) void;
     pub extern fn us_loop_ext(loop: ?*Loop) ?*anyopaque;
@@ -345,17 +349,12 @@ const c = struct {
     pub extern fn us_loop_run(loop: ?*Loop) void;
     pub extern fn us_loop_pump(loop: ?*Loop) void;
     pub extern fn us_wakeup_loop(loop: ?*Loop) void;
-    pub extern fn us_loop_integrate(loop: ?*Loop) void;
     pub extern fn us_loop_iteration_number(loop: ?*Loop) c_longlong;
-    pub extern fn uws_loop_addPostHandler(loop: *Loop, ctx: *anyopaque, cb: *const (fn (ctx: *anyopaque, loop: *Loop) callconv(.c) void)) void;
-    pub extern fn uws_loop_removePostHandler(loop: *Loop, ctx: *anyopaque, cb: *const (fn (ctx: *anyopaque, loop: *Loop) callconv(.c) void)) void;
-    pub extern fn uws_loop_addPreHandler(loop: *Loop, ctx: *anyopaque, cb: *const (fn (ctx: *anyopaque, loop: *Loop) callconv(.c) void)) void;
-    pub extern fn uws_loop_removePreHandler(loop: *Loop, ctx: *anyopaque, cb: *const (fn (ctx: *anyopaque, loop: *Loop) callconv(.c) void)) void;
     pub extern fn us_loop_run_bun_tick(loop: ?*Loop, timouetMs: ?*const bun.timespec) void;
     pub extern fn us_internal_free_closed_sockets(loop: *Loop) void;
     pub extern fn us_loop_close_all_groups(loop: *Loop) c_int;
     pub extern fn uws_get_loop() *Loop;
-    pub extern fn uws_get_loop_with_native(*anyopaque) *WindowsLoop;
+    pub extern fn uws_ensure_loop(?*anyopaque, *uws.PollFailure) ?*Loop;
     pub extern fn uws_loop_defer(loop: *Loop, ctx: *anyopaque, cb: *const (fn (ctx: *anyopaque) callconv(.c) void)) void;
     pub extern fn uws_res_clear_corked_socket(loop: *Loop) void;
     pub extern fn uws_loop_date_header_timer_update(loop: *Loop) void;
@@ -367,6 +366,7 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
+const ProcessLifecycle = @import("../bun_core/ProcessLifecycle.zig");
 
 const uws = bun.uws;
 const InternalLoopData = uws.InternalLoopData;

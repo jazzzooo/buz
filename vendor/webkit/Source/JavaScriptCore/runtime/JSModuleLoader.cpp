@@ -1228,15 +1228,6 @@ JSPromise* JSModuleLoader::loadModuleSync(JSGlobalObject* globalObject, const Id
     return result;
 }
 
-extern "C" __attribute__((weak)) EncodedJSValue Bun__analyzeTranspiledModule(JSGlobalObject* globalObject, const Identifier& moduleKey, const SourceCode& sourceCode, JSPromise* promise)
-{
-    (void)moduleKey;
-    (void)sourceCode;
-
-    VM& vm = globalObject->vm();
-    promise->reject(vm, createError(globalObject, makeString("Bun__analyzeTranspiledModule is not implemented"_s)));
-    return JSValue::encode(promise);
-}
 #endif
 
 JSPromise* JSModuleLoader::makeModule(JSGlobalObject* globalObject, const Identifier& moduleKey, JSSourceCode* jsSourceCode)
@@ -1282,7 +1273,12 @@ JSPromise* JSModuleLoader::makeModule(JSGlobalObject* globalObject, const Identi
         return promise;
     }
     case SourceProviderSourceType::BunTranspiledModule: {
-        RELEASE_AND_RETURN(scope, uncheckedDowncast<JSPromise>(JSValue::decode(Bun__analyzeTranspiledModule(globalObject, moduleKey, sourceCode, promise))));
+        auto analyze = globalObject->globalObjectMethodTable()->moduleLoaderAnalyzeTranspiledModule;
+        if (!analyze) {
+            promise->reject(vm, createError(globalObject, "Transpiled module analysis is not implemented"_s));
+            return promise;
+        }
+        RELEASE_AND_RETURN(scope, analyze(globalObject, moduleKey, sourceCode, promise));
     }
 #endif
     default:

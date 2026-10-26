@@ -10,10 +10,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY CANON INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL CANON INC. OR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -27,64 +27,37 @@
 
 #include "ExceptionOr.h"
 #include "JSDOMBinding.h"
-#include "JSDOMConvert.h"
 #include "JSDOMGuardedObject.h"
-#include "JSReadableStream.h"
+#include <JavaScriptCore/JSObject.h>
 
 namespace WebCore {
 
-class ReadableStreamSink;
-class ReadableStreamSource;
+WEBCORE_EXPORT bool isReadableStream(JSC::JSValue) noexcept;
+WEBCORE_EXPORT JSC::JSValue readableStreamNativePtr(JSC::JSObject&);
+WEBCORE_EXPORT int32_t readableStreamNativeType(JSC::JSObject&);
+WEBCORE_EXPORT bool readableStreamIsTransferred(JSC::JSObject&);
+WEBCORE_EXPORT bool readableStreamIsDisturbed(JSC::JSObject&);
+WEBCORE_EXPORT void setReadableStreamNativePtr(JSC::JSGlobalObject&, JSC::JSObject&, JSC::JSValue);
+WEBCORE_EXPORT void setReadableStreamNativeType(JSC::JSGlobalObject&, JSC::JSObject&, int32_t);
+WEBCORE_EXPORT void setReadableStreamTransferred(JSC::JSGlobalObject&, JSC::JSObject&);
+WEBCORE_EXPORT void setReadableStreamDisturbed(JSC::JSGlobalObject&, JSC::JSObject&, bool);
 
-class ReadableStream final : public DOMGuarded<JSReadableStream> {
+class ReadableStream final : public DOMGuarded<JSC::JSObject> {
 public:
-    static Ref<ReadableStream> create(JSDOMGlobalObject& globalObject, JSReadableStream& readableStream) { return adoptRef(*new ReadableStream(globalObject, readableStream)); }
+    static Ref<ReadableStream> create(JSDOMGlobalObject& globalObject, JSC::JSObject& readableStream) { return adoptRef(*new ReadableStream(globalObject, readableStream)); }
 
-    static ExceptionOr<Ref<ReadableStream>> create(JSC::JSGlobalObject&, RefPtr<ReadableStreamSource>&&);
-    static ExceptionOr<Ref<ReadableStream>> create(JSC::JSGlobalObject& lexicalGlobalObject, RefPtr<ReadableStreamSource>&& source, JSC::JSValue nativePtr);
-
-    WEBCORE_EXPORT static bool isDisturbed(JSC::JSGlobalObject*, JSReadableStream*);
-    WEBCORE_EXPORT static bool isLocked(JSC::JSGlobalObject*, JSReadableStream*);
-    WEBCORE_EXPORT static void cancel(WebCore::JSDOMGlobalObject& globalObject, JSReadableStream*, const WebCore::Exception& exception);
-
-    std::optional<std::pair<Ref<ReadableStream>, Ref<ReadableStream>>> tee();
-
-    void cancel(const Exception&);
-    void lock();
-    void pipeTo(ReadableStreamSink&);
+    WEBCORE_EXPORT static bool isDisturbed(JSC::JSGlobalObject*, JSC::JSObject*);
+    WEBCORE_EXPORT static bool isLocked(JSC::JSGlobalObject*, JSC::JSObject*);
     bool isLocked() const;
     bool isDisturbed() const;
 
-    JSReadableStream* readableStream() const
-    {
-        return guarded();
-    }
+    JSC::JSObject* readableStream() const { return guarded(); }
 
-    ReadableStream(JSDOMGlobalObject& globalObject, JSReadableStream& readableStream)
-        : DOMGuarded<JSReadableStream>(globalObject, readableStream)
+private:
+    ReadableStream(JSDOMGlobalObject& globalObject, JSC::JSObject& readableStream)
+        : DOMGuarded<JSC::JSObject>(globalObject, readableStream)
     {
     }
-};
-
-struct JSReadableStreamWrapperConverter {
-    static RefPtr<ReadableStream> toWrapped(JSC::JSGlobalObject& lexicalGlobalObject, JSC::JSValue value)
-    {
-        auto* globalObject = dynamicDowncast<JSDOMGlobalObject>(&lexicalGlobalObject);
-        if (!globalObject)
-            return nullptr;
-
-        auto* readableStream = dynamicDowncast<JSReadableStream>(value);
-        if (!readableStream)
-            return nullptr;
-
-        return ReadableStream::create(*globalObject, *readableStream);
-    }
-};
-
-template<> struct JSDOMWrapperConverterTraits<ReadableStream> {
-    using WrapperClass = JSReadableStreamWrapperConverter;
-    using ToWrappedReturnType = RefPtr<ReadableStream>;
-    static constexpr bool needsState = true;
 };
 
 inline JSC::JSValue toJS(JSC::JSGlobalObject*, JSC::JSGlobalObject*, ReadableStream* stream)
@@ -101,7 +74,5 @@ inline JSC::JSValue toJSNewlyCreated(JSC::JSGlobalObject*, JSDOMGlobalObject*, R
 {
     return stream->readableStream();
 }
-
-JSC_DECLARE_HOST_FUNCTION(jsFunctionTransferToNativeReadableStream);
 
 }

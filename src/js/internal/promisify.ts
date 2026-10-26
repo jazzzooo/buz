@@ -20,7 +20,7 @@ function defineCustomPromisifyArgs(target, args) {
   return args;
 }
 
-var promisify = function promisify(original) {
+const promisify = function promisify(original) {
   validateFunction(original, "original");
   const custom = original[kCustomPromisifiedSymbol];
   if (custom) {

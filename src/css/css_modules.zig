@@ -132,7 +132,7 @@ pub const CssModule = struct {
         selectors: *const css.selector.parser.SelectorList,
         _: *const css.css_properties.css_modules.Composes,
         _: u32,
-    ) css.Maybe(void, css.PrinterErrorKind) {
+    ) css.Outcome(void, css.PrinterErrorKind) {
         // const allocator = dest.allocator;
         for (selectors.v.slice()) |*sel| {
             if (sel.len() == 1 and sel.components.items[0] == .class) {

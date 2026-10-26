@@ -45,16 +45,16 @@ enum class EncodingCallbackType : uint8_t { Protocol,
     Hash };
 
 bool isAbsolutePathname(StringView input, BaseURLStringType inputType);
-ExceptionOr<String> canonicalizeProtocol(StringView, BaseURLStringType valueType);
-String canonicalizeUsername(StringView value, BaseURLStringType valueType);
-String canonicalizePassword(StringView value, BaseURLStringType valueType);
+ExceptionOr<String> processProtocol(StringView, BaseURLStringType valueType);
+ExceptionOr<String> canonicalizeUsername(StringView value, BaseURLStringType valueType);
+ExceptionOr<String> canonicalizePassword(StringView value, BaseURLStringType valueType);
 ExceptionOr<String> canonicalizeHostname(StringView value, BaseURLStringType valueType);
 ExceptionOr<String> canonicalizeIPv6Hostname(StringView value, BaseURLStringType valueType);
 ExceptionOr<String> canonicalizePort(StringView portValue, StringView protocolValue, BaseURLStringType portValueType);
 ExceptionOr<String> processPathname(StringView pathnameValue, const StringView protocolValue, BaseURLStringType pathnameValueType);
 ExceptionOr<String> canonicalizePathname(StringView pathnameValue);
 ExceptionOr<String> canonicalizeOpaquePathname(StringView value);
-ExceptionOr<String> canonicalizeSearch(StringView value, BaseURLStringType valueType);
-ExceptionOr<String> canonicalizeHash(StringView value, BaseURLStringType valueType);
+ExceptionOr<String> processSearch(StringView value, BaseURLStringType valueType);
+ExceptionOr<String> processHash(StringView value, BaseURLStringType valueType);
 ExceptionOr<String> callEncodingCallback(EncodingCallbackType, StringView input);
 }

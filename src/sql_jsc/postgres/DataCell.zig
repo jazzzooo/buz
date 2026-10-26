@@ -62,7 +62,7 @@ fn trySlice(slice: []const u8, count: usize) []const u8 {
     if (slice.len <= count) return "";
     return slice[count..];
 }
-fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, globalObject: *jsc.JSGlobalObject, offset: ?*usize, comptime is_json_sub_array: bool) !SQLDataCell {
+fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, date_converter: anytype, offset: ?*usize, comptime is_json_sub_array: bool) !SQLDataCell {
     const closing_brace = if (is_json_sub_array) ']' else '}';
     const opening_brace = if (is_json_sub_array) '[' else '{';
     if (bytes.len < 2 or bytes[0] != opening_brace) {
@@ -105,7 +105,7 @@ fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, gl
             },
             opening_brace => {
                 var sub_array_offset: usize = 0;
-                var sub_array = try parseArray(slice, bigint, arrayType, globalObject, &sub_array_offset, is_json_sub_array);
+                var sub_array = try parseArray(slice, bigint, arrayType, date_converter, &sub_array_offset, is_json_sub_array);
                 errdefer sub_array.deinit();
                 try array.append(bun.default_allocator, sub_array);
                 slice = trySlice(slice, sub_array_offset);
@@ -144,9 +144,9 @@ fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, gl
                     .date_array,
                     => {
                         const date_str = slice[1..current_idx];
-                        var str = bun.String.init(date_str);
+                        var str = bun.String.cloneUTF8(date_str);
                         defer str.deref();
-                        try array.append(bun.default_allocator, SQLDataCell{ .tag = .date, .value = .{ .date = try str.parseDate(globalObject) } });
+                        try array.append(bun.default_allocator, SQLDataCell{ .tag = .date, .value = .{ .date = try date_converter.parseDate(&str) } });
 
                         slice = trySlice(slice, current_idx + 1);
                         continue;
@@ -241,9 +241,9 @@ fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, gl
                             continue;
                         }
                         if (arrayType == .date_array) {
-                            var str = bun.String.init(element);
+                            var str = bun.String.cloneUTF8(element);
                             defer str.deref();
-                            try array.append(bun.default_allocator, SQLDataCell{ .tag = .date, .value = .{ .date = try str.parseDate(globalObject) } });
+                            try array.append(bun.default_allocator, SQLDataCell{ .tag = .date, .value = .{ .date = try date_converter.parseDate(&str) } });
                         } else {
                             // the only escape sequency possible here is \b
                             if (bun.strings.eqlComptime(element, "\\b")) {
@@ -432,7 +432,7 @@ fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, gl
                                 if (arrayType == .json_array or arrayType == .jsonb_array) {
                                     if (slice[0] == '[') {
                                         var sub_array_offset: usize = 0;
-                                        var sub_array = try parseArray(slice, bigint, arrayType, globalObject, &sub_array_offset, true);
+                                        var sub_array = try parseArray(slice, bigint, arrayType, date_converter, &sub_array_offset, true);
                                         errdefer sub_array.deinit();
                                         try array.append(bun.default_allocator, sub_array);
                                         slice = trySlice(slice, sub_array_offset);
@@ -461,7 +461,7 @@ fn parseArray(bytes: []const u8, bigint: bool, comptime arrayType: types.Tag, gl
     return SQLDataCell{ .tag = .array, .value = .{ .array = .{ .ptr = array.items.ptr, .len = @truncate(array.items.len), .cap = @truncate(array.capacity) } }, .free_value = 1 };
 }
 
-pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, globalObject: *jsc.JSGlobalObject) !SQLDataCell {
+pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, date_converter: anytype) !SQLDataCell {
     switch (oid) {
         // TODO: .int2_array, .float8_array
         inline .int4_array, .float4_array => |tag| {
@@ -490,7 +490,11 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
                                 .ptr = null,
                                 .len = 0,
                                 .byte_len = 0,
-                                .type = try tag.toJSTypedArrayType(),
+                                .kind = switch (tag) {
+                                    .int4_array => .int32,
+                                    .float4_array => .float32,
+                                    else => unreachable,
+                                },
                             },
                         },
                     };
@@ -526,12 +530,16 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
                             .ptr = if (elements.len > 0) @ptrCast(elements.ptr) else null,
                             .len = @truncate(elements.len),
                             .byte_len = @truncate(bytes.len),
-                            .type = try tag.toJSTypedArrayType(),
+                            .kind = switch (tag) {
+                                .int4_array => .int32,
+                                .float4_array => .float32,
+                                else => unreachable,
+                            },
                         },
                     },
                 };
             } else {
-                return try parseArray(bytes, bigint, tag, globalObject, null, false);
+                return try parseArray(bytes, bigint, tag, date_converter, null, false);
             }
         },
         .int2 => {
@@ -622,9 +630,9 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
                 if (bun.strings.eqlCaseInsensitiveASCII(bytes, "NULL", true)) {
                     return SQLDataCell{ .tag = .null, .value = .{ .null = 0 } };
                 }
-                var str = bun.String.init(bytes);
+                var str = bun.String.cloneUTF8(bytes);
                 defer str.deref();
-                return SQLDataCell{ .tag = .date, .value = .{ .date = try str.parseDate(globalObject) } };
+                return SQLDataCell{ .tag = .date, .value = .{ .date = try date_converter.parseDate(&str) } };
             }
         },
         .time, .timetz => |tag| {
@@ -636,9 +644,8 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
                     // PostgreSQL sends time as microseconds since midnight in binary format
                     const microseconds = @byteSwap(@as(i64, @bitCast(bytes[0..8].*)));
 
-                    // Use C++ helper for formatting
                     var buffer: [32]u8 = undefined;
-                    const len = Postgres__formatTime(microseconds, &buffer, buffer.len);
+                    const len = date_converter.formatTime(microseconds, &buffer);
 
                     return SQLDataCell{ .tag = .string, .value = .{ .string = bun.String.cloneUTF8(buffer[0..len]).value.WTFStringImpl }, .free_value = 1 };
                 } else if (tag == .timetz and bytes.len == 12) {
@@ -646,9 +653,8 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
                     const microseconds = @byteSwap(@as(i64, @bitCast(bytes[0..8].*)));
                     const tz_offset_seconds = @byteSwap(@as(i32, @bitCast(bytes[8..12].*)));
 
-                    // Use C++ helper for formatting with timezone
                     var buffer: [48]u8 = undefined;
-                    const len = Postgres__formatTimeTz(microseconds, tz_offset_seconds, &buffer, buffer.len);
+                    const len = date_converter.formatTimeTz(microseconds, tz_offset_seconds, &buffer);
 
                     return SQLDataCell{ .tag = .string, .value = .{ .string = bun.String.cloneUTF8(buffer[0..len]).value.WTFStringImpl }, .free_value = 1 };
                 } else {
@@ -720,7 +726,7 @@ pub fn fromBytes(binary: bool, bigint: bool, oid: types.Tag, bytes: []const u8, 
         .timestamptz_array,
         .interval_array,
         => |tag| {
-            return try parseArray(bytes, bigint, tag, globalObject, null, false);
+            return try parseArray(bytes, bigint, tag, date_converter, null, false);
         },
         else => {
             return SQLDataCell{ .tag = .string, .value = .{ .string = if (bytes.len > 0) bun.String.cloneUTF8(bytes).value.WTFStringImpl else null }, .free_value = 1 };
@@ -923,73 +929,80 @@ pub fn parseBinary(comptime tag: types.Tag, comptime ReturnType: type, bytes: []
         else => @compileError("TODO"),
     }
 }
-pub const Putter = struct {
-    list: []SQLDataCell,
-    fields: []const protocol.FieldDescription,
-    binary: bool = false,
-    bigint: bool = false,
-    globalObject: *jsc.JSGlobalObject,
+pub fn Putter(comptime DateConverter: type) type {
+    return struct {
+        const Self = @This();
 
-    pub fn toJS(this: *Putter, array: JSValue, result_mode: PostgresSQLQueryResultMode, layout: ?*const ResultLayout) !JSValue {
-        return SQLDataCell.constructObjectFromDataCell(
-            this.globalObject,
-            array,
-            this.list.ptr,
-            @truncate(this.fields.len),
-            @backingInt(result_mode),
-            layout,
-        );
-    }
+        list: []SQLDataCell,
+        fields: []const protocol.FieldDescription,
+        binary: bool = false,
+        bigint: bool = false,
+        date_converter: DateConverter,
 
-    fn putImpl(this: *Putter, index: u32, optional_bytes: ?*Data, comptime is_raw: bool) !bool {
-        // Bounds check to prevent crash when fields/list arrays are empty
-        if (index >= this.fields.len) {
-            debug("putImpl: index {d} >= fields.len {d}, ignoring extra field", .{ index, this.fields.len });
-            return false;
-        }
-        if (index >= this.list.len) {
-            debug("putImpl: index {d} >= list.len {d}, ignoring extra field", .{ index, this.list.len });
-            return false;
+        pub fn appendResultRow(
+            this: *Self,
+            values: *const SQLTypes.BindingValues,
+            rows: ?*const SQLTypes.ResultRows,
+            result_mode: PostgresSQLQueryResultMode,
+            layout: ?*const ResultLayout,
+        ) bun.JSError!?SQLTypes.ResultRows {
+            return SQLResultMaterializer.appendResultRow(
+                values,
+                rows,
+                this.list[0..this.fields.len],
+                result_mode,
+                if (layout) |value| value.materializerLayout() else null,
+            );
         }
 
-        const field = &this.fields[index];
-        const oid = field.type_oid;
-        debug("index: {d}, oid: {d}", .{ index, oid });
-        const cell: *SQLDataCell = &this.list[index];
-        if (is_raw) {
-            cell.* = SQLDataCell.raw(optional_bytes);
-        } else {
-            const tag = if (std.math.maxInt(short) < oid) .text else @as(types.Tag, @fromBackingInt(@intCast(@as(short, @intCast(oid)))));
-            cell.* = if (optional_bytes) |data|
-                try fromBytes((field.binary or this.binary) and tag.isBinaryFormatSupported(), this.bigint, tag, data.slice(), this.globalObject)
-            else
-                SQLDataCell{
-                    .tag = .null,
-                    .value = .{
-                        .null = 0,
-                    },
-                };
-        }
-        return true;
-    }
+        fn putImpl(this: *Self, index: u32, optional_bytes: ?*Data, comptime is_raw: bool) !bool {
+            // Bounds check to prevent crash when fields/list arrays are empty
+            if (index >= this.fields.len) {
+                debug("putImpl: index {d} >= fields.len {d}, ignoring extra field", .{ index, this.fields.len });
+                return false;
+            }
+            if (index >= this.list.len) {
+                debug("putImpl: index {d} >= list.len {d}, ignoring extra field", .{ index, this.list.len });
+                return false;
+            }
 
-    pub fn putRaw(this: *Putter, index: u32, optional_bytes: ?*Data) !bool {
-        return this.putImpl(index, optional_bytes, true);
-    }
-    pub fn put(this: *Putter, index: u32, optional_bytes: ?*Data) !bool {
-        return this.putImpl(index, optional_bytes, false);
-    }
-};
+            const field = &this.fields[index];
+            const oid = field.type_oid;
+            debug("index: {d}, oid: {d}", .{ index, oid });
+            const cell: *SQLDataCell = &this.list[index];
+            if (is_raw) {
+                cell.* = SQLDataCell.raw(optional_bytes);
+            } else {
+                const tag = if (std.math.maxInt(short) < oid) .text else @as(types.Tag, @fromBackingInt(@intCast(@as(short, @intCast(oid)))));
+                cell.* = if (optional_bytes) |data|
+                    try fromBytes((field.binary or this.binary) and tag.isBinaryFormatSupported(), this.bigint, tag, data.slice(), this.date_converter)
+                else
+                    SQLDataCell{
+                        .tag = .null,
+                        .value = .{
+                            .null = 0,
+                        },
+                    };
+            }
+            return true;
+        }
+
+        pub fn putRaw(this: *Self, index: u32, optional_bytes: ?*Data) !bool {
+            return this.putImpl(index, optional_bytes, true);
+        }
+        pub fn put(this: *Self, index: u32, optional_bytes: ?*Data) !bool {
+            return this.putImpl(index, optional_bytes, false);
+        }
+    };
+}
 
 const debug = bun.Output.scoped(.Postgres, .visible);
-
-// External C++ formatting functions
-extern fn Postgres__formatTime(microseconds: i64, buffer: [*]u8, bufferSize: usize) usize;
-extern fn Postgres__formatTimeTz(microseconds: i64, tzOffsetSeconds: i32, buffer: [*]u8, bufferSize: usize) usize;
 
 const log = bun.Output.scoped(.PostgresDataCell, .visible);
 
 const ResultLayout = @import("../shared/ResultLayout.zig");
+const SQLTypes = @import("../shared/SQLTypes.zig");
+const SQLResultMaterializer = @import("../shared/SQLResultMaterializer.zig");
 const protocol = @import("../../sql/postgres/PostgresProtocol.zig");
 const std = @import("std");
 const Data = @import("../../sql/shared/Data.zig").Data;
@@ -1002,6 +1015,3 @@ const short = types.short;
 
 const bun = @import("bun");
 const String = bun.String;
-
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;

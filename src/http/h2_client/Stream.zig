@@ -73,8 +73,8 @@ pub fn rst(this: *@This(), code: wire.ErrorCode) void {
     if (this.rst_done or this.state == .closed) return;
     this.rst_done = true;
     this.state = .closed;
-    var value: u32 = @byteSwap(@backingInt(code));
-    this.session.writeFrame(.HTTP_FRAME_RST_STREAM, 0, this.id, std.mem.asBytes(&value));
+    const value = wire.encodeU32(@backingInt(code));
+    this.session.writeFrame(.HTTP_FRAME_RST_STREAM, 0, this.id, &value);
 }
 
 pub fn sentEndStream(this: *@This()) void {
@@ -107,7 +107,7 @@ pub inline fn remoteClosed(this: *const @This()) bool {
 const ClientSession = @import("./ClientSession.zig");
 const H2 = @import("../H2Client.zig");
 const std = @import("std");
-const wire = @import("../H2FrameParser.zig");
+const wire = @import("../H2Frame.zig");
 
 const bun = @import("bun");
 const HTTPClient = bun.http;

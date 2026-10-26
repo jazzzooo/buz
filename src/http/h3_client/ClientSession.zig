@@ -6,8 +6,6 @@
 
 const ClientSession = @This();
 
-pub const new = bun.TrivialNew(@This());
-
 /// Ref holders: the `ClientContext.sessions` registry while listed (1), the
 /// `quic.Socket` ext slot while connected (1, transferred from the registry
 /// add via `connect`), and one per entry in `pending`. `PendingConnect` holds
@@ -19,7 +17,7 @@ pub const deref = RefCount.deref;
 ref_count: RefCount = .init(),
 /// Null while DNS is in flight; set once `us_quic_connect_addr` returns.
 qsocket: ?*quic.Socket,
-hostname: []const u8,
+hostname: [:0]const u8,
 port: u16,
 reject_unauthorized: bool,
 handshake_done: bool = false,
@@ -50,17 +48,20 @@ pub fn hasHeadroom(this: *const ClientSession) bool {
 /// Queue `client` for a stream on this connection. The lsquic stream is
 /// created asynchronously, so the request goes into `pending` until
 /// `onStreamOpen` pops it.
-pub fn enqueue(this: *ClientSession, client: *HTTPClient) void {
+pub fn enqueue(this: *ClientSession, client: *HTTPClient) bun.OOM!void {
     bun.debugAssert(!this.closed);
+    const stream = try bun.default_allocator.create(Stream);
+    errdefer bun.default_allocator.destroy(stream);
+    try this.pending.append(bun.default_allocator, stream);
+    stream.* = .{ .session = this, .client = client };
+    this.ref();
+
     client.h3 = null;
     client.flags.protocol = .http3;
     client.allow_retry = false;
 
-    const stream = Stream.new(.{ .session = this, .client = client });
     _ = H3.live_streams.fetchAdd(1, .monotonic);
     client.h3 = stream;
-    bun.handleOom(this.pending.append(bun.default_allocator, stream));
-    this.ref();
 
     if (this.handshake_done) {
         this.qsocket.?.makeStream();
@@ -73,7 +74,7 @@ pub fn streamBodyByHttpId(this: *ClientSession, async_http_id: u32, ended: bool)
         if (client.async_http_id != async_http_id) continue;
         if (client.state.original_request_body != .stream) return;
         client.state.original_request_body.stream.ended = ended;
-        if (stream.qstream) |qs| encode.drainSendBody(stream, qs);
+        if (stream.qstream) |qs| encode.drainSendBody(stream, qs) catch |err| this.fail(stream, err);
         return;
     }
 }
@@ -88,7 +89,7 @@ pub fn detach(this: *ClientSession, stream: *Stream) void {
         // content-length violation; RESET_STREAM(H3_REQUEST_CANCELLED)
         // is the correct "I'm abandoning this send half" so lsquic reaps
         // the stream instead of leaking it on the pooled session.
-        if (!stream.request_body_done) qs.reset();
+        if (stream.request_state != .done) qs.reset();
     }
     stream.qstream = null;
     if (std.mem.indexOfScalar(*Stream, this.pending.items, stream)) |i| {
@@ -127,9 +128,7 @@ pub fn retryOrFail(this: *ClientSession, stream: *Stream, err: anyerror) void {
     log("retry {s}:{d} after {s}", .{ host, port, @errorName(err) });
     stream.abort();
     this.detach(stream);
-    if (!ctx.connect(client, host, port)) {
-        client.failFromH2(err);
-    }
+    ctx.connect(client, host, port);
 }
 
 pub fn abortByHttpId(this: *ClientSession, async_http_id: u32) bool {

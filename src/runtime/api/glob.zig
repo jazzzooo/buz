@@ -1,11 +1,9 @@
 const Glob = @This();
 
-pub const js = jsc.Codegen.JSGlob;
-pub const toJS = js.toJS;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
+pub const getConstructor = GlobClass.constructor;
 
-pattern: []const u8,
+bindgen_state: bindgen.ClassState = .{},
+pattern: bindgen.OwnedBytes,
 has_pending_activity: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
 const ScanOpts = struct {
@@ -16,35 +14,33 @@ const ScanOpts = struct {
     follow_symlinks: bool,
     error_on_broken_symlinks: bool,
 
-    fn parseCWD(globalThis: *JSGlobalObject, allocator: std.mem.Allocator, cwdVal: jsc.JSValue, absolute: bool, comptime fnName: string) bun.JSError![]const u8 {
-        const cwd_string: bun.String = try .fromJS(cwdVal, globalThis);
-        defer cwd_string.deref();
-        if (cwd_string.isEmpty()) return "";
-
-        const cwd_utf8 = cwd_string.toUTF8WithoutRef(allocator);
+    fn parseCWD(context: anytype, allocator: std.mem.Allocator, cwd_value: bindgen.DOMStringView, absolute: bool, comptime fnName: []const u8) bun.bindgen.CallError(@TypeOf(context))![]const u8 {
+        const cwd_utf8 = try cwd_value.toUTF8(allocator);
         defer cwd_utf8.deinit();
         const cwd = cwd_utf8.slice();
+        if (cwd.len == 0) return "";
         const cwd_str = if (absolute and !std.fs.path.isAbsolute(cwd)) cwd_str: {
             var path_buf: bun.PathBuffer = undefined;
             const process_cwd = switch (bun.sys.getcwd(&path_buf)) {
                 .result => |result| result,
                 .err => |err| {
-                    const errJs = try err.toJS(globalThis);
-                    return globalThis.throwValue(errJs);
+                    return context.fail(.system, try bindgen.SystemError.fromSysError(err));
                 },
             };
             break :cwd_str try std.fs.path.resolve(allocator, &.{ process_cwd, cwd });
         } else try std.fs.path.resolve(allocator, &.{cwd});
 
         if (cwd_str.len > bun.MAX_PATH_BYTES) {
-            return globalThis.throw("{s}: invalid `cwd`, longer than {d} bytes", .{ fnName, bun.MAX_PATH_BYTES });
+            const message = try std.fmt.allocPrint(bun.default_allocator, "{s}: invalid `cwd`, longer than {d} bytes", .{ fnName, bun.MAX_PATH_BYTES });
+            defer bun.default_allocator.free(message);
+            return context.fail(.invalid_cwd, try bindgen.ThreadSafeDOMString.fromUTF8(message));
         }
 
         return cwd_str;
     }
 
-    fn fromJS(globalThis: *JSGlobalObject, arguments: *ArgumentsSlice, comptime fnName: []const u8, arena: *Arena) bun.JSError!?ScanOpts {
-        const optsObj: JSValue = arguments.nextEat() orelse return null;
+    fn fromGenerated(context: anytype, options: anytype, comptime fnName: []const u8, arena: *Arena) bun.bindgen.CallError(@TypeOf(context))!?ScanOpts {
+        const input = options orelse return null;
         var out: ScanOpts = .{
             .cwd = null,
             .dot = false,
@@ -53,123 +49,77 @@ const ScanOpts = struct {
             .error_on_broken_symlinks = false,
             .only_files = true,
         };
-        if (optsObj.isUndefinedOrNull()) return out;
-        if (!optsObj.isObject()) {
-            if (optsObj.isString()) {
-                {
-                    const result = try parseCWD(globalThis, arena.allocator(), optsObj, out.absolute, fnName);
-                    if (result.len > 0) {
-                        out.cwd = result;
-                    }
+
+        switch (input) {
+            .cwd => |cwd| {
+                const result = try parseCWD(context, arena.allocator(), cwd, out.absolute, fnName);
+                if (result.len > 0) out.cwd = result;
+            },
+            .options => |generated| {
+                out.only_files = generated.only_files;
+                out.error_on_broken_symlinks = generated.error_on_broken_symlinks;
+                out.follow_symlinks = generated.follow_symlinks;
+                out.absolute = generated.absolute;
+                out.dot = generated.dot;
+                if (generated.cwd) |cwd| {
+                    const result = try parseCWD(context, arena.allocator(), cwd, out.absolute, fnName);
+                    if (result.len > 0) out.cwd = result;
                 }
-                return out;
-            }
-            return globalThis.throw("{s}: expected first argument to be an object", .{fnName});
-        }
-
-        if (try optsObj.getOptional(globalThis, "onlyFiles", JSValue)) |only_files| {
-            out.only_files = if (only_files.isBoolean()) only_files.asBoolean() else false;
-        }
-
-        if (try optsObj.getOptional(globalThis, "throwErrorOnBrokenSymlink", JSValue)) |error_on_broken| {
-            out.error_on_broken_symlinks = if (error_on_broken.isBoolean()) error_on_broken.asBoolean() else false;
-        }
-
-        if (try optsObj.getOptional(globalThis, "followSymlinks", JSValue)) |followSymlinksVal| {
-            out.follow_symlinks = if (followSymlinksVal.isBoolean()) followSymlinksVal.asBoolean() else false;
-        }
-
-        if (try optsObj.getOptional(globalThis, "absolute", JSValue)) |absoluteVal| {
-            out.absolute = if (absoluteVal.isBoolean()) absoluteVal.asBoolean() else false;
-        }
-
-        if (try optsObj.getOptional(globalThis, "cwd", JSValue)) |cwdVal| {
-            if (!cwdVal.isString()) {
-                return globalThis.throw("{s}: invalid `cwd`, not a string", .{fnName});
-            }
-
-            {
-                const result = try parseCWD(globalThis, arena.allocator(), cwdVal, out.absolute, fnName);
-                if (result.len > 0) {
-                    out.cwd = result;
-                }
-            }
-        }
-
-        if (try optsObj.getOptional(globalThis, "dot", JSValue)) |dot| {
-            out.dot = if (dot.isBoolean()) dot.asBoolean() else false;
+            },
         }
 
         return out;
     }
 };
 
-pub const WalkTask = struct {
+const WalkTask = struct {
     walker: *GlobWalker,
     alloc: Allocator,
-    err: ?Err = null,
-    global: *jsc.JSGlobalObject,
     has_pending_activity: *std.atomic.Value(usize),
+    completion: bindgen.OwnedCompletion(GlobPullSchema),
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = &run, .on_cancel = &cancel },
 
-    pub const Err = union(enum) {
-        syscall: Syscall.Error,
-        unknown: anyerror,
-
-        pub fn toJS(this: Err, globalThis: *JSGlobalObject) bun.JSError!JSValue {
-            return switch (this) {
-                .syscall => |err| try err.toJS(globalThis),
-                .unknown => |err| ZigString.fromBytes(@errorName(err)).toJS(globalThis),
-            };
-        }
-    };
-
-    pub const AsyncGlobWalkTask = jsc.ConcurrentPromiseTask(WalkTask);
-
-    pub fn create(
-        globalThis: *jsc.JSGlobalObject,
-        alloc: Allocator,
-        globWalker: *GlobWalker,
-        has_pending_activity: *std.atomic.Value(usize),
-    ) !*AsyncGlobWalkTask {
-        const walkTask = try alloc.create(WalkTask);
-        walkTask.* = .{
-            .walker = globWalker,
-            .global = globalThis,
-            .alloc = alloc,
-            .has_pending_activity = has_pending_activity,
+    pub fn schedule(this: *WalkTask, background_tasks: *bun.BackgroundTaskGroup) void {
+        bun.BackgroundWork.schedule(background_tasks, &this.task) catch {
+            defer this.deinit();
+            decrPendingActivityFlag(this.has_pending_activity);
+            this.completion.fail(.concurrency_unavailable, {});
         };
-        return AsyncGlobWalkTask.createOnJSThread(alloc, globalThis, walkTask);
     }
 
-    pub fn run(this: *WalkTask) void {
+    fn run(work_task: *bun.BackgroundTaskGroup.Task) void {
+        const this: *WalkTask = @fieldParentPtr("task", work_task);
+        defer this.deinit();
         defer decrPendingActivityFlag(this.has_pending_activity);
         const result = this.walker.walk() catch |err| {
-            this.err = .{ .unknown = err };
+            switch (err) {
+                error.OutOfMemory => this.completion.outOfMemory(),
+            }
             return;
         };
         switch (result) {
             .err => |err| {
-                this.err = .{ .syscall = err };
+                const system_error = bindgen.SystemError.fromSysError(err) catch {
+                    this.completion.outOfMemory();
+                    return;
+                };
+                this.completion.fail(.system, system_error);
             },
-            .result => {},
+            .result => {
+                const output = globWalkResult(this.walker) catch {
+                    this.completion.outOfMemory();
+                    return;
+                };
+                this.completion.resolve(output);
+            },
         }
     }
 
-    pub fn onScheduleError(this: *WalkTask, err: anyerror) void {
+    fn cancel(work_task: *bun.BackgroundTaskGroup.Task) void {
+        const this: *WalkTask = @fieldParentPtr("task", work_task);
         decrPendingActivityFlag(this.has_pending_activity);
-        this.err = .{ .unknown = err };
-    }
-
-    pub fn then(this: *WalkTask, promise: *jsc.JSPromise) bun.JSTerminated!void {
-        defer this.deinit();
-
-        if (this.err) |err| {
-            try promise.rejectWithAsyncStack(this.global, err.toJS(this.global));
-            return;
-        }
-
-        const jsStrings = globWalkResultToJS(this.walker, this.global) catch return promise.reject(this.global, error.JSError);
-        try promise.resolve(this.global, jsStrings);
+        this.completion.release();
+        this.deinit();
     }
 
     fn deinit(this: *WalkTask) void {
@@ -179,12 +129,8 @@ pub const WalkTask = struct {
     }
 };
 
-fn globWalkResultToJS(globWalk: *GlobWalker, globalThis: *JSGlobalObject) bun.JSError!JSValue {
-    if (globWalk.matchedPaths.keys().len == 0) {
-        return (try jsc.JSArray.createEmpty(globalThis, 0)).toJS();
-    }
-
-    return BunString.toJSArray(globalThis, globWalk.matchedPaths.keys());
+fn globWalkResult(globWalk: *GlobWalker) bun.OOM!bindgen.Return(GlobPullSchema) {
+    return bindgen.Return(GlobPullSchema).fromUTF8Slices(globWalk.matchedPaths.keys());
 }
 
 /// The reference to the arena is not used after the scope because it is copied
@@ -192,13 +138,13 @@ fn globWalkResultToJS(globWalk: *GlobWalker, globalThis: *JSGlobalObject) bun.JS
 /// errors occur
 fn makeGlobWalker(
     this: *Glob,
-    globalThis: *JSGlobalObject,
-    arguments: *ArgumentsSlice,
+    context: anytype,
+    options: anytype,
     comptime fnName: []const u8,
     alloc: Allocator,
     arena: *Arena,
-) bun.JSError!?*GlobWalker {
-    const matchOpts = try ScanOpts.fromJS(globalThis, arguments, fnName, arena) orelse return null;
+) bun.bindgen.CallError(@TypeOf(context))!?*GlobWalker {
+    const matchOpts = try ScanOpts.fromGenerated(context, options, fnName, arena) orelse return null;
     const cwd = matchOpts.cwd;
     const dot = matchOpts.dot;
     const absolute = matchOpts.absolute;
@@ -213,7 +159,7 @@ fn makeGlobWalker(
     if (cwd != null) {
         switch (try globWalker.initWithCwd(
             arena,
-            this.pattern,
+            this.pattern.slice(),
             cwd.?,
             dot,
             absolute,
@@ -222,7 +168,7 @@ fn makeGlobWalker(
             only_files,
         )) {
             .err => |err| {
-                return globalThis.throwValue(try err.toJS(globalThis));
+                return context.fail(.system, try bindgen.SystemError.fromSysError(err));
             },
             else => {},
         }
@@ -231,7 +177,7 @@ fn makeGlobWalker(
 
     switch (try globWalker.init(
         arena,
-        this.pattern,
+        this.pattern.slice(),
         dot,
         absolute,
         follow_symlinks,
@@ -239,38 +185,28 @@ fn makeGlobWalker(
         only_files,
     )) {
         .err => |err| {
-            return globalThis.throwValue(try err.toJS(globalThis));
+            return context.fail(.system, try bindgen.SystemError.fromSysError(err));
         },
         else => {},
     }
     return globWalker;
 }
 
-pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*Glob {
-    const arguments_ = callframe.arguments_old(1);
-    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
-    defer arguments.deinit();
-    const pat_arg: JSValue = arguments.nextEat() orelse {
-        return globalThis.throw("Glob.constructor: expected 1 arguments, got 0", .{});
-    };
-
-    if (!pat_arg.isString()) {
-        return globalThis.throw("Glob.constructor: first argument is not a string", .{});
-    }
-
-    const pat_str: []const u8 = (try pat_arg.toSliceClone(globalThis)).slice();
-
-    return bun.new(Glob, .{ .pattern = pat_str });
+pub fn construct(
+    _: bindgen.CallContext(GlobConstructorSchema),
+    args: bindgen.Args(GlobConstructorSchema),
+) bun.JSError!*Glob {
+    var pattern = bindgen.OwnedBytes.fromDefaultAllocatedSlice(try args.pattern.toOwnedSlice(bun.default_allocator));
+    errdefer pattern.deinit();
+    return bun.tryNew(Glob, .{ .pattern = pattern });
 }
 
-pub fn finalize(
-    this: *Glob,
-) callconv(.c) void {
-    bun.default_allocator.free(this.pattern);
+pub fn destroy(this: *Glob) void {
+    this.pattern.deinit();
     bun.destroy(this);
 }
 
-pub fn hasPendingActivity(this: *Glob) callconv(.c) bool {
+pub fn hasPendingActivity(this: *const Glob) bool {
     return this.has_pending_activity.load(.seq_cst) > 0;
 }
 
@@ -282,48 +218,55 @@ fn decrPendingActivityFlag(has_pending_activity: *std.atomic.Value(usize)) void 
     _ = has_pending_activity.fetchSub(1, .seq_cst);
 }
 
-pub fn __scan(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn __scan(
+    this: *Glob,
+    context: bindgen.CallContext(GlobPullSchema),
+    args: bindgen.Args(GlobPullSchema),
+) bindgen.CallError(GlobPullSchema)!void {
     const alloc = bun.default_allocator;
 
-    const arguments_ = callframe.arguments_old(1);
-    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
-    defer arguments.deinit();
-
     var arena = std.heap.ArenaAllocator.init(alloc);
-    const globWalker = this.makeGlobWalker(globalThis, &arguments, "scan", alloc, &arena) catch |err| {
+    const globWalker = this.makeGlobWalker(context, args.options, "scan", alloc, &arena) catch |err| {
         arena.deinit();
         return err;
     } orelse {
         arena.deinit();
-        return .js_undefined;
+        var completion = context.completion();
+        completion.resolve(try bindgen.Return(GlobPullSchema).fromUTF8Slices(&[_][]const u8{}));
+        return;
     };
 
-    incrPendingActivityFlag(&this.has_pending_activity);
-    var task = WalkTask.create(globalThis, alloc, globWalker, &this.has_pending_activity) catch {
-        decrPendingActivityFlag(&this.has_pending_activity);
+    var completion = context.completion();
+    const task = alloc.create(WalkTask) catch {
+        completion.outOfMemory();
         globWalker.deinit(true);
         alloc.destroy(globWalker);
-        return globalThis.throwOutOfMemory();
+        return;
     };
-    task.schedule();
-
-    return task.promise.value();
+    task.* = .{
+        .walker = globWalker,
+        .alloc = alloc,
+        .has_pending_activity = &this.has_pending_activity,
+        .completion = completion.take(),
+    };
+    incrPendingActivityFlag(&this.has_pending_activity);
+    task.schedule(bun.current_runtime.backgroundTasks());
 }
 
-pub fn __scanSync(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn __scanSync(
+    this: *Glob,
+    context: bindgen.CallContext(GlobResolveSyncSchema),
+    args: bindgen.Args(GlobResolveSyncSchema),
+) bindgen.CallError(GlobResolveSyncSchema)!bindgen.Return(GlobResolveSyncSchema) {
     const alloc = bun.default_allocator;
 
-    const arguments_ = callframe.arguments_old(1);
-    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
-    defer arguments.deinit();
-
     var arena = std.heap.ArenaAllocator.init(alloc);
-    var globWalker = this.makeGlobWalker(globalThis, &arguments, "scanSync", alloc, &arena) catch |err| {
+    const globWalker = this.makeGlobWalker(context, args.options, "scanSync", alloc, &arena) catch |err| {
         arena.deinit();
         return err;
     } orelse {
         arena.deinit();
-        return .js_undefined;
+        return null;
     };
     defer {
         globWalker.deinit(true);
@@ -332,51 +275,44 @@ pub fn __scanSync(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.Call
 
     switch (try globWalker.walk()) {
         .err => |err| {
-            return globalThis.throwValue(try err.toJS(globalThis));
+            return context.fail(.system, try bindgen.SystemError.fromSysError(err));
         },
         .result => {},
     }
 
-    const matchedPaths = globWalkResultToJS(globWalker, globalThis);
-
-    return matchedPaths;
+    return try globWalkResult(globWalker);
 }
 
-pub fn match(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn match(
+    this: *Glob,
+    _: bindgen.CallContext(GlobMatchSchema),
+    args: bindgen.Args(GlobMatchSchema),
+) bun.JSError!bool {
     const alloc = bun.default_allocator;
     var arena = Arena.init(alloc);
     defer arena.deinit();
-
-    const arguments_ = callframe.arguments_old(1);
-    var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
-    defer arguments.deinit();
-    const str_arg = arguments.nextEat() orelse {
-        return globalThis.throw("Glob.matchString: expected 1 arguments, got 0", .{});
-    };
-
-    if (!str_arg.isString()) {
-        return globalThis.throw("Glob.matchString: first argument is not a string", .{});
-    }
-
-    var str = try str_arg.toSlice(globalThis, arena.allocator());
+    var str = try args.value.toUTF8(arena.allocator());
     defer str.deinit();
 
-    return jsc.JSValue.jsBoolean(bun.glob.match(this.pattern, str.slice()).matches());
+    return bun.glob.match(this.pattern.slice(), str.slice()).matches();
 }
 
-const string = []const u8;
-
-const Syscall = @import("../../sys/sys.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Arena = std.heap.ArenaAllocator;
 
 const bun = @import("bun");
-const BunString = bun.String;
 const GlobWalker = bun.glob.BunGlobWalker;
+const bindgen = bun.bindgen;
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
-const ArgumentsSlice = jsc.CallFrame.ArgumentsSlice;
+const GlobBindingModule = bindgen.Module("Glob");
+const GlobSchema = GlobBindingModule.class("Glob");
+const GlobConstructorSchema = GlobSchema.constructor();
+const GlobPullSchema = GlobSchema.member("__scan");
+const GlobResolveSyncSchema = GlobSchema.member("__scanSync");
+const GlobMatchSchema = GlobSchema.member("match");
+const GlobClass = bindgen.Class(GlobSchema, Glob);
+
+comptime {
+    _ = GlobClass;
+}

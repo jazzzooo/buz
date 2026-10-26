@@ -241,6 +241,7 @@ JSC_DEFINE_HOST_FUNCTION(consoleProtoFuncCount, (JSGlobalObject* globalObject, C
     RETURN_IF_EXCEPTION(scope, encodedJSValue());
 
     client->count(globalObject, label);
+    RETURN_IF_EXCEPTION(scope, encodedJSValue());
     return JSValue::encode(jsUndefined());
 }
 
@@ -255,6 +256,7 @@ JSC_DEFINE_HOST_FUNCTION(consoleProtoFuncCountReset, (JSGlobalObject* globalObje
     RETURN_IF_EXCEPTION(scope, encodedJSValue());
 
     client->countReset(globalObject, label);
+    RETURN_IF_EXCEPTION(scope, encodedJSValue());
     return JSValue::encode(jsUndefined());
 }
 
@@ -332,6 +334,7 @@ JSC_DEFINE_HOST_FUNCTION(consoleProtoFuncTime, (JSGlobalObject* globalObject, Ca
     RETURN_IF_EXCEPTION(scope, encodedJSValue());
 
     client->time(globalObject, label);
+    RETURN_IF_EXCEPTION(scope, encodedJSValue());
     return JSValue::encode(jsUndefined());
 }
 
@@ -346,6 +349,7 @@ JSC_DEFINE_HOST_FUNCTION(consoleProtoFuncTimeLog, (JSGlobalObject* globalObject,
     RETURN_IF_EXCEPTION(scope, encodedJSValue());
 
     client->timeLog(globalObject, label, Inspector::createScriptArguments(globalObject, callFrame, 1));
+    RETURN_IF_EXCEPTION(scope, encodedJSValue());
     return JSValue::encode(jsUndefined());
 }
 
@@ -360,6 +364,7 @@ JSC_DEFINE_HOST_FUNCTION(consoleProtoFuncTimeEnd, (JSGlobalObject* globalObject,
     RETURN_IF_EXCEPTION(scope, encodedJSValue());
 
     client->timeEnd(globalObject, label);
+    RETURN_IF_EXCEPTION(scope, encodedJSValue());
     return JSValue::encode(jsUndefined());
 }
 

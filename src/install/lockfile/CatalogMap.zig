@@ -141,7 +141,7 @@ pub fn parseAppend(
                                 version_sliced.slice,
                                 &version_sliced,
                                 log,
-                                pm,
+                                Dependency.ParseContext.fromPackageManager(pm),
                             ) orelse {
                                 try log.addError(source, item.value.?.loc, "Invalid dependency version");
                                 continue;
@@ -202,7 +202,7 @@ pub fn parseAppend(
                                             version_sliced.slice,
                                             &version_sliced,
                                             log,
-                                            pm,
+                                            Dependency.ParseContext.fromPackageManager(pm),
                                         ) orelse {
                                             try log.addError(source, item.value.?.loc, "Invalid dependency version");
                                             continue;
@@ -247,6 +247,7 @@ const FromPnpmLockfileError = OOM || error{InvalidPnpmLockfile};
 
 pub fn fromPnpmLockfile(
     lockfile: *Lockfile,
+    javascript_semantics: JavaScriptSemantics,
     allocator: std.mem.Allocator,
     log: *logger.Log,
     catalogs_obj: *bun.ast.E.Object,
@@ -264,17 +265,18 @@ pub fn fromPnpmLockfile(
         const entries_obj = prop.value.?.data.e_object;
 
         if (strings.eqlComptime(group_name_str, "default")) {
-            try putEntriesFromPnpmLockfile(lockfile, allocator, log, &lockfile.catalogs.default, entries_obj, string_buf);
+            try putEntriesFromPnpmLockfile(lockfile, javascript_semantics, allocator, log, &lockfile.catalogs.default, entries_obj, string_buf);
         } else {
             const group_name = try string_buf.append(group_name_str);
             const group = try lockfile.catalogs.getOrPutGroup(lockfile, group_name);
-            try putEntriesFromPnpmLockfile(lockfile, allocator, log, group, entries_obj, string_buf);
+            try putEntriesFromPnpmLockfile(lockfile, javascript_semantics, allocator, log, group, entries_obj, string_buf);
         }
     }
 }
 
 fn putEntriesFromPnpmLockfile(
     lockfile: *Lockfile,
+    javascript_semantics: JavaScriptSemantics,
     allocator: std.mem.Allocator,
     log: *logger.Log,
     catalog_map: *Map,
@@ -305,7 +307,7 @@ fn putEntriesFromPnpmLockfile(
                 version_sliced.slice,
                 &version_sliced,
                 log,
-                null,
+                .{ .javascript_semantics = javascript_semantics },
             ) orelse {
                 return error.InvalidPnpmLockfile;
             },
@@ -467,5 +469,6 @@ const Expr = bun.ast.Expr;
 const String = bun.Semver.String;
 
 const Dependency = bun.install.Dependency;
+const JavaScriptSemantics = @import("../../bun_core/JavaScriptSemantics.zig");
 const Lockfile = bun.install.Lockfile;
 const PackageManager = bun.install.PackageManager;

@@ -15,17 +15,16 @@
 //!   └───────────────────────────────────────────────────────────────────────┘
 //!
 //! Ownership rule: this struct is OWNED BY the C++ `WebCore::Worker`. It is
-//! allocated in `create()` and freed in `WebCore::Worker::~Worker()` via
-//! `WebWorker__destroy`. The worker thread NEVER frees it. Because `JSWorker`
+//! allocated in `create()` and freed by `WebCore::Worker::~Worker()` through
+//! the generated boundary. The worker thread NEVER frees it. Because `JSWorker`
 //! holds a `Ref<Worker>`, `impl_` is valid for the entire time JS can call
 //! `terminate()`/`ref()`/`unref()` — those calls cannot UAF.
 //!
 //! Refs on `WebCore::Worker`:
 //!   - `JSWorker` wrapper  +1  (dropped at GC)
 //!   - worker thread       +1  taken in `Worker::create()` BEFORE the thread is
-//!                             spawned, dropped on the PARENT thread inside the
-//!                             close task posted by `dispatchExit()`. `~Worker`
-//!                             therefore never runs on the worker thread.
+//!                             spawned, dropped on the parent by exit delivery
+//!                             or the parent's thread join.
 //!
 //! Lifecycle of the worker thread (`threadMain`):
 //!   1. `startVM()`  — build a mimalloc arena, clone env, initialise a
@@ -33,7 +32,9 @@
 //!   2. `spin()`     — load the entry point, call `dispatchOnline` +
 //!      `fireEarlyMessages`, run the event loop until it drains or
 //!      `requested_terminate` is observed, run `beforeExit`.
-//!   3. `shutdown()` — call `vm.onExit()`, tear down the JSC VM, post
+//!   3. `prepareShutdown()` — unpublish the VM and run exit handlers under
+//!      the API lock, then return through the generated call frames.
+//!   4. `shutdown()` — tear down the JSC VM, signal
 //!      `dispatchExit` (which releases `parent_poll_ref` + the thread ref on
 //!      the parent), free the arena, exit the thread. After `dispatchExit`
 //!      `this` may be freed at any time; nothing below it dereferences `this`.
@@ -54,6 +55,46 @@ const WebWorker = @This();
 
 const log = Output.scoped(.Worker, .hidden);
 
+pub const HeapSnapshotTask = struct {
+    completion: bun.bindgen.OwnedCompletion(WorkerGetHeapSnapshotSchema),
+
+    fn resolve(this: *HeapSnapshotTask, snapshot: bun.bindgen.ThreadSafeDOMString) void {
+        this.completion.resolve(snapshot);
+        bun.destroy(this);
+    }
+
+    fn rejectNotRunning(this: *HeapSnapshotTask) void {
+        this.completion.fail(.worker_not_running, {});
+        bun.destroy(this);
+    }
+};
+
+const WorkerBinding = opaque {
+    pub fn getHeapSnapshot(
+        this: *WorkerBinding,
+        context: bun.bindgen.CallContext(WorkerGetHeapSnapshotSchema),
+        _: bun.bindgen.Args(WorkerGetHeapSnapshotSchema),
+    ) bun.bindgen.CallError(WorkerGetHeapSnapshotSchema)!void {
+        const task = bun.default_allocator.create(HeapSnapshotTask) catch {
+            var completion = context.completion();
+            completion.outOfMemory();
+            return;
+        };
+        var completion = context.completion();
+        task.* = .{ .completion = completion.take() };
+
+        const operation = context.engineIn("WebWorkerEngine", "webWorkerStartHeapSnapshot");
+        const EngineArgs = @TypeOf(operation).Args;
+        const TaskOwner = @FieldType(EngineArgs, "task");
+        const WorkerHandle = @FieldType(EngineArgs, "worker");
+        var engine_args: EngineArgs = .{
+            .worker = @as(WorkerHandle, @ptrCast(this)),
+            .task = TaskOwner.initNative(task),
+        };
+        operation.call(&engine_args);
+    }
+};
+
 // ---- Immutable after `create()` (safe from any thread) ----------------------
 
 /// The owning C++ `WebCore::Worker`. Never null; this struct is freed by
@@ -71,9 +112,9 @@ execution_context_id: u32,
 mini: bool,
 eval_mode: bool,
 store_fd: bool,
-/// Borrowed from C++ `WorkerOptions` (kept alive by the owning `Worker`).
-argv: []const WTFStringImpl,
-execArgv: ?[]const WTFStringImpl,
+/// Heap-owned UTF-8 copies; freed in `destroy()`.
+argv: []const []const u8,
+exec_argv: ?[]const []const u8,
 /// Heap-owned by this struct; freed in `destroy()`.
 unresolved_specifier: []const u8,
 preloads: [][]const u8,
@@ -88,13 +129,15 @@ registered_with_parent: bool = false,
 /// Stored before `create()` returns and consumed exactly once by the parent.
 thread: ?std.Thread = null,
 completed: std.Io.Event = .unset,
+startup_ready: std.Io.Event = .unset,
+startup: std.atomic.Value(enum(u32) { pending, run, canceled }) = .init(.pending),
 
 /// Set by the parent (`notifyNeedTermination`) or by the worker itself
 /// (`exit`). The worker loop polls this between ticks.
 requested_terminate: std.atomic.Value(bool) = .init(false),
 
 /// The worker's `jsc.VirtualMachine`, or null before `startVM()` / after
-/// `shutdown()` nulls it. Lives inside `arena`. `vm_lock` must be held for any
+/// `prepareShutdown()` nulls it. Lives inside `arena`. `vm_lock` must be held for any
 /// cross-thread read (see header comment).
 vm: ?*jsc.VirtualMachine = null,
 vm_lock: std.Io.Mutex = .init,
@@ -126,13 +169,6 @@ pub const Status = enum(u8) {
     /// `shutdown()` has begun; no further JS will run.
     terminated,
 };
-
-extern fn WebWorker__teardownJSCVM(*jsc.JSGlobalObject) void;
-extern fn WebWorker__dispatchExit(*anyopaque, i32) void;
-extern fn WebWorker__dispatchOnline(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
-extern fn WebWorker__fireEarlyMessages(cpp_worker: *anyopaque, *jsc.JSGlobalObject) void;
-extern fn WebWorker__dispatchError(*jsc.JSGlobalObject, *anyopaque, bun.String, JSValue) void;
-extern fn WebWorker__finishExit(*anyopaque, i32, bool) void;
 
 pub const Children = struct {
     mutex: std.Io.Mutex = .init,
@@ -222,7 +258,11 @@ pub const Children = struct {
             this.mutex.unlock(io);
 
             thread.join();
-            WebWorker__finishExit(worker.cpp_worker, worker.exit_code, false);
+            bun.bindgen.Engine(WebWorkerFinishExitShim).call(.{
+                .worker = @ptrCast(worker.cpp_worker),
+                .exitCode = worker.exit_code,
+                .dispatchEvent = false,
+            });
         }
     }
 
@@ -232,9 +272,56 @@ pub const Children = struct {
     }
 };
 
-export fn WebWorker__getParentWorker(vm: *jsc.VirtualMachine) ?*anyopaque {
-    const worker = vm.worker orelse return null;
-    return worker.cpp_worker;
+fn bindWebWorkerGetParent(
+    _: bun.bindgen.CallContext(WebWorkerGetParentSchema),
+    _: bun.bindgen.Args(WebWorkerGetParentSchema),
+) bun.bindgen.Return(WebWorkerGetParentSchema) {
+    const worker = jsc.VirtualMachine.get().worker orelse return null;
+    return @ptrCast(worker.cpp_worker);
+}
+
+fn bindWebWorkerNotifyNeedTermination(args: bun.bindgen.Args(WebWorkerNotifyNeedTerminationSchema)) bun.bindgen.Return(WebWorkerNotifyNeedTerminationSchema) {
+    notifyNeedTermination(args.worker);
+}
+
+fn bindWebWorkerSetRef(args: bun.bindgen.Args(WebWorkerSetRefSchema)) bun.bindgen.Return(WebWorkerSetRefSchema) {
+    setRef(args.worker, args.value);
+}
+
+fn bindWebWorkerReleaseParentPollRef(args: bun.bindgen.Args(WebWorkerReleaseParentPollRefSchema)) bun.bindgen.Return(WebWorkerReleaseParentPollRefSchema) {
+    releaseParentPollRef(args.worker);
+}
+
+fn bindWebWorkerDestroy(args: bun.bindgen.Args(WebWorkerDestroySchema)) bun.bindgen.Return(WebWorkerDestroySchema) {
+    if (args.worker.thread != null) {
+        args.worker.requestTermination();
+        args.worker.releaseParentPollRef();
+    }
+    destroy(args.worker);
+}
+
+fn bindWebWorkerCommitStartup(args: bun.bindgen.Args(WebWorkerCommitStartupSchema)) bun.bindgen.Return(WebWorkerCommitStartupSchema) {
+    if (args.worker.startup.cmpxchgStrong(.pending, .run, .release, .monotonic) != null)
+        @panic("worker startup committed after cancellation or commit");
+    args.worker.startup_ready.set(args.worker.parent.pinned_threads.io());
+}
+
+fn bindWebWorkerHeapSnapshotTaskResolve(
+    args: *bun.bindgen.Args(WebWorkerHeapSnapshotTaskResolveSchema),
+) bun.bindgen.Return(WebWorkerHeapSnapshotTaskResolveSchema) {
+    const task = args.task.takeNative();
+    const snapshot = args.snapshot.toOwned() catch {
+        task.completion.outOfMemory();
+        bun.destroy(task);
+        return;
+    };
+    task.resolve(snapshot);
+}
+
+fn bindWebWorkerHeapSnapshotTaskRejectNotRunning(
+    args: *bun.bindgen.Args(WebWorkerHeapSnapshotTaskRejectNotRunningSchema),
+) bun.bindgen.Return(WebWorkerHeapSnapshotTaskRejectNotRunningSchema) {
+    args.task.takeNative().rejectNotRunning();
 }
 
 pub fn hasRequestedTerminate(this: *const WebWorker) bool {
@@ -245,11 +332,13 @@ fn setRequestedTerminate(this: *WebWorker) bool {
     return this.requested_terminate.swap(true, .release);
 }
 
-fn requestTermination(this: *WebWorker) void {
+pub fn requestTermination(this: *WebWorker) void {
     if (this.setRequestedTerminate()) return;
     log("[{d}] requestTermination", .{this.execution_context_id});
 
     const io = this.parent.pinned_threads.io();
+    if (this.startup.cmpxchgStrong(.pending, .canceled, .release, .monotonic) == null)
+        this.startup_ready.set(io);
     this.vm_lock.lockUncancelable(io);
     defer this.vm_lock.unlock(io);
     if (this.vm) |vm| {
@@ -263,116 +352,150 @@ fn requestTermination(this: *WebWorker) void {
 // =============================================================================
 
 /// Allocate the struct, take a keep-alive on the parent event loop, and spawn
-/// the worker thread. On any failure returns null with `error_message` set and
-/// nothing to clean up (no keep-alive held, no allocation outstanding).
-pub fn create(
-    cpp_worker: *anyopaque,
-    parent: *jsc.VirtualMachine,
-    name_str: bun.String,
-    specifier_str: bun.String,
-    error_message: *bun.String,
-    parent_context_id: u32,
-    this_context_id: u32,
-    mini: bool,
-    default_unref: bool,
-    eval_mode: bool,
-    argv_ptr: ?[*]WTFStringImpl,
-    argv_len: usize,
-    inherit_execArgv: bool,
-    execArgv_ptr: ?[*]WTFStringImpl,
-    execArgv_len: usize,
-    preload_modules_ptr: ?[*]bun.String,
-    preload_modules_len: usize,
-) callconv(.c) ?*WebWorker {
-    jsc.markBinding(@src());
-    log("[{d}] create", .{this_context_id});
+/// a thread waiting for startup commit. Failed results contain no live worker state.
+fn bindWebWorkerCreate(
+    _: bun.bindgen.CallContext(WebWorkerCreateSchema),
+    args: bun.bindgen.Args(WebWorkerCreateSchema),
+) bun.JSError!bun.bindgen.Return(WebWorkerCreateSchema) {
+    return createFromBinding(jsc.VirtualMachine.get(), args);
+}
 
-    var spec_slice = specifier_str.toUTF8(bun.default_allocator);
-    defer spec_slice.deinit();
+pub fn createFromBinding(
+    parent: *jsc.VirtualMachine,
+    args: bun.bindgen.Args(WebWorkerCreateSchema),
+) bun.JSError!bun.bindgen.Return(WebWorkerCreateSchema) {
+    log("[{d}] create", .{args.contextID});
+
+    var name = try args.name.toUTF8(bun.default_allocator);
+    defer name.deinit();
+    var specifier = try args.url.toUTF8(bun.default_allocator);
+    defer specifier.deinit();
+    var error_message = bun.String.empty;
+    defer error_message.deref();
+
     const prev_log = parent.transpiler.log;
     var temp_log = bun.logger.Log.init(bun.default_allocator);
     parent.transpiler.setLog(&temp_log);
     defer parent.transpiler.setLog(prev_log);
     defer temp_log.deinit();
 
-    const preload_modules = if (preload_modules_ptr) |ptr| ptr[0..preload_modules_len] else &.{};
-
-    var preloads = bun.handleOom(std.array_list.Managed([]const u8).initCapacity(bun.default_allocator, preload_modules_len));
-    for (preload_modules) |module| {
-        const utf8_slice = module.toUTF8(bun.default_allocator);
+    var preloads = try std.array_list.Managed([]const u8).initCapacity(bun.default_allocator, args.preloadModules.len());
+    defer {
+        for (preloads.items) |preload| bun.default_allocator.free(preload);
+        preloads.deinit();
+    }
+    for (0..args.preloadModules.len()) |index| {
+        const module = args.preloadModules.at(index).?;
+        const utf8_slice = try module.toUTF8(bun.default_allocator);
         defer utf8_slice.deinit();
-        if (resolveEntryPointSpecifier(parent, utf8_slice.slice(), error_message, &temp_log)) |preload| {
-            bun.handleOom(preloads.append(bun.handleOom(bun.default_allocator.dupe(u8, preload))));
+        if (try resolveEntryPointSpecifier(parent, utf8_slice.slice(), &error_message, &temp_log)) |preload| {
+            preloads.appendAssumeCapacity(try bun.default_allocator.dupe(u8, preload));
         }
 
         if (!error_message.isEmpty()) {
-            for (preloads.items) |preload| bun.default_allocator.free(preload);
-            preloads.deinit();
-            return null;
+            return webWorkerCreateFailure(error_message.dupeRef());
         }
     }
 
-    var worker = bun.handleOom(bun.default_allocator.create(WebWorker));
-    worker.* = WebWorker{
-        .cpp_worker = cpp_worker,
-        .parent = parent,
-        .parent_context_id = parent_context_id,
-        .execution_context_id = this_context_id,
-        .mini = mini,
-        .eval_mode = eval_mode,
-        .unresolved_specifier = bun.handleOom(spec_slice.toOwned(bun.default_allocator)).slice(),
-        .store_fd = parent.transpiler.resolver.store_fd,
-        .name = brk: {
-            if (!name_str.isEmpty()) {
-                break :brk bun.handleOom(std.fmt.allocPrintSentinel(bun.default_allocator, "{f}", .{name_str}, 0));
-            }
-            break :brk "";
-        },
-        .argv = if (argv_ptr) |ptr| ptr[0..argv_len] else &.{},
-        .execArgv = if (inherit_execArgv) null else (if (execArgv_ptr) |ptr| ptr[0..execArgv_len] else &.{}),
-        .preloads = preloads.items,
+    const worker = create: {
+        const allocation = try bun.default_allocator.create(WebWorker);
+        errdefer bun.default_allocator.destroy(allocation);
+        const unresolved_specifier = try bun.default_allocator.dupe(u8, specifier.slice());
+        errdefer bun.default_allocator.free(unresolved_specifier);
+        const worker_name = if (name.slice().len > 0)
+            try bun.default_allocator.dupeSentinel(u8, name.slice(), 0)
+        else
+            "";
+        errdefer if (worker_name.len > 0) bun.default_allocator.free(worker_name);
+        const argv = try cloneStringSequence(args.argv);
+        errdefer freeStringSequence(argv);
+        const exec_argv = if (args.defaultExecArgv) null else try cloneStringSequence(args.execArgv);
+        errdefer if (exec_argv) |strings| freeStringSequence(strings);
+
+        allocation.* = WebWorker{
+            .cpp_worker = @ptrCast(args.worker),
+            .parent = parent,
+            .parent_context_id = args.parentContextID,
+            .execution_context_id = args.contextID,
+            .mini = args.miniMode,
+            .eval_mode = args.evalMode,
+            .unresolved_specifier = unresolved_specifier,
+            .store_fd = parent.transpiler.resolver.store_fd,
+            .name = worker_name,
+            .argv = argv,
+            .exec_argv = exec_argv,
+            .preloads = try preloads.toOwnedSlice(),
+        };
+        break :create allocation;
     };
+    var spawned = false;
+    defer if (!spawned) worker.destroy();
 
     // Keep the parent's event loop alive until the close task releases this.
     // If the user passed `{ ref: false }` we skip — they've opted out of the
     // worker keeping the process alive.
-    if (!default_unref) {
+    if (!args.unrefByDefault) {
         worker.parent_poll_ref.ref(parent);
     }
+    defer if (!spawned) worker.parent_poll_ref.unref(parent);
 
     if (!parent.worker_children.register(parent, worker)) {
-        worker.parent_poll_ref.unref(parent);
-        worker.destroy();
-        error_message.* = bun.String.static("Cannot create a worker while its parent is shutting down");
-        return null;
+        return webWorkerCreateFailure(bun.String.static("Cannot create a worker while its parent is shutting down"));
     }
+    defer if (!spawned) {
+        _ = parent.worker_children.remove(parent, worker);
+    };
 
     const thread = std.Thread.spawn(
         .{ .stack_size = bun.default_thread_stack_size },
         threadMain,
         .{worker},
-    ) catch {
-        _ = parent.worker_children.remove(parent, worker);
-        worker.parent_poll_ref.unref(parent);
-        worker.destroy();
-        error_message.* = bun.String.static("Failed to spawn worker thread");
-        return null;
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return webWorkerCreateFailure(bun.String.static("Failed to spawn worker thread")),
     };
     worker.thread = thread;
+    spawned = true;
+    const StateOwner = @typeInfo(@FieldType(bun.bindgen.Return(WebWorkerCreateSchema), "state")).optional.child;
+    return .{ .state = StateOwner.initNative(worker), .errorMessage = .empty() };
+}
 
-    return worker;
+fn webWorkerCreateFailure(error_message: bun.String) bun.OOM!bun.bindgen.Return(WebWorkerCreateSchema) {
+    return .{
+        .state = null,
+        .errorMessage = try bun.bindgen.DOMString.fromBunString(error_message),
+    };
+}
+
+fn cloneStringSequence(strings: anytype) bun.OOM![]const []const u8 {
+    if (strings.len() == 0) return &.{};
+    var result: std.ArrayList([]const u8) = try .initCapacity(bun.default_allocator, strings.len());
+    errdefer {
+        for (result.items) |string| bun.default_allocator.free(string);
+        result.deinit(bun.default_allocator);
+    }
+    for (0..strings.len()) |index| {
+        result.appendAssumeCapacity(try strings.at(index).?.toOwnedSlice(bun.default_allocator));
+    }
+    return result.toOwnedSlice(bun.default_allocator);
+}
+
+fn freeStringSequence(strings: []const []const u8) void {
+    for (strings) |string| bun.default_allocator.free(string);
+    if (strings.len > 0) bun.default_allocator.free(strings);
 }
 
 /// Free the struct and its owned strings. Called from `WebCore::Worker::~Worker()`
-/// (or from `create()` on spawn failure). The allocator is mimalloc (thread-safe),
+/// (or from worker creation on spawn failure). The allocator is mimalloc (thread-safe),
 /// so the caller's thread doesn't matter.
-pub fn destroy(this: *WebWorker) callconv(.c) void {
+fn destroy(this: *WebWorker) void {
     log("[{d}] destroy", .{this.execution_context_id});
     bun.assert(!this.registered_with_parent);
     bun.assert(this.thread == null);
     bun.default_allocator.free(this.unresolved_specifier);
-    for (this.preloads) |preload| bun.default_allocator.free(preload);
-    bun.default_allocator.free(this.preloads);
+    freeStringSequence(this.preloads);
+    freeStringSequence(this.argv);
+    if (this.exec_argv) |exec_argv| freeStringSequence(exec_argv);
     if (this.name.len > 0) bun.default_allocator.free(this.name);
     bun.default_allocator.destroy(this);
 }
@@ -385,7 +508,7 @@ pub fn destroy(this: *WebWorker) callconv(.c) void {
 /// by `~Worker`, which can't run while JSWorker (the caller) holds its
 /// `Ref<Worker>`. `Worker::setKeepAlive()` gates out calls after terminate()
 /// or the close task, so this can unconditionally toggle.
-pub fn setRef(this: *WebWorker, value: bool) callconv(.c) void {
+fn setRef(this: *WebWorker, value: bool) void {
     if (value) {
         this.parent_poll_ref.ref(this.parent);
     } else {
@@ -398,13 +521,13 @@ pub fn setRef(this: *WebWorker, value: bool) callconv(.c) void {
 /// the worker loop so it observes the flag. `parent_poll_ref` stays held until
 /// the close task runs so that `await worker.terminate()` keeps the parent
 /// alive until 'close' fires.
-pub fn notifyNeedTermination(this: *WebWorker) callconv(.c) void {
+fn notifyNeedTermination(this: *WebWorker) void {
     this.requestTermination();
 }
 
 /// Release the keep-alive on the parent's event loop. Called on the parent
 /// thread from the close task posted by `dispatchExit`.
-pub fn releaseParentPollRef(this: *WebWorker) callconv(.c) void {
+fn releaseParentPollRef(this: *WebWorker) void {
     if (this.parent.worker_children.remove(this.parent, this)) |thread| {
         thread.join();
     }
@@ -416,6 +539,12 @@ pub fn releaseParentPollRef(this: *WebWorker) callconv(.c) void {
 // =============================================================================
 
 fn threadMain(this: *WebWorker) void {
+    const io = this.parent.pinned_threads.io();
+    this.startup_ready.waitUncancelable(io);
+    if (this.startup.load(.acquire) != .run) {
+        this.completed.set(io);
+        return;
+    }
     bun.analytics.Features.workers_spawned += 1;
 
     if (this.name.len > 0) {
@@ -427,15 +556,21 @@ fn threadMain(this: *WebWorker) void {
     // Terminated before we even started — skip straight to shutdown so the
     // parent still gets a close event and the thread ref is dropped.
     if (this.hasRequestedTerminate()) {
-        this.shutdown();
-        // unreachable
+        return this.shutdown(null);
     }
 
     this.startVM() catch |err| {
         Output.panic("An unhandled error occurred while starting a worker: {s}\n", .{@errorName(err)});
     };
 
-    this.vm.?.global.vm().holdAPILock(this, jsc.OpaqueWrap(WebWorker, WebWorker.spin));
+    const vm = this.vm;
+    if (vm) |worker_vm| {
+        const api_lock = worker_vm.global.vm().getAPILock();
+        defer api_lock.release();
+        this.spin();
+        this.prepareShutdown();
+    }
+    this.shutdown(vm);
 }
 
 /// Phase 1: build the worker's arena + VirtualMachine and publish `vm`.
@@ -445,21 +580,11 @@ fn startVM(this: *WebWorker) !void {
 
     var transform_options = this.parent.transpiler.options.transform_options;
 
-    if (this.execArgv) |exec_argv| parse_new_args: {
-        var new_args: std.array_list.Managed([]const u8) = try .initCapacity(bun.default_allocator, exec_argv.len);
-        defer {
-            for (new_args.items) |arg| bun.default_allocator.free(arg);
-            new_args.deinit();
-        }
-
-        for (exec_argv) |arg| {
-            try new_args.append(arg.toOwnedSliceZ(bun.default_allocator));
-        }
-
+    if (this.exec_argv) |exec_argv| parse_new_args: {
         var diag: bun.clap.Diagnostic = .{};
-        var iter: bun.clap.args.SliceIterator = .init(new_args.items);
+        var iter: bun.clap.args.SliceIterator = .init(exec_argv);
 
-        var args = bun.clap.parseEx(bun.clap.Help, bun.cli.Command.Tag.RunCommand.params(), &iter, .{
+        var args = bun.clap.parseEx(bun.clap.Help, bun.cli.Command.tagParams(.RunCommand), &iter, .{
             .diagnostic = &diag,
             .allocator = bun.default_allocator,
 
@@ -484,7 +609,7 @@ fn startVM(this: *WebWorker) !void {
     // Proxy-env values may be RefCountedEnvValue bytes owned by the parent's
     // proxy_env_storage. We need a consistent snapshot of (storage slots +
     // env.map entries) so every slice we copy is backed by a ref we hold.
-    // The parent's storage.lock serialises against Bun__setEnvValue on the
+    // The parent's storage.lock serialises against proxy-environment writes on the
     // main thread — it covers both the slot swap and the map.put, so
     // cloneFrom and cloneWithAllocator see the same state.
     var temp_proxy_storage: jsc.RareData.ProxyEnvStorage = .{};
@@ -499,9 +624,6 @@ fn startVM(this: *WebWorker) !void {
         temp_proxy_storage.cloneFrom(parent_storage);
         map.* = try this.parent.transpiler.env.map.cloneWithAllocator(allocator);
     }
-    // Ensure map entries point at the exact bytes we hold refs on.
-    temp_proxy_storage.syncInto(map);
-
     const loader = try allocator.create(bun.DotEnv.Loader);
     loader.* = bun.DotEnv.Loader.init(map, allocator);
 
@@ -511,7 +633,7 @@ fn startVM(this: *WebWorker) !void {
     // VM that will immediately tear down.
     if (this.hasRequestedTerminate()) {
         temp_proxy_storage.deinit();
-        this.shutdown();
+        return;
     }
 
     var vm = try jsc.VirtualMachine.initWorker(this, .{
@@ -532,18 +654,10 @@ fn startVM(this: *WebWorker) !void {
 
     vm.is_main_thread = false;
     jsc.VirtualMachine.is_main_thread_vm = false;
-    vm.onUnhandledRejection = onUnhandledRejection;
+    WorkerErrorEngine.install(vm);
 
-    // Publish `vm` now (rather than at the end of startVM) so that:
-    //   - a concurrent termination request can
-    //     wake us once JS starts running, and
-    //   - early returns below reach spin()/shutdown() with this.vm set,
-    //     so teardownJSCVM/vm.deinit() run and the just-built JSC::VM
-    //     heap is not leaked.
-    // We do NOT call shutdown() directly from here: shutdown() with a
-    // non-null vm runs vm.onExit() (JS), which requires holdAPILock.
-    // Instead we return; threadMain enters holdAPILock(spin) and spin()'s
-    // first check observes requested_terminate.
+    // Publish before fallible configuration so termination can wake the VM
+    // and threadMain can run exit handlers under its API lock on every path.
     {
         const io = this.parent.pinned_threads.io();
         this.vm_lock.lockUncancelable(io);
@@ -561,13 +675,11 @@ fn startVM(this: *WebWorker) !void {
     // Second checkpoint: initWorker just spent the bulk of startup time;
     // if terminate arrived during it, skip configureDefines() (which
     // walks the resolver's global dir_cache) and entry-point loading.
-    // spin() will observe the flag and shutdown() under the API lock.
+    // spin() observes the flag before loading the entry point.
     if (this.hasRequestedTerminate()) return;
 
     b.configureDefines() catch {
-        // Fall through to spin() → shutdown() for full teardown under
-        // the API lock (flushLogs runs JS). Set terminate so spin()
-        // bails immediately; vm.log carries the error for flushLogs.
+        // flushLogs runs under the API lock in spin().
         vm.exit_handler.exit_code = 1;
         _ = this.setRequestedTerminate();
         return;
@@ -576,8 +688,14 @@ fn startVM(this: *WebWorker) !void {
     vm.loadExtraEnvAndSourceCodePrinter();
 }
 
+fn recordResolveError(vm: *jsc.VirtualMachine, message: bun.String) bun.OOM!void {
+    const utf8 = try message.toUTF8(bun.default_allocator);
+    defer utf8.deinit();
+    try vm.log.addError(null, .Empty, utf8.slice());
+}
+
 /// Phase 2: load the entry point, dispatch 'online', run the event loop.
-/// Runs inside `holdAPILock`. Always ends by calling `shutdown()`.
+/// Runs while the JSC API lock is held.
 fn spin(this: *WebWorker) void {
     log("[{d}] spin start", .{this.execution_context_id});
 
@@ -590,62 +708,79 @@ fn spin(this: *WebWorker) void {
     // JSC::VM built by initWorker is torn down rather than leaked.
     if (this.hasRequestedTerminate()) {
         this.flushLogs(vm);
-        this.shutdown();
+        return;
     }
 
     vm.preload = this.preloads;
 
-    // Resolve the entry point on the worker thread (the parent only stored the
-    // raw specifier). The returned slice is BORROWED — every exit from spin()
-    // goes through shutdown() which is noreturn, so a `defer free` here would
-    // never run anyway.
+    // The resolved path borrows the worker's resolver or standalone graph.
     var resolve_error = bun.String.empty;
-    const path = resolveEntryPointSpecifier(vm, this.unresolved_specifier, &resolve_error, vm.log) orelse {
+    defer resolve_error.deref();
+    const path = (resolveEntryPointSpecifier(vm, this.unresolved_specifier, &resolve_error, vm.log) catch |err| {
+        if (!this.exit_called) vm.exit_handler.exit_code = 1;
+        WorkerErrorEngine.reportFailure(vm.global, err);
+        return;
+    }) orelse {
         vm.exit_handler.exit_code = 1;
         if (vm.log.errors == 0 and !resolve_error.isEmpty()) {
-            const err = resolve_error.toUTF8(bun.default_allocator);
-            defer err.deinit();
-            bun.handleOom(vm.log.addError(null, .Empty, err.slice()));
+            recordResolveError(vm, resolve_error) catch |err| {
+                WorkerErrorEngine.reportFailure(vm.global, err);
+                return;
+            };
         }
-        resolve_error.deref();
         this.flushLogs(vm);
-        this.shutdown();
+        return;
     };
-    resolve_error.deref();
-
     // Terminated while resolving — exit code 0, no error.
     if (this.hasRequestedTerminate()) {
         this.flushLogs(vm);
-        this.shutdown();
+        return;
     }
 
-    var promise = vm.loadEntryPointForWebWorker(path) catch {
+    var promise = vm.loadEntryPointForWebWorker(path) catch |err| {
+        if (err == error.WorkerTerminated or this.hasRequestedTerminate()) {
+            if (!this.exit_called) vm.exit_handler.exit_code = 1;
+            this.flushLogs(vm);
+            return;
+        }
+        if (err == error.JSError or err == error.OutOfMemory) WorkerErrorEngine.reportFailure(vm.global, @errorCast(err));
         // process.exit() may have run during load; don't clobber its code.
         if (!this.exit_called) vm.exit_handler.exit_code = 1;
         this.flushLogs(vm);
-        this.shutdown();
+        return;
     };
+    defer promise.deinit();
+    if (this.hasRequestedTerminate()) return;
 
-    if (promise.status() == .rejected) {
-        const handled = vm.uncaughtException(vm.global, promise.result(vm.jsc_vm), true);
+    if (vm.entryPointPromiseStatus(&promise) == .rejected) {
+        const handled = vm.reportEntryPointRejection(&promise) catch |err| {
+            if (!this.exit_called) vm.exit_handler.exit_code = 1;
+            WorkerErrorEngine.reportFailure(vm.global, err);
+            return;
+        };
 
         if (!handled) {
             vm.exit_handler.exit_code = 1;
-            this.shutdown();
+            return;
         }
-    } else {
-        _ = promise.result(vm.jsc_vm);
     }
 
     this.flushLogs(vm);
+    if (this.hasRequestedTerminate()) return;
     log("[{d}] event loop start", .{this.execution_context_id});
     // dispatchOnline fires the parent-side 'open' event and flips the C++
     // state to Running (which routes postMessage directly instead of
     // queuing). It is placed after the entry point has loaded so the parent
     // observes 'online' only once the worker's top-level code has completed;
     // moving it earlier would change that observable ordering.
-    WebWorker__dispatchOnline(this.cpp_worker, vm.global);
-    WebWorker__fireEarlyMessages(this.cpp_worker, vm.global);
+    bun.bindgen.Engine(WebWorkerDispatchOnlineShim).call(vm.global, .{ .worker = @ptrCast(this.cpp_worker) }) catch |err| {
+        if (err != error.JSTerminated) {
+            vm.global.reportActiveExceptionAsUnhandled(err);
+            if (!this.exit_called and !this.hasRequestedTerminate()) vm.exit_handler.exit_code = 1;
+        }
+        return;
+    };
+    bun.bindgen.Engine(WebWorkerFireEarlyMessagesShim).call(vm.global, .{ .worker = @ptrCast(this.cpp_worker) });
     this.setStatus(.running);
 
     // don't run the GC if we don't actually need to
@@ -661,7 +796,7 @@ fn spin(this: *WebWorker) void {
     // dispatchOnline.
     vm.tick();
 
-    while (vm.isEventLoopAlive()) {
+    while (!this.hasRequestedTerminate() and vm.isEventLoopAlive()) {
         vm.tick();
         if (this.hasRequestedTerminate()) break;
         vm.eventLoop().autoTickActive();
@@ -677,80 +812,54 @@ fn spin(this: *WebWorker) void {
     }
 
     this.flushLogs(vm);
-    this.shutdown();
 }
 
-/// Phase 3: run exit handlers, tear down the JSC VM, post the close event,
-/// free the arena, exit the thread.
-///
-/// Ordering constraints (each step is a barrier for the next):
-///   1. `vm = null` under lock    — a racing notifyNeedTermination() now sees
-///                                  null and skips wakeup() instead of touching
-///                                  memory freed in step 5.
-///   2. `vm.onExit()`             — user 'exit' handlers run; needs the JSC VM.
-///   3. `teardownJSCVM()`         — collectNow + vm.deref×2; can re-enter Zig
-///                                  via finalizers, so must precede step 5.
-///   4. `dispatchExit()`          — posts close task → parent releases
-///                                  parent_poll_ref + thread-held Worker ref.
-///                                  After this `this` may be freed at any time.
-///   5. free loop/arena/pools     — no `this.*` dereferences below step 4.
-///
-/// Does NOT free `this` — see ownership rule in the file header.
-fn shutdown(this: *WebWorker) noreturn {
-    jsc.markBinding(@src());
-    this.setStatus(.terminated);
-    bun.analytics.Features.workers_terminated += 1;
-    log("[{d}] shutdown", .{this.execution_context_id});
-
-    // Snapshot everything we'll need after `this` may be freed (step 4).
-    const cpp_worker = this.cpp_worker;
-    var arena = this.arena;
-    this.arena = null;
-
-    // ---- 1. Unpublish vm --------------------------------------------------
-    var vm_to_deinit: ?*jsc.VirtualMachine = null;
-    var loop: ?*bun.uws.Loop = null;
+fn prepareShutdown(this: *WebWorker) void {
+    const vm = this.vm.?;
     {
         const io = this.parent.pinned_threads.io();
         this.vm_lock.lockUncancelable(io);
         defer this.vm_lock.unlock(io);
-        if (this.vm) |vm| {
-            loop = vm.uwsLoop();
-            this.vm = null;
-            vm_to_deinit = vm;
-        }
+        this.vm = null;
     }
+    this.setStatus(.terminated);
+    vm.jsc_vm.clearHasTerminationRequest();
+    vm.is_shutting_down = true;
+    bun.assert(vm.stopChildThreads(null) == .completed);
+    vm.onExit();
+    vm.prepareForJSCDestruction();
+}
 
-    // ---- 2. User exit handlers -------------------------------------------
-    var exit_code: i32 = 0;
-    var globalObject: ?*jsc.JSGlobalObject = null;
+/// Generated call frames and their API-lock owner have returned before teardown.
+/// Posting the close event releases the parent-held worker reference, so only
+/// local snapshots may be used after dispatchExit.
+fn shutdown(this: *WebWorker, vm_to_deinit: ?*jsc.VirtualMachine) void {
+    this.setStatus(.terminated);
+    bun.analytics.Features.workers_terminated += 1;
+    log("[{d}] shutdown", .{this.execution_context_id});
+
+    // Snapshot everything needed after the parent can free this worker.
+    const cpp_worker = this.cpp_worker;
+    var arena = this.arena;
+    this.arena = null;
+
+    const loop = if (vm_to_deinit) |vm| vm.uwsLoop() else null;
+    const exit_code: i32 = if (vm_to_deinit) |vm| vm.exit_handler.exit_code else 0;
+
     if (vm_to_deinit) |vm| {
-        // terminate() set the JSC termination flag to interrupt running JS;
-        // clear it so process.on('exit') handlers can run. teardownJSCVM
-        // re-sets it for the JSC VM teardown.
-        vm.jsc_vm.clearHasTerminationRequest();
-        vm.is_shutting_down = true;
-        bun.assert(vm.stopChildThreads(null) == .completed);
-        vm.onExit();
-        vm.prepareForJSCDestruction();
-        exit_code = vm.exit_handler.exit_code;
-        globalObject = vm.global;
+        bun.bindgen.Engine(TeardownThreadJSCVMShim).call(.{ .globalObject = @ptrCast(vm.global) });
     }
 
-    // ---- 3. JSC VM teardown ----------------------------------------------
-    if (globalObject) |global| {
-        WebWorker__teardownJSCVM(global);
-    }
-
-    // ---- 4. Post close task to parent ------------------------------------
     this.exit_code = exit_code;
     this.completed.set(this.parent.pinned_threads.io());
-    WebWorker__dispatchExit(cpp_worker, exit_code);
+    bun.bindgen.Engine(WebWorkerDispatchExitShim).call(.{
+        .worker = @ptrCast(cpp_worker),
+        .exitCode = exit_code,
+    });
     // `this` may be freed past this point.
 
-    // ---- 5. Free worker-thread resources ---------------------------------
     if (loop) |loop_| {
-        loop_.internal_loop_data.jsc_vm = null;
+        jsc.setLoopVM(loop_, null);
     }
     if (vm_to_deinit) |vm| {
         // Must precede Loop.shutdown so uv_close isn't called twice on the
@@ -768,8 +877,6 @@ fn shutdown(this: *WebWorker) noreturn {
     if (arena) |*arena_| {
         arena_.deinit();
     }
-
-    bun.exitThread();
 }
 
 /// process.exit() inside the worker. Worker-thread only.
@@ -777,7 +884,7 @@ pub fn exit(this: *WebWorker) void {
     this.exit_called = true;
     _ = this.setRequestedTerminate();
     // Stop subsequent JS at the next safepoint. `this.vm` is null during
-    // `vm.onExit()` (shutdown nulls it first), so a re-entrant process.exit()
+    // `vm.onExit()` (prepareShutdown nulls it first), so a re-entrant process.exit()
     // from an exit handler does not re-arm the trap.
     if (this.vm) |vm| {
         vm.jsc_vm.notifyNeedTermination();
@@ -794,63 +901,8 @@ fn setStatus(this: *WebWorker, status: Status) void {
 }
 
 fn flushLogs(this: *WebWorker, vm: *jsc.VirtualMachine) void {
-    jsc.markBinding(@src());
-    if (vm.log.msgs.items.len == 0) return;
-    const err, const str = blk: {
-        const err = vm.log.toJS(vm.global, bun.default_allocator, "Error in worker") catch |e|
-            break :blk e;
-        const str = err.toBunString(vm.global) catch |e| break :blk e;
-        break :blk .{ err, str };
-    } catch |err| switch (err) {
-        error.JSError => @panic("unhandled exception"),
-        error.OutOfMemory => bun.outOfMemory(),
-        error.JSTerminated => @panic("unhandled exception"),
-    };
-    defer str.deref();
-    bun.jsc.fromJSHostCallGeneric(vm.global, @src(), WebWorker__dispatchError, .{ vm.global, this.cpp_worker, str, err }) catch |e| {
-        _ = vm.global.reportUncaughtException(vm.global.takeException(e).asException(vm.global.vm()).?);
-    };
-}
-
-fn onUnhandledRejection(vm: *jsc.VirtualMachine, globalObject: *jsc.JSGlobalObject, error_instance_or_exception: jsc.JSValue) void {
-    // Prevent recursion
-    vm.onUnhandledRejection = &jsc.VirtualMachine.onQuietUnhandledRejectionHandlerCaptureValue;
-
-    var error_instance = error_instance_or_exception.toError() orelse error_instance_or_exception;
-
-    var array = std.Io.Writer.Allocating.init(bun.default_allocator);
-    defer array.deinit();
-
-    const worker = vm.worker orelse @panic("Assertion failure: no worker");
-
-    const writer = &array.writer;
-    jsc.ConsoleObject.format2(
-        .Debug,
-        globalObject,
-        &[_]jsc.JSValue{error_instance},
-        1,
-        writer,
-        .{
-            .enable_colors = false,
-            .add_newline = false,
-            .flush = false,
-            .max_depth = 32,
-        },
-    ) catch |err| {
-        switch (err) {
-            error.JSError => {},
-            error.OutOfMemory => globalObject.throwOutOfMemory() catch {},
-            error.JSTerminated => {},
-        }
-        error_instance = globalObject.tryTakeException().?;
-    };
-    writer.flush() catch {
-        bun.outOfMemory();
-    };
-    jsc.markBinding(@src());
-    WebWorker__dispatchError(globalObject, worker.cpp_worker, bun.String.cloneUTF8(array.written()), error_instance);
-    _ = worker.setRequestedTerminate();
-    worker.shutdown();
+    WorkerErrorEngine.flushLogs(vm, @ptrCast(this.cpp_worker)) catch |err|
+        WorkerErrorEngine.reportFailure(vm.global, err);
 }
 
 /// Resolve a worker entry-point specifier to a path the module loader can
@@ -861,7 +913,7 @@ fn resolveEntryPointSpecifier(
     str: []const u8,
     error_message: *bun.String,
     logger: *bun.logger.Log,
-) ?[]const u8 {
+) bun.JSError!?[]const u8 {
     if (parent.standalone_module_graph) |graph| {
         if (graph.find(str) != null) {
             return str;
@@ -931,26 +983,9 @@ fn resolveEntryPointSpecifier(
         }
     }
 
-    var resolved_entry_point: bun.resolver.Result = parent.transpiler.resolveEntryPoint(str) catch {
-        const out = blk: {
-            const out = logger.toJS(
-                parent.global,
-                bun.default_allocator,
-                "Error resolving Worker entry point",
-            ) catch |err| break :blk err;
-            break :blk out.toBunString(parent.global);
-        } catch |err| switch (err) {
-            error.OutOfMemory => bun.outOfMemory(),
-            error.JSError => {
-                error_message.* = bun.String.static("unexpected exception");
-                return null;
-            },
-            error.JSTerminated => {
-                error_message.* = bun.String.static("unexpected exception");
-                return null;
-            },
-        };
-        error_message.* = out;
+    var resolved_entry_point: bun.resolver.Result = parent.transpiler.resolveEntryPoint(str) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        error_message.* = try WorkerErrorEngine.describeLog(parent.global, logger, "Error resolving Worker entry point");
         return null;
     };
 
@@ -962,21 +997,54 @@ fn resolveEntryPointSpecifier(
 }
 
 comptime {
-    @export(&create, .{ .name = "WebWorker__create" });
-    @export(&notifyNeedTermination, .{ .name = "WebWorker__notifyNeedTermination" });
-    @export(&setRef, .{ .name = "WebWorker__setRef" });
-    @export(&destroy, .{ .name = "WebWorker__destroy" });
-    @export(&releaseParentPollRef, .{ .name = "WebWorker__releaseParentPollRef" });
+    _ = WorkerClassBinding;
+    _ = WebWorkerCreateBinding;
+    _ = WebWorkerCommitStartupBinding;
+    _ = WebWorkerGetParentBinding;
+    _ = WebWorkerNotifyNeedTerminationBinding;
+    _ = WebWorkerSetRefBinding;
+    _ = WebWorkerReleaseParentPollRefBinding;
+    _ = WebWorkerDestroyBinding;
+    _ = WebWorkerHeapSnapshotTaskResolveBinding;
+    _ = WebWorkerHeapSnapshotTaskRejectNotRunningBinding;
 }
 
 const std = @import("std");
-const WTFStringImpl = @import("../string/string.zig").WTFStringImpl;
 
 const bun = @import("bun");
 const Async = bun.Async;
 const Environment = bun.Environment;
 const Output = bun.Output;
 const assert = bun.assert;
+pub const WorkerErrorEngine = @import("./WorkerErrorEngine.zig");
 
 const jsc = bun.jsc;
-const JSValue = jsc.JSValue;
+const JSCThreadTeardownBindings = bun.bindgen.Module("jsc_thread_teardown");
+const WebCoreWorkerBindings = bun.bindgen.Module("WebCoreWorker");
+const WebWorkerEngineBindings = bun.bindgen.Module("WebWorkerEngine");
+const WorkerClassSchema = WebCoreWorkerBindings.class("Worker");
+const WorkerGetHeapSnapshotSchema = WorkerClassSchema.memberKind("getHeapSnapshot", .method);
+const WorkerClassBinding = bun.bindgen.EngineClassBackend(WorkerClassSchema, WorkerBinding);
+const TeardownThreadJSCVMShim = JSCThreadTeardownBindings.engineShim("teardownThreadJSCVM");
+const WebWorkerDispatchExitShim = WebWorkerEngineBindings.engineShim("webWorkerDispatchExit");
+const WebWorkerFinishExitShim = WebWorkerEngineBindings.engineShim("webWorkerFinishExit");
+const WebWorkerDispatchOnlineShim = WebWorkerEngineBindings.engineShim("webWorkerDispatchOnline");
+const WebWorkerFireEarlyMessagesShim = WebWorkerEngineBindings.engineShim("webWorkerFireEarlyMessages");
+const WebWorkerGetParentSchema = WebWorkerEngineBindings.nativeExport("webWorkerGetParent");
+const WebWorkerGetParentBinding = bun.bindgen.Fn(WebWorkerGetParentSchema, bindWebWorkerGetParent);
+const WebWorkerCreateSchema = WebWorkerEngineBindings.nativeExport("webWorkerCreate");
+const WebWorkerCreateBinding = bun.bindgen.Fn(WebWorkerCreateSchema, bindWebWorkerCreate);
+const WebWorkerCommitStartupSchema = WebWorkerEngineBindings.nativeExport("webWorkerCommitStartup");
+const WebWorkerCommitStartupBinding = bun.bindgen.Fn(WebWorkerCommitStartupSchema, bindWebWorkerCommitStartup);
+const WebWorkerNotifyNeedTerminationSchema = WebWorkerEngineBindings.nativeExport("webWorkerNotifyNeedTermination");
+const WebWorkerSetRefSchema = WebWorkerEngineBindings.nativeExport("webWorkerSetRef");
+const WebWorkerReleaseParentPollRefSchema = WebWorkerEngineBindings.nativeExport("webWorkerReleaseParentPollRef");
+const WebWorkerDestroySchema = WebWorkerEngineBindings.nativeExport("webWorkerDestroy");
+const WebWorkerHeapSnapshotTaskResolveSchema = WebWorkerEngineBindings.nativeExport("webWorkerHeapSnapshotTaskResolve");
+const WebWorkerHeapSnapshotTaskRejectNotRunningSchema = WebWorkerEngineBindings.nativeExport("webWorkerHeapSnapshotTaskRejectNotRunning");
+const WebWorkerNotifyNeedTerminationBinding = bun.bindgen.Fn(WebWorkerNotifyNeedTerminationSchema, bindWebWorkerNotifyNeedTermination);
+const WebWorkerSetRefBinding = bun.bindgen.Fn(WebWorkerSetRefSchema, bindWebWorkerSetRef);
+const WebWorkerReleaseParentPollRefBinding = bun.bindgen.Fn(WebWorkerReleaseParentPollRefSchema, bindWebWorkerReleaseParentPollRef);
+const WebWorkerDestroyBinding = bun.bindgen.Fn(WebWorkerDestroySchema, bindWebWorkerDestroy);
+const WebWorkerHeapSnapshotTaskResolveBinding = bun.bindgen.Fn(WebWorkerHeapSnapshotTaskResolveSchema, bindWebWorkerHeapSnapshotTaskResolve);
+const WebWorkerHeapSnapshotTaskRejectNotRunningBinding = bun.bindgen.Fn(WebWorkerHeapSnapshotTaskRejectNotRunningSchema, bindWebWorkerHeapSnapshotTaskRejectNotRunning);

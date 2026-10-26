@@ -20,16 +20,12 @@ pub const RedisError = error{
     InvalidSet,
     InvalidSimpleString,
     InvalidVerbatimString,
-    JSError,
     OutOfMemory,
-    JSTerminated,
     UnsupportedProtocol,
     ConnectionTimeout,
     IdleTimeout,
     NestingDepthExceeded,
 };
-
-pub const valkeyErrorToJS = @import("../runtime/valkey_jsc/protocol_jsc.zig").valkeyErrorToJS;
 
 // RESP protocol types
 pub const RESPType = enum(u8) {
@@ -203,10 +199,6 @@ pub const RESPValue = union(RESPType) {
             .BigNumber => |str| try writer.print("BigNumber({s})", .{str}),
         }
     }
-
-    pub const toJS = @import("../runtime/valkey_jsc/protocol_jsc.zig").respValueToJS;
-    pub const ToJSOptions = @import("../runtime/valkey_jsc/protocol_jsc.zig").ToJSOptions;
-    pub const toJSWithOptions = @import("../runtime/valkey_jsc/protocol_jsc.zig").respValueToJSWithOptions;
 };
 
 pub const ValkeyReader = struct {

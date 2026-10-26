@@ -1,15 +1,11 @@
 /// Mixin to read an entire request body into memory and run a callback.
-/// Consumers should make sure a reference count is held on the server,
-/// and is unreferenced after one of the two callbacks are called.
-///
-/// See DevServer.zig's ErrorReportRequest for an example.
+/// The owner stays alive until `finalize`, which runs once after delivery or abort.
 pub fn BodyReaderMixin(
     Wrap: type,
     field: []const u8,
-    // `body` is freed after this function returns.
+    // The callback borrows its owner and body until it returns.
     onBody: fn (*Wrap, body: []const u8, resp: uws.AnyResponse) anyerror!void,
-    // Called on error or request abort
-    onError: fn (*Wrap) void,
+    finalize: fn (*Wrap) void,
 ) type {
     return struct {
         body: std.array_list.Managed(u8),
@@ -25,65 +21,60 @@ pub fn BodyReaderMixin(
             const handlers = struct {
                 fn onDataGeneric(mixin: *Mixin, r: Response, chunk: []const u8, last: bool) void {
                     const any = uws.AnyResponse.init(r);
-                    onData(mixin, any, chunk, last) catch |e| switch (e) {
-                        error.OutOfMemory => return mixin.onOOM(any),
-                        else => return mixin.onInvalid(any),
-                    };
+                    onData(mixin, any, chunk, last);
                 }
-                fn onAborted(mixin: *Mixin, _: Response) void {
+                fn onAborted(mixin: *Mixin, r: Response) void {
+                    detach(uws.AnyResponse.init(r));
                     mixin.body.clearAndFree();
-                    onError(@fieldParentPtr(field, mixin));
+                    finalize(@fieldParentPtr(field, mixin));
                 }
             };
             resp.onData(*@This(), handlers.onDataGeneric, ctx);
             resp.onAborted(*@This(), handlers.onAborted, ctx);
         }
 
-        fn onData(ctx: *@This(), resp: uws.AnyResponse, chunk: []const u8, last: bool) !void {
+        fn onData(ctx: *@This(), resp: uws.AnyResponse, chunk: []const u8, last: bool) void {
             if (last) {
-                // Free everything after
+                detach(resp);
+                defer finalize(@fieldParentPtr(field, ctx));
                 var body = ctx.body;
                 defer body.deinit();
                 ctx.body = .init(ctx.body.allocator);
-                resp.clearOnData();
                 if (body.items.len > 0) {
-                    try body.appendSlice(chunk);
-                    try onBody(@fieldParentPtr(field, ctx), body.items, resp);
+                    body.appendSlice(chunk) catch |err| return respondToFailure(resp, err);
+                    onBody(@fieldParentPtr(field, ctx), body.items, resp) catch |err| respondToFailure(resp, err);
                 } else {
-                    try onBody(@fieldParentPtr(field, ctx), chunk, resp);
+                    onBody(@fieldParentPtr(field, ctx), chunk, resp) catch |err| respondToFailure(resp, err);
                 }
             } else {
-                try ctx.body.appendSlice(chunk);
+                ctx.body.appendSlice(chunk) catch |err| {
+                    detach(resp);
+                    ctx.body.clearAndFree();
+                    defer finalize(@fieldParentPtr(field, ctx));
+                    respondToFailure(resp, err);
+                };
             }
         }
 
-        fn onOOM(ctx: *@This(), r: uws.AnyResponse) void {
-            var body = ctx.body;
-            ctx.body = .init(ctx.body.allocator);
-            body.deinit();
+        fn detach(r: uws.AnyResponse) void {
             r.clearAborted();
             r.clearOnData();
-            r.clearOnWritable();
-
-            r.writeStatus("500 Internal Server Error");
-            r.endWithoutBody(false);
-
-            onError(@fieldParentPtr(field, ctx));
         }
 
-        fn onInvalid(ctx: *@This(), r: uws.AnyResponse) void {
-            var body = ctx.body;
-            ctx.body = .init(body.allocator);
-            body.deinit();
-
-            r.clearAborted();
-            r.clearOnData();
-            r.clearOnWritable();
-
-            r.writeStatus("400 Bad Request");
-            r.endWithoutBody(false);
-
-            onError(@fieldParentPtr(field, ctx));
+        fn respondToFailure(r: uws.AnyResponse, failure: anyerror) void {
+            switch (failure) {
+                error.ConnectionClosed => return,
+                error.WriteFailed => return r.forceClose(),
+                else => {},
+            }
+            if (r.state().isHttpStatusCalled()) return r.forceClose();
+            r.writeStatus(if (failure == error.OutOfMemory) "500 Internal Server Error" else "400 Bad Request") catch |err| {
+                if (err != error.ConnectionClosed) r.forceClose();
+                return;
+            };
+            r.endWithoutBody(false) catch |err| {
+                if (err != error.ConnectionClosed) r.forceClose();
+            };
         }
     };
 }

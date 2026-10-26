@@ -7,19 +7,18 @@ const ObjectCreate = Object.create;
 const kEmptyObject = ObjectCreate(null);
 
 var fetch = Bun.fetch;
-const bindings = $cpp("Undici.cpp", "createUndiciInternalBinding");
-const Response = bindings[0];
-const Request = bindings[1];
-const Headers = bindings[2];
-const FormData = bindings[3];
-const File = bindings[4];
-const URL = bindings[5];
-const AbortSignal = bindings[6];
-const URLSearchParams = bindings[7];
-const WebSocket = bindings[8];
-const CloseEvent = bindings[9];
-const ErrorEvent = bindings[10];
-const MessageEvent = bindings[11];
+const Response = $bindgenClass("Response.schema.zig", "Response");
+const Request = $bindgenClass("Request.schema.zig", "Request");
+const Headers = $bindgenClass("WebCoreHeaders.schema.zig", "Headers");
+const FormData = $bindgenClass("WebCoreFormData.schema.zig", "FormData");
+const File = $bindgenClass("Blob.schema.zig", "File");
+const URL = $bindgenClass("WebCoreURL.schema.zig", "URL");
+const AbortSignal = $bindgenClass("WebCoreEvents.schema.zig", "AbortSignal");
+const URLSearchParams = $bindgenClass("WebCoreURL.schema.zig", "URLSearchParams");
+const WebSocket = $bindgenClass("WebCoreWebSocket.schema.zig", "WebSocket");
+const CloseEvent = $bindgenClass("WebCoreEvents.schema.zig", "CloseEvent");
+const ErrorEvent = $bindgenClass("WebCoreEvents.schema.zig", "ErrorEvent");
+const MessageEvent = $bindgenClass("WebCoreEvents.schema.zig", "MessageEvent");
 
 class FileReader extends EventTarget {
   constructor() {

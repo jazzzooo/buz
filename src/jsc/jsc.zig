@@ -14,103 +14,99 @@ else
 /// Web Template Framework
 pub const wtf = @import("./WTF.zig").WTF;
 
-/// Binding for JSCInitialize in ZigGlobalObject.cpp
+pub const NodeURL = @import("./NodeURL.zig");
+
+/// Initialize JavaScriptCore before creating a VM.
 pub fn initialize(eval_mode: bool) void {
-    markBinding(@src());
     bun.analytics.Features.jsc += 1;
-    JSCInitialize(bun.environ.ptr, bun.environ.len, onJSCInvalidEnvVar, eval_mode);
+    var environment: std.ArrayListUnmanaged(u8) = .empty;
+    defer environment.deinit(bun.default_allocator);
+    for (0..bun.environ.len) |reverse_index| {
+        const raw_entry = bun.environ[bun.environ.len - reverse_index - 1];
+        const entry = std.mem.span(raw_entry);
+        if (!std.mem.startsWith(u8, entry, "BUN_JSC_")) continue;
+        bun.handleOom(environment.appendSlice(bun.default_allocator, entry));
+        bun.handleOom(environment.append(bun.default_allocator, 0));
+    }
+
+    const invalid_offset = bun.bindgen.Engine(JSCInitializeSchema).call(.{
+        .environment = environment.items,
+        .evalMode = eval_mode,
+    });
+    if (invalid_offset) |offset| {
+        if (offset >= environment.items.len) @panic("JSC returned an invalid environment offset");
+        const entry = environment.items[offset..];
+        const terminator = std.mem.indexOfScalar(u8, entry, 0) orelse
+            @panic("JSC returned an unterminated environment offset");
+        onJSCInvalidEnvVar(entry[0..terminator]);
+    }
 }
 
 pub const JSValue = @import("./JSValue.zig").JSValue;
+pub const JavaScriptSemanticsEngine = @import("./JavaScriptSemanticsEngine.zig");
+pub const NodeClusterBinding = @import("../runtime/node_jsc/NodeClusterBindingEngine.zig");
+pub const NodeCryptoBinding = @import("../runtime/node_jsc/node_crypto_binding.zig");
+pub const NodeClusterEngine = @import("../runtime/node/NodeClusterEngine.zig");
+pub const NodeCryptoEngine = @import("../runtime/node/NodeCryptoEngine.zig");
+pub const NodeFSBindingEngine = @import("../runtime/node_jsc/NodeFSBindingEngine.zig");
+pub const NodeFSBinding = NodeFSBindingEngine.Bindings;
+pub const NodeFSWatcherEngine = @import("../runtime/node/FSWatcherEngine.zig");
+pub const NodeStatWatcherEngine = @import("../runtime/node/StatWatcherEngine.zig");
+pub const NodeHTTPEngine = @import("../runtime/node/NodeHTTPEngine.zig");
+pub const NodeNetEngine = @import("../runtime/node/NodeNetEngine.zig");
+pub const NodeProcessEngine = @import("../runtime/node/NodeProcessEngine.zig");
 
-// Host functions are the native function pointer type that can be used by a
-// JSC::JSFunction to call native code from JavaScript. To allow usage of `try`
-// for error handling, Bun provides toJSHostFn to wrap JSHostFnZig into JSHostFn.
-pub const host_fn = @import("./host_fn.zig");
-pub const JSHostFn = host_fn.JSHostFn;
-pub const JSHostFnZig = host_fn.JSHostFnZig;
-pub const JSHostFnZigWithContext = host_fn.JSHostFnZigWithContext;
-pub const JSHostFunctionTypeWithContext = host_fn.JSHostFunctionTypeWithContext;
-pub const toJSHostFn = host_fn.toJSHostFn;
-pub const toJSHostFnResult = host_fn.toJSHostFnResult;
-pub const toJSHostFnWithContext = host_fn.toJSHostFnWithContext;
-pub const toJSHostCall = host_fn.toJSHostCall;
-pub const fromJSHostCall = host_fn.fromJSHostCall;
-pub const fromJSHostCallGeneric = host_fn.fromJSHostCallGeneric;
+pub const voidFromJSError = bun.bindgen.voidFromJSError;
 
 // JSC Classes Bindings
-pub const AnyPromise = @import("./AnyPromise.zig").AnyPromise;
-pub const array_buffer = @import("./array_buffer.zig");
-pub const ArrayBuffer = array_buffer.ArrayBuffer;
-pub const MarkedArrayBuffer = array_buffer.MarkedArrayBuffer;
-pub const JSCArrayBuffer = array_buffer.JSCArrayBuffer;
 pub const CachedBytecode = @import("./CachedBytecode.zig").CachedBytecode;
-pub const CallFrame = @import("./CallFrame.zig").CallFrame;
-pub const CommonAbortReason = @import("./CommonAbortReason.zig").CommonAbortReason;
-pub const CommonStrings = @import("./CommonStrings.zig").CommonStrings;
-pub const CustomGetterSetter = @import("./CustomGetterSetter.zig").CustomGetterSetter;
+pub const CallFrame = opaque {};
+pub const CommonAbortReason = @import("../http_types/CommonAbortReason.zig").CommonAbortReason;
 pub const DOMFormData = @import("./DOMFormData.zig").DOMFormData;
-pub const DOMURL = @import("./DOMURL.zig").DOMURL;
-pub const DecodedJSValue = @import("./DecodedJSValue.zig").DecodedJSValue;
-pub const DeferredError = @import("./DeferredError.zig").DeferredError;
-pub const FFIOffsets = @import("./FFIOffsets.zig");
-pub const GetterSetter = @import("./GetterSetter.zig").GetterSetter;
-pub const JSArray = @import("./JSArray.zig").JSArray;
 pub const JSArrayIterator = @import("./JSArrayIterator.zig").JSArrayIterator;
-pub const JSCell = @import("./JSCell.zig").JSCell;
-pub const JSFunction = @import("./JSFunction.zig").JSFunction;
+pub const JSGlobalObjectModule = @import("./JSGlobalObject.zig");
 pub const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
-pub const JSInternalPromise = @import("./JSInternalPromise.zig").JSInternalPromise;
-pub const JSMap = @import("./JSMap.zig").JSMap;
-pub const JSModuleLoader = @import("./JSModuleLoader.zig").JSModuleLoader;
-pub const JSObject = @import("./JSObject.zig").JSObject;
-pub const JSPromise = @import("./JSPromise.zig").JSPromise;
-pub const JSPromiseRejectionOperation = @import("./JSPromiseRejectionOperation.zig").JSPromiseRejectionOperation;
-pub const JSRef = @import("./JSRef.zig").JSRef;
-pub const JSString = @import("./JSString.zig").JSString;
-pub const JSUint8Array = @import("./JSUint8Array.zig").JSUint8Array;
-pub const JSBigInt = @import("./JSBigInt.zig").JSBigInt;
+pub const WasmStreamingCompilerHandle = opaque {};
+pub const TLSDefaults = @import("./TLSDefaults.zig");
+pub const IntrusiveTask = @import("./IntrusiveTask.zig");
+pub const NativeCompletionRegistry = @import("../event_loop/NativeCompletionRegistry.zig");
+pub const NativeFinalizerQueue = @import("./NativeFinalizerQueue.zig");
+pub const InternalTestingEngine = @import("./InternalTestingEngine.zig");
+pub const ModuleLoaderEngine = @import("./ModuleLoaderEngine.zig");
+pub const ModuleRunMainOperations = @import("./ModuleRunMainOperations.zig");
+pub const PromiseRejectionOperations = @import("./PromiseRejectionOperations.zig");
 pub const RefString = @import("./RefString.zig");
 pub const ScriptExecutionStatus = @import("./ScriptExecutionStatus.zig").ScriptExecutionStatus;
 pub const SourceType = @import("./SourceType.zig").SourceType;
-pub const Strong = @import("./Strong.zig");
-pub const SystemError = @import("./SystemError.zig").SystemError;
 pub const URL = @import("./URL.zig").URL;
 pub const URLSearchParams = @import("./URLSearchParams.zig").URLSearchParams;
 pub const VM = @import("./VM.zig").VM;
-pub const Weak = @import("./Weak.zig").Weak;
-pub const WeakRefType = @import("./Weak.zig").WeakRefType;
-pub const Exception = @import("./Exception.zig").Exception;
 pub const SourceProvider = @import("./SourceProvider.zig").SourceProvider;
-pub const TopExceptionScope = @import("./TopExceptionScope.zig").TopExceptionScope;
-pub const ExceptionValidationScope = @import("./TopExceptionScope.zig").ExceptionValidationScope;
-pub const MarkedArgumentBuffer = @import("./MarkedArgumentBuffer.zig").MarkedArgumentBuffer;
 pub const RegularExpression = @import("./RegularExpression.zig").RegularExpression;
+pub const Counters = @import("./Counters.zig");
+pub const NodeModuleModule = @import("./NodeModuleModule.zig");
+pub const GlobalObjectHost = @import("./GlobalObjectHost.zig");
+pub const JSMockHost = @import("./JSMockHost.zig");
+pub const WebCoreFunctions = @import("./WebCoreFunctions.zig");
+pub const BindgenTest = @import("./bindgen_test.zig");
+pub const formatting_bindings = @import("./fmt_jsc.zig");
+pub const IPC = @import("./ipc.zig");
+pub const resolve_path_bindings = @import("./resolve_path_jsc.zig");
+pub const resolver_bindings = @import("./resolver_jsc.zig");
+pub const virtual_machine_exports = @import("./virtual_machine_exports.zig");
+pub const Secrets = @import("./JSSecrets.zig");
 
 // JavaScript-related
-pub const Errorable = @import("./Errorable.zig").Errorable;
 pub const ResolvedSource = @import("./ResolvedSource.zig").ResolvedSource;
+pub const ResolvedSourceResult = @import("./ResolvedSource.zig").ResolvedSourceResult;
 pub const ErrorCode = @import("./ErrorCode.zig").ErrorCode;
-pub const JSErrorCode = @import("./JSErrorCode.zig").JSErrorCode;
-pub const ZigErrorType = @import("./ZigErrorType.zig").ZigErrorType;
 pub const Debugger = @import("./Debugger.zig");
 pub const SavedSourceMap = @import("./SavedSourceMap.zig");
-pub const PinnedThreadDomain = @import("./PinnedThreadDomain.zig");
 pub const VirtualMachine = @import("./VirtualMachine.zig");
+pub const WebWorker = @import("./web_worker.zig");
 pub const ModuleLoader = @import("./ModuleLoader.zig");
 pub const RareData = @import("./rare_data.zig");
 pub const EventType = @import("./EventType.zig").EventType;
-pub const JSRuntimeType = @import("./JSRuntimeType.zig").JSRuntimeType;
-pub const ZigStackFrameCode = @import("./ZigStackFrameCode.zig").ZigStackFrameCode;
-
-pub const ErrorableResolvedSource = Errorable(ResolvedSource);
-pub const ErrorableZigString = Errorable(ZigString);
-pub const ErrorableString = Errorable(bun.String);
-
-pub const ZigStackTrace = @import("./ZigStackTrace.zig").ZigStackTrace;
-pub const ZigStackFrame = @import("./ZigStackFrame.zig").ZigStackFrame;
-pub const ZigStackFramePosition = @import("./ZigStackFramePosition.zig").ZigStackFramePosition;
-pub const ZigException = @import("./ZigException.zig").ZigException;
 
 pub const ConsoleObject = @import("./ConsoleObject.zig");
 pub const Formatter = ConsoleObject.Formatter;
@@ -118,9 +114,9 @@ pub const Formatter = ConsoleObject.Formatter;
 pub const hot_reloader = @import("./hot_reloader.zig");
 
 // TODO: move into bun.api
-pub const Jest = @import("../test_runner/jest.zig");
-pub const TestScope = @import("../test_runner/jest.zig").TestScope;
-pub const Expect = @import("../test_runner/expect.zig");
+pub const Jest = @import("../test_runner/JestEngine.zig");
+pub const Expect = @import("../test_runner/expect/ExpectEngine.zig");
+pub const ExpectMatcherEngine = @import("../test_runner/expect/MatcherEngine.zig");
 pub const Snapshot = @import("../test_runner/snapshot.zig");
 
 pub const js_property_iterator = @import("./JSPropertyIterator.zig");
@@ -129,13 +125,15 @@ pub const JSPropertyIteratorOptions = js_property_iterator.JSPropertyIteratorOpt
 
 pub const EventLoop = @import("./event_loop.zig");
 pub const AbstractVM = EventLoop.AbstractVM;
-pub const AnyEventLoop = EventLoop.AnyEventLoop;
 pub const AnyTask = EventLoop.AnyTask;
+pub const NativeMicrotask = @import("./NativeMicrotask.zig");
 pub const AnyTaskWithExtraContext = EventLoop.AnyTaskWithExtraContext;
 pub const ConcurrentCppTask = EventLoop.ConcurrentCppTask;
-pub const ConcurrentPromiseTask = EventLoop.ConcurrentPromiseTask;
 pub const ConcurrentTask = EventLoop.ConcurrentTask;
 pub const CppTask = EventLoop.CppTask;
+pub const JSCDeferredWorkTask = @import("./JSCScheduler.zig").JSCDeferredWorkTask;
+pub const NativeEventSignal = EventLoop.CppTaskModule.NativeEventSignal;
+pub const NativeEventTarget = EventLoop.CppTaskModule.NativeEventTarget;
 pub const DeferredTaskQueue = EventLoop.DeferredTaskQueue;
 pub const EventLoopHandle = EventLoop.EventLoopHandle;
 pub const EventLoopKind = EventLoop.EventLoopKind;
@@ -150,14 +148,9 @@ pub const PlatformEventLoop = if (bun.Environment.isPosix) bun.uws.Loop else bun
 pub const PosixSignalHandle = EventLoop.PosixSignalHandle;
 pub const PosixSignalTask = EventLoop.PosixSignalTask;
 pub const Task = EventLoop.Task;
-pub const BackgroundWork = EventLoop.BackgroundWork;
-pub const BackgroundTask = EventLoop.BackgroundTask;
 pub const WorkTask = EventLoop.WorkTask;
+pub const setLoopVM = EventLoop.setLoopVM;
 
-/// Deprecated: Avoid using this in new code.
-pub const C = @import("./javascript_core_c_api.zig");
-/// Deprecated: Use `bun.String`
-pub const ZigString = @import("./ZigString.zig").ZigString;
 /// Deprecated: Use `bun.webcore`
 pub const WebCore = bun.webcore;
 /// Deprecated: Use `bun.api`
@@ -165,81 +158,12 @@ pub const API = bun.api;
 /// Deprecated: Use `bun.api.node`
 pub const Node = bun.api.node;
 
-const log = bun.Output.scoped(.JSC, .hidden);
-pub inline fn markBinding(src: std.builtin.SourceLocation) void {
-    log("{s} ({s}:{d})", .{ src.fn_name, src.file, src.line });
-}
-pub inline fn markMemberBinding(comptime class: anytype, src: std.builtin.SourceLocation) void {
-    if (!bun.Environment.enable_logs) return;
-    const classname = switch (@typeInfo(@TypeOf(class))) {
-        .pointer => class, // assumed to be a static string
-        else => @typeName(class),
-    };
-    log("{s}.{s} ({s}:{d})", .{ classname, src.fn_name, src.file, src.line });
-}
-
 pub const Subprocess = bun.api.Subprocess;
 
-/// This file is generated by:
-///  1. `bun src/codegen/generate-classes.ts`
-///  2. Scan for **/*.classes.ts files in src/
-///  3. Generate a JS wrapper for each class in:
-///     - Zig: generated_classes.zig
-///     - C++: ZigGeneratedClasses.h, ZigGeneratedClasses.cpp
-///  4. For the Zig code to successfully compile:
-///     - Add it to generated_classes_list.zig
-///     - Expose the generated methods:
-///       ```zig
-///       pub const js = JSC.Codegen.JSMyClassName;
-///       pub const toJS = js.toJS;
-///       pub const fromJS = js.fromJS;
-///       pub const fromJSDirect = js.fromJSDirect;
-///       ```
-///  5. `bun run build`
-///
-pub const Codegen = @import("ZigGeneratedClasses");
-pub const GeneratedClassesList = @import("./generated_classes_list.zig").Classes;
-
-pub const RuntimeTranspilerCache = @import("./RuntimeTranspilerCache.zig").RuntimeTranspilerCache;
-
-/// Track whether an object should keep the event loop alive
-pub const Ref = struct {
-    has: bool = false,
-
-    pub fn init() Ref {
-        return .{};
-    }
-
-    pub fn unref(this: *Ref, vm: *VirtualMachine) void {
-        if (!this.has)
-            return;
-        this.has = false;
-        vm.active_tasks -= 1;
-    }
-
-    pub fn ref(this: *Ref, vm: *VirtualMachine) void {
-        if (this.has)
-            return;
-        this.has = true;
-        vm.active_tasks += 1;
-    }
-};
-
-pub const OpaqueCallback = *const fn (current: ?*anyopaque) callconv(.c) void;
-pub fn OpaqueWrap(comptime Context: type, comptime Function: fn (this: *Context) void) OpaqueCallback {
-    return struct {
-        pub fn callback(ctx: ?*anyopaque) callconv(.c) void {
-            const context: *Context = @as(*Context, @ptrCast(@alignCast(ctx.?)));
-            Function(context);
-        }
-    }.callback;
-}
-
-pub const Error = @import("ErrorCode").Error;
+pub const NodeError = @import("./NodeErrorEngine.zig");
 
 /// According to https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date,
 /// maximum Date in JavaScript is less than Number.MAX_SAFE_INTEGER (u52).
-pub const init_timestamp = std.math.maxInt(JSTimeType);
 pub const JSTimeType = u52;
 pub fn toJSTime(sec: isize, nsec: isize) JSTimeType {
     const millisec = @as(u64, @intCast(@divTrunc(nsec, std.time.ns_per_ms)));
@@ -247,10 +171,8 @@ pub fn toJSTime(sec: isize, nsec: isize) JSTimeType {
 }
 
 pub const MAX_SAFE_INTEGER = 9007199254740991;
-pub const MIN_SAFE_INTEGER = -9007199254740991;
 
-extern "c" fn JSCInitialize(env: [*]const [*:0]u8, count: usize, cb: *const fn ([*]const u8, len: usize) callconv(.c) void, eval_mode: bool) void;
-fn onJSCInvalidEnvVar(name: [*]const u8, len: usize) callconv(.c) void {
+fn onJSCInvalidEnvVar(name: []const u8) noreturn {
     bun.Output.errGeneric(
         \\invalid JSC environment variable
         \\
@@ -264,19 +186,25 @@ fn onJSCInvalidEnvVar(name: [*]const u8, len: usize) callconv(.c) void {
         \\
         \\Warning: options change between releases of Bun and WebKit without notice. This is not a stable API, you should not rely on it beyond debugging something, and it may be removed entirely in a future version of Bun.
     ,
-        .{name[0..len]},
+        .{name},
     );
     bun.Global.exit(1);
 }
 
 pub const math = struct {
-    extern "c" fn Bun__JSC__operationMathPow(f64, f64) f64;
     pub fn pow(x: f64, y: f64) f64 {
-        return Bun__JSC__operationMathPow(x, y);
+        return bun.bindgen.Engine(OperationMathPowShim).call(.{
+            .base = x,
+            .exponent = y,
+        });
     }
 };
 
-pub const generated = @import("bindgen_generated");
-
 const bun = @import("bun");
 const std = @import("std");
+const JSCInitializationBindings = bun.bindgen.Module("jsc_initialization");
+const NumericConversionBindings = bun.bindgen.Module("numeric_conversions");
+const JSCInitializeSchema = JSCInitializationBindings.engineShim("jscInitialize");
+const OperationMathPowShim = NumericConversionBindings.engineShim("operationMathPow");
+
+pub const Diagnostic = @import("./Diagnostic.zig");

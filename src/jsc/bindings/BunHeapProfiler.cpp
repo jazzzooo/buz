@@ -1,6 +1,6 @@
 #include "root.h"
 #include "BunHeapProfiler.h"
-#include "headers-handwritten.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/HeapProfiler.h>
 #include <JavaScriptCore/HeapSnapshotBuilder.h>
 #include <JavaScriptCore/BunV8HeapSnapshotBuilder.h>
@@ -21,8 +21,6 @@ namespace Bun {
 template<typename V>
 using NodeIdHashMap = WTF::HashMap<uint64_t, V, WTF::DefaultHash<uint64_t>, WTF::UnsignedWithZeroKeyHashTraits<uint64_t>>;
 using NodeIdHashSet = WTF::HashSet<uint64_t, WTF::DefaultHash<uint64_t>, WTF::UnsignedWithZeroKeyHashTraits<uint64_t>>;
-
-BunString toStringRef(const WTF::String& wtfString);
 
 // Node data parsed from snapshot
 struct NodeData {
@@ -948,14 +946,16 @@ WTF::String generateHeapSnapshotV8(JSC::VM& vm)
 
 } // namespace Bun
 
-extern "C" BunString Bun__generateHeapProfile(JSC::VM* vm)
+WTF::String Bun::Bindgen::Engine::bunBindgenEngine_heap_profiling_generateHeapProfile(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_heap_profiling_generateHeapProfile_Arguments&)
 {
-    WTF::String result = Bun::generateHeapProfile(*vm);
-    return Bun::toStringRef(result);
+    return Bun::generateHeapProfile(context.globalObject.vm());
 }
 
-extern "C" BunString Bun__generateHeapSnapshotV8(JSC::VM* vm)
+WTF::String Bun::Bindgen::Engine::bunBindgenEngine_heap_profiling_generateHeapSnapshotV8(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_heap_profiling_generateHeapSnapshotV8_Arguments&)
 {
-    WTF::String result = Bun::generateHeapSnapshotV8(*vm);
-    return Bun::toStringRef(result);
+    return Bun::generateHeapSnapshotV8(context.globalObject.vm());
 }

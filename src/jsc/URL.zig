@@ -1,105 +1,97 @@
-pub const URL = opaque {
-    extern fn URL__fromJS(JSValue, *jsc.JSGlobalObject) ?*URL;
-    extern fn URL__fromString(*bun.String) ?*URL;
-    extern fn URL__protocol(*URL) String;
-    extern fn URL__href(*URL) String;
-    extern fn URL__username(*URL) String;
-    extern fn URL__password(*URL) String;
-    extern fn URL__search(*URL) String;
-    extern fn URL__host(*URL) String;
-    extern fn URL__hostname(*URL) String;
-    extern fn URL__port(*URL) u32;
-    extern fn URL__deinit(*URL) void;
-    extern fn URL__pathname(*URL) String;
-    extern fn URL__getHrefFromJS(JSValue, *jsc.JSGlobalObject) String;
-    extern fn URL__getHref(*String) String;
-    extern fn URL__getFileURLString(*String) String;
-    extern fn URL__getHrefJoin(*String, *String) String;
-    extern fn URL__pathFromFileURL(*String) String;
-    extern fn URL__hash(*URL) String;
-    extern fn URL__fragmentIdentifier(*URL) String;
+pub const URL = struct {
+    handle: URLHandle,
+
+    fn toBindingString(value: String) bun.OOM!bun.bindgen.ThreadSafeDOMString {
+        return bun.bindgen.ThreadSafeDOMString.fromBunString(value.dupeRef());
+    }
+
+    fn takeBindingString(value: bun.bindgen.ThreadSafeDOMString) String {
+        var owned = value;
+        return owned.takeBunString();
+    }
+
+    fn takeOptionalBindingString(value: ?bun.bindgen.ThreadSafeDOMString) String {
+        var optional = value;
+        if (optional) |*owned| return owned.takeBunString();
+        return .dead;
+    }
+
+    fn StringGetter(comptime operation: []const u8) type {
+        return struct {
+            pub fn call(url: *const URL) bun.OOM!String {
+                return takeBindingString(try bun.bindgen.Engine(URLBindings.engineShim(operation)).call(.{ .url = &url.handle }));
+            }
+        };
+    }
 
     /// Includes the leading '#'.
-    pub fn hash(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__hash(url);
-    }
+    pub const hash = StringGetter("urlHash").call;
 
     /// Exactly the same as hash, excluding the leading '#'.
-    pub fn fragmentIdentifier(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__fragmentIdentifier(url);
+    pub const fragmentIdentifier = StringGetter("urlFragmentIdentifier").call;
+
+    pub fn hrefFromString(str: String) bun.OOM!String {
+        var input = try toBindingString(str);
+        defer input.deinit();
+        return takeOptionalBindingString(try bun.bindgen.Engine(URLHrefFromStringSchema).call(.{ .input = input.operand() }));
     }
 
-    pub fn hrefFromString(str: bun.String) String {
-        jsc.markBinding(@src());
-        var input = str;
-        return URL__getHref(&input);
+    pub fn hrefFromDOMString(str: *const bun.bindgen.DOMString) bun.OOM!bun.bindgen.DOMString {
+        var owned_input = str.clone();
+        defer owned_input.deinit();
+        var input = try owned_input.toThreadSafe();
+        defer input.deinit();
+        var output = (try bun.bindgen.Engine(URLHrefFromStringSchema).call(.{ .input = input.operand() })) orelse return .empty();
+        return bun.bindgen.DOMString.fromBunString(output.takeBunString());
     }
 
-    pub fn join(base: bun.String, relative: bun.String) String {
-        jsc.markBinding(@src());
-        var base_str = base;
-        var relative_str = relative;
-        return URL__getHrefJoin(&base_str, &relative_str);
+    pub fn join(base: String, relative: String) bun.OOM!String {
+        var bound_base = try toBindingString(base);
+        defer bound_base.deinit();
+        var bound_relative = try toBindingString(relative);
+        defer bound_relative.deinit();
+        return takeOptionalBindingString(try bun.bindgen.Engine(URLJoinSchema).call(.{
+            .base = bound_base.operand(),
+            .relative = bound_relative.operand(),
+        }));
     }
 
-    pub fn fileURLFromString(str: bun.String) String {
-        jsc.markBinding(@src());
-        var input = str;
-        return URL__getFileURLString(&input);
+    pub fn fileURLFromString(str: String) bun.OOM!String {
+        var input = try toBindingString(str);
+        defer input.deinit();
+        return takeBindingString(try bun.bindgen.Engine(URLFileURLFromStringSchema).call(.{ .input = input.operand() }));
     }
 
-    pub fn pathFromFileURL(str: bun.String) String {
-        jsc.markBinding(@src());
-        var input = str;
-        return URL__pathFromFileURL(&input);
+    pub fn pathFromFileURL(str: String) bun.OOM!?String {
+        var input = try toBindingString(str);
+        defer input.deinit();
+        const result = (try bun.bindgen.Engine(URLPathFromFileURLSchema).call(.{ .input = input.operand() })) orelse return null;
+        return takeBindingString(result);
     }
 
-    /// This percent-encodes the URL, punycode-encodes the hostname, and returns the result
-    /// If it fails, the tag is marked Dead
-    pub fn hrefFromJS(value: JSValue, globalObject: *jsc.JSGlobalObject) bun.JSError!String {
-        jsc.markBinding(@src());
-        const result = URL__getHrefFromJS(value, globalObject);
-        if (globalObject.hasException()) return error.JSError;
-        return result;
+    pub fn fromUTF8(input: []const u8) bun.OOM!?URL {
+        var input_string = try bun.bindgen.ThreadSafeDOMString.fromUTF8(input);
+        defer input_string.deinit();
+        const handle = (try bun.bindgen.Engine(URLFromStringSchema).call(.{ .input = input_string.operand() })) orelse return null;
+        return .{ .handle = handle };
     }
 
-    pub fn fromJS(value: JSValue, globalObject: *jsc.JSGlobalObject) bun.JSError!?*URL {
-        jsc.markBinding(@src());
-        const result = URL__fromJS(value, globalObject);
-        if (globalObject.hasException()) return error.JSError;
-        return result;
+    pub fn fromString(str: String) bun.OOM!?URL {
+        var input = try toBindingString(str);
+        defer input.deinit();
+        const handle = (try bun.bindgen.Engine(URLFromStringSchema).call(.{ .input = input.operand() })) orelse return null;
+        return .{ .handle = handle };
     }
 
-    pub fn fromUTF8(input: []const u8) ?*URL {
-        return fromString(String.borrowUTF8(input));
-    }
-    pub fn fromString(str: bun.String) ?*URL {
-        jsc.markBinding(@src());
-        var input = str;
-        return URL__fromString(&input);
-    }
-    pub fn protocol(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__protocol(url);
-    }
-    pub fn href(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__href(url);
-    }
-    pub fn username(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__username(url);
-    }
-    pub fn password(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__password(url);
-    }
-    pub fn search(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__search(url);
-    }
+    pub const protocol = StringGetter("urlProtocol").call;
+
+    pub const href = StringGetter("urlHref").call;
+
+    pub const username = StringGetter("urlUsername").call;
+
+    pub const password = StringGetter("urlPassword").call;
+
+    pub const search = StringGetter("urlSearch").call;
 
     /// Returns the host WITHOUT the port.
     ///
@@ -109,10 +101,7 @@ pub const URL = opaque {
     /// ```
     /// URL("http://example.com:8080").host() => "example.com"
     /// ```
-    pub fn host(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__host(url);
-    }
+    pub const host = StringGetter("urlHost").call;
 
     /// Returns the host WITH the port.
     ///
@@ -122,45 +111,34 @@ pub const URL = opaque {
     /// ```
     /// URL("http://example.com:8080").hostname() => "example.com:8080"
     /// ```
-    pub fn hostname(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__hostname(url);
-    }
-    /// Returns `std.math.maxInt(u32)` if the port is not set. Otherwise, `port`
-    /// is guaranteed to be within the `u16` range.
-    pub fn port(url: *URL) u32 {
-        jsc.markBinding(@src());
-        return URL__port(url);
-    }
-    pub fn deinit(url: *URL) void {
-        jsc.markBinding(@src());
-        return URL__deinit(url);
-    }
-    pub fn pathname(url: *URL) String {
-        jsc.markBinding(@src());
-        return URL__pathname(url);
+    pub const hostname = StringGetter("urlHostname").call;
+
+    pub fn port(url: *const URL) ?u16 {
+        return bun.bindgen.Engine(URLPortSchema).call(.{ .url = &url.handle });
     }
 
-    extern fn URL__originLength(latin1_slice: [*]const u8, len: usize) u32;
-    pub fn originFromSlice(slice: []const u8) ?[]const u8 {
-        jsc.markBinding(@src());
-        // a valid URL will not have ascii in the origin.
-        const first_non_ascii = bun.strings.firstNonASCII(slice) orelse slice.len;
-        const len = URL__originLength(
-            slice[0..first_non_ascii].ptr,
-            first_non_ascii,
-        );
-        if (len == 0) return null;
-        return slice[0..len];
+    pub fn deinit(url: *URL) void {
+        url.handle.deinit();
+    }
+
+    pub const pathname = StringGetter("urlPathname").call;
+
+    pub fn originFromUTF8(bytes: []const u8) bun.OOM!?bun.bindgen.ThreadSafeDOMString {
+        var input = try bun.bindgen.ThreadSafeDOMString.fromUTF8(bytes);
+        defer input.deinit();
+        return bun.bindgen.Engine(URLOriginFromStringSchema).call(.{ .input = input.operand() });
     }
 };
 
-const std = @import("std");
-
 const bun = @import("bun");
-const JSError = bun.JSError;
 const String = bun.String;
 
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+const URLBindings = bun.bindgen.Module("urls");
+const URLFromStringSchema = URLBindings.engineShim("urlFromString");
+const URLHrefFromStringSchema = URLBindings.engineShim("urlHrefFromString");
+const URLFileURLFromStringSchema = URLBindings.engineShim("urlFileURLFromString");
+const URLJoinSchema = URLBindings.engineShim("urlJoin");
+const URLPathFromFileURLSchema = URLBindings.engineShim("urlPathFromFileURL");
+const URLPortSchema = URLBindings.engineShim("urlPort");
+const URLOriginFromStringSchema = URLBindings.engineShim("urlOriginFromString");
+const URLHandle = @typeInfo(bun.bindgen.Return(URLFromStringSchema)).optional.child;

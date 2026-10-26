@@ -1,4 +1,5 @@
 #include "InspectorHTTPServerAgent.h"
+#include "SchemaBindings.h"
 
 #include <JavaScriptCore/InspectorFrontendRouter.h>
 #include <JavaScriptCore/InspectorBackendDispatcher.h>
@@ -13,16 +14,6 @@ namespace Inspector {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(InspectorHTTPServerAgent);
 
-// Zig bindings implementation
-extern "C" {
-void Bun__HTTPServerAgent__setEnabled(Inspector::InspectorHTTPServerAgent* agent);
-
-// void Bun__HTTPServerAgentStartListening(Inspector::InspectorHTTPServerAgent* agent, int serverId);
-// void Bun__HTTPServerAgentStopListening(Inspector::InspectorHTTPServerAgent* agent, int serverId);
-// void Bun__HTTPServerAgentGetRequestBody(Inspector::InspectorHTTPServerAgent* agent, int requestId, int serverId);
-// void Bun__HTTPServerAgentGetResponseBody(Inspector::InspectorHTTPServerAgent* agent, int requestId, int serverId);
-}
-
 InspectorHTTPServerAgent::InspectorHTTPServerAgent(JSC::JSGlobalObject& globalObject)
     : InspectorAgentBase("HTTPServer"_s)
     , m_backendDispatcher(HTTPServerBackendDispatcher::create(globalObject.inspectorController().backendDispatcher(), this))
@@ -34,7 +25,7 @@ InspectorHTTPServerAgent::InspectorHTTPServerAgent(JSC::JSGlobalObject& globalOb
 InspectorHTTPServerAgent::~InspectorHTTPServerAgent()
 {
     if (m_enabled) {
-        Bun__HTTPServerAgent__setEnabled(nullptr);
+        Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorHTTPServerAgent(this, false);
     }
 }
 
@@ -44,8 +35,7 @@ void InspectorHTTPServerAgent::didCreateFrontendAndBackend()
 
 void InspectorHTTPServerAgent::willDestroyFrontendAndBackend(DisconnectReason)
 {
-    m_frontendDispatcher = nullptr;
-    m_enabled = false;
+    disable();
 }
 
 Protocol::ErrorStringOr<void> InspectorHTTPServerAgent::enable()
@@ -54,7 +44,7 @@ Protocol::ErrorStringOr<void> InspectorHTTPServerAgent::enable()
         return {};
 
     m_enabled = true;
-    Bun__HTTPServerAgent__setEnabled(this);
+    Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorHTTPServerAgent(this, true);
     return {};
 }
 
@@ -64,7 +54,7 @@ Protocol::ErrorStringOr<void> InspectorHTTPServerAgent::disable()
         return {};
 
     m_enabled = false;
-    Bun__HTTPServerAgent__setEnabled(nullptr);
+    Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorHTTPServerAgent(this, false);
     return {};
 }
 
@@ -177,65 +167,33 @@ void InspectorHTTPServerAgent::requestHandlerException(Ref<Protocol::HTTPServer:
 
 }
 
-// Zig API implementation
-extern "C" {
-
-// Functions for Zig to call to notify about HTTP server events
-
-typedef int ServerId;
-typedef int HotReloadId;
-typedef int RouteId;
-typedef int RequestId;
-
-[[ZIG_EXPORT(nothrow)]] void Bun__HTTPServerAgent__notifyServerStarted(Inspector::InspectorHTTPServerAgent* agent, ServerId serverId, HotReloadId hotReloadId, const BunString* address, double startTime, void* serverInstance)
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorHTTPServerAgentNotifyServerStarted(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorHTTPServerAgentNotifyServerStarted_Arguments& args)
 {
-
-    agent->serverStarted(serverId, address->toWTFString(), startTime, serverInstance);
+    args.agent->serverStarted(args.serverId, args.address, args.startTime, args.serverInstance);
 }
 
-[[ZIG_EXPORT(nothrow)]] void Bun__HTTPServerAgent__notifyServerStopped(Inspector::InspectorHTTPServerAgent* agent, ServerId serverId, double timestamp)
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorHTTPServerAgentNotifyServerStopped(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorHTTPServerAgentNotifyServerStopped_Arguments& args)
 {
-
-    agent->serverStopped(serverId, timestamp);
+    args.agent->serverStopped(args.serverId, args.timestamp);
 }
 
-// This matches the Route extern struct in Zig
-struct Route {
-    enum class Type : uint8_t {
-        Default = 1,
-        Api = 2,
-        Html = 3,
-        Static = 4
-    };
-
-    int route_id;
-    BunString path;
-    Type type;
-    int script_line;
-    BunString* param_names;
-    size_t param_names_len;
-    BunString file_path;
-    BunString script_id;
-    BunString script_url;
-};
-
-[[ZIG_EXPORT(nothrow)]] void Bun__HTTPServerAgent__notifyServerRoutesUpdated(Inspector::InspectorHTTPServerAgent* agent, ServerId serverId, HotReloadId hotReloadId,
-    Route* routes_ptr, size_t routes_len)
+Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorHTTPServerAgentNotifyServerRoutesUpdated_Return Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorHTTPServerAgentNotifyServerRoutesUpdated(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorHTTPServerAgentNotifyServerRoutesUpdated_Arguments& args)
 {
-
     auto routes = JSON::ArrayOf<Inspector::Protocol::HTTPServer::Route>::create();
-    for (size_t i = 0; i < routes_len; i++) {
-        auto& route = routes_ptr[i];
+    for (const auto& route : args.routes) {
 
         auto route_type = Inspector::Protocol::HTTPServer::RouteType::Default;
         switch (route.type) {
-        case Route::Type::Api:
+        case decltype(route.type)::api:
             route_type = Inspector::Protocol::HTTPServer::RouteType::API;
             break;
-        case Route::Type::Html:
+        case decltype(route.type)::html:
             route_type = Inspector::Protocol::HTTPServer::RouteType::HTML;
             break;
-        case Route::Type::Static:
+        case decltype(route.type)::static_route:
             route_type = Inspector::Protocol::HTTPServer::RouteType::Static;
             break;
         default:
@@ -244,23 +202,23 @@ struct Route {
         }
 
         auto object = Inspector::Protocol::HTTPServer::Route::create()
-                          .setRouteId(route.route_id)
-                          .setPath(route.path.toWTFString())
+                          .setRouteId(route.routeId)
+                          .setPath(route.path)
                           .setType(route_type)
-                          .setScriptLine(route.script_line)
+                          .setScriptLine(route.scriptLine)
                           .release();
 
-        if (!route.file_path.isEmpty()) {
-            object->setFilePath(route.file_path.toWTFString());
+        if (!route.filePath.isEmpty()) {
+            object->setFilePath(route.filePath);
         }
 
-        if (!route.script_url.isEmpty()) {
-            object->setScriptUrl(route.script_url.toWTFString());
+        if (!route.scriptUrl.isEmpty()) {
+            object->setScriptUrl(route.scriptUrl);
         }
 
         routes->addItem(WTF::move(object));
     }
 
-    agent->serverRoutesUpdated(serverId, hotReloadId, WTF::move(routes));
-}
+    args.agent->serverRoutesUpdated(args.serverId, args.hotReloadId, WTF::move(routes));
+    return {};
 }

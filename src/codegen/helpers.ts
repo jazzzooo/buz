@@ -1,4 +1,3 @@
-import { isAscii } from "buffer";
 import fs from "fs";
 import path from "path";
 
@@ -65,14 +64,6 @@ export function resolveSyncOrNull(specifier: string, from: string) {
   }
 }
 
-export function checkAscii(str: string) {
-  if (!isAscii(Buffer.from(str))) {
-    throw new Error(`non-ascii character in string "${str}". this will not be a valid ASCIILiteral`);
-  }
-
-  return str;
-}
-
 export function writeIfNotChanged(file: string, contents: string) {
   if (Array.isArray(contents)) contents = contents.join("");
   contents = contents.replaceAll("\r\n", "\n").trim() + "\n";
@@ -100,39 +91,12 @@ export function writeIfNotChanged(file: string, contents: string) {
   }
 }
 
-export function readdirRecursiveWithExclusionsAndExtensionsSync(
-  dir: string,
-  exclusions: string[],
-  exts: string[],
-): string[] {
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  return entries.flatMap(entry => {
-    if (exclusions.includes(entry.name)) return [];
-    const fullPath = path.join(dir, entry.name);
-    return entry.isDirectory()
-      ? readdirRecursiveWithExclusionsAndExtensionsSync(fullPath, exclusions, exts)
-      : exts.some(ext => fullPath.endsWith(ext))
-        ? fullPath
-        : [];
-  });
-}
-
 export function pathToUpperSnakeCase(filepath: string) {
   return filepath
     .replace(/^.*?:/, "")
     .split(/[-_./\\]/g)
     .join("_")
     .toUpperCase();
-}
-
-export function camelCase(string: string) {
-  return string
-    .split(/[\s_]/)
-    .map((e, i) => (i ? e.charAt(0).toUpperCase() + e.slice(1).toLowerCase() : e.toLowerCase()));
-}
-
-export function pascalCase(string: string) {
-  return string.split(/[\s_]/).map((e, i) => (i ? e.charAt(0).toUpperCase() + e.slice(1) : e.toLowerCase()));
 }
 
 export function argParse(keys: string[]): any {

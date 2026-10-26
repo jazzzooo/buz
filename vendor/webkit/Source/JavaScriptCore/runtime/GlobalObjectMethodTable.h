@@ -43,6 +43,7 @@ class Microtask;
 class RuntimeFlags;
 class ScriptFetcher;
 class ScriptFetchParameters;
+class SourceCode;
 class SourceOrigin;
 class Structure;
 class QueuedTask;
@@ -66,6 +67,7 @@ struct GlobalObjectMethodTable {
     JSPromise* (*moduleLoaderFetch)(JSGlobalObject*, JSModuleLoader*, JSValue, RefPtr<ScriptFetchParameters>, RefPtr<ScriptFetcher>);
     JSObject* (*moduleLoaderCreateImportMetaProperties)(JSGlobalObject*, JSModuleLoader*, JSValue, JSModuleRecord*, RefPtr<ScriptFetcher>);
     JSValue (*moduleLoaderEvaluate)(JSGlobalObject*, JSModuleLoader*, JSValue key, JSValue moduleRecordValue, RefPtr<ScriptFetcher>, JSValue awaitedValue, JSValue resumeMode);
+    JSPromise* (*moduleLoaderAnalyzeTranspiledModule)(JSGlobalObject*, const Identifier&, const SourceCode&, JSPromise*);
 
     void (*promiseRejectionTracker)(JSGlobalObject*, JSPromise*, JSPromiseRejectionOperation);
     void (*reportUncaughtExceptionAtEventLoop)(JSGlobalObject*, Exception*);
@@ -87,6 +89,8 @@ struct GlobalObjectMethodTable {
     String (*codeForEval)(JSGlobalObject*, JSValue);
     bool (*canCompileStrings)(JSGlobalObject*, CompilationType, String, const ArgList&);
     Structure* (*trustedScriptStructure)(JSGlobalObject*);
+    void (*runNativeMicrotask)(JSGlobalObject*, void*) { nullptr };
+    void (*destroyNativeMicrotask)(JSGlobalObject*, void*) { nullptr };
 };
 
 } // namespace JSC

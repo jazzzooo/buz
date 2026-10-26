@@ -46,7 +46,7 @@ fn updatePackageJSONAndInstallWithManagerWithUpdatesAndUpdateRequests(
     var updates: []UpdateRequest = if (manager.subcommand == .@"patch-commit" or manager.subcommand == .patch)
         &[_]UpdateRequest{}
     else
-        UpdateRequest.parse(ctx.allocator, manager, ctx.log, positionals, update_requests, manager.subcommand);
+        UpdateRequest.parse(ctx.allocator, Dependency.ParseContext.fromPackageManager(manager), ctx.log, positionals, update_requests, manager.subcommand);
     try updatePackageJSONAndInstallWithManagerWithUpdates(
         manager,
         ctx,
@@ -752,6 +752,7 @@ const Fs = bun.fs;
 const FileSystem = Fs.FileSystem;
 
 const PackageManager = bun.install.PackageManager;
+const Dependency = bun.install.Dependency;
 const CommandLineArguments = PackageManager.CommandLineArguments;
 const PackageJSONEditor = PackageManager.PackageJSONEditor;
 const PatchCommitResult = PackageManager.PatchCommitResult;

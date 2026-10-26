@@ -28,94 +28,61 @@
 
 #if ENABLE(WEB_CRYPTO)
 
-#include "ScriptExecutionContext.h"
-
 namespace WebCore {
 
-void CryptoAlgorithm::encrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&, WorkQueue&)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithm::encrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::decrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&, WorkQueue&)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithm::decrypt(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&, WorkQueue&)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithm::sign(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, Vector<uint8_t>&&, BoolCallback&&, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&, WorkQueue&)
+ExceptionOr<bool> CryptoAlgorithm::verify(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, Vector<uint8_t>&&, Vector<uint8_t>&&)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::digest(Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&, WorkQueue&)
+ExceptionOr<KeyOrKeyPair> CryptoAlgorithm::generateKey(const CryptoAlgorithmParameters&, bool, CryptoKeyUsageBitmap)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::generateKey(const CryptoAlgorithmParameters&, bool, CryptoKeyUsageBitmap, KeyOrKeyPairCallback&&, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithm::deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, size_t)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::deriveBits(const CryptoAlgorithmParameters&, Ref<CryptoKey>&&, size_t, VectorCallback&&, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&, WorkQueue&)
+ExceptionOr<Ref<CryptoKey>> CryptoAlgorithm::importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool, CryptoKeyUsageBitmap)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::importKey(CryptoKeyFormat, KeyData&&, const CryptoAlgorithmParameters&, bool, CryptoKeyUsageBitmap, KeyCallback&&, ExceptionCallback&& exceptionCallback)
+ExceptionOr<KeyData> CryptoAlgorithm::exportKey(CryptoKeyFormat, Ref<CryptoKey>&&)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::exportKey(CryptoKeyFormat, Ref<CryptoKey>&&, KeyDataCallback&&, ExceptionCallback&& exceptionCallback)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithm::wrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&)
 {
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
-void CryptoAlgorithm::wrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&& exceptionCallback)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithm::unwrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&)
 {
-    exceptionCallback(NotSupportedError, ""_s);
-}
-
-void CryptoAlgorithm::unwrapKey(Ref<CryptoKey>&&, Vector<uint8_t>&&, VectorCallback&&, ExceptionCallback&& exceptionCallback)
-{
-    exceptionCallback(NotSupportedError, ""_s);
+    return Exception { NotSupportedError, ""_s };
 }
 
 ExceptionOr<size_t> CryptoAlgorithm::getKeyLength(const CryptoAlgorithmParameters&)
 {
     return Exception { NotSupportedError };
-}
-
-template<typename ResultCallbackType, typename OperationType>
-static void dispatchAlgorithmOperation(WorkQueue& workQueue, ScriptExecutionContext& context, ResultCallbackType&& callback, CryptoAlgorithm::ExceptionCallback&& exceptionCallback, OperationType&& operation)
-{
-    workQueue.dispatch(context.globalObject(),
-        [operation = WTF::move(operation), callback = WTF::move(callback), exceptionCallback = WTF::move(exceptionCallback), contextIdentifier = context.identifier()]() mutable {
-            auto result = operation();
-            ScriptExecutionContext::postTaskTo(contextIdentifier, [result = crossThreadCopy(WTF::move(result)), callback = WTF::move(callback), exceptionCallback = WTF::move(exceptionCallback)](auto& context) mutable {
-                if (result.hasException()) {
-                    exceptionCallback(result.releaseException().code(), ""_s);
-                    return;
-                }
-                callback(result.releaseReturnValue());
-            });
-        });
-}
-
-void CryptoAlgorithm::dispatchOperationInWorkQueue(WorkQueue& workQueue, ScriptExecutionContext& context, VectorCallback&& callback, ExceptionCallback&& exceptionCallback, Function<ExceptionOr<Vector<uint8_t>>()>&& operation)
-{
-    dispatchAlgorithmOperation(workQueue, context, WTF::move(callback), WTF::move(exceptionCallback), WTF::move(operation));
-}
-
-void CryptoAlgorithm::dispatchOperationInWorkQueue(WorkQueue& workQueue, ScriptExecutionContext& context, BoolCallback&& callback, ExceptionCallback&& exceptionCallback, Function<ExceptionOr<bool>()>&& operation)
-{
-    dispatchAlgorithmOperation(workQueue, context, WTF::move(callback), WTF::move(exceptionCallback), WTF::move(operation));
 }
 
 }

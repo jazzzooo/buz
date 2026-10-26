@@ -19,53 +19,64 @@
 #ifndef UWS_ASYNCSOCKETDATA_H
 #define UWS_ASYNCSOCKETDATA_H
 
-#include <string>
+#include "ByteBuffer.h"
 
 namespace uWS {
 
 struct BackPressure {
-    std::string buffer;
-    unsigned int pendingRemoval = 0;
-    BackPressure(BackPressure &&other) {
-        buffer = std::move(other.buffer);
-        pendingRemoval = other.pendingRemoval;
-    }
+private:
+    ByteBuffer buffer;
+    size_t pendingRemoval = 0;
+public:
+    BackPressure(BackPressure &&other) noexcept
+        : buffer(std::move(other.buffer)), pendingRemoval(std::exchange(other.pendingRemoval, 0)) {}
     BackPressure() = default;
-    void append(const char *data, size_t length) {
-        buffer.append(data, length);
+
+    void adopt(ByteBuffer &&owned) {
+        buffer = std::move(owned);
+        pendingRemoval = 0;
     }
-    void erase(unsigned int length) {
+
+    [[nodiscard]] bool tryAppend(const char *data, size_t length) {
+        return buffer.tryAppend({length ? std::string_view(data, length) : std::string_view()});
+    }
+    [[nodiscard]] bool tryAppendParts(std::string_view prefix, std::initializer_list<std::string_view> parts) {
+        return buffer.tryAppend(prefix, parts);
+    }
+    void appendAssumeCapacity(const char *data, size_t length) {
+        buffer.appendAssumeCapacity(length ? std::string_view(data, length) : std::string_view());
+    }
+    void erase(size_t length) {
+        assert(length <= this->length());
         pendingRemoval += length;
-        /* Always erase a minimum of 1/32th the current backpressure */
-        if (pendingRemoval > (buffer.length() >> 5)) {
-            buffer.erase(0, pendingRemoval);
-            buffer.shrink_to_fit();
+        if (pendingRemoval > (buffer.size() >> 5)) {
+            buffer.discardPrefix(pendingRemoval);
             pendingRemoval = 0;
         }
     }
-    size_t length() {
-        return buffer.length() - pendingRemoval;
+    size_t length() const {
+        return buffer.size() - pendingRemoval;
     }
     void clear() {
         pendingRemoval = 0;
         buffer.clear();
-        buffer.shrink_to_fit();
     }
-    void reserve(size_t length) {
-        buffer.reserve(length + pendingRemoval);
+    [[nodiscard]] bool tryReserve(size_t length) {
+        if (length > static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()) - pendingRemoval) return false;
+        return buffer.tryReserve(length + pendingRemoval);
     }
-    void resize(size_t length) {
-        buffer.resize(length + pendingRemoval);
+    [[nodiscard]] bool tryResizeUninitialized(size_t length) {
+        if (length > static_cast<size_t>(std::numeric_limits<ptrdiff_t>::max()) - pendingRemoval) return false;
+        return buffer.tryResizeUninitialized(length + pendingRemoval);
     }
-    const char *data() {
-        return buffer.data() + pendingRemoval;
+    const char *data() const {
+        return buffer.empty() ? nullptr : buffer.data() + pendingRemoval;
     }
-    size_t size() {
+    size_t size() const {
         return length();
     }
-    /* The total length, incuding pending removal */
-    size_t totalLength() {
-        return buffer.length();
+    std::string_view view() const {
+        return length() ? std::string_view(data(), length()) : std::string_view();
     }
 };
 

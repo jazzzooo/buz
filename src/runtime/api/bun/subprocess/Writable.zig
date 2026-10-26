@@ -1,155 +1,146 @@
-pub const Writable = union(enum) {
-    pipe: *jsc.WebCore.FileSink,
-    fd: bun.FD,
-    buffer: *StaticPipeWriter,
-    memfd: bun.FD,
-    inherit: void,
-    ignore: void,
+pub fn WithIntegration(comptime Integration: type) type {
+    const Stdio = Integration.Stdio;
+    return union(enum) {
+        const Writable = @This();
 
-    pub fn memoryCost(this: *const Writable) usize {
-        return switch (this.*) {
-            .pipe => |pipe| pipe.memoryCost(),
-            .buffer => |buffer| buffer.memoryCost(),
-            // TODO: memfd
-            else => 0,
-        };
-    }
+        pipe: Integration.SinkHandle,
+        fd: bun.FD,
+        buffer: Integration.BufferWriterHandle,
+        memfd: bun.FD,
+        inherit: void,
+        ignore: void,
 
-    pub fn hasPendingActivity(this: *const Writable) bool {
-        return switch (this.*) {
-            .pipe => false,
-
-            // we mark them as .ignore when they are closed, so this must be true
-            .buffer => true,
-            else => false,
-        };
-    }
-
-    pub fn ref(this: *Writable) void {
-        switch (this.*) {
-            .pipe => {
-                this.pipe.updateRef(true);
-            },
-            .buffer => {
-                this.buffer.updateRef(true);
-            },
-            else => {},
+        pub fn memoryCost(this: *const Writable) usize {
+            return switch (this.*) {
+                .pipe => |pipe| Integration.sinkMemoryCost(pipe),
+                .buffer => |buffer| buffer.memoryCost(),
+                // TODO: memfd
+                else => 0,
+            };
         }
-    }
 
-    pub fn unref(this: *Writable) void {
-        switch (this.*) {
-            .pipe => {
-                this.pipe.updateRef(false);
-            },
-            .buffer => {
-                this.buffer.updateRef(false);
-            },
-            else => {},
+        pub fn hasPendingActivity(this: *const Writable) bool {
+            return switch (this.*) {
+                .pipe => false,
+
+                // we mark them as .ignore when they are closed, so this must be true
+                .buffer => true,
+                else => false,
+            };
         }
-    }
 
-    // When the stream has closed we need to be notified to prevent a use-after-free
-    // We can test for this use-after-free by enabling hot module reloading on a file and then saving it twice
-    pub fn onClose(this: *Writable, _: ?bun.sys.Error) void {
-        const process: *Subprocess = @fieldParentPtr("stdin", this);
-
-        if (process.this_value.tryGet()) |this_jsvalue| {
-            if (js.stdinGetCached(this_jsvalue)) |existing_value| {
-                jsc.WebCore.FileSink.JSSink.setDestroyCallback(existing_value, 0);
+        pub fn ref(this: *Writable) void {
+            switch (this.*) {
+                .pipe => {
+                    Integration.updateSinkRef(this.pipe, true);
+                },
+                .buffer => {
+                    this.buffer.updateRef(true);
+                },
+                else => {},
             }
         }
 
-        switch (this.*) {
-            .buffer => {
-                this.buffer.deref();
-            },
-            .pipe => {
-                this.pipe.deref();
-            },
-            else => {},
+        pub fn unref(this: *Writable) void {
+            switch (this.*) {
+                .pipe => {
+                    Integration.updateSinkRef(this.pipe, false);
+                },
+                .buffer => {
+                    this.buffer.updateRef(false);
+                },
+                else => {},
+            }
         }
 
-        process.onStdinDestroyed();
+        // When the stream has closed we need to be notified to prevent a use-after-free
+        // We can test for this use-after-free by enabling hot module reloading on a file and then saving it twice
+        pub fn onClose(this: *Writable, _: ?bun.sys.Error) void {
+            const process = Integration.owner(this);
 
-        this.* = .{
-            .ignore = {},
-        };
-    }
-    pub fn onReady(_: *Writable, _: ?jsc.WebCore.Blob.SizeType, _: ?jsc.WebCore.Blob.SizeType) void {}
-    pub fn onStart(_: *Writable) void {}
+            Integration.clearStdinSinkReference(process);
 
-    pub fn init(
-        stdio: *Stdio,
-        event_loop: *jsc.EventLoop,
-        subprocess: *Subprocess,
-        result: StdioResult,
-        promise_for_stream: *jsc.JSValue,
-    ) !Writable {
-        Subprocess.assertStdioResult(result);
+            const writable = this.*;
+            this.* = .{ .ignore = {} };
+            switch (writable) {
+                .buffer => {
+                    writable.buffer.deref();
+                },
+                .pipe => {
+                    Integration.releaseSink(writable.pipe);
+                },
+                else => {},
+            }
 
-        if (Environment.isWindows) {
+            Integration.stdinDestroyed(process);
+        }
+        pub fn onReady(_: *Writable, _: ?usize, _: ?usize) void {}
+        pub fn onStart(_: *Writable) void {}
+
+        pub fn init(
+            context: anytype,
+            stdio: *Stdio,
+            event_loop: Integration.LoopHandle,
+            subprocess: Integration.ProcessHandle,
+            result: *StdioResult,
+            stdin_is_readable_stream: *bool,
+        ) bun.bindgen.CallError(@TypeOf(context))!Writable {
+            Integration.assertStdioResult(result.*);
+
+            if (Environment.isWindows) {
+                switch (stdio.*) {
+                    .pipe, .readable_stream => {
+                        const pipe = try Integration.createPipe(context, stdio, event_loop, subprocess, result, stdin_is_readable_stream) orelse
+                            return .{ .inherit = {} };
+                        return .{ .pipe = pipe };
+                    },
+
+                    .blob, .retained_bytes => {
+                        const writer = try Integration.createBufferWriter(stdio, event_loop, subprocess, result) orelse return .ignore;
+                        return .{ .buffer = writer };
+                    },
+                    .fd => |fd| {
+                        return Writable{ .fd = fd };
+                    },
+                    .dup2 => |dup2| {
+                        return Writable{ .fd = dup2.to.toFd() };
+                    },
+                    .inherit => {
+                        return Writable{ .inherit = {} };
+                    },
+                    .memfd, .ignore => {
+                        return Writable{ .ignore = {} };
+                    },
+                    .ipc, .capture => {
+                        return Writable{ .ignore = {} };
+                    },
+                }
+            }
+
             switch (stdio.*) {
+                .dup2 => @panic("TODO dup2 stdio"),
                 .pipe, .readable_stream => {
-                    if (result == .buffer) {
-                        const pipe = jsc.WebCore.FileSink.createWithPipe(event_loop, result.buffer);
-
-                        switch (pipe.writer.startWithCurrentPipe()) {
-                            .result => {},
-                            .err => |err| {
-                                _ = err; // autofix
-                                pipe.deref();
-                                if (stdio.* == .readable_stream) {
-                                    stdio.readable_stream.cancel(event_loop.global);
-                                }
-                                return error.UnexpectedCreatingStdin;
-                            },
-                        }
-                        pipe.writer.setParent(pipe);
-                        subprocess.weak_file_sink_stdin_ptr = pipe;
-                        subprocess.ref();
-                        subprocess.flags.deref_on_stdin_destroyed = true;
-                        subprocess.flags.has_stdin_destructor_called = false;
-
-                        if (stdio.* == .readable_stream) {
-                            const assign_result = pipe.assignToStream(&stdio.readable_stream, event_loop.global);
-                            if (assign_result.toError()) |err| {
-                                subprocess.weak_file_sink_stdin_ptr = null;
-                                subprocess.flags.deref_on_stdin_destroyed = false;
-                                pipe.deref();
-                                subprocess.deref();
-                                return event_loop.global.throwValue(err);
-                            }
-                            promise_for_stream.* = assign_result;
-                        }
-
-                        return Writable{
-                            .pipe = pipe,
-                        };
-                    }
-                    return Writable{ .inherit = {} };
+                    const pipe = (try Integration.createPipe(context, stdio, event_loop, subprocess, result, stdin_is_readable_stream)).?;
+                    return .{ .pipe = pipe };
                 },
 
-                .blob => |blob| {
-                    return Writable{
-                        .buffer = StaticPipeWriter.create(event_loop, subprocess, result, .{ .blob = blob }),
-                    };
+                .blob, .retained_bytes => {
+                    const writer = try Integration.createBufferWriter(stdio, event_loop, subprocess, result) orelse return .ignore;
+                    return .{ .buffer = writer };
                 },
-                .array_buffer => |array_buffer| {
-                    return Writable{
-                        .buffer = StaticPipeWriter.create(event_loop, subprocess, result, .{ .array_buffer = array_buffer }),
-                    };
+                .memfd => |memfd| {
+                    bun.assert(memfd != bun.invalid_fd);
+                    stdio.* = .ignore;
+                    _ = result.take();
+                    return Writable{ .memfd = memfd };
                 },
                 .fd => |fd| {
                     return Writable{ .fd = fd };
                 },
-                .dup2 => |dup2| {
-                    return Writable{ .fd = dup2.to.toFd() };
-                },
                 .inherit => {
                     return Writable{ .inherit = {} };
                 },
-                .memfd, .path, .ignore => {
+                .ignore => {
                     return Writable{ .ignore = {} };
                 },
                 .ipc, .capture => {
@@ -158,176 +149,77 @@ pub const Writable = union(enum) {
             }
         }
 
-        switch (stdio.*) {
-            .dup2 => @panic("TODO dup2 stdio"),
-            .pipe, .readable_stream => {
-                const pipe = jsc.WebCore.FileSink.create(event_loop);
-
-                switch (pipe.writer.start(result.?, .{})) {
-                    .result => {},
-                    .err => |err| {
-                        _ = err; // autofix
-                        pipe.deref();
-                        if (stdio.* == .readable_stream) {
-                            stdio.readable_stream.cancel(event_loop.global);
-                        }
-
-                        return error.UnexpectedCreatingStdin;
-                    },
-                }
-
-                subprocess.weak_file_sink_stdin_ptr = pipe;
-                subprocess.ref();
-                subprocess.flags.has_stdin_destructor_called = false;
-                subprocess.flags.deref_on_stdin_destroyed = true;
-
-                if (stdio.* == .readable_stream) {
-                    const assign_result = pipe.assignToStream(&stdio.readable_stream, event_loop.global);
-                    if (assign_result.toError()) |err| {
-                        subprocess.weak_file_sink_stdin_ptr = null;
-                        subprocess.flags.deref_on_stdin_destroyed = false;
-                        pipe.deref();
-                        subprocess.deref();
-                        return event_loop.global.throwValue(err);
-                    }
-                    promise_for_stream.* = assign_result;
-                }
-
-                return Writable{
-                    .pipe = pipe,
-                };
-            },
-
-            .blob => |blob| {
-                return Writable{
-                    .buffer = StaticPipeWriter.create(event_loop, subprocess, result, .{ .blob = blob }),
-                };
-            },
-            .array_buffer => |array_buffer| {
-                return Writable{
-                    .buffer = StaticPipeWriter.create(event_loop, subprocess, result, .{ .array_buffer = array_buffer }),
-                };
-            },
-            .memfd => |memfd| {
-                bun.assert(memfd != bun.invalid_fd);
-                return Writable{ .memfd = memfd };
-            },
-            .fd => {
-                return Writable{ .fd = result.? };
-            },
-            .inherit => {
-                return Writable{ .inherit = {} };
-            },
-            .path, .ignore => {
-                return Writable{ .ignore = {} };
-            },
-            .ipc, .capture => {
-                return Writable{ .ignore = {} };
-            },
+        pub fn toBindingResult(this: *Writable, context: anytype, subprocess: Integration.ProcessHandle) bun.bindgen.CallError(@TypeOf(context))!bun.bindgen.Return(@TypeOf(context)) {
+            if (Integration.stdinIsReadableStream(subprocess)) return .{ .undefined = true };
+            return switch (this.*) {
+                .fd => |fd| .{ .fd = try this.transferFD(context, fd) },
+                .memfd, .ignore, .buffer, .inherit => .{ .undefined = true },
+                .pipe => |pipe| {
+                    this.* = .{ .ignore = {} };
+                    return .{ .sink = try Integration.takeSinkResult(context, subprocess, pipe) };
+                },
+            };
         }
-    }
 
-    pub fn toJS(this: *Writable, globalThis: *jsc.JSGlobalObject, subprocess: *Subprocess) JSValue {
-        return switch (this.*) {
-            .fd => |fd| fd.toJS(globalThis),
-            .memfd, .ignore => .js_undefined,
-            .buffer, .inherit => .js_undefined,
-            .pipe => |pipe| {
-                this.* = .{ .ignore = {} };
-                if (subprocess.process.hasExited() and !subprocess.flags.has_stdin_destructor_called) {
-                    // `Writable.init()` already called `subprocess.ref()` and
-                    // set `deref_on_stdin_destroyed`. `onAttachedProcessExit()`
-                    // → `writer.close()` → `pipe.signal` → `Writable.onClose`
-                    // → `onStdinDestroyed()` balances that ref, so a ref-count
-                    // drop across this call is expected (previously these
-                    // writes were clobbered by the struct-literal reassignment
-                    // in spawnMaybeSync and this path asserted no ref change;
-                    // see https://github.com/oven-sh/bun/pull/14092).
-                    pipe.onAttachedProcessExit(&subprocess.process.status);
-                    return pipe.toJS(globalThis);
-                } else {
-                    subprocess.flags.has_stdin_destructor_called = false;
-                    subprocess.weak_file_sink_stdin_ptr = pipe;
-                    if (!subprocess.flags.deref_on_stdin_destroyed) {
-                        // `Writable.init()` already did this for fresh pipes;
-                        // only take a new ref if `onStdinDestroyed()` has since
-                        // consumed it.
-                        subprocess.ref();
-                        subprocess.flags.deref_on_stdin_destroyed = true;
-                    }
-                    if (@intFromPtr(pipe.signal.ptr) == @intFromPtr(subprocess)) {
-                        pipe.signal.clear();
-                    }
-                    return pipe.toJSWithDestructor(
-                        globalThis,
-                        jsc.WebCore.Sink.DestructorPtr.init(subprocess),
-                    );
-                }
-            },
-        };
-    }
+        fn transferFD(this: *Writable, context: anytype, fd: bun.FD) bun.bindgen.CallError(@TypeOf(context))!i32 {
+            return switch (Integration.fdToBindingInt32(fd)) {
+                .result => |owned| owned,
+                .err => |err| {
+                    this.* = .{ .ignore = {} };
+                    return context.fail(.system, try bun.bindgen.SystemError.fromSysError(err));
+                },
+            };
+        }
 
-    pub fn finalize(this: *Writable) void {
-        const subprocess: *Subprocess = @fieldParentPtr("stdin", this);
-        if (subprocess.this_value.tryGet()) |this_jsvalue| {
-            if (jsc.Codegen.JSSubprocess.stdinGetCached(this_jsvalue)) |existing_value| {
-                jsc.WebCore.FileSink.JSSink.setDestroyCallback(existing_value, 0);
+        pub fn finalize(this: *Writable) void {
+            const subprocess = Integration.owner(this);
+            Integration.clearStdinSinkReference(subprocess);
+
+            return switch (this.*) {
+                .pipe => |pipe| {
+                    Integration.finalizeSink(this, pipe);
+
+                    this.* = .{ .ignore = {} };
+                },
+                .buffer => |buffer| {
+                    this.* = .ignore;
+                    buffer.detach();
+                    buffer.updateRef(false);
+                    buffer.close();
+                    buffer.deref();
+                },
+                .memfd => |fd| {
+                    _ = fd.closeAllowingStandardIo(null);
+                    this.* = .{ .ignore = {} };
+                },
+                .ignore => {},
+                .fd, .inherit => {},
+            };
+        }
+
+        pub fn close(this: *Writable) void {
+            switch (this.*) {
+                .pipe => |pipe| {
+                    Integration.endSink(pipe);
+                },
+                .memfd => |fd| {
+                    _ = fd.closeAllowingStandardIo(null);
+                    this.* = .{ .ignore = {} };
+                },
+                .fd => {
+                    this.* = .{ .ignore = {} };
+                },
+                .buffer => {
+                    this.buffer.close();
+                },
+                .ignore => {},
+                .inherit => {},
             }
         }
-
-        return switch (this.*) {
-            .pipe => |pipe| {
-                if (pipe.signal.ptr == @as(*anyopaque, @ptrCast(this))) {
-                    pipe.signal.clear();
-                }
-
-                pipe.deref();
-
-                this.* = .{ .ignore = {} };
-            },
-            .buffer => {
-                this.buffer.updateRef(false);
-                this.buffer.deref();
-            },
-            .memfd => |fd| {
-                fd.close();
-                this.* = .{ .ignore = {} };
-            },
-            .ignore => {},
-            .fd, .inherit => {},
-        };
-    }
-
-    pub fn close(this: *Writable) void {
-        switch (this.*) {
-            .pipe => |pipe| {
-                _ = pipe.end(null);
-            },
-            .memfd => |fd| {
-                fd.close();
-                this.* = .{ .ignore = {} };
-            },
-            .fd => {
-                this.* = .{ .ignore = {} };
-            },
-            .buffer => {
-                this.buffer.close();
-            },
-            .ignore => {},
-            .inherit => {},
-        }
-    }
-};
+    };
+}
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const Stdio = bun.spawn.Stdio;
-
-const jsc = bun.jsc;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-
-const Subprocess = jsc.API.Subprocess;
-const StaticPipeWriter = Subprocess.StaticPipeWriter;
-const StdioResult = Subprocess.StdioResult;
-const js = Subprocess.js;
+const BlobSize = @import("../../../webcore/BlobSize.zig").SizeType;
+const StdioResult = bun.spawn.process.SpawnProcessResult.StdioResult;

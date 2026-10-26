@@ -33,6 +33,8 @@ export const enum Loader {
   sqlite_embedded = 17,
   html = 18,
   yaml = 19,
+  json5 = 20,
+  md = 21,
 }
 export const LoaderKeys: {
   1: "jsx";
@@ -54,38 +56,29 @@ export const LoaderKeys: {
   17: "sqlite_embedded";
   18: "html";
   19: "yaml";
-  jsx: 1;
-  js: 2;
-  ts: 3;
-  tsx: 4;
-  css: 5;
-  file: 6;
-  json: 7;
-  jsonc: 8;
-  toml: 9;
-  wasm: 10;
-  napi: 11;
-  base64: 12;
-  dataurl: 13;
-  text: 14;
-  bunsh: 15;
-  sqlite: 16;
-  sqlite_embedded: 17;
-  html: 18;
-  yaml: 19;
-};
-export const enum FrameworkEntryPointType {
-  client = 1,
-  server = 2,
-  fallback = 3,
-}
-export const FrameworkEntryPointTypeKeys: {
-  1: "client";
-  client: "client";
-  2: "server";
-  server: "server";
-  3: "fallback";
-  fallback: "fallback";
+  20: "json5";
+  21: "md";
+  jsx: "jsx";
+  js: "js";
+  ts: "ts";
+  tsx: "tsx";
+  css: "css";
+  file: "file";
+  json: "json";
+  jsonc: "jsonc";
+  toml: "toml";
+  wasm: "wasm";
+  napi: "napi";
+  base64: "base64";
+  dataurl: "dataurl";
+  text: "text";
+  bunsh: "bunsh";
+  sqlite: "sqlite";
+  sqlite_embedded: "sqlite_embedded";
+  html: "html";
+  yaml: "yaml";
+  json5: "json5";
+  md: "md";
 };
 export const enum StackFrameScope {
   Eval = 1,
@@ -195,26 +188,6 @@ export const JSXRuntimeKeys: {
   3: "solid";
   solid: "solid";
 };
-export const enum ScanDependencyMode {
-  app = 1,
-  all = 2,
-}
-export const ScanDependencyModeKeys: {
-  1: "app";
-  app: "app";
-  2: "all";
-  all: "all";
-};
-export const enum ModuleImportType {
-  import = 1,
-  require = 2,
-}
-export const ModuleImportTypeKeys: {
-  1: "import";
-  import: "import";
-  2: "require";
-  require: "require";
-};
 export const enum DotEnvBehavior {
   disable = 1,
   prefix = 2,
@@ -298,60 +271,6 @@ export const MessageLevelKeys: {
   5: "debug";
   debug: "debug";
 };
-export const enum Reloader {
-  disable = 1,
-  live = 2,
-  fast_refresh = 3,
-}
-export const ReloaderKeys: {
-  1: "disable";
-  disable: "disable";
-  2: "live";
-  live: "live";
-  3: "fast_refresh";
-  fast_refresh: "fast_refresh";
-};
-export const enum WebsocketMessageKind {
-  welcome = 1,
-  file_change_notification = 2,
-  build_success = 3,
-  build_fail = 4,
-  manifest_success = 5,
-  manifest_fail = 6,
-  resolve_file = 7,
-  file_change_notification_with_hint = 8,
-}
-export const WebsocketMessageKindKeys: {
-  1: "welcome";
-  welcome: "welcome";
-  2: "file_change_notification";
-  file_change_notification: "file_change_notification";
-  3: "build_success";
-  build_success: "build_success";
-  4: "build_fail";
-  build_fail: "build_fail";
-  5: "manifest_success";
-  manifest_success: "manifest_success";
-  6: "manifest_fail";
-  manifest_fail: "manifest_fail";
-  7: "resolve_file";
-  resolve_file: "resolve_file";
-  8: "file_change_notification_with_hint";
-  file_change_notification_with_hint: "file_change_notification_with_hint";
-};
-export const enum WebsocketCommandKind {
-  build = 1,
-  manifest = 2,
-  build_with_file_path = 3,
-}
-export const WebsocketCommandKindKeys: {
-  1: "build";
-  build: "build";
-  2: "manifest";
-  manifest: "manifest";
-  3: "build_with_file_path";
-  build_with_file_path: "build_with_file_path";
-};
 export const enum TestKind {
   test_fn = 1,
   describe_fn = 2,
@@ -427,51 +346,6 @@ export interface StringPointer {
   length: uint32;
 }
 
-export interface JavascriptBundledModule {
-  path: StringPointer;
-  code: StringPointer;
-  package_id: uint32;
-  id: uint32;
-  path_extname_length: byte;
-}
-
-export interface JavascriptBundledPackage {
-  name: StringPointer;
-  version: StringPointer;
-  hash: uint32;
-  modules_offset: uint32;
-  modules_length: uint32;
-}
-
-export interface JavascriptBundle {
-  modules: JavascriptBundledModule[];
-  packages: JavascriptBundledPackage[];
-  etag: Uint8Array;
-  generated_at: uint32;
-  app_package_json_dependencies_hash: Uint8Array;
-  import_from_name: Uint8Array;
-  manifest_string: Uint8Array;
-}
-
-export interface JavascriptBundleContainer {
-  bundle_format_version?: uint32;
-  routes?: LoadedRouteConfig;
-  framework?: LoadedFramework;
-  bundle?: JavascriptBundle;
-  code_length?: uint32;
-}
-
-export interface ModuleImportRecord {
-  kind: ModuleImportType;
-  path: string;
-  dynamic: boolean;
-}
-
-export interface Module {
-  path: string;
-  imports: ModuleImportRecord[];
-}
-
 export interface StringMap {
   keys: string[];
   values: string[];
@@ -487,12 +361,6 @@ export interface EnvConfig {
   defaults?: StringMap;
 }
 
-export interface LoadedEnvConfig {
-  dotenv: DotEnvBehavior;
-  defaults: StringMap;
-  prefix: string;
-}
-
 export interface FrameworkConfig {
   package?: string;
   client?: FrameworkEntryPointMessage;
@@ -504,37 +372,9 @@ export interface FrameworkConfig {
   overrideModules?: StringMap;
 }
 
-export interface FrameworkEntryPoint {
-  kind: FrameworkEntryPointType;
-  path: string;
-  env: LoadedEnvConfig;
-}
-
-export interface FrameworkEntryPointMap {
-  client?: FrameworkEntryPoint;
-  server?: FrameworkEntryPoint;
-  fallback?: FrameworkEntryPoint;
-}
-
 export interface FrameworkEntryPointMessage {
   path?: string;
   env?: EnvConfig;
-}
-
-export interface LoadedFramework {
-  package: string;
-  display_name: string;
-  development: boolean;
-  entry_points: FrameworkEntryPointMap;
-  client_css_in_js: CSSInJSBehavior;
-  overrideModules: StringMap;
-}
-
-export interface LoadedRouteConfig {
-  dir: string;
-  extensions: string[];
-  static_dir: string;
-  asset_prefix: string;
 }
 
 export interface RouteConfig {
@@ -647,61 +487,6 @@ export interface Log {
   msgs: Message[];
 }
 
-export interface WebsocketMessage {
-  timestamp: uint32;
-  kind: WebsocketMessageKind;
-}
-
-export interface WebsocketMessageWelcome {
-  epoch: uint32;
-  javascriptReloader: Reloader;
-  cwd: string;
-  assetPrefix: string;
-}
-
-export interface WebsocketMessageFileChangeNotification {
-  id: uint32;
-  loader: Loader;
-}
-
-export interface WebsocketCommand {
-  kind: WebsocketCommandKind;
-  timestamp: uint32;
-}
-
-export interface WebsocketCommandBuild {
-  id: uint32;
-}
-
-export interface WebsocketCommandManifest {
-  id: uint32;
-}
-
-export interface WebsocketMessageBuildSuccess {
-  id: uint32;
-  from_timestamp: uint32;
-  loader: Loader;
-  module_path: string;
-  blob_length: uint32;
-}
-
-export interface WebsocketMessageBuildFailure {
-  id: uint32;
-  from_timestamp: uint32;
-  loader: Loader;
-  module_path: string;
-  log: Log;
-}
-
-export interface WebsocketCommandBuildWithFilePath {
-  id: uint32;
-  file_path: string;
-}
-
-export interface WebsocketMessageResolveID {
-  id: uint32;
-}
-
 export interface NPMRegistry {
   url: string;
   username: string;
@@ -736,22 +521,6 @@ export interface BunInstall {
   frozen_lockfile?: boolean;
   exact?: boolean;
   concurrent_scripts?: uint32;
-}
-
-export interface ClientServerModule {
-  moduleId: uint32;
-  inputName: StringPointer;
-  assetName: StringPointer;
-  exportNames: StringPointer;
-}
-
-export interface ClientServerModuleManifest {
-  version: uint32;
-  clientModules: ClientServerModule[];
-  serverModules: ClientServerModule[];
-  ssrModules: ClientServerModule[];
-  exportNames: StringPointer[];
-  contents: Uint8Array;
 }
 
 export interface GetTestsRequest {
@@ -790,38 +559,16 @@ export declare function encodeJSX(message: JSX, bb: ByteBuffer): void;
 export declare function decodeJSX(buffer: ByteBuffer): JSX;
 export declare function encodeStringPointer(message: StringPointer, bb: ByteBuffer): void;
 export declare function decodeStringPointer(buffer: ByteBuffer): StringPointer;
-export declare function encodeJavascriptBundledModule(message: JavascriptBundledModule, bb: ByteBuffer): void;
-export declare function decodeJavascriptBundledModule(buffer: ByteBuffer): JavascriptBundledModule;
-export declare function encodeJavascriptBundledPackage(message: JavascriptBundledPackage, bb: ByteBuffer): void;
-export declare function decodeJavascriptBundledPackage(buffer: ByteBuffer): JavascriptBundledPackage;
-export declare function encodeJavascriptBundle(message: JavascriptBundle, bb: ByteBuffer): void;
-export declare function decodeJavascriptBundle(buffer: ByteBuffer): JavascriptBundle;
-export declare function encodeJavascriptBundleContainer(message: JavascriptBundleContainer, bb: ByteBuffer): void;
-export declare function decodeJavascriptBundleContainer(buffer: ByteBuffer): JavascriptBundleContainer;
-export declare function encodeModuleImportRecord(message: ModuleImportRecord, bb: ByteBuffer): void;
-export declare function decodeModuleImportRecord(buffer: ByteBuffer): ModuleImportRecord;
-export declare function encodeModule(message: Module, bb: ByteBuffer): void;
-export declare function decodeModule(buffer: ByteBuffer): Module;
 export declare function encodeStringMap(message: StringMap, bb: ByteBuffer): void;
 export declare function decodeStringMap(buffer: ByteBuffer): StringMap;
 export declare function encodeLoaderMap(message: LoaderMap, bb: ByteBuffer): void;
 export declare function decodeLoaderMap(buffer: ByteBuffer): LoaderMap;
 export declare function encodeEnvConfig(message: EnvConfig, bb: ByteBuffer): void;
 export declare function decodeEnvConfig(buffer: ByteBuffer): EnvConfig;
-export declare function encodeLoadedEnvConfig(message: LoadedEnvConfig, bb: ByteBuffer): void;
-export declare function decodeLoadedEnvConfig(buffer: ByteBuffer): LoadedEnvConfig;
 export declare function encodeFrameworkConfig(message: FrameworkConfig, bb: ByteBuffer): void;
 export declare function decodeFrameworkConfig(buffer: ByteBuffer): FrameworkConfig;
-export declare function encodeFrameworkEntryPoint(message: FrameworkEntryPoint, bb: ByteBuffer): void;
-export declare function decodeFrameworkEntryPoint(buffer: ByteBuffer): FrameworkEntryPoint;
-export declare function encodeFrameworkEntryPointMap(message: FrameworkEntryPointMap, bb: ByteBuffer): void;
-export declare function decodeFrameworkEntryPointMap(buffer: ByteBuffer): FrameworkEntryPointMap;
 export declare function encodeFrameworkEntryPointMessage(message: FrameworkEntryPointMessage, bb: ByteBuffer): void;
 export declare function decodeFrameworkEntryPointMessage(buffer: ByteBuffer): FrameworkEntryPointMessage;
-export declare function encodeLoadedFramework(message: LoadedFramework, bb: ByteBuffer): void;
-export declare function decodeLoadedFramework(buffer: ByteBuffer): LoadedFramework;
-export declare function encodeLoadedRouteConfig(message: LoadedRouteConfig, bb: ByteBuffer): void;
-export declare function decodeLoadedRouteConfig(buffer: ByteBuffer): LoadedRouteConfig;
 export declare function encodeRouteConfig(message: RouteConfig, bb: ByteBuffer): void;
 export declare function decodeRouteConfig(buffer: ByteBuffer): RouteConfig;
 export declare function encodeTransformOptions(message: TransformOptions, bb: ByteBuffer): void;
@@ -850,44 +597,12 @@ export declare function encodeMessage(message: Message, bb: ByteBuffer): void;
 export declare function decodeMessage(buffer: ByteBuffer): Message;
 export declare function encodeLog(message: Log, bb: ByteBuffer): void;
 export declare function decodeLog(buffer: ByteBuffer): Log;
-export declare function encodeWebsocketMessage(message: WebsocketMessage, bb: ByteBuffer): void;
-export declare function decodeWebsocketMessage(buffer: ByteBuffer): WebsocketMessage;
-export declare function encodeWebsocketMessageWelcome(message: WebsocketMessageWelcome, bb: ByteBuffer): void;
-export declare function decodeWebsocketMessageWelcome(buffer: ByteBuffer): WebsocketMessageWelcome;
-export declare function encodeWebsocketMessageFileChangeNotification(
-  message: WebsocketMessageFileChangeNotification,
-  bb: ByteBuffer,
-): void;
-export declare function decodeWebsocketMessageFileChangeNotification(
-  buffer: ByteBuffer,
-): WebsocketMessageFileChangeNotification;
-export declare function encodeWebsocketCommand(message: WebsocketCommand, bb: ByteBuffer): void;
-export declare function decodeWebsocketCommand(buffer: ByteBuffer): WebsocketCommand;
-export declare function encodeWebsocketCommandBuild(message: WebsocketCommandBuild, bb: ByteBuffer): void;
-export declare function decodeWebsocketCommandBuild(buffer: ByteBuffer): WebsocketCommandBuild;
-export declare function encodeWebsocketCommandManifest(message: WebsocketCommandManifest, bb: ByteBuffer): void;
-export declare function decodeWebsocketCommandManifest(buffer: ByteBuffer): WebsocketCommandManifest;
-export declare function encodeWebsocketMessageBuildSuccess(message: WebsocketMessageBuildSuccess, bb: ByteBuffer): void;
-export declare function decodeWebsocketMessageBuildSuccess(buffer: ByteBuffer): WebsocketMessageBuildSuccess;
-export declare function encodeWebsocketMessageBuildFailure(message: WebsocketMessageBuildFailure, bb: ByteBuffer): void;
-export declare function decodeWebsocketMessageBuildFailure(buffer: ByteBuffer): WebsocketMessageBuildFailure;
-export declare function encodeWebsocketCommandBuildWithFilePath(
-  message: WebsocketCommandBuildWithFilePath,
-  bb: ByteBuffer,
-): void;
-export declare function decodeWebsocketCommandBuildWithFilePath(buffer: ByteBuffer): WebsocketCommandBuildWithFilePath;
-export declare function encodeWebsocketMessageResolveID(message: WebsocketMessageResolveID, bb: ByteBuffer): void;
-export declare function decodeWebsocketMessageResolveID(buffer: ByteBuffer): WebsocketMessageResolveID;
 export declare function encodeNPMRegistry(message: NPMRegistry, bb: ByteBuffer): void;
 export declare function decodeNPMRegistry(buffer: ByteBuffer): NPMRegistry;
 export declare function encodeNPMRegistryMap(message: NPMRegistryMap, bb: ByteBuffer): void;
 export declare function decodeNPMRegistryMap(buffer: ByteBuffer): NPMRegistryMap;
 export declare function encodeBunInstall(message: BunInstall, bb: ByteBuffer): void;
 export declare function decodeBunInstall(buffer: ByteBuffer): BunInstall;
-export declare function encodeClientServerModule(message: ClientServerModule, bb: ByteBuffer): void;
-export declare function decodeClientServerModule(buffer: ByteBuffer): ClientServerModule;
-export declare function encodeClientServerModuleManifest(message: ClientServerModuleManifest, bb: ByteBuffer): void;
-export declare function decodeClientServerModuleManifest(buffer: ByteBuffer): ClientServerModuleManifest;
 export declare function encodeGetTestsRequest(message: GetTestsRequest, bb: ByteBuffer): void;
 export declare function decodeGetTestsRequest(buffer: ByteBuffer): GetTestsRequest;
 export declare function encodeTestResponseItem(message: TestResponseItem, bb: ByteBuffer): void;

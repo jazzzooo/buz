@@ -1,9 +1,13 @@
-
 #include "root.h"
 
-#include <wtf/text/WTFString.h>
+#include "decodeURIComponentSIMD.h"
+#include "SchemaBindings.h"
+#include "StringConversion.h"
+#include <unicode/utf8.h>
 #include <wtf/SIMDHelpers.h>
 #include <wtf/SIMDUTF.h>
+#include <wtf/text/StringBuilder.h>
+
 namespace Bun {
 using namespace WTF;
 
@@ -15,301 +19,170 @@ ALWAYS_INLINE static uint8_t hexToInt(uint8_t c)
         return c - 'A' + 10;
     if (c >= 'a' && c <= 'f')
         return c - 'a' + 10;
-    return 255; // Invalid
+    return 255;
 }
 
-WTF::String decodeURIComponentSIMD(std::span<const uint8_t> input)
+template<typename Character>
+static Expected<String, UTF8ConversionError> copyDecodedString(std::span<const Character> characters)
 {
-    ASSERT_WITH_MESSAGE(simdutf::validate_ascii(reinterpret_cast<const char*>(input.data()), input.size()), "Input is not ASCII");
+    std::span<Character> output;
+    auto impl = StringImpl::tryCreateUninitialized(characters.size(), output);
+    if (!impl)
+        return makeUnexpected(UTF8ConversionError::OutOfMemory);
+    if (!characters.empty())
+        memcpy(output.data(), characters.data(), characters.size_bytes());
+    return String(WTF::move(impl));
+}
 
-    const std::span<const Latin1Character> lchar = { reinterpret_cast<const Latin1Character*>(input.data()), input.size() };
+Expected<String, UTF8ConversionError> decodeURIComponentSIMD(std::span<const uint8_t> input)
+{
+    if (input.empty())
+        return emptyString();
 
-    // Fast path - check if there are any % characters at all
-    const uint8_t* cursor = reinterpret_cast<const uint8_t*>(input.data());
+    const bool ascii = simdutf::validate_ascii(reinterpret_cast<const char*>(input.data()), input.size());
+    const uint8_t* cursor = input.data();
     const uint8_t* end = cursor + input.size();
-
     constexpr size_t stride = SIMD::stride<uint8_t>;
     constexpr char16_t replacementChar = 0xFFFD;
-
     auto percentVector = SIMD::splat<uint8_t>('%');
 
-    // Check 16 bytes at a time
-    for (; cursor + stride <= end; cursor += stride) {
-        auto chunk = SIMD::load(cursor);
-        if (SIMD::isNonZero(SIMD::equal(chunk, percentVector))) {
-            goto slow_path;
+    if (ascii) {
+        for (; static_cast<size_t>(end - cursor) >= stride; cursor += stride) {
+            if (SIMD::isNonZero(SIMD::equal(SIMD::load(cursor), percentVector)))
+                break;
         }
+        while (cursor < end && *cursor != '%')
+            ++cursor;
+        if (cursor == end)
+            return copyDecodedString<Latin1Character>(input);
     }
 
-    // Check any remaining bytes
-    while (cursor < end) {
-        if (*cursor == '%')
-            goto slow_path;
-        cursor++;
-    }
-
-    return String(lchar);
-
-slow_path:
-    StringBuilder result;
-    result.reserveCapacity(input.size());
-    result.append(std::span<const Latin1Character>(reinterpret_cast<const Latin1Character*>(input.data()), cursor - input.data()));
+    StringBuilder result(OverflowPolicy::RecordOverflow);
+    const size_t prefixLength = cursor - input.data();
+    if (prefixLength > StringImpl::MaxLength)
+        return makeUnexpected(UTF8ConversionError::OutOfMemory);
+    result.append(input.first(prefixLength));
 
     while (cursor < end) {
+        if (result.hasOverflowed())
+            return makeUnexpected(UTF8ConversionError::OutOfMemory);
         if (*cursor == '%') {
-            if (cursor + 2 >= end) {
+            if (end - cursor < 3) {
                 result.append(replacementChar);
-                cursor++;
+                ++cursor;
                 continue;
             }
 
-            uint8_t highNibble = hexToInt(cursor[1]);
-            uint8_t lowNibble = hexToInt(cursor[2]);
-
+            auto highNibble = hexToInt(cursor[1]);
+            auto lowNibble = hexToInt(cursor[2]);
+            cursor += 3;
             if (highNibble > 15 || lowNibble > 15) {
                 result.append(replacementChar);
-                cursor += (cursor + 2 < end) ? 3 : 1;
+                continue;
+            }
+            const uint8_t firstByte = (highNibble << 4) | lowNibble;
+            if (firstByte < 0x80) {
+                result.append(firstByte);
                 continue;
             }
 
-            uint8_t byte = (highNibble << 4) | lowNibble;
-
-            // Start of UTF-8 sequence
-            if ((byte & 0x80) == 0) {
-                // ASCII
-                result.append(byte);
-                cursor += 3;
-            } else if ((byte & 0xE0) == 0xC0) {
-                // 2-byte sequence
-                uint32_t value = byte & 0x1F;
-                cursor += 3;
-
-                // Get second byte
-                if (cursor + 2 >= end || *cursor != '%') {
-                    result.append(replacementChar);
-                    continue;
-                }
-
-                highNibble = hexToInt(cursor[1]);
-                lowNibble = hexToInt(cursor[2]);
-                if (highNibble > 15 || lowNibble > 15) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                byte = (highNibble << 4) | lowNibble;
-                if ((byte & 0xC0) != 0x80) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                value = (value << 6) | (byte & 0x3F);
-                cursor += 3;
-
-                // Check for overlong encoding
-                if (value < 0x80 || value > 0x7FF) {
-                    result.append(replacementChar);
-                    continue;
-                }
-
-                result.append(static_cast<char16_t>(value));
-            } else if ((byte & 0xF0) == 0xE0) {
-                // 3-byte sequence
-                uint32_t value = byte & 0x0F;
-                cursor += 3;
-
-                // Get second byte
-                if (cursor + 2 >= end || *cursor != '%') {
-                    result.append(replacementChar);
-                    continue;
-                }
-                highNibble = hexToInt(cursor[1]);
-                lowNibble = hexToInt(cursor[2]);
-                if (highNibble > 15 || lowNibble > 15) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                byte = (highNibble << 4) | lowNibble;
-                if ((byte & 0xC0) != 0x80) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                value = (value << 6) | (byte & 0x3F);
-                cursor += 3;
-
-                // Get third byte
-                if (cursor + 2 >= end || *cursor != '%') {
-                    result.append(replacementChar);
-                    continue;
-                }
-                highNibble = hexToInt(cursor[1]);
-                lowNibble = hexToInt(cursor[2]);
-                if (highNibble > 15 || lowNibble > 15) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                byte = (highNibble << 4) | lowNibble;
-                if ((byte & 0xC0) != 0x80) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                value = (value << 6) | (byte & 0x3F);
-                cursor += 3;
-
-                // Check for overlong encoding and surrogate range
-                if (value < 0x800 || value > 0xFFFF || (value >= 0xD800 && value <= 0xDFFF) || // Surrogate range check
-                    (byte == 0xE0 && (value & 0x1F00) == 0)) // Overlong check for E0
-                {
-                    result.append(replacementChar);
-                    continue;
-                }
-
-                result.append(static_cast<char16_t>(value));
-            } else if ((byte & 0xF8) == 0xF0) {
-                // 4-byte sequence -> surrogate pair
-                uint32_t value = byte & 0x07;
-                cursor += 3;
-
-                // Get second byte
-                if (cursor + 2 >= end || *cursor != '%') {
-                    result.append(replacementChar);
-                    continue;
-                }
-                highNibble = hexToInt(cursor[1]);
-                lowNibble = hexToInt(cursor[2]);
-                if (highNibble > 15 || lowNibble > 15) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                byte = (highNibble << 4) | lowNibble;
-                if ((byte & 0xC0) != 0x80) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                value = (value << 6) | (byte & 0x3F);
-                cursor += 3;
-
-                // Get third byte
-                if (cursor + 2 >= end || *cursor != '%') {
-                    result.append(replacementChar);
-                    continue;
-                }
-                highNibble = hexToInt(cursor[1]);
-                lowNibble = hexToInt(cursor[2]);
-                if (highNibble > 15 || lowNibble > 15) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                byte = (highNibble << 4) | lowNibble;
-                if ((byte & 0xC0) != 0x80) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                value = (value << 6) | (byte & 0x3F);
-                cursor += 3;
-
-                // Get fourth byte
-                if (cursor + 2 >= end || *cursor != '%') {
-                    result.append(replacementChar);
-                    continue;
-                }
-                highNibble = hexToInt(cursor[1]);
-                lowNibble = hexToInt(cursor[2]);
-                if (highNibble > 15 || lowNibble > 15) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                byte = (highNibble << 4) | lowNibble;
-                if ((byte & 0xC0) != 0x80) {
-                    result.append(replacementChar);
-                    continue;
-                }
-                value = (value << 6) | (byte & 0x3F);
-                cursor += 3;
-
-                // Check for overlong encoding and maximum valid code point
-                if (value < 0x10000 || value > 0x10FFFF || (byte == 0xF0 && (value & 0x040000) == 0) || // Overlong check for F0
-                    (byte == 0xF4 && value > 0x10FFFF)) // Max code point check
-                {
-                    result.append(replacementChar);
-                    continue;
-                }
-
-                // Convert to surrogate pair
-                value -= 0x10000;
-                result.append(static_cast<char16_t>(0xD800 | (value >> 10)));
-                result.append(static_cast<char16_t>(0xDC00 | (value & 0x3FF)));
+            unsigned remaining;
+            uint32_t scalar;
+            uint32_t minimum;
+            if ((firstByte & 0xE0) == 0xC0) {
+                remaining = 1;
+                scalar = firstByte & 0x1F;
+                minimum = 0x80;
+            } else if ((firstByte & 0xF0) == 0xE0) {
+                remaining = 2;
+                scalar = firstByte & 0x0F;
+                minimum = 0x800;
+            } else if ((firstByte & 0xF8) == 0xF0) {
+                remaining = 3;
+                scalar = firstByte & 0x07;
+                minimum = 0x10000;
             } else {
                 result.append(replacementChar);
-                cursor += (cursor + 2 < end) ? 3 : 1;
+                continue;
             }
-            continue;
-        } else {
-            // Look ahead for next % using SIMD
-            const uint8_t* lookAhead = cursor;
-            while (lookAhead + stride <= end) {
-                auto chunk = SIMD::load(lookAhead);
-                if (SIMD::isNonZero(SIMD::equal(chunk, percentVector))) {
+
+            // An invalid continuation belongs to the next decoding step.
+            for (; remaining; --remaining) {
+                if (end - cursor < 3 || *cursor != '%')
                     break;
-                }
-                lookAhead += stride;
+                highNibble = hexToInt(cursor[1]);
+                lowNibble = hexToInt(cursor[2]);
+                if (highNibble > 15 || lowNibble > 15)
+                    break;
+                const uint8_t byte = (highNibble << 4) | lowNibble;
+                if ((byte & 0xC0) != 0x80)
+                    break;
+                scalar = (scalar << 6) | (byte & 0x3F);
+                cursor += 3;
             }
-
-            // Append everything up to lookAhead
-            result.append(std::span<const Latin1Character>(reinterpret_cast<const Latin1Character*>(cursor), lookAhead - cursor));
-            cursor = lookAhead;
-
-            // Handle remaining bytes until next % or end
-            while (cursor < end && *cursor != '%') {
-                cursor++;
+            if (remaining || scalar < minimum || scalar > 0x10FFFF || U_IS_SURROGATE(scalar))
+                result.append(replacementChar);
+            else
+                result.append(static_cast<char32_t>(scalar));
+        } else if (!ascii) {
+            int32_t offset = 0;
+            const int32_t length = static_cast<int32_t>(std::min<size_t>(end - cursor, U8_MAX_LENGTH));
+            UChar32 scalar;
+            U8_NEXT(cursor, offset, length, scalar);
+            cursor += offset;
+            result.append(scalar < 0 ? static_cast<char32_t>(replacementChar) : static_cast<char32_t>(scalar));
+        } else {
+            const uint8_t* start = cursor;
+            while (static_cast<size_t>(end - cursor) >= stride) {
+                if (SIMD::isNonZero(SIMD::equal(SIMD::load(cursor), percentVector)))
+                    break;
+                cursor += stride;
             }
-            if (cursor > lookAhead) {
-                result.append(std::span<const Latin1Character>(reinterpret_cast<const Latin1Character*>(lookAhead), cursor - lookAhead));
-            }
+            while (cursor < end && *cursor != '%')
+                ++cursor;
+            const size_t length = cursor - start;
+            if (length > StringImpl::MaxLength)
+                return makeUnexpected(UTF8ConversionError::OutOfMemory);
+            result.append(std::span<const Latin1Character>(start, length));
         }
     }
 
-    return result.toString();
+    if (result.hasOverflowed())
+        return makeUnexpected(UTF8ConversionError::OutOfMemory);
+    if (result.is8Bit())
+        return copyDecodedString(result.span8());
+    return copyDecodedString(result.span16());
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsFunctionDecodeURIComponentSIMD, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+std::optional<WTF::String> Bindgen::Cpp::bunBindgenCpp_bindgen_test_decodeURIComponentSIMD(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_bindgen_test_decodeURIComponentSIMD_Arguments& args)
 {
-
+    auto* globalObject = &context.globalObject;
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    JSC::JSValue input = callFrame->argument(0);
-    if (input.isString()) {
-        auto string = input.toWTFString(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (!string.is8Bit()) {
-            const auto span = string.span16();
-            size_t expected_length = simdutf::latin1_length_from_utf16(span.size());
-            std::span<Latin1Character> ptr;
-            WTF::String convertedString = WTF::String::tryCreateUninitialized(expected_length, ptr);
-            if (convertedString.isNull()) [[unlikely]] {
-                throwVMError(globalObject, scope, createOutOfMemoryError(globalObject));
-                return {};
-            }
-
-            auto result = simdutf::convert_utf16le_to_latin1_with_errors(span.data(), span.size(), reinterpret_cast<char*>(ptr.data()));
-
-            if (result.error) {
-                scope.throwException(globalObject, createRangeError(globalObject, "Invalid character in input"_s));
-                return {};
-            }
-            string = convertedString;
+    const auto decode = [&](std::span<const uint8_t> bytes) -> std::optional<WTF::String> {
+        auto output = decodeURIComponentSIMD(bytes);
+        if (!output) {
+            JSC::throwOutOfMemoryError(globalObject, scope);
+            return {};
         }
-
-        auto span = string.span8();
-        auto&& output = decodeURIComponentSIMD(span);
-        return JSC::JSValue::encode(JSC::jsString(vm, output));
+        return WTF::move(*output);
+    };
+    if (args.input.is_string()) {
+        auto utf8 = encodeUTF8ReplacingInvalidSequences(args.input.string());
+        if (!utf8) {
+            RELEASE_ASSERT(utf8.error() == UTF8ConversionError::OutOfMemory);
+            JSC::throwOutOfMemoryError(globalObject, scope);
+            return {};
+        }
+        return decode({ reinterpret_cast<const uint8_t*>(utf8->span().data()), utf8->size() });
     }
+    if (args.input.is_buffer())
+        return decode({ args.input.buffer().unsafePtr("The entry frame holds the byte lease through synchronous URI decoding"_s), args.input.buffer().size() });
 
-    JSC::JSArrayBufferView* view = dynamicDowncast<JSC::JSArrayBufferView>(input);
-    if (!view) {
-        return JSC::JSValue::encode(JSC::jsUndefined());
-    }
-    auto span = view->span();
-    auto&& output = decodeURIComponentSIMD(span);
-    return JSC::JSValue::encode(JSC::jsString(vm, output));
+    RELEASE_ASSERT(args.input.is_ignored());
+    return std::nullopt;
 }
-}
+
+} // namespace Bun

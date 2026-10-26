@@ -68,7 +68,7 @@ pub const SyntaxString = union(enum) {
     }
 
     /// Parses a syntax string.
-    pub fn parseString(allocator: std.mem.Allocator, input: []const u8) css.Maybe(SyntaxString, void) {
+    pub fn parseString(allocator: std.mem.Allocator, input: []const u8) css.Outcome(SyntaxString, void) {
         // https://drafts.css-houdini.org/css-properties-values-api/#parsing-syntax
         var trimmed_input = std.mem.trimStart(u8, input, SPACE_CHARACTERS);
         if (trimmed_input.len == 0) {
@@ -255,7 +255,7 @@ pub const SyntaxComponent = struct {
     kind: SyntaxComponentKind,
     multiplier: Multiplier,
 
-    pub fn parseString(input: *[]const u8) css.Maybe(SyntaxComponent, void) {
+    pub fn parseString(input: *[]const u8) css.Outcome(SyntaxComponent, void) {
         const kind = switch (SyntaxComponentKind.parseString(input)) {
             .result => |vv| vv,
             .err => |e| return .{ .err = e },
@@ -328,7 +328,7 @@ pub const SyntaxComponentKind = union(enum) {
     /// A literal component.
     literal: []const u8,
 
-    pub fn parseString(input: *[]const u8) css.Maybe(SyntaxComponentKind, void) {
+    pub fn parseString(input: *[]const u8) css.Outcome(SyntaxComponentKind, void) {
         // https://drafts.css-houdini.org/css-properties-values-api/#consume-syntax-component
         input.* = std.mem.trimStart(u8, input.*, SPACE_CHARACTERS);
         if (bun.strings.startsWithChar(input.*, '<')) {

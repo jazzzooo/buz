@@ -3,235 +3,206 @@
 #include "BunProcess.h"
 #include "ModuleLoader.h"
 #include "JSCommonJSModule.h"
+#include "SchemaBindings.h"
+#include <JavaScriptCore/Interpreter.h>
+#include <JavaScriptCore/StackFrame.h>
 
 namespace Bun {
 using namespace JSC;
 
+#define BUN_BINDGEN_OBJECT_SURFACE_JSCommonJSExtensions
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSCommonJSExtensions
+
 const JSC::ClassInfo JSCommonJSExtensions::s_info = { "CommonJSExtensions"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSCommonJSExtensions) };
 
-JSC::EncodedJSValue builtinLoader(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame, BunLoaderType loaderType);
+JSC::JSValue builtinLoader(JSC::JSGlobalObject* globalObject, Bun::JSCommonJSModule* module, const WTF::String& filename, BunLoaderType loaderType);
 
 // These functions are separate so that assigning one to the other can be
 // detected and use the corresponding loader.
-JSC_DEFINE_HOST_FUNCTION(jsLoaderJS, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_jsLoaderJS(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_jsLoaderJS_Arguments& args)
 {
-    return builtinLoader(globalObject, callFrame, BunLoaderTypeJS);
+    auto* module = dynamicDowncast<Bun::JSCommonJSModule>(args.module);
+    RELEASE_ASSERT(module);
+    return builtinLoader(
+        &context.globalObject,
+        module,
+        args.filename,
+        BunLoaderType::js);
 }
-JSC_DEFINE_HOST_FUNCTION(jsLoaderTS, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_jsLoaderTS(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_jsLoaderTS_Arguments& args)
 {
-    return builtinLoader(globalObject, callFrame, BunLoaderTypeTS);
+    auto* module = dynamicDowncast<Bun::JSCommonJSModule>(args.module);
+    RELEASE_ASSERT(module);
+    return builtinLoader(
+        &context.globalObject,
+        module,
+        args.filename,
+        BunLoaderType::ts);
 }
-JSC_DEFINE_HOST_FUNCTION(jsLoaderJSON, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeModuleModule_jsLoaderJSON(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeModuleModule_jsLoaderJSON_Arguments& args)
 {
-    return builtinLoader(globalObject, callFrame, BunLoaderTypeJSON);
+    auto* module = dynamicDowncast<Bun::JSCommonJSModule>(args.module);
+    RELEASE_ASSERT(module);
+    return builtinLoader(
+        &context.globalObject,
+        module,
+        args.filename,
+        BunLoaderType::json);
 }
-#define jsLoaderNode Process_functionDlopen
+#define jsLoaderNode bun_bindgen_host_ProcessHost_dlopen
 
-// The few places that call the above functions directly are usually because the
-// developer is using a package to allow injecting a transpiler into Node.js. An
-// example is the Next.js require extensions hook:
-//
-//     const oldJSHook = require.extensions['.js'];
-//     require.extensions['.js'] = function(mod, filename) {
-//         try {
-//             return oldJSHook(mod, filename);
-//         } catch (error) {
-//             if (error.code !== 'ERR_REQUIRE_ESM') {
-//                 throw error;
-//             }
-//             const content = readFileSync(filename, 'utf8');
-//             const { code } = transformSync(content, swcOptions);
-//             mod._compile(code, filename);
-//         }
-//     };
-//
-// These sorts of hooks don't do their intended purpose. Since Bun has always
-// supported requiring ESM+TypeScript+JSX, errors are never thrown. This
-// is just asking to make the developer experience worse.
-//
-// Since developers are not even aware of some of these hooks, some are disabled
-// automatically. Some hooks have genuine use cases, such as adding new loaders.
-bool isAllowedToMutateExtensions(JSC::JSGlobalObject* globalObject)
+static bool isAllowedToMutateExtensions(JSC::JSGlobalObject* globalObject)
 {
-    JSC::VM& vm = globalObject->vm();
-    WTF::Vector<JSC::StackFrame> stackFrames;
-    vm.interpreter.getStackTrace(globalObject, stackFrames, 0, 1);
-    if (stackFrames.size() == 0) return true;
-    JSC::StackFrame& frame = stackFrames[0];
+    auto& vm = globalObject->vm();
+    WTF::Vector<JSC::StackFrame> frames;
+    vm.interpreter.getStackTrace(globalObject, frames, 0, 1);
+    if (frames.isEmpty()) return true;
+    const auto url = frames[0].sourceURL(vm);
 
-    WTF::String url = frame.sourceURL(vm);
-    if (!url) return true;
-
+    // Bun already loads the ESM and TypeScript handled by these Node transpiler hooks.
 #if OS(WINDOWS)
-#define CHECK_PATH(url, _, windows) (url.contains(windows))
+    return !url.contains("dist\\build\\next-config-ts\\"_s) && !url.contains("@meteorjs\\babel"_s);
 #else
-#define CHECK_PATH(url, posix, _) (url.contains(posix))
+    return !url.contains("dist/build/next-config-ts/"_s) && !url.contains("@meteorjs/babel"_s);
 #endif
-
-    // When adding to this list, please comment why the package is using extensions incorrectly.
-    if (CHECK_PATH(url, "dist/build/next-config-ts/"_s, "dist\\build\\next-config-ts\\"_s))
-        return false; // Next.js adds SWC support to add features Bun already has.
-    if (CHECK_PATH(url, "@meteorjs/babel"_s, "@meteorjs\\babel"_s))
-        return false; // Wraps existing loaders to use Babel.
-    // NOTE: @babel/core is not on this list because it checks if extensions[".ts"] exists
-    //       before adding it's own.
-    // NOTE: vitest uses extensions correctly
-    // NOTE: vite doesn't need to use extensions, but blocking them would make
-    //       it slower as they already bundle the code before injecting the hook.
-
-#undef CHECK_PATH
-    return true;
 }
 
 void JSCommonJSExtensions::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
-
-    Zig::GlobalObject* global = defaultGlobalObject(globalObject());
-    JSC::JSFunction* fnLoadJS = JSC::JSFunction::create(
-        vm,
-        global,
-        2,
-        ""_s,
-        jsLoaderJS,
-        JSC::ImplementationVisibility::Public,
-        JSC::Intrinsic::NoIntrinsic,
-        JSC::callHostFunctionAsConstructor);
-    JSC::JSFunction* fnLoadJSON = JSC::JSFunction::create(
-        vm,
-        global,
-        2,
-        ""_s,
-        jsLoaderJSON,
-        JSC::ImplementationVisibility::Public,
-        JSC::Intrinsic::NoIntrinsic,
-        JSC::callHostFunctionAsConstructor);
-    JSC::JSFunction* fnLoadNode = JSC::JSFunction::create(
-        vm,
-        global,
-        2,
-        ""_s,
-        jsLoaderNode,
-        JSC::ImplementationVisibility::Public,
-        JSC::Intrinsic::NoIntrinsic,
-        JSC::callHostFunctionAsConstructor);
-    JSC::JSFunction* fnLoadTS = JSC::JSFunction::create(
-        vm,
-        global,
-        2,
-        ""_s,
-        jsLoaderTS,
-        JSC::ImplementationVisibility::Public,
-        JSC::Intrinsic::NoIntrinsic,
-        JSC::callHostFunctionAsConstructor);
-
-    this->putDirect(vm, JSC::Identifier::fromString(vm, ".js"_s), fnLoadJS, 0);
-    this->putDirect(vm, JSC::Identifier::fromString(vm, ".json"_s), fnLoadJSON, 0);
-    this->putDirect(vm, JSC::Identifier::fromString(vm, ".node"_s), fnLoadNode, 0);
-    this->putDirect(vm, JSC::Identifier::fromString(vm, ".ts"_s), fnLoadTS, 0);
-    this->putDirect(vm, JSC::Identifier::fromString(vm, ".cts"_s), fnLoadTS, 0);
-    this->putDirect(vm, JSC::Identifier::fromString(vm, ".mjs"_s), fnLoadJS, 0);
-    this->putDirect(vm, JSC::Identifier::fromString(vm, ".mts"_s), fnLoadTS, 0);
+    bunBindgenObjectSurface_JSCommonJSExtensions_install(vm, info(), *this);
 }
 
-extern "C" void NodeModuleModule__onRequireExtensionModify(
-    Zig::GlobalObject* globalObject,
-    const BunString* key,
-    BunLoaderType loader,
-    JSC::JSValue value);
-
-extern "C" void NodeModuleModule__onRequireExtensionModifyNonFunction(
-    Zig::GlobalObject* globalObject,
-    const BunString* key);
-
-void onAssign(Zig::GlobalObject* globalObject, JSC::PropertyName propertyName, JSC::JSValue value)
+static CommonJSExtensionUpdate* prepareExtensionUpdate(Zig::GlobalObject* globalObject, JSC::PropertyName propertyName, JSC::JSValue value)
 {
-    if (propertyName.isSymbol()) return;
+    if (propertyName.isSymbol()) return nullptr;
     auto* name = propertyName.publicName();
-    if (!name->startsWith('.')) return;
-    BunString ext = Bun::toString(name);
+    if (!name->startsWith('.')) return nullptr;
+    WTF::String extension(name);
     JSC::CallData callData = JSC::getCallData(value);
     if (callData.type == JSC::CallData::Type::None) {
-        return NodeModuleModule__onRequireExtensionModifyNonFunction(globalObject, &ext);
+        return Bindgen::ZigExports::bunBindgenZig_ModuleLoader_prepareCommonJSExtensionUpdate(globalObject, extension, std::nullopt, std::nullopt);
     }
 
-    BunLoaderType loader = BunLoaderTypeNone;
+    std::optional<Bindgen::CommonJSBuiltinLoader> loader;
     if (callData.type == JSC::CallData::Type::Native) {
         auto* untaggedPtr = callData.native.function.untaggedPtr();
-        if (untaggedPtr == &jsLoaderJS) {
-            loader = BunLoaderTypeJS;
-        } else if (untaggedPtr == &jsLoaderJSON) {
-            loader = BunLoaderTypeJSON;
+        if (untaggedPtr == &bun_bindgen_host_NodeModuleModule_jsLoaderJS) {
+            loader = Bindgen::CommonJSBuiltinLoader::js;
+        } else if (untaggedPtr == &bun_bindgen_host_NodeModuleModule_jsLoaderJSON) {
+            loader = Bindgen::CommonJSBuiltinLoader::json;
         } else if (untaggedPtr == &jsLoaderNode) {
-            loader = BunLoaderTypeNAPI;
-        } else if (untaggedPtr == &jsLoaderTS) {
-            loader = BunLoaderTypeTS;
+            loader = Bindgen::CommonJSBuiltinLoader::napi;
+        } else if (untaggedPtr == &bun_bindgen_host_NodeModuleModule_jsLoaderTS) {
+            loader = Bindgen::CommonJSBuiltinLoader::ts;
         }
     }
-    NodeModuleModule__onRequireExtensionModify(globalObject, &ext, loader, value);
+    return Bun::Bindgen::ZigExports::bunBindgenZig_ModuleLoader_prepareCommonJSExtensionUpdate(
+        globalObject, extension, loader, value);
 }
+
+class ExtensionUpdateScope {
+public:
+    ExtensionUpdateScope(const ExtensionUpdateScope&) = delete;
+    ExtensionUpdateScope& operator=(const ExtensionUpdateScope&) = delete;
+
+    explicit ExtensionUpdateScope(CommonJSExtensionUpdate* update)
+        : m_update(update)
+    {
+    }
+
+    ~ExtensionUpdateScope() { finish(false); }
+
+    void finish(bool commit)
+    {
+        if (!m_update)
+            return;
+        Bindgen::ZigExports::bunBindgenZig_ModuleLoader_finishCommonJSExtensionUpdate(m_update, commit);
+        m_update = nullptr;
+    }
+
+private:
+    CommonJSExtensionUpdate* m_update;
+};
 
 bool JSCommonJSExtensions::defineOwnProperty(JSC::JSObject* object, JSC::JSGlobalObject* globalObject, JSC::PropertyName propertyName, const JSC::PropertyDescriptor& descriptor, bool shouldThrow)
 {
     if (!isAllowedToMutateExtensions(globalObject)) return true;
-    JSValue value = descriptor.value();
-    if (value) {
-        onAssign(defaultGlobalObject(globalObject), propertyName, value);
-    } else {
-        onAssign(defaultGlobalObject(globalObject), propertyName, JSC::jsUndefined());
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto* global = defaultGlobalObject(globalObject);
+    JSValue candidate = descriptor.value();
+    if (!candidate && descriptor.isDataDescriptor()) {
+        PropertyDescriptor previous;
+        bool own = object->getOwnPropertyDescriptor(globalObject, propertyName, previous);
+        RETURN_IF_EXCEPTION(scope, false);
+        if (!own || previous.isAccessorDescriptor())
+            candidate = jsUndefined();
     }
-    return Base::defineOwnProperty(object, globalObject, propertyName, descriptor, shouldThrow);
+    if (descriptor.isAccessorDescriptor() && !propertyName.isSymbol() && propertyName.publicName()->startsWith('.')) {
+        auto factory = bun_bindgen_source_function_NodeModuleModule_createExtensionAccessor_value(global);
+        MarkedArgumentBuffer arguments;
+        arguments.append(object);
+        arguments.append(jsString(globalObject->vm(), String(propertyName.publicName())));
+        if (arguments.hasOverflowed()) {
+            throwOutOfMemoryError(globalObject, scope);
+            return false;
+        }
+        candidate = profiledCall(globalObject, ProfilingReason::Other, factory.asCell(), getCallData(factory.asCell()), jsUndefined(), arguments);
+        RETURN_IF_EXCEPTION(scope, false);
+    }
+    ExtensionUpdateScope update(candidate ? prepareExtensionUpdate(global, propertyName, candidate) : nullptr);
+    RETURN_IF_EXCEPTION(scope, false);
+    bool defined = Base::defineOwnProperty(object, globalObject, propertyName, descriptor, shouldThrow);
+    RETURN_IF_EXCEPTION(scope, false);
+    if (defined)
+        update.finish(true);
+    return defined;
 }
 
 bool JSCommonJSExtensions::put(JSC::JSCell* cell, JSC::JSGlobalObject* globalObject, JSC::PropertyName propertyName, JSC::JSValue value, JSC::PutPropertySlot& slot)
 {
     if (!isAllowedToMutateExtensions(globalObject)) return true;
-    onAssign(defaultGlobalObject(globalObject), propertyName, value);
-    return Base::put(cell, globalObject, propertyName, value, slot);
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    if (slot.thisValue() != cell)
+        RELEASE_AND_RETURN(scope, Base::put(cell, globalObject, propertyName, value, slot));
+    auto* global = defaultGlobalObject(globalObject);
+    ExtensionUpdateScope update(prepareExtensionUpdate(global, propertyName, value));
+    RETURN_IF_EXCEPTION(scope, false);
+    bool written = Base::put(cell, globalObject, propertyName, value, slot);
+    RETURN_IF_EXCEPTION(scope, false);
+    if (written) {
+        PropertyDescriptor descriptor;
+        bool own = asObject(cell)->getOwnPropertyDescriptor(globalObject, propertyName, descriptor);
+        RETURN_IF_EXCEPTION(scope, false);
+        if (own && !descriptor.isAccessorDescriptor() && descriptor.value() == value)
+            update.finish(true);
+    }
+    return written;
 }
 
 bool JSCommonJSExtensions::deleteProperty(JSC::JSCell* cell, JSC::JSGlobalObject* globalObject, JSC::PropertyName propertyName, JSC::DeletePropertySlot& slot)
 {
     if (!isAllowedToMutateExtensions(globalObject)) return true;
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto* global = defaultGlobalObject(globalObject);
+    ExtensionUpdateScope update(prepareExtensionUpdate(global, propertyName, jsUndefined()));
+    RETURN_IF_EXCEPTION(scope, false);
     bool deleted = Base::deleteProperty(cell, globalObject, propertyName, slot);
+    RETURN_IF_EXCEPTION(scope, false);
     if (deleted) {
-        onAssign(defaultGlobalObject(globalObject), propertyName, JSC::jsUndefined());
+        update.finish(true);
     }
     return deleted;
-}
-
-extern "C" uint32_t JSCommonJSExtensions__appendFunction(Zig::GlobalObject* globalObject, JSC::JSValue value)
-{
-    JSCommonJSExtensions* extensions = globalObject->lazyRequireExtensionsObject();
-    extensions->m_registeredFunctions.append(JSC::WriteBarrier<Unknown>());
-    extensions->m_registeredFunctions.last().set(globalObject->vm(), extensions, value);
-    return extensions->m_registeredFunctions.size() - 1;
-}
-
-extern "C" void JSCommonJSExtensions__setFunction(Zig::GlobalObject* globalObject, uint32_t index, JSC::JSValue value)
-{
-    JSCommonJSExtensions* extensions = globalObject->lazyRequireExtensionsObject();
-    extensions->m_registeredFunctions[index].set(globalObject->vm(), globalObject, value);
-}
-
-extern "C" uint32_t JSCommonJSExtensions__swapRemove(Zig::GlobalObject* globalObject, uint32_t index)
-{
-    JSCommonJSExtensions* extensions = globalObject->lazyRequireExtensionsObject();
-    ASSERT(extensions->m_registeredFunctions.size() > 0);
-    if (extensions->m_registeredFunctions.size() == 1) {
-        extensions->m_registeredFunctions.clear();
-        return index;
-    }
-    ASSERT(index < extensions->m_registeredFunctions.size());
-    if (index < (extensions->m_registeredFunctions.size() - 1)) {
-        JSValue last = extensions->m_registeredFunctions.takeLast().get();
-        extensions->m_registeredFunctions[index].set(globalObject->vm(), globalObject, last);
-        return extensions->m_registeredFunctions.size();
-    } else {
-        extensions->m_registeredFunctions.removeLast();
-        return index;
-    }
 }
 
 // This implements `Module._extensions['.js']`, which
@@ -240,41 +211,24 @@ extern "C" uint32_t JSCommonJSExtensions__swapRemove(Zig::GlobalObject* globalOb
 // - Evaluates the module
 //     - Calls `module._compile(code, filename)`, which is often overridden.
 // - Returns `undefined`
-JSC::EncodedJSValue builtinLoader(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame, BunLoaderType loaderType)
+JSC::JSValue builtinLoader(JSC::JSGlobalObject* globalObject, Bun::JSCommonJSModule* mod, const WTF::String& specifierWtfString, BunLoaderType loaderType)
 {
     auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     Zig::GlobalObject* global = defaultGlobalObject(globalObject);
-    JSC::JSObject* modValue = callFrame->argument(0).getObject();
-    if (!modValue) {
-        throwTypeError(globalObject, scope, "Module._extensions['.js'] must be called with a CommonJS module object"_s);
-        return {};
-    }
-    Bun::JSCommonJSModule* mod = dynamicDowncast<Bun::JSCommonJSModule>(modValue);
-    if (!mod) {
-        throwTypeError(globalObject, scope, "Module._extensions['.js'] must be called with a CommonJS module object"_s);
-        return {};
-    }
-    JSC::JSValue specifier = callFrame->argument(1);
-    WTF::String specifierWtfString = specifier.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    BunString specifierBunString = Bun::toString(specifierWtfString);
-    BunString empty = BunStringEmpty;
     JSC::VM& vm = globalObject->vm();
-    ErrorableResolvedSource res;
-    res.success = false;
-    memset(&res.result, 0, sizeof res.result);
+    JSC::JSValue specifier = JSC::jsString(vm, specifierWtfString);
+    ResolvedSourceResult res {};
 
     JSValue result = fetchCommonJSModuleNonBuiltin<true>(
         global->bunVM(),
         vm,
         global,
-        &specifierBunString,
-        specifier,
-        &empty,
-        &empty,
-        &res,
-        mod,
         specifierWtfString,
+        specifier,
+        WTF::emptyString(),
+        std::nullopt,
+        res,
+        mod,
         loaderType,
         scope);
     RETURN_IF_EXCEPTION(scope, {});
@@ -289,21 +243,16 @@ JSC::EncodedJSValue builtinLoader(JSC::JSGlobalObject* globalObject, JSC::CallFr
         RETURN_IF_EXCEPTION(scope, {});
     }
 
-    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(jsUndefined()));
+    RELEASE_AND_RETURN(scope, jsUndefined());
 }
-
-template<typename Visitor>
-void JSCommonJSExtensions::visitChildrenImpl(JSCell* cell, Visitor& visitor)
-{
-    JSCommonJSExtensions* thisObject = uncheckedDowncast<JSCommonJSExtensions>(cell);
-    ASSERT_GC_OBJECT_INHERITS(thisObject, info());
-    Base::visitChildren(thisObject, visitor);
-
-    for (auto& func : thisObject->m_registeredFunctions) {
-        visitor.append(func);
-    }
-}
-
-DEFINE_VISIT_CHILDREN(JSCommonJSExtensions);
 
 } // namespace Bun
+
+namespace Bun::Bindgen::Engine {
+
+void releaseCommonJSExtensionUpdate(Bun::CommonJSExtensionUpdate* update)
+{
+    ZigExports::bunBindgenZig_ModuleLoader_finishCommonJSExtensionUpdate(update, false);
+}
+
+}

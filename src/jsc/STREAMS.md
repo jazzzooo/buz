@@ -37,7 +37,7 @@ To understand Bun's stream optimizations, two foundational concepts must be unde
 Identifying the _source_ of a `ReadableStream` at the native level unlocks many optimization opportunities. This is achieved by "tagging" the stream object internally.
 
 - **Mechanism:** Every `ReadableStream` in Bun holds a private field, `bunNativePtr`, which can point to a native Zig struct representing the stream's underlying source.
-- **Identification:** A C++ binding, `ReadableStreamTag__tagged` (from `ReadableStream.zig`), is the primary entry point for this identification. When native code needs to consume a stream (e.g., when sending a `Response` body), it calls this function on the JS `ReadableStream` object to determine its origin.
+- **Identification:** The generated `readableStreamTag` engine shim is the primary entry point for this identification. When native code needs to consume a stream (e.g., when sending a `Response` body), it calls this function on the JS `ReadableStream` object to determine its origin.
 
 ```zig
 // src/runtime/webcore/ReadableStream.zig
@@ -156,7 +156,7 @@ flowchart TB
 **Diagram 2: Synchronous Coercion Logic Flow**
 
 1.  **Entry Point:** A JS call to `response.text()` triggers `readableStreamToText` (`ReadableStream.ts`), which immediately calls `tryUseReadableStreamBufferedFastPath`.
-2.  **Native Check:** `tryUseReadableStreamBufferedFastPath` calls the native binding `jsFunctionGetCompleteRequestOrResponseBodyValueAsArrayBuffer` (`Response.zig`).
+2.  **Native Check:** `tryUseReadableStreamBufferedFastPath` calls the native `getCompleteRequestOrResponseBodyValueAsArrayBuffer` binding (`Response.zig`).
 3.  **State Inspection:** This native function inspects the `Body.Value` tag. If the tag is `.InternalBlob`, `.Blob` (and not a disk-backed file), or `.WTFStringImpl`, the complete data is already in memory.
 4.  **Synchronous Data Transfer:** The function **synchronously** returns the underlying buffer as a native `ArrayBuffer` handle to JavaScript. The `Body` state is immediately transitioned to `.Used`. The buffer's ownership is often transferred (`.transfer` lifetime), avoiding a data copy.
 5.  **JS Resolution:** The JS layer receives a promise that is **already fulfilled** with the complete `ArrayBuffer`. It then performs the final conversion (e.g., `TextDecoder.decode()`) in a single step.

@@ -8,7 +8,6 @@ pub fn StatType(comptime big: bool) type {
 
         const StatTimespec = bun.timespec;
         const Float = if (big) i64 else f64;
-
         pub inline fn init(stat_: *const Syscall.PosixStat) @This() {
             return .{ .value = stat_.* };
         }
@@ -25,6 +24,14 @@ pub fn StatType(comptime big: bool) type {
                 .sec = @intCast(ts.sec),
                 .nsec = @intCast(ts.nsec),
             });
+        }
+
+        inline fn toSignedBigInt(value: anytype) i64 {
+            const integer = @typeInfo(@TypeOf(value)).int;
+            return if (integer.signedness == .signed)
+                @intCast(value)
+            else
+                @bitCast(@as(u64, @intCast(value)));
         }
 
         fn toTimeMS(ts: StatTimespec) Float {
@@ -53,15 +60,11 @@ pub fn StatType(comptime big: bool) type {
             return stat_.birthtim;
         }
 
-        pub fn toJS(this: *const @This(), globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-            return statToJS(&this.value, globalObject);
+        pub fn toResult(this: *const @This(), comptime Result: type) Result {
+            return statResult(&this.value, Result);
         }
 
-        pub fn getConstructor(globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-            return if (big) Bun__JSBigIntStatsObjectConstructor(globalObject) else Bun__JSStatsObjectConstructor(globalObject);
-        }
-
-        fn statToJS(stat_: *const Syscall.PosixStat, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+        fn statResult(stat_: *const Syscall.PosixStat, comptime Result: type) Result {
             const aTime = stat_.atime();
             const mTime = stat_.mtime();
             const cTime = stat_.ctime();
@@ -72,103 +75,63 @@ pub fn StatType(comptime big: bool) type {
             const birthtime_ms: Float = toTimeMS(bTime);
 
             if (big) {
-                return bun.jsc.fromJSHostCall(globalObject, @src(), Bun__createJSBigIntStatsObject, .{
-                    globalObject,
-                    stat_.dev,
-                    stat_.ino,
-                    stat_.mode,
-                    stat_.nlink,
-                    stat_.uid,
-                    stat_.gid,
-                    stat_.rdev,
-                    stat_.size,
-                    stat_.blksize,
-                    stat_.blocks,
-                    atime_ms,
-                    mtime_ms,
-                    ctime_ms,
-                    birthtime_ms,
-                    toNanoseconds(aTime),
-                    toNanoseconds(mTime),
-                    toNanoseconds(cTime),
-                    toNanoseconds(bTime),
-                });
+                return .{
+                    .brand = true,
+                    .dev = toSignedBigInt(stat_.dev),
+                    .ino = toSignedBigInt(stat_.ino),
+                    .mode = toSignedBigInt(stat_.mode),
+                    .nlink = toSignedBigInt(stat_.nlink),
+                    .uid = toSignedBigInt(stat_.uid),
+                    .gid = toSignedBigInt(stat_.gid),
+                    .rdev = toSignedBigInt(stat_.rdev),
+                    .size = toSignedBigInt(stat_.size),
+                    .blksize = toSignedBigInt(stat_.blksize),
+                    .blocks = toSignedBigInt(stat_.blocks),
+                    .atimeMs = atime_ms,
+                    .mtimeMs = mtime_ms,
+                    .ctimeMs = ctime_ms,
+                    .birthtimeMs = birthtime_ms,
+                    .atimeNs = toNanoseconds(aTime),
+                    .mtimeNs = toNanoseconds(mTime),
+                    .ctimeNs = toNanoseconds(cTime),
+                    .birthtimeNs = toNanoseconds(bTime),
+                };
             }
 
-            return Bun__createJSStatsObject(
-                globalObject,
-                stat_.dev,
-                stat_.ino,
-                stat_.mode,
-                stat_.nlink,
-                stat_.uid,
-                stat_.gid,
-                stat_.rdev,
-                stat_.size,
-                stat_.blksize,
-                stat_.blocks,
-                atime_ms,
-                mtime_ms,
-                ctime_ms,
-                birthtime_ms,
-            );
+            return .{
+                .brand = true,
+                .dev = stat_.dev,
+                .ino = stat_.ino,
+                .mode = stat_.mode,
+                .nlink = stat_.nlink,
+                .uid = stat_.uid,
+                .gid = stat_.gid,
+                .rdev = stat_.rdev,
+                .size = @bitCast(stat_.size),
+                .blksize = @bitCast(stat_.blksize),
+                .blocks = @bitCast(stat_.blocks),
+                .atimeMs = atime_ms,
+                .mtimeMs = mtime_ms,
+                .ctimeMs = ctime_ms,
+                .birthtimeMs = birthtime_ms,
+            };
         }
     };
 }
-extern fn Bun__JSBigIntStatsObjectConstructor(*jsc.JSGlobalObject) jsc.JSValue;
-extern fn Bun__JSStatsObjectConstructor(*jsc.JSGlobalObject) jsc.JSValue;
-
-extern fn Bun__createJSStatsObject(
-    globalObject: *jsc.JSGlobalObject,
-    dev: u64,
-    ino: u64,
-    mode: u64,
-    nlink: u64,
-    uid: u64,
-    gid: u64,
-    rdev: u64,
-    size: u64,
-    blksize: u64,
-    blocks: u64,
-    atimeMs: f64,
-    mtimeMs: f64,
-    ctimeMs: f64,
-    birthtimeMs: f64,
-) jsc.JSValue;
-
-extern fn Bun__createJSBigIntStatsObject(
-    globalObject: *jsc.JSGlobalObject,
-    dev: u64,
-    ino: u64,
-    mode: u64,
-    nlink: u64,
-    uid: u64,
-    gid: u64,
-    rdev: u64,
-    size: u64,
-    blksize: u64,
-    blocks: u64,
-    atimeMs: i64,
-    mtimeMs: i64,
-    ctimeMs: i64,
-    birthtimeMs: i64,
-    atimeNs: u64,
-    mtimeNs: u64,
-    ctimeNs: u64,
-    birthtimeNs: u64,
-) jsc.JSValue;
-
 pub const StatsSmall = StatType(false);
 pub const StatsBig = StatType(true);
 
-/// Test-only: build a Stats/BigIntStats from a raw u64 ino via the real
-/// statToJS path, so regression tests can exercise high-inode values without
-/// a filesystem that hands them out.
-pub fn createStatsForIno(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const ino_arg, const big_arg = callFrame.argumentsAsArray(2);
+pub fn createStatsForIno(
+    _: bun.bindgen.CallContext(CreateStatsForInoSchema),
+    args: bun.bindgen.Args(CreateStatsForInoSchema),
+) bun.JSError!bun.bindgen.Return(CreateStatsForInoSchema) {
+    const Result = bun.bindgen.Return(CreateStatsForInoSchema);
     var stat_ = std.mem.zeroes(Syscall.PosixStat);
-    stat_.ino = ino_arg.toUInt64NoTruncate();
-    return try Stats.init(&stat_, big_arg.toBoolean()).toJSNewlyCreated(globalObject);
+    stat_.ino = args.ino;
+    return if (args.bigint)
+        .{ .bigint_stats = StatsBig.init(&stat_).toResult(@FieldType(Result, "bigint_stats")) }
+    else
+        .{ .stats = StatsSmall.init(&stat_).toResult(@FieldType(Result, "stats")) };
 }
 
 /// Union between `Stats` and `BigIntStats` where the type can be decided at runtime
@@ -183,20 +146,6 @@ pub const Stats = union(enum) {
             return .{ .small = StatsSmall.init(stat_) };
         }
     }
-
-    pub fn toJSNewlyCreated(this: *const Stats, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-        return switch (this.*) {
-            .big => this.big.toJS(globalObject),
-            .small => this.small.toJS(globalObject),
-        };
-    }
-
-    pub inline fn toJS(this: *Stats, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
-        _ = this;
-        _ = globalObject;
-
-        @compileError("Only use Stats.toJSNewlyCreated() or Stats.toJS() directly on a StatsBig or StatsSmall");
-    }
 };
 
 const std = @import("std");
@@ -204,4 +153,11 @@ const std = @import("std");
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Syscall = bun.sys;
-const jsc = bun.jsc;
+
+const InternalTestingBindings = bun.bindgen.Module("InternalTesting");
+const CreateStatsForInoSchema = InternalTestingBindings.function("createStatsForIno");
+const CreateStatsForInoBinding = bun.bindgen.Fn(CreateStatsForInoSchema, createStatsForIno);
+
+comptime {
+    _ = CreateStatsForInoBinding;
+}

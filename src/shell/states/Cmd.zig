@@ -59,7 +59,8 @@ state: union(enum) {
 /// undefined memory.
 pub const ShellAsyncSubprocessDone = struct {
     cmd: *Cmd,
-    concurrent_task: jsc.EventLoopTask,
+    scheduler: Interpreter.Scheduler,
+    main_task: Interpreter.Scheduler.Task = .{},
 
     pub fn format(this: *const ShellAsyncSubprocessDone, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("ShellAsyncSubprocessDone(0x{x}, cmd=0{x})", .{ @intFromPtr(this), @intFromPtr(this.cmd) });
@@ -67,14 +68,7 @@ pub const ShellAsyncSubprocessDone = struct {
 
     pub fn enqueue(this: *ShellAsyncSubprocessDone) void {
         log("{f} enqueue", .{this});
-        const ctx = this;
-        const evtloop = this.cmd.base.eventLoop();
-
-        if (evtloop == .js) {
-            evtloop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(ctx, .manual_deinit));
-        } else {
-            evtloop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(ctx, "runFromMainThreadMini"));
-        }
+        this.scheduler.enqueue(&this.main_task, this);
     }
 
     pub fn runFromMainThreadMini(this: *@This(), _: *void) void {
@@ -182,9 +176,9 @@ const BufferedIoClosed = struct {
 
     fn fromStdio(io: *const [3]bun.shell.subproc.Stdio) BufferedIoClosed {
         return .{
-            .stdin = if (io[stdin_no].isPiped()) false else null,
-            .stdout = if (io[stdout_no].isPiped()) .{} else null,
-            .stderr = if (io[stderr_no].isPiped()) .{} else null,
+            .stdin = if (io[stdin_no].buffersInput()) false else null,
+            .stdout = if (io[stdout_no].buffersOutput()) .{} else null,
+            .stderr = if (io[stderr_no].buffersOutput()) .{} else null,
         };
     }
 };
@@ -344,7 +338,7 @@ pub fn start(this: *Cmd) Yield {
     return .{ .cmd = this };
 }
 
-pub fn onIOWriterChunk(this: *Cmd, _: usize, e: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *Cmd, _: usize, e: ?bun.sys.SystemError) Yield {
     if (e) |err| {
         this.base.throw(&bun.shell.ShellErr.newSys(err));
         return .failed;
@@ -410,7 +404,7 @@ fn initSubproc(this: *Cmd) Yield {
 
     var arena = &this.spawn_arena;
     // var arena_allocator = arena.allocator();
-    var spawn_args = Subprocess.SpawnArgs.default(arena, this, this.base.interpreter.event_loop, false);
+    var spawn_args = Subprocess.SpawnArgs.default(arena, this, this.base.eventLoop(), false);
 
     spawn_args.cmd_parent = this;
     spawn_args.cwd = this.base.shell.cwdZ();
@@ -502,7 +496,7 @@ fn initSubproc(this: *Cmd) Yield {
     defer shellio.deref();
     this.io.to_subproc_stdio(&spawn_args.stdio, &shellio);
 
-    if (this.initRedirections(&spawn_args) catch .failed) |yield| return yield;
+    if (this.initRedirections(&spawn_args)) |yield| return yield;
 
     const buffered_closed = BufferedIoClosed.fromStdio(&spawn_args.stdio);
     log("cmd ({x}) set buffered closed", .{@intFromPtr(this)});
@@ -512,7 +506,11 @@ fn initSubproc(this: *Cmd) Yield {
         .buffered_closed = buffered_closed,
     } };
     var did_exit_immediately = false;
-    const subproc = switch (Subprocess.spawnAsync(this.base.eventLoop(), &shellio, spawn_args, &this.exec.subproc.child, &did_exit_immediately)) {
+    const subproc = switch (Subprocess.spawnAsync(this.base.eventLoop(), &shellio, spawn_args, &this.exec.subproc.child, &did_exit_immediately) catch {
+        this.exec = .none;
+        this.base.eventLoop().reportOutOfMemory();
+        return .failed;
+    }) {
         .result => this.exec.subproc.child,
         .err => |*e| {
             defer e.deinit(bun.default_allocator);
@@ -538,7 +536,7 @@ fn initSubproc(this: *Cmd) Yield {
     return .suspended;
 }
 
-fn initRedirections(this: *Cmd, spawn_args: *Subprocess.SpawnArgs) bun.JSError!?Yield {
+fn initRedirections(this: *Cmd, spawn_args: *Subprocess.SpawnArgs) ?Yield {
     if (this.node.redirect_file) |redirect| {
         const in_cmd_subst = false;
 
@@ -546,60 +544,58 @@ fn initRedirections(this: *Cmd, spawn_args: *Subprocess.SpawnArgs) bun.JSError!?
             setStdioFromRedirect(&spawn_args.stdio, this.node.redirect, .ignore);
         } else switch (redirect) {
             .jsbuf => |val| {
-                // JS values in here is probably a bug
-                if (this.base.eventLoop() != .js) @panic("JS values not allowed in this context");
-                const global = this.base.eventLoop().js.global;
+                if (!this.base.eventLoop().isJavaScript()) @panic("JS values not allowed in this context");
+                const value = this.base.interpreter.shellValue(val.idx) orelse {
+                    this.base.eventLoop().throwMessage("Invalid JS object reference in shell");
+                    return .failed;
+                };
 
-                if (val.idx >= this.base.interpreter.jsobjs.len) {
-                    return global.throw("Invalid JS object reference in shell", .{});
-                }
-
-                if (this.base.interpreter.jsobjs[val.idx].asArrayBuffer(global)) |buf| {
-                    // Each slot needs its own Strong; copying one Stdio into multiple slots
-                    // (e.g. for &>) would alias the same *Impl and double-free in deinit.
-                    const flags = this.node.redirect;
-                    if (flags.stdin) {
-                        spawn_args.stdio[stdin_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
-                    }
-                    if (flags.duplicate_out) {
-                        spawn_args.stdio[stdout_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
-                        spawn_args.stdio[stderr_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
-                    } else {
-                        if (flags.stdout) {
-                            spawn_args.stdio[stdout_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
+                const flags = this.node.redirect;
+                switch (value.*) {
+                    .buffer => |*buffer| {
+                        var stdin_bytes: ?bun.bindgen.OwnedMutableLease(u8) = null;
+                        var stdout_bytes: ?bun.bindgen.OwnedMutableLease(u8) = null;
+                        var stderr_bytes: ?bun.bindgen.OwnedMutableLease(u8) = null;
+                        defer if (stdin_bytes) |*bytes| bytes.deinit();
+                        defer if (stdout_bytes) |*bytes| bytes.deinit();
+                        defer if (stderr_bytes) |*bytes| bytes.deinit();
+                        if (flags.stdin) stdin_bytes = bun.handleOom(buffer.clone());
+                        if (flags.stdout) stdout_bytes = bun.handleOom(buffer.clone());
+                        if (flags.stderr) stderr_bytes = bun.handleOom(buffer.clone());
+                        if (stdin_bytes) |bytes| {
+                            spawn_args.stdio[stdin_no] = .{ .leased_bytes = bytes };
+                            stdin_bytes = null;
                         }
-                        if (flags.stderr) {
-                            spawn_args.stdio[stderr_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
+                        if (stdout_bytes) |bytes| {
+                            spawn_args.stdio[stdout_no] = .{ .leased_bytes = bytes };
+                            stdout_bytes = null;
                         }
-                    }
-                } else if (this.base.interpreter.jsobjs[val.idx].as(jsc.WebCore.Blob)) |blob__| {
-                    const blob = blob__.dupe();
-                    if (this.node.redirect.stdin) {
-                        try spawn_args.stdio[stdin_no].extractBlob(global, .{ .Blob = blob }, stdin_no);
-                    } else if (this.node.redirect.stdout) {
-                        try spawn_args.stdio[stdout_no].extractBlob(global, .{ .Blob = blob }, stdout_no);
-                    } else if (this.node.redirect.stderr) {
-                        try spawn_args.stdio[stderr_no].extractBlob(global, .{ .Blob = blob }, stderr_no);
-                    }
-                } else if (try jsc.WebCore.ReadableStream.fromJS(this.base.interpreter.jsobjs[val.idx], global)) |rstream| {
-                    _ = rstream;
-                    @panic("TODO SHELL READABLE STREAM");
-                } else if (this.base.interpreter.jsobjs[val.idx].as(jsc.WebCore.Response)) |req| {
-                    req.getBodyValue().toBlobIfPossible();
-                    if (this.node.redirect.stdin) {
-                        try spawn_args.stdio[stdin_no].extractBlob(global, req.getBodyValue().useAsAnyBlob(), stdin_no);
-                    }
-                    if (this.node.redirect.stdout) {
-                        try spawn_args.stdio[stdout_no].extractBlob(global, req.getBodyValue().useAsAnyBlob(), stdout_no);
-                    }
-                    if (this.node.redirect.stderr) {
-                        try spawn_args.stdio[stderr_no].extractBlob(global, req.getBodyValue().useAsAnyBlob(), stderr_no);
-                    }
-                } else {
-                    const jsval = this.base.interpreter.jsobjs[val.idx];
-                    const string_value = try jsval.toBunString(global);
-                    defer string_value.deref();
-                    return global.throw("Unknown JS value used in shell: {f}", .{string_value});
+                        if (stderr_bytes) |bytes| {
+                            spawn_args.stdio[stderr_no] = .{ .leased_bytes = bytes };
+                            stderr_bytes = null;
+                        }
+                    },
+                    .blob => |*blob| {
+                        var context: SubprocessBlobRedirectContext = .{ .spawn_args = spawn_args, .flags = flags, .scheduler = this.base.eventLoop() };
+                        if (context.consumeBlob(blob)) |result| return result;
+                    },
+                    .response, .stream => {
+                        const is_stream = switch (value.*) {
+                            .stream => true,
+                            else => false,
+                        };
+                        if (is_stream and (!flags.stdin or flags.stdout or flags.stderr)) {
+                            this.base.eventLoop().throwMessage("ReadableStream redirection is only valid for stdin");
+                            return .failed;
+                        }
+                        var context: SubprocessBlobRedirectContext = .{ .spawn_args = spawn_args, .flags = flags, .scheduler = this.base.eventLoop() };
+                        if (this.base.eventLoop().withShellValueBlob(
+                            value,
+                            if (is_stream) "Cannot redirect a live ReadableStream" else "Cannot redirect a streaming Response",
+                            &context,
+                            SubprocessBlobRedirectContext.consumeOpaque,
+                        )) |result| return result;
+                    },
                 }
             },
             .atom => {
@@ -634,6 +630,49 @@ fn initRedirections(this: *Cmd, spawn_args: *Subprocess.SpawnArgs) bun.JSError!?
 
     return null;
 }
+
+const SubprocessBlobRedirectContext = struct {
+    spawn_args: *Subprocess.SpawnArgs,
+    flags: ast.RedirectFlags,
+    scheduler: Interpreter.Scheduler,
+
+    fn consumeOpaque(raw_context: *anyopaque, source: *bun.webcore.Blob.Any) ?Yield {
+        return @as(*SubprocessBlobRedirectContext, @ptrCast(@alignCast(raw_context))).consume(source);
+    }
+
+    fn consume(this: *SubprocessBlobRedirectContext, source: *bun.webcore.Blob.Any) ?Yield {
+        var blob = source.intoBlob() catch {
+            this.scheduler.reportOutOfMemory();
+            return .failed;
+        };
+        defer blob.deinit();
+        return this.consumeBlob(&blob);
+    }
+
+    fn consumeBlob(this: *SubprocessBlobRedirectContext, blob: *const bun.webcore.Blob) ?Yield {
+        if (this.flags.stdin) if (this.assignBlob(.stdin, blob)) |result| return result;
+        if (this.flags.stdout) if (this.assignBlob(.stdout, blob)) |result| return result;
+        if (this.flags.stderr) if (this.assignBlob(.stderr, blob)) |result| return result;
+        return null;
+    }
+
+    fn assignBlob(this: *SubprocessBlobRedirectContext, comptime kind: enum { stdin, stdout, stderr }, blob: *const bun.webcore.Blob) ?Yield {
+        const index = switch (kind) {
+            .stdin => stdin_no,
+            .stdout => stdout_no,
+            .stderr => stderr_no,
+        };
+        const copy = blob.dupe() catch {
+            this.scheduler.reportOutOfMemory();
+            return .failed;
+        };
+        if (this.spawn_args.stdio[index].assignBlob(.{ .Blob = copy }, index)) |err| {
+            this.scheduler.throwInvalidArguments(err.toStr());
+            return .failed;
+        }
+        return null;
+    }
+};
 
 fn setStdioFromRedirect(stdio: *[3]shell.subproc.Stdio, flags: ast.RedirectFlags, val: shell.subproc.Stdio) void {
     if (flags.stdin) {
@@ -725,7 +764,7 @@ pub fn bufferedInputClose(this: *Cmd) void {
     this.exec.subproc.buffered_closed.close(this, .stdin);
 }
 
-pub fn bufferedOutputClose(this: *Cmd, kind: Subprocess.OutKind, err: ?jsc.SystemError) Yield {
+pub fn bufferedOutputClose(this: *Cmd, kind: Subprocess.OutKind, err: ?bun.sys.SystemError) Yield {
     switch (kind) {
         .stdout => this.bufferedOutputCloseStdout(err),
         .stderr => this.bufferedOutputCloseStderr(err),
@@ -734,7 +773,7 @@ pub fn bufferedOutputClose(this: *Cmd, kind: Subprocess.OutKind, err: ?jsc.Syste
         if (!this.spawn_arena_freed) {
             var async_subprocess_done = bun.new(ShellAsyncSubprocessDone, .{
                 .cmd = this,
-                .concurrent_task = jsc.EventLoopTask.fromEventLoop(this.base.eventLoop()),
+                .scheduler = this.base.eventLoop(),
             });
             async_subprocess_done.enqueue();
             return .suspended;
@@ -745,7 +784,7 @@ pub fn bufferedOutputClose(this: *Cmd, kind: Subprocess.OutKind, err: ?jsc.Syste
     return .suspended;
 }
 
-pub fn bufferedOutputCloseStdout(this: *Cmd, err: ?jsc.SystemError) void {
+pub fn bufferedOutputCloseStdout(this: *Cmd, err: ?bun.sys.SystemError) void {
     if (comptime bun.Environment.allow_assert) {
         assert(this.exec == .subproc);
     }
@@ -763,7 +802,7 @@ pub fn bufferedOutputCloseStdout(this: *Cmd, err: ?jsc.SystemError) void {
     this.exec.subproc.child.closeIO(.stdout);
 }
 
-pub fn bufferedOutputCloseStderr(this: *Cmd, err: ?jsc.SystemError) void {
+pub fn bufferedOutputCloseStderr(this: *Cmd, err: ?bun.sys.SystemError) void {
     if (comptime bun.Environment.allow_assert) {
         assert(this.exec == .subproc);
     }
@@ -784,7 +823,6 @@ const std = @import("std");
 
 const bun = @import("bun");
 const assert = bun.assert;
-const jsc = bun.jsc;
 const which = bun.which;
 
 const shell = bun.shell;

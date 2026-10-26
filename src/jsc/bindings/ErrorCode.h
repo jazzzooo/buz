@@ -1,12 +1,13 @@
-// To add a new error code, put it in ErrorCode.ts
 #pragma once
+
 
 #include "ZigGlobalObject.h"
 #include "root.h"
+#include <JavaScriptCore/ErrorType.h>
 #include <JavaScriptCore/JSInternalFieldObjectImpl.h>
 #include <JavaScriptCore/JSInternalFieldObjectImplInlines.h>
 #include "BunClientData.h"
-#include "ErrorCode+List.h"
+#include "SchemaBindingsErrorCodes.h"
 #include "CryptoKeyType.h"
 
 #define RELEASE_RETURN_IF_EXCEPTION(scope__, value__)                                                              \
@@ -52,7 +53,7 @@ public:
     static ErrorCodeCache* create(VM& vm, Structure* structure);
     static Structure* createStructure(VM& vm, JSGlobalObject* globalObject);
 
-    JSObject* createError(VM& vm, Zig::GlobalObject* globalObject, ErrorCode code, JSValue message, JSValue options);
+    Structure* structureFor(Zig::GlobalObject*, ErrorCode);
 
 private:
     JS_EXPORT_PRIVATE ErrorCodeCache(VM&, Structure*);
@@ -61,15 +62,11 @@ private:
 };
 
 JSC::EncodedJSValue throwError(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, ErrorCode code, const WTF::String& message);
-JSC::JSObject* createError(Zig::GlobalObject* globalObject, ErrorCode code, const WTF::String& message);
 JSC::JSObject* createError(JSC::JSGlobalObject* globalObject, ErrorCode code, const WTF::String& message);
-JSC::JSObject* createError(Zig::GlobalObject* globalObject, ErrorCode code, JSC::JSValue message);
-JSC::JSObject* createError(VM& vm, Zig::GlobalObject* globalObject, ErrorCode code, JSValue message, JSValue options);
+JSC::JSObject* createErrorWithCode(JSC::JSGlobalObject* globalObject, JSC::ErrorType type, WTF::ASCIILiteral name, WTF::ASCIILiteral code, const WTF::String& message);
 JSC::JSValue toJS(JSC::JSGlobalObject*, ErrorCode);
 JSObject* createInvalidThisError(JSGlobalObject* globalObject, JSValue thisValue, const ASCIILiteral typeName);
 JSObject* createInvalidThisError(JSGlobalObject* globalObject, const String& message);
-
-JSC_DECLARE_HOST_FUNCTION(jsFunctionMakeErrorWithCode);
 
 enum Bound {
     LOWER,
@@ -78,9 +75,12 @@ enum Bound {
 
 namespace ERR {
 
+JSC::EncodedJSValue INVALID_ARG_PROPERTY_VALUE(JSC::ThrowScope&, JSC::JSGlobalObject*, const WTF::String& name, JSC::JSValue value, const WTF::String& expected);
+
 JSC::EncodedJSValue INVALID_ARG_TYPE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, ASCIILiteral message);
-JSC::EncodedJSValue INVALID_ARG_TYPE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, const WTF::String& arg_name, const WTF::String& expected_type, JSC::JSValue val_actual_value);
+JSC::EncodedJSValue INVALID_ARG_TYPE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, const WTF::String& arg_name, const WTF::String& expected_type, JSC::JSValue val_actual_value, bool multiple_types = false);
 JSC::EncodedJSValue INVALID_ARG_TYPE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, JSC::JSValue arg_name, const WTF::String& expected_type, JSC::JSValue val_actual_value);
+JSC::EncodedJSValue INVALID_ARG_SAFE_INTEGER(JSC::ThrowScope&, JSC::JSGlobalObject*, const WTF::String& name, JSC::JSValue value);
 JSC::EncodedJSValue INVALID_ARG_INSTANCE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, const WTF::String& arg_name, const WTF::String& expected_type, JSC::JSValue val_actual_value);
 JSC::EncodedJSValue INVALID_ARG_TYPE_INSTANCE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, WTF::ASCIILiteral arg_name, WTF::ASCIILiteral expected_type, WTF::ASCIILiteral expected_instance_types, JSC::JSValue val_actual_value);
 JSC::EncodedJSValue INVALID_ARG_TYPE_INSTANCE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, WTF::ASCIILiteral arg_name, WTF::ASCIILiteral expected_instance_types, JSC::JSValue val_actual_value);
@@ -91,10 +91,10 @@ JSC::EncodedJSValue OUT_OF_RANGE(JSC::ThrowScope& throwScope, JSC::JSGlobalObjec
 JSC::EncodedJSValue OUT_OF_RANGE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, const WTF::String& arg_name_val, const WTF::String& msg, JSC::JSValue actual);
 JSC::EncodedJSValue OUT_OF_RANGE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, ASCIILiteral message);
 JSC::EncodedJSValue INVALID_ARG_VALUE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, WTF::ASCIILiteral name, JSC::JSValue value, const WTF::String& reason = "is invalid"_s);
-JSC::EncodedJSValue INVALID_ARG_VALUE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, JSC::JSValue name, JSC::JSValue value, WTF::ASCIILiteral reason, JSC::JSArray* oneOf);
 JSC::EncodedJSValue INVALID_ARG_VALUE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, WTF::ASCIILiteral name, WTF::ASCIILiteral reason, JSC::JSValue value, std::span<const ASCIILiteral> oneOf);
 JSC::EncodedJSValue INVALID_ARG_VALUE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, WTF::ASCIILiteral name, WTF::ASCIILiteral reason, JSC::JSValue value, std::span<const int32_t> oneOf);
 JSC::EncodedJSValue INVALID_ARG_VALUE_RangeError(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, WTF::ASCIILiteral name, JSC::JSValue value, const WTF::String& reason = "is invalid"_s);
+JSC::EncodedJSValue INVALID_ARG_VALUE_RangeError(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, const WTF::String& name, JSC::JSValue value, const WTF::String& reason = "is invalid"_s);
 JSC::EncodedJSValue INVALID_ARG_VALUE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, JSC::JSValue name, JSC::JSValue value, const WTF::String& reason = "is invalid"_s);
 JSC::EncodedJSValue INVALID_ARG_VALUE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, const WTF::String& name, JSC::JSValue value, const WTF::String& reason = "is invalid"_s);
 JSC::EncodedJSValue UNKNOWN_ENCODING(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, const WTF::StringView encoding);
@@ -105,14 +105,15 @@ JSC::EncodedJSValue BUFFER_OUT_OF_BOUNDS(JSC::ThrowScope& throwScope, JSC::JSGlo
 JSC::EncodedJSValue UNKNOWN_SIGNAL(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, JSC::JSValue signal, bool triedUppercase = false);
 JSC::EncodedJSValue MISSING_ARGS(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, WTF::ASCIILiteral message);
 JSC::EncodedJSValue SOCKET_BAD_PORT(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, JSC::JSValue name, JSC::JSValue port, bool allowZero);
+JSC::EncodedJSValue SOCKET_BAD_PORT_NUMBER(JSC::ThrowScope&, JSC::JSGlobalObject*, const WTF::String&, JSC::JSValue);
 JSC::EncodedJSValue UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject);
 JSC::EncodedJSValue ASSERTION(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, JSC::JSValue msg);
+JSC::EncodedJSValue ASSERTION(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, const WTF::String& msg);
 JSC::EncodedJSValue ASSERTION(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, ASCIILiteral msg);
 JSC::EncodedJSValue CRYPTO_INVALID_CURVE(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject);
 JSC::EncodedJSValue CRYPTO_OPERATION_FAILED(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject, ASCIILiteral message);
 JSC::EncodedJSValue CRYPTO_INVALID_KEYPAIR(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject);
 JSC::EncodedJSValue CRYPTO_ECDH_INVALID_PUBLIC_KEY(JSC::ThrowScope& throwScope, JSC::JSGlobalObject* globalObject);
-JSC::EncodedJSValue CRYPTO_ECDH_INVALID_FORMAT(JSC::ThrowScope&, JSC::JSGlobalObject*, const WTF::String& formatString);
 JSC::EncodedJSValue CRYPTO_JWK_UNSUPPORTED_CURVE(JSC::ThrowScope&, JSC::JSGlobalObject*, const WTF::String&);
 JSC::EncodedJSValue CRYPTO_JWK_UNSUPPORTED_CURVE(JSC::ThrowScope&, JSC::JSGlobalObject*, ASCIILiteral message, const char* curveName);
 JSC::EncodedJSValue CRYPTO_JWK_UNSUPPORTED_KEY_TYPE(JSC::ThrowScope&, JSC::JSGlobalObject*);
@@ -141,7 +142,7 @@ JSC::EncodedJSValue CRYPTO_INVALID_STATE(JSC::ThrowScope&, JSC::JSGlobalObject*,
 JSC::EncodedJSValue CRYPTO_INVALID_MESSAGELEN(JSC::ThrowScope&, JSC::JSGlobalObject*);
 JSC::EncodedJSValue OSSL_EVP_INVALID_DIGEST(JSC::ThrowScope&, JSC::JSGlobalObject*);
 JSC::EncodedJSValue KEY_GENERATION_JOB_FAILED(JSC::ThrowScope&, JSC::JSGlobalObject*);
-JSC::EncodedJSValue INCOMPATIBLE_OPTION_PAIR(JSC::ThrowScope&, JSC::JSGlobalObject*, ASCIILiteral opt1, ASCIILiteral opt2);
+JSC::EncodedJSValue INCOMPATIBLE_OPTION_PAIR(JSC::ThrowScope&, JSC::JSGlobalObject*, WTF::StringView opt1, WTF::StringView opt2);
 JSC::EncodedJSValue MISSING_OPTION(JSC::ThrowScope&, JSC::JSGlobalObject*, ASCIILiteral message);
 JSC::EncodedJSValue INVALID_MIME_SYNTAX(JSC::ThrowScope&, JSC::JSGlobalObject*, const String& part, const String& input, int position);
 JSC::EncodedJSValue CLOSED_MESSAGE_PORT(JSC::ThrowScope&, JSC::JSGlobalObject*);

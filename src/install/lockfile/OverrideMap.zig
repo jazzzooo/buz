@@ -331,7 +331,7 @@ pub fn parseOverrideValue(
             literalSliced.slice,
             &literalSliced,
             log,
-            package_manager,
+            Dependency.ParseContext.fromPackageManager(package_manager),
         ) orelse {
             try log.addWarningFmt(source, loc, lockfile.allocator, "Invalid " ++ field ++ " value \"{s}\"", .{value});
             return null;

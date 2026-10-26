@@ -1,15 +1,29 @@
 #include "EventLoopTaskNoContext.h"
+#include "SchemaBindings.h"
+#include "ZigGlobalObject.h"
 
 namespace Bun {
 
-extern "C" void Bun__EventLoopTaskNoContext__performTask(EventLoopTaskNoContext* task)
+EventLoopTaskNoContext::EventLoopTaskNoContext(JSC::JSGlobalObject* global)
+    : m_createdInBunVm(defaultGlobalObject(global)->bunVM())
 {
-    task->performTask();
 }
 
-extern "C" void* Bun__EventLoopTaskNoContext__createdInBunVm(const EventLoopTaskNoContext* task)
+void Bindgen::Engine::releaseEventLoopTaskNoContext(EventLoopTaskNoContext* task)
 {
-    return task->createdInBunVm();
+    delete task;
+}
+
+void Bindgen::Engine::bunBindgenEngine_EventLoop_eventLoopTaskNoContextPerform(
+    const Bindgen::Engine::BunBindgenEngine_EventLoop_eventLoopTaskNoContextPerform_Arguments& args)
+{
+    args.task->performTask();
+}
+
+std::optional<VirtualMachine*> Bindgen::Engine::bunBindgenEngine_EventLoop_eventLoopTaskNoContextCreatedInBunVM(
+    const Bindgen::Engine::BunBindgenEngine_EventLoop_eventLoopTaskNoContextCreatedInBunVM_Arguments& args)
+{
+    return static_cast<VirtualMachine*>(args.task->createdInBunVm());
 }
 
 } // namespace Bun

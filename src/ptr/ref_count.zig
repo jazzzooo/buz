@@ -70,6 +70,9 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
         debug: if (enable_debug) DebugData(false) else void = if (enable_debug) .empty,
 
         const debug_name = options.debug_name orelse bun.meta.typeBaseName(@typeName(T));
+        pub const ref_count_target = T;
+        pub const thread_safe = false;
+        pub const bindgen_gc_token = @import("../bindgen/gc_token.zig").markerWithAffinity(@This(), .vm);
         pub const scope = bun.Output.Scoped(debug_name, .hidden);
         const debug_stack_trace = false;
 
@@ -111,6 +114,10 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
         }
 
         pub fn deref(self: *T) void {
+            if (derefDeferred(self)) destructor(self);
+        }
+
+        pub fn derefDeferred(self: *T) bool {
             const count = getRefCount(self);
             if (enable_debug) {
                 count.debug.assertValid(); // Likely double deref.
@@ -134,8 +141,15 @@ pub fn RefCount(T: type, field_name: []const u8, destructor: anytype, options: O
                 if (enable_debug) {
                     count.debug.deinit();
                 }
-                destructor(self);
+                return true;
             }
+            return false;
+        }
+
+        pub fn destroyAfterDeferred(self: *T) void {
+            const count = getRefCount(self);
+            assert(count.raw_count == 0);
+            destructor(self);
         }
 
         pub fn dupeRef(self: anytype) RefPtr(@TypeOf(self)) {
@@ -198,6 +212,9 @@ pub fn ThreadSafeRefCount(T: type, field_name: []const u8, destructor: fn (*T) v
         debug: if (enable_debug) DebugData(true) else void = if (enable_debug) .empty,
 
         const debug_name = options.debug_name orelse bun.meta.typeBaseName(@typeName(T));
+        pub const ref_count_target = T;
+        pub const thread_safe = true;
+        pub const bindgen_gc_token = @import("../bindgen/gc_token.zig").markerWithAffinity(@This(), .any);
         pub const scope = bun.Output.Scoped(debug_name, .hidden);
 
         pub fn init() @This() {
@@ -227,6 +244,10 @@ pub fn ThreadSafeRefCount(T: type, field_name: []const u8, destructor: fn (*T) v
         }
 
         pub fn deref(self: *T) void {
+            if (derefDeferred(self)) destructor(self);
+        }
+
+        pub fn derefDeferred(self: *T) bool {
             const count = getRefCount(self);
             if (enable_debug) count.debug.assertValid();
             const old_count = count.raw_count.fetchSub(1, .seq_cst);
@@ -242,8 +263,15 @@ pub fn ThreadSafeRefCount(T: type, field_name: []const u8, destructor: fn (*T) v
                 if (enable_debug) {
                     count.debug.deinit();
                 }
-                destructor(self);
+                return true;
             }
+            return false;
+        }
+
+        pub fn destroyAfterDeferred(self: *T) void {
+            const count = getRefCount(self);
+            bun.assert(count.raw_count.load(.seq_cst) == 0);
+            destructor(self);
         }
 
         pub fn dupeRef(self: anytype) RefPtr(@TypeOf(self)) {

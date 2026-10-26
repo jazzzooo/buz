@@ -658,38 +658,41 @@ pub const visible = struct {
     }
 };
 
-// C exports for wrapAnsi.cpp
-
-/// Calculate visible width of UTF-16 string excluding ANSI escape codes
-export fn Bun__visibleWidthExcludeANSI_utf16(ptr: [*]const u16, len: usize, ambiguous_as_wide: bool) usize {
-    const input = ptr[0..len];
-    return visible.width.exclude_ansi_colors.utf16(input, ambiguous_as_wide);
+fn bindVisibleWidthExcludeANSILatin1(
+    args: bun.bindgen.Args(VisibleWidthExcludeANSILatin1Schema),
+) bun.bindgen.Return(VisibleWidthExcludeANSILatin1Schema) {
+    const input = args.input.unsafePtr("the C++ caller owns the code units until synchronous visible-width calculation returns");
+    return visible.width.exclude_ansi_colors.latin1(input, args.ambiguousAsWide);
 }
 
-/// Calculate visible width of Latin-1 string excluding ANSI escape codes
-export fn Bun__visibleWidthExcludeANSI_latin1(ptr: [*]const u8, len: usize, ambiguous_as_wide: bool) usize {
-    const input = ptr[0..len];
-    return visible.width.exclude_ansi_colors.latin1(input, ambiguous_as_wide);
+fn bindVisibleWidthExcludeANSIUTF16(
+    args: bun.bindgen.Args(VisibleWidthExcludeANSIUTF16Schema),
+) bun.bindgen.Return(VisibleWidthExcludeANSIUTF16Schema) {
+    const bytes = args.input.unsafePtr("the C++ caller owns the code units until synchronous visible-width calculation returns");
+    if (bytes.len % @sizeOf(u16) != 0) @panic("UTF-16 binding input has an odd byte length");
+    const input = std.mem.bytesAsSlice(u16, @as([]align(@alignOf(u16)) const u8, @alignCast(bytes)));
+    return visible.width.exclude_ansi_colors.utf16(input, args.ambiguousAsWide);
 }
 
-/// Calculate visible width of a single codepoint
-export fn Bun__codepointWidth(cp: u32, ambiguous_as_wide: bool) u8 {
-    return @intCast(visibleCodepointWidth(cp, ambiguous_as_wide));
+fn bindCodepointWidth(
+    args: bun.bindgen.Args(CodepointWidthSchema),
+) bun.bindgen.Return(CodepointWidthSchema) {
+    return @intCast(visibleCodepointWidth(args.codepoint, args.ambiguousAsWide));
 }
 
-/// Grapheme break detection for C++ callers.
-/// Returns true if there should be a grapheme break between cp1 and cp2.
-/// `state` is an opaque u8 that must be initialized to 0 and passed between calls.
-export fn Bun__graphemeBreak(cp1: u32, cp2: u32, state_ptr: *u8) bool {
-    var state: grapheme.BreakState = @fromBackingInt(@intCast(state_ptr.*));
-    const result = grapheme.graphemeBreak(cp1, cp2, &state);
-    state_ptr.* = @backingInt(state);
-    return result;
+fn bindGraphemeBreak(
+    args: bun.bindgen.Args(GraphemeBreakSchema),
+) bun.bindgen.Return(GraphemeBreakSchema) {
+    var state: grapheme.BreakState = @fromBackingInt(@intCast(args.state));
+    const should_break = grapheme.graphemeBreak(args.previous, args.current, &state);
+    // The low bit carries the decision and the high byte carries the next opaque state.
+    return (@as(u16, @backingInt(state)) << 8) | @intFromBool(should_break);
 }
 
-/// Check whether a codepoint is an emoji-capable width base.
-export fn Bun__isEmojiPresentation(cp: u32) bool {
-    return cp >= 0x80 and unicode.get(cp).emoji;
+fn bindIsEmojiPresentation(
+    args: bun.bindgen.Args(IsEmojiPresentationSchema),
+) bun.bindgen.Return(IsEmojiPresentationSchema) {
+    return args.codepoint >= 0x80 and unicode.get(args.codepoint).emoji;
 }
 
 const bun = @import("bun");
@@ -704,3 +707,24 @@ const unicode = @import("unicode_data");
 const u3_fast = strings.u3_fast;
 const unicode_replacement = strings.unicode_replacement;
 const utf16CodepointWithFFFD = strings.utf16CodepointWithFFFD;
+
+const VisibleWidthExcludeANSILatin1Schema = StringWidthBindings.nativeExport("visibleWidthExcludeANSILatin1");
+const VisibleWidthExcludeANSIUTF16Schema = StringWidthBindings.nativeExport("visibleWidthExcludeANSIUTF16");
+const VisibleWidthExcludeANSILatin1Binding = bun.bindgen.Fn(VisibleWidthExcludeANSILatin1Schema, bindVisibleWidthExcludeANSILatin1);
+const VisibleWidthExcludeANSIUTF16Binding = bun.bindgen.Fn(VisibleWidthExcludeANSIUTF16Schema, bindVisibleWidthExcludeANSIUTF16);
+
+const StringWidthBindings = bun.bindgen.Module("StringWidth");
+const CodepointWidthSchema = StringWidthBindings.nativeExport("codepointWidth");
+const GraphemeBreakSchema = StringWidthBindings.nativeExport("graphemeBreak");
+const IsEmojiPresentationSchema = StringWidthBindings.nativeExport("isEmojiPresentation");
+const CodepointWidthBinding = bun.bindgen.Fn(CodepointWidthSchema, bindCodepointWidth);
+const GraphemeBreakBinding = bun.bindgen.Fn(GraphemeBreakSchema, bindGraphemeBreak);
+const IsEmojiPresentationBinding = bun.bindgen.Fn(IsEmojiPresentationSchema, bindIsEmojiPresentation);
+
+comptime {
+    _ = VisibleWidthExcludeANSILatin1Binding;
+    _ = VisibleWidthExcludeANSIUTF16Binding;
+    _ = CodepointWidthBinding;
+    _ = GraphemeBreakBinding;
+    _ = IsEmojiPresentationBinding;
+}

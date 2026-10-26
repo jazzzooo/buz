@@ -32,6 +32,8 @@ pub const S = platform_defs.S;
 /// other places and other times we go direct. So we end up with a lot of
 /// redundant code.
 pub const SystemErrno = platform_defs.SystemErrno;
+pub const SystemError = @import("./SystemError.zig").SystemError;
+pub const SystemResources = @import("./SystemResources.zig");
 pub const getErrno = platform_defs.getErrno;
 
 comptime {
@@ -323,6 +325,9 @@ pub const Tag = enum(u8) {
     uv_tty_set_mode,
     uv_open_osfhandle,
     uv_os_homedir,
+    uv_os_getpriority,
+    uv_os_setpriority,
+    uv_uptime,
 
     // Below this line are Windows API calls only.
 
@@ -337,15 +342,13 @@ pub const Tag = enum(u8) {
     pub fn isWindows(this: Tag) bool {
         return @backingInt(this) > @backingInt(Tag.WriteFile);
     }
-
-    pub var strings = std.EnumMap(Tag, jsc.C.JSStringRef).initFull(null);
 };
 
 pub const Error = @import("./Error.zig");
 pub const PosixStat = @import("./PosixStat.zig").PosixStat;
 
 pub fn Maybe(comptime ReturnTypeT: type) type {
-    return bun.api.node.Maybe(ReturnTypeT, Error);
+    return MaybeResult(This, ReturnTypeT, Error);
 }
 
 pub fn getcwd(buf: []u8) Maybe([]u8) {
@@ -377,7 +380,7 @@ pub fn getcwdZ(buf: []u8) Maybe([:0]u8) {
 
 const syscall_or_c = if (Environment.isLinux) syscall else bun.c;
 
-pub fn fchown(fd: bun.FD, uid: jsc.Node.uid_t, gid: jsc.Node.gid_t) Maybe(void) {
+pub fn fchown(fd: bun.FD, uid: uid_t, gid: gid_t) Maybe(void) {
     if (comptime Environment.isWindows) {
         return sys_uv.fchown(fd, uid, gid);
     }
@@ -866,7 +869,7 @@ pub fn lstatx(path: [*:0]const u8, comptime fields: []const StatxField) Maybe(Po
     return statxImpl(bun.FD.fromNative(std.posix.AT.FDCWD), path, linux.AT.SYMLINK_NOFOLLOW, mask);
 }
 
-pub fn lutimes(path: [:0]const u8, atime: jsc.Node.TimeLike, mtime: jsc.Node.TimeLike) Maybe(void) {
+pub fn lutimes(path: [:0]const u8, atime: TimeLike, mtime: TimeLike) Maybe(void) {
     if (comptime Environment.isWindows) {
         return sys_uv.lutimes(path, atime, mtime);
     }
@@ -1010,7 +1013,13 @@ pub fn mkdirOSPath(file_path: bun.OSPathSliceZ, flags: mode_t) Maybe(void) {
 const fnctl_int = if (Environment.isLinux) usize else c_int;
 pub fn fcntl(fd: bun.FD, cmd: i32, arg: anytype) Maybe(fnctl_int) {
     while (true) {
-        const result = switch (@TypeOf(arg)) {
+        const result = if (comptime Environment.isLinux) fcntl_symbol(fd.native(), cmd, switch (@TypeOf(arg)) {
+            i32, comptime_int, c_int => @as(usize, @bitCast(@as(isize, @as(c_int, arg)))),
+            i64 => @as(usize, @bitCast(@as(isize, arg))),
+            *const anyopaque, *anyopaque => @intFromPtr(arg),
+            usize => arg,
+            else => @compileError("Unsupported argument type for fcntl"),
+        }) else switch (@TypeOf(arg)) {
             i32, comptime_int, c_int => fcntl_symbol(fd.native(), cmd, @as(c_int, arg)),
             i64 => fcntl_symbol(fd.cast(), cmd, @as(c_long, @bitCast(arg))),
             *const anyopaque, *anyopaque, usize => fcntl_symbol(fd.cast(), cmd, arg),
@@ -1991,7 +2000,9 @@ fn rawWritePosix(fd: bun.FD, bytes: []const u8, len: usize, writeFn: anytype) Ma
     }
 }
 
-pub fn write(fd: bun.FD, bytes: []const u8) Maybe(usize) {
+pub fn write(fd: bun.FD, input: []const u8) Maybe(usize) {
+    // Empty Zig slices may have pointers outside the kernel user-address range.
+    const bytes: []const u8 = if (input.len == 0) "" else input;
     const adjusted_len = @min(max_count, bytes.len);
     var debug_timer = bun.Output.DebugTimer.start();
 
@@ -2235,7 +2246,9 @@ else
 
 const fcntl_symbol = syscall.fcntl;
 
-pub fn pread(fd: bun.FD, buf: []u8, offset: i64) Maybe(usize) {
+pub fn pread(fd: bun.FD, input: []u8, offset: i64) Maybe(usize) {
+    var empty_buffer: [1]u8 = undefined;
+    const buf = if (input.len == 0) empty_buffer[0..0] else input;
     const adjusted_len = @min(buf.len, max_count);
 
     if (comptime Environment.allow_assert) {
@@ -2260,7 +2273,8 @@ const pwrite_sym = if (builtin.os.tag == .linux and builtin.link_libc and bun.En
 else
     syscall.pwrite;
 
-pub fn pwrite(fd: bun.FD, bytes: []const u8, offset: i64) Maybe(usize) {
+pub fn pwrite(fd: bun.FD, input: []const u8, offset: i64) Maybe(usize) {
+    const bytes: []const u8 = if (input.len == 0) "" else input;
     if (comptime Environment.allow_assert) {
         if (bytes.len == 0) {
             bun.Output.debugWarn("pwrite() called with 0 length buffer", .{});
@@ -2281,7 +2295,9 @@ pub fn pwrite(fd: bun.FD, bytes: []const u8, offset: i64) Maybe(usize) {
     }
 }
 
-pub fn read(fd: bun.FD, buf: []u8) Maybe(usize) {
+pub fn read(fd: bun.FD, input: []u8) Maybe(usize) {
+    var empty_buffer: [1]u8 = undefined;
+    const buf = if (input.len == 0) empty_buffer[0..0] else input;
     if (comptime Environment.allow_assert) {
         if (buf.len == 0) {
             bun.Output.debugWarn("read() called with 0 length buffer", .{});
@@ -3259,23 +3275,39 @@ pub fn mmap(
     return .initResult(@as([*]align(page_size_min) u8, @ptrCast(@alignCast(rc)))[0..length]);
 }
 
-pub fn mmapFile(path: [:0]const u8, flags: std.c.MAP, wanted_size: ?usize, offset: usize) Maybe([]align(page_size_min) u8) {
+pub const FileMapping = struct {
+    memory: []align(page_size_min) u8,
+    bytes: []u8,
+
+    pub fn deinit(this: *const FileMapping) void {
+        _ = munmap(this.memory);
+    }
+};
+
+pub fn mmapFile(path: [:0]const u8, flags: std.c.MAP, wanted_size: ?usize, offset: usize) Maybe(FileMapping) {
     const fd = switch (open(path, bun.O.RDWR, 0)) {
         .result => |fd| fd,
         .err => |err| return .{ .err = err },
     };
     defer fd.close();
 
-    var size = std.math.sub(usize, @as(usize, @intCast(switch (fstat(fd)) {
+    const file_size = std.math.cast(usize, switch (fstat(fd)) {
         .result => |result| result.size,
         .err => |err| {
             return .{ .err = err };
         },
-    })), offset) catch 0;
+    }) orelse return .{ .err = Error.fromCode(.OVERFLOW, .mmap) };
+    if (offset > std.math.maxInt(i64)) return .{ .err = Error.fromCode(.OVERFLOW, .mmap) };
+    var size = std.math.sub(usize, file_size, offset) catch 0;
 
     if (wanted_size) |size_| size = @min(size, size_);
+    if (size == 0) return .{ .err = Error.fromCode(.INVAL, .mmap) };
 
-    const map = switch (mmap(null, size, .{ .READ = true, .WRITE = true }, flags, fd, offset)) {
+    const aligned_offset = std.mem.alignBackwardAnyAlign(usize, offset, std.heap.pageSize());
+    const delta = offset - aligned_offset;
+    const mapped_size = std.math.add(usize, size, delta) catch return .{ .err = Error.fromCode(.NOMEM, .mmap) };
+
+    const map = switch (mmap(null, mapped_size, .{ .READ = true, .WRITE = true }, flags, fd, aligned_offset)) {
         .result => |map| map,
 
         .err => |err| {
@@ -3283,7 +3315,7 @@ pub fn mmapFile(path: [:0]const u8, flags: std.c.MAP, wanted_size: ?usize, offse
         },
     };
 
-    return .{ .result = map };
+    return .{ .result = .{ .memory = map, .bytes = map[delta..][0..size] } };
 }
 
 pub fn setCloseOnExec(fd: bun.FD) Maybe(void) {
@@ -3699,7 +3731,7 @@ pub fn directoryExistsAt(dir: bun.FD, subpath: anytype) bun.sys.Maybe(bool) {
     };
 }
 
-pub fn futimens(fd: bun.FD, atime: jsc.Node.TimeLike, mtime: jsc.Node.TimeLike) Maybe(void) {
+pub fn futimens(fd: bun.FD, atime: TimeLike, mtime: TimeLike) Maybe(void) {
     if (comptime Environment.isWindows) @compileError("TODO: futimes");
 
     while (true) {
@@ -3723,7 +3755,7 @@ pub fn futimens(fd: bun.FD, atime: jsc.Node.TimeLike, mtime: jsc.Node.TimeLike) 
     unreachable;
 }
 
-fn utimensWithFlags(path: bun.OSPathSliceZ, atime: jsc.Node.TimeLike, mtime: jsc.Node.TimeLike, flags: u32) Maybe(void) {
+fn utimensWithFlags(path: bun.OSPathSliceZ, atime: TimeLike, mtime: TimeLike, flags: u32) Maybe(void) {
     if (comptime Environment.isWindows) @compileError("TODO: utimens");
 
     while (true) {
@@ -3765,7 +3797,7 @@ pub fn getFcntlFlags(fd: bun.FD) Maybe(fnctl_int) {
     };
 }
 
-pub fn utimens(path: bun.OSPathSliceZ, atime: jsc.Node.TimeLike, mtime: jsc.Node.TimeLike) Maybe(void) {
+pub fn utimens(path: bun.OSPathSliceZ, atime: TimeLike, mtime: TimeLike) Maybe(void) {
     return utimensWithFlags(path, atime, mtime, 0);
 }
 
@@ -3885,11 +3917,19 @@ pub fn existsAt(fd: bun.FD, subpath: [:0]const u8) bool {
     @compileError("TODO: existsAtOSPath");
 }
 
-pub extern "c" fn is_executable_file(path: [*:0]const u8) bool;
+fn isExecutableFileZ(path: [*:0]const u8) bool {
+    const info = stat(std.mem.span(path)).asValue() orelse return false;
+    if (!S.ISREG(@intCast(info.mode))) return false;
+    while (true) {
+        const rc = std.c.faccessat(std.posix.AT.FDCWD, path, std.posix.X_OK, c.AT_EACCESS);
+        if (rc == 0) return true;
+        if (getErrno(rc) != .INTR) return false;
+    }
+}
 
 pub fn isExecutableFileOSPath(path: bun.OSPathSliceZ) bool {
     if (comptime Environment.isPosix) {
-        return is_executable_file(path);
+        return isExecutableFileZ(path);
     }
 
     if (comptime Environment.isWindows) {
@@ -3920,9 +3960,10 @@ pub fn isExecutableFilePath(path: anytype) bool {
     const Type = @TypeOf(path);
     if (comptime Environment.isPosix) {
         switch (Type) {
-            *[*:0]const u8, *[*:0]u8, [*:0]const u8, [*:0]u8 => return is_executable_file(path),
-            [:0]const u8, [:0]u8 => return is_executable_file(path.ptr),
-            []const u8, []u8 => return is_executable_file(
+            *[*:0]const u8, *[*:0]u8 => return isExecutableFileZ(path.*),
+            [*:0]const u8, [*:0]u8 => return isExecutableFileZ(path),
+            [:0]const u8, [:0]u8 => return isExecutableFileZ(path.ptr),
+            []const u8, []u8 => return isExecutableFileZ(
                 &(std.posix.toPosixPath(path) catch return false),
             ),
             else => @compileError("TODO: isExecutableFilePath"),
@@ -3980,9 +4021,10 @@ pub fn setFileOffsetToEndWindows(fd: bun.FD) Maybe(usize) {
     @compileError("Not Implemented");
 }
 
-extern fn Bun__disableSOLinger(fd: if (Environment.isWindows) windows.HANDLE else i32) void;
 pub fn disableLinger(fd: bun.FD) void {
-    Bun__disableSOLinger(fd.cast());
+    const Linger = if (Environment.isWindows) std.os.windows.ws2_32.linger else std.c.linger;
+    const linger: Linger = .{ .onoff = 1, .linger = 0 };
+    _ = std.c.setsockopt(fd.native(), std.c.SOL.SOCKET, std.c.SO.LINGER, &linger, @sizeOf(Linger));
 }
 
 pub fn pipe() Maybe([2]bun.FD) {
@@ -4029,7 +4071,7 @@ pub fn dupWithFlags(fd: bun.FD, _: i32) Maybe(bun.FD) {
             process,
             &target,
             0,
-            1,
+            0,
             w.DUPLICATE_SAME_ACCESS,
         );
         if (out == 0) {
@@ -4059,6 +4101,20 @@ pub fn dupWithFlags(fd: bun.FD, _: i32) Maybe(bun.FD) {
 
 pub fn dup(fd: bun.FD) Maybe(bun.FD) {
     return dupWithFlags(fd, 0);
+}
+
+pub fn dupForLibUV(source: bun.FD) Maybe(bun.FD) {
+    const fd = switch (dup(source)) {
+        .result => |fd| fd,
+        .err => |err| return .{ .err = err },
+    };
+    if (comptime Environment.isWindows) {
+        return .{ .result = fd.makeLibUVOwned() catch {
+            _ = fd.closeAllowingStandardIo(null);
+            return .{ .err = Error.fromCode(.MFILE, .dup).withFd(source) };
+        } };
+    }
+    return .{ .result = fd };
 }
 
 pub fn link(comptime T: type, src: [:0]const T, dest: [:0]const T) Maybe(void) {
@@ -4180,15 +4236,6 @@ pub fn linkatTmpfile(tmpfd: bun.FD, dirfd: bun.FD, name: [:0]const u8) Maybe(voi
     }
 }
 
-/// c-bindings.cpp
-extern "c" fn sys_preadv2(
-    fd: c_int,
-    iov: [*]const std.posix.iovec,
-    iovcnt: c_int,
-    offset: std.posix.off_t,
-    flags: c_uint,
-) isize;
-
 /// On Linux, this `preadv2(2)` to attempt to read a blocking file descriptor without blocking.
 ///
 /// On other platforms, this is just a wrapper around `read(2)`.
@@ -4202,7 +4249,7 @@ pub fn readNonblocking(fd: bun.FD, buf: []u8) Maybe(usize) {
             var debug_timer = bun.Output.DebugTimer.start();
 
             // Note that there is a bug on Linux Kernel 5
-            const rc = sys_preadv2(fd.native(), &iovec, 1, -1, std.os.linux.RWF.NOWAIT);
+            const rc = std.os.linux.preadv2(fd.native(), &iovec, 1, -1, std.os.linux.RWF.NOWAIT);
 
             if (comptime Environment.isDebug) {
                 log("preadv2({f}, {d}) = {d} ({f})", .{ fd, buf.len, rc, debug_timer });
@@ -4233,15 +4280,6 @@ pub fn readNonblocking(fd: bun.FD, buf: []u8) Maybe(usize) {
     return read(fd, buf);
 }
 
-/// c-bindings.cpp
-pub extern "c" fn sys_pwritev2(
-    fd: c_int,
-    iov: [*]const std.posix.iovec_const,
-    iovcnt: c_int,
-    offset: std.posix.off_t,
-    flags: c_uint,
-) isize;
-
 /// On Linux, this `pwritev(2)` to attempt to read a blocking file descriptor without blocking.
 ///
 /// On other platforms, this is just a wrapper around `read(2)`.
@@ -4255,7 +4293,7 @@ pub fn writeNonblocking(fd: bun.FD, buf: []const u8) Maybe(usize) {
 
             var debug_timer = bun.Output.DebugTimer.start();
 
-            const rc = sys_pwritev2(fd.native(), &iovec, 1, -1, std.os.linux.RWF.NOWAIT);
+            const rc = std.os.linux.pwritev2(fd.native(), &iovec, 1, -1, std.os.linux.RWF.NOWAIT);
 
             if (comptime Environment.isDebug) {
                 log("pwritev2({f}, {d}) = {d} ({f})", .{ fd, buf.len, rc, debug_timer });
@@ -4319,26 +4357,26 @@ const FILE_SHARE = w.FILE_SHARE_WRITE | w.FILE_SHARE_READ | w.FILE_SHARE_DELETE;
 pub const libuv_error_map = @import("./libuv_error_map.zig").libuv_error_map;
 pub const coreutils_error_map = @import("./coreutils_error_map.zig").coreutils_error_map;
 
-extern fn getRSS(rss: *usize) c_int;
 pub fn selfProcessMemoryUsage() ?usize {
     var rss: usize = undefined;
-    if (getRSS(&rss) != 0) {
+    if (@import("libc-process").bun_process_resident_memory(&rss) != 0) {
         return null;
     }
     return rss;
 }
 
-export fn Bun__errnoName(err: c_int) ?[*:0]const u8 {
+fn errnoName(err: c_int) []const u8 {
     if (comptime Environment.isWindows) {
-        if (err < 0) return @ptrCast(bun.windows.libuv.uv_err_name(err));
-        return @tagName(SystemErrno.fromErrno(err) orelse return null);
+        if (err < 0) return std.mem.span(@as([*:0]const u8, @ptrCast(bun.windows.libuv.uv_err_name(err))));
+        return @tagName(SystemErrno.fromErrno(err) orelse return "UNKNOWN");
     }
-    return @tagName(SystemErrno.init(err) orelse return null);
+    return @tagName(SystemErrno.init(err) orelse return "UNKNOWN");
 }
 
-/// Small "fire and forget" wrapper around unlink for c usage that handles EINTR, windows path conversion, etc.
-export fn Bun__unlink(ptr: [*:0]const u8, len: usize) void {
-    _ = unlink(ptr[0..len :0]);
+fn bindSystemErrnoName(
+    args: bun.bindgen.Args(SystemErrnoNameSchema),
+) bun.OOM!bun.bindgen.Return(SystemErrnoNameSchema) {
+    return bun.bindgen.ByteString.fromLatin1(errnoName(args.errorNumber));
 }
 
 // TODO: this is wrong on Windows
@@ -4733,18 +4771,19 @@ pub const umask = switch (Environment.os) {
     .windows => @extern(*const fn (mode: u16) callconv(.c) u16, .{ .name = "_umask" }),
 };
 
-pub const TestingAPIs = @import("../sys_jsc/error_jsc.zig").TestingAPIs;
-
 pub const File = @import("./File.zig");
 
 const builtin = @import("builtin");
 const sys = @This(); // to avoid ambiguous references.
+const MaybeResult = @import("./Maybe.zig").Maybe;
 
 const bun = @import("bun");
 const Environment = bun.Environment;
 const FD = bun.FD;
 const MAX_PATH_BYTES = bun.MAX_PATH_BYTES;
-const jsc = bun.jsc;
+pub const uid_t = if (Environment.isPosix) std.posix.uid_t else bun.windows.libuv.uv_uid_t;
+pub const gid_t = if (Environment.isPosix) std.posix.gid_t else bun.windows.libuv.uv_gid_t;
+pub const TimeLike = @import("./time_like.zig").TimeLike;
 const NativeStat = switch (Environment.os) {
     .linux => bun.c.struct_stat,
     .mac, .freebsd => std.c.Stat,
@@ -4775,6 +4814,14 @@ const mem = std.mem;
 const page_size_min = std.heap.page_size_min;
 const w = bun.windows;
 const Stat = std.Io.File.Stat;
+
+const ErrorBindings = bun.bindgen.Module("errors");
+const SystemErrnoNameSchema = ErrorBindings.nativeExport("systemErrnoName");
+const SystemErrnoNameBinding = bun.bindgen.Fn(SystemErrnoNameSchema, bindSystemErrnoName);
+
+comptime {
+    _ = SystemErrnoNameBinding;
+}
 
 const posix = std.posix;
 const libc = std.posix.system;

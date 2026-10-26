@@ -43,7 +43,7 @@ pub const decode = decoderWrap(OKPacket, decodeInternal).decode;
 
 const Data = @import("../../shared/Data.zig").Data;
 
-const StatusFlags = @import("../StatusFlags.zig").StatusFlags;
+const StatusFlags = @import("mysql_domain").StatusFlags;
 
 const NewReader = @import("./NewReader.zig").NewReader;
 const decoderWrap = @import("./NewReader.zig").decoderWrap;

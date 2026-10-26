@@ -2,15 +2,17 @@ const debug = Output.scoped(.CLI, .hidden);
 
 pub var start_time: i128 = undefined;
 
-pub var Bun__Node__ProcessTitle: ?string = null;
+pub var process_title: ?[]u8 = null;
 
 pub const Cli = struct {
     pub const CompileTarget = @import("../options_types/CompileTarget.zig");
     pub var log_: logger.Log = undefined;
     pub var io: std.Io = undefined;
-    var pinned_thread_domain: ?bun.jsc.PinnedThreadDomain = null;
+    pub var transpiler_capabilities: bun.Transpiler.EngineCapabilities = undefined;
+    pub var engine_capabilities: CliEngineCapabilities = undefined;
+    var pinned_thread_domain: ?bun.PinnedThreadDomain = null;
 
-    pub fn pinnedThreads() *bun.jsc.PinnedThreadDomain {
+    pub fn pinnedThreads() *bun.PinnedThreadDomain {
         return if (pinned_thread_domain) |*domain| domain else @panic("runtime services are not initialized");
     }
 
@@ -19,9 +21,11 @@ pub const Cli = struct {
         pinned_thread_domain = null;
     }
 
-    pub fn start(allocator: std.mem.Allocator, io_: std.Io) void {
+    pub fn start(allocator: std.mem.Allocator, io_: std.Io, capabilities: CliEngineCapabilities) void {
         is_main_thread = true;
         io = io_;
+        transpiler_capabilities = capabilities.transpiler;
+        engine_capabilities = capabilities;
         pinned_thread_domain = .init(io);
         start_time = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
         log_ = logger.Log.init(allocator);
@@ -92,6 +96,7 @@ pub const RemoveCommand = @import("./remove_command.zig").RemoveCommand;
 pub const RunCommand = @import("./run_command.zig").RunCommand;
 pub const ShellCompletions = @import("./shell_completions.zig");
 pub const UpdateCommand = @import("./update_command.zig").UpdateCommand;
+pub const UpgradeCommandModule = @import("./upgrade_command.zig");
 pub const UpgradeCommand = @import("./upgrade_command.zig").UpgradeCommand;
 pub const BunxCommand = @import("./bunx_command.zig").BunxCommand;
 pub const ExecCommand = @import("./exec_command.zig").ExecCommand;
@@ -100,13 +105,12 @@ pub const PatchCommitCommand = @import("./patch_commit_command.zig").PatchCommit
 pub const OutdatedCommand = @import("./outdated_command.zig").OutdatedCommand;
 pub const UpdateInteractiveCommand = @import("./update_interactive_command.zig").UpdateInteractiveCommand;
 pub const PublishCommand = @import("./publish_command.zig").PublishCommand;
+pub const PackCommandModule = @import("./pack_command.zig");
 pub const PackCommand = @import("./pack_command.zig").PackCommand;
 pub const AuditCommand = @import("./audit_command.zig").AuditCommand;
 pub const InitCommand = @import("./init_command.zig").InitCommand;
 pub const WhyCommand = @import("./why_command.zig").WhyCommand;
 pub const FuzzilliCommand = @import("./fuzzilli_command.zig").FuzzilliCommand;
-pub const ReplCommand = @import("./repl_command.zig").ReplCommand;
-
 pub const Arguments = @import("./Arguments.zig");
 
 const AutoCommand = struct {
@@ -347,11 +351,18 @@ pub const Command = struct {
             .start_time = start_time,
             .io = Cli.io,
             .allocator = allocator,
+            .transpiler_capabilities = Cli.transpiler_capabilities,
+            .engine_capabilities = Cli.engine_capabilities,
         };
         global_cli_ctx = &context_data;
 
         if (comptime Command.Tag.uses_global_options.get(command)) {
             global_cli_ctx.args = try Arguments.parse(allocator, global_cli_ctx, command);
+            global_cli_ctx.engine_capabilities.configure_process_runtime(
+                global_cli_ctx.runtime_options.no_deprecation,
+                global_cli_ctx.runtime_options.throw_deprecation,
+                global_cli_ctx.runtime_options.zero_fill_buffers,
+            );
         }
 
         if (comptime Environment.isWindows) {
@@ -558,11 +569,7 @@ pub const Command = struct {
                 const fd = std.fmt.parseInt(u31, fd_str, 10) catch {
                     Output.panic("Invalid BUN_INTERNAL_WEBVIEW_HOST fd: {s}", .{fd_str});
                 };
-                const hostMain = @extern(
-                    *const fn (i32) callconv(.c) noreturn,
-                    .{ .name = "Bun__WebView__hostMain" },
-                );
-                hostMain(fd);
+                @import("webview-host-ffi").Bun__WebView__hostMain(fd);
             }
         }
 
@@ -607,6 +614,8 @@ pub const Command = struct {
                         .start_time = start_time,
                         .io = Cli.io,
                         .allocator = bun.default_allocator,
+                        .transpiler_capabilities = Cli.transpiler_capabilities,
+                        .engine_capabilities = Cli.engine_capabilities,
                     };
                     global_cli_ctx = &context_data;
 
@@ -717,7 +726,7 @@ pub const Command = struct {
             },
             .ReplCommand => {
                 const ctx = try Command.init(allocator, log, .RunCommand);
-                try ReplCommand.exec(ctx);
+                try ctx.engine_capabilities.run_repl(ctx);
                 return;
             },
             .RemoveCommand => {
@@ -747,7 +756,7 @@ pub const Command = struct {
             .TestCommand => {
                 const ctx = try Command.init(allocator, log, .TestCommand);
 
-                try TestCommand.exec(ctx);
+                try ctx.engine_capabilities.run_tests(ctx);
                 return;
             },
             .GetCompletionsCommand => {
@@ -855,7 +864,7 @@ pub const Command = struct {
 
                 if (ctx.positionals.len > 1) {
                     try ExecCommand.exec(ctx);
-                } else Tag.printHelp(.ExecCommand, true);
+                } else tagPrintHelp(.ExecCommand, true);
             },
             .FuzzilliCommand => {
                 if (bun.Environment.enable_fuzzilli) {
@@ -913,28 +922,7 @@ pub const Command = struct {
             },
 
             .InitCommand => {
-                const intro_text =
-                    \\<b>Usage<r>: <b><green>bun init<r> <cyan>[flags]<r> <blue>[\<folder\>]<r>
-                    \\  Initialize a Bun project in the current directory.
-                    \\  Creates a package.json, tsconfig.json, and bunfig.toml if they don't exist.
-                    \\
-                    \\<b>Flags<r>:
-                    \\      <cyan>--help<r>             Print this menu
-                    \\  <cyan>-y, --yes<r>              Accept all default options
-                    \\  <cyan>-m, --minimal<r>          Only initialize type definitions
-                    \\  <cyan>-r, --react<r>            Initialize a React project
-                    \\      <cyan>--react=tailwind<r>   Initialize a React project with TailwindCSS
-                    \\      <cyan>--react=shadcn<r>     Initialize a React project with @shadcn/ui and TailwindCSS
-                    \\
-                    \\<b>Examples:<r>
-                    \\  <b><green>bun init<r>
-                    \\  <b><green>bun init<r> <cyan>--yes<r>
-                    \\  <b><green>bun init<r> <cyan>--react<r>
-                    \\  <b><green>bun init<r> <cyan>--react=tailwind<r> <blue>my-app<r>
-                ;
-
-                Output.pretty(intro_text ++ "\n", .{});
-                Output.flush();
+                InitCommand.printHelp();
             },
 
             Command.Tag.BunxCommand => {
@@ -1213,6 +1201,7 @@ pub const Command = struct {
 
         try Install.Lockfile.Printer.print(
             ctx.io,
+            ctx.transpiler_capabilities.javascript_semantics,
             ctx.allocator,
             ctx.log,
             ctx.args.entry_points[0],
@@ -1278,7 +1267,7 @@ pub const Command = struct {
         const args = bun.argv;
 
         if (args.len <= 2) {
-            Command.Tag.printHelp(.CreateCommand, false);
+            Command.tagPrintHelp(.CreateCommand, false);
             Global.exit(1);
             return;
         }
@@ -1319,7 +1308,7 @@ pub const Command = struct {
             positional_i == 0 or
             positionals[1].len == 0)
         {
-            Command.Tag.printHelp(.CreateCommand, true);
+            Command.tagPrintHelp(.CreateCommand, true);
             Global.exit(0);
             return;
         }
@@ -1449,11 +1438,9 @@ const options = @import("../bundler/options.zig");
 const std = @import("std");
 const ColonListType = @import("./colon_list_type.zig").ColonListType;
 const RunCommand_ = @import("./run_command.zig").RunCommand;
-const TestCommand = @import("./test_command.zig").TestCommand;
 
 const Install = @import("../install/install.zig");
 const PackageManager = Install.PackageManager;
-
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Global = bun.Global;
@@ -1465,3 +1452,4 @@ const logger = bun.logger;
 const strings = bun.strings;
 const File = bun.sys.File;
 const api = bun.schema.api;
+const CliEngineCapabilities = @import("../options_types/Context.zig").EngineCapabilities;

@@ -31,7 +31,7 @@ pub fn convertEnvToWTF8() bun.OOM!void {
             if (str_len == 0) break; // array ends with empty null-terminated string
             num_vars += 1;
         }
-        break :blk try bun.strings.toUTF8AllocWithType(bun.default_allocator, wtf16_buf[0..len]);
+        break :blk try bun.strings.toUTF8Alloc(bun.default_allocator, wtf16_buf[0..len]);
     };
     errdefer bun.default_allocator.free(wtf8_buf);
     var len: usize = 0;

@@ -33,7 +33,7 @@ const std = @import("std");
 
 const bun = @import("bun");
 const strings = bun.strings;
-const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
+const SSLConfig = @import("../../runtime/socket/SSLConfig.zig");
 
 const HTTPClient = bun.http;
 const NewHTTPContext = HTTPClient.NewHTTPContext;

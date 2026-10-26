@@ -3,7 +3,6 @@
 #include "JSDOMConvertBase.h"
 #include <concepts>
 #include <optional>
-#include <tuple>
 #include <utility>
 
 namespace Bun {
@@ -14,23 +13,12 @@ typename WebCore::Converter<T>::ReturnType convertIDL(
     JSC::JSValue value,
     Ctx& ctx)
 {
+    if constexpr (requires { ctx.setValue(value); })
+        ctx.setValue(value);
     if constexpr (WebCore::Converter<T>::takesContext) {
         return WebCore::Converter<T>::convert(globalObject, value, ctx);
     } else {
         return WebCore::Converter<T>::convert(globalObject, value);
-    }
-}
-
-template<typename T, IDLConversionContext Ctx>
-std::optional<typename WebCore::Converter<T>::ReturnType> tryConvertIDL(
-    JSC::JSGlobalObject& globalObject,
-    JSC::JSValue value,
-    Ctx& ctx)
-{
-    if constexpr (WebCore::Converter<T>::takesContext) {
-        return WebCore::Converter<T>::tryConvert(globalObject, value, ctx);
-    } else {
-        return WebCore::Converter<T>::tryConvert(globalObject, value);
     }
 }
 
@@ -49,6 +37,7 @@ struct DefaultContextConverter : WebCore::DefaultConverter<IDL> {
 
 template<typename IDL>
 struct DefaultTryConverter : DefaultContextConverter<IDL> {
+    using DefaultContextConverter<IDL>::convert;
     using typename DefaultContextConverter<IDL>::ReturnType;
 
     template<IDLConversionContext Ctx>
@@ -65,13 +54,6 @@ struct DefaultTryConverter : DefaultContextConverter<IDL> {
         return ReturnType {};
     }
 
-    static std::optional<ReturnType> tryConvert(
-        JSC::JSGlobalObject& globalObject,
-        JSC::JSValue value)
-    {
-        auto ctx = DefaultConversionContext {};
-        return WebCore::Converter<IDL>::tryConvert(globalObject, value, ctx);
-    }
 };
 
 }

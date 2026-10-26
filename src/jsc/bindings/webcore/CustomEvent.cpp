@@ -26,6 +26,8 @@
 
 #include "config.h"
 #include "CustomEvent.h"
+#include "JSDOMWrapperCache.h"
+#include "WebCoreJSClientData.h"
 
 #include <JavaScriptCore/JSCInlines.h>
 #include <wtf/TZoneMallocInlines.h>
@@ -57,17 +59,15 @@ Ref<CustomEvent> CustomEvent::create(const AtomString& type, const Init& initial
     return adoptRef(*new CustomEvent(type, initializer, isTrusted));
 }
 
-void CustomEvent::initCustomEvent(const AtomString& type, bool canBubble, bool cancelable, JSC::JSValue detail)
+void CustomEvent::initCustomEvent(JSC::VM& vm, const AtomString& type, bool canBubble, bool cancelable, Bun::Bindgen::CppAny detail)
 {
     if (isBeingDispatched())
         return;
 
     initEvent(type, canBubble, cancelable);
 
-    // FIXME: This code is wrong: we should emit a write-barrier. Otherwise, GC can collect it.
-    // https://bugs.webkit.org/show_bug.cgi?id=236353
-    m_detail.setWeakly(detail);
-    m_cachedDetail.clear();
+    m_detail.set(detail);
+    writeBarrierForWrappers(vm, static_cast<JSVMClientData*>(vm.clientData)->wrapperWorlds(), *this);
 }
 
 } // namespace WebCore

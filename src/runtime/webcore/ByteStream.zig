@@ -9,12 +9,19 @@ has_received_last_chunk: bool = false,
 pending: streams.Result.Pending = .{ .result = .{ .done = {} } },
 done: bool = false,
 pending_buffer: []u8 = &.{},
-pending_value: jsc.Strong.Optional = .empty,
 offset: usize = 0,
 highWaterMark: Blob.SizeType = 0,
 pipe: Pipe = .{},
 size_hint: Blob.SizeType = 0,
 buffer_action: ?BufferAction = null,
+consume_callback: ?struct {
+    context: bun.bindgen.NativeCallbackContext(.vm),
+    run: *const fn (bun.bindgen.NativeCallbackContext(.vm), usize) void,
+} = null,
+
+fn didConsume(this: *ByteStream, count: usize) void {
+    if (this.consume_callback) |callback| callback.run(callback.context, count);
+}
 
 pub const Source = webcore.ReadableStream.NewSource(
     @This(),
@@ -24,7 +31,7 @@ pub const Source = webcore.ReadableStream.NewSource(
     onCancel,
     deinit,
     null,
-    drain,
+    drainForBindings,
     memoryCost,
     toBufferedValue,
 );
@@ -33,11 +40,9 @@ const log = Output.scoped(.ByteStream, .visible);
 
 pub const tag = webcore.ReadableStream.Tag.Bytes;
 
-pub fn setup(this: *ByteStream) void {
-    this.* = .{};
-}
-
-pub fn onStart(this: *@This()) streams.Start {
+pub fn onStart(this: *@This()) streams.ReadableStart {
+    if (this.pending.result == .err) return .{ .ready = {} };
+    this.compact();
     if (this.has_received_last_chunk and this.buffer.items.len == 0) {
         return .{ .empty = {} };
     }
@@ -59,21 +64,12 @@ pub fn onStart(this: *@This()) streams.Start {
     return .{ .chunk_size = @min(512 * 1024 + page_size, @max(this.highWaterMark, page_size)) };
 }
 
-pub fn value(this: *@This()) JSValue {
-    const result = this.pending_value.get() orelse {
-        return .zero;
-    };
-    this.pending_value.clearWithoutDeallocation();
-    return result;
-}
-
 pub fn isCancelled(this: *const @This()) bool {
     return this.parent().cancelled;
 }
 
-pub fn unpipeWithoutDeref(this: *@This()) void {
-    this.pipe.ctx = null;
-    this.pipe.onPipe = null;
+pub fn unpipe(this: *@This()) void {
+    this.pipe.deinit();
 }
 
 pub fn onData(
@@ -81,220 +77,159 @@ pub fn onData(
     stream: streams.Result,
     allocator: std.mem.Allocator,
 ) bun.JSTerminated!void {
-    jsc.markBinding(@src());
-    if (this.done) {
-        if (stream.isDone() and (stream == .owned or stream == .owned_and_done)) {
-            if (stream == .owned) allocator.free(stream.owned.slice());
-            if (stream == .owned_and_done) allocator.free(stream.owned_and_done.slice());
-        }
-        this.has_received_last_chunk = stream.isDone();
+    var stream_ = stream;
+    switch (stream_) {
+        .owned, .owned_and_done, .temporary, .temporary_and_done, .err, .done => {},
+        else => @panic("byte stream received a non-data result"),
+    }
+    defer releaseData(&stream_, allocator);
+    if (this.done) return;
 
-        log("ByteStream.onData already done... do nothing", .{});
+    bun.assert(!this.has_received_last_chunk or stream_ == .err);
+    this.has_received_last_chunk = stream_.isDone();
 
+    if (!this.pipe.isEmpty()) {
+        this.didConsume(stream_.slice().len);
+        this.pipe.deliver(stream_.take(), allocator);
         return;
     }
 
-    bun.assert(!this.has_received_last_chunk or stream == .err);
-    this.has_received_last_chunk = stream.isDone();
-
-    if (this.pipe.ctx) |ctx| {
-        this.pipe.onPipe.?(ctx, stream, allocator);
+    if (stream_ == .err) {
+        this.fail(&stream_.err);
         return;
     }
 
-    const chunk = stream.slice();
-
-    if (this.buffer_action) |*action| {
-        if (stream == .err) {
-            defer {
-                this.buffer.clearAndFree();
-                this.pending.result.deinit();
-                this.pending.result = .{ .done = {} };
-                this.buffer_action = null;
-            }
-
-            log("ByteStream.onData err  action.reject()", .{});
-
-            return action.reject(this.parent().globalThis, stream.err);
-        }
-
-        if (this.has_received_last_chunk) {
-            defer {
-                this.buffer_action = null;
-            }
-
-            if (this.buffer.capacity == 0 and stream == .done) {
-                log("ByteStream.onData done and action.fulfill()", .{});
-
-                var blob = this.toAnyBlob().?;
-                try action.fulfill(this.parent().globalThis, &blob);
-                return;
-            }
-            if (this.buffer.capacity == 0 and stream == .owned_and_done) {
-                log("ByteStream.onData owned_and_done and action.fulfill()", .{});
-
-                this.buffer = std.array_list.Managed(u8).fromOwnedSlice(bun.default_allocator, @constCast(chunk));
-                var blob = this.toAnyBlob().?;
-                try action.fulfill(this.parent().globalThis, &blob);
-                return;
-            }
-            defer {
-                if (stream == .owned_and_done or stream == .owned) {
-                    allocator.free(stream.slice());
-                }
-            }
-            log("ByteStream.onData appendSlice and action.fulfill()", .{});
-
-            bun.handleOom(this.buffer.appendSlice(chunk));
-            var blob = this.toAnyBlob().?;
-            try action.fulfill(this.parent().globalThis, &blob);
+    if (this.buffer_action != null) {
+        this.didConsume(stream_.slice().len);
+        this.append(&stream_, 0, allocator) catch {
+            this.outOfMemory();
             return;
-        } else {
-            bun.handleOom(this.buffer.appendSlice(chunk));
-
-            if (stream == .owned_and_done or stream == .owned) {
-                allocator.free(stream.slice());
-            }
+        };
+        if (this.has_received_last_chunk) {
+            var action = this.buffer_action.?.take();
+            this.buffer_action = null;
+            var blob = this.toAnyBlob().?;
+            action.fulfill(&blob);
         }
-
         return;
     }
 
     if (this.pending.state == .pending) {
         bun.assert(this.buffer.items.len == 0);
+        const chunk = stream_.slice();
         const to_copy = this.pending_buffer[0..@min(chunk.len, this.pending_buffer.len)];
-        const pending_buffer_len = this.pending_buffer.len;
         bun.assert(to_copy.ptr != chunk.ptr);
         @memcpy(to_copy, chunk[0..to_copy.len]);
+        this.didConsume(to_copy.len);
         this.pending_buffer = &.{};
 
-        const is_really_done = this.has_received_last_chunk and to_copy.len <= pending_buffer_len;
-
+        this.append(&stream_, to_copy.len, allocator) catch {
+            this.outOfMemory();
+            return;
+        };
+        const is_really_done = this.has_received_last_chunk and this.buffer.items.len == this.offset;
         if (is_really_done) {
             this.done = true;
-
             if (to_copy.len == 0) {
-                if (stream == .err) {
-                    this.pending.result = .{
-                        .err = stream.err,
-                    };
-                } else {
-                    this.pending.result = .{
-                        .done = {},
-                    };
-                }
+                this.pending.result = .{ .done = {} };
             } else {
                 this.pending.result = .{
                     .into_array_and_done = .{
-                        .value = this.value(),
-                        .len = @as(Blob.SizeType, @truncate(to_copy.len)),
+                        .len = to_copy.len,
                     },
                 };
             }
         } else {
             this.pending.result = .{
                 .into_array = .{
-                    .value = this.value(),
-                    .len = @as(Blob.SizeType, @truncate(to_copy.len)),
+                    .len = to_copy.len,
                 },
             };
         }
 
-        const remaining = chunk[to_copy.len..];
-        if (remaining.len > 0 and chunk.len > 0)
-            this.append(stream, to_copy.len, chunk, allocator) catch @panic("Out of memory while copying request body");
-
-        log("ByteStream.onData pending.run()", .{});
-
         this.pending.run();
-
         return;
     }
 
-    log("ByteStream.onData no action just append", .{});
-
-    this.append(stream, 0, chunk, allocator) catch @panic("Out of memory while copying request body");
+    this.append(&stream_, 0, allocator) catch this.outOfMemory();
 }
 
-pub fn append(
+fn releaseData(stream: *streams.Result, allocator: std.mem.Allocator) void {
+    switch (stream.*) {
+        .owned, .owned_and_done => |*bytes| bytes.deinit(allocator),
+        .err => |*err| err.deinit(),
+        else => {},
+    }
+}
+
+fn outOfMemory(this: *ByteStream) void {
+    var err: streams.Result.StreamError = .OutOfMemory;
+    this.fail(&err);
+}
+
+fn fail(this: *ByteStream, err: *streams.Result.StreamError) void {
+    this.done = true;
+    this.has_received_last_chunk = true;
+    this.buffer.clearAndFree();
+    this.offset = 0;
+    this.pending_buffer = &.{};
+    this.pending.result.deinit();
+    this.pending.result = .{ .err = err.take() };
+
+    if (this.buffer_action) |*action| {
+        action.reject(&this.pending.result.err);
+        this.buffer_action = null;
+        this.pending.result.deinit();
+        this.pending.result = .{ .done = {} };
+    } else {
+        this.pending.run();
+    }
+}
+
+fn append(
     this: *@This(),
-    stream: streams.Result,
+    stream: *streams.Result,
     offset: usize,
-    base_address: []const u8,
     allocator: std.mem.Allocator,
-) !void {
-    var stream_ = stream;
+) bun.OOM!void {
     const chunk = stream.slice()[offset..];
+    if (chunk.len == 0) return;
 
-    if (this.buffer.capacity == 0) {
-        switch (stream_) {
-            .owned => |*owned| {
+    // drain() transfers a byte list whose owner uses the default allocator.
+    if (this.buffer.items.len == 0 and
+        bun.allocators.isDefault(allocator))
+    {
+        switch (stream.*) {
+            .owned, .owned_and_done => |*owned| {
+                this.buffer.clearAndFree();
                 this.buffer = owned.moveToListManaged(allocator);
-                this.offset += offset;
+                this.offset = offset;
+                return;
             },
-            .owned_and_done => |*owned| {
-                this.buffer = owned.moveToListManaged(allocator);
-                this.offset += offset;
-            },
-            .temporary_and_done, .temporary => {
-                this.buffer = try std.array_list.Managed(u8).initCapacity(bun.default_allocator, chunk.len);
-                this.buffer.appendSliceAssumeCapacity(chunk);
-            },
-            .err => {
-                this.pending.result = .{ .err = stream.err };
-            },
-            .done => {},
-            else => unreachable,
+            else => {},
         }
-        return;
     }
 
-    switch (stream) {
-        .temporary_and_done, .temporary => {
-            try this.buffer.appendSlice(chunk);
-        },
-        .owned_and_done, .owned => {
-            try this.buffer.appendSlice(chunk);
-            allocator.free(@constCast(base_address));
-        },
-        .err => {
-            if (this.buffer_action != null) {
-                @panic("Expected buffer action to be null");
-            }
-
-            this.pending.result = .{ .err = stream.err };
-        },
-        .done => {},
-        // We don't support the rest of these yet
-        else => unreachable,
-    }
-
-    return;
-}
-
-pub fn setValue(this: *@This(), view: jsc.JSValue) void {
-    jsc.markBinding(@src());
-    this.pending_value.set(this.parent().globalThis, view);
+    try this.buffer.appendSlice(chunk);
 }
 
 pub fn parent(this: *@This()) *Source {
     return @fieldParentPtr("context", this);
 }
 
-pub fn onPull(this: *@This(), buffer: []u8, view: jsc.JSValue) streams.Result {
-    jsc.markBinding(@src());
+pub fn onPull(this: *@This(), buffer: []u8) streams.Result {
     bun.assert(buffer.len > 0);
     bun.debugAssert(this.buffer_action == null);
 
+    if (this.pending.result == .err) return this.pending.result.take();
+
     if (this.buffer.items.len > 0) {
-        bun.assert(this.value() == .zero);
         const to_write = @min(
             this.buffer.items.len - this.offset,
             buffer.len,
         );
-        const remaining_in_buffer = this.buffer.items[this.offset..][0..to_write];
-
         @memcpy(buffer[0..to_write], this.buffer.items[this.offset..][0..to_write]);
+        this.didConsume(to_write);
 
         if (this.offset + to_write == this.buffer.items.len) {
             this.offset = 0;
@@ -303,34 +238,31 @@ pub fn onPull(this: *@This(), buffer: []u8, view: jsc.JSValue) streams.Result {
             this.offset += to_write;
         }
 
-        if (this.has_received_last_chunk and remaining_in_buffer.len == 0) {
+        if (this.has_received_last_chunk and this.buffer.items.len == 0) {
             this.buffer.clearAndFree();
             this.done = true;
 
             return .{
                 .into_array_and_done = .{
-                    .value = view,
-                    .len = @as(Blob.SizeType, @truncate(to_write)),
+                    .len = to_write,
                 },
             };
         }
 
         return .{
             .into_array = .{
-                .value = view,
-                .len = @as(Blob.SizeType, @truncate(to_write)),
+                .len = to_write,
             },
         };
     }
 
-    if (this.has_received_last_chunk) {
+    if (this.has_received_last_chunk or this.done) {
         return .{
             .done = {},
         };
     }
 
     this.pending_buffer = buffer;
-    this.setValue(view);
 
     return .{
         .pending = &this.pending,
@@ -338,24 +270,25 @@ pub fn onPull(this: *@This(), buffer: []u8, view: jsc.JSValue) streams.Result {
 }
 
 pub fn onCancel(this: *@This()) void {
-    jsc.markBinding(@src());
-    const view = this.value();
-    if (this.buffer.capacity > 0) this.buffer.clearAndFree();
+    if (this.done) return;
+    var pipe = this.pipe.take();
+    defer pipe.deinit();
+    var action = if (this.buffer_action) |*pending_action| pending_action.take() else null;
+    this.buffer_action = null;
+    this.buffer.clearAndFree();
     this.done = true;
-    this.pending_value.deinit();
+    this.has_received_last_chunk = true;
+    this.offset = 0;
+    this.pending_buffer = &.{};
+    this.pending.result.deinit();
+    this.pending.result = .{ .done = {} };
+    this.pending.run();
 
-    if (view != .zero) {
-        this.pending_buffer = &.{};
-        this.pending.result.deinit();
-        this.pending.result = .{ .done = {} };
-        this.pending.run();
+    if (action) |*pending_action| {
+        var reason: streams.Result.StreamError = .{ .AbortReason = .UserAbort };
+        pending_action.reject(&reason);
     }
-
-    if (this.buffer_action) |*action| {
-        const global = this.parent().globalThis;
-        action.reject(global, .{ .AbortReason = .UserAbort }) catch {}; // TODO: properly propagate exception upwards
-        this.buffer_action = null;
-    }
+    if (!pipe.isEmpty()) pipe.deliver(.{ .err = .{ .AbortReason = .UserAbort } }, bun.default_allocator);
 }
 
 pub fn memoryCost(this: *const @This()) usize {
@@ -364,38 +297,48 @@ pub fn memoryCost(this: *const @This()) usize {
 }
 
 pub fn deinit(this: *@This()) void {
-    jsc.markBinding(@src());
-    if (this.buffer.capacity > 0) this.buffer.clearAndFree();
-
-    this.pending_value.deinit();
-    if (!this.done) {
-        this.done = true;
-
+    this.buffer.clearAndFree();
+    if (this.pending.state == .pending) {
         this.pending_buffer = &.{};
         this.pending.result.deinit();
         this.pending.result = .{ .done = {} };
-        if (this.pending.state == .pending and this.pending.future == .promise) {
-            // We must never run JavaScript inside of a GC finalizer.
-            this.pending.runOnNextTick();
-        } else {
-            this.pending.run();
-        }
+        this.pending.run();
     }
+    this.pending.deinit();
     if (this.buffer_action) |*action| {
         action.deinit();
     }
-    this.parent().deinit();
+    this.pipe.deinit();
 }
 
 pub fn drain(this: *@This()) bun.ByteList {
+    this.compact();
     if (this.buffer.items.len > 0) {
+        this.didConsume(this.buffer.items.len);
         return bun.ByteList.moveFromList(&this.buffer);
     }
     return .{};
 }
 
+fn drainForBindings(this: *ByteStream) bun.OOM!bun.bindgen.OwnedBytes {
+    const bytes = try bun.bindgen.OwnedBytes.fromSlice(this.buffer.items[this.offset..]);
+    this.didConsume(this.buffer.items.len - this.offset);
+    this.buffer.clearAndFree();
+    this.offset = 0;
+    return bytes;
+}
+
+fn compact(this: *ByteStream) void {
+    if (this.offset == 0) return;
+    const remaining = this.buffer.items[this.offset..];
+    std.mem.copyForwards(u8, this.buffer.items[0..remaining.len], remaining);
+    this.buffer.items.len = remaining.len;
+    this.offset = 0;
+}
+
 pub fn toAnyBlob(this: *@This()) ?Blob.Any {
-    if (this.has_received_last_chunk) {
+    if (this.has_received_last_chunk and this.pending.result != .err) {
+        this.compact();
         const buffer = this.buffer;
         this.buffer = .{
             .allocator = bun.default_allocator,
@@ -407,7 +350,7 @@ pub fn toAnyBlob(this: *@This()) ?Blob.Any {
         this.pending.result = .{ .done = {} };
         this.parent().is_closed = true;
         return .{ .InternalBlob = .{
-            .bytes = buffer,
+            .bytes = .fromManaged(buffer),
             .was_string = false,
         } };
     }
@@ -415,33 +358,30 @@ pub fn toAnyBlob(this: *@This()) ?Blob.Any {
     return null;
 }
 
-pub fn toBufferedValue(this: *@This(), globalThis: *jsc.JSGlobalObject, action: streams.BufferAction.Tag) bun.JSError!jsc.JSValue {
+pub fn toBufferedValue(this: *@This(), action: *BufferAction) void {
     if (this.buffer_action != null) {
-        return globalThis.throw("Cannot buffer value twice", .{});
+        action.failAlreadyBuffering();
+        return;
     }
 
     if (this.pending.result == .err) {
-        const err, _ = this.pending.result.err.toJSWeak(globalThis);
+        action.reject(&this.pending.result.err);
         this.pending.result.deinit();
+        this.pending.result = .{ .done = {} };
         this.done = true;
         this.buffer.clearAndFree();
-        return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+        this.offset = 0;
+        return;
     }
 
     if (this.toAnyBlob()) |blob_| {
         var blob = blob_;
-        return blob.toPromise(globalThis, action);
+        action.fulfill(&blob);
+        return;
     }
 
-    this.buffer_action = switch (action) {
-        .blob => .{ .blob = .init(globalThis) },
-        .bytes => .{ .bytes = .init(globalThis) },
-        .arrayBuffer => .{ .arrayBuffer = .init(globalThis) },
-        .json => .{ .json = .init(globalThis) },
-        .text => .{ .text = .init(globalThis) },
-    };
-
-    return this.buffer_action.?.value();
+    this.didConsume(this.buffer.items.len - this.offset);
+    this.buffer_action = action.take();
 }
 
 const std = @import("std");
@@ -449,12 +389,9 @@ const std = @import("std");
 const bun = @import("bun");
 const Output = bun.Output;
 
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;
-
 const webcore = bun.webcore;
 const Blob = webcore.Blob;
+const BufferAction = webcore.ReadableStream.BufferAction;
 const Pipe = webcore.Pipe;
 
 const streams = webcore.streams;
-const BufferAction = streams.BufferAction;

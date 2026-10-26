@@ -156,12 +156,10 @@ pub const FilePoll = struct {
     const Subprocess = jsc.Subprocess;
     const StaticPipeWriter = Subprocess.StaticPipeWriter.Poll;
     const ShellStaticPipeWriter = bun.shell.ShellSubprocess.StaticPipeWriter.Poll;
-    const SecurityScanStaticPipeWriter = bun.install.SecurityScanSubprocess.StaticPipeWriter.Poll;
+    const SecurityScanStaticPipeWriter = SecurityScanSubprocess.StaticPipeWriter.Poll;
     const FileSink = jsc.WebCore.FileSink.Poll;
     const TerminalPoll = bun.api.Terminal.Poll;
     const DNSResolver = bun.api.dns.Resolver;
-    const GetAddrInfoRequest = bun.api.dns.GetAddrInfoRequest;
-    const Request = bun.api.dns.internal.Request;
     const LifecycleScriptSubprocessOutputReader = bun.install.LifecycleScriptSubprocess.OutputReader;
     const BufferedReader = bun.io.BufferedReader;
     const ParentDeathWatchdog = bun.ParentDeathWatchdog;
@@ -187,8 +185,6 @@ pub const FilePoll = struct {
         BufferedReader,
 
         DNSResolver,
-        GetAddrInfoRequest,
-        Request,
         // LifecycleScriptSubprocessOutputReader,
         Process,
         ShellBufferedWriter, // i do not know why, but this has to be here otherwise compiler will complain about dependency loop
@@ -411,26 +407,6 @@ pub const FilePoll = struct {
                 loader.onDNSPoll(poll);
             },
 
-            @field(Owner.Tag, @typeName(GetAddrInfoRequest)) => {
-                if (comptime !Environment.isMac) {
-                    unreachable;
-                }
-
-                log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) GetAddrInfoRequest", .{poll.fd});
-                var loader: *GetAddrInfoRequest = ptr.as(GetAddrInfoRequest);
-                loader.onMachportChange();
-            },
-
-            @field(Owner.Tag, @typeName(Request)) => {
-                if (comptime !Environment.isMac) {
-                    unreachable;
-                }
-
-                log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) InternalDNSRequest", .{poll.fd});
-                const loader: *Request = ptr.as(Request);
-                Request.MacAsyncDNS.onMachportChange(loader);
-            },
-
             @field(Owner.Tag, @typeName(TerminalPoll)) => {
                 log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) Terminal", .{poll.fd});
                 var handler: *TerminalPoll = ptr.as(TerminalPoll);
@@ -577,8 +553,8 @@ pub const FilePoll = struct {
             };
         }
 
-        pub fn get(this: *Store) *FilePoll {
-            return this.hive.get();
+        pub fn tryGet(this: *Store) bun.OOM!*FilePoll {
+            return this.hive.tryGet();
         }
 
         pub fn processDeferredFrees(this: *Store) void {
@@ -614,10 +590,8 @@ pub const FilePoll = struct {
             poll.flags.insert(.ignore_updates);
             this.pending_free_tail = poll;
 
-            const callback = jsc.OpaqueWrap(Store, processDeferredFrees);
-            bun.assert(vm.after_event_loop_callback == null or vm.after_event_loop_callback == @as(?jsc.OpaqueCallback, callback));
-            vm.after_event_loop_callback = callback;
-            vm.after_event_loop_callback_ctx = this;
+            bun.assert(vm.pending_file_poll_frees == null or vm.pending_file_poll_frees == this);
+            vm.pending_file_poll_frees = this;
         }
     };
 
@@ -639,7 +613,11 @@ pub const FilePoll = struct {
             return;
         }
 
-        if (comptime @TypeOf(event_loop_ctx_) == jsc.EventLoopHandle) {
+        if (comptime @TypeOf(event_loop_ctx_) == RuntimeLoopHandle) {
+            event_loop_ctx_.platformLoop().subActive(@as(u32, @intFromBool(this.flags.contains(.has_incremented_active_count))));
+        } else if (comptime @TypeOf(event_loop_ctx_) == *RuntimeLoop) {
+            event_loop_ctx_.platformLoop().subActive(@as(u32, @intFromBool(this.flags.contains(.has_incremented_active_count))));
+        } else if (comptime @TypeOf(event_loop_ctx_) == jsc.EventLoopHandle) {
             event_loop_ctx_.loop().subActive(@as(u32, @intFromBool(this.flags.contains(.has_incremented_active_count))));
         } else {
             const event_loop_ctx = jsc.AbstractVM(event_loop_ctx_);
@@ -672,7 +650,11 @@ pub const FilePoll = struct {
         if (this.flags.contains(.closed))
             return;
 
-        if (comptime @TypeOf(event_loop_ctx_) == jsc.EventLoopHandle) {
+        if (comptime @TypeOf(event_loop_ctx_) == RuntimeLoopHandle) {
+            event_loop_ctx_.platformLoop().addActive(@as(u32, @intFromBool(!this.flags.contains(.has_incremented_active_count))));
+        } else if (comptime @TypeOf(event_loop_ctx_) == *RuntimeLoop) {
+            event_loop_ctx_.platformLoop().addActive(@as(u32, @intFromBool(!this.flags.contains(.has_incremented_active_count))));
+        } else if (comptime @TypeOf(event_loop_ctx_) == jsc.EventLoopHandle) {
             event_loop_ctx_.loop().addActive(@as(u32, @intFromBool(!this.flags.contains(.has_incremented_active_count))));
         } else {
             const event_loop_ctx = jsc.AbstractVM(event_loop_ctx_);
@@ -706,57 +688,26 @@ pub const FilePoll = struct {
         }
     }
 
-    pub fn init(vm: anytype, fd: bun.FD, flags: Flags.Struct, comptime Type: type, owner: *Type) *FilePoll {
-        if (comptime @TypeOf(vm) == *bun.install.PackageManager) {
-            return init(jsc.EventLoopHandle.init(&vm.event_loop), fd, flags, Type, owner);
-        }
-
-        if (comptime @TypeOf(vm) == jsc.EventLoopHandle) {
-            var poll = vm.filePolls().get();
-            poll.fd = fd;
-            poll.flags = Flags.Set.init(flags);
-            poll.owner = Owner.init(owner);
-            poll.next_to_free = null;
-            poll.allocator_type = if (vm == .js) .js else .mini;
-
-            if (KQueueGenerationNumber != u0) {
-                max_generation_number +%= 1;
-                poll.generation_number = max_generation_number;
-            }
-            log("FilePoll.init(0x{x}, generation_number={d}, fd={f})", .{ @intFromPtr(poll), poll.generation_number, fd });
-            return poll;
-        }
-
-        return initWithOwner(vm, fd, flags, Owner.init(owner));
+    pub fn create(vm: anytype, fd: bun.FD, flags: Flags.Struct, comptime Type: type, owner: *Type) bun.OOM!*FilePoll {
+        const runtime_loop = vm.runtimeLoopHandle();
+        const store = try runtime_loop.tryFilePolls();
+        return initialize(try store.tryGet(), fd, flags, Owner.init(owner), if (runtime_loop.kind == .js) .js else .mini);
     }
 
-    pub fn initWithOwner(vm_: anytype, fd: bun.FD, flags: Flags.Struct, owner: Owner) *FilePoll {
-        const vm = jsc.AbstractVM(vm_);
-        var poll = vm.allocFilePoll();
+    fn initialize(poll: *FilePoll, fd: bun.FD, flags: Flags.Struct, owner: Owner, allocator_type: AllocatorType) *FilePoll {
         poll.fd = fd;
         poll.flags = Flags.Set.init(flags);
         poll.owner = owner;
         poll.next_to_free = null;
-        poll.allocator_type = if (comptime @TypeOf(vm_) == *jsc.VirtualMachine) .js else .mini;
+        poll.allocator_type = allocator_type;
 
         if (KQueueGenerationNumber != u0) {
             max_generation_number +%= 1;
             poll.generation_number = max_generation_number;
         }
 
-        log("FilePoll.initWithOwner(0x{x}, generation_number={d}, fd={f})", .{ @intFromPtr(poll), poll.generation_number, fd });
+        log("FilePoll.create(0x{x}, generation_number={d}, fd={f})", .{ @intFromPtr(poll), poll.generation_number, fd });
         return poll;
-    }
-
-    pub inline fn canRef(this: *const FilePoll) bool {
-        if (this.flags.contains(.disable))
-            return false;
-
-        return !this.flags.contains(.has_incremented_poll_count);
-    }
-
-    pub inline fn canUnref(this: *const FilePoll) bool {
-        return this.flags.contains(.has_incremented_poll_count);
     }
 
     /// Prevent a poll from keeping the process alive.
@@ -804,10 +755,6 @@ pub const FilePoll = struct {
         FilePoll,
     });
 
-    comptime {
-        @export(&onTick, .{ .name = "Bun__internal_dispatch_ready_poll" });
-    }
-
     const timeout = std.mem.zeroes(std.posix.timespec);
     const kevent = std.c.kevent;
     const linux = std.os.linux;
@@ -819,6 +766,7 @@ pub const FilePoll = struct {
     }
 
     pub fn registerWithFd(this: *FilePoll, loop: *Loop, flag: Flags, one_shot: OneShotFlag, fd: bun.FD) bun.sys.Maybe(void) {
+        loop.internal_loop_data.dispatch_ready_poll = onTick;
         const watcher_fd = loop.fd;
 
         log("register: FilePoll(0x{x}, generation_number={d}) {s} ({f})", .{ @intFromPtr(this), this.generation_number, @tagName(flag), fd });
@@ -1268,114 +1216,7 @@ pub const FilePoll = struct {
     }
 };
 
-pub const Waker = switch (Environment.os) {
-    .mac => KEventWaker,
-    // FreeBSD 13+ has eventfd(2), so the Linux waker works as-is.
-    .linux, .freebsd => LinuxWaker,
-    .windows, .wasm => @compileError("unreachable"),
-};
-
-pub const LinuxWaker = struct {
-    fd: bun.FD,
-
-    pub fn init() !Waker {
-        return initWithFileDescriptor(try bun.sys.eventfd(0, 0).unwrap());
-    }
-
-    pub fn getFd(this: *const Waker) bun.FD {
-        return this.fd;
-    }
-
-    pub fn initWithFileDescriptor(fd: bun.FD) Waker {
-        return Waker{ .fd = fd };
-    }
-
-    pub fn wait(this: Waker) void {
-        var bytes: usize = 0;
-        _ = bun.sys.read(this.fd, @as(*[8]u8, @ptrCast(&bytes))).unwrap() catch 0;
-    }
-
-    pub fn wake(this: *const Waker) void {
-        var bytes: usize = 1;
-        _ = bun.sys.write(
-            this.fd,
-            @as(*[8]u8, @ptrCast(&bytes)),
-        ).unwrap() catch 0;
-    }
-};
-
-pub const KEventWaker = struct {
-    kq: std.posix.fd_t,
-    machport: bun.mach_port = undefined,
-    machport_buf: []u8 = &.{},
-
-    const zeroed = std.mem.zeroes([16]Kevent64);
-
-    const Kevent64 = std.posix.system.kevent64_s;
-
-    pub fn wake(this: *Waker) void {
-        bun.jsc.markBinding(@src());
-
-        _ = io_darwin_schedule_wakeup(this.machport);
-    }
-
-    pub fn getFd(this: *const Waker) bun.FD {
-        return .fromNative(this.kq);
-    }
-
-    pub fn wait(this: Waker) void {
-        if (!bun.FD.fromNative(this.kq).isValid()) {
-            return;
-        }
-
-        bun.jsc.markBinding(@src());
-        var events = zeroed;
-
-        _ = std.posix.system.kevent64(
-            this.kq,
-            &events,
-            0,
-            &events,
-            events.len,
-            .{},
-            null,
-        );
-    }
-
-    extern fn io_darwin_close_machport(bun.mach_port) void;
-
-    extern fn io_darwin_create_machport(
-        std.posix.fd_t,
-        *anyopaque,
-        usize,
-    ) bun.mach_port;
-
-    extern fn io_darwin_schedule_wakeup(bun.mach_port) bool;
-
-    pub fn init() !Waker {
-        return initWithFileDescriptor(bun.default_allocator, (try bun.sys.kqueue().unwrap()).cast());
-    }
-
-    pub fn initWithFileDescriptor(allocator: std.mem.Allocator, kq: i32) !Waker {
-        bun.jsc.markBinding(@src());
-        bun.assert(kq > -1);
-        const machport_buf = try allocator.alloc(u8, 1024);
-        const machport = io_darwin_create_machport(
-            kq,
-            machport_buf.ptr,
-            1024,
-        );
-        if (machport == 0) {
-            return error.MachportCreationFailed;
-        }
-
-        return Waker{
-            .kq = kq,
-            .machport = machport,
-            .machport_buf = machport_buf,
-        };
-    }
-};
+pub const Waker = bun.io.Waker;
 
 pub const Closer = struct {
     pub fn close(
@@ -1384,13 +1225,16 @@ pub const Closer = struct {
         _: void,
     ) void {
         bun.assert(fd.isValid());
-        fd.close();
+        _ = fd.closeAllowingStandardIo(null);
     }
 };
 
 const std = @import("std");
 
 const bun = @import("bun");
+const SecurityScanSubprocess = bun.install.SecurityScanner.SecurityScanSubprocess;
+const RuntimeLoop = bun.RuntimeLoop;
+const RuntimeLoopHandle = bun.RuntimeLoopHandle;
 const Environment = bun.Environment;
 const Output = bun.Output;
 const jsc = bun.jsc;

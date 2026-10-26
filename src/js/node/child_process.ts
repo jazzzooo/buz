@@ -204,7 +204,7 @@ function spawn(file, args, options) {
  *   ) => any} [callback]
  * @returns {ChildProcess}
  */
-function execFile(file, args, options, callback) {
+function execFile(file, args?, options?, callback?) {
   ({ file, args, options, callback } = normalizeExecFileArgs(file, args, options, callback));
 
   options = {
@@ -254,7 +254,7 @@ function execFile(file, args, options, callback) {
   let exited = false;
   let timeoutId;
 
-  let ex: Error | null = null;
+  let ex: (Error & { cmd?: string }) | null = null;
 
   let cmd = file;
 
@@ -325,7 +325,7 @@ function execFile(file, args, options, callback) {
     killed = true;
     try {
       child.kill(options.killSignal);
-    } catch (e) {
+    } catch (e: any) {
       ex = e;
       exitHandler();
     }
@@ -422,9 +422,10 @@ const kCustomPromisifySymbol = Symbol.for("nodejs.util.promisify.custom");
 
 const customPromiseExecFunction = orig => {
   return (...args) => {
-    const { resolve, reject, promise } = Promise.withResolvers();
+    const { resolve, reject, promise } = Promise.withResolvers<{ stdout: any; stderr: any }>();
 
-    promise.child = orig(...args, (err, stdout, stderr) => {
+    const promiseWithChild = promise as typeof promise & { child: ReturnType<typeof orig> };
+    promiseWithChild.child = orig(...args, (err, stdout, stderr) => {
       if (err !== null) {
         err.stdout = stdout;
         err.stderr = stderr;
@@ -434,7 +435,7 @@ const customPromiseExecFunction = orig => {
       }
     });
 
-    return promise;
+    return promiseWithChild;
   };
 };
 
@@ -484,7 +485,7 @@ execFile[kCustomPromisifySymbol][kCustomPromisifySymbol] = execFile[kCustomPromi
  *   error: Error;
  *   }}
  */
-function spawnSync(file, args, options) {
+function spawnSync(file, args?, options?) {
   options = {
     __proto__: null,
     maxBuffer: MAX_BUFFER,
@@ -511,7 +512,7 @@ function spawnSync(file, args, options) {
   var { input } = options;
   if (input) {
     if (ArrayBufferIsView(input)) {
-      bunStdio[0] = input;
+      bunStdio[0] = input as Bun.SpawnOptions.Writable;
     } else if (typeof input === "string") {
       bunStdio[0] = Buffer.from(input, encoding || "utf8");
     } else {
@@ -520,8 +521,15 @@ function spawnSync(file, args, options) {
   }
 
   var error;
+  var stdout: string | Buffer | number | null = null;
+  var stderr: string | Buffer | number | null = null;
+  var exitCode: number | null = null;
+  var signalCode: string | null | undefined;
+  var exitedDueToTimeout: boolean | undefined;
+  var exitedDueToMaxBuffer: boolean | undefined;
+  var pid: number | undefined;
   try {
-    var {
+    ({
       stdout = null,
       stderr = null,
       exitCode,
@@ -543,7 +551,7 @@ function spawnSync(file, args, options) {
       timeout: options.timeout,
       killSignal: options.killSignal,
       maxBuffer: options.maxBuffer,
-    });
+    }));
   } catch (err) {
     error = err;
     stdout = null;
@@ -555,7 +563,15 @@ function spawnSync(file, args, options) {
   const outputStdout = typeof stdout === "number" ? null : stdout;
   const outputStderr = typeof stderr === "number" ? null : stderr;
 
-  const result = {
+  const result: {
+    signal: string | null;
+    status: number | null;
+    output: (string | Buffer | null | undefined)[];
+    pid: number | undefined;
+    error?: any;
+    stdout?: string | Buffer | null | undefined;
+    stderr?: string | Buffer | null | undefined;
+  } = {
     signal: signalCode ?? null,
     status: exitCode,
     // TODO: Need to expose extra pipes from Bun.spawnSync to child_process
@@ -604,8 +620,8 @@ function spawnSync(file, args, options) {
 
   return result;
 }
-const etimedoutErrorCode = $newZigFunction("node_util_binding.zig", "etimedoutErrorCode", 0);
-const enobufsErrorCode = $newZigFunction("node_util_binding.zig", "enobufsErrorCode", 0);
+const etimedoutErrorCode = $bindgenFn("NodeUtil.schema.zig", "etimedoutErrorCode");
+const enobufsErrorCode = $bindgenFn("NodeUtil.schema.zig", "enobufsErrorCode");
 
 /**
  * Spawns a file as a shell synchronously.
@@ -721,7 +737,7 @@ function stdioStringToArray(stdio, channel) {
  *   }} [options]
  * @returns {ChildProcess}
  */
-function fork(modulePath, args = [], options) {
+function fork(modulePath, args: any[] = [], options?) {
   modulePath = getValidatedPath(modulePath, "modulePath");
 
   // Get options and args arguments.
@@ -804,7 +820,7 @@ function getSignalsToNamesMapping() {
   return signalsToNamesMapping;
 }
 
-function normalizeExecFileArgs(file, args, options, callback) {
+function normalizeExecFileArgs(file, args?, options?, callback?) {
   if ($isJSArray(args)) {
     args = ArrayPrototypeSlice.$call(args);
   } else if (args != null && typeof args === "object") {
@@ -1044,6 +1060,10 @@ class ChildProcess extends EventEmitter {
   #handle;
   #closesNeeded = 1;
   #closesGot = 0;
+
+  // Assigned only when the child is spawned with an IPC channel.
+  declare send: (message: any, handle?: any, options?: any, callback?: any) => boolean;
+  declare disconnect: () => void;
 
   signalCode = null;
   exitCode = null;
@@ -1391,7 +1411,7 @@ class ChildProcess extends EventEmitter {
           item?.ref?.();
         }
       }
-    } catch (ex) {
+    } catch (ex: any) {
       if (
         ex != null &&
         typeof ex === "object" &&
@@ -1596,7 +1616,7 @@ const nodeToBunLookup = {
   ipc: "ipc",
 };
 
-function nodeToBun(item: string, index: number): string | number | null | NodeJS.TypedArray | ArrayBufferView {
+function nodeToBun(item: any, index: number): string | number | null | NodeJS.TypedArray | ArrayBufferView {
   // If not defined, use the default.
   // For stdin/stdout/stderr, it's pipe. For others, it's ignore.
   if (item == null) {
@@ -1665,7 +1685,14 @@ function fdToStdioName(fd: number) {
   }
 }
 
-function getBunStdioFromOptions(stdio) {
+type BunStdioTuple = [
+  Bun.SpawnOptions.Writable,
+  Bun.SpawnOptions.Readable,
+  Bun.SpawnOptions.Readable,
+  ...Bun.SpawnOptions.Readable[],
+];
+
+function getBunStdioFromOptions(stdio): BunStdioTuple {
   const normalizedStdio = normalizeStdio(stdio);
   if (normalizedStdio.filter(v => v === "ipc").length > 1) throw $ERR_IPC_ONE_PIPE();
   // Node options:
@@ -1690,8 +1717,7 @@ function getBunStdioFromOptions(stdio) {
   // ignore -> null
   // inherit -> inherit (stdin/stdout/stderr)
   // Stream -> throw err for now
-  const bunStdio = normalizedStdio.map(nodeToBun);
-  return bunStdio;
+  return normalizedStdio.map(nodeToBun) as BunStdioTuple;
 }
 
 function normalizeStdio(stdio): string[] {
@@ -1987,6 +2013,8 @@ class SystemError extends Error {
   syscall;
   errno;
   code;
+  pid;
+  spawnargs;
   constructor(message, path, syscall, errno, code) {
     super(message);
     this.path = path;

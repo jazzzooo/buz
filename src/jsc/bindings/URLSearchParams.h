@@ -27,9 +27,8 @@
 
 #include "ExceptionOr.h"
 #include <wtf/Vector.h>
-#include <wtf/WeakPtr.h>
+#include <wtf/RefPtr.h>
 #include <wtf/text/WTFString.h>
-#include <variant>
 
 namespace WebCore {
 
@@ -40,22 +39,19 @@ class URLSearchParams : public RefCounted<URLSearchParams> {
 public:
     ~URLSearchParams();
 
-    static ExceptionOr<Ref<URLSearchParams>> create(std::variant<Vector<Vector<String>>, Vector<KeyValuePair<String, String>>, String>&&);
-    static Ref<URLSearchParams> create(const String& string, DOMURL* associatedURL)
-    {
-        return adoptRef(*new URLSearchParams(string, associatedURL));
-    }
+    static ExceptionOr<Ref<URLSearchParams>> create(StringView);
+    static ExceptionOr<Ref<URLSearchParams>> create(Vector<KeyValuePair<String, String>>&&);
 
-    void append(const String& name, const String& value);
-    void remove(const StringView name, const String& value = {});
+    ExceptionOr<void> append(const String& name, const String& value);
+    ExceptionOr<void> remove(const StringView name, const String& value = {});
     String get(const StringView name) const;
-    Vector<String> getAll(const StringView name) const;
+    ExceptionOr<Vector<String>> getAll(const StringView name) const;
     bool has(const StringView name, const String& value = {}) const;
-    void set(const String& name, const String& value);
-    String toString() const;
-    void updateFromAssociatedURL();
-    void sort();
+    ExceptionOr<void> set(const String& name, const String& value);
+    ExceptionOr<String> toString() const;
+    ExceptionOr<void> sort();
     size_t size() const { return m_pairs.size(); }
+    const Vector<KeyValuePair<String, String>>& pairs() const { return m_pairs; }
     size_t memoryCost() const;
 
     class Iterator {
@@ -71,14 +67,14 @@ public:
     Iterator createIterator(const ScriptExecutionContext* context) { return Iterator { *this }; }
 
 private:
-    const Vector<KeyValuePair<String, String>>& pairs() const { return m_pairs; }
-    URLSearchParams(const String&, DOMURL*);
-    URLSearchParams(const Vector<KeyValuePair<String, String>>&);
-    void updateURL();
+    friend class DOMURL;
+    static ExceptionOr<Ref<URLSearchParams>> createFromQuery(StringView);
+    explicit URLSearchParams(Vector<KeyValuePair<String, String>>&&);
+    template<typename Mutate> ExceptionOr<void> mutatePairs(Mutate&&);
 
-    WeakPtr<DOMURL> m_associatedURL;
     Vector<KeyValuePair<String, String>> m_pairs;
-    bool needsSorting { true };
+    // A DOMURL owns its params; invalidation needs no back-reference to that owner.
+    bool m_queryDirty { false };
 };
 
 } // namespace WebCore

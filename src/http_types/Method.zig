@@ -37,8 +37,23 @@ pub const Method = enum(u8) {
     UNLOCK = 34,
     UNSUBSCRIBE = 35,
 
-    pub const fromJS = Map.fromJS;
     pub const Set = std.enums.EnumSet(Method);
+
+    pub fn fromBinding(value: BindingMethod) Method {
+        return switch (value) {
+            .DELETE_METHOD => .DELETE,
+            .M_SEARCH => .@"M-SEARCH",
+            inline else => |method| @field(Method, @tagName(method)),
+        };
+    }
+
+    pub fn toBinding(value: Method) BindingMethod {
+        return switch (value) {
+            .DELETE => .DELETE_METHOD,
+            .@"M-SEARCH" => .M_SEARCH,
+            inline else => |method| @field(BindingMethod, @tagName(method)),
+        };
+    }
 
     const with_body: Set = brk: {
         var values = Set.full;
@@ -167,8 +182,6 @@ pub const Method = enum(u8) {
         return Map.get(str);
     }
 
-    pub const toJS = @import("../http_jsc/method_jsc.zig").toJS;
-
     pub const Optional = union(enum) {
         any: void,
         method: Set,
@@ -198,13 +211,21 @@ pub const Method = enum(u8) {
     };
 };
 
-export fn Bun__HTTPMethod__from(str: [*]const u8, len: usize) i16 {
-    const method: Method = Method.find(str[0..len]) orelse return -1;
-    return @backingInt(method);
+fn bindFrom(
+    args: bun.bindgen.Args(FromSchema),
+) bun.bindgen.Return(FromSchema) {
+    const bytes = args.bytes.unsafePtr("the native export borrows the caller-owned method bytes only for this synchronous lookup");
+    const method = Method.find(bytes) orelse return null;
+    return method.toBinding();
 }
 
+const HTTPMethodBindings = bun.bindgen.Module("HTTPMethod");
+const FromSchema = HTTPMethodBindings.nativeExport("from");
+const BindingMethod = @typeInfo(bun.bindgen.Return(FromSchema)).optional.child;
+const FromBinding = bun.bindgen.Fn(FromSchema, bindFrom);
+
 comptime {
-    _ = Bun__HTTPMethod__from;
+    _ = FromBinding;
 }
 
 const bun = @import("bun");

@@ -18,4 +18,6 @@ pub fn writeMatches(allocator: std.mem.Allocator, prefix: []const u8, writer: *s
 const compressed_data = @embedFile("add-completions.txt.zst");
 
 const std = @import("std");
-const zstd = @import("bun").zstd;
+const zstd = bun.zstd;
+
+const bun = @import("bun");

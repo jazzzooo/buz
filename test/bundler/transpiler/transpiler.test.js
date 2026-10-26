@@ -2376,9 +2376,7 @@ console.log(<div {...obj} key="after" />);`),
     });
 
     // Covers: the original fuzzer input (0x76B22B), max+1, i32::MAX, and the
-    // negative-i32 path — parse_int::<i32> accepts a leading '-' so `&#-1;`
-    // lands as a negative CodePoint that must be rejected before it reaches
-    // the u32 cast in push_codepoint_utf16.
+    // negative-i32 path.
     it.each(["&#7777707;", "&#x110000;", "&#2147483647;", "&#-1;"])("%s is rejected", entity => {
       expect(() => bun.transformSync(`export var x = <div>${entity}</div>`)).toThrow(/JSX entity escape is too big/);
     });

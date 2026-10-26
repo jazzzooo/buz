@@ -1,57 +1,5 @@
 pub const FetchHeaders = opaque {
-    extern fn WebCore__FetchHeaders__append(arg0: *FetchHeaders, arg1: *const ZigString, arg2: *const ZigString, arg3: *JSGlobalObject) void;
-    extern fn WebCore__FetchHeaders__cast_(JSValue0: JSValue, arg1: *VM) ?*FetchHeaders;
-    extern fn WebCore__FetchHeaders__clone(arg0: *FetchHeaders, arg1: *JSGlobalObject) JSValue;
-    extern fn WebCore__FetchHeaders__cloneThis(arg0: *FetchHeaders, arg1: *JSGlobalObject) *FetchHeaders;
-    extern fn WebCore__FetchHeaders__copyTo(arg0: *FetchHeaders, arg1: [*]StringPointer, arg2: [*]StringPointer, arg3: [*]u8) void;
-    extern fn WebCore__FetchHeaders__count(arg0: *FetchHeaders, arg1: *u32, arg2: *u32) void;
-    extern fn WebCore__FetchHeaders__createEmpty() *FetchHeaders;
-    extern fn WebCore__FetchHeaders__createFromPicoHeaders_(arg0: ?*const anyopaque) *FetchHeaders;
-    extern fn WebCore__FetchHeaders__createFromUWS(arg1: *anyopaque) *FetchHeaders;
-    extern fn WebCore__FetchHeaders__createValueNotJS(arg0: *JSGlobalObject, arg1: [*c]StringPointer, arg2: [*c]StringPointer, arg3: [*c]const ZigString, arg4: u32) ?*FetchHeaders;
-    extern fn WebCore__FetchHeaders__createValue(arg0: *JSGlobalObject, arg1: [*c]StringPointer, arg2: [*c]StringPointer, arg3: [*c]const ZigString, arg4: u32) JSValue;
-    extern fn WebCore__FetchHeaders__deref(arg0: *FetchHeaders) void;
-    extern fn WebCore__FetchHeaders__fastGet_(arg0: *FetchHeaders, arg1: u8, arg2: [*c]ZigString) void;
-    extern fn WebCore__FetchHeaders__fastHas_(arg0: *FetchHeaders, arg1: u8) bool;
-    extern fn WebCore__FetchHeaders__fastRemove_(arg0: *FetchHeaders, arg1: u8) void;
-    extern fn WebCore__FetchHeaders__get_(arg0: *FetchHeaders, arg1: [*c]const ZigString, arg2: [*c]ZigString, arg3: *JSGlobalObject) void;
-    extern fn WebCore__FetchHeaders__has(arg0: *FetchHeaders, arg1: [*c]const ZigString, arg2: *JSGlobalObject) bool;
-    extern fn WebCore__FetchHeaders__isEmpty(arg0: *FetchHeaders) bool;
-    extern fn WebCore__FetchHeaders__put_(arg0: *FetchHeaders, arg1: [*c]const ZigString, arg2: [*c]const ZigString, arg3: *JSGlobalObject) void;
-    extern fn WebCore__FetchHeaders__remove(arg0: *FetchHeaders, arg1: [*c]const ZigString, arg2: *JSGlobalObject) void;
-    extern fn WebCore__FetchHeaders__toJS(arg0: *FetchHeaders, arg1: *JSGlobalObject) JSValue;
-    extern fn WebCore__FetchHeaders__toUWSResponse(arg0: *FetchHeaders, kind: bun.uws.ResponseKind, arg2: ?*anyopaque) void;
-    extern fn WebCore__FetchHeaders__createFromH3(arg0: *anyopaque) *FetchHeaders;
-
-    pub fn createValue(
-        global: *JSGlobalObject,
-        names: [*c]api.StringPointer,
-        values: [*c]api.StringPointer,
-        buf: *const ZigString,
-        count_: u32,
-    ) JSValue {
-        return WebCore__FetchHeaders__createValue(
-            global,
-            names,
-            values,
-            buf,
-            count_,
-        );
-    }
-
-    extern "c" fn WebCore__FetchHeaders__createFromJS(*jsc.JSGlobalObject, JSValue) ?*FetchHeaders;
-    /// Construct a `Headers` object from a JSValue.
-    ///
-    /// This can be:
-    /// -  Array<[String, String]>
-    /// -  Record<String, String>.
-    ///
-    /// Throws an exception if invalid.
-    ///
-    /// If empty, returns null.
-    pub fn createFromJS(global: *JSGlobalObject, value: JSValue) bun.JSError!?*FetchHeaders {
-        return bun.jsc.fromJSHostCallGeneric(global, @src(), WebCore__FetchHeaders__createFromJS, .{ global, value });
-    }
+    pub const Owner = bun.bindgen.Return(FetchHeadersCreateEmptySchema);
 
     pub fn putDefault(this: *FetchHeaders, name_: HTTPHeaderName, value: []const u8, global: *JSGlobalObject) bun.JSError!void {
         if (this.fastHas(name_)) {
@@ -63,102 +11,96 @@ pub const FetchHeaders = opaque {
 
     pub fn create(
         global: *JSGlobalObject,
-        names: [*c]api.StringPointer,
-        values: [*c]api.StringPointer,
-        buf: *const ZigString,
-        count_: u32,
-    ) ?*FetchHeaders {
-        return WebCore__FetchHeaders__createValueNotJS(
-            global,
-            names,
-            values,
-            buf,
-            count_,
-        );
-    }
+        names: []const api.StringPointer,
+        header_values: []const api.StringPointer,
+        buffer: []const u8,
+    ) bun.JSError!Owner {
+        bun.assert(names.len == header_values.len);
 
-    pub fn from(
-        global: *JSGlobalObject,
-        names: [*c]api.StringPointer,
-        values: [*c]api.StringPointer,
-        buf: *const ZigString,
-        count_: u32,
-    ) JSValue {
-        return WebCore__FetchHeaders__createValue(
-            global,
-            names,
-            values,
-            buf,
-            count_,
-        );
+        const Entry = std.meta.Elem(@FieldType(bun.bindgen.Args(FetchHeadersCreateFromEntriesSchema), "entries"));
+        const native_entries = try bun.default_allocator.alloc(Entry, names.len);
+        defer bun.default_allocator.free(native_entries);
+
+        for (names, header_values, native_entries) |name, value, *entry| {
+            entry.* = .{
+                .name = bun.bindgen.BytesOperand.fromSlice(headerSlice(buffer, name)),
+                .value = bun.bindgen.BytesOperand.fromSlice(headerSlice(buffer, value)),
+            };
+        }
+
+        return bun.bindgen.Engine(FetchHeadersCreateFromEntriesSchema).call(global, .{ .entries = native_entries });
     }
 
     pub fn isEmpty(this: *FetchHeaders) bool {
-        return WebCore__FetchHeaders__isEmpty(this);
+        return bun.bindgen.Engine(FetchHeadersIsEmptySchema).call(.{ .headers = this });
     }
 
     pub fn createFromUWS(
         uws_request: *anyopaque,
-    ) *FetchHeaders {
-        return WebCore__FetchHeaders__createFromUWS(
-            uws_request,
-        );
+    ) bun.OOM!Owner {
+        return bun.bindgen.Engine(FetchHeadersCreateFromUWSSchema).call(.{ .request = @ptrCast(uws_request) });
     }
 
     pub fn createFromH3(
         h3_request: *anyopaque,
-    ) *FetchHeaders {
-        return WebCore__FetchHeaders__createFromH3(
-            h3_request,
-        );
+    ) bun.OOM!Owner {
+        return bun.bindgen.Engine(FetchHeadersCreateFromH3Schema).call(.{ .request = @ptrCast(h3_request) });
     }
 
-    pub fn toUWSResponse(
-        headers: *FetchHeaders,
-        kind: bun.uws.ResponseKind,
-        uws_response: *anyopaque,
-    ) void {
-        return WebCore__FetchHeaders__toUWSResponse(
-            headers,
-            kind,
-            uws_response,
-        );
-    }
-
-    const PicoHeaders = extern struct {
-        ptr: ?*const anyopaque,
-        len: usize,
+    pub const ResponseWriteOptions = struct {
+        omit_framing: bool = false,
+        omit_connection: bool = false,
     };
 
-    pub fn createEmpty() *FetchHeaders {
-        return WebCore__FetchHeaders__createEmpty();
+    pub fn writeToResponse(headers: *FetchHeaders, response: bun.uws.AnyResponse, options: ResponseWriteOptions) bun.uws.ResponseWriteError!void {
+        var entries = try headers.snapshotForHTTP();
+        defer entries.deinit();
+        var iterator = entries.iterator();
+        while (iterator.next()) |converted| {
+            var entry = converted;
+            defer entry.deinit();
+            const name = entry.value.key.unsafePtr("entry owns the header name until the synchronous response write finishes copying it; entry.deinit runs afterward").latin1;
+            if (options.omit_framing and
+                (bun.strings.eqlCaseInsensitiveASCII(name, "content-length", true) or
+                    bun.strings.eqlCaseInsensitiveASCII(name, "transfer-encoding", true))) continue;
+            if (options.omit_connection and
+                (bun.strings.eqlCaseInsensitiveASCII(name, "connection", true) or
+                    bun.strings.eqlCaseInsensitiveASCII(name, "keep-alive", true) or
+                    bun.strings.eqlCaseInsensitiveASCII(name, "proxy-connection", true) or
+                    bun.strings.eqlCaseInsensitiveASCII(name, "upgrade", true))) continue;
+            const value = entry.value.value.unsafePtr("entry owns the header value until the synchronous response write finishes copying it; entry.deinit runs afterward").latin1;
+            try response.writeHeader(name, value);
+        }
+    }
+
+    pub fn createEmpty() bun.OOM!Owner {
+        return bun.bindgen.Engine(FetchHeadersCreateEmptySchema).call(.{});
+    }
+
+    pub fn appendToUpgrade(headers: *FetchHeaders, preparation: *bun.uws.UpgradePreparation) bun.OOM!void {
+        var entries = try headers.snapshotForHTTP();
+        defer entries.deinit();
+        var iterator = entries.iterator();
+        while (iterator.next()) |converted| {
+            var entry = converted;
+            defer entry.deinit();
+            const name = entry.value.key.unsafePtr("entry owns the header name until upgrade preparation finishes copying it; entry.deinit runs afterward").latin1;
+            const value = entry.value.value.unsafePtr("entry owns the header value until upgrade preparation finishes copying it; entry.deinit runs afterward").latin1;
+            try preparation.addHeader(name, value);
+        }
     }
 
     pub fn createFromPicoHeaders(
         pico_headers: anytype,
-    ) *FetchHeaders {
-        const out = PicoHeaders{ .ptr = pico_headers.list.ptr, .len = pico_headers.list.len };
-        const result = WebCore__FetchHeaders__createFromPicoHeaders_(
-            &out,
-        );
-        return result;
+    ) bun.OOM!Owner {
+        const Entry = std.meta.Elem(@FieldType(bun.bindgen.Args(FetchHeadersCreateFromPicoHeadersSchema), "headers"));
+        const pico_entries = try bun.default_allocator.alloc(Entry, pico_headers.list.len);
+        defer bun.default_allocator.free(pico_entries);
+        for (pico_headers.list, pico_entries) |header, *entry| {
+            entry.* = .{ .name = bun.bindgen.BytesOperand.fromSlice(header.name), .value = bun.bindgen.BytesOperand.fromSlice(header.value) };
+        }
+        return bun.bindgen.Engine(FetchHeadersCreateFromPicoHeadersSchema).call(.{ .headers = pico_entries });
     }
-
-    pub fn append(
-        this: *FetchHeaders,
-        name_: *const ZigString,
-        value: *const ZigString,
-        global: *JSGlobalObject,
-    ) void {
-        return WebCore__FetchHeaders__append(
-            this,
-            name_,
-            value,
-            global,
-        );
-    }
-
-    extern fn WebCore__FetchHeaders__put(this: *FetchHeaders, name_: HTTPHeaderName, value: *const ZigString, global: *JSGlobalObject) void;
 
     pub fn put(
         this: *FetchHeaders,
@@ -166,286 +108,106 @@ pub const FetchHeaders = opaque {
         value: []const u8,
         global: *JSGlobalObject,
     ) bun.JSError!void {
-        return bun.jsc.fromJSHostCallGeneric(global, @src(), WebCore__FetchHeaders__put, .{ this, name_, &ZigString.init(value), global });
-    }
-
-    pub fn get_(
-        this: *FetchHeaders,
-        name_: *const ZigString,
-        out: *ZigString,
-        global: *JSGlobalObject,
-    ) void {
-        WebCore__FetchHeaders__get_(
-            this,
-            name_,
-            out,
-            global,
-        );
+        try bun.bindgen.Engine(FetchHeadersPutSchema).call(global, .{
+            .headers = this,
+            .name = name_,
+            .value = bun.bindgen.BytesOperand.fromSlice(value),
+        });
     }
 
     pub fn get(
         this: *FetchHeaders,
         name_: []const u8,
         global: *JSGlobalObject,
-    ) ?[]const u8 {
-        var out = ZigString.Empty;
-        get_(this, &ZigString.init(name_), &out, global);
-        if (out.len > 0) {
-            return out.slice();
+    ) bun.JSError!?bun.String {
+        var result = try bun.bindgen.Engine(FetchHeadersGetSchema).call(global, .{
+            .headers = this,
+            .name = bun.bindgen.BytesOperand.fromSlice(name_),
+        });
+        if (result) |*value| {
+            defer value.deinit();
+            return value.takeBunString();
         }
-
         return null;
-    }
-
-    pub fn has(
-        this: *FetchHeaders,
-        name_: *const ZigString,
-        global: *JSGlobalObject,
-    ) bool {
-        return WebCore__FetchHeaders__has(
-            this,
-            name_,
-            global,
-        );
     }
 
     pub fn fastHas(
         this: *FetchHeaders,
         name_: HTTPHeaderName,
     ) bool {
-        return fastHas_(this, @backingInt(name_));
+        return bun.bindgen.Engine(FetchHeadersFastHasSchema).call(.{
+            .headers = this,
+            .name = name_,
+        });
     }
 
     pub fn fastGet(
         this: *FetchHeaders,
         name_: HTTPHeaderName,
-    ) ?ZigString {
-        var str = ZigString.init("");
-        fastGet_(this, @backingInt(name_), &str);
-        if (str.len == 0) {
-            return null;
-        }
-
-        return str;
+    ) bun.OOM!?bun.bindgen.ByteString {
+        return bun.bindgen.Engine(FetchHeadersFastGetSchema).call(.{
+            .headers = this,
+            .name = name_,
+        });
     }
 
-    pub fn fastHas_(
-        this: *FetchHeaders,
-        name_: u8,
-    ) bool {
-        return WebCore__FetchHeaders__fastHas_(
-            this,
-            name_,
-        );
-    }
-
-    pub fn fastGet_(
-        this: *FetchHeaders,
-        name_: u8,
-        str: *ZigString,
-    ) void {
-        return WebCore__FetchHeaders__fastGet_(
-            this,
-            name_,
-            str,
-        );
-    }
-
-    pub const HTTPHeaderName = enum(u8) {
-        Accept,
-        AcceptCharset,
-        AcceptEncoding,
-        AcceptLanguage,
-        AcceptRanges,
-        AccessControlAllowCredentials,
-        AccessControlAllowHeaders,
-        AccessControlAllowMethods,
-        AccessControlAllowOrigin,
-        AccessControlExposeHeaders,
-        AccessControlMaxAge,
-        AccessControlRequestHeaders,
-        AccessControlRequestMethod,
-        Age,
-        Authorization,
-        CacheControl,
-        Connection,
-        ContentDisposition,
-        ContentEncoding,
-        ContentLanguage,
-        ContentLength,
-        ContentLocation,
-        ContentRange,
-        ContentSecurityPolicy,
-        ContentSecurityPolicyReportOnly,
-        ContentType,
-        Cookie,
-        Cookie2,
-        CrossOriginEmbedderPolicy,
-        CrossOriginEmbedderPolicyReportOnly,
-        CrossOriginOpenerPolicy,
-        CrossOriginOpenerPolicyReportOnly,
-        CrossOriginResourcePolicy,
-        DNT,
-        Date,
-        DefaultStyle,
-        ETag,
-        Expect,
-        Expires,
-        Host,
-        IcyMetaInt,
-        IcyMetadata,
-        IfMatch,
-        IfModifiedSince,
-        IfNoneMatch,
-        IfRange,
-        IfUnmodifiedSince,
-        KeepAlive,
-        LastEventID,
-        LastModified,
-        Link,
-        Location,
-        Origin,
-        PingFrom,
-        PingTo,
-        Pragma,
-        ProxyAuthorization,
-        ProxyConnection,
-        Purpose,
-        Range,
-        Referer,
-        ReferrerPolicy,
-        Refresh,
-        ReportTo,
-        SecFetchDest,
-        SecFetchMode,
-        SecWebSocketAccept,
-        SecWebSocketExtensions,
-        SecWebSocketKey,
-        SecWebSocketProtocol,
-        SecWebSocketVersion,
-        ServerTiming,
-        ServiceWorker,
-        ServiceWorkerAllowed,
-        ServiceWorkerNavigationPreload,
-        SetCookie,
-        SetCookie2,
-        SourceMap,
-        StrictTransportSecurity,
-        TE,
-        TimingAllowOrigin,
-        Trailer,
-        TransferEncoding,
-        Upgrade,
-        UpgradeInsecureRequests,
-        UserAgent,
-        Vary,
-        Via,
-        XContentTypeOptions,
-        XDNSPrefetchControl,
-        XFrameOptions,
-        XSourceMap,
-        XTempTablet,
-        XXSSProtection,
-    };
+    pub const HTTPHeaderName = @FieldType(bun.bindgen.Args(FetchHeadersFastHasSchema), "name");
 
     pub fn fastRemove(
         this: *FetchHeaders,
         header: HTTPHeaderName,
     ) void {
-        return fastRemove_(this, @backingInt(header));
+        bun.bindgen.Engine(FetchHeadersFastRemoveSchema).call(.{
+            .headers = this,
+            .name = header,
+        });
     }
 
-    pub fn fastRemove_(
+    pub fn retain(this: *FetchHeaders) Owner {
+        return bun.bindgen.Engine(FetchHeadersRetainSchema).call(.{ .headers = this });
+    }
+
+    pub fn snapshotForHTTP(
         this: *FetchHeaders,
-        header: u8,
-    ) void {
-        return WebCore__FetchHeaders__fastRemove_(
-            this,
-            header,
-        );
-    }
-
-    pub fn remove(
-        this: *FetchHeaders,
-        name_: *const ZigString,
-        global: *JSGlobalObject,
-    ) void {
-        return WebCore__FetchHeaders__remove(
-            this,
-            name_,
-            global,
-        );
-    }
-
-    pub fn cast_(value: JSValue, vm: *VM) ?*FetchHeaders {
-        return WebCore__FetchHeaders__cast_(value, vm);
-    }
-
-    pub fn cast(value: JSValue) ?*FetchHeaders {
-        return cast_(value, jsc.VirtualMachine.get().global.vm());
-    }
-
-    pub fn toJS(this: *FetchHeaders, globalThis: *JSGlobalObject) JSValue {
-        return WebCore__FetchHeaders__toJS(this, globalThis);
-    }
-
-    pub fn count(
-        this: *FetchHeaders,
-        names: *u32,
-        buf_len: *u32,
-    ) void {
-        return WebCore__FetchHeaders__count(
-            this,
-            names,
-            buf_len,
-        );
-    }
-
-    pub fn clone(
-        this: *FetchHeaders,
-        global: *JSGlobalObject,
-    ) JSValue {
-        return WebCore__FetchHeaders__clone(
-            this,
-            global,
-        );
+    ) bun.OOM!bun.bindgen.Return(FetchHeadersSnapshotForHTTPSchema) {
+        return bun.bindgen.Engine(FetchHeadersSnapshotForHTTPSchema).call(.{ .headers = this });
     }
 
     pub fn cloneThis(
         this: *FetchHeaders,
-        global: *JSGlobalObject,
-    ) bun.JSError!?*FetchHeaders {
-        return bun.jsc.fromJSHostCallGeneric(global, @src(), WebCore__FetchHeaders__cloneThis, .{ this, global });
-    }
-
-    pub fn deref(
-        this: *FetchHeaders,
-    ) void {
-        return WebCore__FetchHeaders__deref(this);
-    }
-
-    pub fn copyTo(
-        this: *FetchHeaders,
-        names: [*]api.StringPointer,
-        values: [*]api.StringPointer,
-        buf: [*]u8,
-    ) void {
-        return WebCore__FetchHeaders__copyTo(
-            this,
-            names,
-            values,
-            buf,
-        );
+    ) bun.OOM!Owner {
+        return bun.bindgen.Engine(FetchHeadersCloneNativeSchema).call(.{ .headers = this });
     }
 };
+
+fn headerSlice(buffer: []const u8, pointer: api.StringPointer) []const u8 {
+    const offset: usize = pointer.offset;
+    const length: usize = pointer.length;
+    bun.assert(offset <= buffer.len and length <= buffer.len - offset);
+    return buffer[offset..][0..length];
+}
+
+const std = @import("std");
 
 const bun = @import("bun");
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
-const VM = jsc.VM;
-const ZigString = jsc.ZigString;
 
 const api = bun.schema.api;
-const StringPointer = api.StringPointer;
+
+const FetchHeadersBindings = bun.bindgen.Module("fetch_headers");
+const FetchHeadersCreateEmptySchema = FetchHeadersBindings.engineShim("fetchHeadersCreateEmpty");
+const FetchHeadersCreateFromEntriesSchema = FetchHeadersBindings.engineShim("fetchHeadersCreateFromEntries");
+const FetchHeadersCreateFromPicoHeadersSchema = FetchHeadersBindings.engineShim("fetchHeadersCreateFromPicoHeaders");
+const FetchHeadersCreateFromUWSSchema = FetchHeadersBindings.engineShim("fetchHeadersCreateFromUWS");
+const FetchHeadersCreateFromH3Schema = FetchHeadersBindings.engineShim("fetchHeadersCreateFromH3");
+const FetchHeadersFastHasSchema = FetchHeadersBindings.engineShim("fetchHeadersFastHas");
+const FetchHeadersFastGetSchema = FetchHeadersBindings.engineShim("fetchHeadersFastGet");
+const FetchHeadersFastRemoveSchema = FetchHeadersBindings.engineShim("fetchHeadersFastRemove");
+const FetchHeadersIsEmptySchema = FetchHeadersBindings.engineShim("fetchHeadersIsEmpty");
+const FetchHeadersGetSchema = FetchHeadersBindings.engineShim("fetchHeadersGet");
+const FetchHeadersPutSchema = FetchHeadersBindings.engineShim("fetchHeadersPut");
+const FetchHeadersSnapshotForHTTPSchema = FetchHeadersBindings.engineShim("fetchHeadersSnapshotForHTTP");
+const FetchHeadersRetainSchema = FetchHeadersBindings.engineShim("fetchHeadersRetain");
+const FetchHeadersCloneNativeSchema = FetchHeadersBindings.engineShim("fetchHeadersCloneNative");

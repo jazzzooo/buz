@@ -1,56 +1,49 @@
-pub fn create(globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    const object = jsc.JSObject.createEmpty(globalThis, 1);
-    object.putDirect(
-        globalThis,
-        ZigString.static("parse"),
-        jsc.JSFunction.create(
-            globalThis,
-            "parse",
-            parse,
-            1,
-            .{},
-        ).toJS(),
-    );
-
-    return object.toJS();
-}
-
-pub fn parse(
-    globalThis: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!jsc.JSValue {
-    var arena = bun.ArenaAllocator.init(globalThis.allocator());
+pub fn parseGraph(
+    context: bun.bindgen.CallContext(ParseGraphSchema),
+    args: bun.bindgen.Args(ParseGraphSchema),
+) bun.bindgen.CallError(ParseGraphSchema)!bun.bindgen.Return(ParseGraphSchema) {
+    var arena = bun.ArenaAllocator.init(bun.default_allocator);
     const allocator = arena.allocator();
     defer arena.deinit();
 
-    var ast_memory_allocator = bun.handleOom(allocator.create(ast.ASTMemoryAllocator));
+    const ast_memory_allocator = try allocator.create(ast.ASTMemoryAllocator);
     var ast_scope = ast_memory_allocator.enter(allocator);
     defer ast_scope.exit();
 
     var log = logger.Log.init(default_allocator);
     defer log.deinit();
-    const input_value = callframe.argument(0);
-    if (input_value.isEmptyOrUndefinedOrNull()) {
-        return globalThis.throwInvalidArguments("Expected a string to parse", .{});
-    }
+    const input = args.input orelse {
+        return context.fail(.missing_input, {});
+    };
 
-    var input_slice = try input_value.toSlice(globalThis, bun.default_allocator);
+    var input_slice = try input.toUTF8(bun.default_allocator);
     defer input_slice.deinit();
+    if (input_slice.slice().len > std.math.maxInt(i32)) {
+        return context.fail(.input_too_large, try ParsedValueGraph.inputTooLargeMessage(input_slice.slice().len));
+    }
     const source = &logger.Source.initPathString("input.jsonc", input_slice.slice());
     const parse_result = json.parseTSConfig(source, &log, allocator, true) catch |err| {
-        if (err == error.StackOverflow) {
-            return globalThis.throwStackOverflow();
+        switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.StackOverflow => return throwStackOverflow(context),
+            else => {},
         }
-        return globalThis.throwValue(try log.toJS(globalThis, default_allocator, "Failed to parse JSONC"));
+        const message = if (log.msgs.items.len > 0)
+            log.msgs.items[0].data.text
+        else
+            "Failed to parse JSONC";
+        return context.fail(.parse_error, try bun.bindgen.DOMString.fromUTF8(message));
     };
+    return ParsedValueGraph.fromExpr(bun.bindgen.Return(ParseGraphSchema), parse_result, allocator) catch |err| switch (err) {
+        error.OutOfMemory => |oom| oom,
+        error.GraphTooLarge => context.fail(.input_too_large, try ParsedValueGraph.inputTooLargeMessage(input_slice.slice().len)),
+        error.UnsupportedExpression => context.fail(.unsupported_value, {}),
+    };
+}
 
-    return parse_result.toJS(allocator, globalThis) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.JSError => return error.JSError,
-        error.JSTerminated => return error.JSTerminated,
-        // JSONC parsing does not produce macros or identifiers
-        else => unreachable,
-    };
+fn throwStackOverflow(context: anytype) bun.JSError {
+    context.engineIn("errors", "throwStackOverflow").call(.{}) catch |err| return err;
+    unreachable;
 }
 
 const bun = @import("bun");
@@ -58,7 +51,12 @@ const ast = bun.ast;
 const default_allocator = bun.default_allocator;
 const logger = bun.logger;
 const json = bun.interchange.json;
+const std = @import("std");
+const ParsedValueGraph = @import("ParsedValueGraph.zig");
 
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;
-const ZigString = jsc.ZigString;
+const JSONCObjectBindings = bun.bindgen.Module("JSONCObject");
+const ParseGraphSchema = JSONCObjectBindings.function("parseGraph");
+
+comptime {
+    _ = bun.bindgen.Fn(ParseGraphSchema, parseGraph);
+}

@@ -7,14 +7,14 @@ off the JS thread.
 
 | file                                  | owns                                                                                                            | touch when                               |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| `Image.classes.ts`                    | JS surface (codegen input)                                                                                      | adding/renaming a JS method              |
-| `Image.zig`                           | JS↔Zig glue: arg parsing, op recording, `ConcurrentPromiseTask` scheduling, result delivery                     | new options, new chainable, new terminal |
+| `Image.schema.zig`                   | JS surface (codegen input)                                                                                      | adding/renaming a JS method              |
+| `Image.zig`                           | JS↔Zig glue: arg parsing, op recording, schema-completion scheduling, result delivery                           | new options, new chainable, new terminal |
 | `codecs.zig`                          | thin `extern fn` wrappers over libjpeg-turbo / libspng / libwebp + the `Format` sniffer + the pixel-limit guard | bumping a codec, adding a format         |
 | `exif.zig`                            | JPEG APP1/TIFF Orientation reader (tag 0x0112 only)                                                             | extending EXIF coverage                  |
 | `quantize.zig`                        | median-cut RGBA → palette for `png({palette})`                                                                  | dithering, perceptual weighting          |
 | `backend_coregraphics.zig`            | macOS ImageIO/CoreGraphics, lazy `dlopen`                                                                       | macOS-specific behaviour                 |
 | `backend_wic.zig`                     | Windows WIC, COM                                                                                                | Windows-specific behaviour               |
-| `../bun.js/bindings/image_resize.cpp` | highway resize/rotate/flip/modulate kernels (`bun_image_*` C ABI)                                               | new filter, perf work                    |
+| `../../image_sys/` | Native image library: shared C header, Highway kernels, and SDK-backed platform adapters | native codec interfaces and kernels |
 
 `system_backend` in `codecs.zig` is `?type` — `null` on Linux so the dispatch
 compiles away. On macOS/Windows the backend is tried first; it returns
@@ -27,14 +27,14 @@ The codecs themselves are vendored via `scripts/build/deps/{libjpeg-turbo,libspn
 ## Adding a chainable op
 
 1. Add a field to `Pipeline` in `Image.zig` (one slot per op — setters
-   overwrite, there is no op list) and a stage in `PipelineTask.applyPipeline`
+   overwrite, there is no op list) and a stage in `PipelineJob.applyPipeline`
    at the right point in the fixed `rotate → flip/flop → resize → modulate`
    order.
-2. Add a `do<Name>` method that parses args, writes the slot, returns
-   `callframe.this()`.
-3. Add it to `proto:` in `Image.classes.ts`.
-4. If it needs a kernel, put the C ABI in `image_resize.cpp` and the `extern`
-   in `codecs.zig`.
+2. Add a `do<Name>` method that performs the operation and a typed
+   `bind<Name>` adapter for the schema declaration.
+3. Add it to the `Image` class declaration in `Image.schema.zig`.
+4. Declare native kernels in `src/image_sys/BunImage.h` and implement them
+   in `src/image_sys/Kernels.cpp`. Zig consumes the translated `image-ffi` module.
 
 ## Adding a format
 
@@ -55,6 +55,6 @@ The codecs themselves are vendored via `scripts/build/deps/{libjpeg-turbo,libspn
   codecs return `Encoded` with the right `free`, not a default_allocator slice.
 - The `max_pixels` guard fires **after the header read, before the RGBA alloc**
   in every codec. New codecs must do the same.
-- `image_resize.cpp` must stay in `noUnify` (see `scripts/build/unified.ts`) —
+- `src/image_sys/Kernels.cpp` must stay in `no_unify` in `src/build/exe.zig` —
   highway's `foreach_target.h` has a TU-wide include guard that breaks with
   two highway TUs in one bundle.

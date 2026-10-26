@@ -1,10 +1,8 @@
 #pragma once
 
 #include "root.h"
-#include "ActiveDOMObject.h"
 #include <wtf/CrossThreadTask.h>
 #include <wtf/Function.h>
-#include <wtf/HashSet.h>
 #include <wtf/ObjectIdentifier.h>
 #include <wtf/WeakPtr.h>
 #include <wtf/text/WTFString.h>
@@ -30,6 +28,7 @@ class ScriptExecutionContext;
 class EventLoopTask;
 
 class ContextDestructionObserver;
+class MessagePortContext;
 
 using ScriptExecutionContextIdentifier = uint32_t;
 
@@ -80,30 +79,38 @@ public:
     // {
     // }
 
-#if ENABLE(WEB_CRYPTO)
-    // These two methods are used when CryptoKeys are serialized into IndexedDB. As a side effect, it is also
-    // used for things that utilize the same structure clone algorithm, for example, message passing between
-    // worker and document.
 
-    // For now these will return false. In the future, we will want to implement these similar to how WorkerGlobalScope.cpp does.
-    // virtual bool wrapCryptoKey(const Vector<uint8_t>& key, Vector<uint8_t>& wrappedKey) = 0;
-    // virtual bool unwrapCryptoKey(const Vector<uint8_t>& wrappedKey, Vector<uint8_t>& key) = 0;
-    bool wrapCryptoKey(const Vector<uint8_t>& key, Vector<uint8_t>& wrappedKey) { return false; }
-    bool unwrapCryptoKey(const Vector<uint8_t>& wrappedKey, Vector<uint8_t>& key) { return false; }
-#endif
 
     WEBCORE_EXPORT static bool postTaskTo(ScriptExecutionContextIdentifier identifier, Function<void(ScriptExecutionContext&)>&& task);
     WEBCORE_EXPORT static bool ensureOnContextThread(ScriptExecutionContextIdentifier, Function<void(ScriptExecutionContext&)>&& task);
     WEBCORE_EXPORT static bool ensureOnMainThread(Function<void(ScriptExecutionContext&)>&& task);
 
     WEBCORE_EXPORT JSC::JSGlobalObject* globalObject();
+    RefPtr<MessagePortContext> messagePortContext();
 
-    void didCreateDestructionObserver(ContextDestructionObserver&);
-    void willDestroyDestructionObserver(ContextDestructionObserver&);
+    class NativeLifetime {
+    public:
+        NativeLifetime() = default;
+        NativeLifetime(const NativeLifetime&) = delete;
+        NativeLifetime& operator=(const NativeLifetime&) = delete;
+        virtual ~NativeLifetime();
+        bool attach(ScriptExecutionContext&) noexcept;
+        void detach() noexcept;
+        ScriptExecutionContext* context() const { return m_context; }
+
+    protected:
+        virtual void contextClosed() noexcept = 0;
+
+    private:
+        friend class ScriptExecutionContext;
+        ScriptExecutionContext* m_context { nullptr };
+        NativeLifetime* m_previous { nullptr };
+        NativeLifetime* m_next { nullptr };
+    };
 
     void checkConsistency() const;
 
-    void regenerateIdentifier();
+    void inheritIdentifierFrom(ScriptExecutionContext&);
     void addToContextsMap();
     void removeFromContextsMap();
 
@@ -134,17 +141,20 @@ public:
     static ScriptExecutionContext* getMainThreadScriptExecutionContext();
 
 private:
+    friend class ContextDestructionObserver;
+    void didCreateDestructionObserver(ContextDestructionObserver&);
+    void willDestroyDestructionObserver(ContextDestructionObserver&);
+    void closeNativeLifetimes() noexcept;
+    NativeLifetime* m_nativeLifetimes { nullptr };
+    bool m_nativeLifetimesOpen { true };
+    RefPtr<MessagePortContext> m_messagePortContext;
     JSC::VM* m_vm = nullptr;
     JSC::JSGlobalObject* m_globalObject = nullptr;
     WTF::URL m_url = WTF::URL();
     ScriptExecutionContextIdentifier m_identifier;
 
-    UncheckedKeyHashSet<ContextDestructionObserver*> m_destructionObservers;
-
-public:
-#if ASSERT_ENABLED
+    ContextDestructionObserver* m_destructionObservers { nullptr };
     bool m_inScriptExecutionContextDestructor = false;
-#endif
 };
 
 ScriptExecutionContext* executionContext(JSC::JSGlobalObject*);

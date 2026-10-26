@@ -1,5 +1,6 @@
 #include "root.h"
 
+#include "SchemaBindings.h"
 #include "JavaScriptCore/ArrayAllocationProfile.h"
 #include "JavaScriptCore/JSArray.h"
 
@@ -9,6 +10,7 @@
 #include "ErrorCode.h"
 #include "JSX509Certificate.h"
 #include "JSX509CertificatePrototype.h"
+#include "StringConversion.h"
 #include "ZigGlobalObject.h"
 #include "wtf/Assertions.h"
 #include "wtf/SharedTask.h"
@@ -21,7 +23,6 @@
 #include <JavaScriptCore/LazyPropertyInlines.h>
 #include "openssl/evp.h"
 #include "JavaScriptCore/ObjectPrototype.h"
-#include "BunString.h"
 #include <JavaScriptCore/FunctionPrototype.h>
 #include "JSBuffer.h"
 #include "wtf/text/ExternalStringImpl.h"
@@ -29,6 +30,10 @@
 #include <JavaScriptCore/VMTrapsInlines.h>
 #include "CryptoUtil.h"
 #include "JSPublicKeyObject.h"
+
+#include <algorithm>
+#include <type_traits>
+#include <utility>
 
 namespace Bun {
 
@@ -51,9 +56,6 @@ WTF::String toWTFString(ncrypto::BIOPointer& bio)
     }
     return WTF::String::fromUTF8({ reinterpret_cast<const Latin1Character*>(bptr->data), bptr->length });
 }
-
-static JSC_DECLARE_HOST_FUNCTION(x509CertificateConstructorCall);
-static JSC_DECLARE_HOST_FUNCTION(x509CertificateConstructorConstruct);
 
 class JSX509CertificateConstructor final : public JSC::InternalFunction {
 public:
@@ -78,7 +80,7 @@ public:
 
 private:
     JSX509CertificateConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, x509CertificateConstructorCall, x509CertificateConstructorConstruct)
+        : Base(vm, structure, bun_bindgen_host_X509_certificateConstructorCall, bun_bindgen_host_X509_certificateConstructorConstruct)
     {
     }
 
@@ -99,78 +101,62 @@ void JSX509CertificateConstructor::finishCreation(VM& vm, JSGlobalObject* global
     Base::finishCreation(vm, 1, "X509Certificate"_s, PropertyAdditionMode::WithStructureTransition);
     putDirectWithoutTransition(vm, vm.propertyNames->prototype, prototype, PropertyAttribute::DontEnum | PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly);
 }
-static JSValue createX509Certificate(JSC::VM& vm, JSGlobalObject* globalObject, Structure* structure, JSValue arg)
+static JSValue createX509Certificate(JSC::VM& vm, JSGlobalObject* globalObject, Structure* structure, std::span<const uint8_t> data)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
-    Bun::UTF8View view;
-    std::span<const uint8_t> data;
-
-    if (arg.isString()) {
-        view = arg.toWTFString(globalObject);
-        RETURN_IF_EXCEPTION(scope, {});
-        data = std::span(reinterpret_cast<const uint8_t*>(view.span().data()), view.span().size());
-    } else if (auto* typedArray = dynamicDowncast<JSArrayBufferView>(arg)) {
-        if (typedArray->isDetached()) [[unlikely]] {
-            Bun::throwError(globalObject, scope, ErrorCode::ERR_INVALID_ARG_TYPE, "TypedArray is detached"_s);
-            return {};
-        }
-        data = typedArray->span();
-    } else if (auto* buffer = dynamicDowncast<JSArrayBuffer>(arg)) {
-        auto* impl = buffer->impl();
-        if (!impl) [[unlikely]] {
-            Bun::throwError(globalObject, scope, ErrorCode::ERR_INVALID_ARG_TYPE, "Buffer is detached"_s);
-            return {};
-        }
-        data = impl->span();
-    } else {
-        Bun::throwError(globalObject, scope, ErrorCode::ERR_INVALID_ARG_TYPE, "X509Certificate constructor argument must be a Buffer, TypedArray, or string"_s);
-        return {};
-    }
-
     JSX509Certificate* certificate = JSX509Certificate::create(vm, structure, globalObject, data);
     RETURN_IF_EXCEPTION(scope, {});
     return certificate;
 }
 
-JSC_DEFINE_HOST_FUNCTION(x509CertificateConstructorCall, (JSGlobalObject * globalObject, CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_X509_certificateConstructorCall(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_X509_certificateConstructorCall_Arguments&)
 {
+    auto* globalObject = &context.globalObject;
     auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     Bun::throwError(globalObject, scope, ErrorCode::ERR_ILLEGAL_CONSTRUCTOR, "X509Certificate constructor cannot be invoked without 'new'"_s);
-    return {};
 }
 
-JSC_DEFINE_HOST_FUNCTION(x509CertificateConstructorConstruct, (JSGlobalObject * globalObject, CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_X509_certificateConstructorConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_X509_certificateConstructorConstruct_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    if (!callFrame->argumentCount()) {
+    if (!args.input) {
         Bun::throwError(globalObject, scope, ErrorCode::ERR_MISSING_ARGS, "X509Certificate constructor requires at least one argument"_s);
         return {};
     }
 
-    JSValue arg = callFrame->uncheckedArgument(0);
-    if (!arg.isCell()) {
-        Bun::throwError(globalObject, scope, ErrorCode::ERR_INVALID_ARG_TYPE, "X509Certificate constructor argument must be a Buffer, TypedArray, or string"_s);
-        return {};
+    WTF::Vector<uint8_t> encodedInput;
+    std::span<const uint8_t> bytes;
+    if (args.input->is_string()) {
+        auto encoded = Bun::encodeUTF8ReplacingInvalidSequences(args.input->string());
+        if (!encoded) {
+            throwOutOfMemoryError(globalObject, scope);
+            return {};
+        }
+        encodedInput = WTF::move(*encoded);
+        bytes = encodedInput;
+    } else {
+        RELEASE_ASSERT(args.input->is_buffer());
+        bytes = args.input->buffer();
     }
 
     auto* zigGlobalObject = defaultGlobalObject(globalObject);
+    auto* newTarget = JSC::asObject(args.bindingNewTarget);
     Structure* structure = zigGlobalObject->m_JSX509CertificateClassStructure.get(zigGlobalObject);
-    JSValue newTarget = callFrame->newTarget();
     if (zigGlobalObject->m_JSX509CertificateClassStructure.constructor(zigGlobalObject) != newTarget) [[unlikely]] {
-        if (!newTarget) {
-            throwTypeError(globalObject, scope, "Class constructor X509Certificate cannot be invoked without 'new'"_s);
-            return {};
-        }
-
-        auto* functionGlobalObject = defaultGlobalObject(getFunctionRealm(globalObject, newTarget.getObject()));
+        auto* functionGlobalObject = defaultGlobalObject(getFunctionRealm(globalObject, newTarget));
         RETURN_IF_EXCEPTION(scope, {});
-        structure = InternalFunction::createSubclassStructure(globalObject, newTarget.getObject(), functionGlobalObject->m_JSX509CertificateClassStructure.get(functionGlobalObject));
+        structure = InternalFunction::createSubclassStructure(globalObject, newTarget, functionGlobalObject->m_JSX509CertificateClassStructure.get(functionGlobalObject));
         RETURN_IF_EXCEPTION(scope, {});
     }
 
-    RELEASE_AND_RETURN(scope, JSValue::encode(createX509Certificate(vm, globalObject, structure, arg)));
+    RELEASE_AND_RETURN(scope, createX509Certificate(vm, globalObject, structure, bytes));
 }
 
 const ClassInfo JSX509Certificate::s_info = { "X509Certificate"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSX509Certificate) };
@@ -185,7 +171,7 @@ void JSX509Certificate::finishCreation(VM& vm)
     });
     m_subject.initLater([](const JSC::LazyProperty<JSX509Certificate, JSString>::Initializer& init) {
         auto scope = DECLARE_THROW_SCOPE(init.vm);
-        auto value = init.owner->computeSubject(init.owner->view(), init.owner->globalObject(), false);
+        auto value = init.owner->computeSubject(init.owner->view(), init.owner->globalObject());
         if (scope.exception()) [[unlikely]] {
             (void)scope.tryClearException();
             return init.set(jsEmptyString(init.vm));
@@ -199,7 +185,7 @@ void JSX509Certificate::finishCreation(VM& vm)
     });
     m_issuer.initLater([](const JSC::LazyProperty<JSX509Certificate, JSString>::Initializer& init) {
         auto scope = DECLARE_THROW_SCOPE(init.vm);
-        JSValue value = init.owner->computeIssuer(init.owner->view(), init.owner->globalObject(), false);
+        JSValue value = init.owner->computeIssuer(init.owner->view(), init.owner->globalObject());
         if (scope.exception()) [[unlikely]] {
             (void)scope.tryClearException();
             return init.set(jsEmptyString(init.vm));
@@ -207,7 +193,7 @@ void JSX509Certificate::finishCreation(VM& vm)
         if (value.isString()) {
             init.set(value.toString(init.owner->globalObject()));
         } else {
-            init.property.setMayBeNull(init.owner->vm(), init.owner, nullptr);
+            init.set(jsEmptyString(init.owner->vm()));
         }
     });
     m_validFrom.initLater([](const JSC::LazyProperty<JSX509Certificate, JSString>::Initializer& init) {
@@ -230,7 +216,7 @@ void JSX509Certificate::finishCreation(VM& vm)
     });
 
     m_infoAccess.initLater([](const JSC::LazyProperty<JSX509Certificate, JSString>::Initializer& init) {
-        JSValue value = init.owner->computeInfoAccess(init.owner->view(), init.owner->globalObject(), false);
+        JSValue value = init.owner->computeInfoAccess(init.owner->view(), init.owner->globalObject());
         if (value.isString()) {
             init.set(value.toString(init.owner->globalObject()));
         } else {
@@ -338,91 +324,108 @@ JSC::Structure* JSX509Certificate::createStructure(JSC::VM& vm, JSC::JSGlobalObj
     return Structure::create(vm, globalObject, prototype, TypeInfo(ObjectType, StructureFlags), info());
 }
 
-// Convert an X509_NAME* into a JavaScript object.
-// Each entry of the name is converted into a property of the object.
-// The property value may be a single string or an array of strings.
-template<X509_NAME* get_name(const X509*)>
-static JSObject* GetX509NameObject(JSGlobalObject* globalObject, const X509* cert)
+template<typename Vector, typename Value>
+static bool appendX509Result(Vector& vector, Value&& value, JSGlobalObject* globalObject, JSC::ThrowScope& scope)
 {
+    if (vector.tryAppend(std::forward<Value>(value)))
+        return true;
+    throwOutOfMemoryError(globalObject, scope);
+    return false;
+}
+
+template<X509_NAME* get_name(const X509*), typename OptionalRecord>
+static bool getX509NameRecord(JSGlobalObject* globalObject, const X509* cert, OptionalRecord& output)
+{
+    using Record = typename OptionalRecord::value_type;
+    using Entry = std::remove_cvref_t<decltype(std::declval<Record>()[0])>;
+    using Value = std::remove_cvref_t<decltype(std::declval<Entry>().second)>;
+
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     X509_NAME* name = get_name(cert);
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    if (!name) {
+        output = std::nullopt;
+        return true;
+    }
 
-    if (!name)
-        return nullptr;
+    int count = X509_NAME_entry_count(name);
+    if (count < 0) {
+        output = std::nullopt;
+        return true;
+    }
 
-    int cnt = X509_NAME_entry_count(name);
-    if (cnt < 0)
-        return nullptr;
+    Record result;
+    if (!result.tryReserveCapacity(static_cast<size_t>(count))) {
+        throwOutOfMemoryError(globalObject, scope);
+        return false;
+    }
 
-    // Create object with null prototype to match Node.js behavior
-    JSObject* result = constructEmptyObject(vm, globalObject->nullPrototypeObjectStructure());
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    for (int i = 0; i < cnt; i++) {
+    for (int i = 0; i < count; ++i) {
         X509_NAME_ENTRY* entry = X509_NAME_get_entry(name, i);
         if (!entry)
             continue;
 
-        ASN1_OBJECT* obj = X509_NAME_ENTRY_get_object(entry);
-        ASN1_STRING* str = X509_NAME_ENTRY_get_data(entry);
-        if (!obj || !str)
+        ASN1_OBJECT* object = X509_NAME_ENTRY_get_object(entry);
+        ASN1_STRING* string = X509_NAME_ENTRY_get_data(entry);
+        if (!object || !string)
             continue;
 
-        // Convert the ASN1_OBJECT to a string key
         String key;
-        int nid = OBJ_obj2nid(obj);
+        int nid = OBJ_obj2nid(object);
         if (nid != NID_undef) {
-            const char* sn = OBJ_nid2sn(nid);
-            if (sn)
-                key = String::fromUTF8(sn);
+            if (const char* shortName = OBJ_nid2sn(nid))
+                key = String::fromUTF8(shortName);
         }
         if (key.isEmpty()) {
-            char buf[80];
-            if (OBJ_obj2txt(buf, sizeof(buf), obj, 1) >= 0)
-                key = String::fromUTF8(buf);
+            char buffer[80];
+            if (OBJ_obj2txt(buffer, sizeof(buffer), object, 1) >= 0)
+                key = String::fromUTF8(buffer);
         }
         if (key.isEmpty())
             continue;
 
-        // Convert the ASN1_STRING to a string value
-        unsigned char* value_str = nullptr;
-        int value_str_size = ASN1_STRING_to_UTF8(&value_str, str);
-        if (value_str_size < 0)
+        unsigned char* valueBytes = nullptr;
+        int valueLength = ASN1_STRING_to_UTF8(&valueBytes, string);
+        if (valueLength < 0)
             continue;
+        ncrypto::DataPointer freeValueBytes(valueBytes, valueLength);
+        String value = String::fromUTF8(std::span(reinterpret_cast<const char*>(valueBytes), valueLength));
 
-        ncrypto::DataPointer free_value_str(value_str, value_str_size);
-        JSValue jsvalue = jsString(vm, String::fromUTF8(std::span(reinterpret_cast<const char*>(value_str), value_str_size)));
-        RETURN_IF_EXCEPTION(scope, nullptr);
-
-        // Check if this key already exists
-        JSValue existing = result->getIfPropertyExists(globalObject, Identifier::fromString(vm, key));
-        RETURN_IF_EXCEPTION(scope, nullptr);
-        if (existing) {
-            JSArray* array = dynamicDowncast<JSArray>(existing);
-            if (!array) {
-                array = JSArray::tryCreate(vm, globalObject->arrayStructureForIndexingTypeDuringAllocation(ArrayWithContiguous), 2);
-                if (!array) {
-                    throwOutOfMemoryError(globalObject, scope);
-                    return nullptr;
-                }
-                array->putDirectIndex(globalObject, 0, existing);
-                array->putDirectIndex(globalObject, 1, jsvalue);
-                result->putDirect(vm, Identifier::fromString(vm, key), array, 0);
-            } else {
-                array->putDirectIndex(globalObject, array->length(), jsvalue);
+        Value* existing = nullptr;
+        for (auto& item : result) {
+            if (item.first == key) {
+                existing = &item.second;
+                break;
             }
-        } else {
-            // First occurrence of this key
-            result->putDirect(vm, Identifier::fromString(vm, key), jsvalue);
         }
-        RETURN_IF_EXCEPTION(scope, nullptr);
+
+        if (!existing) {
+            Value first;
+            first.set_value(WTF::move(value));
+            if (!appendX509Result(result, Entry { WTF::move(key), WTF::move(first) }, globalObject, scope))
+                return false;
+            continue;
+        }
+
+        if (existing->is_value()) {
+            WTF::Vector<WTF::String> values;
+            if (!values.tryReserveCapacity(2)) {
+                throwOutOfMemoryError(globalObject, scope);
+                return false;
+            }
+            if (!appendX509Result(values, WTF::move(existing->value()), globalObject, scope)
+                || !appendX509Result(values, WTF::move(value), globalObject, scope))
+                return false;
+            existing->set_values(WTF::move(values));
+        } else if (!appendX509Result(existing->values(), WTF::move(value), globalObject, scope)) {
+            return false;
+        }
     }
 
-    return result;
+    output = WTF::move(result);
+    return true;
 }
 
-JSValue JSX509Certificate::computeSubject(ncrypto::X509View view, JSGlobalObject* globalObject, bool legacy)
+JSValue JSX509Certificate::computeSubject(ncrypto::X509View view, JSGlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -431,29 +434,15 @@ JSValue JSX509Certificate::computeSubject(ncrypto::X509View view, JSGlobalObject
     if (!cert)
         return jsUndefined();
 
-    if (!legacy) {
-        auto bio = view.getSubject();
-        if (!bio) {
-            throwCryptoOperationFailed(globalObject, scope);
-            return {};
-        }
-        return jsString(vm, toWTFString(bio));
+    auto bio = view.getSubject();
+    if (!bio) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
     }
-
-    // For legacy mode, convert to object format
-    X509_NAME* name = X509_get_subject_name(cert);
-    if (!name)
-        return jsUndefined();
-
-    JSObject* obj = GetX509NameObject<X509_get_subject_name>(globalObject, cert);
-    RETURN_IF_EXCEPTION(scope, {});
-    if (!obj)
-        return jsUndefined();
-
-    return obj;
+    return jsString(vm, toWTFString(bio));
 }
 
-JSValue JSX509Certificate::computeIssuer(ncrypto::X509View view, JSGlobalObject* globalObject, bool legacy)
+JSValue JSX509Certificate::computeIssuer(ncrypto::X509View view, JSGlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -464,11 +453,7 @@ JSValue JSX509Certificate::computeIssuer(ncrypto::X509View view, JSGlobalObject*
         return {};
     }
 
-    if (!legacy) {
-        return jsString(vm, toWTFString(bio));
-    }
-
-    RELEASE_AND_RETURN(scope, GetX509NameObject<X509_get_issuer_name>(globalObject, view.get()));
+    return jsString(vm, toWTFString(bio));
 }
 
 JSString* JSX509Certificate::computeValidFrom(ncrypto::X509View view, JSGlobalObject* globalObject)
@@ -620,12 +605,12 @@ bool JSX509Certificate::checkEmail(JSGlobalObject* globalObject, std::span<const
     return handleMatchResult(globalObject, "Invalid email"_s, scope, result);
 }
 
-bool JSX509Certificate::checkIP(JSGlobalObject* globalObject, const char* ip)
+bool JSX509Certificate::checkIP(JSGlobalObject* globalObject, const char* ip, uint32_t flags)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto result = view().checkIp(ip, 0);
+    auto result = view().checkIp(ip, flags);
     return handleMatchResult(globalObject, "Invalid IP address"_s, scope, result);
 }
 
@@ -703,341 +688,266 @@ bool JSX509Certificate::verify(const KeyObject& keyObject)
 }
 
 // This one doesn't depend on a JSX509Certificate object
-JSC::JSObject* JSX509Certificate::toLegacyObject(ncrypto::X509View view, JSGlobalObject* globalObject)
+template<typename OptionalRecord>
+static bool getX509InfoAccessRecord(JSGlobalObject* globalObject, ncrypto::X509View view, OptionalRecord& output)
 {
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
+    using Record = typename OptionalRecord::value_type;
+    using Entry = std::remove_cvref_t<decltype(std::declval<Record>()[0])>;
 
-    auto* cert = view.get();
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto bio = view.getInfoAccess();
+    if (!bio) {
+        output = std::nullopt;
+        return true;
+    }
 
-    if (!cert)
-        return nullptr;
+    String info = toWTFString(bio);
+    Record result;
+    unsigned substringStart = 0;
+    while (substringStart < info.length()) {
+        auto keyIndex = info.find(':', substringStart);
+        if (keyIndex == notFound)
+            break;
 
-    JSC::JSObject* object = constructEmptyObject(globalObject);
-    RETURN_IF_EXCEPTION(scope, nullptr);
+        auto lineEnd = info.find('\n', keyIndex);
+        unsigned valueStart = keyIndex + 1;
+        String key = info.substringSharingImpl(substringStart, keyIndex - substringStart);
+        String value = lineEnd == notFound
+            ? info.substringSharingImpl(valueStart)
+            : info.substringSharingImpl(valueStart, lineEnd - valueStart);
 
-    // Helper function to convert JSValue to undefined if empty/null
-    auto valueOrUndefined = [&](JSValue value) -> JSValue {
-        if (value.isEmpty() || value.isNull() || (value.isString() && value.toString(globalObject)->length() == 0))
-            return jsUndefined();
-        return value;
-    };
+        WTF::Vector<WTF::String>* existing = nullptr;
+        for (auto& item : result) {
+            if (item.first == key) {
+                existing = &item.second;
+                break;
+            }
+        }
 
-    // Set subject
-    object->putDirect(vm, Identifier::fromString(vm, "subject"_s), valueOrUndefined(computeSubject(view, globalObject, true)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+        if (existing) {
+            if (!appendX509Result(*existing, WTF::move(value), globalObject, scope))
+                return false;
+        } else {
+            WTF::Vector<WTF::String> values;
+            if (!appendX509Result(values, WTF::move(value), globalObject, scope)
+                || !appendX509Result(result, Entry { WTF::move(key), WTF::move(values) }, globalObject, scope))
+                return false;
+        }
 
-    // Set issuer
-    object->putDirect(vm, Identifier::fromString(vm, "issuer"_s), valueOrUndefined(computeIssuer(view, globalObject, true)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+        if (lineEnd == notFound)
+            break;
+        substringStart = lineEnd + 1;
+    }
 
-    // Set subjectaltname
-    object->putDirect(vm, Identifier::fromString(vm, "subjectaltname"_s), valueOrUndefined(computeSubjectAltName(view, globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    output = WTF::move(result);
+    return true;
+}
 
-    // Set infoAccess
-    object->putDirect(vm, Identifier::fromString(vm, "infoAccess"_s), valueOrUndefined(computeInfoAccess(view, globalObject, true)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+template<typename OptionalString>
+static void setX509String(OptionalString& output, WTF::String value)
+{
+    if (!value.isEmpty())
+        output = WTF::move(value);
+}
 
-    // Set modulus and exponent for RSA keys
-    EVP_PKEY* pkey = X509_get0_pubkey(cert);
-    if (pkey) {
-        switch (EVP_PKEY_base_id(pkey)) {
+template<typename Return>
+static Return createLegacyCertificateResult(ncrypto::X509View view, JSGlobalObject* globalObject)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    Return result {};
+    auto* certificate = view.get();
+    if (!certificate)
+        return result;
+
+    bool subjectConverted = getX509NameRecord<X509_get_subject_name>(globalObject, certificate, result.subject);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!subjectConverted)
+        return {};
+
+    auto issuer = view.getIssuer();
+    if (!issuer) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
+    }
+    bool issuerConverted = getX509NameRecord<X509_get_issuer_name>(globalObject, certificate, result.issuer);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!issuerConverted)
+        return {};
+
+    if (auto subjectAltName = view.getSubjectAltName())
+        setX509String(result.subjectaltname, toWTFString(subjectAltName));
+
+    bool infoAccessConverted = getX509InfoAccessRecord(globalObject, view, result.infoAccess);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!infoAccessConverted)
+        return {};
+
+    EVP_PKEY* publicKey = X509_get0_pubkey(certificate);
+    if (publicKey) {
+        switch (EVP_PKEY_base_id(publicKey)) {
         case EVP_PKEY_RSA: {
-            const RSA* rsa = EVP_PKEY_get0_RSA(pkey);
-            if (rsa) {
-                const BIGNUM* n;
-                const BIGNUM* e;
-                RSA_get0_key(rsa, &n, &e, nullptr);
+            const RSA* rsa = EVP_PKEY_get0_RSA(publicKey);
+            if (!rsa)
+                break;
 
-                // Convert modulus to string
-                auto bio = ncrypto::BIOPointer::New(n);
-                if (bio) {
-                    object->putDirect(vm, Identifier::fromString(vm, "modulus"_s), jsString(vm, toWTFString(bio)));
-                    RETURN_IF_EXCEPTION(scope, nullptr);
+            const BIGNUM* modulus;
+            const BIGNUM* exponent;
+            RSA_get0_key(rsa, &modulus, &exponent, nullptr);
+
+            if (auto bio = ncrypto::BIOPointer::New(modulus))
+                result.modulus = toWTFString(bio);
+
+            uint64_t exponentWord = static_cast<uint64_t>(ncrypto::BignumPointer::GetWord(exponent));
+            auto exponentBio = ncrypto::BIOPointer::NewMem();
+            if (exponentBio) {
+                BIO_printf(exponentBio.get(), "0x%" PRIx64, exponentWord);
+                result.exponent = toWTFString(exponentBio);
+            }
+
+            result.bits = ncrypto::BignumPointer::GetBitCount(modulus);
+
+            int size = i2d_RSA_PUBKEY(rsa, nullptr);
+            if (size > 0) {
+                WTF::Vector<uint8_t> bytes;
+                if (!bytes.tryGrow(static_cast<size_t>(size))) {
+                    throwOutOfMemoryError(globalObject, scope);
+                    return {};
                 }
-
-                // Convert exponent to string
-                uint64_t exponent_word = static_cast<uint64_t>(ncrypto::BignumPointer::GetWord(e));
-                auto bio_e = ncrypto::BIOPointer::NewMem();
-                if (bio_e) {
-                    BIO_printf(bio_e.get(), "0x%" PRIx64, exponent_word);
-                    object->putDirect(vm, Identifier::fromString(vm, "exponent"_s), jsString(vm, toWTFString(bio_e)));
-                    RETURN_IF_EXCEPTION(scope, nullptr);
-                }
-
-                // Set bits
-                object->putDirect(vm, Identifier::fromString(vm, "bits"_s), jsNumber(ncrypto::BignumPointer::GetBitCount(n)));
-                RETURN_IF_EXCEPTION(scope, nullptr);
-
-                // Set pubkey
-                int size = i2d_RSA_PUBKEY(rsa, nullptr);
-                if (size > 0) {
-                    auto* buffer = Bun::createUninitializedBuffer(globalObject, static_cast<size_t>(size));
-                    RETURN_IF_EXCEPTION(scope, nullptr);
-                    uint8_t* data = buffer->typedVector();
-                    i2d_RSA_PUBKEY(rsa, &data);
-                    object->putDirect(vm, Identifier::fromString(vm, "pubkey"_s), buffer);
-                }
+                uint8_t* data = bytes.mutableSpan().data();
+                i2d_RSA_PUBKEY(rsa, &data);
+                result.pubkey = WTF::move(bytes);
             }
             break;
         }
         case EVP_PKEY_EC: {
-            const EC_KEY* ec = EVP_PKEY_get0_EC_KEY(pkey);
-            if (ec) {
-                const EC_GROUP* group = EC_KEY_get0_group(ec);
-                if (group) {
-                    // Set bits
-                    int bits = EC_GROUP_order_bits(group);
-                    if (bits > 0) {
-                        object->putDirect(vm, Identifier::fromString(vm, "bits"_s), jsNumber(bits));
-                        RETURN_IF_EXCEPTION(scope, nullptr);
-                    }
+            const EC_KEY* ec = EVP_PKEY_get0_EC_KEY(publicKey);
+            if (!ec)
+                break;
+            const EC_GROUP* group = EC_KEY_get0_group(ec);
+            if (!group)
+                break;
 
-                    // Add pubkey field for EC keys
-                    const EC_POINT* point = EC_KEY_get0_public_key(ec);
-                    if (point) {
-                        point_conversion_form_t form = EC_KEY_get_conv_form(ec);
-                        size_t size = EC_POINT_point2oct(group, point, form, nullptr, 0, nullptr);
-                        if (size > 0) {
-                            auto* buffer = Bun::createUninitializedBuffer(globalObject, size);
-                            RETURN_IF_EXCEPTION(scope, nullptr);
-                            uint8_t* data = buffer->typedVector();
-                            size_t result_size = EC_POINT_point2oct(group, point, form, data, size, nullptr);
-                            if (result_size == size) {
-                                object->putDirect(vm, Identifier::fromString(vm, "pubkey"_s), buffer);
-                            }
-                        }
-                    }
+            int bits = EC_GROUP_order_bits(group);
+            if (bits > 0)
+                result.bits = bits;
 
-                    // Set curve info
-                    int nid = EC_GROUP_get_curve_name(group);
-                    if (nid != 0) {
-                        const char* sn = OBJ_nid2sn(nid);
-                        if (sn) {
-                            object->putDirect(vm, Identifier::fromString(vm, "asn1Curve"_s), jsString(vm, String::fromUTF8(sn)));
-                            RETURN_IF_EXCEPTION(scope, nullptr);
-                        }
-
-                        const char* nist = EC_curve_nid2nist(nid);
-                        if (nist) {
-                            object->putDirect(vm, Identifier::fromString(vm, "nistCurve"_s), jsString(vm, String::fromUTF8(nist)));
-                            RETURN_IF_EXCEPTION(scope, nullptr);
-                        }
+            const EC_POINT* point = EC_KEY_get0_public_key(ec);
+            if (point) {
+                point_conversion_form_t form = EC_KEY_get_conv_form(ec);
+                size_t size = EC_POINT_point2oct(group, point, form, nullptr, 0, nullptr);
+                if (size > 0) {
+                    WTF::Vector<uint8_t> bytes;
+                    if (!bytes.tryGrow(size)) {
+                        throwOutOfMemoryError(globalObject, scope);
+                        return {};
                     }
+                    size_t resultSize = EC_POINT_point2oct(group, point, form, bytes.mutableSpan().data(), size, nullptr);
+                    if (resultSize == size)
+                        result.pubkey = WTF::move(bytes);
                 }
+            }
+
+            int nid = EC_GROUP_get_curve_name(group);
+            if (nid != 0) {
+                if (const char* shortName = OBJ_nid2sn(nid))
+                    result.asn1Curve = String::fromUTF8(shortName);
+                if (const char* nistName = EC_curve_nid2nist(nid))
+                    result.nistCurve = String::fromUTF8(nistName);
             }
             break;
         }
         }
     }
 
-    // Set validFrom
-    object->putDirect(vm, Identifier::fromString(vm, "valid_from"_s), valueOrUndefined(computeValidFrom(view, globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    auto validFrom = view.getValidFrom();
+    if (!validFrom) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
+    }
+    setX509String(result.valid_from, toWTFString(validFrom));
 
-    // Set validTo
-    object->putDirect(vm, Identifier::fromString(vm, "valid_to"_s), valueOrUndefined(computeValidTo(view, globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    auto validTo = view.getValidTo();
+    if (!validTo) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
+    }
+    setX509String(result.valid_to, toWTFString(validTo));
 
-    // Set fingerprints
-    object->putDirect(vm, Identifier::fromString(vm, "fingerprint"_s), valueOrUndefined(computeFingerprint(view, globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    auto fingerprint = view.getFingerprint(EVP_sha1());
+    if (!fingerprint) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
+    }
+    setX509String(result.fingerprint, WTF::move(fingerprint.value()));
 
-    object->putDirect(vm, Identifier::fromString(vm, "fingerprint256"_s), valueOrUndefined(computeFingerprint256(view, globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    auto fingerprint256 = view.getFingerprint(EVP_sha256());
+    if (!fingerprint256) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
+    }
+    setX509String(result.fingerprint256, WTF::move(fingerprint256.value()));
 
-    object->putDirect(vm, Identifier::fromString(vm, "fingerprint512"_s), valueOrUndefined(computeFingerprint512(view, globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    auto fingerprint512 = view.getFingerprint(EVP_sha512());
+    if (!fingerprint512) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
+    }
+    setX509String(result.fingerprint512, WTF::move(fingerprint512.value()));
 
-    // Set keyUsage
-    object->putDirect(vm, Identifier::fromString(vm, "ext_key_usage"_s), getKeyUsage(view, globalObject));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set serialNumber
-    object->putDirect(vm, Identifier::fromString(vm, "serialNumber"_s), valueOrUndefined(computeSerialNumber(view, globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set raw
-    object->putDirect(vm, Identifier::fromString(vm, "raw"_s), computeRaw(view, globalObject));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set CA flag
-    object->putDirect(vm, Identifier::fromString(vm, "ca"_s), jsBoolean(computeIsCA(view, globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    return object;
-}
-
-// This one DOES depend on a JSX509Certificate object
-// This implementation re-uses the cached values from the JSX509Certificate object getters
-// saving memory.
-JSC::JSObject* JSX509Certificate::toLegacyObject(JSGlobalObject* globalObject)
-{
-    VM& vm = globalObject->vm();
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* cert = view().get();
-
-    if (!cert)
-        return nullptr;
-
-    JSC::JSObject* object = constructEmptyObject(globalObject);
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Helper function to convert JSValue to undefined if empty/null
-    auto valueOrUndefined = [&](JSValue value) -> JSValue {
-        if (value.isEmpty() || value.isNull() || (value.isString() && value.toString(globalObject)->length() == 0))
-            return jsUndefined();
-        return value;
-    };
-
-    // Set subject
-    object->putDirect(vm, Identifier::fromString(vm, "subject"_s), valueOrUndefined(computeSubject(view(), globalObject, true)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set issuer
-    object->putDirect(vm, Identifier::fromString(vm, "issuer"_s), valueOrUndefined(computeIssuer(view(), globalObject, true)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set subjectaltname
-    object->putDirect(vm, Identifier::fromString(vm, "subjectaltname"_s), valueOrUndefined(subjectAltName()));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set infoAccess
-    object->putDirect(vm, Identifier::fromString(vm, "infoAccess"_s), valueOrUndefined(computeInfoAccess(view(), globalObject, true)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set modulus and exponent for RSA keys
-    EVP_PKEY* pkey = X509_get0_pubkey(cert);
-    if (pkey) {
-        switch (EVP_PKEY_base_id(pkey)) {
-        case EVP_PKEY_RSA: {
-            const RSA* rsa = EVP_PKEY_get0_RSA(pkey);
-            if (rsa) {
-                const BIGNUM* n;
-                const BIGNUM* e;
-                RSA_get0_key(rsa, &n, &e, nullptr);
-
-                // Convert modulus to string
-                auto bio = ncrypto::BIOPointer::New(n);
-                if (bio) {
-                    object->putDirect(vm, Identifier::fromString(vm, "modulus"_s), jsString(vm, toWTFString(bio)));
-                    RETURN_IF_EXCEPTION(scope, nullptr);
-                }
-
-                // Convert exponent to string
-                uint64_t exponent_word = static_cast<uint64_t>(ncrypto::BignumPointer::GetWord(e));
-                auto bio_e = ncrypto::BIOPointer::NewMem();
-                if (bio_e) {
-                    BIO_printf(bio_e.get(), "0x%" PRIx64, exponent_word);
-                    object->putDirect(vm, Identifier::fromString(vm, "exponent"_s), jsString(vm, toWTFString(bio_e)));
-                    RETURN_IF_EXCEPTION(scope, nullptr);
-                }
-
-                // Set bits
-                object->putDirect(vm, Identifier::fromString(vm, "bits"_s), jsNumber(ncrypto::BignumPointer::GetBitCount(n)));
-                RETURN_IF_EXCEPTION(scope, nullptr);
-
-                // Set pubkey
-                int size = i2d_RSA_PUBKEY(rsa, nullptr);
-                if (size > 0) {
-                    auto* buffer = Bun::createUninitializedBuffer(globalObject, static_cast<size_t>(size));
-                    RETURN_IF_EXCEPTION(scope, nullptr);
-                    uint8_t* data = buffer->typedVector();
-                    i2d_RSA_PUBKEY(rsa, &data);
-                    object->putDirect(vm, Identifier::fromString(vm, "pubkey"_s), buffer);
-                }
-            }
-            break;
+    if (auto keyUsage = view.getKeyUsage()) {
+        WTF::Vector<WTF::String> values;
+        int count = sk_ASN1_OBJECT_num(keyUsage.get());
+        if (!values.tryReserveCapacity(static_cast<size_t>(std::max(count, 0)))) {
+            throwOutOfMemoryError(globalObject, scope);
+            return {};
         }
-        case EVP_PKEY_EC: {
-            const EC_KEY* ec = EVP_PKEY_get0_EC_KEY(pkey);
-            if (ec) {
-                const EC_GROUP* group = EC_KEY_get0_group(ec);
-                if (group) {
-                    // Set bits
-                    int bits = EC_GROUP_order_bits(group);
-                    if (bits > 0) {
-                        object->putDirect(vm, Identifier::fromString(vm, "bits"_s), jsNumber(bits));
-                        RETURN_IF_EXCEPTION(scope, nullptr);
-                    }
-
-                    // Add pubkey field for EC keys
-                    const EC_POINT* point = EC_KEY_get0_public_key(ec);
-                    if (point) {
-                        point_conversion_form_t form = EC_KEY_get_conv_form(ec);
-                        size_t size = EC_POINT_point2oct(group, point, form, nullptr, 0, nullptr);
-                        if (size > 0) {
-                            auto* buffer = Bun::createUninitializedBuffer(globalObject, size);
-                            RETURN_IF_EXCEPTION(scope, nullptr);
-                            uint8_t* data = buffer->typedVector();
-                            size_t result_size = EC_POINT_point2oct(group, point, form, data, size, nullptr);
-                            if (result_size == size) {
-                                object->putDirect(vm, Identifier::fromString(vm, "pubkey"_s), buffer);
-                            }
-                        }
-                    }
-
-                    // Set curve info
-                    int nid = EC_GROUP_get_curve_name(group);
-                    if (nid != 0) {
-                        const char* sn = OBJ_nid2sn(nid);
-                        if (sn) {
-                            object->putDirect(vm, Identifier::fromString(vm, "asn1Curve"_s), jsString(vm, String::fromUTF8(sn)));
-                            RETURN_IF_EXCEPTION(scope, nullptr);
-                        }
-
-                        const char* nist = EC_curve_nid2nist(nid);
-                        if (nist) {
-                            object->putDirect(vm, Identifier::fromString(vm, "nistCurve"_s), jsString(vm, String::fromUTF8(nist)));
-                            RETURN_IF_EXCEPTION(scope, nullptr);
-                        }
-                    }
-                }
-            }
-            break;
+        char buffer[256];
+        for (int i = 0; i < count; ++i) {
+            if (OBJ_obj2txt(buffer, sizeof(buffer), sk_ASN1_OBJECT_value(keyUsage.get(), i), 1) >= 0
+                && !appendX509Result(values, String::fromUTF8(buffer), globalObject, scope))
+                return {};
         }
-        }
+        result.ext_key_usage = WTF::move(values);
     }
 
-    // Set validFrom
-    object->putDirect(vm, Identifier::fromString(vm, "valid_from"_s), valueOrUndefined(validFrom()));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    auto serialNumber = view.getSerialNumber();
+    if (!serialNumber) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
+    }
+    setX509String(result.serialNumber, String::fromUTF8(std::span(static_cast<const char*>(serialNumber.get()), serialNumber.size())));
 
-    // Set validTo
-    object->putDirect(vm, Identifier::fromString(vm, "valid_to"_s), valueOrUndefined(validTo()));
-    RETURN_IF_EXCEPTION(scope, nullptr);
+    auto raw = view.toDER();
+    if (!raw) {
+        throwCryptoOperationFailed(globalObject, scope);
+        return {};
+    }
+    BUF_MEM* rawMemory = nullptr;
+    BIO_get_mem_ptr(raw.get(), &rawMemory);
+    std::span<const uint8_t> rawBytes(reinterpret_cast<const uint8_t*>(rawMemory->data), rawMemory->length);
+    WTF::Vector<uint8_t> copiedRaw;
+    if (!copiedRaw.tryAppend(rawBytes)) {
+        throwOutOfMemoryError(globalObject, scope);
+        return {};
+    }
 
-    // Set fingerprints
-    object->putDirect(vm, Identifier::fromString(vm, "fingerprint"_s), valueOrUndefined(fingerprint()));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    object->putDirect(vm, Identifier::fromString(vm, "fingerprint256"_s), valueOrUndefined(fingerprint256()));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    object->putDirect(vm, Identifier::fromString(vm, "fingerprint512"_s), valueOrUndefined(fingerprint512()));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set keyUsage
-    object->putDirect(vm, Identifier::fromString(vm, "ext_key_usage"_s), getKeyUsage(globalObject));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set serialNumber
-    object->putDirect(vm, Identifier::fromString(vm, "serialNumber"_s), valueOrUndefined(serialNumber()));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set raw
-    object->putDirect(vm, Identifier::fromString(vm, "raw"_s), raw());
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    // Set CA flag
-    object->putDirect(vm, Identifier::fromString(vm, "ca"_s), jsBoolean(computeIsCA(view(), globalObject)));
-    RETURN_IF_EXCEPTION(scope, nullptr);
-
-    return object;
+    result.raw = WTF::move(copiedRaw);
+    result.ca = view.isCA();
+    return result;
 }
 
+using X509LegacyCertificateResult = decltype(Bindgen::Cpp::bunBindgenCpp_X509_certificateToLegacyObject(
+    std::declval<Bindgen::CppCallContext&>(),
+    std::declval<const Bindgen::Cpp::BunBindgenCpp_X509_certificateToLegacyObject_Arguments&>()));
+
+X509LegacyCertificateResult Bindgen::Cpp::bunBindgenCpp_X509_certificateToLegacyObject(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_X509_certificateToLegacyObject_Arguments& args)
+{
+    auto* certificate = dynamicDowncast<JSX509Certificate>(args.bindingThis);
+    RELEASE_ASSERT(certificate);
+    return createLegacyCertificateResult<X509LegacyCertificateResult>(certificate->view(), &context.globalObject);
+}
 JSValue JSX509Certificate::computePublicKey(ncrypto::X509View view, JSGlobalObject* lexicalGlobalObject)
 {
     VM& vm = lexicalGlobalObject->vm();
@@ -1050,11 +960,12 @@ JSValue JSX509Certificate::computePublicKey(ncrypto::X509View view, JSGlobalObje
         return {};
     }
 
-    auto handle = KeyObject::create(CryptoKeyType::Public, WTF::move(result.value));
+    auto handle = KeyObject::create(lexicalGlobalObject, scope, CryptoKeyType::Public, WTF::move(result.value));
+    RETURN_IF_EXCEPTION(scope, {});
     return JSPublicKeyObject::create(vm, globalObject->m_JSPublicKeyObjectClassStructure.get(lexicalGlobalObject), lexicalGlobalObject, WTF::move(handle));
 }
 
-JSValue JSX509Certificate::computeInfoAccess(ncrypto::X509View view, JSGlobalObject* globalObject, bool legacy)
+JSValue JSX509Certificate::computeInfoAccess(ncrypto::X509View view, JSGlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -1063,50 +974,7 @@ JSValue JSX509Certificate::computeInfoAccess(ncrypto::X509View view, JSGlobalObj
     if (!bio) {
         return jsEmptyString(vm);
     }
-    String info = toWTFString(bio);
-    if (!legacy) {
-        return jsString(vm, info);
-    }
-
-    // InfoAccess is always an array, even when a single element is present.
-    JSObject* object = constructEmptyObject(vm, globalObject->nullPrototypeObjectStructure());
-
-    // Go through each newline
-    unsigned substring_start = 0;
-    while (substring_start < info.length()) {
-        auto key_index = info.find(':', substring_start);
-
-        if (key_index == notFound) {
-            break;
-        }
-        auto line_end = info.find('\n', key_index);
-        unsigned value_start = key_index + 1;
-        String key = info.substringSharingImpl(substring_start, key_index - substring_start);
-        String value = line_end == notFound ? info.substringSharingImpl(value_start) : info.substringSharingImpl(value_start, line_end - value_start);
-        Identifier identifier = Identifier::fromString(vm, key);
-
-        if (identifier.isNull()) {
-            continue;
-        }
-        JSValue existingValue = object->getIfPropertyExists(globalObject, identifier);
-        RETURN_IF_EXCEPTION(scope, {});
-        if (existingValue) {
-            JSArray* array = uncheckedDowncast<JSArray>(existingValue);
-            array->push(globalObject, jsString(vm, value));
-        } else {
-            JSArray* array = constructEmptyArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), 1);
-            RETURN_IF_EXCEPTION(scope, {});
-            array->putDirectIndex(globalObject, 0, jsString(vm, value));
-            object->putDirect(vm, identifier, array);
-        }
-
-        if (line_end == notFound) {
-            break;
-        }
-        substring_start = line_end + 1;
-    }
-
-    return object;
+    return jsString(vm, toWTFString(bio));
 }
 
 JSString* JSX509Certificate::computeSubjectAltName(ncrypto::X509View view, JSGlobalObject* globalObject)
@@ -1166,24 +1034,30 @@ void setupX509CertificateClassStructure(LazyClassStructure::Initializer& init)
     init.setConstructor(constructor);
 }
 
-extern "C" EncodedJSValue Bun__X509__toJSLegacyEncoding(X509* cert, JSGlobalObject* globalObject)
+Bindgen::Engine::BunBindgenEngine_X509_x509ToLegacyObject_Return Bindgen::Engine::bunBindgenEngine_X509_x509ToLegacyObject(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_X509_x509ToLegacyObject_Arguments& args)
 {
-    ncrypto::X509View view(cert);
-    return JSValue::encode(JSX509Certificate::toLegacyObject(view, globalObject));
-}
-extern "C" EncodedJSValue Bun__X509__toJS(X509* cert, JSGlobalObject* globalObject)
-{
-    ncrypto::X509Pointer cert_ptr(cert);
-    auto* zigGlobalObject = defaultGlobalObject(globalObject);
-    return JSValue::encode(JSX509Certificate::create(zigGlobalObject->vm(), zigGlobalObject->m_JSX509CertificateClassStructure.get(zigGlobalObject), globalObject, WTF::move(cert_ptr)));
+    ncrypto::X509View view(args.certificate);
+    return createLegacyCertificateResult<Bindgen::Engine::BunBindgenEngine_X509_x509ToLegacyObject_Return>(view, &context.globalObject);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsIsX509Certificate, (JSGlobalObject * globalObject, CallFrame* callFrame))
+JSC::JSValue Bindgen::Engine::bunBindgenEngine_X509_x509CreateCertificateObject(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_X509_x509CreateCertificateObject_Arguments& args)
 {
-    JSValue value = callFrame->argument(0);
-    if (!value.isCell())
-        return JSValue::encode(jsBoolean(false));
-    return JSValue::encode(jsBoolean(value.asCell()->inherits(JSX509Certificate::info())));
+    RELEASE_ASSERT(X509_up_ref(args.certificate));
+    ncrypto::X509Pointer cert_ptr(args.certificate);
+    auto* globalObject = &context.globalObject;
+    auto* zigGlobalObject = defaultGlobalObject(globalObject);
+    return JSX509Certificate::create(zigGlobalObject->vm(), zigGlobalObject->m_JSX509CertificateClassStructure.get(zigGlobalObject), globalObject, WTF::move(cert_ptr));
+}
+
+bool Bindgen::Cpp::bunBindgenCpp_X509_isX509Certificate(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_X509_isX509Certificate_Arguments& args)
+{
+    return args.value.is_object() && args.value.object().inherits(JSX509Certificate::info());
 }
 
 } // namespace Bun

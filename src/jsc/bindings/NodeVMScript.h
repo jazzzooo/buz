@@ -13,8 +13,6 @@ public:
     bool produceCachedData = false;
 
     using BaseVMOptions::BaseVMOptions;
-
-    bool fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSValue optionsArg, JSValue* importer);
 };
 
 class NodeVMScriptConstructor final : public JSC::InternalFunction {
@@ -106,8 +104,6 @@ public:
     bool breakOnSigint = false;
 
     using BaseVMOptions::BaseVMOptions;
-
-    bool fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSValue optionsArg);
 };
 
 } // namespace Bun

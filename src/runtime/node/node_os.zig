@@ -1,22 +1,5 @@
-extern fn bun_sysconf__SC_NPROCESSORS_ONLN() i32;
-
-pub fn createNodeOsBinding(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-    return (try jsc.JSObject.create(.{
-        .hostCpuCount = @max(1, bun_sysconf__SC_NPROCESSORS_ONLN()),
-        .cpus = gen.createCpusCallback(global),
-        .freemem = gen.createFreememCallback(global),
-        .getPriority = gen.createGetPriorityCallback(global),
-        .homedir = gen.createHomedirCallback(global),
-        .hostname = gen.createHostnameCallback(global),
-        .loadavg = gen.createLoadavgCallback(global),
-        .networkInterfaces = gen.createNetworkInterfacesCallback(global),
-        .release = gen.createReleaseCallback(global),
-        .totalmem = gen.createTotalmemCallback(global),
-        .uptime = gen.createUptimeCallback(global),
-        .userInfo = gen.createUserInfoCallback(global),
-        .version = gen.createVersionCallback(global),
-        .setPriority = gen.createSetPriorityCallback(global),
-    }, global)).toJS();
+fn onlineProcessorCount() i32 {
+    return @intCast(c.sysconf(c._SC_NPROCESSORS_ONLN));
 }
 
 const CPUTimes = struct {
@@ -25,18 +8,29 @@ const CPUTimes = struct {
     sys: u64 = 0,
     idle: u64 = 0,
     irq: u64 = 0,
-
-    pub fn toValue(self: CPUTimes, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-        const fields = comptime std.meta.fieldNames(CPUTimes);
-        const ret = jsc.JSObject.createEmpty(globalThis, fields.len);
-        inline for (fields) |fieldName| {
-            ret.putDirect(globalThis, jsc.ZigString.static(fieldName), jsc.JSValue.jsNumberFromUint64(@field(self, fieldName)));
-        }
-        return ret.toJS();
-    }
 };
 
-pub fn cpus(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+fn appendCPU(values: *CPUInfoList, model: []const u8, speed: u64, times: CPUTimes) bun.OOM!void {
+    var owned_model = try bun.bindgen.DOMString.fromUTF8(model);
+    errdefer owned_model.deinit();
+    try values.append(.{
+        .model = owned_model,
+        .speed = speed,
+        .times = .{
+            .user = times.user,
+            .nice = times.nice,
+            .sys = times.sys,
+            .idle = times.idle,
+            .irq = times.irq,
+        },
+    });
+}
+
+fn deinitCPUInfos(values: []CPUInfo) void {
+    for (values) |*value| value.model.deinit();
+}
+
+pub fn cpus(io: std.Io) !CpusResult {
     const cpusImpl = switch (Environment.os) {
         .linux => cpusImplLinux,
         .mac => cpusImplLibuv,
@@ -45,22 +39,13 @@ pub fn cpus(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
         .wasm => @compileError("Unsupported OS"),
     };
 
-    return cpusImpl(global) catch {
-        const err = jsc.SystemError{
-            .message = bun.String.static("Failed to get CPU information"),
-            .code = bun.String.static(@tagName(jsc.Node.ErrorCode.ERR_SYSTEM_ERROR)),
-        };
-        return global.throwValue((try err.toErrorInstance(global)).toJS());
-    };
+    return cpusImpl(io);
 }
 
-fn getCPUObject(values: *jsc.JSArray, globalThis: *jsc.JSGlobalObject, index: u32) !*jsc.JSObject {
-    return (try values.getIndex(globalThis, index)).getObject() orelse error.invalid_cpu_entry;
-}
-
-fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
-    // Create the return array
-    const values = try jsc.JSArray.createEmpty(globalThis, 0);
+fn cpusImplLinux(io: std.Io) !CpusResult {
+    var values = CPUInfoList.init(bun.default_allocator);
+    defer values.deinit();
+    errdefer deinitCPUInfos(values.items);
     var num_cpus: u32 = 0;
 
     var stack_fallback_buffer: [1024 * 8]u8 = undefined;
@@ -70,23 +55,15 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
 
     // Read /proc/stat to get number of CPUs and times
     {
-        const file = std.Io.Dir.cwd().openFile(globalThis.bunVM().io, "/proc/stat", .{}) catch {
-            // hidepid mounts (common on Android) deny /proc/stat. lazyCpus in os.ts
-            // pre-creates hostCpuCount lazy proxies, so return that many stub
-            // entries (zeroed times / unknown model / speed 0) — matches Node.
-            const count: u32 = @intCast(@max(1, bun_sysconf__SC_NPROCESSORS_ONLN()));
-            const stubs = try jsc.JSArray.createEmpty(globalThis, count);
+        const file = std.Io.Dir.cwd().openFile(io, "/proc/stat", .{}) catch {
+            const count: u32 = @intCast(@max(1, onlineProcessorCount()));
             var i: u32 = 0;
             while (i < count) : (i += 1) {
-                const cpu = jsc.JSObject.createEmpty(globalThis, 3);
-                cpu.putDirect(globalThis, jsc.ZigString.static("times"), (CPUTimes{}).toValue(globalThis));
-                cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
-                cpu.putDirect(globalThis, jsc.ZigString.static("speed"), jsc.JSValue.jsNumber(0));
-                try stubs.putDirectIndex(globalThis, i, cpu.toJS());
+                try appendCPU(&values, "unknown", 0, .{});
             }
-            return stubs.toJS();
+            return CpusResult.fromOwnedSlice(values.items);
         };
-        defer file.close(globalThis.bunVM().io);
+        defer file.close(io);
 
         const read = try bun.sys.File.from(file).readToEndWithArrayList(&file_buf, .probably_small).unwrap();
         defer file_buf.clearRetainingCapacity();
@@ -115,18 +92,15 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
             _ = try (toks.next() orelse error.eol); // skip iowait
             times.irq = scale * try std.fmt.parseInt(u64, toks.next() orelse return error.eol, 10);
 
-            // Actually create the JS object representing the CPU
-            const cpu = jsc.JSObject.createEmpty(globalThis, 1);
-            cpu.putDirect(globalThis, jsc.ZigString.static("times"), times.toValue(globalThis));
-            try values.putDirectIndex(globalThis, num_cpus, cpu.toJS());
+            try appendCPU(&values, "unknown", 0, times);
 
             num_cpus += 1;
         }
     }
 
     // Read /proc/cpuinfo to get model information (optional)
-    if (std.Io.Dir.cwd().openFile(globalThis.bunVM().io, "/proc/cpuinfo", .{})) |file| {
-        defer file.close(globalThis.bunVM().io);
+    if (std.Io.Dir.cwd().openFile(io, "/proc/cpuinfo", .{})) |file| {
+        defer file.close(io);
 
         const read = try bun.sys.File.from(file).readToEndWithArrayList(&file_buf, .probably_small).unwrap();
         defer file_buf.clearRetainingCapacity();
@@ -138,46 +112,26 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
         const key_model_name = "model name\t: ";
 
         var cpu_index: u32 = 0;
-        var has_model_name = true;
         while (line_iter.next()) |line| {
             if (strings.hasPrefixComptime(line, key_processor)) {
-                if (!has_model_name) {
-                    const cpu = try getCPUObject(values, globalThis, cpu_index);
-                    cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
-                }
-                // If this line starts a new processor, parse the index from the line
                 const digits = std.mem.trim(u8, line[key_processor.len..], " \t\n");
                 cpu_index = try std.fmt.parseInt(u32, digits, 10);
-                if (cpu_index >= num_cpus) return error.too_may_cpus;
-                has_model_name = false;
+                if (cpu_index >= num_cpus) return error.TooManyCPUs;
             } else if (strings.hasPrefixComptime(line, key_model_name)) {
-                // If this is the model name, extract it and store on the current cpu
+                if (cpu_index >= values.items.len) return error.TooManyCPUs;
                 const model_name = line[key_model_name.len..];
-                const cpu = try getCPUObject(values, globalThis, cpu_index);
-                cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.init(model_name).withEncoding().toJS(globalThis));
-                has_model_name = true;
+                const model = try bun.bindgen.DOMString.fromUTF8(model_name);
+                values.items[cpu_index].model.deinit();
+                values.items[cpu_index].model = model;
             }
         }
-        if (!has_model_name) {
-            const cpu = try getCPUObject(values, globalThis, cpu_index);
-            cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
-        }
-    } else |_| {
-        // Initialize model name to "unknown"
-        for (0..num_cpus) |cpu_index| {
-            const cpu = try getCPUObject(values, globalThis, @intCast(cpu_index));
-            cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.static("unknown").withEncoding().toJS(globalThis));
-        }
-    }
+    } else |_| {}
 
-    // Read /sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq to get current frequency (optional)
     for (0..num_cpus) |cpu_index| {
-        const cpu = try getCPUObject(values, globalThis, @truncate(cpu_index));
-
         var path_buf: [128]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq", .{cpu_index});
-        if (std.Io.Dir.cwd().openFile(globalThis.bunVM().io, path, .{})) |file| {
-            defer file.close(globalThis.bunVM().io);
+        if (std.Io.Dir.cwd().openFile(io, path, .{})) |file| {
+            defer file.close(io);
 
             const read = try bun.sys.File.from(file).readToEndWithArrayList(&file_buf, .probably_small).unwrap();
             defer file_buf.clearRetainingCapacity();
@@ -186,17 +140,14 @@ fn cpusImplLinux(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
             const digits = std.mem.trim(u8, contents, " \n");
             const speed = (std.fmt.parseInt(u64, digits, 10) catch 0) / 1000;
 
-            cpu.putDirect(globalThis, jsc.ZigString.static("speed"), jsc.JSValue.jsNumber(speed));
-        } else |_| {
-            // Initialize CPU speed to 0
-            cpu.putDirect(globalThis, jsc.ZigString.static("speed"), jsc.JSValue.jsNumber(0));
-        }
+            values.items[cpu_index].speed = speed;
+        } else |_| {}
     }
 
-    return values.toJS();
+    return CpusResult.fromOwnedSlice(values.items);
 }
 
-fn cpusImplFreeBSD(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
+fn cpusImplFreeBSD(_: std.Io) !CpusResult {
     var ncpu: c_uint = 0;
     var ncpu_len: usize = @sizeOf(c_uint);
     try sysctlByName("hw.ncpu", &ncpu, &ncpu_len);
@@ -205,9 +156,9 @@ fn cpusImplFreeBSD(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     var model_buf: [512]u8 = undefined;
     var model_len: usize = model_buf.len;
     const model = if (sysctlByName("hw.model", &model_buf, &model_len)) |_|
-        jsc.ZigString.init(std.mem.sliceTo(&model_buf, 0)).withEncoding().toJS(globalThis)
+        std.mem.sliceTo(&model_buf, 0)
     else |_|
-        jsc.ZigString.static("unknown").withEncoding().toJS(globalThis);
+        "unknown";
 
     var speed_mhz: c_uint = 0;
     var speed_len: usize = @sizeOf(c_uint);
@@ -219,10 +170,12 @@ fn cpusImplFreeBSD(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     var times_len: usize = times_buf.len * @sizeOf(c_long);
     try sysctlByName("kern.cp_times", times_buf.ptr, &times_len);
 
-    const ticks: i64 = bun_sysconf__SC_CLK_TCK();
+    const ticks = c.sysconf(c._SC_CLK_TCK);
     const mult: u64 = if (ticks > 0) 1000 / @as(u64, @intCast(ticks)) else 1;
 
-    const values = try jsc.JSArray.createEmpty(globalThis, @intCast(ncpu));
+    var values = try CPUInfoList.initCapacity(bun.default_allocator, @intCast(ncpu));
+    defer values.deinit();
+    errdefer deinitCPUInfos(values.items);
     var i: u32 = 0;
     while (i < ncpu) : (i += 1) {
         const off = @as(usize, i) * cpu_states;
@@ -233,17 +186,12 @@ fn cpusImplFreeBSD(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
             .irq = @as(u64, @intCast(@max(times_buf[off + 3], 0))) * mult,
             .idle = @as(u64, @intCast(@max(times_buf[off + 4], 0))) * mult,
         };
-        const cpu = jsc.JSObject.createEmpty(globalThis, 3);
-        cpu.putDirect(globalThis, jsc.ZigString.static("model"), model);
-        cpu.putDirect(globalThis, jsc.ZigString.static("speed"), jsc.JSValue.jsNumber(speed_mhz));
-        cpu.putDirect(globalThis, jsc.ZigString.static("times"), times.toValue(globalThis));
-        try values.putDirectIndex(globalThis, i, cpu.toJS());
+        try appendCPU(&values, model, @intCast(speed_mhz), times);
     }
-    return values.toJS();
+    return CpusResult.fromOwnedSlice(values.items);
 }
 
-extern fn bun_sysconf__SC_CLK_TCK() isize;
-pub fn cpusImplLibuv(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
+pub fn cpusImplLibuv(_: std.Io) !CpusResult {
     var cpu_infos: [*]libuv.uv_cpu_info_t = undefined;
     var count: c_int = undefined;
     const err = libuv.uv_cpu_info(&cpu_infos, &count);
@@ -252,9 +200,11 @@ pub fn cpusImplLibuv(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
     }
     defer libuv.uv_free_cpu_info(cpu_infos, count);
 
-    const values = try jsc.JSArray.createEmpty(globalThis, @intCast(count));
+    var values = try CPUInfoList.initCapacity(bun.default_allocator, @intCast(count));
+    defer values.deinit();
+    errdefer deinitCPUInfos(values.items);
 
-    for (cpu_infos[0..@intCast(count)], 0..@intCast(count)) |cpu_info, i| {
+    for (cpu_infos[0..@intCast(count)]) |cpu_info| {
         const times = CPUTimes{
             .user = cpu_info.cpu_times.user,
             .nice = cpu_info.cpu_times.nice,
@@ -263,58 +213,71 @@ pub fn cpusImplLibuv(globalThis: *jsc.JSGlobalObject) !jsc.JSValue {
             .irq = cpu_info.cpu_times.irq,
         };
 
-        const cpu = jsc.JSObject.createEmpty(globalThis, 3);
-        cpu.putDirect(globalThis, jsc.ZigString.static("model"), jsc.ZigString.init(bun.span(cpu_info.model)).withEncoding().toJS(globalThis));
-        cpu.putDirect(globalThis, jsc.ZigString.static("speed"), jsc.JSValue.jsNumber(cpu_info.speed));
-        cpu.putDirect(globalThis, jsc.ZigString.static("times"), times.toValue(globalThis));
-
-        try values.putDirectIndex(globalThis, @intCast(i), cpu.toJS());
+        try appendCPU(&values, bun.span(cpu_info.model), @intCast(@max(cpu_info.speed, 0)), times);
     }
 
-    return values.toJS();
+    return CpusResult.fromOwnedSlice(values.items);
 }
 
 pub fn freemem() u64 {
-    // OsBinding.cpp
-    return @extern(*const fn () callconv(.c) u64, .{
-        .name = "Bun__Os__getFreeMemory",
-    })();
+    return bun.sys.SystemResources.freeMemory();
 }
 
-extern fn get_process_priority(pid: i32) i32;
-pub fn getPriority(global: *jsc.JSGlobalObject, pid: i32) bun.JSError!i32 {
-    const result = get_process_priority(pid);
-    if (result == std.math.maxInt(i32)) {
-        const err = jsc.SystemError{
-            .message = bun.String.static("no such process"),
-            .code = bun.String.static("ESRCH"),
-            .errno = comptime switch (bun.Environment.os) {
-                else => -@as(c_int, @backingInt(std.posix.E.SRCH)),
-                .windows => libuv.UV_ESRCH,
-            },
-            .syscall = bun.String.static("uv_os_getpriority"),
+fn noSuchProcessError(syscall: sys.Tag) bun.sys.Error {
+    if (comptime Environment.isWindows) {
+        return .{
+            .errno = @intCast(-libuv.UV_ESRCH),
+            .from_libuv = true,
+            .syscall = syscall,
         };
-        return global.throwValue((try err.toErrorInstanceWithInfoObject(global)).toJS());
     }
-    return result;
+    return bun.sys.Error.fromCode(.SRCH, syscall);
 }
 
-pub fn homedir(global: *jsc.JSGlobalObject) !bun.String {
+fn systemErrorFromUV(code: c_int, syscall: sys.Tag) bun.sys.Error {
+    if (comptime Environment.isWindows) {
+        bun.assert(code < 0);
+        return .{
+            .errno = @intCast(-code),
+            .from_libuv = true,
+            .syscall = syscall,
+        };
+    }
+    unreachable;
+}
+
+pub fn getPriority(pid: i32) bun.sys.Maybe(i32) {
+    if (pid < 0) return .{ .err = noSuchProcessError(.uv_os_getpriority) };
+    if (comptime Environment.isWindows) {
+        var priority: c_int = undefined;
+        const status = libuv.uv_os_getpriority(pid, &priority);
+        if (status != 0) return .{ .err = systemErrorFromUV(status, .uv_os_getpriority) };
+        return .{ .result = priority };
+    }
+    std.c._errno().* = 0;
+    const result = c.getpriority(c.PRIO_PROCESS, @intCast(pid));
+    if (result == -1 and std.c._errno().* != 0)
+        return .{ .err = bun.sys.Error.fromCode(bun.sys.getErrno(result), .uv_os_getpriority) };
+    return .{ .result = result };
+}
+
+fn homedirBytes() bun.OOM!bun.sys.Maybe(bun.bindgen.OwnedBytes) {
     // In Node.js, this is a wrapper around uv_os_homedir.
     if (Environment.isWindows) {
         var out: bun.PathBuffer = undefined;
         var size: usize = out.len;
-        if (libuv.uv_os_homedir(&out, &size).toError(.uv_os_homedir)) |err| {
-            return global.throwValue(try err.toJS(global));
+        const code = libuv.uv_os_homedir(&out, &size).int();
+        if (code != 0) {
+            return .{ .err = systemErrorFromUV(code, .uv_os_homedir) };
         }
-        return bun.String.cloneUTF8(out[0..size]);
+        return .{ .result = try bun.bindgen.OwnedBytes.fromSlice(out[0..size]) };
     } else {
 
         // The posix implementation of uv_os_homedir first checks the HOME
         // environment variable, then falls back to reading the passwd entry.
         if (bun.env_var.HOME.get()) |home| {
             if (home.len > 0)
-                return bun.String.init(home);
+                return .{ .result = try bun.bindgen.OwnedBytes.fromSlice(home) };
         }
 
         // From libuv:
@@ -346,7 +309,7 @@ pub fn homedir(global: *jsc.JSGlobalObject) !bun.String {
             // If the system call wants more memory, double it.
             if (ret == @backingInt(bun.sys.E.RANGE)) {
                 const len = string_bytes.len;
-                bun.default_allocator.free(string_bytes);
+                if (string_bytes.ptr != &stack_string_bytes) bun.default_allocator.free(string_bytes);
                 string_bytes = "";
                 string_bytes = try bun.default_allocator.alloc(u8, len * 2);
                 continue;
@@ -356,48 +319,55 @@ pub fn homedir(global: *jsc.JSGlobalObject) !bun.String {
         };
 
         if (ret != 0) {
-            return global.throwValue(try bun.sys.Error.fromCode(
+            return .{ .err = bun.sys.Error.fromCode(
                 @fromBackingInt(@intCast(ret)),
                 .uv_os_homedir,
-            ).toJS(global));
+            ) };
         }
 
         if (result == null) {
             // bionic has no passwd entries for app uids; with HOME also unset
             // (zygote/run-as), return a usable default rather than throwing.
             if (comptime Environment.isAndroid) {
-                return bun.String.static("/data/local/tmp");
+                return .{ .result = try bun.bindgen.OwnedBytes.fromSlice("/data/local/tmp") };
             }
             // in uv__getpwuid_r, null result throws UV_ENOENT.
-            return global.throwValue(try bun.sys.Error.fromCode(
+            return .{ .err = bun.sys.Error.fromCode(
                 .NOENT,
                 .uv_os_homedir,
-            ).toJS(global));
+            ) };
         }
 
-        return if (pw.pw_dir) |dir|
-            bun.String.cloneUTF8(bun.span(dir))
+        return .{ .result = if (pw.pw_dir) |dir|
+            try bun.bindgen.OwnedBytes.fromSlice(bun.span(dir))
         else
-            bun.String.empty;
+            bun.bindgen.OwnedBytes.empty() };
     }
 }
 
-pub fn hostname(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+pub fn homedir() bun.OOM!bun.sys.Maybe(bun.bindgen.DOMString) {
+    var bytes = switch (try homedirBytes()) {
+        .result => |value| value,
+        .err => |err| return .{ .err = err },
+    };
+    defer bytes.deinit();
+    return .{ .result = try bun.bindgen.DOMString.fromUTF8(bytes.slice()) };
+}
+
+pub fn hostname() bun.OOM!bun.bindgen.DOMString {
     if (Environment.isWindows) {
         var name_buffer: [129:0]u16 = undefined;
         if (bun.windows.GetHostNameW(&name_buffer, name_buffer.len).toBool()) {
-            const str = bun.String.cloneUTF16(std.mem.sliceTo(&name_buffer, 0));
-            defer str.deref();
-            return str.toJS(global);
+            return bun.bindgen.DOMString.fromUTF16(std.mem.sliceTo(&name_buffer, 0));
         }
-        return jsc.ZigString.init("unknown").withEncoding().toJS(global);
+        return bun.bindgen.DOMString.fromUTF8("unknown");
     } else {
         var name_buffer: [bun.HOST_NAME_MAX]u8 = undefined;
-        return jsc.ZigString.init(std.posix.gethostname(&name_buffer) catch "unknown").withEncoding().toJS(global);
+        return bun.bindgen.DOMString.fromUTF8(std.posix.gethostname(&name_buffer) catch "unknown");
     }
 }
 
-pub fn loadavg(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+pub fn loadavg() [3]f64 {
     const result = switch (bun.Environment.os) {
         .mac => loadavg: {
             var avg: c.struct_loadavg = undefined;
@@ -432,11 +402,7 @@ pub fn loadavg(global: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
         .wasm => @compileError("TODO"),
     };
 
-    return (try jsc.JSArray.create(global, &.{
-        jsc.JSValue.jsNumber(result[0]),
-        jsc.JSValue.jsNumber(result[1]),
-        jsc.JSValue.jsNumber(result[2]),
-    })).toJS();
+    return result;
 }
 
 pub const networkInterfaces = switch (Environment.os) {
@@ -445,49 +411,151 @@ pub const networkInterfaces = switch (Environment.os) {
     .wasm => @compileError("Unsupported OS"),
 };
 
-fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-    // getifaddrs sets a pointer to a linked list
+const NetworkInterfaceGroup = struct {
+    name: []const u8,
+    values: std.ArrayListUnmanaged(NetworkInterface) = .empty,
+};
+
+const NetworkInterfaceGroups = std.ArrayListUnmanaged(NetworkInterfaceGroup);
+
+fn deinitNetworkInterface(value: *NetworkInterface) void {
+    value.address.deinit();
+    value.netmask.deinit();
+    value.mac.deinit();
+    if (value.cidr) |*cidr| cidr.deinit();
+}
+
+fn deinitNetworkInterfaceGroups(groups: *NetworkInterfaceGroups) void {
+    for (groups.items) |*group| {
+        for (group.values.items) |*value| deinitNetworkInterface(value);
+        group.values.deinit(bun.default_allocator);
+    }
+    groups.deinit(bun.default_allocator);
+}
+
+fn appendNetworkInterfaceValue(
+    groups: *NetworkInterfaceGroups,
+    name: []const u8,
+    address: []const u8,
+    netmask: []const u8,
+    family: NetworkInterfaceFamily,
+    mac: []const u8,
+    internal: bool,
+    cidr: ?[]const u8,
+    scopeid: ?u32,
+) bun.OOM!void {
+    var owned_address = try bun.bindgen.DOMString.fromUTF8(address);
+    errdefer owned_address.deinit();
+    var owned_netmask = try bun.bindgen.DOMString.fromUTF8(netmask);
+    errdefer owned_netmask.deinit();
+    var owned_mac = try bun.bindgen.DOMString.fromUTF8(mac);
+    errdefer owned_mac.deinit();
+    var owned_cidr: ?bun.bindgen.DOMString = if (cidr) |value|
+        try bun.bindgen.DOMString.fromUTF8(value)
+    else
+        null;
+    errdefer if (owned_cidr) |*value| value.deinit();
+
+    const group: *NetworkInterfaceGroup = for (groups.items) |*candidate| {
+        if (std.mem.eql(u8, candidate.name, name)) break candidate;
+    } else group: {
+        try groups.append(bun.default_allocator, .{ .name = name });
+        break :group &groups.items[groups.items.len - 1];
+    };
+
+    try group.values.append(bun.default_allocator, .{
+        .address = owned_address,
+        .netmask = owned_netmask,
+        .family = family,
+        .mac = owned_mac,
+        .internal = internal,
+        .cidr = owned_cidr,
+        .scopeid = scopeid,
+    });
+}
+
+fn appendNetworkInterface(
+    groups: *NetworkInterfaceGroups,
+    name: []const u8,
+    address: SocketAddress,
+    netmask: SocketAddress,
+    mac: []const u8,
+    internal: bool,
+) bun.OOM!void {
+    var address_buffer: [65]u8 = undefined;
+    const address_string = address.formatIp(&address_buffer);
+    var netmask_buffer: [65]u8 = undefined;
+    const netmask_string = netmask.formatIp(&netmask_buffer);
+
+    const family: NetworkInterfaceFamily = switch (address.family()) {
+        .INET => .ipv4,
+        .INET6 => .ipv6,
+    };
+    const suffix: ?u8 = switch (address.family()) {
+        .INET => netmaskToCIDRSuffix(netmask.address4()),
+        .INET6 => netmaskToCIDRSuffix(@as(u128, @bitCast(netmask.address6()))),
+    };
+    var cidr_buffer: [72]u8 = undefined;
+    const cidr: ?[]const u8 = if (suffix) |value|
+        std.fmt.bufPrint(&cidr_buffer, "{s}/{d}", .{ address_string, value }) catch unreachable
+    else
+        null;
+
+    try appendNetworkInterfaceValue(
+        groups,
+        name,
+        address_string,
+        netmask_string,
+        family,
+        mac,
+        internal,
+        cidr,
+        if (address.family() == .INET6) @intCast(address.scopeId()) else null,
+    );
+}
+
+fn finishNetworkInterfaces(groups: *NetworkInterfaceGroups) bun.OOM!NetworkInterfacesResult {
+    var entries = try NetworkInterfacesResult.Builder.init(groups.items.len);
+    errdefer entries.deinit();
+    for (groups.items) |*group| {
+        var key = try bun.bindgen.DOMString.fromUTF8(group.name);
+        errdefer key.deinit();
+        const value = try NetworkInterfaceList.fromOwnedSlice(group.values.items);
+        group.values.items.len = 0;
+        entries.appendOwned(.{ .key = key, .value = value });
+    }
+    return entries.finish();
+}
+
+fn networkInterfacesPosix() !NetworkInterfacesResult {
     var interface_start: ?*c.ifaddrs = null;
     const rc = c.getifaddrs(&interface_start);
     if (rc != 0) {
         const errno = std.posix.errno(rc);
-        // Android API 30+: SELinux denies the netlink socket getifaddrs uses.
-        // Node returns {} rather than throwing.
         if (comptime Environment.isAndroid) {
             if (errno == .ACCES or errno == .PERM) {
-                return jsc.JSObject.createEmpty(globalThis, 0).toJS();
+                var groups: NetworkInterfaceGroups = .empty;
+                defer deinitNetworkInterfaceGroups(&groups);
+                return finishNetworkInterfaces(&groups);
             }
         }
-        const err = jsc.SystemError{
-            .message = bun.String.static("A system error occurred: getifaddrs returned an error"),
-            .code = bun.String.static("ERR_SYSTEM_ERROR"),
-            .errno = @backingInt(errno),
-            .syscall = bun.String.static("getifaddrs"),
-        };
-
-        return globalThis.throwValue((try err.toErrorInstance(globalThis)).toJS());
+        return error.NetworkInterfacesQueryFailed;
     }
     defer c.freeifaddrs(interface_start);
 
     const helpers = struct {
-        // We'll skip interfaces that aren't actually available
         pub fn skip(iface: *c.ifaddrs) bool {
-            // Skip interfaces that aren't actually available
             if (iface.ifa_flags & c.IFF_RUNNING == 0) return true;
             if (iface.ifa_flags & c.IFF_UP == 0) return true;
-            if (iface.ifa_addr == null) return true;
-
-            return false;
+            return iface.ifa_addr == null;
         }
 
-        // We won't actually return link-layer interfaces but we need them for
-        //  extracting the MAC address
         pub fn isLinkLayer(iface: *c.ifaddrs) bool {
             if (iface.ifa_addr == null) return false;
             return if (comptime Environment.isLinux)
-                return iface.ifa_addr.*.sa_family == std.posix.AF.PACKET
+                iface.ifa_addr.*.sa_family == std.posix.AF.PACKET
             else if (comptime Environment.isMac or Environment.isFreeBSD)
-                return iface.ifa_addr.?.*.sa_family == std.posix.AF.LINK
+                iface.ifa_addr.?.*.sa_family == std.posix.AF.LINK
             else
                 @compileError("unreachable");
         }
@@ -497,257 +565,110 @@ fn networkInterfacesPosix(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSVal
         }
     };
 
-    // The list currently contains entries for link-layer interfaces
-    //  and the IPv4, IPv6 interfaces.  We only want to return the latter two
-    //  but need the link-layer entries to determine MAC address.
-    // So, on our first pass through the linked list we'll count the number of
-    //  INET interfaces only.
-    var num_inet_interfaces: usize = 0;
+    var groups: NetworkInterfaceGroups = .empty;
+    defer deinitNetworkInterfaceGroups(&groups);
+
     var it = interface_start;
     while (it) |iface| : (it = iface.ifa_next) {
         if (helpers.skip(iface) or helpers.isLinkLayer(iface)) continue;
-        num_inet_interfaces += 1;
-    }
 
-    var ret = jsc.JSObject.createEmpty(globalThis, 0);
-
-    // Second pass through, populate each interface object
-    it = interface_start;
-    while (it) |iface| : (it = iface.ifa_next) {
-        if (helpers.skip(iface) or helpers.isLinkLayer(iface)) continue;
-
+        const address_pointer = iface.ifa_addr orelse continue;
+        const netmask_pointer = iface.ifa_netmask orelse continue;
+        const address = SocketAddress.fromPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(address_pointer)))) orelse continue;
+        const netmask = SocketAddress.fromPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(netmask_pointer)))) orelse continue;
         const interface_name = std.mem.sliceTo(iface.ifa_name, 0);
-        const addr = SocketAddress.fromPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_addr)))) orelse continue;
-        const netmask = SocketAddress.fromPosix(@alignCast(@as(*std.posix.sockaddr, @ptrCast(iface.ifa_netmask)))) orelse continue;
 
-        var interface = jsc.JSObject.createEmpty(globalThis, 0);
+        var mac_buffer: [17]u8 = undefined;
+        var mac: []const u8 = "00:00:00:00:00:00";
+        var link_it = interface_start;
+        const link_address = while (link_it) |link_iface| : (link_it = link_iface.ifa_next) {
+            if (helpers.skip(link_iface) or !helpers.isLinkLayer(link_iface)) continue;
 
-        // address <string> The assigned IPv4 or IPv6 address
-        // cidr <string> The assigned IPv4 or IPv6 address with the routing prefix in CIDR notation. If the netmask is invalid, this property is set to null.
-        {
-            // Compute the CIDR suffix; returns null if the netmask cannot
-            //  be converted to a CIDR suffix
-            const maybe_suffix: ?u8 = switch (addr.family()) {
-                .INET => netmaskToCIDRSuffix(netmask.address4()),
-                .INET6 => netmaskToCIDRSuffix(@as(u128, @bitCast(netmask.address6()))),
-            };
+            const link_name = std.mem.sliceTo(link_iface.ifa_name, 0);
+            if (!strings.hasPrefix(link_name, interface_name)) continue;
+            if (link_name.len > interface_name.len and link_name[interface_name.len] != ':') continue;
 
-            // Format the address and then, if valid, the CIDR suffix; both
-            //  the address and cidr values can be slices into this same buffer
-            // e.g. addr_str = "192.168.88.254", cidr_str = "192.168.88.254/24"
-            var buf: [64]u8 = undefined;
-            const addr_str = bun.fmt.formatIp(addr, &buf) catch unreachable;
-            var cidr = jsc.JSValue.null;
-            if (maybe_suffix) |suffix| {
-                //NOTE addr_str might not start at buf[0] due to slicing in formatIp
-                const start = @intFromPtr(addr_str.ptr) - @intFromPtr(&buf[0]);
-                // Start writing the suffix immediately after the address
-                const suffix_str = std.fmt.bufPrint(buf[start + addr_str.len ..], "/{}", .{suffix}) catch unreachable;
-                // The full cidr value is the address + the suffix
-                const cidr_str = buf[start .. start + addr_str.len + suffix_str.len];
-                cidr = jsc.ZigString.init(cidr_str).withEncoding().toJS(globalThis);
-            }
-
-            interface.putDirect(globalThis, jsc.ZigString.static("address"), jsc.ZigString.init(addr_str).withEncoding().toJS(globalThis));
-            interface.putDirect(globalThis, jsc.ZigString.static("cidr"), cidr);
-        }
-
-        // netmask <string> The IPv4 or IPv6 network mask
-        {
-            var buf: [64]u8 = undefined;
-            const str = bun.fmt.formatIp(netmask, &buf) catch unreachable;
-            interface.putDirect(globalThis, jsc.ZigString.static("netmask"), jsc.ZigString.init(str).withEncoding().toJS(globalThis));
-        }
-
-        // family <string> Either IPv4 or IPv6
-        interface.putDirect(globalThis, jsc.ZigString.static("family"), switch (addr.family()) {
-            .INET => globalThis.commonStrings().IPv4(),
-            .INET6 => globalThis.commonStrings().IPv6(),
-        });
-
-        // mac <string> The MAC address of the network interface
-        {
-            // We need to search for the link-layer interface whose name matches this one
-            var ll_it = interface_start;
-            const maybe_ll_addr = while (ll_it) |ll_iface| : (ll_it = ll_iface.ifa_next) {
-                if (helpers.skip(ll_iface) or !helpers.isLinkLayer(ll_iface)) continue;
-
-                const ll_name = std.mem.sliceTo(ll_iface.ifa_name, 0);
-                if (!strings.hasPrefix(ll_name, interface_name)) continue;
-                if (ll_name.len > interface_name.len and ll_name[interface_name.len] != ':') continue;
-
-                // This is the correct link-layer interface entry for the current interface,
-                //  cast to a link-layer socket address
-                if (comptime Environment.isLinux) {
-                    break @as(?*std.posix.sockaddr.ll, @ptrCast(@alignCast(ll_iface.ifa_addr)));
-                } else if (comptime Environment.isMac or Environment.isFreeBSD) {
-                    break @as(?*c.sockaddr_dl, @ptrCast(@alignCast(ll_iface.ifa_addr)));
-                } else {
-                    @compileError("unreachable");
-                }
-            } else null;
-
-            if (maybe_ll_addr) |ll_addr| {
-                // Encode its link-layer address.  We need 2*6 bytes for the
-                //  hex characters and 5 for the colon separators
-                var mac_buf: [17]u8 = undefined;
-                const addr_data = if (comptime Environment.isLinux) ll_addr.addr else if (comptime Environment.isMac or Environment.isFreeBSD) ll_addr.sdl_data[ll_addr.sdl_nlen..] else @compileError("unreachable");
-                if (addr_data.len < 6) {
-                    const mac = "00:00:00:00:00:00";
-                    interface.putDirect(globalThis, jsc.ZigString.static("mac"), jsc.ZigString.init(mac).withEncoding().toJS(globalThis));
-                } else {
-                    const mac = std.fmt.bufPrint(&mac_buf, "{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}", .{
-                        addr_data[0], addr_data[1], addr_data[2],
-                        addr_data[3], addr_data[4], addr_data[5],
-                    }) catch unreachable;
-                    interface.putDirect(globalThis, jsc.ZigString.static("mac"), jsc.ZigString.init(mac).withEncoding().toJS(globalThis));
-                }
+            if (comptime Environment.isLinux) {
+                break @as(?*std.posix.sockaddr.ll, @ptrCast(@alignCast(link_iface.ifa_addr)));
+            } else if (comptime Environment.isMac or Environment.isFreeBSD) {
+                break @as(?*c.sockaddr_dl, @ptrCast(@alignCast(link_iface.ifa_addr)));
             } else {
-                const mac = "00:00:00:00:00:00";
-                interface.putDirect(globalThis, jsc.ZigString.static("mac"), jsc.ZigString.init(mac).withEncoding().toJS(globalThis));
+                @compileError("unreachable");
+            }
+        } else null;
+
+        if (link_address) |value| {
+            const bytes = if (comptime Environment.isLinux)
+                value.addr
+            else if (comptime Environment.isMac or Environment.isFreeBSD)
+                value.sdl_data[value.sdl_nlen..]
+            else
+                @compileError("unreachable");
+            if (bytes.len >= 6) {
+                mac = std.fmt.bufPrint(&mac_buffer, "{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}", .{
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+                }) catch unreachable;
             }
         }
 
-        // internal <boolean> true if the network interface is a loopback or similar interface that is not remotely accessible; otherwise false
-        interface.putDirect(globalThis, jsc.ZigString.static("internal"), jsc.JSValue.jsBoolean(helpers.isLoopback(iface)));
-
-        // scopeid <number> The numeric IPv6 scope ID (only specified when family is IPv6)
-        if (addr.family() == .INET6) {
-            interface.putDirect(globalThis, jsc.ZigString.static("scopeid"), jsc.JSValue.jsNumber(addr.scopeId()));
-        }
-
-        // Does this entry already exist?
-        if (try ret.getOwn(globalThis, interface_name)) |array| {
-            // Add this interface entry to the existing array
-            const array_object = array.getArrayObject().?;
-            const next_index: u32 = @intCast(try array_object.getLength(globalThis));
-            try array_object.putDirectIndex(globalThis, next_index, interface.toJS());
-        } else {
-            // Add it as an array with this interface as an element
-            const member_name = jsc.ZigString.init(interface_name);
-            var array = try jsc.JSArray.createEmpty(globalThis, 1);
-            try array.putDirectIndex(globalThis, 0, interface.toJS());
-            ret.putDirect(globalThis, &member_name, array.toJS());
-        }
+        try appendNetworkInterface(
+            &groups,
+            interface_name,
+            address,
+            netmask,
+            mac,
+            helpers.isLoopback(iface),
+        );
     }
 
-    return ret.toJS();
+    return finishNetworkInterfaces(&groups);
 }
 
-fn networkInterfacesWindows(globalThis: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
+fn networkInterfacesWindows() !NetworkInterfacesResult {
     var ifaces: [*]libuv.uv_interface_address_t = undefined;
     var count: c_int = undefined;
-    const err = libuv.uv_interface_addresses(&ifaces, &count);
-    if (err != 0) {
-        const sys_err = jsc.SystemError{
-            .message = bun.String.static("uv_interface_addresses failed"),
-            .code = bun.String.static("ERR_SYSTEM_ERROR"),
-            //.info = info,
-            .errno = err,
-            .syscall = bun.String.static("uv_interface_addresses"),
-        };
-        return globalThis.throwValue((try sys_err.toErrorInstance(globalThis)).toJS());
+    if (libuv.uv_interface_addresses(&ifaces, &count) != 0) {
+        return error.NetworkInterfacesQueryFailed;
     }
     defer libuv.uv_free_interface_addresses(ifaces, count);
 
-    var ret = jsc.JSObject.createEmpty(globalThis, 8);
-
-    // 65 comes from: https://stackoverflow.com/questions/39443413/why-is-inet6-addrstrlen-defined-as-46-in-c
-    var ip_buf: [65]u8 = undefined;
-    var mac_buf: [17]u8 = undefined;
+    var groups: NetworkInterfaceGroups = .empty;
+    defer deinitNetworkInterfaceGroups(&groups);
 
     for (ifaces[0..@intCast(count)]) |iface| {
-        var interface = jsc.JSObject.createEmpty(globalThis, 7);
+        const address = SocketAddress.fromPosix(@ptrCast(&iface.address.address4)) orelse continue;
+        const netmask = SocketAddress.fromPosix(@ptrCast(&iface.netmask.netmask4)) orelse continue;
+        var mac_buffer: [17]u8 = undefined;
+        const physical_address = iface.phys_addr;
+        const mac = std.fmt.bufPrint(&mac_buffer, "{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}", .{
+            physical_address[0],
+            physical_address[1],
+            physical_address[2],
+            physical_address[3],
+            physical_address[4],
+            physical_address[5],
+        }) catch unreachable;
 
-        // address <string> The assigned IPv4 or IPv6 address
-        // cidr <string> The assigned IPv4 or IPv6 address with the routing prefix in CIDR notation. If the netmask is invalid, this property is set to null.
-        var cidr = jsc.JSValue.null;
-        {
-            // Compute the CIDR suffix; returns null if the netmask cannot
-            //  be converted to a CIDR suffix
-            const maybe_suffix: ?u8 = switch (iface.address.address4.family) {
-                std.posix.AF.INET => netmaskToCIDRSuffix(iface.netmask.netmask4.addr),
-                std.posix.AF.INET6 => netmaskToCIDRSuffix(@as(u128, @bitCast(iface.netmask.netmask6.addr))),
-                else => null,
-            };
-
-            // Format the address and then, if valid, the CIDR suffix; both
-            //  the address and cidr values can be slices into this same buffer
-            // e.g. addr_str = "192.168.88.254", cidr_str = "192.168.88.254/24"
-            const addr_str = bun.fmt.formatIp(
-                SocketAddress.fromPosix(@ptrCast(&iface.address.address4)) orelse unreachable,
-                &ip_buf,
-            ) catch unreachable;
-            if (maybe_suffix) |suffix| {
-                //NOTE addr_str might not start at buf[0] due to slicing in formatIp
-                const start = @intFromPtr(addr_str.ptr) - @intFromPtr(&ip_buf[0]);
-                // Start writing the suffix immediately after the address
-                const suffix_str = std.fmt.bufPrint(ip_buf[start + addr_str.len ..], "/{}", .{suffix}) catch unreachable;
-                // The full cidr value is the address + the suffix
-                const cidr_str = ip_buf[start .. start + addr_str.len + suffix_str.len];
-                cidr = jsc.ZigString.init(cidr_str).withEncoding().toJS(globalThis);
-            }
-
-            interface.putDirect(globalThis, jsc.ZigString.static("address"), jsc.ZigString.init(addr_str).withEncoding().toJS(globalThis));
-        }
-
-        // netmask
-        {
-            const str = bun.fmt.formatIp(
-                SocketAddress.fromPosix(@ptrCast(&iface.netmask.netmask4)) orelse unreachable,
-                &ip_buf,
-            ) catch unreachable;
-            interface.putDirect(globalThis, jsc.ZigString.static("netmask"), jsc.ZigString.init(str).withEncoding().toJS(globalThis));
-        }
-        // family
-        interface.putDirect(globalThis, jsc.ZigString.static("family"), switch (iface.address.address4.family) {
-            std.posix.AF.INET => globalThis.commonStrings().IPv4(),
-            std.posix.AF.INET6 => globalThis.commonStrings().IPv6(),
-            else => jsc.ZigString.static("unknown").toJS(globalThis),
-        });
-
-        // mac
-        {
-            const phys = iface.phys_addr;
-            const mac = std.fmt.bufPrint(&mac_buf, "{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}", .{
-                phys[0], phys[1], phys[2], phys[3], phys[4], phys[5],
-            }) catch unreachable;
-            interface.putDirect(globalThis, jsc.ZigString.static("mac"), jsc.ZigString.init(mac).withEncoding().toJS(globalThis));
-        }
-
-        // internal
-        {
-            interface.putDirect(globalThis, jsc.ZigString.static("internal"), jsc.JSValue.jsBoolean(iface.is_internal != 0));
-        }
-
-        // cidr. this is here to keep ordering consistent with the node implementation
-        interface.putDirect(globalThis, jsc.ZigString.static("cidr"), cidr);
-
-        // scopeid
-        if (iface.address.address4.family == std.posix.AF.INET6) {
-            interface.putDirect(globalThis, jsc.ZigString.static("scopeid"), jsc.JSValue.jsNumber(iface.address.address6.scope_id));
-        }
-
-        // Does this entry already exist?
-        const interface_name = bun.span(iface.name);
-        if (try ret.getOwn(globalThis, interface_name)) |array| {
-            // Add this interface entry to the existing array
-            const array_object = array.getArrayObject().?;
-            const next_index: u32 = @intCast(try array_object.getLength(globalThis));
-            try array_object.putDirectIndex(globalThis, next_index, interface.toJS());
-        } else {
-            // Add it as an array with this interface as an element
-            const member_name = jsc.ZigString.init(interface_name);
-            var array = try jsc.JSArray.createEmpty(globalThis, 1);
-            try array.putDirectIndex(globalThis, 0, interface.toJS());
-            ret.putDirect(globalThis, &member_name, array.toJS());
-        }
+        try appendNetworkInterface(
+            &groups,
+            bun.span(iface.name),
+            address,
+            netmask,
+            mac,
+            iface.is_internal != 0,
+        );
     }
 
-    return ret.toJS();
+    return finishNetworkInterfaces(&groups);
 }
 
-pub fn release() bun.String {
+pub fn release(
+    context: bun.bindgen.CallContext(ReleaseSchema),
+    args: bun.bindgen.Args(ReleaseSchema),
+) bun.JSError!bun.bindgen.DOMString {
+    _ = context;
+    _ = args;
+
     var name_buffer: [bun.HOST_NAME_MAX]u8 = undefined;
 
     const value = switch (Environment.os) {
@@ -786,72 +707,19 @@ pub fn release() bun.String {
         .wasm => @compileError("unsupported os"),
     };
 
-    return bun.String.cloneUTF8(value);
+    return bun.bindgen.DOMString.fromUTF8(value);
 }
 
-pub extern fn set_process_priority(pid: i32, priority: i32) i32;
-pub fn setProcessPriorityImpl(pid: i32, priority: i32) bun.sys.E {
-    if (pid < 0) return .SRCH;
-
-    const code: i32 = set_process_priority(pid, priority);
-
-    if (code == -2) return .SRCH;
-    if (code == 0) return .SUCCESS;
-
+pub fn setProcessPriority(pid: i32, priority: i32) ?bun.sys.Error {
+    if (pid < 0) return noSuchProcessError(.uv_os_setpriority);
     if (comptime bun.Environment.isWindows) {
-        return bun.windows.libuv.translateUVErrorToE(code);
+        const code = libuv.uv_os_setpriority(pid, priority);
+        if (code == 0) return null;
+        return systemErrorFromUV(code, .uv_os_setpriority);
     }
-
-    return bun.sys.getErrno(code);
-}
-
-pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void {
-    const errcode = setProcessPriorityImpl(pid, priority);
-    switch (errcode) {
-        .SRCH => {
-            const err = jsc.SystemError{
-                .message = bun.String.static("no such process"),
-                .code = bun.String.static("ESRCH"),
-                .errno = comptime switch (bun.Environment.os) {
-                    else => -@as(c_int, @backingInt(std.posix.E.SRCH)),
-                    .windows => libuv.UV_ESRCH,
-                },
-                .syscall = bun.String.static("uv_os_getpriority"),
-            };
-            return global.throwValue((try err.toErrorInstanceWithInfoObject(global)).toJS());
-        },
-        .ACCES => {
-            const err = jsc.SystemError{
-                .message = bun.String.static("permission denied"),
-                .code = bun.String.static("EACCES"),
-                .errno = comptime switch (bun.Environment.os) {
-                    else => -@as(c_int, @backingInt(std.posix.E.ACCES)),
-                    .windows => libuv.UV_EACCES,
-                },
-                .syscall = bun.String.static("uv_os_getpriority"),
-            };
-            return global.throwValue((try err.toErrorInstanceWithInfoObject(global)).toJS());
-        },
-        .PERM => {
-            const err = jsc.SystemError{
-                .message = bun.String.static("operation not permitted"),
-                .code = bun.String.static("EPERM"),
-                .errno = comptime switch (bun.Environment.os) {
-                    else => -@as(c_int, @backingInt(std.posix.E.SRCH)),
-                    .windows => libuv.UV_ESRCH,
-                },
-                .syscall = bun.String.static("uv_os_getpriority"),
-            };
-            return global.throwValue((try err.toErrorInstanceWithInfoObject(global)).toJS());
-        },
-        else => {
-            // no other error codes can be emitted
-        },
-    }
-}
-
-pub fn setPriority2(global: *jsc.JSGlobalObject, priority: i32) !void {
-    return setPriority1(global, 0, priority);
+    const code = c.setpriority(c.PRIO_PROCESS, @intCast(pid), priority);
+    if (code == 0) return null;
+    return bun.sys.Error.fromCode(bun.sys.getErrno(code), .uv_os_setpriority);
 }
 
 pub fn totalmem() u64 {
@@ -880,33 +748,36 @@ pub fn totalmem() u64 {
     }
 }
 
-pub fn uptime(global: *jsc.JSGlobalObject) bun.JSError!f64 {
+fn uptimeError(system_error: bun.sys.Error) bun.sys.Error {
+    var result = system_error;
+    result.node_code = .ERR_SYSTEM_ERROR;
+    result.node_message = "failed to get system uptime";
+    return result;
+}
+
+pub fn uptime(io: std.Io) bun.sys.Maybe(f64) {
     switch (Environment.os) {
         .windows => {
             var uptime_value: f64 = undefined;
             const err = libuv.uv_uptime(&uptime_value);
             if (err != 0) {
-                const sys_err = jsc.SystemError{
-                    .message = bun.String.static("failed to get system uptime"),
-                    .code = bun.String.static("ERR_SYSTEM_ERROR"),
-                    .errno = err,
-                    .syscall = bun.String.static("uv_uptime"),
-                };
-                return global.throwValue((try sys_err.toErrorInstance(global)).toJS());
+                return .{ .err = uptimeError(systemErrorFromUV(err, .uv_uptime)) };
             }
-            return uptime_value;
+            return .{ .result = uptime_value };
         },
         .mac, .freebsd => {
             var boot_time: std.c.timeval = undefined;
             var size: usize = @sizeOf(@TypeOf(boot_time));
-            sysctlByName("kern.boottime", &boot_time, &size) catch return 0;
-            return @floatFromInt(bun.realSeconds(global.bunVM().io) - boot_time.sec);
+            if (std.c.sysctlbyname("kern.boottime", &boot_time, &size, null, 0) != 0) {
+                return .{ .err = uptimeError(bun.sys.Error.fromCode(bun.sys.getErrno(@as(c_int, -1)), .uv_uptime)) };
+            }
+            return .{ .result = @floatFromInt(bun.realSeconds(io) - boot_time.sec) };
         },
         .linux => {
             var info: c.struct_sysinfo = undefined;
             if (c.sysinfo(&info) == 0)
-                return @floatFromInt(info.uptime);
-            return 0;
+                return .{ .result = @floatFromInt(info.uptime) };
+            return .{ .err = uptimeError(bun.sys.Error.fromCode(bun.sys.getErrno(@as(c_int, -1)), .uv_uptime)) };
         },
         .wasm => @compileError("unsupported os"),
     }
@@ -916,31 +787,60 @@ fn sysctlByName(name: [*:0]const u8, oldp: ?*anyopaque, oldlenp: *usize) error{S
     if (std.c.sysctlbyname(name, oldp, oldlenp, null, 0) != 0) return error.SysctlFailed;
 }
 
-pub fn userInfo(globalThis: *jsc.JSGlobalObject, options: gen.UserInfoOptions) bun.JSError!jsc.JSValue {
-    _ = options; // TODO:
-
-    const result = jsc.JSObject.createEmpty(globalThis, 5);
-
-    const home = try homedir(globalThis);
-    defer home.deref();
-
-    result.putDirect(globalThis, jsc.ZigString.static("homedir"), try home.toJS(globalThis));
+pub fn userInfo(buffer_output: bool) bun.OOM!bun.sys.Maybe(bun.bindgen.Return(UserInfoSchema)) {
+    var home_bytes = switch (try homedirBytes()) {
+        .result => |value| value,
+        .err => |err| return .{ .err = err },
+    };
+    defer home_bytes.deinit();
+    var username_bytes = try bun.bindgen.OwnedBytes.fromSlice(bun.env_var.USER.get() orelse "unknown");
+    defer username_bytes.deinit();
 
     if (comptime Environment.isWindows) {
-        result.putDirect(globalThis, jsc.ZigString.static("username"), jsc.ZigString.init(bun.env_var.USER.get() orelse "unknown").withEncoding().toJS(globalThis));
-        result.putDirect(globalThis, jsc.ZigString.static("uid"), jsc.JSValue.jsNumber(-1));
-        result.putDirect(globalThis, jsc.ZigString.static("gid"), jsc.JSValue.jsNumber(-1));
-        result.putDirect(globalThis, jsc.ZigString.static("shell"), jsc.JSValue.jsNull());
-    } else {
-        const username = bun.env_var.USER.get() orelse "unknown";
+        if (buffer_output) return .{ .result = .{ .buffer = .{
+            .username = username_bytes.take(),
+            .uid = -1,
+            .gid = -1,
+            .shell = null,
+            .homedir = home_bytes.take(),
+        } } };
 
-        result.putDirect(globalThis, jsc.ZigString.static("username"), jsc.ZigString.init(username).withEncoding().toJS(globalThis));
-        result.putDirect(globalThis, jsc.ZigString.static("shell"), jsc.ZigString.init(bun.env_var.SHELL.get() orelse "unknown").withEncoding().toJS(globalThis));
-        result.putDirect(globalThis, jsc.ZigString.static("uid"), jsc.JSValue.jsNumber(c.getuid()));
-        result.putDirect(globalThis, jsc.ZigString.static("gid"), jsc.JSValue.jsNumber(c.getgid()));
+        var username = try bun.bindgen.DOMString.fromUTF8(username_bytes.slice());
+        errdefer username.deinit();
+        var home = try bun.bindgen.DOMString.fromUTF8(home_bytes.slice());
+        errdefer home.deinit();
+        return .{ .result = .{ .text = .{
+            .username = username,
+            .uid = -1,
+            .gid = -1,
+            .shell = null,
+            .homedir = home,
+        } } };
     }
 
-    return result.toJS();
+    var shell_bytes = try bun.bindgen.OwnedBytes.fromSlice(bun.env_var.SHELL.get() orelse "unknown");
+    defer shell_bytes.deinit();
+    if (buffer_output) return .{ .result = .{ .buffer = .{
+        .username = username_bytes.take(),
+        .uid = @floatFromInt(c.getuid()),
+        .gid = @floatFromInt(c.getgid()),
+        .shell = shell_bytes.take(),
+        .homedir = home_bytes.take(),
+    } } };
+
+    var username = try bun.bindgen.DOMString.fromUTF8(username_bytes.slice());
+    errdefer username.deinit();
+    var shell = try bun.bindgen.DOMString.fromUTF8(shell_bytes.slice());
+    errdefer shell.deinit();
+    var home = try bun.bindgen.DOMString.fromUTF8(home_bytes.slice());
+    errdefer home.deinit();
+    return .{ .result = .{ .text = .{
+        .username = username,
+        .uid = @floatFromInt(c.getuid()),
+        .gid = @floatFromInt(c.getgid()),
+        .shell = shell,
+        .homedir = home,
+    } } };
 }
 
 pub fn version() bun.JSError!bun.String {
@@ -1007,9 +907,183 @@ const std = @import("std");
 const bun = @import("bun");
 const Environment = bun.Environment;
 const c = bun.c;
-const jsc = bun.jsc;
 const strings = bun.strings;
 const sys = bun.sys;
-const gen = bun.gen.node_os;
+
+const NodeOsBindings = bun.bindgen.Module("node_os");
+const ProcessHostBindings = bun.bindgen.Module("ProcessHost");
+const CpusSchema = NodeOsBindings.function("cpus");
+const CpusResult = bun.bindgen.Return(CpusSchema);
+const CPUInfo = bun.bindgen.ResultType(CpusSchema.ReturnType.child);
+const CPUInfoList = std.array_list.Managed(CPUInfo);
+const FreememSchema = NodeOsBindings.function("freemem");
+const AvailableMemorySchema = ProcessHostBindings.function("availableMemory");
+const GetPrioritySchema = NodeOsBindings.function("getPriority");
+const HomedirSchema = NodeOsBindings.function("homedir");
+const HostnameSchema = NodeOsBindings.function("hostname");
+const LoadavgSchema = NodeOsBindings.function("loadavg");
+const NetworkInterfacesSchema = NodeOsBindings.function("networkInterfaces");
+const NetworkInterfacesResult = bun.bindgen.Return(NetworkInterfacesSchema);
+const NetworkInterfaceList = bun.bindgen.ResultType(NetworkInterfacesSchema.ReturnType.ValueType);
+const NetworkInterface = bun.bindgen.ResultType(NetworkInterfacesSchema.ReturnType.ValueType.child);
+const NetworkInterfaceFamily = @FieldType(NetworkInterface, "family");
+const ReleaseSchema = NodeOsBindings.function("release");
+const TotalmemSchema = NodeOsBindings.function("totalmem");
+const UptimeSchema = NodeOsBindings.function("uptime");
+const UserInfoSchema = NodeOsBindings.function("userInfo");
+const VersionSchema = NodeOsBindings.function("version");
+const SetPrioritySchema = NodeOsBindings.function("setPriority");
+
+fn cpusBinding(
+    context: bun.bindgen.CallContext(CpusSchema),
+    _: bun.bindgen.Args(CpusSchema),
+) bun.bindgen.CallError(CpusSchema)!CpusResult {
+    return cpus(bun.current_runtime.io()) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => context.fail(.query_failed, {}),
+    };
+}
+
+fn freememBinding(context: bun.bindgen.CallContext(FreememSchema), args: bun.bindgen.Args(FreememSchema)) bun.JSError!u64 {
+    _ = context;
+    _ = args;
+    return freemem();
+}
+
+fn availableMemoryBinding(context: bun.bindgen.CallContext(AvailableMemorySchema), args: bun.bindgen.Args(AvailableMemorySchema)) bun.JSError!u64 {
+    _ = context;
+    _ = args;
+    return freemem();
+}
+
+fn getPriorityBinding(
+    context: bun.bindgen.CallContext(GetPrioritySchema),
+    args: bun.bindgen.Args(GetPrioritySchema),
+) bun.bindgen.CallError(GetPrioritySchema)!i32 {
+    return switch (getPriority(args.pid)) {
+        .result => |value| value,
+        .err => |err| context.fail(.system, try bun.bindgen.SystemError.fromSysErrorWithInfo(err)),
+    };
+}
+
+fn homedirBinding(
+    context: bun.bindgen.CallContext(HomedirSchema),
+    _: bun.bindgen.Args(HomedirSchema),
+) bun.bindgen.CallError(HomedirSchema)!bun.bindgen.DOMString {
+    return switch (try homedir()) {
+        .result => |value| value,
+        .err => |err| context.fail(.system, try bun.bindgen.SystemError.fromSysError(err)),
+    };
+}
+
+fn hostnameBinding(_: bun.bindgen.CallContext(HostnameSchema), _: bun.bindgen.Args(HostnameSchema)) bun.JSError!bun.bindgen.DOMString {
+    return hostname();
+}
+
+fn loadavgBinding(_: bun.bindgen.CallContext(LoadavgSchema), _: bun.bindgen.Args(LoadavgSchema)) bun.JSError!bun.bindgen.Return(LoadavgSchema) {
+    const values = loadavg();
+    return try bun.bindgen.Return(LoadavgSchema).fromOwnedSlice(&values);
+}
+
+fn networkInterfacesBinding(
+    context: bun.bindgen.CallContext(NetworkInterfacesSchema),
+    _: bun.bindgen.Args(NetworkInterfacesSchema),
+) bun.bindgen.CallError(NetworkInterfacesSchema)!NetworkInterfacesResult {
+    return networkInterfaces() catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => context.fail(.query_failed, {}),
+    };
+}
+
+fn totalmemBinding(context: bun.bindgen.CallContext(TotalmemSchema), args: bun.bindgen.Args(TotalmemSchema)) bun.JSError!u64 {
+    _ = context;
+    _ = args;
+    return totalmem();
+}
+
+fn uptimeBinding(
+    context: bun.bindgen.CallContext(UptimeSchema),
+    _: bun.bindgen.Args(UptimeSchema),
+) bun.bindgen.CallError(UptimeSchema)!f64 {
+    return switch (uptime(bun.current_runtime.io())) {
+        .result => |value| value,
+        .err => |err| context.fail(.system, try bun.bindgen.SystemError.fromSysError(err)),
+    };
+}
+
+fn stringViewEquals(value: anytype, comptime expected: []const u8) bool {
+    if (value.length() != expected.len) return false;
+    inline for (expected, 0..) |code_unit, index| {
+        if (value.codeUnitAt(index) != code_unit) return false;
+    }
+    return true;
+}
+
+fn userInfoBinding(
+    context: bun.bindgen.CallContext(UserInfoSchema),
+    args: bun.bindgen.Args(UserInfoSchema),
+) bun.bindgen.CallError(UserInfoSchema)!bun.bindgen.Return(UserInfoSchema) {
+    const buffer_output = if (args.options) |options| stringViewEquals(options.encoding, "buffer") else false;
+    return switch (try userInfo(buffer_output)) {
+        .result => |value| value,
+        .err => |err| context.fail(.system, try bun.bindgen.SystemError.fromSysError(err)),
+    };
+}
+
+fn versionBinding(context: bun.bindgen.CallContext(VersionSchema), args: bun.bindgen.Args(VersionSchema)) bun.JSError!bun.bindgen.DOMString {
+    _ = context;
+    _ = args;
+    var value = try version();
+    defer value.deref();
+    const utf8 = try value.toUTF8(bun.default_allocator);
+    defer utf8.deinit();
+    return bun.bindgen.DOMString.fromUTF8(utf8.slice());
+}
+
+fn setPriorityBinding(
+    context: bun.bindgen.CallContext(SetPrioritySchema),
+    args: bun.bindgen.Args(SetPrioritySchema),
+) bun.bindgen.CallError(SetPrioritySchema)!void {
+    const failure = switch (args) {
+        .with_pid => |values| setProcessPriority(values.pid, values.priority),
+        .current => |values| setProcessPriority(0, values.priority),
+    };
+    if (failure) |err| {
+        return context.fail(.system, try bun.bindgen.SystemError.fromSysErrorWithInfo(err));
+    }
+}
+
+const CpusBinding = bun.bindgen.Fn(CpusSchema, cpusBinding);
+const FreememBinding = bun.bindgen.Fn(FreememSchema, freememBinding);
+const AvailableMemoryBinding = bun.bindgen.Fn(AvailableMemorySchema, availableMemoryBinding);
+const GetPriorityBinding = bun.bindgen.Fn(GetPrioritySchema, getPriorityBinding);
+const HomedirBinding = bun.bindgen.Fn(HomedirSchema, homedirBinding);
+const HostnameBinding = bun.bindgen.Fn(HostnameSchema, hostnameBinding);
+const LoadavgBinding = bun.bindgen.Fn(LoadavgSchema, loadavgBinding);
+const NetworkInterfacesBinding = bun.bindgen.Fn(NetworkInterfacesSchema, networkInterfacesBinding);
+const ReleaseBinding = bun.bindgen.Fn(ReleaseSchema, release);
+const TotalmemBinding = bun.bindgen.Fn(TotalmemSchema, totalmemBinding);
+const UptimeBinding = bun.bindgen.Fn(UptimeSchema, uptimeBinding);
+const UserInfoBinding = bun.bindgen.Fn(UserInfoSchema, userInfoBinding);
+const VersionBinding = bun.bindgen.Fn(VersionSchema, versionBinding);
+const SetPriorityBinding = bun.bindgen.Fn(SetPrioritySchema, setPriorityBinding);
+
+comptime {
+    _ = CpusBinding;
+    _ = FreememBinding;
+    _ = AvailableMemoryBinding;
+    _ = GetPriorityBinding;
+    _ = HomedirBinding;
+    _ = HostnameBinding;
+    _ = LoadavgBinding;
+    _ = NetworkInterfacesBinding;
+    _ = ReleaseBinding;
+    _ = TotalmemBinding;
+    _ = UptimeBinding;
+    _ = UserInfoBinding;
+    _ = VersionBinding;
+    _ = SetPriorityBinding;
+}
+
 const libuv = bun.windows.libuv;
-const SocketAddress = bun.api.socket.SocketAddress;
+const SocketAddress = @import("../socket/SocketAddressValue.zig");

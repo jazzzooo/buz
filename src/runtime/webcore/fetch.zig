@@ -1,228 +1,264 @@
 pub const fetch_error_no_args = "fetch() expects a string but received no arguments.";
 pub const fetch_error_blank_url = "fetch() URL must not be a blank string.";
-pub const fetch_error_unexpected_body = "fetch() request with GET/HEAD/OPTIONS method cannot have body.";
-pub const fetch_error_proxy_unix = "fetch() cannot use a proxy with a unix socket.";
-const JSTypeErrorEnum = std.enums.EnumArray(JSType, string);
-pub const fetch_type_error_names: JSTypeErrorEnum = brk: {
-    var errors = JSTypeErrorEnum.initUndefined();
-    errors.set(JSType.kJSTypeUndefined, "Undefined");
-    errors.set(JSType.kJSTypeNull, "Null");
-    errors.set(JSType.kJSTypeBoolean, "Boolean");
-    errors.set(JSType.kJSTypeNumber, "Number");
-    errors.set(JSType.kJSTypeString, "String");
-    errors.set(JSType.kJSTypeObject, "Object");
-    errors.set(JSType.kJSTypeSymbol, "Symbol");
-    errors.set(JSType.kJSTypeBigInt, "BigInt");
-    break :brk errors;
-};
-
-pub const fetch_type_error_string_values = .{
-    std.fmt.comptimePrint("fetch() expects a string, but received {s}", .{fetch_type_error_names.get(JSType.kJSTypeUndefined)}),
-    std.fmt.comptimePrint("fetch() expects a string, but received {s}", .{fetch_type_error_names.get(JSType.kJSTypeNull)}),
-    std.fmt.comptimePrint("fetch() expects a string, but received {s}", .{fetch_type_error_names.get(JSType.kJSTypeBoolean)}),
-    std.fmt.comptimePrint("fetch() expects a string, but received {s}", .{fetch_type_error_names.get(JSType.kJSTypeNumber)}),
-    std.fmt.comptimePrint("fetch() expects a string, but received {s}", .{fetch_type_error_names.get(JSType.kJSTypeString)}),
-    std.fmt.comptimePrint("fetch() expects a string, but received {s}", .{fetch_type_error_names.get(JSType.kJSTypeObject)}),
-    std.fmt.comptimePrint("fetch() expects a string, but received {s}", .{fetch_type_error_names.get(JSType.kJSTypeSymbol)}),
-    std.fmt.comptimePrint("fetch() expects a string, but received {s}", .{fetch_type_error_names.get(JSType.kJSTypeBigInt)}),
-};
-
-pub const fetch_type_error_strings: JSTypeErrorEnum = brk: {
-    var errors = JSTypeErrorEnum.initUndefined();
-    errors.set(
-        JSType.kJSTypeUndefined,
-        bun.asByteSlice(fetch_type_error_string_values[0]),
-    );
-    errors.set(
-        JSType.kJSTypeNull,
-        bun.asByteSlice(fetch_type_error_string_values[1]),
-    );
-    errors.set(
-        JSType.kJSTypeBoolean,
-        bun.asByteSlice(fetch_type_error_string_values[2]),
-    );
-    errors.set(
-        JSType.kJSTypeNumber,
-        bun.asByteSlice(fetch_type_error_string_values[3]),
-    );
-    errors.set(
-        JSType.kJSTypeString,
-        bun.asByteSlice(fetch_type_error_string_values[4]),
-    );
-    errors.set(
-        JSType.kJSTypeObject,
-        bun.asByteSlice(fetch_type_error_string_values[5]),
-    );
-    errors.set(
-        JSType.kJSTypeSymbol,
-        bun.asByteSlice(fetch_type_error_string_values[6]),
-    );
-    errors.set(
-        JSType.kJSTypeBigInt,
-        bun.asByteSlice(fetch_type_error_string_values[7]),
-    );
-    break :brk errors;
-};
 
 pub const FetchTasklet = @import("./fetch/FetchTasklet.zig").FetchTasklet;
 
 fn dataURLResponse(
-    _data_url: DataURL,
+    data_url: DataURL,
     globalThis: *JSGlobalObject,
     allocator: std.mem.Allocator,
-) JSValue {
-    var data_url = _data_url;
-
-    const data = data_url.decodeData(allocator) catch {
-        const err = globalThis.createError("failed to fetch the data URL", .{}) catch return .zero;
-        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err.toJS());
+) (bun.JSError || error{InvalidDataURL})!Response.Ref {
+    const data = data_url.decodeData(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Base64DecodeError => return error.InvalidDataURL,
     };
-    var blob = Blob.init(data, allocator, globalThis);
+    var blob = try Blob.init(data, allocator);
+    errdefer blob.deinit();
 
-    var allocated = false;
-    const mime_type = bun.http.MimeType.init(data_url.mime_type, allocator, &allocated);
-    blob.content_type = mime_type.value;
-    if (allocated) {
-        blob.content_type_allocated = true;
-    }
+    const mime_type = bun.http.MimeType.init(if (data_url.mime_type.len == 0) "text/plain" else data_url.mime_type);
+    try blob.setContentType(mime_type.value, .explicit);
 
-    var response = bun.new(Response, Response.init(
+    var status_text = try bun.bindgen.DOMString.fromUTF8("OK");
+    defer status_text.deinit();
+    var response_url = try bun.bindgen.DOMString.fromBunString(data_url.url.dupeRef());
+    defer response_url.deinit();
+    const response = try bun.default_allocator.create(Response);
+    response.* = Response.init(
         .{
             .status_code = 200,
-            .status_text = bun.String.createAtomASCII("OK"),
+            .status_text = status_text.take(),
         },
         Body{
-            .value = .{ .Blob = blob },
+            .value = .{ .Blob = blob.take() },
         },
-        data_url.url.dupeRef(),
+        response_url.take(),
         false,
-    ));
+    );
 
-    return JSPromise.resolvedPromiseValue(globalThis, response.toJS(globalThis));
+    return response.toClassRef(globalThis);
 }
 
-comptime {
-    const Bun__fetchPreconnect = jsc.toJSHostFn(Bun__fetchPreconnect_);
-    @export(&Bun__fetchPreconnect, .{ .name = "Bun__fetchPreconnect" });
-}
-pub fn Bun__fetchPreconnect_(
-    globalObject: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!jsc.JSValue {
-    const arguments = callframe.arguments_old(1).slice();
-
-    if (arguments.len < 1) {
-        return globalObject.throwNotEnoughArguments("fetch.preconnect", 1, arguments.len);
-    }
-
-    var url_str = try jsc.URL.hrefFromJS(arguments[0], globalObject);
-    defer url_str.deref();
-
-    if (globalObject.hasException()) {
-        return .zero;
-    }
-
-    if (url_str.tag == .Dead) {
-        return globalObject.ERR(.INVALID_ARG_TYPE, "Invalid URL", .{}).throw();
-    }
-
-    if (url_str.isEmpty()) {
-        return globalObject.ERR(.INVALID_ARG_TYPE, fetch_error_blank_url, .{}).throw();
-    }
-
-    const url = ZigURL.parse(bun.handleOom(url_str.toOwnedSlice(bun.default_allocator)));
+pub fn fetchPreconnect(
+    context: bun.bindgen.CallContext(FetchPreconnectSchema),
+    args: bun.bindgen.Args(FetchPreconnectSchema),
+) bun.bindgen.CallError(FetchPreconnectSchema)!void {
+    var url_string = try args.url.toUTF8(bun.default_allocator);
+    const url = ZigURL.parse(try url_string.intoOwnedSlice(bun.default_allocator));
     if (!url.isHTTP() and !url.isHTTPS() and !url.isS3()) {
         bun.default_allocator.free(url.href);
-        return globalObject.throwInvalidArguments("URL must be HTTP or HTTPS", .{});
+        return context.fail(.unsupported_protocol, {});
     }
 
     if (url.hostname.len == 0) {
         bun.default_allocator.free(url.href);
-        return globalObject.ERR(.INVALID_ARG_TYPE, fetch_error_blank_url, .{}).throw();
+        return context.fail(.missing_hostname, {});
     }
 
     if (!url.hasValidPort()) {
         bun.default_allocator.free(url.href);
-        return globalObject.throwInvalidArguments("Invalid port", .{});
+        return context.fail(.invalid_port, {});
     }
 
-    bun.http.AsyncHTTP.preconnect(url, true);
-    return .js_undefined;
+    bun.http.AsyncHTTP.preconnect(url, true, jsc.JavaScriptSemanticsEngine.javascript_semantics);
 }
 
-const StringOrURL = struct {
-    pub fn fromJS(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject) bun.JSError!?bun.String {
-        if (value.isString()) {
-            return try bun.String.fromJS(value, globalThis);
-        }
+fn resolveFetch(completion: *?FetchTasklet.FetchCompletions.Owned, response: Response.Ref) void {
+    var owned = completion.*.?;
+    completion.* = null;
+    FetchTasklet.completeFetch(&owned, .{ .response = response });
+}
 
-        const out = try jsc.URL.hrefFromJS(value, globalThis);
-        if (out.tag == .Dead) return null;
-        return out;
+fn failFetch(completion: *?FetchTasklet.FetchCompletions.Owned, comptime tag: anytype) void {
+    var owned = bun.take(completion) orelse @panic("fetch validation failure has no completion");
+    owned.fail(tag, {});
+}
+
+fn rejectTLSConfig(
+    completion: *?FetchTasklet.FetchCompletions.Owned,
+    failure: SSLConfigEngine.ParseFailure,
+) bun.OOM!void {
+    switch (failure) {
+        .system => |system_error| {
+            const payload = try bun.bindgen.SystemError.fromSysError(system_error);
+            var owned = completion.* orelse @panic("fetch TLS failure has no completion");
+            completion.* = null;
+            owned.fail(.tls_system, payload);
+        },
+        else => {
+            var message_buffer: [128]u8 = undefined;
+            const payload = try bun.bindgen.ThreadSafeDOMString.fromUTF8(failure.message(&message_buffer));
+            var owned = completion.* orelse @panic("fetch TLS failure has no completion");
+            completion.* = null;
+            owned.fail(.tls_invalid_options, payload);
+        },
     }
+}
+
+const Operation = enum {
+    standard,
+    node_http,
 };
 
-comptime {
-    const Bun__fetch = jsc.toJSHostFn(Bun__fetch_);
-    @export(&Bun__fetch, .{ .name = "Bun__fetch" });
+fn startFromBinding(
+    comptime operation: Operation,
+    context: anytype,
+    args: anytype,
+) bun.bindgen.CallError(@TypeOf(context))!void {
+    const globalObject = context.viewToken().globalObject();
+    var view = context.completion();
+    var completion: ?FetchTasklet.FetchCompletions.Owned = FetchTasklet.FetchCompletions.takeForContext(context, &view);
+    defer if (completion) |*owned| owned.release();
+    fetchImpl(operation == .node_http, globalObject, context, args, &completion) catch |err| {
+        if (completion != null) {
+            var thrown = try context.takeThrownValue(err);
+            defer thrown.deinit();
+            var reason = try thrown.toRoot();
+            var owned = bun.take(&completion).?;
+            FetchTasklet.completeFetch(&owned, .{ .js_error = reason.takeOptional() });
+            return;
+        }
+        return err;
+    };
 }
 
 /// Public entry point for `Bun.fetch` - validates body on GET/HEAD/OPTIONS
-pub fn Bun__fetch_(
-    ctx: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!jsc.JSValue {
-    return fetchImpl(false, ctx, callframe);
+pub fn fetch(
+    context: bun.bindgen.CallContext(FetchSchema),
+    args: bun.bindgen.Args(FetchSchema),
+) bun.bindgen.CallError(FetchSchema)!void {
+    return startFromBinding(.standard, context, args);
 }
 
 /// Internal entry point for Node.js HTTP client - allows body on GET/HEAD/OPTIONS
 pub fn nodeHttpClient(
-    ctx: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!jsc.JSValue {
-    return fetchImpl(true, ctx, callframe);
+    context: bun.bindgen.CallContext(NodeHTTPClientSchema),
+    args: bun.bindgen.Args(NodeHTTPClientSchema),
+) bun.bindgen.CallError(NodeHTTPClientSchema)!void {
+    return startFromBinding(.node_http, context, args);
+}
+
+fn booleanOrCountValue(field_optional: anytype) ?bool {
+    const field = field_optional orelse return null;
+    return switch (field) {
+        .flag => |flag| flag,
+        .count => |count| count != 0,
+        .ignored => null,
+    };
+}
+
+fn fetchOptionValues(comptime Fields: type) type {
+    const fields = @typeInfo(Fields).@"struct";
+    var names: [fields.field_names.len][]const u8 = undefined;
+    var types: [fields.field_names.len]type = undefined;
+    for (fields.field_names, fields.field_types, 0..) |name, Field, i| {
+        const Conversion = @typeInfo(@TypeOf(Field.convert)).@"fn".return_type.?;
+        const Converted = @typeInfo(Conversion).error_union.payload;
+        names[i] = name;
+        types[i] = @FieldType(Converted, "value");
+    }
+    return @Struct(.auto, null, &names, &types, &@splat(.{}));
+}
+
+fn fetchOptionSelected(comptime name: []const u8, value: anytype) bool {
+    const field = value orelse return false;
+    if (comptime bun.strings.eqlComptime(name, "decompress") or bun.strings.eqlComptime(name, "timeout") or bun.strings.eqlComptime(name, "keepalive")) return field != .ignored;
+    if (comptime bun.strings.eqlComptime(name, "tls")) return field == .config;
+    if (comptime bun.strings.eqlComptime(name, "unix_path")) return field == .text and field.text.length() > 0;
+    if (comptime bun.strings.eqlComptime(name, "protocol")) return field == .name;
+    if (comptime bun.strings.eqlComptime(name, "signal")) return field == .signal;
+    if (comptime bun.strings.eqlComptime(name, "verbose")) return switch (field) {
+        .flag => true,
+        .name => |text| text.eqlUTF8("curl"),
+        .ignored => false,
+    };
+    if (comptime bun.strings.eqlComptime(name, "proxy")) return switch (field) {
+        .text => |text| text.length() > 0,
+        .config => |config| if (config.url) |url| url != null else false,
+        .ignored => false,
+    };
+    return true;
+}
+
+fn prepareFetchOptions(
+    comptime Fields: type,
+    context: anytype,
+    init_fields: ?*const Fields,
+    input_fields: ?*const Fields,
+    request_fields: anytype,
+    unused_input_options: anytype,
+    is_s3: bool,
+    init_values: *fetchOptionValues(Fields),
+    input_values: *fetchOptionValues(Fields),
+) bun.JSError!bun.bindgen.DeferredLeaseProof {
+    var body_source: enum { none, init, input } = .none;
+    inline for (@typeInfo(Fields).@"struct".field_names) |name| {
+        if (comptime bun.strings.eqlComptime(name, "body")) continue;
+        if (comptime bun.strings.eqlComptime(name, "s3")) {
+            if (init_fields) |source| {
+                if (is_s3) {
+                    @field(init_values, name) = (try @field(source, name).convert(context)).value;
+                } else try @field(source, name).discard(context);
+            }
+            if (input_fields) |source| try @field(source, name).discard(context);
+            continue;
+        }
+        if (init_fields) |source| @field(init_values, name) = (try @field(source, name).convert(context)).value;
+        const selected_init = fetchOptionSelected(name, @field(init_values, name));
+        inline for (.{ request_fields, input_fields }) |fields| {
+            if (fields) |source| {
+                if (comptime @hasField(@TypeOf(source.*), name)) {
+                    if (selected_init) {
+                        try @field(source, name).discard(context);
+                    } else @field(input_values, name) = (try @field(source, name).convert(context)).value;
+                }
+            }
+        }
+        if (comptime bun.strings.eqlComptime(name, "body_presence")) {
+            body_source = if (selected_init) .init else if (@field(input_values, name) != null) .input else .none;
+        }
+    }
+    if (init_fields) |source| {
+        if (body_source == .init) {
+            init_values.body = (try source.body.convert(context)).value;
+        } else try source.body.discard(context);
+    }
+    if (input_fields) |source| {
+        if (body_source == .input) {
+            const forced = try source.body.convertLast(context);
+            input_values.body = forced.converted.value;
+            return forced.proof;
+        }
+        return source.body.discardLast(context);
+    }
+    return unused_input_options.?.discardLast(context);
 }
 
 /// Shared implementation of fetch
 fn fetchImpl(
     comptime allow_get_body: bool,
-    ctx: *jsc.JSGlobalObject,
-    callframe: *jsc.CallFrame,
-) bun.JSError!jsc.JSValue {
-    jsc.markBinding(@src());
-    const globalThis = ctx;
-    const arguments = callframe.arguments_old(2);
+    globalThis: *JSGlobalObject,
+    context: anytype,
+    args: anytype,
+    completion: *?FetchTasklet.FetchCompletions.Owned,
+) bun.JSError!void {
     bun.analytics.Features.fetch += 1;
-    const vm = jsc.VirtualMachine.get();
+    const vm = globalThis.bunVM();
 
-    // used to clean up dynamically allocated memory on error (a poor man's errdefer)
-    var is_error = false;
     var upgraded_connection = false;
     var force_http2 = false;
     var force_http3 = false;
     var force_http1 = false;
     var allocator = bun.default_allocator;
 
-    if (arguments.len == 0) {
-        const err = ctx.toTypeError(.MISSING_ARGS, fetch_error_no_args, .{});
-        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
-    }
+    const input_argument = args.input orelse {
+        return failFetch(completion, .missing_input);
+    };
 
     var headers: ?Headers = null;
     var method = Method.GET;
 
-    var args = jsc.CallFrame.ArgumentsSlice.init(vm, arguments.slice());
-
     var url = ZigURL{};
-    var first_arg = args.nextEat().?;
 
-    // We must always get the Body before the Headers That way, we can set
-    // the Content-Type header from the Blob if no Content-Type header is
-    // set in the Headers
-    //
-    // which is important for FormData.
-    // https://github.com/oven-sh/bun/issues/2264
-    //
     var body: FetchTasklet.HTTPRequestBody = FetchTasklet.HTTPRequestBody.Empty;
 
     var disable_timeout = false;
@@ -239,7 +275,7 @@ fn fetchImpl(
     // Custom Hostname
     var hostname: ?[]u8 = null;
     var range: ?[]u8 = null;
-    var unix_socket_path: ZigString.Slice = ZigString.Slice.empty;
+    var unix_socket_path: bun.String.Slice = bun.String.Slice.empty;
 
     var url_proxy_buffer: []const u8 = "";
     const URLType = enum {
@@ -251,127 +287,118 @@ fn fetchImpl(
 
     var ssl_config: ?SSLConfig.SharedPtr = null;
     var reject_unauthorized = vm.getTLSRejectUnauthorized();
-    var check_server_identity: JSValue = .zero;
+    var check_server_identity: ?FetchCheckServerIdentityCallback = null;
+    var tasklet_owns_inputs = false;
 
     defer {
-        if (signal) |sig| {
-            signal = null;
-            sig.unref();
-        }
+        if (!tasklet_owns_inputs) {
+            if (signal) |sig| {
+                signal = null;
+                sig.unref();
+            }
 
-        unix_socket_path.deinit();
+            unix_socket_path.deinit();
 
-        allocator.free(url_proxy_buffer);
-        url_proxy_buffer = "";
+            allocator.free(url_proxy_buffer);
+            url_proxy_buffer = "";
 
-        if (headers) |*headers_| {
-            headers_.buf.deinit(allocator);
-            headers_.entries.deinit(allocator);
-            headers = null;
-        }
+            if (headers) |*headers_| {
+                headers_.buf.deinit(allocator);
+                headers_.entries.deinit(allocator);
+                headers = null;
+            }
 
-        body.detach();
+            body.detach();
 
-        // clean hostname if any
-        if (hostname) |hn| {
-            bun.default_allocator.free(hn);
-            hostname = null;
+            if (check_server_identity) |*callback| {
+                callback.deinit();
+                check_server_identity = null;
+            }
+
+            // clean hostname if any
+            if (hostname) |hn| {
+                bun.default_allocator.free(hn);
+                hostname = null;
+            }
+
+            if (ssl_config) |*conf| {
+                conf.deinit();
+                ssl_config = null;
+            }
         }
         if (range) |range_| {
             bun.default_allocator.free(range_);
             range = null;
         }
-
-        if (ssl_config) |*conf| {
-            conf.deinit();
-            ssl_config = null;
-        }
     }
 
-    const options_object: ?JSValue = brk: {
-        if (args.nextEat()) |options| {
-            if (options.isObject() or options.jsType() == .DOMWrapper) {
-                break :brk options;
-            }
-        }
-
-        break :brk null;
+    const converted_input = try input_argument.convert(context);
+    const request_properties = if (converted_input.value == .request)
+        try args.request_properties.?.convert(context)
+    else properties: {
+        try args.request_properties.?.discard(context);
+        break :properties null;
     };
-    const request: ?*Request = brk: {
-        if (first_arg.isCell()) {
-            if (first_arg.asDirect(Request)) |request_| {
-                break :brk request_;
-            }
-        }
+    var request: ?*Request = null;
+    var request_reference: ?*const bun.bindgen.ClassRefView(RequestClassSchema) = null;
+    var use_input_options = false;
 
-        break :brk null;
-    };
-    // If it's NOT a Request or a subclass of Request, treat the first argument as a URL.
-    const url_str_optional = if (first_arg.as(Request) == null) try StringOrURL.fromJS(first_arg, globalThis) else null;
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
-    }
-
-    const request_init_object: ?JSValue = brk: {
-        if (request != null) break :brk null;
-        if (url_str_optional != null) break :brk null;
-        if (first_arg.isObject()) break :brk first_arg;
-        break :brk null;
-    };
-
-    var url_str = extract_url: {
-        if (url_str_optional) |str| break :extract_url str;
-
-        if (request) |req| {
-            bun.handleOom(req.ensureURL());
-            break :extract_url req.url.dupeRef();
-        }
-
-        if (request_init_object) |request_init| {
-            if (try request_init.fastGet(globalThis, .url)) |url_| {
-                if (!url_.isUndefined()) {
-                    break :extract_url try bun.String.fromJS(url_, globalThis);
+    var url_str = extract_input: {
+        switch (converted_input.value) {
+            .url, .primitive_text => |text| {
+                var owned = text.toOwned();
+                break :extract_input owned.takeBunString();
+            },
+            .object_text => |text| {
+                if (!text.eqlUTF8("[object Object]")) {
+                    var owned = text.toOwned();
+                    break :extract_input owned.takeBunString();
                 }
-            }
+                use_input_options = true;
+                const input_url = try args.input_url.?.convert(context);
+                if (input_url.value.url) |url_field| {
+                    var owned = url_field.toOwned();
+                    break :extract_input owned.takeBunString();
+                }
+                break :extract_input bun.String.empty;
+            },
+            .request => |*request_ref| {
+                request = request_ref.get(Request);
+                request_reference = request_ref;
+                var request_url = request_properties.?.value.url.toOwned();
+                break :extract_input request_url.takeBunString();
+            },
         }
-
-        break :extract_url bun.String.empty;
     };
     defer url_str.deref();
 
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
-    }
+    if (!use_input_options) try args.input_url.?.discard(context);
 
     if (url_str.isEmpty()) {
-        is_error = true;
-        const err = ctx.toTypeError(.INVALID_URL, fetch_error_blank_url, .{});
-        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+        return failFetch(completion, .blank_url);
     }
 
     if (url_str.hasPrefixComptime("data:")) {
-        var url_slice = url_str.toUTF8WithoutRef(allocator);
+        var url_slice = try url_str.toUTF8WithoutRef(allocator);
         defer url_slice.deinit();
 
         var data_url = DataURL.parseWithoutCheck(url_slice.slice()) catch {
-            const err = try ctx.createError("failed to fetch the data URL", .{});
-            is_error = true;
-            return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err.toJS());
+            return failFetch(completion, .invalid_data_url);
         };
 
         data_url.url = url_str;
-        return dataURLResponse(data_url, globalThis, allocator);
+        const response = dataURLResponse(data_url, globalThis, allocator) catch |err| switch (err) {
+            error.InvalidDataURL => return failFetch(completion, .invalid_data_url),
+            else => |js_error| return js_error,
+        };
+        return resolveFetch(completion, response);
     }
 
-    url = ZigURL.fromString(allocator, url_str) catch {
-        const err = ctx.toTypeError(.INVALID_URL, "fetch() URL is invalid", .{});
-        is_error = true;
-        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(
-            globalThis,
-            err,
-        );
+    url = normalizeURL(allocator, url_str) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidURL => {
+            return failFetch(completion, .invalid_url);
+        },
     };
     if (url.isFile()) {
         url_type = URLType.file;
@@ -380,623 +407,367 @@ fn fetchImpl(
     }
     url_proxy_buffer = url.href;
 
-    // **Start with the harmless ones.**
+    const init_converted = if (args.init) |init_argument| try init_argument.convert(context) else null;
+    const source_converted = if (use_input_options) try args.input_options.?.convert(context) else null;
+    const Fields = @FieldType(@TypeOf(source_converted.?.value), "options");
+    const init_fields: ?*const Fields = if (init_converted) |*converted| switch (converted.value) {
+        .options => |*options| options,
+        .ignored => null,
+    } else null;
+    const input_fields: ?*const Fields = if (source_converted) |*converted| switch (converted.value) {
+        .options => |*options| options,
+        .ignored => null,
+    } else null;
+    var init_values = std.mem.zeroes(fetchOptionValues(Fields));
+    var input_values = std.mem.zeroes(fetchOptionValues(Fields));
+    const proof = try prepareFetchOptions(Fields, context, init_fields, input_fields, if (request_properties) |*properties| &properties.value else null, if (use_input_options) null else args.input_options, url.isS3(), &init_values, &input_values);
+    try context.lease(proof);
+
+    const options_source: ?*const fetchOptionValues(Fields) = if (init_fields != null) &init_values else null;
+    const input_source: ?*const fetchOptionValues(Fields) = if (input_fields != null or request_properties != null) &input_values else null;
+    const sources = [2]@TypeOf(options_source){ options_source, input_source };
 
     // "method"
-    method = extract_method: {
-        if (options_object) |options| {
-            if (try options.getOptional(globalThis, "method", JSValue)) |method_| {
-                break :extract_method try Method.fromJS(globalThis, method_);
+    method = method: {
+        if (options_source) |source| {
+            if (source.method) |field| {
+                if (field) |value| break :method Method.fromBinding(value);
             }
         }
 
-        if (request) |req| {
-            break :extract_method req.method;
-        }
-
-        if (request_init_object) |req| {
-            if (try req.getOptional(globalThis, "method", JSValue)) |method_| {
-                break :extract_method try Method.fromJS(globalThis, method_);
+        if (input_source) |source| {
+            if (source.method) |field| {
+                if (field) |value| break :method Method.fromBinding(value);
             }
         }
 
-        break :extract_method null;
-    } orelse .GET;
-
-    // "decompress: boolean"
-    disable_decompression = extract_disable_decompression: {
-        const objects_to_try = [_]JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (try objects_to_try[i].get(globalThis, "decompress")) |decompression_value| {
-                    if (decompression_value.isBoolean()) {
-                        break :extract_disable_decompression !decompression_value.asBoolean();
-                    } else if (decompression_value.isNumber()) {
-                        break :extract_disable_decompression decompression_value.to(i32) == 0;
-                    }
-                }
-
-                if (globalThis.hasException()) {
-                    is_error = true;
-                    return .zero;
-                }
-            }
-        }
-
-        break :extract_disable_decompression disable_decompression;
+        break :method .GET;
     };
 
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
+    // "decompress: boolean"
+    for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        if (booleanOrCountValue(source.decompress)) |flag| {
+            disable_decompression = !flag;
+            break;
+        }
     }
 
     // "tls: TLSConfig"
-    ssl_config = extract_ssl_config: {
-        const objects_to_try = [_]JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (try objects_to_try[i].get(globalThis, "tls")) |tls| {
-                    if (tls.isObject()) {
-                        if (try tls.get(ctx, "rejectUnauthorized")) |reject| {
-                            if (reject.isBoolean()) {
-                                reject_unauthorized = reject.asBoolean();
-                            } else if (reject.isNumber()) {
-                                reject_unauthorized = reject.to(i32) != 0;
-                            }
-                        }
-
-                        if (globalThis.hasException()) {
-                            is_error = true;
-                            return .zero;
-                        }
-
-                        if (try tls.get(ctx, "checkServerIdentity")) |checkServerIdentity| {
-                            if (checkServerIdentity.isCell() and checkServerIdentity.isCallable()) {
-                                check_server_identity = checkServerIdentity;
-                            }
-                        }
-
-                        if (globalThis.hasException()) {
-                            is_error = true;
-                            return .zero;
-                        }
-
-                        if (SSLConfig.fromJS(vm, globalThis, tls) catch {
-                            is_error = true;
-                            return .zero;
-                        }) |config| {
-                            // Intern via GlobalRegistry for deduplication and pointer equality
-                            break :extract_ssl_config SSLConfig.GlobalRegistry.intern(vm.io, config);
-                        }
-                    }
+    tls: for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        const field = if (source.tls) |*value| value else continue;
+        switch (field.*) {
+            .config => |*tls| {
+                if (tls.reject_unauthorized) |reject| {
+                    reject_unauthorized = reject;
                 }
-            }
+                if (tls.check_server_identity) |*identity_field| switch (identity_field.*) {
+                    .callback => |callback| check_server_identity = try callback.toOwned(),
+                    .ignored => {},
+                };
+                const default_reject_unauthorized = bun.current_runtime.tlsRejectUnauthorized();
+                switch (try SSLConfigEngine.parseResult(default_reject_unauthorized, tls)) {
+                    .value => |config| if (config) |value| {
+                        var owned_config = value;
+                        defer owned_config.deinit();
+                        ssl_config = try SSLConfig.GlobalRegistry.intern(vm.io, &owned_config);
+                    },
+                    .failure => |failure| return rejectTLSConfig(completion, failure),
+                }
+                break :tls;
+            },
+            .ignored => {},
         }
-
-        break :extract_ssl_config ssl_config;
-    };
-
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
     }
 
     // unix: string | undefined
-    unix_socket_path = extract_unix_socket_path: {
-        const objects_to_try = [_]JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (try objects_to_try[i].get(globalThis, "unix")) |socket_path| {
-                    if (socket_path.isString() and try socket_path.getLength(ctx) > 0) {
-                        break :extract_unix_socket_path try socket_path.toSliceCloneWithAllocator(globalThis, allocator);
-                    }
-                }
-
-                if (globalThis.hasException()) {
-                    is_error = true;
-                    return .zero;
-                }
-            }
+    unix: for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        const field = if (source.unix_path) |*value| value else continue;
+        switch (field.*) {
+            .text => |*text| {
+                if (text.length() == 0) continue;
+                const utf8 = try text.toUTF8(bun.default_allocator);
+                defer utf8.deinit();
+                unix_socket_path = try bun.TextView.toSliceClone(.{ .utf8 = utf8.slice() }, allocator);
+                break :unix;
+            },
+            .ignored => {},
         }
-        break :extract_unix_socket_path unix_socket_path;
-    };
-
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
     }
 
     // protocol: "http2" | "h2" | "http1.1" | "h1" | undefined.
-    extract_protocol: {
-        const objects_to_try = [_]JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (try objects_to_try[i].get(globalThis, "protocol")) |protocol_val| {
-                    if (protocol_val.isString()) {
-                        const str = try protocol_val.toBunString(globalThis);
-                        defer str.deref();
-                        if (str.eqlComptime("http2") or str.eqlComptime("h2")) {
-                            force_http2 = true;
-                        } else if (str.eqlComptime("http3") or str.eqlComptime("h3")) {
-                            force_http3 = true;
-                        } else if (str.eqlComptime("http1.1") or str.eqlComptime("h1")) {
-                            force_http1 = true;
-                        } else {
-                            is_error = true;
-                            return globalThis.throwInvalidArguments("fetch: 'protocol' must be \"http2\", \"h2\", \"http3\", \"h3\", \"http1.1\", or \"h1\"", .{});
-                        }
-                        break :extract_protocol;
-                    }
+    protocol: for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        const field = source.protocol orelse continue;
+        switch (field) {
+            .name => |name| {
+                switch (name) {
+                    .http1 => force_http1 = true,
+                    .http2 => force_http2 = true,
+                    .http3 => force_http3 = true,
                 }
-            }
+                break :protocol;
+            },
+            .ignored => {},
         }
     }
 
     // timeout: false | number | undefined
-    disable_timeout = extract_disable_timeout: {
-        const objects_to_try = [_]JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (try objects_to_try[i].get(globalThis, "timeout")) |timeout_value| {
-                    if (timeout_value.isBoolean()) {
-                        break :extract_disable_timeout !timeout_value.asBoolean();
-                    } else if (timeout_value.isNumber()) {
-                        break :extract_disable_timeout timeout_value.to(i32) == 0;
-                    }
-                }
-
-                if (globalThis.hasException()) {
-                    is_error = true;
-                    return .zero;
-                }
-            }
+    for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        if (booleanOrCountValue(source.timeout)) |flag| {
+            disable_timeout = !flag;
+            break;
         }
-
-        break :extract_disable_timeout disable_timeout;
-    };
-
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
     }
 
     // redirect: "follow" | "error" | "manual" | undefined;
-    redirect_type = extract_redirect_type: {
-        // First, try to use the Request object's redirect if available
-        if (request) |req| {
-            redirect_type = req.flags.redirect;
+    // The Request object supplies the default, which the option objects can
+    // override.
+    if (request) |req| {
+        redirect_type = req.flags.redirect;
+    }
+    redirect: for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        const field = source.redirect orelse continue;
+        switch (field) {
+            .value => |value| {
+                redirect_type = @fromBackingInt(@intCast(@as(u8, @intCast(@backingInt(value)))));
+                break :redirect;
+            },
+            .ignored => {},
         }
-
-        // Then check options/init objects which can override the Request's redirect
-        const objects_to_try = [_]JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (objects_to_try[i].getOptionalEnum(globalThis, "redirect", FetchRedirect) catch {
-                    is_error = true;
-                    return .zero;
-                }) |redirect_value| {
-                    break :extract_redirect_type redirect_value;
-                }
-            }
-        }
-
-        break :extract_redirect_type redirect_type;
-    };
-
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
     }
 
     // keepalive: boolean | undefined;
-    disable_keepalive = extract_disable_keepalive: {
-        const objects_to_try = [_]JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (try objects_to_try[i].get(globalThis, "keepalive")) |keepalive_value| {
-                    if (keepalive_value.isBoolean()) {
-                        break :extract_disable_keepalive !keepalive_value.asBoolean();
-                    } else if (keepalive_value.isNumber()) {
-                        break :extract_disable_keepalive keepalive_value.to(i32) == 0;
-                    }
-                }
-
-                if (globalThis.hasException()) {
-                    is_error = true;
-                    return .zero;
-                }
-            }
+    for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        if (booleanOrCountValue(source.keepalive)) |flag| {
+            disable_keepalive = !flag;
+            break;
         }
-
-        break :extract_disable_keepalive disable_keepalive;
-    };
-
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
     }
 
     // verbose: boolean | "curl" | undefined;
-    verbose = extract_verbose: {
-        const objects_to_try = [_]JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (try objects_to_try[i].get(globalThis, "verbose")) |verb| {
-                    if (verb.isString()) {
-                        if ((try verb.getZigString(globalThis)).eqlComptime("curl")) {
-                            break :extract_verbose .curl;
-                        }
-                    } else if (verb.isBoolean()) {
-                        break :extract_verbose if (verb.toBoolean()) .headers else .none;
-                    }
+    verbose: for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        const field = if (source.verbose) |*value| value else continue;
+        switch (field.*) {
+            .flag => |flag| {
+                verbose = if (flag) .headers else .none;
+                break :verbose;
+            },
+            .name => |*name| {
+                const utf8 = try name.toUTF8(bun.default_allocator);
+                defer utf8.deinit();
+                if (bun.strings.eqlComptime(utf8.slice(), "curl")) {
+                    verbose = .curl;
+                    break :verbose;
                 }
-
-                if (globalThis.hasException()) {
-                    is_error = true;
-                    return .zero;
-                }
-            }
+            },
+            .ignored => {},
         }
-        break :extract_verbose verbose;
-    };
+    }
 
     // proxy: string | { url: string, headers?: Headers } | undefined;
     var proxy_headers: ?Headers = null;
-    defer if (proxy_headers) |*hdrs| {
-        hdrs.deinit();
-    };
-    url_proxy_buffer = extract_proxy: {
-        const objects_to_try = [_]jsc.JSValue{
-            options_object orelse .zero,
-            request_init_object orelse .zero,
-        };
-        inline for (0..2) |i| {
-            if (objects_to_try[i] != .zero) {
-                if (try objects_to_try[i].get(globalThis, "proxy")) |proxy_arg| {
-                    // Handle string format: proxy: "http://proxy.example.com:8080"
-                    if (proxy_arg.isString() and try proxy_arg.getLength(ctx) > 0) {
-                        var href = try jsc.URL.hrefFromJS(proxy_arg, globalThis);
-                        if (href.tag == .Dead) {
-                            const err = ctx.toTypeError(.INVALID_ARG_VALUE, "fetch() proxy URL is invalid", .{});
-                            is_error = true;
-                            return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
-                        }
-                        defer href.deref();
-                        const buffer = try std.fmt.allocPrint(allocator, "{s}{f}", .{ url_proxy_buffer, href });
-                        url = ZigURL.parse(buffer[0..url.href.len]);
-                        if (url.isFile()) {
-                            url_type = URLType.file;
-                        } else if (url.isBlob()) {
-                            url_type = URLType.blob;
-                        }
+    defer {
+        if (!tasklet_owns_inputs) {
+            if (proxy_headers) |*hdrs| hdrs.deinit();
+        }
+    }
+    proxy: for (sources) |source_optional| {
+        const source = source_optional orelse continue;
+        const field = if (source.proxy) |*value| value else continue;
 
-                        proxy = ZigURL.parse(buffer[url.href.len..]);
-                        allocator.free(url_proxy_buffer);
-                        break :extract_proxy buffer;
-                    }
-                    // Handle object format: proxy: { url: "http://proxy.example.com:8080", headers?: Headers }
-                    // If the proxy object doesn't have a 'url' property, ignore it.
-                    // This handles cases like passing a URL object directly as proxy (which has 'href' not 'url').
-                    if (proxy_arg.isObject()) {
-                        // Get the URL from the proxy object
-                        if (try proxy_arg.get(globalThis, "url")) |proxy_url_arg| {
-                            if (!proxy_url_arg.isUndefinedOrNull()) {
-                                if (proxy_url_arg.isString() and try proxy_url_arg.getLength(ctx) > 0) {
-                                    var href = try jsc.URL.hrefFromJS(proxy_url_arg, globalThis);
-                                    if (href.tag == .Dead) {
-                                        const err = ctx.toTypeError(.INVALID_ARG_VALUE, "fetch() proxy URL is invalid", .{});
-                                        is_error = true;
-                                        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
-                                    }
-                                    defer href.deref();
-                                    const buffer = try std.fmt.allocPrint(allocator, "{s}{f}", .{ url_proxy_buffer, href });
-                                    url = ZigURL.parse(buffer[0..url.href.len]);
-                                    if (url.isFile()) {
-                                        url_type = URLType.file;
-                                    } else if (url.isBlob()) {
-                                        url_type = URLType.blob;
-                                    }
-
-                                    proxy = ZigURL.parse(buffer[url.href.len..]);
-                                    allocator.free(url_proxy_buffer);
-                                    url_proxy_buffer = buffer;
-
-                                    // Get the headers from the proxy object (optional)
-                                    if (try proxy_arg.get(globalThis, "headers")) |headers_value| {
-                                        if (!headers_value.isUndefinedOrNull()) {
-                                            if (headers_value.as(FetchHeaders)) |fetch_hdrs| {
-                                                proxy_headers = Headers.from(fetch_hdrs, allocator, .{}) catch |err| bun.handleOom(err);
-                                            } else if (try FetchHeaders.createFromJS(ctx, headers_value)) |fetch_hdrs| {
-                                                defer fetch_hdrs.deref();
-                                                proxy_headers = Headers.from(fetch_hdrs, allocator, .{}) catch |err| bun.handleOom(err);
-                                            }
-                                        }
-                                    }
-
-                                    break :extract_proxy url_proxy_buffer;
-                                } else {
-                                    const err = ctx.toTypeError(.INVALID_ARG_VALUE, "fetch() proxy.url must be a non-empty string", .{});
-                                    is_error = true;
-                                    return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+        var config_headers: ?*FetchHeaders = null;
+        var proxy_url: bun.bindgen.DOMString = switch (field.*) {
+            .text => |*text| text: {
+                if (text.length() == 0) continue :proxy;
+                break :text text.toOwned();
+            },
+            .config => |*config| config: {
+                const url_field = if (config.url) |*value| value else continue :proxy;
+                if (url_field.*) |*url_value| {
+                    switch (url_value.*) {
+                        .text => |*text| if (text.length() > 0) {
+                            if (config.headers) |*headers_field| {
+                                if (headers_field.*) |*handle| {
+                                    config_headers = handle.get();
                                 }
                             }
-                        }
+                            break :config text.toOwned();
+                        },
+                        .invalid => {},
                     }
+                    return failFetch(completion, .invalid_proxy_field);
                 }
+                continue :proxy;
+            },
+            .ignored => continue :proxy,
+        };
+        defer proxy_url.deinit();
 
-                if (globalThis.hasException()) {
-                    is_error = true;
-                    return .zero;
-                }
-            }
+        var proxy_input = try proxy_url.toThreadSafe();
+        defer proxy_input.deinit();
+        var href = (try bun.bindgen.Engine(bun.bindgen.Module("urls").engineShim("urlHrefFromString")).call(.{ .input = proxy_input.operand() })) orelse
+            return failFetch(completion, .invalid_proxy_url);
+        defer href.deinit();
+        var href_utf8 = try href.toUTF8(allocator);
+        defer href_utf8.deinit();
+        const buffer = try std.fmt.allocPrint(allocator, "{s}{s}", .{ url_proxy_buffer, href_utf8.slice() });
+        url = ZigURL.parse(buffer[0..url.href.len]);
+        if (url.isFile()) {
+            url_type = URLType.file;
+        } else if (url.isBlob()) {
+            url_type = URLType.blob;
         }
 
-        break :extract_proxy url_proxy_buffer;
-    };
+        proxy = ZigURL.parse(buffer[url.href.len..]);
+        allocator.free(url_proxy_buffer);
+        url_proxy_buffer = buffer;
 
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
+        if (config_headers) |fetch_hdrs| {
+            proxy_headers = try HeadersEngine.from(fetch_hdrs, allocator, .{});
+        }
+
+        break :proxy;
     }
 
     // signal: AbortSignal | undefined;
-    signal = extract_signal: {
-        if (options_object) |options| {
-            if (try options.get(globalThis, "signal")) |signal_| {
-                if (!signal_.isUndefined()) {
-                    if (signal_.as(jsc.WebCore.AbortSignal)) |signal__| {
-                        break :extract_signal signal__.ref();
-                    }
-                }
-            }
-
-            if (globalThis.hasException()) {
-                is_error = true;
-                return .zero;
-            }
+    signal = signal: {
+        if (options_source) |source| {
+            if (source.signal) |*field| switch (field.*) {
+                .signal => |*signal_ref| break :signal signal_ref.get().ref(),
+                .ignored => {},
+            };
         }
 
         if (request) |req| {
-            if (req.signal) |signal_| {
-                break :extract_signal signal_.ref();
+            if (req.signal) |signal_ref| {
+                var cloned_signal = signal_ref.clone();
+                break :signal cloned_signal.take();
             }
-            break :extract_signal null;
+            break :signal null;
         }
 
-        if (request_init_object) |options| {
-            if (try options.get(globalThis, "signal")) |signal_| {
-                if (signal_.isUndefined()) {
-                    break :extract_signal null;
-                }
-
-                if (signal_.as(jsc.WebCore.AbortSignal)) |signal__| {
-                    break :extract_signal signal__.ref();
-                }
-            }
+        if (input_source) |source| {
+            if (source.signal) |*field| switch (field.*) {
+                .signal => |*signal_ref| break :signal signal_ref.get().ref(),
+                .ignored => {},
+            };
         }
 
-        break :extract_signal null;
+        break :signal null;
     };
-
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
-    }
 
     // We do this 2nd to last instead of last so that if it's a FormData
     // object, we can still insert the boundary.
     //
     // body: BodyInit | null | undefined;
     //
-    body = extract_body: {
-        if (options_object) |options| {
-            if (try options.fastGet(globalThis, .body)) |body__| {
-                if (!body__.isUndefined()) {
-                    break :extract_body try FetchTasklet.HTTPRequestBody.fromJS(ctx, body__);
-                }
-            }
-
-            if (globalThis.hasException()) {
-                is_error = true;
-                return .zero;
+    body = body: {
+        if (options_source) |source| {
+            if (source.body) |*body_init| {
+                break :body try FetchTasklet.HTTPRequestBody.fromGeneratedBodyInit(globalThis, context, body_init);
             }
         }
 
         if (request) |req| {
             const bodyValue = req.getBodyValue();
-            if (bodyValue.* == .Used or (bodyValue.* == .Locked and (bodyValue.Locked.action != .none or bodyValue.Locked.isDisturbed(Request, globalThis, first_arg)))) {
-                return globalThis.ERR(.BODY_ALREADY_USED, "Request body already used", .{}).throw();
+            const request_receiver = request_reference.?.*;
+            if (bodyValue.* == .Used or (bodyValue.* == .Locked and (bodyValue.Locked.action != .none or try bodyValue.Locked.isDisturbed(globalThis, Request, context, request_receiver)))) {
+                return globalThis.throwNodeError(.ERR_BODY_ALREADY_USED, "Request body already used", .{});
             }
 
             if (bodyValue.* == .Locked) {
-                if (req.getBodyReadableStream(globalThis)) |readable| {
-                    break :extract_body FetchTasklet.HTTPRequestBody{ .ReadableStream = jsc.WebCore.ReadableStream.Strong.init(readable, globalThis) };
+                if (try req.getBodyReadableStream(globalThis)) |readable| {
+                    break :body FetchTasklet.HTTPRequestBody{ .ReadableStream = readable };
                 }
                 if (bodyValue.Locked.readable.has()) {
-                    break :extract_body FetchTasklet.HTTPRequestBody{ .ReadableStream = jsc.WebCore.ReadableStream.Strong.init(bodyValue.Locked.readable.get(globalThis).?, globalThis) };
+                    break :body FetchTasklet.HTTPRequestBody{ .ReadableStream = bodyValue.Locked.readable.clone() };
                 }
-                const readable = try bodyValue.toReadableStream(globalThis);
-                if (!readable.isEmptyOrUndefinedOrNull() and bodyValue.* == .Locked and bodyValue.Locked.readable.has()) {
-                    break :extract_body FetchTasklet.HTTPRequestBody{ .ReadableStream = jsc.WebCore.ReadableStream.Strong.init(bodyValue.Locked.readable.get(globalThis).?, globalThis) };
+                if (try bodyValue.toReadableStream(globalThis)) |readable| {
+                    var owned_readable = readable;
+                    owned_readable.deinit();
                 }
-            }
-
-            break :extract_body FetchTasklet.HTTPRequestBody{ .AnyBlob = bodyValue.useAsAnyBlob() };
-        }
-
-        if (request_init_object) |req| {
-            if (try req.fastGet(globalThis, .body)) |body__| {
-                if (!body__.isUndefined()) {
-                    break :extract_body try FetchTasklet.HTTPRequestBody.fromJS(ctx, body__);
+                if (bodyValue.* == .Locked and bodyValue.Locked.readable.has()) {
+                    break :body FetchTasklet.HTTPRequestBody{ .ReadableStream = bodyValue.Locked.readable.clone() };
                 }
             }
+
+            break :body FetchTasklet.HTTPRequestBody{ .AnyBlob = try bodyValue.useAsAnyBlob() };
         }
 
-        break :extract_body null;
-    } orelse FetchTasklet.HTTPRequestBody.Empty;
-
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
-    }
-
-    // headers: Headers | undefined;
-    headers = extract_headers: {
-        var fetch_headers_to_deref: ?*bun.webcore.FetchHeaders = null;
-        defer {
-            if (fetch_headers_to_deref) |fetch_headers| {
-                fetch_headers.deref();
+        if (input_source) |source| {
+            if (source.body) |*body_init| {
+                break :body try FetchTasklet.HTTPRequestBody.fromGeneratedBodyInit(globalThis, context, body_init);
             }
         }
 
-        const fetch_headers: ?*bun.webcore.FetchHeaders = brk: {
-            if (options_object) |options| {
-                if (try options.fastGet(globalThis, .headers)) |headers_value| {
-                    if (!headers_value.isUndefined()) {
-                        if (headers_value.as(FetchHeaders)) |headers__| {
-                            if (headers__.isEmpty()) {
-                                break :brk null;
-                            }
-
-                            break :brk headers__;
-                        }
-
-                        if (try FetchHeaders.createFromJS(ctx, headers_value)) |headers__| {
-                            fetch_headers_to_deref = headers__;
-                            break :brk headers__;
-                        }
-
-                        break :brk null;
-                    }
-                }
-
-                if (globalThis.hasException()) {
-                    is_error = true;
-                    return .zero;
-                }
-            }
-
-            if (request) |req| {
-                if (req.getFetchHeadersUnlessEmpty()) |head| {
-                    break :brk head;
-                }
-
-                break :brk null;
-            }
-
-            if (request_init_object) |options| {
-                if (try options.fastGet(globalThis, .headers)) |headers_value| {
-                    if (!headers_value.isUndefined()) {
-                        if (headers_value.as(FetchHeaders)) |headers__| {
-                            if (headers__.isEmpty()) {
-                                break :brk null;
-                            }
-
-                            break :brk headers__;
-                        }
-
-                        if (try FetchHeaders.createFromJS(ctx, headers_value)) |headers__| {
-                            fetch_headers_to_deref = headers__;
-                            break :brk headers__;
-                        }
-
-                        break :brk null;
-                    }
-                }
-            }
-
-            if (globalThis.hasException()) {
-                is_error = true;
-                return .zero;
-            }
-
-            break :extract_headers headers;
-        };
-
-        if (globalThis.hasException()) {
-            is_error = true;
-            return .zero;
-        }
-
-        if (fetch_headers) |headers_| {
-            if (headers_.fastGet(bun.webcore.FetchHeaders.HTTPHeaderName.Host)) |_hostname| {
-                if (hostname) |host| {
-                    hostname = null;
-                    allocator.free(host);
-                }
-                hostname = bun.handleOom(_hostname.toOwnedSliceZ(allocator));
-            }
-            if (url.isS3()) {
-                if (headers_.fastGet(bun.webcore.FetchHeaders.HTTPHeaderName.Range)) |_range| {
-                    if (range) |range_| {
-                        range = null;
-                        allocator.free(range_);
-                    }
-                    range = bun.handleOom(_range.toOwnedSliceZ(allocator));
-                }
-            }
-
-            if (headers_.fastGet(bun.webcore.FetchHeaders.HTTPHeaderName.Upgrade)) |_upgrade| {
-                const upgrade = _upgrade.toSlice(bun.default_allocator);
-                defer upgrade.deinit();
-                const slice = upgrade.slice();
-                if (!bun.strings.eqlComptime(slice, "h2") and !bun.strings.eqlComptime(slice, "h2c")) {
-                    upgraded_connection = true;
-                }
-            }
-
-            break :extract_headers Headers.from(headers_, allocator, .{ .body = body.getAnyBlob() }) catch |err| bun.handleOom(err);
-        }
-
-        break :extract_headers headers;
+        break :body FetchTasklet.HTTPRequestBody.Empty;
     };
 
-    if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
-    }
+    // headers: Headers | undefined;
+    headers = headers: {
+        const fetch_headers: *FetchHeaders = brk: {
+            if (options_source) |source| {
+                if (source.headers) |*field| {
+                    if (field.*) |*handle| break :brk handle.get();
+                    break :headers headers;
+                }
+            }
+
+            if (input_source) |source| {
+                if (source.headers) |*field| {
+                    if (field.*) |*handle| break :brk handle.get();
+                    break :headers headers;
+                }
+            }
+
+            break :headers headers;
+        };
+
+        if (try fetch_headers.fastGet(.Host)) |owned_hostname| {
+            var _hostname = owned_hostname;
+            defer _hostname.deinit();
+            if (hostname) |host| {
+                hostname = null;
+                allocator.free(host);
+            }
+            hostname = try _hostname.toOwnedSliceZ(allocator);
+        }
+        if (url.isS3()) {
+            if (try fetch_headers.fastGet(.Range)) |owned_range| {
+                var _range = owned_range;
+                defer _range.deinit();
+                if (range) |range_| {
+                    range = null;
+                    allocator.free(range_);
+                }
+                range = try _range.toOwnedSliceZ(allocator);
+            }
+        }
+
+        if (try fetch_headers.fastGet(.Upgrade)) |owned_upgrade| {
+            var _upgrade = owned_upgrade;
+            defer _upgrade.deinit();
+            if (!_upgrade.eqlUTF8("h2") and !_upgrade.eqlUTF8("h2c")) {
+                upgraded_connection = true;
+            }
+        }
+
+        break :headers try HeadersEngine.from(fetch_headers, allocator, .{ .body = body.getAnyBlob() });
+    };
 
     if (proxy != null and unix_socket_path.length() > 0) {
-        is_error = true;
-        const err = ctx.toTypeError(.INVALID_ARG_VALUE, fetch_error_proxy_unix, .{});
-        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+        return failFetch(completion, .proxy_with_unix_socket);
     }
 
     if (globalThis.hasException()) {
-        is_error = true;
-        return .zero;
+        return error.JSError;
     }
 
     // This is not 100% correct.
@@ -1021,20 +792,20 @@ fn fetchImpl(
         var url_string: bun.String = bun.String.empty;
         defer url_string.deref();
         // This can be a blob: url or a file: url.
-        const blob_to_use = blob: {
+        var blob_to_use = blob: {
 
             // Support blob: urls
             if (url_type == URLType.blob) {
-                if (jsc.WebCore.ObjectURLRegistry.singleton().resolveAndDupe(globalThis.bunVM().io, url_path_decoded)) |blob| {
-                    url_string = bun.String.createFormat("blob:{s}", .{url_path_decoded}) catch |err| bun.handleOom(err);
-                    break :blob blob;
+                if (try jsc.WebCore.ObjectURLRegistry.singleton().resolveAndDupe(globalThis.bunVM().io, url_path_decoded)) |resolved_blob| {
+                    var owned_blob = resolved_blob;
+                    errdefer owned_blob.deinit();
+                    url_string = try bun.String.createFormat("blob:{s}", .{url_path_decoded});
+                    break :blob owned_blob;
                 } else {
-                    // Consistent with what Node.js does - it rejects, not a 404.
-                    const err = globalThis.toTypeError(.INVALID_ARG_VALUE, "Failed to resolve blob:{s}", .{
-                        url_path_decoded,
-                    });
-                    is_error = true;
-                    return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+                    const message = try bun.bindgen.ThreadSafeDOMString.fromBunString(try bun.String.createFormat("Failed to resolve blob:{s}", .{url_path_decoded}));
+                    var owned = bun.take(completion) orelse @panic("fetch blob failure has no completion");
+                    owned.fail(.unresolved_blob_url, message);
+                    return;
                 }
             }
 
@@ -1071,72 +842,70 @@ fn fetchImpl(
                 break :brk fullpath;
             };
 
-            url_string = jsc.URL.fileURLFromString(bun.String.borrowUTF8(temp_file_path));
+            const temp_file_path_string = bun.String.cloneUTF8(temp_file_path);
+            if (temp_file_path_string.tag == .Dead) return error.OutOfMemory;
+            defer temp_file_path_string.deref();
+            url_string = try jsc.URL.fileURLFromString(temp_file_path_string);
 
-            var pathlike: jsc.Node.PathOrFileDescriptor = .{
+            var pathlike: bun.api.node.PathOrFileDescriptor = .{
                 .path = .{
-                    .encoded_slice = ZigString.Slice.init(bun.default_allocator, try bun.default_allocator.dupe(u8, temp_file_path)),
+                    .encoded_slice = bun.String.Slice.init(bun.default_allocator, try bun.default_allocator.dupe(u8, temp_file_path)),
                 },
             };
 
-            break :blob Blob.findOrCreateFileFromPath(
+            defer pathlike.deinit();
+            break :blob try Blob.findOrCreateFileFromPath(
                 &pathlike,
                 globalThis,
                 true,
             );
         };
+        defer blob_to_use.deinit();
 
-        const response = bun.new(Response, Response.init(
+        var response_url = try bun.bindgen.DOMString.fromBunString(url_string.dupeRef());
+        defer response_url.deinit();
+        const response = try bun.default_allocator.create(Response);
+        response.* = Response.init(
             Response.Init{
                 .status_code = 200,
             },
             Body{
-                .value = .{ .Blob = blob_to_use },
+                .value = .{ .Blob = blob_to_use.take() },
             },
-            url_string.clone(),
+            response_url.take(),
             false,
-        ));
+        );
 
-        return JSPromise.resolvedPromiseValue(globalThis, response.toJS(globalThis));
+        return resolveFetch(completion, try response.toClassRef(globalThis));
     }
 
     if (url.protocol.len > 0) {
         if (!(url.isHTTP() or url.isHTTPS() or url.isS3())) {
-            const err = globalThis.toTypeError(.INVALID_ARG_VALUE, "protocol must be http:, https: or s3:", .{});
-            is_error = true;
-            return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+            return failFetch(completion, .unsupported_protocol);
         }
     }
 
     if (!allow_get_body and !method.hasRequestBody() and body.hasBody() and !upgraded_connection) {
-        const err = globalThis.toTypeError(.INVALID_ARG_VALUE, fetch_error_unexpected_body, .{});
-        is_error = true;
-        return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);
+        return failFetch(completion, .unexpected_body);
     }
 
     if (headers == null and body.hasBody() and body.hasContentTypeFromUser()) {
-        headers = Headers.from(
+        headers = try HeadersEngine.from(
             null,
             allocator,
             .{ .body = body.getAnyBlob() },
-        ) catch |err| bun.handleOom(err);
+        );
     }
 
-    var http_body = body;
+    var sendfile_body: ?FetchTasklet.HTTPRequestBody = null;
+    defer if (sendfile_body) |*pending| pending.detach();
     if (body.isS3()) {
         prepare_body: {
-            // is a S3 file we can use chunked here
-
-            if (try jsc.WebCore.ReadableStream.fromJS(try jsc.WebCore.ReadableStream.fromBlobCopyRef(globalThis, &body.AnyBlob.Blob, s3.MultiPartUploadOptions.DefaultPartSize), globalThis)) |stream| {
-                var old = body;
-                defer old.detach();
-                body = .{ .ReadableStream = jsc.WebCore.ReadableStream.Strong.init(stream, globalThis) };
-                break :prepare_body;
-            }
-            const rejected_value = JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, (try globalThis.createErrorInstance("Failed to start s3 stream", .{})).toJS());
-            body.detach();
-
-            return rejected_value;
+            const stream = try jsc.WebCore.ReadableStream.fromBlobCopyRefOwned(globalThis, &body.AnyBlob.Blob, s3.MultiPartUploadOptions.DefaultPartSize);
+            var old = body;
+            defer old.detach();
+            body = .{ .ReadableStream = try jsc.WebCore.ReadableStream.Strong.initOwned(stream) };
+            break :prepare_body;
         }
     }
     if (body.needsToReadFile()) {
@@ -1148,12 +917,15 @@ fn fetchImpl(
 
             const opened_fd = switch (opened_fd_res) {
                 .err => |err| {
-                    const rejected_value = JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err.toJS(globalThis) catch return .zero);
-                    is_error = true;
-                    return rejected_value;
+                    const payload = try bun.bindgen.SystemError.fromSysError(err);
+                    var owned = bun.take(completion) orelse @panic("fetch body failure has no completion");
+                    owned.fail(.body_io, payload);
+                    return;
                 },
                 .result => |fd| fd,
             };
+            var owns_opened_fd = true;
+            defer if (owns_opened_fd) opened_fd.close();
 
             if (proxy == null and bun.http.SendFile.isEligible(url)) {
                 use_sendfile: {
@@ -1182,7 +954,7 @@ fn fetchImpl(
                     else
                         @min(original_size, stat_size);
 
-                    http_body = .{
+                    sendfile_body = .{
                         .Sendfile = .{
                             .fd = opened_fd,
                             .remain = body.AnyBlob.Blob.offset + original_size,
@@ -1192,9 +964,10 @@ fn fetchImpl(
                     };
 
                     if (bun.isRegularFile(stat.mode)) {
-                        http_body.Sendfile.offset = @min(http_body.Sendfile.offset, stat_size);
-                        http_body.Sendfile.remain = @min(@max(http_body.Sendfile.remain, http_body.Sendfile.offset), stat_size) -| http_body.Sendfile.offset;
+                        sendfile_body.?.Sendfile.offset = @min(sendfile_body.?.Sendfile.offset, stat_size);
+                        sendfile_body.?.Sendfile.remain = @min(@max(sendfile_body.?.Sendfile.remain, sendfile_body.?.Sendfile.offset), stat_size) -| sendfile_body.?.Sendfile.offset;
                     }
+                    owns_opened_fd = false;
                     body.detach();
 
                     break :prepare_body;
@@ -1202,7 +975,7 @@ fn fetchImpl(
             }
 
             // TODO: make this async + lazy
-            const res = jsc.Node.fs.NodeFS.readFile(
+            const res = bun.api.node.fs.NodeFS.readFile(
                 globalThis.bunVM().nodeFS(),
                 .{
                     .encoding = .buffer,
@@ -1213,22 +986,23 @@ fn fetchImpl(
                 .sync,
             );
 
-            if (body.store().?.data.file.pathlike == .path) {
-                opened_fd.close();
-            }
-
             switch (res) {
                 .err => |err| {
-                    is_error = true;
-                    const rejected_value = JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err.toJS(globalThis) catch return .zero);
+                    const payload = try bun.bindgen.SystemError.fromSysError(err);
                     body.detach();
-
-                    return rejected_value;
+                    var owned = bun.take(completion) orelse @panic("fetch body failure has no completion");
+                    owned.fail(.body_io, payload);
+                    return;
                 },
                 .result => |result| {
+                    var owned_result = result;
+                    defer owned_result.deinit();
+                    const bytes = switch (owned_result) {
+                        .buffer => |*buffer| buffer.takeDefaultOwned() orelse try allocator.dupe(u8, buffer.slice()),
+                        else => try allocator.dupe(u8, owned_result.slice()),
+                    };
                     body.detach();
-                    body = .{ .AnyBlob = .fromOwnedSlice(allocator, @constCast(result.slice())) };
-                    http_body = .{ .AnyBlob = body.AnyBlob };
+                    body = .{ .AnyBlob = .fromOwnedSlice(allocator, bytes) };
                 },
             }
         }
@@ -1246,12 +1020,9 @@ fn fetchImpl(
             credentialsWithOptions.deinit();
         }
 
-        if (options_object) |options| {
-            if (try options.getOptional(globalThis, "s3", JSValue)) |s3_options| {
-                if (s3_options.isObject()) {
-                    s3_options.ensureStillAlive();
-                    credentialsWithOptions = try s3.S3Credentials.getCredentialsWithOptions(credentialsWithOptions.credentials, .{}, s3_options, null, null, false, globalThis);
-                }
+        if (options_source) |source| {
+            if (source.s3 != null and source.s3.? == .options) {
+                credentialsWithOptions = try S3CredentialsJSC.getCredentialsWithBindingOptions(credentialsWithOptions.credentials, .{}, source.s3, null, null, false, globalThis);
             }
         }
 
@@ -1259,78 +1030,61 @@ fn fetchImpl(
             // we cannot direct stream to s3 we need to use multi part upload
             defer body.ReadableStream.deinit();
             const Wrapper = struct {
-                promise: jsc.JSPromise.Strong,
+                completion: FetchTasklet.FetchCompletions.Owned,
                 url: ZigURL,
                 url_proxy_buffer: []const u8,
-                global: *jsc.JSGlobalObject,
 
-                pub const new = bun.TrivialNew(@This());
+                fn completeResponse(self: *@This(), failure: ?s3.Error.S3Error) bun.OOM!void {
+                    const response = try bun.default_allocator.create(Response);
+                    response.* = Response.init(.{ .method = .PUT, .status_code = 200 }, .{ .value = .Empty }, .empty(), false);
+                    errdefer response.unref();
+                    response.url = try bun.bindgen.DOMString.fromUTF8(self.url.href);
+                    if (failure) |err| {
+                        response.response_init.status_code = 500;
+                        response.response_init.status_text = try bun.bindgen.DOMString.fromUTF8(err.code);
+                        response.body.value = .{ .InternalBlob = .{
+                            .bytes = .fromOwnedSlice(bun.default_allocator, try bun.default_allocator.dupe(u8, err.message)),
+                            .was_string = true,
+                        } };
+                    }
+                    FetchTasklet.completeFetch(&self.completion, .{ .native_response = response });
+                }
 
-                pub fn resolve(result: s3.S3UploadResult, self: *@This()) bun.JSTerminated!void {
-                    const global = self.global;
+                pub fn resolve(result: s3.S3UploadStreamResult, opaque_self: bun.bindgen.NativeCallbackContext(.vm)) void {
+                    const self = opaque_self.get(*@This());
                     defer bun.destroy(self);
                     defer bun.default_allocator.free(self.url_proxy_buffer);
                     switch (result) {
-                        .success => {
-                            const response = bun.new(Response, Response.init(
-                                Response.Init{
-                                    .method = .PUT,
-                                    .status_code = 200,
-                                },
-                                Body{
-                                    .value = .Empty,
-                                },
-                                bun.String.createAtomIfPossible(self.url.href),
-                                false,
-                            ));
-                            const response_js = Response.makeMaybePooled(@as(*jsc.JSGlobalObject, global), response);
-                            response_js.ensureStillAlive();
-                            try self.promise.resolve(global, response_js);
-                        },
-                        .failure => |err| {
-                            const response = bun.new(Response, Response.init(
-                                .{
-                                    .method = .PUT,
-                                    .status_code = 500,
-                                    .status_text = bun.String.createAtomIfPossible(err.code),
-                                },
-                                .{
-                                    .value = .{
-                                        .InternalBlob = .{
-                                            .bytes = std.array_list.Managed(u8).fromOwnedSlice(bun.default_allocator, bun.handleOom(bun.default_allocator.dupe(u8, err.message))),
-                                            .was_string = true,
-                                        },
-                                    },
-                                },
-                                bun.String.createAtomIfPossible(self.url.href),
-                                false,
-                            ));
-
-                            const response_js = Response.makeMaybePooled(@as(*jsc.JSGlobalObject, global), response);
-                            response_js.ensureStillAlive();
-                            try self.promise.resolve(global, response_js);
+                        .out_of_memory => self.completion.outOfMemory(),
+                        .terminated => self.completion.release(),
+                        .success => self.completeResponse(null) catch self.completion.outOfMemory(),
+                        .failure => |failure| self.completeResponse(failure.error_value) catch self.completion.outOfMemory(),
+                        .stream_error => |reason| {
+                            var root = reason.clone();
+                            self.completion.reject(&root, .{ .attach_async_stack = true });
                         },
                     }
                 }
             };
             if (method != .PUT and method != .POST) {
-                return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, (try globalThis.createErrorInstance("Only POST and PUT do support body when using S3", .{})).toJS());
+                return failFetch(completion, .s3_body_method);
             }
-            const promise = jsc.JSPromise.Strong.init(globalThis);
-
-            const s3_stream = Wrapper.new(.{
+            const stream_credentials = try credentialsWithOptions.credentials.dupe();
+            defer stream_credentials.deref();
+            const s3_stream = try bun.default_allocator.create(Wrapper);
+            const taken = completion.*.?;
+            completion.* = null;
+            s3_stream.* = .{
                 .url = url,
                 .url_proxy_buffer = url_proxy_buffer,
-                .promise = promise,
-                .global = globalThis,
-            });
+                .completion = taken,
+            };
 
-            const promise_value = promise.value();
             const proxy_url = if (proxy) |p| p.href else "";
-            _ = try bun.S3.uploadStream(
-                credentialsWithOptions.credentials.dupe(),
+            S3StreamEngine.uploadStream(
+                stream_credentials,
                 url.s3Path(),
-                body.ReadableStream.get(globalThis).?,
+                &body.ReadableStream,
                 globalThis,
                 credentialsWithOptions.options,
                 credentialsWithOptions.acl,
@@ -1340,12 +1094,35 @@ fn fetchImpl(
                 if (headers) |h| h.getContentEncoding() else null,
                 proxy_url,
                 credentialsWithOptions.request_payer,
-                @ptrCast(&Wrapper.resolve),
-                s3_stream,
-            );
+                Wrapper.resolve,
+                .init(s3_stream),
+            ) catch |err| {
+                var owned_completion = s3_stream.completion;
+                bun.destroy(s3_stream);
+                switch (err) {
+                    error.OutOfMemory => owned_completion.outOfMemory(),
+                    error.JSError => {
+                        var thrown = context.takeThrownValue(err) catch |termination| {
+                            owned_completion.release();
+                            return termination;
+                        };
+                        defer thrown.deinit();
+                        var error_root = thrown.toRoot() catch |failure| {
+                            owned_completion.release();
+                            return failure;
+                        };
+                        owned_completion.reject(&error_root, .{ .attach_async_stack = true });
+                    },
+                    error.JSTerminated => {
+                        owned_completion.release();
+                        return error.JSTerminated;
+                    },
+                }
+                return;
+            };
             url = .{};
             url_proxy_buffer = "";
-            return promise_value;
+            return;
         }
         if (method == .POST) {
             method = .PUT;
@@ -1355,21 +1132,26 @@ fn fetchImpl(
             .path = url.s3Path(),
             .method = method,
         }, false, null) catch |sign_err| {
-            is_error = true;
-            return JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, s3.getJSSignError(sign_err, globalThis));
+            var error_value = try S3ErrorEngine.getSignError(context, sign_err);
+            defer error_value.deinit();
+            var root = try error_value.toRoot();
+            defer root.deinit();
+            var owned = completion.*.?;
+            completion.* = null;
+            FetchTasklet.completeFetch(&owned, .{ .js_error = root.takeOptional() });
+            return;
         };
         defer result.deinit();
         if (proxy) |proxy_| {
-            // proxy and url are in the same buffer lets replace it
+            const length = std.math.add(usize, result.url.len, proxy_.href.len) catch return error.OutOfMemory;
+            const buffer = try allocator.alloc(u8, length);
+            @memcpy(buffer[0..result.url.len], result.url);
+            @memcpy(buffer[result.url.len..], proxy_.href);
             const old_buffer = url_proxy_buffer;
-            defer allocator.free(old_buffer);
-            var buffer = bun.handleOom(allocator.alloc(u8, result.url.len + proxy_.href.len));
-            bun.copy(u8, buffer[0..result.url.len], result.url);
-            bun.copy(u8, buffer[proxy_.href.len..], proxy_.href);
             url_proxy_buffer = buffer;
-
             url = ZigURL.parse(url_proxy_buffer[0..result.url.len]);
             proxy = ZigURL.parse(url_proxy_buffer[result.url.len..]);
+            allocator.free(old_buffer);
         } else {
             // replace headers and url of the request
             allocator.free(url_proxy_buffer);
@@ -1383,102 +1165,69 @@ fn fetchImpl(
 
         if (range) |range_| {
             const _headers = result.mixWithHeader(&header_buffer, .{ .name = "range", .value = range_ });
-            setHeaders(&headers, _headers, allocator);
+            try setHeaders(&headers, _headers, allocator);
         } else if (content_type) |ct| {
             if (ct.len > 0) {
                 const _headers = result.mixWithHeader(&header_buffer, .{ .name = "Content-Type", .value = ct });
-                setHeaders(&headers, _headers, allocator);
+                try setHeaders(&headers, _headers, allocator);
             } else {
-                setHeaders(&headers, result.headers(), allocator);
+                try setHeaders(&headers, result.headers(), allocator);
             }
         } else {
-            setHeaders(&headers, result.headers(), allocator);
+            try setHeaders(&headers, result.headers(), allocator);
         }
     }
 
-    // Only create this after we have validated all the input.
-    // or else we will leak it
-    var promise = JSPromise.Strong.init(globalThis);
-
-    const promise_val = promise.value();
-
-    const initial_body_reference_count: if (Environment.isDebug) usize else u0 = brk: {
-        if (Environment.isDebug) {
-            if (body.store()) |store| {
-                break :brk store.ref_count.load(.monotonic);
-            }
-        }
-
-        break :brk 0;
-    };
-
-    _ = FetchTasklet.queue(
-        allocator,
-        globalThis,
-        &.{
-            .method = method,
-            .url = url,
-            .headers = headers orelse Headers{
-                .allocator = allocator,
-            },
-            .body = http_body,
-            .disable_keepalive = disable_keepalive,
-            .disable_timeout = disable_timeout,
-            .disable_decompression = disable_decompression,
-            .reject_unauthorized = reject_unauthorized,
-            .redirect_type = redirect_type,
-            .verbose = verbose,
-            .proxy = proxy,
-            .proxy_headers = proxy_headers,
-            .url_proxy_buffer = url_proxy_buffer,
-            .signal = signal,
-            .globalThis = globalThis,
-            .ssl_config = ssl_config,
-            .hostname = hostname,
-            .upgraded_connection = upgraded_connection,
-            .force_http2 = force_http2,
-            .force_http3 = force_http3,
-            .force_http1 = force_http1,
-            .check_server_identity = if (check_server_identity.isEmptyOrUndefinedOrNull()) .empty else .create(check_server_identity, globalThis),
-            .unix_socket_path = unix_socket_path,
+    var fetch_options: FetchTasklet.FetchOptions = .{
+        .method = method,
+        .url = url,
+        .headers = headers orelse Headers{
+            .allocator = allocator,
         },
-        // Pass the Strong value instead of creating a new one, or else we
-        // will leak it
-        // see https://github.com/oven-sh/bun/issues/2985
-        promise,
-    ) catch |err| bun.handleOom(err);
-
-    if (Environment.isDebug) {
-        if (body.store()) |store| {
-            if (store.ref_count.load(.monotonic) == initial_body_reference_count) {
-                Output.panic("Expected body ref count to have incremented in FetchTasklet", .{});
-            }
-        }
-    }
-
-    // These are now owned by FetchTasklet.
-    url = .{};
-    headers = null;
-    // Reference count for the blob is incremented above.
-    if (body.store() != null) {
-        body.detach();
-    } else {
-        // These are single-use, and have effectively been moved to the FetchTasklet.
-        body = FetchTasklet.HTTPRequestBody.Empty;
-    }
-    proxy = null;
-    proxy_headers = null;
-    url_proxy_buffer = "";
-    signal = null;
-    ssl_config = null;
-    hostname = null;
-    unix_socket_path = ZigString.Slice.empty;
-
-    return promise_val;
+        .body = if (sendfile_body) |*pending| pending.take() else body.take(),
+        .disable_keepalive = disable_keepalive,
+        .disable_timeout = disable_timeout,
+        .disable_decompression = disable_decompression,
+        .reject_unauthorized = reject_unauthorized,
+        .redirect_type = redirect_type,
+        .verbose = verbose,
+        .proxy = proxy,
+        .proxy_headers = proxy_headers,
+        .url_proxy_buffer = url_proxy_buffer,
+        .signal = signal,
+        .globalThis = globalThis,
+        .ssl_config = ssl_config,
+        .hostname = hostname,
+        .upgraded_connection = upgraded_connection,
+        .force_http2 = force_http2,
+        .force_http3 = force_http3,
+        .force_http1 = force_http1,
+        .check_server_identity = if (check_server_identity) |*identity| identity.take() else null,
+        .unix_socket_path = unix_socket_path,
+    };
+    defer fetch_options.body.detach();
+    const queued = FetchTasklet.queue(
+        globalThis,
+        &fetch_options,
+        taken_completion: {
+            const taken = completion.*.?;
+            completion.* = null;
+            break :taken_completion taken;
+        },
+    );
+    tasklet_owns_inputs = true;
+    try queued;
 }
-fn setHeaders(headers: *?Headers, new_headers: []const picohttp.Header, allocator: std.mem.Allocator) void {
+
+fn normalizeURL(allocator: std.mem.Allocator, input: bun.String) !ZigURL {
+    var href = try jsc.URL.hrefFromString(input);
+    if (href.tag == .Dead) return error.InvalidURL;
+    defer href.deref();
+    return ZigURL.parse(try href.toOwnedSlice(allocator));
+}
+fn setHeaders(headers: *?Headers, new_headers: []const picohttp.Header, allocator: std.mem.Allocator) bun.OOM!void {
     var old = headers.*;
-    headers.* = bun.handleOom(Headers.fromPicoHttpHeaders(new_headers, allocator));
+    headers.* = try Headers.fromPicoHttpHeaders(new_headers, allocator);
 
     if (old) |*headers_| {
         headers_.deinit();
@@ -1491,6 +1240,9 @@ const std = @import("std");
 const DataURL = @import("../../resolver/data_url.zig").DataURL;
 const Method = @import("../../http_types/Method.zig").Method;
 const ZigURL = @import("../../url/url.zig").URL;
+const S3CredentialsJSC = @import("./s3/CredentialsEngine.zig");
+const S3ErrorEngine = @import("./s3/ErrorEngine.zig");
+const S3StreamEngine = @import("./s3/ClientStreamEngine.zig");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
@@ -1499,22 +1251,36 @@ const picohttp = bun.picohttp;
 const s3 = bun.S3;
 const FetchHeaders = bun.webcore.FetchHeaders;
 const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
+const SSLConfigEngine = bun.api.server.ServerConfig.SSLConfigEngine;
 
 const http = bun.http;
 const FetchRedirect = http.FetchRedirect;
 const Headers = bun.http.Headers;
+const HeadersEngine = bun.api.HTTPHeadersEngine;
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSPromise = jsc.JSPromise;
-const JSValue = jsc.JSValue;
 const VirtualMachine = jsc.VirtualMachine;
-const ZigString = jsc.ZigString;
-const JSType = jsc.C.JSType;
-
 const Body = jsc.WebCore.Body;
 const Request = jsc.WebCore.Request;
 const Response = jsc.WebCore.Response;
 
 const Blob = jsc.WebCore.Blob;
 const AnyBlob = jsc.WebCore.Blob.Any;
+
+const BunObjectBindings = bun.bindgen.Module("BunObject");
+const NodeHTTPBindings = bun.bindgen.Module("NodeHTTP");
+const RequestClassSchema = bun.bindgen.Module("Request").class("Request");
+const FetchCheckServerIdentityCallback = bun.bindgen.Callback(bun.bindgen.CallbackSchema("FetchCheckServerIdentityCallback"));
+const FetchSchema = BunObjectBindings.function("fetch");
+const FetchPreconnectSchema = BunObjectBindings.function("fetchPreconnect");
+const NodeHTTPClientSchema = NodeHTTPBindings.function("client");
+const FetchBinding = bun.bindgen.Fn(FetchSchema, fetch);
+const FetchPreconnectBinding = bun.bindgen.Fn(FetchPreconnectSchema, fetchPreconnect);
+const NodeHTTPClientBinding = bun.bindgen.Fn(NodeHTTPClientSchema, nodeHttpClient);
+
+comptime {
+    _ = FetchBinding;
+    _ = FetchPreconnectBinding;
+    _ = NodeHTTPClientBinding;
+}

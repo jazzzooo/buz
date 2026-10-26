@@ -25,10 +25,3 @@
 
 #include "root.h"
 #include "CloseEvent.h"
-#include <wtf/TZoneMallocInlines.h>
-
-namespace WebCore {
-
-WTF_MAKE_TZONE_ALLOCATED_IMPL(CloseEvent);
-
-} // namespace WebCore

@@ -1,23 +1,20 @@
-//! Similar to `IOWriter` but for reading
-//!
-//! *NOTE* This type is reference counted, but deinitialization is queued onto
-//! the event loop. This was done to prevent bugs.
+//! Delivers descriptor reads to registered shell consumers.
 pub const IOReader = @This();
 
-const RefCount = bun.ptr.RefCount(@This(), "ref_count", asyncDeinit, .{});
+const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
 pub const ref = RefCount.ref;
 pub const deref = RefCount.deref;
 
 fd: bun.FD,
+owns_fd: bool = true,
 reader: ReaderImpl,
 buf: std.ArrayListUnmanaged(u8) = .empty,
 readers: Readers = .{ .inlined = .{} },
+next_reader_id: u64 = 0,
 read: usize = 0,
 ref_count: RefCount,
-err: ?jsc.SystemError = null,
-evtloop: jsc.EventLoopHandle,
-concurrent_task: jsc.EventLoopTask,
-async_deinit: AsyncDeinitReader,
+err: ?bun.sys.SystemError = null,
+scheduler: Interpreter.Scheduler,
 is_reading: if (bun.Environment.isWindows) bool else u0 = if (bun.Environment.isWindows) false else 0,
 started: bool = false,
 
@@ -36,26 +33,20 @@ pub fn memoryCost(this: *const IOReader) usize {
     return size;
 }
 
-pub fn eventLoop(this: *IOReader) jsc.EventLoopHandle {
-    return this.evtloop;
+pub fn eventLoop(this: *IOReader) bun.RuntimeLoopHandle {
+    return this.scheduler.runtimeLoopHandle();
 }
 
 pub fn loop(this: *IOReader) *bun.Async.Loop {
-    if (comptime bun.Environment.isWindows) {
-        return this.evtloop.loop().uv_loop;
-    } else {
-        return this.evtloop.loop();
-    }
+    return this.scheduler.platformLoop();
 }
 
-pub fn init(fd: bun.FD, evtloop: jsc.EventLoopHandle) *IOReader {
+pub fn init(fd: bun.FD, scheduler: Interpreter.Scheduler) *IOReader {
     const this = bun.new(IOReader, .{
         .ref_count = .init(),
         .fd = fd,
         .reader = ReaderImpl.init(@This()),
-        .evtloop = evtloop,
-        .concurrent_task = jsc.EventLoopTask.fromEventLoop(evtloop),
-        .async_deinit = .{},
+        .scheduler = scheduler,
     });
     log("IOReader(0x{x}, fd={f}) create", .{ @intFromPtr(this), fd });
 
@@ -63,9 +54,6 @@ pub fn init(fd: bun.FD, evtloop: jsc.EventLoopHandle) *IOReader {
         this.reader.flags.close_handle = false;
     }
 
-    if (bun.Environment.isWindows) {
-        this.reader.source = .{ .file = bun.io.Source.openFile(fd) };
-    }
     this.reader.setParent(this);
 
     return this;
@@ -73,6 +61,12 @@ pub fn init(fd: bun.FD, evtloop: jsc.EventLoopHandle) *IOReader {
 
 /// Idempotent function to start the reading
 pub fn start(this: *IOReader) Yield {
+    this.ref();
+    defer this.deref();
+    if (this.started and (this.err != null or this.reader.isDone())) {
+        this.onReaderDone();
+        return .suspended;
+    }
     this.started = true;
     if (bun.Environment.isPosix) {
         if (this.reader.handle == .closed or !this.reader.handle.poll.isRegistered()) {
@@ -85,8 +79,13 @@ pub fn start(this: *IOReader) Yield {
 
     if (this.is_reading) return .suspended;
     this.is_reading = true;
-    if (this.reader.startWithCurrentPipe().asErr()) |e| {
-        this.onReaderError(e);
+    const result = if (this.reader.source == null) start: {
+        const result = this.reader.start(this.fd, true);
+        if (this.reader.source != null) this.owns_fd = false;
+        break :start result;
+    } else this.reader.startReading();
+    if (result.asErr()) |err| {
+        this.reader.onError(err);
         return .failed;
     }
     return .suspended;
@@ -106,13 +105,12 @@ pub fn addReader(this: *IOReader, reader_: anytype) void {
         else => ChildPtr.init(reader_),
     };
 
-    const slice = this.readers.slice();
-    const usize_slice: []const usize = @as([*]const usize, @ptrCast(slice.ptr))[0..slice.len];
-    const ptr_usize: usize = @intFromPtr(reader.ptr.ptr());
-    // Only add if it hasn't been added yet
-    if (std.mem.indexOfScalar(usize, usize_slice, ptr_usize) == null) {
-        this.readers.append(reader);
+    for (this.readers.slice()) |registered| {
+        if (registered.ptr.ptr.ptr() == reader.ptr.ptr()) return;
     }
+    this.next_reader_id = std.math.add(u64, this.next_reader_id, 1) catch
+        @panic("reader registration generation exhausted");
+    this.readers.append(.{ .ptr = reader, .id = this.next_reader_id });
 }
 
 pub fn removeReader(this: *IOReader, reader_: anytype) void {
@@ -120,116 +118,109 @@ pub fn removeReader(this: *IOReader, reader_: anytype) void {
         ChildPtr => reader_,
         else => ChildPtr.init(reader_),
     };
-    const slice = this.readers.slice();
-    const usize_slice: []const usize = @as([*]const usize, @ptrCast(slice.ptr))[0..slice.len];
-    const ptr_usize: usize = @intFromPtr(reader.ptr.ptr());
-    if (std.mem.indexOfScalar(usize, usize_slice, ptr_usize)) |idx| {
-        this.readers.swapRemove(idx);
+    for (this.readers.slice(), 0..) |registered, idx| {
+        if (registered.ptr.ptr.ptr() == reader.ptr.ptr()) {
+            this.readers.orderedRemove(idx);
+            return;
+        }
     }
+}
+
+fn removeRegistration(this: *IOReader, id: u64) void {
+    for (this.readers.slice(), 0..) |registered, idx| {
+        if (registered.id == id) {
+            this.readers.orderedRemove(idx);
+            return;
+        }
+    }
+}
+
+fn nextRegistration(this: *const IOReader, after: u64, last: u64) ?Reader {
+    for (this.readers.slice()) |registered| {
+        if (registered.id > after and registered.id <= last) return registered;
+    }
+    return null;
 }
 
 pub fn onReadChunk(ptr: *anyopaque, chunk: []const u8, has_more: bun.io.ReadState) bool {
     var this: *IOReader = @ptrCast(@alignCast(ptr));
+    this.ref();
+    defer this.deref();
     log("IOReader(0x{x}, fd={f}) onReadChunk(chunk_len={d}, has_more={s})", .{ @intFromPtr(this), this.fd, chunk.len, @tagName(has_more) });
     this.setReading(false);
 
-    var i: usize = 0;
-    while (i < this.readers.len()) {
-        var r = this.readers.get(i);
+    const last_registration = this.next_reader_id;
+    var delivered: u64 = 0;
+    while (this.nextRegistration(delivered, last_registration)) |registered| {
+        delivered = registered.id;
         var remove = false;
-        r.onReadChunk(chunk, &remove).run();
-        if (remove) {
-            this.readers.swapRemove(i);
-        } else {
-            i += 1;
-        }
+        const yielded = registered.ptr.onReadChunk(chunk, &remove);
+        if (remove) this.removeRegistration(registered.id);
+        yielded.run();
     }
 
-    const should_continue = has_more != .eof;
+    const should_continue = has_more != .eof and this.readers.len() > 0;
     if (should_continue) {
-        if (this.readers.len() > 0) {
-            this.setReading(true);
-            if (bun.Environment.isPosix)
-                this.reader.registerPoll()
-            else switch (this.reader.startWithCurrentPipe()) {
-                .err => |e| {
-                    this.onReaderError(e);
-                    return false;
-                },
-                else => {},
-            }
-        }
+        this.setReading(true);
+        if (bun.Environment.isPosix) this.reader.registerPoll();
     }
 
     return should_continue;
 }
 
 pub fn onReaderError(this: *IOReader, err: bun.sys.Error) void {
+    this.ref();
+    defer this.deref();
     log("IOReader(0x{x}.onReaderError({f}) ", .{ @intFromPtr(this), err });
     this.setReading(false);
+    if (this.err) |*previous| previous.deref();
     this.err = err.toShellSystemError();
-    for (this.readers.slice()) |r| {
-        r.onReaderDone(if (this.err) |*e| brk: {
-            e.ref();
-            break :brk e.*;
-        } else null).run();
-    }
+    this.notifyReadersDone();
 }
 
 pub fn onReaderDone(this: *IOReader) void {
+    this.ref();
+    defer this.deref();
     log("IOReader(0x{x}) done", .{@intFromPtr(this)});
     this.setReading(false);
-    for (this.readers.slice()) |r| {
-        r.onReaderDone(if (this.err) |*err| brk: {
+    this.notifyReadersDone();
+}
+
+fn notifyReadersDone(this: *IOReader) void {
+    while (this.readers.len() > 0) {
+        const reader = this.readers.get(0).ptr;
+        this.readers.orderedRemove(0);
+        reader.onReaderDone(if (this.err) |*err| brk: {
             err.ref();
             break :brk err.*;
         } else null).run();
     }
 }
 
-fn asyncDeinit(this: *@This()) void {
-    log("IOReader(0x{x}) asyncDeinit", .{@intFromPtr(this)});
-    // The async hop guards against being deref'd from inside a read callback while
-    // BufferedReader is still iterating. If we never started reading, no callback can be
-    // in flight, so close synchronously to avoid holding the fd until the next tick.
-    if (!this.started) {
-        this.asyncDeinitCallback();
-        return;
-    }
-    this.async_deinit.enqueue(); // calls `asyncDeinitCallback`
+fn deinit(this: *IOReader) void {
+    this.reader.deinitWhenIdle(this, destroy);
 }
 
-fn asyncDeinitCallback(this: *@This()) void {
-    if (this.fd != bun.invalid_fd) {
-        // windows reader closes the file descriptor
-        if (bun.Environment.isWindows) {
-            if (this.reader.source != null and !this.reader.source.?.isClosed()) {
-                this.reader.closeImpl(false);
-            }
-        } else {
-            // We set reader.flags.close_handle=false in init(), so reader.deinit() will not
-            // return the FilePoll to its pool. Do it explicitly (without closing the fd —
-            // we own that and close it ourselves below).
-            if (this.reader.handle == .poll) {
-                this.reader.handle.closeImpl(null, {}, false);
-            }
-            log("IOReader(0x{x}) __deinit fd={f}", .{ @intFromPtr(this), this.fd });
-            this.fd.close();
-        }
-    }
+fn destroy(this: *IOReader) void {
     if (this.err) |*e| e.deref();
     this.readers.deinit();
     this.buf.deinit(bun.default_allocator);
     this.reader.disableKeepingProcessAlive({});
     this.reader.deinit();
+    if (this.owns_fd) _ = this.fd.closeAllowingStandardIo(null);
     bun.destroy(this);
 }
 
 pub const Reader = struct {
     ptr: ChildPtr,
+    id: u64,
+
+    pub fn memoryCost(this: Reader) usize {
+        return this.ptr.memoryCost();
+    }
 };
 
-pub const Readers = SmolList(ChildPtr, 4);
+pub const Readers = SmolList(Reader, 4);
 
 pub const IOReaderChildPtr = struct {
     ptr: ChildPtrRaw,
@@ -258,44 +249,14 @@ pub const IOReaderChildPtr = struct {
         return this.ptr.call("onIOReaderChunk", .{ chunk, remove }, Yield);
     }
 
-    pub fn onReaderDone(this: IOReaderChildPtr, err: ?jsc.SystemError) Yield {
+    pub fn onReaderDone(this: IOReaderChildPtr, err: ?bun.sys.SystemError) Yield {
         return this.ptr.call("onIOReaderDone", .{err}, Yield);
-    }
-};
-
-pub const AsyncDeinitReader = struct {
-    ran: bool = false,
-
-    pub fn enqueue(this: *@This()) void {
-        if (this.ran) return;
-        this.ran = true;
-
-        var ioreader = this.reader();
-        if (ioreader.evtloop == .js) {
-            ioreader.evtloop.js.enqueueTaskConcurrent(ioreader.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            ioreader.evtloop.mini.enqueueTaskConcurrent(ioreader.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
-    }
-
-    pub fn reader(this: *AsyncDeinitReader) *IOReader {
-        return @alignCast(@fieldParentPtr("async_deinit", this));
-    }
-
-    pub fn runFromMainThread(this: *AsyncDeinitReader) void {
-        const ioreader: *IOReader = @alignCast(@fieldParentPtr("async_deinit", this));
-        ioreader.asyncDeinitCallback();
-    }
-
-    pub fn runFromMainThreadMini(this: *AsyncDeinitReader, _: *void) void {
-        this.runFromMainThread();
     }
 };
 
 const std = @import("std");
 
 const bun = @import("bun");
-const jsc = bun.jsc;
 
 const shell = bun.shell;
 const Interpreter = bun.shell.Interpreter;

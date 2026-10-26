@@ -1,4 +1,5 @@
 #include "root.h"
+#include "SchemaBindings.h"
 
 #include "JavaScriptCore/JSDestructibleObject.h"
 #include "JavaScriptCore/ExceptionScope.h"
@@ -7,7 +8,8 @@
 #include <JavaScriptCore/ObjectConstructor.h>
 
 #include "ProcessBindingTTYWrap.h"
-#include "NodeTTYModule.h"
+#include <cmath>
+#include "wtf-bindings.h"
 #include "WebCoreJSBuiltins.h"
 #include <JavaScriptCore/FunctionPrototype.h>
 
@@ -27,8 +29,6 @@
 #endif
 
 #if OS(WINDOWS)
-
-extern "C" int Source__setRawModeStdin(bool raw);
 
 namespace UV {
 
@@ -175,114 +175,61 @@ private:
     }
 };
 
-#if OS(WINDOWS)
-extern "C" void Bun__setCTRLHandler(BOOL add);
-#endif
-
 const ClassInfo TTYWrapObject::s_info = {
     "LibuvStreamWrap"_s,
 
     &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(TTYWrapObject)
 };
 
-JSC::EncodedJSValue Process_functionInternalGetWindowSize(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame);
-
-extern "C" int Bun__ttySetMode(int fd, int mode);
-
-JSC_DEFINE_HOST_FUNCTION(jsTTYSetMode, (JSC::JSGlobalObject * globalObject, CallFrame* callFrame))
+TTYWrapObject* ttyWrapObjectCast(JSC::JSValue value)
 {
-#if OS(WINDOWS)
-    ASSERT(callFrame->argumentCount() == 1);
-    auto flag = callFrame->argument(0);
-    bool raw = flag.asBoolean();
-
-    Zig::GlobalObject* global = uncheckedDowncast<Zig::GlobalObject>(globalObject);
-
-    return JSValue::encode(jsNumber(Source__setRawModeStdin(raw)));
-#else
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    if (callFrame->argumentCount() != 2) {
-        throwTypeError(globalObject, scope, "Expected 2 arguments"_s);
-        return {};
-    }
-
-    JSValue fd = callFrame->argument(0);
-    if (!fd.isNumber()) {
-        throwTypeError(globalObject, scope, "fd must be a number"_s);
-        return {};
-    }
-
-    JSValue mode = callFrame->argument(1);
-
-    auto fdToUse = fd.toInt32(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-
-    // Nodejs does not throw when ttySetMode fails. An Error event is emitted instead.
-    int mode_ = mode.toInt32(globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    int err = Bun__ttySetMode(fdToUse, mode_);
-    return JSValue::encode(jsNumber(err));
-#endif
+    return dynamicDowncast<TTYWrapObject>(value);
 }
 
-JSC_DEFINE_HOST_FUNCTION(TTYWrap_functionSetMode,
-    (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+bool isTTYWrapObject(JSC::JSValue value) noexcept
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto argCount = callFrame->argumentCount();
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    if (argCount == 0) {
-        JSC::throwTypeError(globalObject, throwScope, "setRawMode requires 1 argument (a number)"_s);
-        return {};
-    }
-
-    TTYWrapObject* ttyWrap = dynamicDowncast<TTYWrapObject>(callFrame->thisValue());
-    if (!ttyWrap) [[unlikely]] {
-        JSC::throwTypeError(globalObject, throwScope, "TTY.setRawMode expects a TTYWrapObject as this"_s);
-        return {};
-    }
-
-    int fd = ttyWrap->fd;
-    JSValue mode = callFrame->argument(0);
-    if (!mode.isNumber()) {
-        throwTypeError(globalObject, throwScope, "mode must be a number"_s);
-        return {};
-    }
-
-#if OS(WINDOWS)
-    if (mode.toInt32(globalObject) == 0) {
-        Bun__setCTRLHandler(1);
-    }
-
-    int err = uv_tty_set_mode(ttyWrap->handle->tty(), mode.toInt32(globalObject));
-#else
-    // Nodejs does not throw when ttySetMode fails. An Error event is emitted instead.
-    int err = Bun__ttySetMode(fd, mode.toInt32(globalObject));
-#endif
-    return JSValue::encode(jsNumber(err));
+    return !!ttyWrapObjectCast(value);
 }
 
-JSC_DEFINE_HOST_FUNCTION(TTYWrap_functionGetWindowSize,
-    (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+int32_t Bindgen::Cpp::bunBindgenCpp_ProcessTTY_setMode(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_ProcessTTY_setMode_Arguments& args)
 {
+    return Bun::Bindgen::ZigExports::bunBindgenZig_ProcessTTY_setModeNative(args.fd, args.mode ? 1 : 0);
+}
+
+int32_t Bindgen::Cpp::bunBindgenCpp_ProcessTTY_wrapSetMode(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_ProcessTTY_wrapSetMode_Arguments& args)
+{
+    auto* wrap = ttyWrapObjectCast(args.bindingThis);
+    RELEASE_ASSERT(wrap);
+    int fd = wrap->fd;
+
+#if OS(WINDOWS)
+    if (!args.mode) {
+        Bun::Bindgen::ZigExports::bunBindgenZig_ProcessTTY_enableConsoleControlHandler();
+    }
+
+    int err = uv_tty_set_mode(wrap->handle->tty(), args.mode);
+#else
+    // Node.js emits an Error event instead of throwing when ttySetMode fails.
+    int err = Bun::Bindgen::ZigExports::bunBindgenZig_ProcessTTY_setModeNative(fd, args.mode);
+#endif
+    return err;
+}
+
+bool Bindgen::Cpp::bunBindgenCpp_ProcessTTY_wrapGetWindowSize(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_ProcessTTY_wrapGetWindowSize_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
-    auto argCount = callFrame->argumentCount();
     auto throwScope = DECLARE_THROW_SCOPE(vm);
-    if (argCount == 0) {
-        JSC::throwTypeError(globalObject, throwScope, "getWindowSize requires 1 argument (an array)"_s);
-        return {};
-    }
-
-    TTYWrapObject* ttyWrap = dynamicDowncast<TTYWrapObject>(callFrame->thisValue());
-    if (!ttyWrap) [[unlikely]] {
-        JSC::throwTypeError(globalObject, throwScope, "TTY.getWindowSize expects a TTYWrapObject as this"_s);
-        return {};
-    }
-
-    int fd = ttyWrap->fd;
-    JSC::JSArray* array = dynamicDowncast<JSC::JSArray>(callFrame->uncheckedArgument(0));
+    auto* wrap = ttyWrapObjectCast(args.bindingThis);
+    RELEASE_ASSERT(wrap);
+    int fd = wrap->fd;
+    JSC::JSArray* array = dynamicDowncast<JSC::JSArray>(args.array);
     if (!array || array->length() < 2) {
         JSC::throwTypeError(globalObject, throwScope, "getWindowSize expects an array"_s);
         return {};
@@ -290,29 +237,24 @@ JSC_DEFINE_HOST_FUNCTION(TTYWrap_functionGetWindowSize,
 
     size_t width, height;
     if (!getWindowSize(fd, &width, &height)) {
-        return JSC::JSValue::encode(jsBoolean(false));
+        return false;
     }
 
     array->putDirectIndex(globalObject, 0, jsNumber(width));
     array->putDirectIndex(globalObject, 1, jsNumber(height));
 
-    return JSC::JSValue::encode(jsBoolean(true));
+    return true;
 }
 
-JSC_DEFINE_HOST_FUNCTION(Process_functionInternalGetWindowSize,
-    (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+bool Bindgen::Cpp::bunBindgenCpp_ProcessTTY_getWindowSize(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_ProcessTTY_getWindowSize_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     auto& vm = JSC::getVM(globalObject);
-    auto argCount = callFrame->argumentCount();
     auto throwScope = DECLARE_THROW_SCOPE(vm);
-    if (argCount == 0) {
-        JSC::throwTypeError(globalObject, throwScope, "getWindowSize requires 2 argument (a file descriptor)"_s);
-        return {};
-    }
-
-    int fd = callFrame->uncheckedArgument(0).toInt32(globalObject);
-    RETURN_IF_EXCEPTION(throwScope, {});
-    JSC::JSArray* array = dynamicDowncast<JSC::JSArray>(callFrame->uncheckedArgument(1));
+    int fd = args.fd;
+    JSC::JSArray* array = dynamicDowncast<JSC::JSArray>(args.array);
     if (!array || array->length() < 2) {
         JSC::throwTypeError(globalObject, throwScope, "getWindowSize requires 2 argument (an array)"_s);
         return {};
@@ -320,7 +262,7 @@ JSC_DEFINE_HOST_FUNCTION(Process_functionInternalGetWindowSize,
 
     size_t width, height;
     if (!getWindowSize(fd, &width, &height)) {
-        return JSC::JSValue::encode(jsBoolean(false));
+        return false;
     }
 
     array->putDirectIndex(globalObject, 0, jsNumber(width));
@@ -328,13 +270,12 @@ JSC_DEFINE_HOST_FUNCTION(Process_functionInternalGetWindowSize,
     array->putDirectIndex(globalObject, 1, jsNumber(height));
     RETURN_IF_EXCEPTION(throwScope, {});
 
-    return JSC::JSValue::encode(jsBoolean(true));
+    return true;
 }
 
-static const HashTableValue TTYWrapPrototypeValues[] = {
-    { "getWindowSize"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, TTYWrap_functionGetWindowSize, 1 } },
-    { "setRawMode"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function | PropertyAttribute::DontDelete), NoIntrinsic, { HashTableValue::NativeFunctionType, TTYWrap_functionSetMode, 0 } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_TTYWrapPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_TTYWrapPrototype
 
 class TTYWrapPrototype final : public JSC::JSNonFinalObject {
 public:
@@ -364,8 +305,7 @@ public:
     {
         Base::finishCreation(vm);
 
-        reifyStaticProperties(vm, TTYWrapObject::info(), TTYWrapPrototypeValues, *this);
-        JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+        bunBindgenObjectSurface_TTYWrapPrototype_install(vm, TTYWrapObject::info(), *this);
     }
 
     TTYWrapPrototype(JSC::VM& vm, JSC::Structure* structure)
@@ -404,82 +344,11 @@ public:
         return &vm.internalFunctionSpace();
     }
 
-    static JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES call(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe)
-    {
-        auto& vm = JSC::getVM(globalObject);
-        auto scope = DECLARE_THROW_SCOPE(vm);
-
-        throwTypeError(globalObject, scope, "TTYWrapConstructor cannot be called as a function"_s);
-        return {};
-    }
-
-    // new TTY()
-    static JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES construct(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callframe)
-    {
-        auto& vm = JSC::getVM(globalObject);
-        auto scope = DECLARE_THROW_SCOPE(vm);
-
-        auto* constructor = dynamicDowncast<TTYWrapConstructor>(callframe->jsCallee());
-
-        if (!constructor) {
-            throwTypeError(globalObject, scope, "TTYWrapConstructor::construct called with wrong 'this' value"_s);
-            return {};
-        }
-
-        if (callframe->argumentCount() < 1) {
-            throwTypeError(globalObject, scope, "Expected at least 1 argument"_s);
-            return {};
-        }
-
-        JSValue fd_value = callframe->argument(0);
-        int32_t fd = fd_value.toInt32(globalObject);
-
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (fd < 0) {
-            throwTypeError(globalObject, scope, "fd must be a positive number"_s);
-            return {};
-        }
-
-        auto prototypeValue = constructor->get(globalObject, vm.propertyNames->prototype);
-        RETURN_IF_EXCEPTION(scope, {});
-        if (!prototypeValue.isObject()) {
-            throwTypeError(globalObject, scope, "TTYWrapConstructor prototype is not an object"_s);
-            return {};
-        }
-
-#if OS(WINDOWS)
-        auto* handle = new UV::TTY();
-        memset(handle, 0, sizeof(UV::TTY));
-        int rc = uv_tty_init(uncheckedDowncast<Zig::GlobalObject>(globalObject)->uvLoop(), handle->tty(), fd, 0);
-        if (rc < 0) {
-            delete handle;
-            throwTypeError(globalObject, scope, "Failed to initialize TTY handle"_s);
-            return {};
-        }
-        ASSERT(handle->tty()->loop);
-#else
-        if (!isatty(fd)) {
-            throwTypeError(globalObject, scope, makeString("fd"_s, fd, " is not a tty"_s));
-            return {};
-        }
-#endif
-
-        auto* structure = TTYWrapObject::createStructure(vm, globalObject, prototypeValue.getObject());
-        auto* object = TTYWrapObject::create(vm, globalObject, structure, fd);
-
-#if OS(WINDOWS)
-        object->handle = handle;
-#endif
-
-        return JSValue::encode(object);
-    }
-
     DECLARE_EXPORT_INFO;
 
 private:
     TTYWrapConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, call, construct)
+        : Base(vm, structure, bun_bindgen_host_ProcessTTY_ttyWrapConstructorCall, bun_bindgen_host_ProcessTTY_ttyWrapConstructorConstruct)
     {
     }
 
@@ -490,34 +359,101 @@ private:
     }
 };
 
+void Bindgen::Cpp::bunBindgenCpp_ProcessTTY_ttyWrapConstructorCall(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_ProcessTTY_ttyWrapConstructorCall_Arguments&)
+{
+    auto* globalObject = &context.globalObject;
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    throwTypeError(globalObject, scope, "TTYWrapConstructor cannot be called as a function"_s);
+}
+
+TTYWrapConstructor* ttyWrapConstructorCast(JSC::JSValue value)
+{
+    return dynamicDowncast<TTYWrapConstructor>(value);
+}
+
+bool isTTYWrapConstructor(JSC::JSValue value) noexcept
+{
+    return !!ttyWrapConstructorCast(value);
+}
+
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_ProcessTTY_ttyWrapConstructorConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_ProcessTTY_ttyWrapConstructorConstruct_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    if (!args.fd) {
+        throwTypeError(globalObject, scope, "Expected at least 1 argument"_s);
+        return {};
+    }
+    int32_t fd = *args.fd;
+
+    if (fd < 0) {
+        throwTypeError(globalObject, scope, "fd must be a positive number"_s);
+        return {};
+    }
+
+    auto* constructor = ttyWrapConstructorCast(args.bindingCallee);
+    RELEASE_ASSERT(constructor);
+    auto prototypeValue = constructor->get(globalObject, vm.propertyNames->prototype);
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!prototypeValue.isObject()) {
+        throwTypeError(globalObject, scope, "TTYWrapConstructor prototype is not an object"_s);
+        return {};
+    }
+
+#if OS(WINDOWS)
+    auto* handle = new UV::TTY();
+    memset(handle, 0, sizeof(UV::TTY));
+    int rc = uv_tty_init(uncheckedDowncast<Zig::GlobalObject>(globalObject)->uvLoop(), handle->tty(), fd, 0);
+    if (rc < 0) {
+        delete handle;
+        throwTypeError(globalObject, scope, "Failed to initialize TTY handle"_s);
+        return {};
+    }
+    ASSERT(handle->tty()->loop);
+#else
+    if (!isatty(fd)) {
+        throwTypeError(globalObject, scope, makeString("fd"_s, fd, " is not a tty"_s));
+        return {};
+    }
+#endif
+
+    auto* structure = TTYWrapObject::createStructure(vm, globalObject, prototypeValue.getObject());
+    auto* object = TTYWrapObject::create(vm, globalObject, structure, fd);
+
+#if OS(WINDOWS)
+    object->handle = handle;
+#endif
+
+    return object;
+}
+
 const ClassInfo TTYWrapConstructor::s_info = { "TTY"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(TTYWrapConstructor) };
 
-JSValue createBunTTYFunctions(Zig::GlobalObject* globalObject)
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_ProcessTTY_constructTTYWrapConstructor(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_ProcessTTY_constructTTYWrapConstructor_Arguments&)
 {
-    auto& vm = JSC::getVM(globalObject);
-    auto* obj = constructEmptyObject(globalObject);
-
-    obj->putDirect(vm, PropertyName(Identifier::fromString(vm, "isatty"_s)), JSFunction::create(vm, globalObject, 0, "isatty"_s, Zig::jsFunctionTty_isatty, ImplementationVisibility::Public), 0);
-
-    obj->putDirect(vm, PropertyName(Identifier::fromString(vm, "setRawMode"_s)), JSFunction::create(vm, globalObject, 0, "ttySetMode"_s, jsTTYSetMode, ImplementationVisibility::Public), 0);
-
-    obj->putDirect(vm, PropertyName(Identifier::fromString(vm, "getWindowSize"_s)), JSFunction::create(vm, globalObject, 0, "getWindowSize"_s, Bun::Process_functionInternalGetWindowSize, ImplementationVisibility::Public), 0);
-
-    return obj;
+    auto* globalObject = &context.globalObject;
+    auto& vm = globalObject->vm();
+    TTYWrapPrototype* prototype = TTYWrapPrototype::create(vm, globalObject, TTYWrapPrototype::createStructure(vm, globalObject));
+    return TTYWrapConstructor::create(vm, globalObject, TTYWrapConstructor::createStructure(vm, globalObject, globalObject->functionPrototype()), prototype);
 }
+
+#define BUN_BINDGEN_OBJECT_SURFACE_ProcessTTYBinding
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_ProcessTTYBinding
 
 JSValue createNodeTTYWrapObject(JSC::JSGlobalObject* globalObject)
 {
     auto& vm = JSC::getVM(globalObject);
     auto* obj = constructEmptyObject(globalObject);
-
-    obj->putDirect(vm, PropertyName(Identifier::fromString(vm, "isTTY"_s)), JSFunction::create(vm, globalObject, 0, "isatty"_s, Zig::jsFunctionTty_isatty, ImplementationVisibility::Public), 0);
-
-    TTYWrapPrototype* prototype = TTYWrapPrototype::create(vm, globalObject, TTYWrapPrototype::createStructure(vm, globalObject));
-    TTYWrapConstructor* constructor = TTYWrapConstructor::create(vm, globalObject, TTYWrapConstructor::createStructure(vm, globalObject, globalObject->functionPrototype()), prototype);
-
-    obj->putDirect(vm, Identifier::fromString(vm, "TTY"_s), constructor, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::ReadOnly | JSC::PropertyAttribute::DontDelete);
-
+    bunBindgenObjectSurface_ProcessTTYBinding_install(vm, obj->classInfo(), *obj);
     return obj;
 }
 }

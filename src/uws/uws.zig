@@ -8,10 +8,10 @@ pub const Timer = @import("../uws_sys/Timer.zig").Timer;
 pub const SocketGroup = @import("../uws_sys/SocketGroup.zig").SocketGroup;
 pub const SocketKind = @import("../uws_sys/SocketKind.zig").SocketKind;
 pub const vtable = @import("../uws_sys/vtable.zig");
-pub const dispatch = @import("../runtime/socket/uws_dispatch.zig");
 /// The opaque `us_socket_context_t` is gone; this namespace now only carries
 /// the SSL-options extern struct (`SSLConfig.asUSockets()` return type).
 pub const SocketContext = @import("../uws_sys/SocketContext.zig");
+pub const TLSContextFailure = SocketContext.TLSContextFailure;
 /// Bare BoringSSL `SSL_CTX`. `SSL_CTX_up_ref`/`SSL_CTX_free` is the refcount;
 /// policy (verify mode, reneg limits) is encoded on the SSL_CTX itself via
 /// `us_ssl_ctx_from_options`, so there's no wrapper struct. `?*SslCtx` is what
@@ -19,26 +19,29 @@ pub const SocketContext = @import("../uws_sys/SocketContext.zig");
 pub const SslCtx = bun.BoringSSL.c.SSL_CTX;
 pub const ConnectingSocket = @import("../uws_sys/ConnectingSocket.zig").ConnectingSocket;
 pub const InternalLoopData = @import("../uws_sys/InternalLoopData.zig").InternalLoopData;
-pub const WindowsNamedPipe = @import("../runtime/socket/WindowsNamedPipe.zig");
 pub const PosixLoop = @import("../uws_sys/Loop.zig").PosixLoop;
 pub const WindowsLoop = @import("../uws_sys/Loop.zig").WindowsLoop;
 pub const Request = @import("../uws_sys/Request.zig").Request;
 pub const AnyRequest = @import("../uws_sys/Request.zig").AnyRequest;
 pub const AnyResponse = @import("../uws_sys/Response.zig").AnyResponse;
 pub const PreparedWrite = @import("../uws_sys/Response.zig").PreparedWrite;
+pub const UpgradePreparation = @import("../uws_sys/Response.zig").UpgradePreparation;
+pub const ResponseWriteError = @import("../uws_sys/Response.zig").WriteError;
 pub const NewApp = @import("../uws_sys/App.zig").NewApp;
+pub const ListenFailure = @import("../uws_sys/App.zig").ListenFailure;
+pub const PollFailure = @import("../uws_sys/PollFailure.zig").PollFailure;
+pub const ConnectFailure = @import("../uws_sys/ConnectFailure.zig").ConnectFailure;
 pub const uws_res = @import("../uws_sys/Response.zig").uws_res;
 pub const RawWebSocket = @import("../uws_sys/WebSocket.zig").RawWebSocket;
 pub const AnyWebSocket = @import("../uws_sys/WebSocket.zig").AnyWebSocket;
 pub const WebSocketBehavior = @import("../uws_sys/WebSocket.zig").WebSocketBehavior;
 /// uWS C++ `WebSocketContext<SSL,true,UserData>*`. Only ever produced by the
-/// upgrade-handler thunk and round-tripped to `uws_res_upgrade`; Zig never
+/// upgrade-handler thunk and passed to `uws_res_prepare_upgrade`; Zig never
 /// dereferences it. Typed as a named opaque so it can't be confused with the
 /// dozen other handles that flow through the upgrade path.
 pub const WebSocketUpgradeContext = opaque {};
 pub const AnySocket = @import("../uws_sys/socket.zig").AnySocket;
 pub const NewSocketHandler = @import("../uws_sys/socket.zig").NewSocketHandler;
-pub const UpgradedDuplex = @import("../runtime/socket/UpgradedDuplex.zig");
 pub const ListenSocket = @import("../uws_sys/ListenSocket.zig").ListenSocket;
 pub const State = @import("../uws_sys/Response.zig").State;
 pub const Loop = @import("../uws_sys/Loop.zig").Loop;
@@ -47,8 +50,7 @@ pub const BodyReaderMixin = @import("../uws_sys/BodyReaderMixin.zig").BodyReader
 pub const H3 = @import("../uws_sys/h3.zig");
 pub const quic = @import("../uws_sys/quic.zig");
 
-/// Recovers the concrete uWS response type from `*anyopaque` across the
-/// Zig→C++ boundary. Mirrors `UWSResponseKind` in headers-handwritten.h.
+/// Identifies the concrete uWS response type erased behind `*anyopaque`.
 pub const ResponseKind = enum(i32) {
     tcp = 0,
     ssl = 1,
@@ -94,13 +96,20 @@ pub const LIBUS_SOCKET_IPV6_ONLY: i32 = 8;
 pub const LIBUS_LISTEN_REUSE_ADDR: i32 = 16;
 pub const LIBUS_LISTEN_DISALLOW_REUSE_PORT_FAILURE: i32 = 32;
 
-// TODO: refactor to error union
+pub const ServerNameError = enum(c_int) {
+    ok = 0,
+    duplicate = 1,
+    out_of_memory = 2,
+    invalid = 3,
+};
+
 pub const create_bun_socket_error_t = enum(c_int) {
     none = 0,
     load_ca_file,
     invalid_ca_file,
     invalid_ca,
     invalid_ciphers,
+    out_of_memory,
 
     pub fn message(this: create_bun_socket_error_t) ?[]const u8 {
         return switch (this) {
@@ -109,18 +118,15 @@ pub const create_bun_socket_error_t = enum(c_int) {
             .invalid_ca_file => "Invalid CA file",
             .invalid_ca => "Invalid CA",
             .invalid_ciphers => "Invalid ciphers",
+            .out_of_memory => "Out of memory",
         };
     }
-
-    pub const toJS = @import("../runtime/socket/uws_jsc.zig").createBunSocketErrorToJS;
 };
 
 pub const us_bun_verify_error_t = extern struct {
     error_no: i32 = 0,
     code: [*c]const u8 = null,
     reason: [*c]const u8 = null,
-
-    pub const toJS = @import("../runtime/socket/uws_jsc.zig").verifyErrorToJS;
 };
 
 pub const SocketAddress = struct {
@@ -150,11 +156,8 @@ pub const SendStatus = enum(c_uint) {
     backpressure = 0,
     success = 1,
     dropped = 2,
+    out_of_memory = 3,
 };
-
-export fn BUN__warn__extra_ca_load_failed(filename: [*c]const u8, error_msg: [*c]const u8) void {
-    bun.Output.warn("ignoring extra certs from {s}, load failed: {s}", .{ filename, error_msg });
-}
 
 pub const LIBUS_SOCKET_DESCRIPTOR = switch (bun.Environment.isWindows) {
     true => *anyopaque,

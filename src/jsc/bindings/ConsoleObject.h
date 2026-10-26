@@ -24,11 +24,7 @@ class ConsoleObject final : public JSC::ConsoleClient {
 
 public:
     ~ConsoleObject() final {}
-    ConsoleObject(void* client)
-        : JSC::ConsoleClient()
-    {
-        m_client = client;
-    }
+    ConsoleObject() = default;
 
     static bool logToSystemConsole();
     static void setLogToSystemConsole(bool);
@@ -39,8 +35,6 @@ public:
     {
         m_scriptProfilerAgent = agent;
     }
-
-    void* m_client;
 
 private:
     void messageWithTypeAndLevel(MessageType, MessageLevel, JSC::JSGlobalObject*,

@@ -84,10 +84,9 @@ declare module "bun" {
     type DistributedOmit<T, K extends PropertyKey> = T extends T ? Omit<T, K> : never;
 
     type KeysInBoth<A, B> = Extract<keyof A, keyof B>;
-    type MergeInner<A, B> = Omit<A, KeysInBoth<A, B>> &
-      Omit<B, KeysInBoth<A, B>> & {
-        [Key in KeysInBoth<A, B>]: A[Key] | B[Key];
-      };
+    type MergeInner<A, B> = Omit<B, keyof A> & {
+      [Key in keyof A]: A[Key] | (Key extends keyof B ? B[Key] : never);
+    };
     type Merge<A, B> = MergeInner<A, B> & MergeInner<B, A>;
     type DistributedMerge<T, Else = T> = T extends T ? Merge<T, Exclude<Else, T>> : never;
 
@@ -313,8 +312,11 @@ declare module "bun" {
   }
 
   interface DirectUnderlyingSource<R = any> {
-    cancel?: UnderlyingSourceCancelCallback;
+    /** The stream awaits the returned promise; its settlement value is ignored. */
+    cancel?: (reason?: any) => unknown;
     pull: (controller: ReadableStreamDirectController) => void | PromiseLike<void>;
+    /** Called once when the stream finishes, before it detaches its controller. */
+    close?: (reason?: any) => unknown;
     type: "direct";
   }
 
@@ -791,6 +793,16 @@ declare module "bun" {
      * @returns A JavaScript object
      */
     export function parse(input: string): object;
+
+    /**
+     * Convert a JavaScript object into a TOML document.
+     *
+     * @param input The object to stringify.
+     * @param replacer Currently not supported.
+     * @param space Accepted for JSON API compatibility and ignored.
+     * @returns A TOML string, or `undefined` if the input is `undefined`, a function, or a symbol.
+     */
+    export function stringify(input: unknown, replacer?: undefined | null, space?: string | number): string | undefined;
   }
 
   /**
@@ -1779,12 +1791,12 @@ declare module "bun" {
   function concatArrayBuffers(buffers: Array<ArrayBufferView | ArrayBufferLike>, maxLength?: number): ArrayBuffer;
   function concatArrayBuffers(
     buffers: Array<ArrayBufferView | ArrayBufferLike>,
-    maxLength: number,
+    maxLength: number | undefined,
     asUint8Array: false,
   ): ArrayBuffer;
   function concatArrayBuffers(
     buffers: Array<ArrayBufferView | ArrayBufferLike>,
-    maxLength: number,
+    maxLength: number | undefined,
     asUint8Array: true,
   ): Uint8Array<ArrayBuffer>;
 
@@ -2307,7 +2319,7 @@ declare module "bun" {
    *
    * This is not a cryptographic hash function.
    * @param data The data to hash.
-   * @param seed The seed to use.
+   * @param seed A safe integer Number or a BigInt, reduced to the algorithm's seed width.
    */
   const hash: ((
     data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer,
@@ -2316,18 +2328,18 @@ declare module "bun" {
     Hash;
 
   interface Hash {
-    wyhash: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: bigint) => bigint;
+    wyhash: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => bigint;
     adler32: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer) => number;
-    crc32: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number) => number;
+    crc32: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => number;
     cityHash32: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer) => number;
-    cityHash64: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: bigint) => bigint;
-    xxHash32: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number) => number;
-    xxHash64: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: bigint) => bigint;
-    xxHash3: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: bigint) => bigint;
-    murmur32v3: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number) => number;
-    murmur32v2: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number) => number;
-    murmur64v2: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: bigint) => bigint;
-    rapidhash: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: bigint) => bigint;
+    cityHash64: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => bigint;
+    xxHash32: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => number;
+    xxHash64: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => bigint;
+    xxHash3: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => bigint;
+    murmur32v3: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => number;
+    murmur32v2: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => number;
+    murmur64v2: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => bigint;
+    rapidhash: (data: string | ArrayBufferView | ArrayBuffer | SharedArrayBuffer, seed?: number | bigint) => bigint;
   }
 
   type JavaScriptLoader = "jsx" | "js" | "ts" | "tsx";
@@ -6404,6 +6416,18 @@ declare module "bun" {
      * @default false
      */
     allowHalfOpen?: boolean;
+    /**
+     * Allow multiple sockets to bind to the same port (`SO_REUSEPORT`).
+     *
+     * @default false
+     */
+    reusePort?: boolean;
+    /**
+     * Restrict an IPv6 listener to IPv6 traffic only (`IPV6_V6ONLY`).
+     *
+     * @default false
+     */
+    ipv6Only?: boolean;
   }
 
   interface TCPSocketConnectOptions<Data = undefined> extends SocketOptions<Data> {
@@ -6448,6 +6472,18 @@ declare module "bun" {
      * TLS Configuration with which to create the socket
      */
     tls?: TLSOptions | boolean;
+    /**
+     * Whether to allow half-open connections; see {@link TCPSocketListenOptions.allowHalfOpen}.
+     *
+     * @default false
+     */
+    allowHalfOpen?: boolean;
+    /**
+     * Whether to use exclusive mode; see {@link TCPSocketListenOptions.exclusive}.
+     *
+     * @default false
+     */
+    exclusive?: boolean;
   }
 
   interface FdSocketOptions<Data = undefined> extends SocketOptions<Data> {
@@ -6474,12 +6510,34 @@ declare module "bun" {
    */
   function connect<Data = undefined>(options: UnixSocketOptions<Data>): Promise<Socket<Data>>;
 
+  interface FdSocketListenOptions<Data = undefined> extends SocketOptions<Data> {
+    /**
+     * A file descriptor of an already-bound socket to listen on
+     */
+    fd: number;
+    /**
+     * The TLS configuration object with which to create the server
+     */
+    tls?: TLSOptions | boolean;
+    hostname?: string;
+    allowHalfOpen?: boolean;
+    exclusive?: boolean;
+    reusePort?: boolean;
+    ipv6Only?: boolean;
+  }
+
   /**
    * Create a TCP server that listens on a port
    *
    * @category HTTP & Networking
    */
   function listen<Data = undefined>(options: TCPSocketListenOptions<Data>): TCPSocketListener<Data>;
+  /**
+   * Create a TCP server that listens on an already-bound socket file descriptor
+   *
+   * @category HTTP & Networking
+   */
+  function listen<Data = undefined>(options: FdSocketListenOptions<Data>): TCPSocketListener<Data>;
   /**
    * Create a TCP server that listens on a unix socket
    *
@@ -6534,6 +6592,8 @@ declare module "bun" {
       port?: number;
       binaryType?: DataBinaryType;
       socket?: SocketHandler<DataBinaryType>;
+      /** Socket binding flags (e.g. `UV_UDP_REUSEADDR`-style reuse flags). */
+      flags?: number;
     }
 
     export interface ConnectSocketOptions<DataBinaryType extends BinaryType> {
@@ -6859,7 +6919,7 @@ declare module "bun" {
        * });
        * ```
        */
-      onDisconnect?(): void | Promise<void>;
+      onDisconnect?(firstTime: boolean): void | Promise<void>;
 
       /**
        * When specified, Bun will open an IPC channel to the subprocess. The passed callback is called for
@@ -7292,14 +7352,14 @@ declare module "bun" {
   > {
     stdout: SpawnOptions.ReadableToSyncIO<Out>;
     stderr: SpawnOptions.ReadableToSyncIO<Err>;
-    exitCode: number;
+    exitCode: number | null;
     success: boolean;
     /**
      * Get the resource usage information of the process (max RSS, CPU time, etc)
      */
     resourceUsage: ResourceUsage;
 
-    signalCode?: string;
+    signalCode?: NodeJS.Signals | number;
     exitedDueToTimeout?: boolean;
     exitedDueToMaxBuffer?: boolean;
     pid: number;

@@ -1,5 +1,5 @@
 pub const ScanCommand = struct {
-    pub fn exec(ctx: Command.Context) !void {
+    pub fn exec(ctx: Context) !void {
         const cli = try PackageManager.CommandLineArguments.parse(ctx.allocator, .scan);
 
         const manager, const cwd = PackageManager.init(ctx, cli, .scan) catch |err| {
@@ -15,7 +15,7 @@ pub const ScanCommand = struct {
         try execWithManager(ctx, manager, cwd);
     }
 
-    pub fn execWithManager(ctx: Command.Context, manager: *PackageManager, original_cwd: []const u8) !void {
+    pub fn execWithManager(ctx: Context, manager: *PackageManager, original_cwd: []const u8) !void {
         if (manager.options.security_scanner == null) {
             Output.prettyErrorln("<r><red>error<r>: no security scanner configured", .{});
             Output.pretty(
@@ -33,7 +33,7 @@ pub const ScanCommand = struct {
         Output.prettyError(comptime Output.prettyFmt("<r><b>bun pm scan <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n", true), .{});
         Output.flush();
 
-        const load_lockfile = manager.lockfile.loadFromCwd(manager, ctx.allocator, ctx.log, true);
+        const load_lockfile = manager.lockfile.loadFromCwd(manager, bun.install.Dependency.ParseContext.fromPackageManager(manager), ctx.allocator, ctx.log, true);
         if (load_lockfile == .not_found) {
             Output.errGeneric("Lockfile not found. Run 'bun install' first to generate a lockfile.", .{});
             Global.exit(1);
@@ -68,7 +68,7 @@ pub const ScanCommand = struct {
 };
 
 const security_scanner = @import("../install/PackageManager/security_scanner.zig");
-const Command = @import("./cli.zig").Command;
+const Context = @import("../options_types/Context.zig").Context;
 const PackageManager = @import("../install/install.zig").PackageManager;
 
 const bun = @import("bun");

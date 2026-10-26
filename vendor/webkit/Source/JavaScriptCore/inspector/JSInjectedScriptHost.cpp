@@ -137,6 +137,7 @@ JSValue JSInjectedScriptHost::evaluateWithScopeExtension(JSGlobalObject* globalO
     });
 
     JSValue result = JSC::evaluateWithScopeExtension(globalObject, makeSource(program, callFrame->callerSourceOrigin(vm), SourceTaintedOrigin::Untainted), scopeExtension, exception);
+    RETURN_IF_EXCEPTION(scope, { });
 
     if (exception)
         throwException(globalObject, scope, exception);

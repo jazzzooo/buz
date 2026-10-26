@@ -2,315 +2,331 @@
 ///
 const JSSourceMap = @This();
 
-sourcemap: *bun.SourceMap.ParsedSourceMap,
-sources: []bun.String = &.{},
-names: []bun.String = &.{},
+bindgen_state: bindgen.ClassState = .{},
+sourcemap: ParsedSourceMapRef,
+strings: bindgen.OwnedNative(SourceMapStrings, .any),
+payload: ?bindgen.Root = null,
+line_lengths: ?bindgen.Root = null,
 
 /// TODO: when we implement --enable-source-map CLI flag, set this to true.
 pub var @"--enable-source-maps" = false;
 
 fn findSourceMap(
-    globalObject: *JSGlobalObject,
-    callFrame: *CallFrame,
-) bun.JSError!JSValue {
+    context: bindgen.CallContext(FindSourceMapSchema),
+    args: bindgen.Args(FindSourceMapSchema),
+) bindgen.CallError(FindSourceMapSchema)!bindgen.Return(FindSourceMapSchema) {
+
     // Node.js doesn't enable source maps by default.
     // In Bun, we do use them for almost all files since we transpile almost all files
     // If we enable this by default, we don't have a `payload` object since we don't internally create one.
     // This causes Next.js to emit errors like the below on start:
     //       .next/server/chunks/ssr/[root-of-the-server]__012ba519._.js: Invalid source map. Only conformant source maps can be used to filter stack frames. Cause: TypeError: payload is not an Object. (evaluating '"sections" in payload')
     if (!@"--enable-source-maps") {
-        return .js_undefined;
+        return null;
     }
 
-    const source_url_value = callFrame.argument(0);
-    if (!source_url_value.isString()) {
-        return .js_undefined;
-    }
-
-    var source_url_string = try bun.String.fromJS(source_url_value, globalObject);
-    defer source_url_string.deref();
-
-    var source_url_slice = source_url_string.toUTF8(bun.default_allocator);
-    defer source_url_slice.deinit();
-
-    var source_url = source_url_slice.slice();
+    const source_url_input = args.source_url orelse return null;
+    const converted_source_url = try source_url_input.convert(context);
+    const source_url_view = switch (converted_source_url.value) {
+        .string => |value| value,
+        .ignored => return null,
+    };
+    const allocator = bun.default_allocator;
+    var source_url = try source_url_view.toOwnedSlice(allocator);
+    defer allocator.free(source_url);
     if (bun.strings.hasPrefix(source_url, "node:") or bun.strings.hasPrefix(source_url, "bun:") or bun.strings.hasPrefix(source_url, "data:")) {
-        return .js_undefined;
+        return null;
     }
 
     if (bun.strings.indexOf(source_url, "://")) |source_url_index| {
         if (bun.strings.eqlComptime(source_url[0..source_url_index], "file")) {
-            const path = bun.jsc.URL.pathFromFileURL(source_url_string);
-
-            if (path.tag == .Dead) {
-                return globalObject.ERR(.INVALID_URL, "Invalid URL: {s}", .{source_url}).throw();
-            }
-
-            // Replace the file:// URL with the absolute path.
-            source_url_string.deref();
-            source_url_slice.deinit();
-            source_url_string = path;
-            source_url_slice = path.toUTF8(bun.default_allocator);
-            source_url = source_url_slice.slice();
+            var input = try bindgen.ThreadSafeDOMString.fromUTF8(source_url);
+            defer input.deinit();
+            var path = (try bindgen.Engine(URLPathFromFileURLSchema).call(.{ .input = input.operand() })) orelse {
+                const message = try std.fmt.allocPrint(bun.default_allocator, "Invalid URL: {s}", .{source_url});
+                defer bun.default_allocator.free(message);
+                return context.fail(.invalid_url, try bindgen.DOMString.fromUTF8(message));
+            };
+            defer path.deinit();
+            const path_bytes = try path.toOwnedSlice(allocator);
+            allocator.free(source_url);
+            source_url = path_bytes;
         }
     }
 
-    const vm = globalObject.bunVM();
-    const source_map = vm.source_mappings.get(source_url) orelse return .js_undefined;
-    const fake_sources_array = bun.default_allocator.alloc(bun.String, 1) catch return globalObject.throwOutOfMemory();
-    fake_sources_array[0] = source_url_string.dupeRef();
+    const this = owned: {
+        var source_map = try bun.api.SourceMapEngine.lookup(source_url) orelse return null;
+        errdefer source_map.deinit();
+        const known_sources = source_map.get().external_source_names;
+        const sources = try allocator.alloc([]const u16, @max(known_sources.len, 1));
+        var initialized: usize = 0;
+        errdefer {
+            for (sources[0..initialized]) |source| allocator.free(source);
+            allocator.free(sources);
+        }
+        for (sources, 0..) |*source, index| {
+            source.* = try bun.strings.toUTF16AllocForReal(allocator, if (known_sources.len == 0) source_url else known_sources[index], false, false);
+            initialized += 1;
+        }
+        const strings = try allocator.create(SourceMapStrings);
+        errdefer allocator.destroy(strings);
+        strings.* = .{ .sources = sources };
+        const instance = try allocator.create(JSSourceMap);
+        instance.* = .{
+            .sourcemap = .adopt(source_map.take()),
+            .strings = .init(strings),
+        };
+        break :owned instance;
+    };
 
-    const this = bun.new(JSSourceMap, .{
-        .sourcemap = source_map,
-        .sources = fake_sources_array,
-        .names = &.{},
-    });
-
-    return this.toJS(globalObject);
+    return try SourceMapClass.adoptResult(this, context);
 }
 
-pub fn constructor(
-    globalObject: *JSGlobalObject,
-    callFrame: *CallFrame,
-    thisValue: JSValue,
-) bun.JSError!*JSSourceMap {
-    const payload_arg = callFrame.argument(0);
-    const options_arg = callFrame.argument(1);
-
-    try globalObject.validateObject("payload", payload_arg, .{});
-
-    var line_lengths: JSValue = .zero;
-    if (options_arg.isObject()) {
-        // Node doesn't check it further than this.
-        if (try options_arg.getIfPropertyExists(globalObject, "lineLengths")) |lengths| {
-            if (lengths.jsType().isArray()) {
-                line_lengths = lengths;
-            }
-        }
+fn copyStrings(
+    input: anytype,
+) bun.OOM![][]const u16 {
+    var strings = std.array_list.Managed([]const u16).init(bun.default_allocator);
+    errdefer {
+        for (strings.items) |str| bun.default_allocator.free(str);
+        strings.deinit();
     }
 
-    // Parse the payload to create a proper sourcemap
+    if (input) |field| switch (field) {
+        .values => |values| {
+            try strings.ensureTotalCapacityPrecise(values.len());
+            var iterator = values.iterator();
+            while (iterator.next()) |item| {
+                const units = try bun.default_allocator.alloc(u16, item.value.length());
+                for (units, 0..) |*unit, index| unit.* = item.value.codeUnitAt(index).?;
+                strings.appendAssumeCapacity(units);
+            }
+        },
+        .ignored => {},
+    };
+
+    return strings.toOwnedSlice();
+}
+
+pub fn construct(
+    context: bindgen.CallContext(SourceMapConstructorSchema),
+    args: bindgen.Args(SourceMapConstructorSchema),
+) bindgen.CallError(SourceMapConstructorSchema)!*JSSourceMap {
+    const payload_root = try args.payload.source_identity.toRoot();
+    errdefer {
+        var root = payload_root;
+        root.deinit();
+    }
+    var line_lengths: ?bindgen.Root = null;
+    errdefer if (line_lengths) |*root| root.deinit();
+    if (args.options) |input| switch (input) {
+        .options => |options| {
+            if (options.lineLengths) |field| {
+                if (field) |value| line_lengths = try value.toRoot();
+            }
+        },
+        .ignored => {},
+    };
+
     var arena = bun.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    // Extract mappings string from payload
-    const mappings_value = try payload_arg.getStringish(globalObject, "mappings") orelse {
-        return globalObject.throwInvalidArguments("payload 'mappings' must be a string", .{});
-    };
-    defer mappings_value.deref();
-
-    const mappings_str = mappings_value.toUTF8(arena_allocator);
+    const mappings_str = try args.payload.mappings.toUTF8(arena_allocator);
     defer mappings_str.deinit();
 
-    var names = std.array_list.Managed(bun.String).init(bun.default_allocator);
-    errdefer {
-        for (names.items) |*str| {
-            str.deref();
-        }
-        names.deinit();
-    }
-
-    var sources = std.array_list.Managed(bun.String).init(bun.default_allocator);
-    errdefer {
-        for (sources.items) |*str| {
-            str.deref();
-        }
-        sources.deinit();
-    }
-
-    if (try payload_arg.getArray(globalObject, "sources")) |sources_value| {
-        var iter = try sources_value.arrayIterator(globalObject);
-        while (try iter.next()) |source| {
-            const source_str = try source.toBunString(globalObject);
-            try sources.append(source_str);
-        }
-    }
-
-    if (try payload_arg.getArray(globalObject, "names")) |names_value| {
-        var iter = try names_value.arrayIterator(globalObject);
-        while (try iter.next()) |name| {
-            const name_str = try name.toBunString(globalObject);
-            try names.append(name_str);
-        }
-    }
+    const owned_sources = try copyStrings(args.payload.sources);
+    errdefer deinitStrings(owned_sources);
+    const owned_names = try copyStrings(args.payload.names);
+    errdefer deinitStrings(owned_names);
 
     // Parse the VLQ mappings
     const parse_result = bun.SourceMap.Mapping.parse(
         bun.default_allocator,
         mappings_str.slice(),
         null, // estimated_mapping_count
-        @intCast(sources.items.len), // sources_count
-        std.math.maxInt(i32),
+        std.math.cast(i32, owned_sources.len) orelse return error.OutOfMemory,
+        null,
         .{ .allow_names = true, .sort = true },
     );
 
-    const mapping_list = switch (parse_result) {
+    var mapping_list = switch (parse_result) {
         .success => |parsed| parsed,
         .fail => |fail| {
-            if (fail.loc.toNullable()) |loc| {
-                return globalObject.throwValue((try globalObject.createSyntaxErrorInstance("{s} at {d}", .{ fail.msg, loc.start })).toJS());
-            }
-            return globalObject.throwValue((try globalObject.createSyntaxErrorInstance("{s}", .{fail.msg})).toJS());
+            if (fail.err == error.OutOfMemory) return error.OutOfMemory;
+            const message = if (fail.loc.toNullable()) |loc|
+                try std.fmt.allocPrint(bun.default_allocator, "{s} at {d}", .{ fail.msg, loc.start })
+            else
+                try bun.default_allocator.dupe(u8, fail.msg);
+            defer bun.default_allocator.free(message);
+            return context.fail(.invalid_mappings, try bindgen.DOMString.fromUTF8(message));
         },
     };
+    errdefer mapping_list.mappings.deinit(bun.default_allocator);
 
-    const source_map = bun.new(JSSourceMap, .{
-        .sourcemap = bun.new(bun.SourceMap.ParsedSourceMap, mapping_list),
-        .sources = sources.items,
-        .names = names.items,
-    });
-
-    if (payload_arg != .zero) {
-        js.payloadSetCached(thisValue, globalObject, payload_arg);
-    }
-    if (line_lengths != .zero) {
-        js.lineLengthsSetCached(thisValue, globalObject, line_lengths);
-    }
+    const parsed = try bun.default_allocator.create(bun.SourceMap.ParsedSourceMap);
+    errdefer bun.default_allocator.destroy(parsed);
+    parsed.* = mapping_list;
+    const strings = try bun.default_allocator.create(SourceMapStrings);
+    errdefer bun.default_allocator.destroy(strings);
+    strings.* = .{ .sources = owned_sources, .names = owned_names };
+    const source_map = try bun.default_allocator.create(JSSourceMap);
+    source_map.* = .{
+        .sourcemap = .adopt(parsed),
+        .strings = .init(strings),
+        .payload = payload_root,
+        .line_lengths = line_lengths,
+    };
 
     return source_map;
 }
 
 pub fn memoryCost(this: *const JSSourceMap) usize {
-    return @sizeOf(JSSourceMap) + this.sources.len * @sizeOf(bun.String) + this.sourcemap.memoryCost();
+    const strings = this.strings.get();
+    var bytes = @sizeOf(JSSourceMap) + @sizeOf(SourceMapStrings) +
+        (strings.sources.len + strings.names.len) * @sizeOf([]const u16) + this.sourcemap.get().memoryCost();
+    for (strings.sources) |source| bytes += source.len * @sizeOf(u16);
+    for (strings.names) |name| bytes += name.len * @sizeOf(u16);
+    return bytes;
 }
 
-pub fn estimatedSize(this: *JSSourceMap) usize {
+pub fn memoryUsage(this: *const JSSourceMap, _: bun.bindgen.MemoryUsageContext(.any)) usize {
     return this.memoryCost();
 }
 
-// The cached value should handle this.
-pub fn getPayload(_: *JSSourceMap, _: *JSGlobalObject) JSValue {
-    return .js_undefined;
+pub fn getPayload(
+    this: *JSSourceMap,
+    context: bindgen.CallContext(SourceMapPayloadSchema),
+    _: bindgen.Args(SourceMapPayloadSchema),
+) bun.JSError!bindgen.Return(SourceMapPayloadSchema) {
+    return takeRoot(context, &this.payload);
 }
 
-// The cached value should handle this.
-pub fn getLineLengths(_: *JSSourceMap, _: *JSGlobalObject) JSValue {
-    return .js_undefined;
+pub fn getLineLengths(
+    this: *JSSourceMap,
+    context: bindgen.CallContext(SourceMapLineLengthsSchema),
+    _: bindgen.Args(SourceMapLineLengthsSchema),
+) bun.JSError!bindgen.Return(SourceMapLineLengthsSchema) {
+    return takeRoot(context, &this.line_lengths);
 }
 
-fn getLineColumn(globalObject: *JSGlobalObject, callFrame: *CallFrame) bun.JSError![2]i32 {
-    const line_number_value = callFrame.argument(0);
-    const column_number_value = callFrame.argument(1);
-
-    return .{
-        // Node.js does no validations.
-        try line_number_value.coerce(i32, globalObject),
-        try column_number_value.coerce(i32, globalObject),
-    };
+fn takeRoot(context: anytype, value: *?bindgen.Root) bindgen.AnyResult {
+    var root = value.* orelse return .initUndefined(context);
+    value.* = null;
+    return .fromOwnedRoot(&root, context);
 }
 
-fn mappingNameToJS(this: *const JSSourceMap, globalObject: *JSGlobalObject, mapping: *const bun.SourceMap.Mapping) bun.JSError!JSValue {
+fn mappingName(this: *const JSSourceMap, mapping: *const bun.SourceMap.Mapping) bun.OOM!?bindgen.DOMString {
     const name_index = mapping.nameIndex();
     if (name_index >= 0) {
-        if (this.sourcemap.mappings.getName(name_index)) |name| {
-            return bun.String.createUTF8ForJS(globalObject, name);
+        if (this.sourcemap.get().mappings.getName(name_index)) |name| {
+            return try bindgen.DOMString.fromUTF8(name);
         } else {
             const index: usize = @intCast(name_index);
-            if (index < this.names.len) {
-                return this.names[index].toJS(globalObject);
+            if (index < this.strings.get().names.len) {
+                return try bindgen.DOMString.fromUTF16(this.strings.get().names[index]);
             }
         }
     }
-    return .js_undefined;
+    return null;
 }
 
-fn sourceNameToJS(this: *const JSSourceMap, globalObject: *JSGlobalObject, mapping: *const bun.SourceMap.Mapping) bun.JSError!JSValue {
+fn sourceName(this: *const JSSourceMap, mapping: *const bun.SourceMap.Mapping) bun.OOM!?bindgen.DOMString {
     const source_index = mapping.sourceIndex();
-    if (source_index >= 0 and source_index < @as(i32, @intCast(this.sources.len))) {
-        return this.sources[@intCast(source_index)].toJS(globalObject);
+    if (source_index >= 0 and @as(usize, @intCast(source_index)) < this.strings.get().sources.len) {
+        return try bindgen.DOMString.fromUTF16(this.strings.get().sources[@intCast(source_index)]);
     }
 
-    return .js_undefined;
+    return null;
 }
 
-extern fn Bun__createNodeModuleSourceMapOriginObject(
-    globalObject: *JSGlobalObject,
-    name: JSValue,
-    line: JSValue,
-    column: JSValue,
-    source: JSValue,
-) JSValue;
-
-extern fn Bun__createNodeModuleSourceMapEntryObject(
-    globalObject: *JSGlobalObject,
-    generatedLine: JSValue,
-    generatedColumn: JSValue,
-    originalLine: JSValue,
-    originalColumn: JSValue,
-    source: JSValue,
-    name: JSValue,
-) JSValue;
-
-pub fn findOrigin(this: *JSSourceMap, globalObject: *JSGlobalObject, callFrame: *CallFrame) bun.JSError!JSValue {
-    const line_number, const column_number = try getLineColumn(globalObject, callFrame);
-
-    const mapping = this.sourcemap.findMapping(.fromZeroBased(line_number), .fromZeroBased(column_number)) orelse return jsc.JSObject.createEmpty(globalObject, 0).toJS();
-    const name = try mappingNameToJS(this, globalObject, &mapping);
-    const source = try sourceNameToJS(this, globalObject, &mapping);
-    return Bun__createNodeModuleSourceMapOriginObject(
-        globalObject,
-        name,
-        jsc.JSValue.jsNumber(mapping.originalLine()),
-        jsc.JSValue.jsNumber(mapping.originalColumn()),
-        source,
-    );
+pub fn findOrigin(
+    this: *JSSourceMap,
+    _: bindgen.CallContext(SourceMapFindOriginSchema),
+    args: bindgen.Args(SourceMapFindOriginSchema),
+) bun.JSError!bindgen.Return(SourceMapFindOriginSchema) {
+    const mapping = this.sourcemap.get().findMapping(.fromZeroBased(args.lineNumber), .fromZeroBased(args.columnNumber)) orelse
+        return .{ .empty = .{} };
+    var name = try mappingName(this, &mapping);
+    errdefer if (name) |*value| value.deinit();
+    var source = try sourceName(this, &mapping);
+    errdefer if (source) |*value| value.deinit();
+    return .{ .origin = .{
+        .name = name,
+        .line = mapping.originalLine(),
+        .column = mapping.originalColumn(),
+        .file_name = source,
+    } };
 }
 
-pub fn findEntry(this: *JSSourceMap, globalObject: *JSGlobalObject, callFrame: *CallFrame) bun.JSError!JSValue {
-    const line_number, const column_number = try getLineColumn(globalObject, callFrame);
-
-    const mapping = this.sourcemap.findMapping(.fromZeroBased(line_number), .fromZeroBased(column_number)) orelse return jsc.JSObject.createEmpty(globalObject, 0).toJS();
-
-    const name = try mappingNameToJS(this, globalObject, &mapping);
-    const source = try sourceNameToJS(this, globalObject, &mapping);
-    return Bun__createNodeModuleSourceMapEntryObject(
-        globalObject,
-        jsc.JSValue.jsNumber(mapping.generatedLine()),
-        jsc.JSValue.jsNumber(mapping.generatedColumn()),
-        jsc.JSValue.jsNumber(mapping.originalLine()),
-        jsc.JSValue.jsNumber(mapping.originalColumn()),
-        source,
-        name,
-    );
+pub fn findEntry(
+    this: *JSSourceMap,
+    _: bindgen.CallContext(SourceMapFindEntrySchema),
+    args: bindgen.Args(SourceMapFindEntrySchema),
+) bun.JSError!bindgen.Return(SourceMapFindEntrySchema) {
+    const mapping = this.sourcemap.get().findMapping(.fromZeroBased(args.lineNumber), .fromZeroBased(args.columnNumber)) orelse
+        return .{ .empty = .{} };
+    var name = try mappingName(this, &mapping);
+    errdefer if (name) |*value| value.deinit();
+    var source = try sourceName(this, &mapping);
+    errdefer if (source) |*value| value.deinit();
+    return .{ .entry = .{
+        .generated_line = mapping.generatedLine(),
+        .generated_column = mapping.generatedColumn(),
+        .original_line = mapping.originalLine(),
+        .original_column = mapping.originalColumn(),
+        .original_source = source,
+        .name = name,
+    } };
 }
 
-pub fn deinit(this: *JSSourceMap) void {
-    for (this.sources) |*str| {
-        str.deref();
-    }
-    bun.default_allocator.free(this.sources);
+fn deinitStrings(strings: []const []const u16) void {
+    for (strings) |value| bun.default_allocator.free(value);
+    bun.default_allocator.free(strings);
+}
 
-    for (this.names) |*name| {
-        name.deref();
-    }
-
-    bun.default_allocator.free(this.names);
-
-    this.sourcemap.deref();
+fn deinit(this: *JSSourceMap) void {
+    if (this.payload) |*payload| payload.deinit();
+    if (this.line_lengths) |*line_lengths| line_lengths.deinit();
+    this.strings.deinit();
+    this.sourcemap.deinit();
     bun.destroy(this);
 }
 
-pub fn finalize(this: *JSSourceMap) void {
+pub fn destroy(this: *JSSourceMap) void {
     this.deinit();
 }
-
-comptime {
-    const jsFunctionFindSourceMap = jsc.toJSHostFn(findSourceMap);
-    @export(&jsFunctionFindSourceMap, .{ .name = "Bun__JSSourceMap__find" });
-}
-
-pub const js = jsc.Codegen.JSSourceMap;
-pub const fromJS = js.fromJS;
-pub const fromJSDirect = js.fromJSDirect;
-pub const toJS = js.toJS;
-
-const string = []const u8;
 
 const bun = @import("bun");
 const std = @import("std");
 
-const jsc = bun.jsc;
-const CallFrame = jsc.CallFrame;
-const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+const bindgen = bun.bindgen;
+const ParsedSourceMapRef = bindgen.RefNative(bun.SourceMap.ParsedSourceMap, .any);
+
+const SourceMapStrings = struct {
+    sources: []const []const u16 = &.{},
+    names: []const []const u16 = &.{},
+
+    pub fn destroy(strings: *SourceMapStrings) void {
+        deinitStrings(strings.sources);
+        deinitStrings(strings.names);
+        bun.destroy(strings);
+    }
+};
+
+const SourceMapBindingModule = bindgen.Module("SourceMap");
+const URLPathFromFileURLSchema = bindgen.Module("urls").engineShim("urlPathFromFileURL");
+const SourceMapSchema = SourceMapBindingModule.class("SourceMap");
+const SourceMapConstructorSchema = SourceMapSchema.constructor();
+const SourceMapFindEntrySchema = SourceMapSchema.member("findEntry");
+const SourceMapFindOriginSchema = SourceMapSchema.member("findOrigin");
+const SourceMapLineLengthsSchema = SourceMapSchema.member("lineLengths");
+const SourceMapPayloadSchema = SourceMapSchema.member("payload");
+const SourceMapClass = bindgen.Class(SourceMapSchema, JSSourceMap);
+const NodeModuleModuleBindings = bun.bindgen.Module("NodeModuleModule");
+const FindSourceMapSchema = NodeModuleModuleBindings.function("findSourceMap");
+const FindSourceMapBinding = bun.bindgen.Fn(FindSourceMapSchema, findSourceMap);
+
+comptime {
+    _ = FindSourceMapBinding;
+    _ = SourceMapClass;
+}

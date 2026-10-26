@@ -1,14 +1,6 @@
 // clang-format off
 #pragma once
 
-#ifdef ASSERT_ENABLED
-#if ASSERT_ENABLED
-#define ORIGINAL_ASSERT_ENABLED 1
-#undef ASSERT_ENABLED
-#define ASSERT_ENABLED 0
-#endif
-#endif
-
 #include "root.h"
 
 #include <JavaScriptCore/VM.h>
@@ -28,7 +20,6 @@ using namespace JSC;
     macro(ReadableByteStreamController) \
     macro(ReadableStream) \
     macro(ReadableStreamBYOBReader) \
-    macro(ReadableStreamBYOBRequest) \
     macro(ReadableStreamDefaultController) \
     macro(ReadableStreamDefaultReader) \
     macro(SQL) \
@@ -39,57 +30,43 @@ using namespace JSC;
     macro(WritableStreamDefaultController) \
     macro(WritableStreamDefaultWriter) \
     macro(_events) \
-    macro(abortAlgorithm) \
-    macro(abortSteps) \
     macro(addAbortAlgorithmToSignal) \
-    macro(assignToStream) \
-    macro(associatedReadableByteStreamController) \
     macro(atimeMs) \
     macro(attributes) \
-    macro(autoAllocateChunkSize) \
     macro(backpressure) \
     macro(backpressureChangePromise) \
     macro(basename) \
+    macro(bindingFactory) \
     macro(birthtimeMs) \
     macro(body) \
-    macro(bunNativePtr) \
-    macro(bunNativeType) \
-    macro(byobRequest) \
-    macro(cancel) \
-    macro(cancelAlgorithm) \
+    macro(bunTestScopeConcurrent) \
+    macro(bunTestScopeFailing) \
+    macro(bunTestScopeOnly) \
+    macro(bunTestScopeSerial) \
+    macro(bunTestScopeSkip) \
+    macro(bunTestScopeState) \
+    macro(bunTestScopeTodo) \
     macro(checks) \
     macro(checkBufferRead) \
     macro(cloneArrayBuffer) \
     macro(close) \
-    macro(closeAlgorithm) \
     macro(closeRequest) \
-    macro(closeRequested) \
-    macro(closedPromise) \
-    macro(closedPromiseCapability) \
     macro(cmd) \
     macro(code) \
-    macro(controlledReadableStream) \
     macro(controller) \
     macro(createCommonJSModule) \
-    macro(createEmptyReadableStream) \
-    macro(createFIFO) \
     macro(createInternalModuleById) \
-    macro(createNativeReadableStream) \
     macro(createUninitializedArrayBuffer) \
-    macro(createUsedReadableStream) \
     macro(createWritableStreamFromInternal) \
     macro(ctimeMs) \
-    macro(data) \
     macro(dataView) \
     macro(decode) \
+    macro(deferredNativeSource) \
     macro(dest) \
     macro(dirname) \
-    macro(disturbed) \
     macro(domain) \
     macro(encoding) \
-    macro(end) \
     macro(errno) \
-    macro(errorSteps) \
     macro(evaluateCommonJSModule) \
     macro(evictIsolationSourceProviderCache) \
     macro(expires) \
@@ -99,7 +76,6 @@ using namespace JSC;
     macro(fatal) \
     macro(fd) \
     macro(filename) \
-    macro(flushAlgorithm) \
     macro(format) \
     macro(fulfillModuleSync) \
     macro(esmNamespaceForCjs) \
@@ -109,7 +85,6 @@ using namespace JSC;
     macro(getInternalWritableStream) \
     macro(handleEvent) \
     macro(headers) \
-    macro(highWaterMark) \
     macro(host) \
     macro(hostDefinedImportType) \
     macro(hostname) \
@@ -118,14 +93,12 @@ using namespace JSC;
     macro(importer) \
     macro(inFlightCloseRequest) \
     macro(inFlightWriteRequest) \
-    macro(inherits) \
     macro(internalModuleRegistry) \
     macro(internalRequire) \
     macro(internalWritable) \
     macro(isAbortSignal) \
     macro(isAbsolute) \
     macro(join) \
-    macro(lazy) \
     macro(lazyStreamPrototypeMap) \
     macro(lineText) \
     macro(loadEsmIntoCjs) \
@@ -136,7 +109,6 @@ using namespace JSC;
     macro(makeGetterTypeError) \
     macro(maxAge) \
     macro(method) \
-    macro(metafileJson) \
     macro(mockedFunction) \
     macro(mode) \
     macro(mtimeMs) \
@@ -146,7 +118,6 @@ using namespace JSC;
     macro(originalColumn) \
     macro(originalLine) \
     macro(overridableRequire) \
-    macro(ownerReadableStream) \
     macro(parse) \
     macro(partitioned) \
     macro(path) \
@@ -154,23 +125,13 @@ using namespace JSC;
     macro(peekPromiseSettledValue) \
     macro(peekPromiseStatus) \
     macro(pendingAbortRequest) \
-    macro(pendingPullIntos) \
     macro(pokePromiseAsHandled) \
     macro(port) \
     macro(post) \
+    macro(prepareStackTrace) \
     macro(processBindingConstants) \
-    macro(pull) \
-    macro(pullAgain) \
-    macro(pullAlgorithm) \
-    macro(pulling) \
-    macro(queue) \
     macro(read) \
-    macro(readIntoRequests) \
-    macro(readRequests) \
     macro(readable) \
-    macro(readableStreamController) \
-    macro(reader) \
-    macro(readyPromise) \
     macro(redirect) \
     macro(relative) \
     macro(removeAbortAlgorithmFromSignal) \
@@ -178,7 +139,6 @@ using namespace JSC;
     macro(requireESM) \
     macro(requireMap) \
     macro(requireNativeModule) \
-    macro(resolveSync) \
     macro(resume) \
     macro(sameSite) \
     macro(secure) \
@@ -187,37 +147,23 @@ using namespace JSC;
     macro(sink) \
     macro(size) \
     macro(specifier) \
-    macro(start) \
-    macro(startAlgorithm) \
     macro(startDirectStream) \
-    macro(started) \
-    macro(state) \
     macro(status) \
     macro(statusText) \
-    macro(storedError) \
-    macro(strategy) \
-    macro(strategyHWM) \
-    macro(strategySizeAlgorithm) \
-    macro(stream) \
     macro(structuredCloneForStream) \
     macro(syscall) \
     macro(textDecoder) \
-    macro(textDecoderStreamDecoder) \
     macro(textDecoderStreamTransform) \
     macro(textEncoderStreamEncoder) \
     macro(textEncoderStreamTransform) \
     macro(toClass) \
     macro(toNamespacedPath) \
-    macro(transformAlgorithm) \
     macro(underlyingByteSource) \
     macro(underlyingSink) \
-    macro(underlyingSource) \
     macro(url) \
-    macro(view) \
     macro(warning) \
     macro(writable) \
-    macro(write) \
-    macro(writeAlgorithm) \
+    macro(writableStreamBrand) \
     macro(writeRequests) \
     macro(writer) \
     macro(written) \
@@ -258,9 +204,3 @@ private:
 };
 
 } // namespace WebCore
-
-#ifdef ORIGINAL_ASSERT_ENABLED
-#undef ASSERT_ENABLED
-#define ASSERT_ENABLED 1
-#undef ORIGINAL_ASSERT_ENABLED
-#endif

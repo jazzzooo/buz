@@ -70,21 +70,7 @@ pub fn callback(task: *BackgroundTaskGroup.Task) void {
 
     var this: *Task = @fieldParentPtr("background_task", task);
     const manager = this.package_manager;
-    defer {
-        if (this.status == .success) {
-            if (this.apply_patch_task) |pt| {
-                defer pt.deinit();
-                bun.handleOom(pt.apply());
-                if (pt.callback.apply.logger.errors > 0) {
-                    defer pt.callback.apply.logger.deinit();
-                    // this.log.addErrorFmt(null, logger.Loc.Empty, bun.default_allocator, "failed to apply patch: {}", .{e}) catch unreachable;
-                    pt.callback.apply.logger.print(Output.errorWriter()) catch {};
-                }
-            }
-        }
-        manager.resolve_tasks.push(this);
-        manager.wake();
-    }
+    defer this.complete();
 
     switch (this.tag) {
         .package_manifest => {
@@ -95,14 +81,16 @@ pub fn callback(task: *BackgroundTaskGroup.Task) void {
             defer body.deinit();
 
             const metadata = manifest.network.response.metadata orelse {
-                // Handle the case when metadata is null (e.g., network failure before receiving headers)
                 const err = manifest.network.response.fail orelse error.HTTPError;
-                this.log.addErrorFmt(null, logger.Loc.Empty, allocator, "{s} downloading package manifest {s}", .{
-                    @errorName(err), manifest.name.slice(),
-                }) catch unreachable;
                 this.err = err;
                 this.status = Status.fail;
                 this.data = .{ .package_manifest = .{} };
+                if (err == error.OutOfMemory) return;
+                this.log.addErrorFmt(null, logger.Loc.Empty, allocator, "{s} downloading package manifest {s}", .{
+                    @errorName(err), manifest.name.slice(),
+                }) catch |log_error| {
+                    this.err = log_error;
+                };
                 return;
             };
 
@@ -132,11 +120,14 @@ pub fn callback(task: *BackgroundTaskGroup.Task) void {
                     return;
                 },
                 .not_found => {
-                    this.log.addErrorFmt(null, logger.Loc.Empty, allocator, "404 - GET {s}", .{
-                        this.request.package_manifest.name.slice(),
-                    }) catch unreachable;
+                    this.err = error.PackageManifestHTTP404;
                     this.status = Status.fail;
                     this.data = .{ .package_manifest = .{} };
+                    this.log.addErrorFmt(null, logger.Loc.Empty, allocator, "404 - GET {s}", .{
+                        this.request.package_manifest.name.slice(),
+                    }) catch |log_error| {
+                        this.err = log_error;
+                    };
                     return;
                 },
             }
@@ -174,7 +165,7 @@ pub fn callback(task: *BackgroundTaskGroup.Task) void {
             const dir = brk: {
                 if (Repository.tryHTTPS(url)) |https| break :brk Repository.download(
                     manager,
-                    this.request.git_clone.env,
+                    this.request.git_clone.env.?.map,
                     &this.log,
                     manager.getCacheDirectory(),
                     this.id,
@@ -182,9 +173,7 @@ pub fn callback(task: *BackgroundTaskGroup.Task) void {
                     https,
                     attempt,
                 ) catch |err| {
-                    // Exit early if git checked and could
-                    // not find the repository, skip ssh
-                    if (err == error.RepositoryNotFound) {
+                    if (err == error.RepositoryNotFound or err == error.OutOfMemory) {
                         this.err = err;
                         this.status = Status.fail;
                         this.data = .{ .git_clone = bun.invalid_fd };
@@ -201,7 +190,7 @@ pub fn callback(task: *BackgroundTaskGroup.Task) void {
                 break :brk null;
             } orelse if (Repository.trySSH(url)) |ssh| Repository.download(
                 manager,
-                this.request.git_clone.env,
+                this.request.git_clone.env.?.map,
                 &this.log,
                 manager.getCacheDirectory(),
                 this.id,
@@ -214,6 +203,9 @@ pub fn callback(task: *BackgroundTaskGroup.Task) void {
                 this.data = .{ .git_clone = bun.invalid_fd };
                 return;
             } else {
+                this.err = this.err orelse error.InvalidRepositoryURL;
+                this.status = .fail;
+                this.data = .{ .git_clone = bun.invalid_fd };
                 return;
             };
 
@@ -225,7 +217,7 @@ pub fn callback(task: *BackgroundTaskGroup.Task) void {
             const git_checkout = &this.request.git_checkout;
             const data = Repository.checkout(
                 manager,
-                this.request.git_checkout.env,
+                this.request.git_checkout.env.?.map,
                 &this.log,
                 manager.getCacheDirectory(),
                 git_checkout.repo_dir.stdDir(),
@@ -286,8 +278,45 @@ pub fn onScheduleError(task: *BackgroundTaskGroup.Task, err: std.Io.ConcurrentEr
         .git_clone => .{ .git_clone = bun.invalid_fd },
         .git_checkout => .{ .git_checkout = .{} },
     };
-    this.package_manager.resolve_tasks.push(this);
-    this.package_manager.wake();
+    this.complete();
+}
+
+fn complete(this: *Task) void {
+    if (this.apply_patch_task) |patch| {
+        this.apply_patch_task = null;
+        defer patch.deinit();
+        if (this.status == .success) {
+            bun.assert(this.tag == .git_checkout);
+            var failure: ?anyerror = null;
+            patch.apply() catch |err| {
+                failure = err;
+            };
+            if (failure == null and patch.callback.apply.logger.errors > 0) failure = error.InstallFailed;
+            patch.callback.apply.logger.appendTo(&this.log) catch |err| {
+                failure = err;
+            };
+            if (failure) |err| {
+                if (this.data.git_checkout.json) |json| this.package_manager.allocator.free(json.buf);
+                this.data = .{ .git_checkout = .{} };
+                this.status = .fail;
+                this.err = err;
+            }
+        }
+    }
+    const manager = this.package_manager;
+    switch (this.tag) {
+        .git_clone => {
+            this.request.git_clone.env.?.destroy();
+            this.request.git_clone.env = null;
+        },
+        .git_checkout => {
+            this.request.git_checkout.env.?.destroy();
+            this.request.git_checkout.env = null;
+        },
+        else => {},
+    }
+    manager.resolve_tasks.push(this);
+    manager.wake();
 }
 
 fn readAndExtract(
@@ -340,9 +369,10 @@ pub const Request = union {
     git_clone: struct {
         name: strings.StringOrTinyString,
         url: strings.StringOrTinyString,
-        env: DotEnv.Map,
+        env: ?*Repository.EnvironmentSnapshot,
         dep_id: DependencyID,
         res: Resolution,
+        patch_name_and_version_hash: ?u64,
     },
     git_checkout: struct {
         repo_dir: bun.FD,
@@ -351,7 +381,7 @@ pub const Request = union {
         url: strings.StringOrTinyString,
         resolved: strings.StringOrTinyString,
         resolution: Resolution,
-        env: DotEnv.Map,
+        env: ?*Repository.EnvironmentSnapshot,
     },
     local_tarball: struct {
         tarball: ExtractTarball,
@@ -386,7 +416,6 @@ const Resolution = install.Resolution;
 const Task = install.Task;
 
 const bun = @import("bun");
-const DotEnv = bun.DotEnv;
 const Output = bun.Output;
 const Semver = bun.Semver;
 const BackgroundTaskGroup = bun.BackgroundTaskGroup;

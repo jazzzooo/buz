@@ -11,7 +11,7 @@ pub fn VisitExpr(
         const only_scan_imports_and_do_not_visit = P.only_scan_imports_and_do_not_visit;
 
         // public for JSNode.JSXWriter usage
-        pub inline fn visitExpr(noalias p: *P, expr: Expr) Expr {
+        pub inline fn visitExpr(noalias p: *P, expr: Expr) anyerror!Expr {
             if (only_scan_imports_and_do_not_visit) {
                 @compileError("only_scan_imports_and_do_not_visit must not run this.");
             }
@@ -20,9 +20,9 @@ pub fn VisitExpr(
             return p.visitExprInOut(expr, .{});
         }
 
-        pub fn visitExprInOut(p: *P, expr: Expr, in: ExprIn) Expr {
+        pub fn visitExprInOut(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
             if (in.assign_target != .none and !p.isValidAssignmentTarget(expr)) {
-                p.log.addError(p.source, expr.loc, "Invalid assignment target") catch unreachable;
+                try p.log.addError(p.source, expr.loc, "Invalid assignment target");
             }
 
             return switch (@as(Expr.Tag, expr.data)) {
@@ -46,7 +46,7 @@ pub fn VisitExpr(
                 // idc about legacy octal loc
                 return expr;
             }
-            pub fn e_this(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_this(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 if (p.valueForThis(expr.loc)) |exp| {
                     return exp;
                 }
@@ -58,7 +58,7 @@ pub fn VisitExpr(
                 // }
                 return expr;
             }
-            pub fn e_import_meta(p: *P, expr: Expr, in: ExprIn) Expr {
+            pub fn e_import_meta(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
                 // TODO: delete import.meta might not work
                 const is_delete_target = p.delete_target == .e_import_meta;
 
@@ -74,21 +74,21 @@ pub fn VisitExpr(
 
                 return expr;
             }
-            pub fn e_spread(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_spread(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const exp = expr.data.e_spread;
-                exp.value = p.visitExpr(exp.value);
+                exp.value = try p.visitExpr(exp.value);
                 return expr;
             }
-            pub fn e_identifier(p: *P, expr: Expr, in: ExprIn) Expr {
+            pub fn e_identifier(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
                 var e_ = expr.data.e_identifier;
                 const is_delete_target = @as(Expr.Tag, p.delete_target) == .e_identifier and e_.ref.eql(p.delete_target.e_identifier.ref);
 
                 const name = p.loadNameFromRef(e_.ref);
                 if (p.isStrictMode() and js_lexer.StrictModeReservedWords.has(name)) {
-                    p.markStrictModeFeature(.reserved_word, js_lexer.rangeOfIdentifier(p.source, expr.loc), name) catch unreachable;
+                    try p.markStrictModeFeature(.reserved_word, js_lexer.rangeOfIdentifier(p.source, expr.loc), name);
                 }
 
-                const result = p.findSymbol(expr.loc, name) catch unreachable;
+                const result = try p.findSymbol(expr.loc, name);
 
                 e_.must_keep_due_to_with_stmt = result.is_inside_with_scope;
                 e_.ref = result.ref;
@@ -97,31 +97,33 @@ pub fn VisitExpr(
                 if (in.assign_target != .none) {
                     if (p.symbols.items[result.ref.innerIndex()].kind == .constant) { // TODO: silence this for runtime transpiler
                         const r = js_lexer.rangeOfIdentifier(p.source, expr.loc);
-                        var notes = p.allocator.alloc(logger.Data, 1) catch unreachable;
+                        const note_text = try std.fmt.allocPrint(p.allocator, "The symbol \"{s}\" was declared a constant here:", .{name});
+                        defer p.allocator.free(note_text);
+                        var notes: [1]logger.Data = undefined;
                         notes[0] = logger.Data{
-                            .text = std.fmt.allocPrint(p.allocator, "The symbol \"{s}\" was declared a constant here:", .{name}) catch unreachable,
+                            .text = note_text,
                             .location = logger.Location.initOrNull(p.source, js_lexer.rangeOfIdentifier(p.source, result.declare_loc.?)),
                         };
 
                         const is_error = p.const_values.contains(result.ref) or p.options.bundle;
                         switch (is_error) {
-                            true => p.log.addRangeErrorFmtWithNotes(
+                            true => try p.log.addRangeErrorFmtWithNotes(
                                 p.source,
                                 r,
                                 p.allocator,
-                                notes,
+                                &notes,
                                 "Cannot assign to \"{s}\" because it is a constant",
                                 .{name},
-                            ) catch unreachable,
+                            ),
 
-                            false => p.log.addRangeErrorFmtWithNotes(
+                            false => try p.log.addRangeErrorFmtWithNotes(
                                 p.source,
                                 r,
                                 p.allocator,
-                                notes,
+                                &notes,
                                 "This assignment will throw because \"{s}\" is a constant",
                                 .{name},
-                            ) catch unreachable,
+                            ),
                         }
                     } else if (p.exports_ref.eql(e_.ref)) {
                         // Assigning to `exports` in a CommonJS module must be tracked to undo the
@@ -185,16 +187,16 @@ pub fn VisitExpr(
                     .was_originally_identifier = true,
                 });
             }
-            pub fn e_jsx_element(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_jsx_element(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_jsx_element;
                 switch (comptime jsx_transform_type) {
                     .react => {
                         const tag: Expr = tagger: {
                             if (e_.tag) |_tag| {
-                                break :tagger p.visitExpr(_tag);
+                                break :tagger try p.visitExpr(_tag);
                             } else {
                                 if (p.options.jsx.runtime == .classic) {
-                                    break :tagger p.jsxStringsToMemberExpression(expr.loc, p.options.jsx.fragment) catch unreachable;
+                                    break :tagger try p.jsxStringsToMemberExpression(expr.loc, p.options.jsx.fragment);
                                 }
 
                                 break :tagger p.jsxImport(.Fragment, expr.loc);
@@ -204,15 +206,15 @@ pub fn VisitExpr(
                         const all_props: []G.Property = e_.properties.slice();
                         for (all_props) |*property| {
                             if (property.kind != .spread) {
-                                property.key = p.visitExpr(property.key.?);
+                                property.key = try p.visitExpr(property.key.?);
                             }
 
                             if (property.value != null) {
-                                property.value = p.visitExpr(property.value.?);
+                                property.value = try p.visitExpr(property.value.?);
                             }
 
                             if (property.initializer != null) {
-                                property.initializer = p.visitExpr(property.initializer.?);
+                                property.initializer = try p.visitExpr(property.initializer.?);
                             }
                         }
 
@@ -224,15 +226,15 @@ pub fn VisitExpr(
                         // That would reduce the amount of allocations a little
                         if (runtime == .classic or is_key_after_spread) {
                             // Arguments to createElement()
-                            var args = bun.BabyList(Expr).initCapacity(
+                            var args = try bun.BabyList(Expr).initCapacity(
                                 p.allocator,
                                 2 + children_count,
-                            ) catch |err| bun.handleOom(err);
+                            );
                             args.appendAssumeCapacity(tag);
 
                             const num_props = e_.properties.len;
                             if (num_props > 0) {
-                                const props = p.allocator.alloc(G.Property, num_props) catch unreachable;
+                                const props = try p.allocator.alloc(G.Property, num_props);
                                 bun.copy(G.Property, props, e_.properties.slice());
                                 args.appendAssumeCapacity(p.newExpr(
                                     E.Object{ .properties = G.Property.List.fromOwnedSlice(props) },
@@ -244,13 +246,13 @@ pub fn VisitExpr(
 
                             const children_elements = e_.children.slice()[0..children_count];
                             for (children_elements) |child| {
-                                const arg = p.visitExpr(child);
+                                const arg = try p.visitExpr(child);
                                 if (arg.data != .e_missing) {
                                     args.appendAssumeCapacity(arg);
                                 }
                             }
 
-                            const target = p.jsxStringsToMemberExpression(expr.loc, p.options.jsx.factory) catch unreachable;
+                            const target = try p.jsxStringsToMemberExpression(expr.loc, p.options.jsx.factory);
 
                             // Call createElement()
                             return p.newExpr(E.Call{
@@ -280,7 +282,7 @@ pub fn VisitExpr(
                                 var last_child: u32 = 0;
                                 const children = e_.children.slice()[0..children_count];
                                 for (children) |child| {
-                                    e_.children.ptr[last_child] = p.visitExpr(child);
+                                    e_.children.ptr[last_child] = try p.visitExpr(child);
                                     // if tree-shaking removes the element, we must also remove it here.
                                     last_child += @as(u32, @intCast(@intFromBool(e_.children.ptr[last_child].data != .e_missing)));
                                 }
@@ -305,24 +307,24 @@ pub fn VisitExpr(
                             const is_static_jsx = e_.children.len > 1 or (e_.children.len == 1 and e_.children.ptr[0].data == .e_spread);
 
                             if (is_static_jsx) {
-                                props.append(allocator, G.Property{
+                                try props.append(allocator, G.Property{
                                     .key = children_key,
                                     .value = p.newExpr(E.Array{
                                         .items = e_.children,
                                         .is_single_line = e_.children.len < 2,
                                     }, e_.close_tag_loc),
-                                }) catch |err| bun.handleOom(err);
+                                });
                             } else if (e_.children.len == 1) {
-                                props.append(allocator, G.Property{
+                                try props.append(allocator, G.Property{
                                     .key = children_key,
                                     .value = e_.children.ptr[0],
-                                }) catch |err| bun.handleOom(err);
+                                });
                             }
 
                             // Either:
                             // jsxDEV(type, arguments, key, isStaticChildren, source, self)
                             // jsx(type, arguments, key)
-                            const args = p.allocator.alloc(Expr, if (p.options.jsx.development) @as(usize, 6) else @as(usize, 2) + @as(usize, @intFromBool(maybe_key_value != null))) catch unreachable;
+                            const args = try p.allocator.alloc(Expr, if (p.options.jsx.development) @as(usize, 6) else @as(usize, 2) + @as(usize, @intFromBool(maybe_key_value != null)));
                             args[0] = tag;
 
                             args[1] = p.newExpr(E.Object{
@@ -374,10 +376,10 @@ pub fn VisitExpr(
                 }
                 return expr;
             }
-            pub fn e_template(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_template(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_template;
                 if (e_.tag) |tag| {
-                    e_.tag = p.visitExpr(tag);
+                    e_.tag = try p.visitExpr(tag);
 
                     if (comptime allow_macros) {
                         const ref = switch (e_.tag.?.data) {
@@ -395,28 +397,19 @@ pub fn VisitExpr(
 
                                 // this ordering incase someone wants to use a macro in a node_module conditionally
                                 if (p.options.features.no_macros) {
-                                    p.log.addError(p.source, tag.loc, "Macros are disabled") catch unreachable;
+                                    try p.log.addError(p.source, tag.loc, "Macros are disabled");
                                     return p.newExpr(E.Undefined{}, e_.tag.?.loc);
                                 }
 
                                 if (p.source.path.isNodeModule()) {
-                                    p.log.addError(p.source, expr.loc, "For security reasons, macros cannot be run from node_modules.") catch unreachable;
+                                    try p.log.addError(p.source, expr.loc, "For security reasons, macros cannot be run from node_modules.");
                                     return p.newExpr(E.Undefined{}, expr.loc);
                                 }
 
-                                p.macro_call_count += 1;
                                 const name = macro_ref_data.name orelse e_.tag.?.data.e_dot.name;
                                 const record = &p.import_records.items[macro_ref_data.import_record_id];
                                 // We must visit it to convert inline_identifiers and record usage
-                                const macro_result = (p.options.macro_context.call(
-                                    record.path.text,
-                                    std.fs.path.dirname(p.source.path.text) orelse ".",
-                                    p.log,
-                                    p.source,
-                                    record.range,
-                                    expr,
-                                    name,
-                                ) catch return expr);
+                                const macro_result = (try expandMacro(p, record.*, expr, name)) orelse return expr;
 
                                 if (macro_result.data != .e_template) {
                                     return p.visitExpr(macro_result);
@@ -427,7 +420,7 @@ pub fn VisitExpr(
                 }
 
                 for (e_.parts) |*part| {
-                    part.value = p.visitExpr(part.value);
+                    part.value = try p.visitExpr(part.value);
                 }
 
                 // When mangling, inline string values into the template literal. Note that
@@ -438,7 +431,7 @@ pub fn VisitExpr(
                 }
                 return expr;
             }
-            pub fn e_binary(p: *P, expr: Expr, in: ExprIn) Expr {
+            pub fn e_binary(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_binary;
 
                 // The handling of binary expressions is convoluted because we're using
@@ -455,6 +448,7 @@ pub fn VisitExpr(
                 // should almost always be very small, and almost all visits should reuse
                 // existing memory without allocating anything.
                 const stack_bottom = p.binary_expression_stack.items.len;
+                defer p.binary_expression_stack.shrinkRetainingCapacity(stack_bottom);
 
                 var current = Expr{ .data = .{ .e_binary = e_ }, .loc = v.loc };
 
@@ -462,7 +456,7 @@ pub fn VisitExpr(
                 // Continue iterating until we encounter something that's not a binary node.
 
                 while (true) {
-                    if (v.checkAndPrepare(p)) |out| {
+                    if (try v.checkAndPrepare(p)) |out| {
                         current = out;
                         break;
                     }
@@ -482,15 +476,15 @@ pub fn VisitExpr(
                     // in that case that we don't want to miss (before the top-level "switch"
                     // statement).
                     if (left_binary == null or left_in.assign_target != .none) {
-                        v.e.left = p.visitExprInOut(left, left_in);
-                        current = v.visitRightAndFinish(p);
+                        v.e.left = try p.visitExprInOut(left, left_in);
+                        current = try v.visitRightAndFinish(p);
                         break;
                     }
 
                     // Note that we only append to the stack (and therefore allocate memory
                     // on the heap) when there are nested binary expressions. A single binary
                     // expression doesn't add anything to the stack.
-                    bun.handleOom(p.binary_expression_stack.append(v));
+                    try p.binary_expression_stack.append(v);
                     v = BinaryExpressionVisitor{
                         .e = left_binary.?,
                         .loc = left.loc,
@@ -504,12 +498,12 @@ pub fn VisitExpr(
                 while (p.binary_expression_stack.items.len > stack_bottom) {
                     v = p.binary_expression_stack.pop().?;
                     v.e.left = current;
-                    current = v.visitRightAndFinish(p);
+                    current = try v.visitRightAndFinish(p);
                 }
 
                 return current;
             }
-            pub fn e_index(p: *P, expr: Expr, in: ExprIn) Expr {
+            pub fn e_index(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_index;
                 const is_call_target = p.call_target == .e_index and expr.data.e_index == p.call_target.e_index;
                 const is_delete_target = p.delete_target == .e_index and expr.data.e_index == p.delete_target.e_index;
@@ -541,14 +535,14 @@ pub fn VisitExpr(
                     return p.visitExprInOut(dot, in);
                 }
 
-                const target_visited = p.visitExprInOut(e_.target, .{});
+                const target_visited = try p.visitExprInOut(e_.target, .{});
                 e_.target = target_visited;
 
                 switch (e_.index.data) {
                     .e_private_identifier => |_private| {
                         var private = _private;
                         const name = p.loadNameFromRef(private.ref);
-                        const result = p.findSymbol(e_.index.loc, name) catch unreachable;
+                        const result = try p.findSymbol(e_.index.loc, name);
                         private.ref = result.ref;
 
                         // Unlike regular identifiers, there are no unbound private identifiers
@@ -556,24 +550,24 @@ pub fn VisitExpr(
                         var r: logger.Range = undefined;
                         if (!Symbol.isKindPrivate(kind)) {
                             r = logger.Range{ .loc = e_.index.loc, .len = @as(i32, @intCast(name.len)) };
-                            p.log.addRangeErrorFmt(p.source, r, p.allocator, "Private name \"{s}\" must be declared in an enclosing class", .{name}) catch unreachable;
+                            try p.log.addRangeErrorFmt(p.source, r, p.allocator, "Private name \"{s}\" must be declared in an enclosing class", .{name});
                         } else {
                             if (in.assign_target != .none and (kind == .private_method or kind == .private_static_method)) {
                                 r = logger.Range{ .loc = e_.index.loc, .len = @as(i32, @intCast(name.len)) };
-                                p.log.addRangeWarningFmt(p.source, r, p.allocator, "Writing to read-only method \"{s}\" will throw", .{name}) catch unreachable;
+                                try p.log.addRangeWarningFmt(p.source, r, p.allocator, "Writing to read-only method \"{s}\" will throw", .{name});
                             } else if (in.assign_target != .none and (kind == .private_get or kind == .private_static_get)) {
                                 r = logger.Range{ .loc = e_.index.loc, .len = @as(i32, @intCast(name.len)) };
-                                p.log.addRangeWarningFmt(p.source, r, p.allocator, "Writing to getter-only property \"{s}\" will throw", .{name}) catch unreachable;
+                                try p.log.addRangeWarningFmt(p.source, r, p.allocator, "Writing to getter-only property \"{s}\" will throw", .{name});
                             } else if (in.assign_target != .replace and (kind == .private_set or kind == .private_static_set)) {
                                 r = logger.Range{ .loc = e_.index.loc, .len = @as(i32, @intCast(name.len)) };
-                                p.log.addRangeWarningFmt(p.source, r, p.allocator, "Reading from setter-only property \"{s}\" will throw", .{name}) catch unreachable;
+                                try p.log.addRangeWarningFmt(p.source, r, p.allocator, "Reading from setter-only property \"{s}\" will throw", .{name});
                             }
                         }
 
                         e_.index = .{ .data = .{ .e_private_identifier = private }, .loc = e_.index.loc };
                     },
                     else => {
-                        const index = p.visitExpr(e_.index);
+                        const index = try p.visitExpr(e_.index);
                         e_.index = index;
 
                         const unwrapped = e_.index.unwrapInlined();
@@ -611,7 +605,7 @@ pub fn VisitExpr(
                             // like .e_import_identifier tracking works
                             // Reminder that this can only be done after
                             // `target` is visited.
-                            if (p.maybeRewritePropertyAccess(
+                            if (try p.maybeRewritePropertyAccess(
                                 expr.loc,
                                 e_.target,
                                 unwrapped.data.e_string.data,
@@ -681,23 +675,23 @@ pub fn VisitExpr(
                     p.symbols.items[e_.target.data.e_identifier.ref.innerIndex()].kind == .import)
                 {
                     const r = js_lexer.rangeOfIdentifier(p.source, e_.target.loc);
-                    p.log.addRangeErrorFmt(
+                    try p.log.addRangeErrorFmt(
                         p.source,
                         r,
                         p.allocator,
                         "Cannot assign to property on import \"{s}\"",
                         .{p.symbols.items[e_.target.data.e_identifier.ref.innerIndex()].original_name},
-                    ) catch unreachable;
+                    );
                 }
 
                 return p.newExpr(e_, expr.loc);
             }
-            pub fn e_unary(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_unary(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_unary;
                 switch (e_.op) {
                     .un_typeof => {
                         const id_before = e_.value.data == .e_identifier;
-                        e_.value = p.visitExprInOut(e_.value, ExprIn{ .assign_target = e_.op.unaryAssignTarget() });
+                        e_.value = try p.visitExprInOut(e_.value, ExprIn{ .assign_target = e_.op.unaryAssignTarget() });
                         const id_after = e_.value.data == .e_identifier;
 
                         // The expression "typeof (0, x)" must not become "typeof x" if "x"
@@ -720,10 +714,10 @@ pub fn VisitExpr(
                         }
                     },
                     .un_delete => {
-                        e_.value = p.visitExprInOut(e_.value, .{});
+                        e_.value = try p.visitExprInOut(e_.value, .{});
                     },
                     else => {
-                        e_.value = p.visitExprInOut(e_.value, ExprIn{ .assign_target = e_.op.unaryAssignTarget() });
+                        e_.value = try p.visitExprInOut(e_.value, ExprIn{ .assign_target = e_.op.unaryAssignTarget() });
 
                         // Post-process the unary expression
                         switch (e_.op) {
@@ -748,7 +742,7 @@ pub fn VisitExpr(
                             },
                             .un_cpl => {
                                 if (p.should_fold_typescript_constant_expressions) {
-                                    if (SideEffects.toNumber(e_.value.data)) |value| {
+                                    if (SideEffects.toNumber(e_.value.data, p.options.javascript_semantics)) |value| {
                                         return p.newExpr(E.Number{
                                             .value = @floatFromInt(~floatToInt32(value)),
                                         }, expr.loc);
@@ -761,12 +755,12 @@ pub fn VisitExpr(
                                 }
                             },
                             .un_pos => {
-                                if (SideEffects.toNumber(e_.value.data)) |num| {
+                                if (SideEffects.toNumber(e_.value.data, p.options.javascript_semantics)) |num| {
                                     return p.newExpr(E.Number{ .value = num }, expr.loc);
                                 }
                             },
                             .un_neg => {
-                                if (SideEffects.toNumber(e_.value.data)) |num| {
+                                if (SideEffects.toNumber(e_.value.data, p.options.javascript_semantics)) |num| {
                                     return p.newExpr(E.Number{ .value = -num }, expr.loc);
                                 }
                             },
@@ -819,7 +813,7 @@ pub fn VisitExpr(
                 }
                 return expr;
             }
-            pub fn e_dot(p: *P, expr: Expr, in: ExprIn) Expr {
+            pub fn e_dot(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_dot;
                 const is_delete_target = @as(Expr.Tag, p.delete_target) == .e_dot and expr.data.e_dot == p.delete_target.e_dot;
                 const is_call_target = @as(Expr.Tag, p.call_target) == .e_dot and expr.data.e_dot == p.call_target.e_dot;
@@ -867,7 +861,7 @@ pub fn VisitExpr(
                     }
                 }
 
-                e_.target = p.visitExprInOut(e_.target, .{
+                e_.target = try p.visitExprInOut(e_.target, .{
                     .property_access_for_method_call_maybe_should_replace_with_undefined = in.property_access_for_method_call_maybe_should_replace_with_undefined,
                 });
 
@@ -886,7 +880,7 @@ pub fn VisitExpr(
                 }
 
                 if (e_.optional_chain == null) {
-                    if (p.maybeRewritePropertyAccess(
+                    if (try p.maybeRewritePropertyAccess(
                         expr.loc,
                         e_.target,
                         e_.name,
@@ -913,13 +907,13 @@ pub fn VisitExpr(
                 }
                 return expr;
             }
-            pub fn e_if(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_if(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_if;
                 const is_call_target = @as(Expr.Data, p.call_target) == .e_if and expr.data.e_if == p.call_target.e_if;
 
                 const prev_in_branch = p.in_branch_condition;
                 p.in_branch_condition = true;
-                e_.test_ = p.visitExpr(e_.test_);
+                e_.test_ = try p.visitExpr(e_.test_);
                 p.in_branch_condition = prev_in_branch;
 
                 e_.test_ = SideEffects.simplifyBoolean(p, e_.test_);
@@ -927,16 +921,16 @@ pub fn VisitExpr(
                 const side_effects = SideEffects.toBoolean(p, e_.test_.data);
 
                 if (!side_effects.ok) {
-                    e_.yes = p.visitExpr(e_.yes);
-                    e_.no = p.visitExpr(e_.no);
+                    e_.yes = try p.visitExpr(e_.yes);
+                    e_.no = try p.visitExpr(e_.no);
                 } else {
                     // Mark the control flow as dead if the branch is never taken
                     if (side_effects.value) {
                         // "true ? live : dead"
-                        e_.yes = p.visitExpr(e_.yes);
+                        e_.yes = try p.visitExpr(e_.yes);
                         const old = p.is_control_flow_dead;
                         p.is_control_flow_dead = true;
-                        e_.no = p.visitExpr(e_.no);
+                        e_.no = try p.visitExpr(e_.no);
                         p.is_control_flow_dead = old;
 
                         if (side_effects.side_effects == .could_have_side_effects) {
@@ -955,9 +949,9 @@ pub fn VisitExpr(
                         // "false ? dead : live"
                         const old = p.is_control_flow_dead;
                         p.is_control_flow_dead = true;
-                        e_.yes = p.visitExpr(e_.yes);
+                        e_.yes = try p.visitExpr(e_.yes);
                         p.is_control_flow_dead = old;
-                        e_.no = p.visitExpr(e_.no);
+                        e_.no = try p.visitExpr(e_.no);
 
                         // "(a, false) ? b : c" => "a, c"
                         if (side_effects.side_effects == .could_have_side_effects) {
@@ -975,23 +969,23 @@ pub fn VisitExpr(
                 }
                 return expr;
             }
-            pub fn e_await(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_await(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_await;
                 p.await_target = e_.value.data;
-                e_.value = p.visitExpr(e_.value);
+                e_.value = try p.visitExpr(e_.value);
                 return expr;
             }
-            pub fn e_yield(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_yield(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_yield;
                 if (e_.value) |val| {
-                    e_.value = p.visitExpr(val);
+                    e_.value = try p.visitExpr(val);
                 }
                 return expr;
             }
-            pub fn e_array(p: *P, expr: Expr, in: ExprIn) Expr {
+            pub fn e_array(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_array;
                 if (in.assign_target != .none) {
-                    p.maybeCommaSpreadError(e_.comma_after_spread);
+                    try p.maybeCommaSpreadError(e_.comma_after_spread);
                 }
                 const items = e_.items.slice();
                 var spread_item_count: usize = 0;
@@ -999,7 +993,7 @@ pub fn VisitExpr(
                     switch (item.data) {
                         .e_missing => {},
                         .e_spread => |spread| {
-                            spread.value = p.visitExprInOut(spread.value, ExprIn{ .assign_target = in.assign_target });
+                            spread.value = try p.visitExprInOut(spread.value, ExprIn{ .assign_target = in.assign_target });
 
                             spread_item_count += if (spread.value.data == .e_array)
                                 @as(usize, spread.value.data.e_array.items.len)
@@ -1016,8 +1010,8 @@ pub fn VisitExpr(
                                 {
                                     p.decorator_class_name = p.loadNameFromRef(e2.left.data.e_identifier.ref);
                                 }
-                                e2.left = p.visitExprInOut(e2.left, ExprIn{ .assign_target = .replace });
-                                e2.right = p.visitExpr(e2.right);
+                                e2.left = try p.visitExprInOut(e2.left, ExprIn{ .assign_target = .replace });
+                                e2.right = try p.visitExpr(e2.right);
                                 p.decorator_class_name = null;
 
                                 if (@as(Expr.Tag, e2.left.data) == .e_identifier) {
@@ -1028,32 +1022,32 @@ pub fn VisitExpr(
                                     );
                                 }
                             } else {
-                                item.* = p.visitExprInOut(item.*, ExprIn{ .assign_target = in.assign_target });
+                                item.* = try p.visitExprInOut(item.*, ExprIn{ .assign_target = in.assign_target });
                             }
                         },
                         else => {
-                            item.* = p.visitExprInOut(item.*, ExprIn{ .assign_target = in.assign_target });
+                            item.* = try p.visitExprInOut(item.*, ExprIn{ .assign_target = in.assign_target });
                         },
                     }
                 }
 
                 // "[1, ...[2, 3], 4]" => "[1, 2, 3, 4]"
                 if (p.options.features.minify_syntax and spread_item_count > 0 and in.assign_target == .none) {
-                    e_.items = e_.inlineSpreadOfArrayLiterals(p.allocator, spread_item_count) catch e_.items;
+                    e_.items = try e_.inlineSpreadOfArrayLiterals(p.allocator, spread_item_count);
                 }
                 return expr;
             }
-            pub fn e_object(p: *P, expr: Expr, in: ExprIn) Expr {
+            pub fn e_object(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_object;
                 if (in.assign_target != .none) {
-                    p.maybeCommaSpreadError(e_.comma_after_spread);
+                    try p.maybeCommaSpreadError(e_.comma_after_spread);
                 }
 
                 var has_spread = false;
                 var has_proto = false;
                 for (e_.properties.slice()) |*property| {
                     if (property.kind != .spread) {
-                        property.key = p.visitExpr(property.key orelse Output.panic("Expected property key", .{}));
+                        property.key = try p.visitExpr(property.key orelse Output.panic("Expected property key", .{}));
                         const key = property.key.?;
                         // Forbid duplicate "__proto__" properties according to the specification
                         if (!property.flags.contains(.is_computed) and
@@ -1069,7 +1063,7 @@ pub fn VisitExpr(
                         {
                             if (has_proto) {
                                 const r = js_lexer.rangeOfIdentifier(p.source, key.loc);
-                                p.log.addRangeError(p.source, r, "Cannot specify the \"__proto__\" property more than once per object") catch unreachable;
+                                try p.log.addRangeError(p.source, r, "Cannot specify the \"__proto__\" property more than once per object");
                             }
                             has_proto = true;
                         }
@@ -1100,9 +1094,9 @@ pub fn VisitExpr(
                             property.key != null and
                             property.key.?.data == .e_string)
                         {
-                            p.decorator_class_name = property.key.?.data.e_string.string(p.allocator) catch null;
+                            p.decorator_class_name = try property.key.?.data.e_string.string(p.allocator);
                         }
-                        property.value = p.visitExprInOut(property.value.?, ExprIn{ .assign_target = in.assign_target });
+                        property.value = try p.visitExprInOut(property.value.?, ExprIn{ .assign_target = in.assign_target });
                         p.decorator_class_name = null;
                     }
 
@@ -1117,7 +1111,7 @@ pub fn VisitExpr(
                                 }
                             }
                         }
-                        property.initializer = p.visitExpr(property.initializer.?);
+                        property.initializer = try p.visitExpr(property.initializer.?);
                         p.decorator_class_name = null;
 
                         if (property.value) |val| {
@@ -1133,7 +1127,7 @@ pub fn VisitExpr(
                 }
                 return expr;
             }
-            pub fn e_import(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_import(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_import;
                 // We want to forcefully fold constants inside of imports
                 // even when minification is disabled, so that if we have an
@@ -1147,8 +1141,8 @@ pub fn VisitExpr(
                 defer p.should_fold_typescript_constant_expressions = prev_should_fold_typescript_constant_expressions;
                 p.should_fold_typescript_constant_expressions = true;
 
-                e_.expr = p.visitExpr(e_.expr);
-                e_.options = p.visitExpr(e_.options);
+                e_.expr = try p.visitExpr(e_.expr);
+                e_.options = try p.visitExpr(e_.options);
 
                 // Import transposition is able to duplicate the options structure, so
                 // only perform it if the expression is side effect free.
@@ -1176,7 +1170,7 @@ pub fn VisitExpr(
                 }
                 return expr;
             }
-            pub fn e_call(p: *P, expr: Expr, in: ExprIn) Expr {
+            pub fn e_call(p: *P, expr: Expr, in: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_call;
                 p.call_target = e_.target.data;
 
@@ -1187,7 +1181,7 @@ pub fn VisitExpr(
                 };
 
                 const target_was_identifier_before_visit = e_.target.data == .e_identifier;
-                e_.target = p.visitExprInOut(e_.target, .{
+                e_.target = try p.visitExprInOut(e_.target, .{
                     .property_access_for_method_call_maybe_should_replace_with_undefined = true,
                 });
 
@@ -1257,6 +1251,9 @@ pub fn VisitExpr(
                     const old_should_fold_typescript_constant_expressions = p.should_fold_typescript_constant_expressions;
                     defer p.should_fold_typescript_constant_expressions = old_should_fold_typescript_constant_expressions;
                     const old_is_control_flow_dead = p.is_control_flow_dead;
+                    const old_is_macro_argument = p.is_macro_argument;
+                    defer p.is_macro_argument = old_is_macro_argument;
+                    p.is_macro_argument = old_is_macro_argument or is_macro_ref;
 
                     // We want to forcefully fold constants inside of
                     // certain calls even when minification is disabled, so
@@ -1294,7 +1291,7 @@ pub fn VisitExpr(
                     }
 
                     for (e_.args.slice()) |*arg| {
-                        arg.* = p.visitExpr(arg.*);
+                        arg.* = try p.visitExpr(arg.*);
                     }
 
                     if (method_call_should_be_replaced_with_undefined) {
@@ -1307,7 +1304,7 @@ pub fn VisitExpr(
                 // Check if the bundler_feature_flag_ref is set before calling the function
                 // to avoid stack memory usage from copying values back and forth.
                 if (p.bundler_feature_flag_ref.isValid()) {
-                    if (maybeReplaceBundlerFeatureCall(p, e_, expr.loc)) |result| {
+                    if (try maybeReplaceBundlerFeatureCall(p, e_, expr.loc)) |result| {
                         return result;
                     }
                 }
@@ -1347,11 +1344,11 @@ pub fn VisitExpr(
 
                     if (p.options.warn_about_unbundled_modules) {
                         const r = js_lexer.rangeOfIdentifier(p.source, e_.target.loc);
-                        p.log.addRangeDebug(p.source, r, "This call to \"require\" will not be bundled because it has multiple arguments") catch unreachable;
+                        try p.log.addRangeDebug(p.source, r, "This call to \"require\" will not be bundled because it has multiple arguments");
                     }
 
                     if (e_.args.len >= 1) {
-                        bun.handleOom(p.checkDynamicSpecifier(e_.args.slice()[0], e_.target.loc, "require()"));
+                        try p.checkDynamicSpecifier(e_.args.slice()[0], e_.target.loc, "require()");
                     }
 
                     if (p.options.features.allow_runtime) {
@@ -1387,7 +1384,7 @@ pub fn VisitExpr(
                     }
 
                     if (e_.args.len >= 1) {
-                        bun.handleOom(p.checkDynamicSpecifier(e_.args.slice()[0], e_.target.loc, "require.resolve()"));
+                        try p.checkDynamicSpecifier(e_.args.slice()[0], e_.target.loc, "require.resolve()");
                     }
 
                     return expr;
@@ -1419,38 +1416,19 @@ pub fn VisitExpr(
                         }
 
                         if (p.options.features.no_macros) {
-                            p.log.addError(p.source, expr.loc, "Macros are disabled") catch unreachable;
+                            try p.log.addError(p.source, expr.loc, "Macros are disabled");
                             return p.newExpr(E.Undefined{}, expr.loc);
                         }
 
                         if (p.source.path.isNodeModule()) {
-                            p.log.addError(p.source, expr.loc, "For security reasons, macros cannot be run from node_modules.") catch unreachable;
+                            try p.log.addError(p.source, expr.loc, "For security reasons, macros cannot be run from node_modules.");
                             return p.newExpr(E.Undefined{}, expr.loc);
                         }
 
                         const name = macro_ref_data.name orelse e_.target.data.e_dot.name;
                         const record = &p.import_records.items[macro_ref_data.import_record_id];
                         const copied = Expr{ .loc = expr.loc, .data = .{ .e_call = e_ } };
-                        const start_error_count = p.log.msgs.items.len;
-                        p.macro_call_count += 1;
-                        const macro_result = p.options.macro_context.call(
-                            record.path.text,
-                            std.fs.path.dirname(p.source.path.text) orelse ".",
-                            p.log,
-                            p.source,
-                            record.range,
-                            copied,
-                            name,
-                        ) catch |err| {
-                            if (err == error.MacroFailed) {
-                                if (p.log.msgs.items.len == start_error_count) {
-                                    p.log.addError(p.source, expr.loc, "macro threw exception") catch unreachable;
-                                }
-                            } else {
-                                p.log.addErrorFmt(p.source, expr.loc, p.allocator, "\"{s}\" error in macro", .{@errorName(err)}) catch unreachable;
-                            }
-                            return expr;
-                        };
+                        const macro_result = (try expandMacro(p, record.*, copied, name)) orelse return expr;
 
                         if (macro_result.data != .e_call) {
                             return p.visitExpr(macro_result);
@@ -1502,15 +1480,11 @@ pub fn VisitExpr(
                         if (!bun.strings.startsWith(p.source.path.pretty, "node_modules") and
                             bun.strings.eqlComptime(original_name, "useState"))
                         {
-                            p.log.addError(
+                            try p.log.addError(
                                 p.source,
                                 expr.loc,
-                                std.fmt.allocPrint(
-                                    p.allocator,
-                                    "\"useState\" is not available in a server component. If you need interactivity, consider converting part of this to a Client Component (by adding `\"use client\";` to the top of the file).",
-                                    .{},
-                                ) catch |err| bun.handleOom(err),
-                            ) catch |err| bun.handleOom(err);
+                                "\"useState\" is not available in a server component. If you need interactivity, consider converting part of this to a Client Component (by adding `\"use client\";` to the top of the file).",
+                            );
                         }
                     }
                 }
@@ -1542,12 +1516,12 @@ pub fn VisitExpr(
 
                 return expr;
             }
-            pub fn e_new(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_new(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_new;
-                e_.target = p.visitExpr(e_.target);
+                e_.target = try p.visitExpr(e_.target);
 
                 for (e_.args.slice()) |*arg| {
-                    arg.* = p.visitExpr(arg.*);
+                    arg.* = try p.visitExpr(arg.*);
                 }
 
                 if (p.options.features.minify_syntax) {
@@ -1557,13 +1531,13 @@ pub fn VisitExpr(
                 }
                 return expr;
             }
-            pub fn e_arrow(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_arrow(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_arrow;
                 if (p.is_revisit_for_substitution) {
                     return expr;
                 }
 
-                const old_fn_or_arrow_data = std.mem.toBytes(p.fn_or_arrow_data_visit);
+                const old_fn_or_arrow_data = p.fn_or_arrow_data_visit;
                 p.fn_or_arrow_data_visit = FnOrArrowDataVisit{
                     .is_async = e_.is_async,
                 };
@@ -1574,45 +1548,50 @@ pub fn VisitExpr(
                 // function within the current enclosing function is async.
                 const old_inside_async_arrow_fn = p.fn_only_data_visit.is_inside_async_arrow_fn;
                 p.fn_only_data_visit.is_inside_async_arrow_fn = e_.is_async or p.fn_only_data_visit.is_inside_async_arrow_fn;
+                errdefer {
+                    p.fn_only_data_visit.is_inside_async_arrow_fn = old_inside_async_arrow_fn;
+                    p.fn_or_arrow_data_visit = old_fn_or_arrow_data;
+                }
 
-                p.pushScopeForVisitPass(.function_args, expr.loc) catch unreachable;
-                const dupe = p.allocator.dupe(Stmt, e_.body.stmts) catch unreachable;
+                try p.pushScopeForVisitPass(.function_args, expr.loc);
+                const dupe = try p.allocator.dupe(Stmt, e_.body.stmts);
+                var stmts_list = ListManaged(Stmt).fromOwnedSlice(p.allocator, dupe);
+                errdefer stmts_list.deinit();
 
-                p.visitArgs(e_.args, VisitArgsOpts{
+                try p.visitArgs(e_.args, VisitArgsOpts{
                     .has_rest_arg = e_.has_rest_arg,
                     .body = dupe,
                     .is_unique_formal_parameters = true,
                 });
-                p.pushScopeForVisitPass(.function_body, e_.body.loc) catch unreachable;
+                try p.pushScopeForVisitPass(.function_body, e_.body.loc);
 
                 var react_hook_data: ?ReactRefresh.HookContext = null;
                 const prev = p.react_refresh.hook_ctx_storage;
                 defer p.react_refresh.hook_ctx_storage = prev;
                 p.react_refresh.hook_ctx_storage = &react_hook_data;
 
-                var stmts_list = ListManaged(Stmt).fromOwnedSlice(p.allocator, dupe);
                 var temp_opts = PrependTempRefsOpts{ .kind = .fn_body };
-                p.visitStmtsAndPrependTempRefs(&stmts_list, &temp_opts) catch unreachable;
-                p.allocator.free(e_.body.stmts);
-                e_.body.stmts = stmts_list.items;
+                try p.visitStmtsAndPrependTempRefs(&stmts_list, &temp_opts);
                 p.popScope();
                 p.popScope();
 
                 p.fn_only_data_visit.is_inside_async_arrow_fn = old_inside_async_arrow_fn;
-                p.fn_or_arrow_data_visit = std.mem.bytesToValue(@TypeOf(p.fn_or_arrow_data_visit), &old_fn_or_arrow_data);
+                p.fn_or_arrow_data_visit = old_fn_or_arrow_data;
 
+                var final_expr = expr;
                 if (react_hook_data) |*hook| try_mark_hook: {
                     const stmts = p.nearest_stmt_list orelse break :try_mark_hook;
-                    bun.handleOom(stmts.append(p.getReactRefreshHookSignalDecl(hook.signature_cb)));
+                    try stmts.append(p.getReactRefreshHookSignalDecl(hook.signature_cb));
 
                     p.handleReactRefreshPostVisitFunctionBody(&stmts_list, hook);
-                    e_.body.stmts = stmts_list.items;
-
-                    return p.getReactRefreshHookSignalInit(hook, expr);
+                    final_expr = p.getReactRefreshHookSignalInit(hook, expr);
                 }
-                return expr;
+                const visited_stmts = try stmts_list.toOwnedSlice();
+                p.allocator.free(e_.body.stmts);
+                e_.body.stmts = visited_stmts;
+                return final_expr;
             }
-            pub fn e_function(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_function(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_function;
                 if (p.is_revisit_for_substitution) {
                     return expr;
@@ -1623,7 +1602,7 @@ pub fn VisitExpr(
                 defer p.react_refresh.hook_ctx_storage = prev;
                 p.react_refresh.hook_ctx_storage = &react_hook_data;
 
-                e_.func = p.visitFunc(e_.func, expr.loc);
+                e_.func = try p.visitFunc(e_.func, expr.loc);
 
                 // Remove unused function names when minifying (only when bundling is enabled)
                 // unless --keep-names is specified
@@ -1641,7 +1620,7 @@ pub fn VisitExpr(
 
                 if (react_hook_data) |*hook| try_mark_hook: {
                     const stmts = p.nearest_stmt_list orelse break :try_mark_hook;
-                    bun.handleOom(stmts.append(p.getReactRefreshHookSignalDecl(hook.signature_cb)));
+                    try stmts.append(p.getReactRefreshHookSignalDecl(hook.signature_cb));
                     final_expr = p.getReactRefreshHookSignalInit(hook, expr);
                 }
 
@@ -1651,7 +1630,7 @@ pub fn VisitExpr(
 
                 return final_expr;
             }
-            pub fn e_class(p: *P, expr: Expr, _: ExprIn) Expr {
+            pub fn e_class(p: *P, expr: Expr, _: ExprIn) anyerror!Expr {
                 const e_ = expr.data.e_class;
                 if (p.is_revisit_for_substitution) {
                     return expr;
@@ -1661,7 +1640,7 @@ pub fn VisitExpr(
                 const decorator_name_from_context = p.decorator_class_name;
                 p.decorator_class_name = null;
 
-                _ = p.visitClass(expr.loc, e_, Ref.None);
+                _ = try p.visitClass(expr.loc, e_, Ref.None);
 
                 // Lower standard decorators for class expressions
                 if (e_.should_lower_standard_decorators) {
@@ -1683,16 +1662,28 @@ pub fn VisitExpr(
                 return expr;
             }
 
-            /// Handles `feature("FLAG_NAME")` calls from `import { feature } from "bun:bundle"`.
-            /// This enables statically analyzable dead-code elimination through feature gating.
-            ///
-            /// When a feature flag is enabled via `--feature=FLAG_NAME`, `feature("FLAG_NAME")`
-            /// is replaced with `true`, otherwise it's replaced with `false`. This allows
-            /// bundlers to eliminate dead code branches at build time.
-            ///
-            /// Returns the replacement expression if this is a feature() call, or null otherwise.
-            /// Note: Caller must check `p.bundler_feature_flag_ref.isValid()` before calling.
-            fn maybeReplaceBundlerFeatureCall(p: *P, e_: *E.Call, loc: logger.Loc) ?Expr {
+            fn expandMacro(p: *P, record: ImportRecord, caller: Expr, name: string) anyerror!?Expr {
+                const start_error_count = p.log.errors;
+                p.macro_call_count +|= 1;
+                return p.options.macro_context.call(
+                    p.allocator,
+                    record.path.text,
+                    std.fs.path.dirname(p.source.path.text) orelse ".",
+                    p.log,
+                    p.source,
+                    record.range,
+                    caller,
+                    name,
+                ) catch |err| {
+                    if (err == error.OutOfMemory or err == error.JSTerminated) return err;
+                    if (p.log.errors == start_error_count) {
+                        try p.log.addErrorFmt(p.source, caller.loc, p.allocator, "\"{s}\" error in macro", .{@errorName(err)});
+                    }
+                    return null;
+                };
+            }
+
+            fn maybeReplaceBundlerFeatureCall(p: *P, e_: *E.Call, loc: logger.Loc) anyerror!?Expr {
                 // Check if the target is the `feature` function from "bun:bundle"
                 // It could be e_identifier (for unbound) or e_import_identifier (for imports)
                 const target_ref: ?Ref = switch (e_.target.data) {
@@ -1712,7 +1703,7 @@ pub fn VisitExpr(
 
                 // Validate: exactly one argument required
                 if (e_.args.len != 1) {
-                    p.log.addError(p.source, loc, "feature() requires exactly one string argument") catch unreachable;
+                    try p.log.addError(p.source, loc, "feature() requires exactly one string argument");
                     return p.newExpr(E.Boolean{ .value = false }, loc);
                 }
 
@@ -1720,7 +1711,7 @@ pub fn VisitExpr(
 
                 // Validate: argument must be a string literal
                 if (arg.data != .e_string) {
-                    p.log.addError(p.source, arg.loc, "feature() argument must be a string literal") catch unreachable;
+                    try p.log.addError(p.source, arg.loc, "feature() argument must be a string literal");
                     return p.newExpr(E.Boolean{ .value = false }, loc);
                 }
 
@@ -1729,17 +1720,17 @@ pub fn VisitExpr(
                 // Feature flag names should be ASCII identifiers, so UTF-16 is unexpected.
                 const flag_string = arg.data.e_string;
                 if (flag_string.is_utf16) {
-                    p.log.addError(p.source, arg.loc, "feature() flag name must be an ASCII string") catch unreachable;
+                    try p.log.addError(p.source, arg.loc, "feature() flag name must be an ASCII string");
                     return p.newExpr(E.Boolean{ .value = false }, loc);
                 }
 
                 // feature() can only be used directly in an if statement or ternary condition
                 if (!p.in_branch_condition) {
-                    p.log.addError(p.source, loc, "feature() from \"bun:bundle\" can only be used directly in an if statement or ternary condition") catch unreachable;
+                    try p.log.addError(p.source, loc, "feature() from \"bun:bundle\" can only be used directly in an if statement or ternary condition");
                     return p.newExpr(E.Boolean{ .value = false }, loc);
                 }
 
-                const is_enabled = p.options.features.bundler_feature_flags.map.contains(flag_string.data);
+                const is_enabled = p.options.features.bundler_feature_flags.contains(flag_string.data);
                 return .{ .data = .{ .e_branch_boolean = .{ .value = is_enabled } }, .loc = loc };
             }
         };
@@ -1773,6 +1764,7 @@ const Property = G.Property;
 
 const js_parser = bun.js_parser;
 const ExprIn = js_parser.ExprIn;
+const ImportRecord = @import("../../options_types/import_record.zig").ImportRecord;
 const FnOrArrowDataVisit = js_parser.FnOrArrowDataVisit;
 const IdentifierOpts = js_parser.IdentifierOpts;
 const JSXTransformType = js_parser.JSXTransformType;

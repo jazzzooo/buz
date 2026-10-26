@@ -5,52 +5,38 @@
 #include <JavaScriptCore/Structure.h>
 #include <bun-uws/src/App.h>
 #include <bun-uws/src/Http3Request.h>
-#include "ZigGeneratedClasses.h"
-#include "AsyncContextFrame.h"
+#include "SchemaBindings.h"
 #include "ServerRouteList.h"
 #include "decodeURIComponentSIMD.h"
 #include "JSBunRequest.h"
 #include <JavaScriptCore/PropertyName.h>
+#include <wtf/text/MakeString.h>
 
 namespace Bun {
 using namespace JSC;
 using namespace WebCore;
 
-/**
-  ServerRouteList holds all the callbacks used by routes in Bun.serve()
-
-  The easier approach would be an std.array_list.Managed of JSC.Strong in Zig, but that
-  would mean that now we're holding a Strong reference for every single
-  callback. This would show up in profiling, and it's a lot of strong
-  references. We could use a JSArray instead, but that would incur unnecessary
-  overhead when reading values from the array.
-
-  So instead, we have this class that uses a FixedVector of WriteBarriers to
-  the JSCell of the callback.
-
-  When the ServerRouteList is destroyed, it will clear the FixedVector and
-  allow the callbacks to be GC'd.
-
-  This also lets us hold structures for the params objects for each route, which
-  we create lazily. This makes it fast to create the params object for a route.
-  and is generally better for the JIT since it will see the same structure repeatedly.
- */
 class ServerRouteList final : public JSC::JSDestructibleObject {
 public:
     using Base = JSC::JSDestructibleObject;
     struct IdentifierRange {
-        uint16_t start;
-        uint16_t count;
+        size_t start;
+        size_t count;
     };
 
     static ServerRouteList* create(
-        JSC::VM& vm,
+        JSC::JSGlobalObject& globalObject,
         JSC::Structure* structure,
-        std::span<EncodedJSValue> callbacks,
-        std::span<ZigString> paths)
+        std::span<const JSValue> callbacks,
+        std::span<const WTF::String> paths)
     {
-        auto* routeList = new (NotNull, JSC::allocateCell<ServerRouteList>(vm)) ServerRouteList(vm, structure, callbacks, paths);
-        routeList->finishCreation(vm, callbacks, paths);
+        auto& vm = globalObject.vm();
+        auto scope = DECLARE_THROW_SCOPE(vm);
+        auto* routeList = new (NotNull, JSC::allocateCell<ServerRouteList>(vm)) ServerRouteList(vm, structure);
+        if (!routeList->finishCreation(vm, callbacks, paths)) {
+            throwOutOfMemoryError(&globalObject, scope);
+            return nullptr;
+        }
         return routeList;
     }
 
@@ -67,7 +53,6 @@ public:
     ~ServerRouteList()
     {
         m_routes.clear();
-        m_paramsObjectStructures.clear();
         m_pathIdentifiers.clear();
         m_pathIdentifierRanges.clear();
     }
@@ -89,75 +74,54 @@ public:
     DECLARE_VISIT_CHILDREN;
 
     template<typename Req>
-    JSValue callRoute(Zig::GlobalObject* globalObject, uint32_t index, void* requestPtr, EncodedJSValue serverObject, EncodedJSValue* requestObject, Req* req);
+    Bindgen::Engine::BunBindgenEngine_ServerRouteList_prepareRoute_Return prepareRoute(Zig::GlobalObject* globalObject, uint32_t index, void* requestPtr, Req* req);
 
 private:
-    Structure* structureForParamsObject(JSC::VM& vm, JSC::JSGlobalObject* globalObject, uint32_t index, std::span<const Identifier> identifiers);
     template<typename Req>
     JSObject* paramsObjectForRoute(JSC::VM& vm, JSC::JSGlobalObject* globalObject, uint32_t index, Req* req);
 
-    ServerRouteList(JSC::VM& vm, JSC::Structure* structure, std::span<EncodedJSValue> callbacks, std::span<ZigString> paths)
+    ServerRouteList(JSC::VM& vm, JSC::Structure* structure)
         : Base(vm, structure)
-        , m_routes(callbacks.size())
-        , m_paramsObjectStructures(paths.size())
-        , m_pathIdentifierRanges(paths.size() * 2)
     {
-        ASSERT(callbacks.size() == paths.size());
     }
 
-    WTF::FixedVector<JSC::WriteBarrier<JSC::JSCell>> m_routes;
-    WTF::FixedVector<JSC::WriteBarrier<Structure>> m_paramsObjectStructures;
-    WTF::FixedVector<IdentifierRange> m_pathIdentifierRanges;
+    WTF::Vector<JSC::WriteBarrier<JSC::JSCell>> m_routes;
+    WTF::Vector<IdentifierRange> m_pathIdentifierRanges;
     WTF::Vector<Identifier> m_pathIdentifiers;
 
-    void finishCreation(JSC::VM& vm, std::span<EncodedJSValue> callbacks, std::span<ZigString> paths)
+    bool finishCreation(JSC::VM& vm, std::span<const JSValue> callbacks, std::span<const WTF::String> paths)
     {
         Base::finishCreation(vm);
-        ASSERT(callbacks.size() == paths.size());
-
-        for (size_t i = 0; i < callbacks.size(); i++) {
-            this->m_routes.at(i).setMayBeNull(vm, this, JSValue::decode(callbacks[i]).asCell());
-            this->m_paramsObjectStructures.at(i).setMayBeNull(vm, this, nullptr);
+        RELEASE_ASSERT(callbacks.size() == paths.size());
+        if (!m_routes.tryReserveInitialCapacity(callbacks.size()) || !m_pathIdentifierRanges.tryReserveInitialCapacity(paths.size()))
+            return false;
+        for (auto callback : callbacks) {
+            m_routes.append(JSC::WriteBarrier<JSC::JSCell>());
+            m_routes.last().set(vm, this, callback.asCell());
         }
-
-        std::span<IdentifierRange> pathIdentifierRanges = m_pathIdentifierRanges.mutableSpan();
-
-        for (size_t i = 0; i < paths.size(); i++) {
-            ZigString rawPath = paths[i];
-            WTF::String path = Zig::toString(rawPath);
-            uint32_t originalIdentifierIndex = m_pathIdentifiers.size();
-            size_t startOfIdentifier = 0;
-            size_t identifierCount = 0;
-            for (size_t j = 0; j < path.length(); j++) {
-                switch (path[j]) {
-                case '/': {
-                    if (startOfIdentifier && startOfIdentifier < j) {
-                        WTF::String&& identifier = path.substring(startOfIdentifier, j - startOfIdentifier);
-                        m_pathIdentifiers.append(JSC::Identifier::fromString(vm, identifier));
-                        identifierCount++;
-                    }
-                    startOfIdentifier = 0;
-                    break;
-                }
-                case ':': {
-                    startOfIdentifier = j + 1;
-                    break;
-                }
-                default: {
-                    break;
-                }
+        for (const auto& path : paths) {
+            const size_t start = m_pathIdentifiers.size();
+            size_t identifierStart = 0;
+            auto appendIdentifier = [&](size_t end) {
+                if (!identifierStart || identifierStart >= end) return true;
+                auto text = WTF::tryMakeString(StringView(path).substring(identifierStart, end - identifierStart));
+                if (text.isNull()) return false;
+                return m_pathIdentifiers.tryAppend(Identifier::fromString(vm, text));
+            };
+            for (size_t i = 0; i < path.length(); ++i) {
+                if (path[i] == '/') {
+                    if (!appendIdentifier(i)) return false;
+                    identifierStart = 0;
+                } else if (path[i] == ':') {
+                    identifierStart = i + 1;
                 }
             }
-            if (startOfIdentifier && startOfIdentifier < path.length()) {
-                WTF::String&& identifier = path.substring(startOfIdentifier, path.length() - startOfIdentifier);
-                m_pathIdentifiers.append(JSC::Identifier::fromString(vm, identifier));
-                identifierCount++;
-            }
-
-            pathIdentifierRanges[0] = { static_cast<uint16_t>(originalIdentifierIndex), static_cast<uint16_t>(identifierCount) };
-            pathIdentifierRanges = pathIdentifierRanges.subspan(1);
+            if (!appendIdentifier(path.length())) return false;
+            m_pathIdentifierRanges.append(IdentifierRange{start, m_pathIdentifiers.size() - start});
         }
+        return true;
     }
+
 };
 
 const JSC::ClassInfo ServerRouteList::s_info = { "ServerRouteList"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(ServerRouteList) };
@@ -170,135 +134,128 @@ void ServerRouteList::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 
     for (unsigned i = 0; i < thisCallSite->m_routes.size(); i++) {
         if (thisCallSite->m_routes[i]) visitor.append(thisCallSite->m_routes[i]);
-        if (thisCallSite->m_paramsObjectStructures[i]) visitor.append(thisCallSite->m_paramsObjectStructures[i]);
     }
 }
 DEFINE_VISIT_CHILDREN(ServerRouteList);
 
-Structure* ServerRouteList::structureForParamsObject(JSC::VM& vm, JSC::JSGlobalObject* globalObject, uint32_t index, std::span<const Identifier> identifiers)
+ServerRouteList* serverRouteListCast(JSC::JSValue value)
 {
+    return dynamicDowncast<ServerRouteList>(value);
+}
 
-    if (identifiers.empty()) {
-        return globalObject->nullPrototypeObjectStructure();
-    }
-
-    if (!m_paramsObjectStructures.at(index)) {
-        auto* zigGlobalObject = defaultGlobalObject(globalObject);
-        auto* prototype = zigGlobalObject->m_JSBunRequestParamsPrototype.get(zigGlobalObject);
-        unsigned inlineCapacity = std::min(identifiers.size(), static_cast<size_t>(JSC::JSFinalObject::maxInlineCapacity));
-        auto* structure = Structure::create(vm, globalObject, prototype, TypeInfo(FinalObjectType, StructureFlags), JSFinalObject::info(), NonArray, inlineCapacity);
-
-        if (identifiers.size() < JSC::JSFinalObject::maxInlineCapacity) {
-            PropertyOffset offset;
-            for (const auto& identifier : identifiers) {
-                structure = structure->addPropertyTransition(vm, structure, identifier, JSC::PropertyAttribute::DontDelete | 0, offset);
-            }
-        }
-        m_paramsObjectStructures.at(index).set(vm, this, structure);
-        return structure;
-    }
-
-    return m_paramsObjectStructures.at(index).get();
+bool isServerRouteList(JSC::JSValue value) noexcept
+{
+    return !!serverRouteListCast(value);
 }
 
 template<typename Req>
 JSObject* ServerRouteList::paramsObjectForRoute(JSC::VM& vm, JSC::JSGlobalObject* globalObject, uint32_t index, Req* req)
 {
+    auto scope = DECLARE_THROW_SCOPE(vm);
 
     // Ensure that the object doesn't get GC'd before we've had a chance to initialize it.
     MarkedArgumentBuffer args;
     IdentifierRange range = m_pathIdentifierRanges.at(index);
     size_t offset = range.start;
     size_t identifierCount = range.count;
+    if (!identifierCount)
+        return constructEmptyObject(vm, globalObject->nullPrototypeObjectStructure());
     args.ensureCapacity(identifierCount);
+    if (args.hasOverflowed()) {
+        throwOutOfMemoryError(globalObject, scope);
+        return nullptr;
+    }
 
     for (size_t i = 0; i < identifierCount; i++) {
         auto param = req->getParameter(static_cast<unsigned short>(i));
         if (!param.empty()) {
             const std::span<const uint8_t> paramBytes(reinterpret_cast<const uint8_t*>(param.data()), param.size());
-            // TODO: Investigate raw non-ASCII bytes in route parameters.
-            args.append(jsString(vm, decodeURIComponentSIMD(paramBytes)));
+            auto decoded = decodeURIComponentSIMD(paramBytes);
+            if (!decoded) {
+                throwOutOfMemoryError(globalObject, scope);
+                return nullptr;
+            }
+            args.append(jsString(vm, WTF::move(*decoded)));
         } else {
             args.append(jsEmptyString(vm));
         }
     }
+    if (args.hasOverflowed()) {
+        throwOutOfMemoryError(globalObject, scope);
+        return nullptr;
+    }
 
     const std::span<const Identifier> identifiers = m_pathIdentifiers.subspan(offset, identifierCount);
 
-    auto* structure = structureForParamsObject(vm, globalObject, index, identifiers);
-    JSObject* object = constructEmptyObject(vm, structure);
-
-    if (identifierCount < JSC::JSFinalObject::maxInlineCapacity) {
-        for (size_t i = 0; i < identifierCount; i++) {
-            object->putDirectOffset(vm, i, args.at(i));
-        }
-    } else {
-        for (size_t i = 0; i < identifierCount; i++) {
-            object->putDirect(vm, identifiers[i], args.at(i));
-        }
+    auto* prototype = defaultGlobalObject(globalObject)->m_JSBunRequestParamsPrototype.get(globalObject);
+    RETURN_IF_EXCEPTION(scope, nullptr);
+    auto* object = constructEmptyObject(globalObject, prototype,
+        std::min(identifierCount, static_cast<size_t>(JSFinalObject::maxInlineCapacity)));
+    RETURN_IF_EXCEPTION(scope, nullptr);
+    const unsigned attributes = identifierCount < JSFinalObject::maxInlineCapacity ? static_cast<unsigned>(PropertyAttribute::DontDelete) : 0;
+    for (size_t i = 0; i < identifierCount; ++i) {
+        object->putDirect(vm, identifiers[i], args.at(i), attributes);
+        RETURN_IF_EXCEPTION(scope, nullptr);
     }
 
     return object;
 }
 
 template<typename Req>
-JSValue ServerRouteList::callRoute(Zig::GlobalObject* globalObject, uint32_t index, void* requestPtr, EncodedJSValue serverObject, EncodedJSValue* requestObject, Req* req)
+Bindgen::Engine::BunBindgenEngine_ServerRouteList_prepareRoute_Return ServerRouteList::prepareRoute(Zig::GlobalObject* globalObject, uint32_t index, void* requestPtr, Req* req)
 {
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
     auto* structure = globalObject->m_JSBunRequestStructure.get(globalObject);
+    RETURN_IF_EXCEPTION(scope, {});
 
     auto* params = paramsObjectForRoute(vm, globalObject, index, req);
+    RETURN_IF_EXCEPTION(scope, {});
 
-    JSBunRequest* request = JSBunRequest::create(vm, structure, requestPtr, params);
-    scope.assertNoException();
-    *requestObject = JSValue::encode(request);
+    JSBunRequest* request = JSBunRequest::create(vm, globalObject, structure, requestPtr, params);
+    RETURN_IF_EXCEPTION(scope, {});
 
     JSValue callback = m_routes.at(index).get();
     ASSERT(callback);
-    JSValue serverValue = JSValue::decode(serverObject);
-    MarkedArgumentBuffer args;
-    args.append(request);
-    args.append(serverValue);
-
-    auto result = AsyncContextFrame::call(globalObject, callback, serverValue, args);
-    RETURN_IF_EXCEPTION(scope, {});
+    Bindgen::Engine::BunBindgenEngine_ServerRouteList_prepareRoute_Return result;
+    result.callback = callback;
+    result.request = request;
     return result;
 }
 
-extern "C" JSC::EncodedJSValue Bun__ServerRouteList__callRoute(
-    Zig::GlobalObject* globalObject,
-    uint32_t index,
-    void* requestPtr,
-    JSC::EncodedJSValue serverObject,
-    JSC::EncodedJSValue routeListObject,
-    JSC::EncodedJSValue* requestObject,
-    uWS::HttpRequest* req)
+Bindgen::Engine::BunBindgenEngine_ServerRouteList_prepareRoute_Return Bindgen::Engine::bunBindgenEngine_ServerRouteList_prepareRoute(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_ServerRouteList_prepareRoute_Arguments& args)
 {
-    JSValue routeListValue = JSValue::decode(routeListObject);
-    ServerRouteList* routeList = uncheckedDowncast<ServerRouteList>(routeListValue);
-    return JSValue::encode(routeList->callRoute(globalObject, index, requestPtr, serverObject, requestObject, req));
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto* routeList = serverRouteListCast(args.routeList);
+    RELEASE_ASSERT(routeList);
+    switch (args.kind) {
+    case decltype(args.kind)::http:
+        return routeList->prepareRoute(
+            globalObject,
+            args.index,
+            args.requestNative,
+            reinterpret_cast<uWS::HttpRequest*>(args.request));
+    case decltype(args.kind)::h3:
+        return routeList->prepareRoute(
+            globalObject,
+            args.index,
+            args.requestNative,
+            reinterpret_cast<uWS::Http3Request*>(args.request));
+    }
+    RELEASE_ASSERT_NOT_REACHED();
 }
 
-extern "C" JSC::EncodedJSValue Bun__ServerRouteList__callRouteH3(
-    Zig::GlobalObject* globalObject,
-    uint32_t index,
-    void* requestPtr,
-    JSC::EncodedJSValue serverObject,
-    JSC::EncodedJSValue routeListObject,
-    JSC::EncodedJSValue* requestObject,
-    uWS::Http3Request* req)
+JSC::JSValue Bindgen::Engine::bunBindgenEngine_ServerRouteList_create(
+    Bindgen::EngineCallContext& context,
+    const Bindgen::Engine::BunBindgenEngine_ServerRouteList_create_Arguments& args)
 {
-    JSValue routeListValue = JSValue::decode(routeListObject);
-    ServerRouteList* routeList = uncheckedDowncast<ServerRouteList>(routeListValue);
-    return JSValue::encode(routeList->callRoute(globalObject, index, requestPtr, serverObject, requestObject, req));
-}
-
-extern "C" JSC::EncodedJSValue Bun__ServerRouteList__create(Zig::GlobalObject* globalObject, EncodedJSValue* callbacks, ZigString* paths, size_t pathsLength)
-{
+    auto* globalObject = static_cast<Zig::GlobalObject*>(&context.globalObject);
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     auto* structure = globalObject->m_ServerRouteListStructure.get(globalObject);
-    auto* routeList = ServerRouteList::create(globalObject->vm(), structure, std::span<EncodedJSValue>(callbacks, pathsLength), std::span<ZigString>(paths, pathsLength));
-    return JSValue::encode(routeList);
+    RETURN_IF_EXCEPTION(scope, {});
+    RELEASE_AND_RETURN(scope, ServerRouteList::create(*globalObject, structure, args.callbacks, args.paths));
 }
 
 Structure* createServerRouteListStructure(JSC::VM& vm, Zig::GlobalObject* globalObject)

@@ -55,7 +55,7 @@ fn writeEntryItem(
     path: []const u8,
     hash: u64,
     loader: options.Loader,
-    kind: bun.jsc.API.BuildArtifact.OutputKind,
+    kind: OutputKind,
 ) !void {
     try writer.writeAll("{");
 
@@ -262,6 +262,7 @@ const options = @import("./options.zig");
 const Loader = options.Loader;
 
 const bun = @import("bun");
+const OutputKind = @import("./OutputKind.zig").OutputKind;
 const default_allocator = bun.default_allocator;
 const strings = bun.strings;
 

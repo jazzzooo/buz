@@ -16,17 +16,11 @@ namespace Bun {
 // Template implementations for Diffie-Hellman functions that are shared between
 // JSDiffieHellman and JSDiffieHellmanGroup
 
-template<typename DiffieHellmanType>
-JSC::EncodedJSValue jsDiffieHellmanProtoFuncGenerateKeysTemplate(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+template<typename DiffieHellmanType, typename Encoding>
+Bindgen::NodeCryptoEncodedOutputResult jsDiffieHellmanProtoFuncGenerateKeysTemplate(JSC::JSGlobalObject* globalObject, DiffieHellmanType* thisObject, const std::optional<Encoding>& encoding)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = dynamicDowncast<DiffieHellmanType>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        throwThisTypeError(*globalObject, scope, DiffieHellmanType::info()->className, "generateKeys"_s);
-        return {};
-    }
 
     auto& dh = thisObject->getImpl();
     auto keys = dh.generateKeys();
@@ -35,35 +29,42 @@ JSC::EncodedJSValue jsDiffieHellmanProtoFuncGenerateKeysTemplate(JSC::JSGlobalOb
         return {};
     }
 
-    auto encodingType = getEncodingDefaultBuffer(globalObject, scope, callFrame->argument(0));
-    RETURN_IF_EXCEPTION(scope, {});
+    auto encodingType = nodeEncodingOrDefault(encoding, BufferEncodingType::buffer);
 
     RELEASE_AND_RETURN(scope, StringBytes::encode(globalObject, scope, keys.span(), encodingType));
 }
 
-template<typename DiffieHellmanType>
-JSC::EncodedJSValue jsDiffieHellmanProtoFuncComputeSecretTemplate(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+template<typename DiffieHellmanType, typename Key, typename InputEncoding, typename OutputEncoding>
+Bindgen::NodeCryptoEncodedOutputResult jsDiffieHellmanProtoFuncComputeSecretTemplate(
+    Bindgen::CppCallContext& context,
+    JSC::JSGlobalObject* globalObject,
+    DiffieHellmanType* thisObject,
+    const std::optional<Key>& keyArg,
+    const std::optional<InputEncoding>& inputEncoding,
+    const std::optional<OutputEncoding>& outputEncoding)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto* thisObject = dynamicDowncast<DiffieHellmanType>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        throwThisTypeError(*globalObject, scope, DiffieHellmanType::info()->className, "computeSecret"_s);
+    if (!keyArg) {
+        Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "key"_s, "string or an instance of Buffer, TypedArray, or DataView"_s, JSC::jsUndefined());
         return {};
     }
 
-    // Get the arguments
-    JSC::JSValue keyArg = callFrame->argument(0);
-    JSC::JSValue inputEncodingArg = callFrame->argument(1);
-    JSC::JSValue outputEncodingArg = callFrame->argument(2);
+    BufferEncodingType resolvedInputEncoding = BufferEncodingType::utf8;
+    if (inputEncoding) {
+        const auto* converted = Bindgen::convertLastAndLease(context, *inputEncoding);
+        RETURN_IF_EXCEPTION(scope, {});
+        if (!converted)
+            return {};
+        if (*converted)
+            resolvedInputEncoding = nodeEncodingToBufferEncoding(**converted);
+    }
 
-    // Process the public key input
-    auto* keyBuffer = Bun::getArrayBufferOrView(globalObject, scope, keyArg, "key"_s, inputEncodingArg);
+    auto keyBuffer = Bun::getStringOrBufferBytes(globalObject, scope, *keyArg, resolvedInputEncoding);
     RETURN_IF_EXCEPTION(scope, {});
-    ASSERT(keyBuffer);
 
-    auto span = keyBuffer->span();
+    auto span = keyBuffer.data;
 
     // Check for unusually large buffer sizes
     if (span.size() > INT32_MAX) {
@@ -112,24 +113,17 @@ JSC::EncodedJSValue jsDiffieHellmanProtoFuncComputeSecretTemplate(JSC::JSGlobalO
         return {};
     }
 
-    BufferEncodingType outputEncodingType = getEncodingDefaultBuffer(globalObject, scope, outputEncodingArg);
-    RETURN_IF_EXCEPTION(scope, {});
+    BufferEncodingType outputEncodingType = nodeEncodingOrDefault(outputEncoding, BufferEncodingType::buffer);
 
     // If output encoding is specified and not "buffer", return a string
     RELEASE_AND_RETURN(scope, StringBytes::encode(globalObject, scope, secret.span(), outputEncodingType));
 }
 
-template<typename DiffieHellmanType>
-JSC::EncodedJSValue jsDiffieHellmanProtoFuncGetPrimeTemplate(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+template<typename DiffieHellmanType, typename Encoding>
+Bindgen::NodeCryptoEncodedOutputResult jsDiffieHellmanProtoFuncGetPrimeTemplate(JSC::JSGlobalObject* globalObject, DiffieHellmanType* thisObject, const std::optional<Encoding>& encoding)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = dynamicDowncast<DiffieHellmanType>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        throwThisTypeError(*globalObject, scope, DiffieHellmanType::info()->className, "getPrime"_s);
-        return {};
-    }
 
     auto& dh = thisObject->getImpl();
     auto prime = dh.getPrime();
@@ -139,23 +133,16 @@ JSC::EncodedJSValue jsDiffieHellmanProtoFuncGetPrimeTemplate(JSC::JSGlobalObject
     }
 
     // Handle optional encoding parameter
-    BufferEncodingType encodingType = getEncodingDefaultBuffer(globalObject, scope, callFrame->argument(0));
-    RETURN_IF_EXCEPTION(scope, {});
+    BufferEncodingType encodingType = nodeEncodingOrDefault(encoding, BufferEncodingType::buffer);
 
     RELEASE_AND_RETURN(scope, StringBytes::encode(globalObject, scope, prime.span(), encodingType));
 }
 
-template<typename DiffieHellmanType>
-JSC::EncodedJSValue jsDiffieHellmanProtoFuncGetGeneratorTemplate(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+template<typename DiffieHellmanType, typename Encoding>
+Bindgen::NodeCryptoEncodedOutputResult jsDiffieHellmanProtoFuncGetGeneratorTemplate(JSC::JSGlobalObject* globalObject, DiffieHellmanType* thisObject, const std::optional<Encoding>& encoding)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = dynamicDowncast<DiffieHellmanType>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        throwThisTypeError(*globalObject, scope, DiffieHellmanType::info()->className, "getGenerator"_s);
-        return {};
-    }
 
     auto& dh = thisObject->getImpl();
     auto gen = dh.getGenerator();
@@ -165,23 +152,16 @@ JSC::EncodedJSValue jsDiffieHellmanProtoFuncGetGeneratorTemplate(JSC::JSGlobalOb
     }
 
     // Handle optional encoding parameter
-    BufferEncodingType encodingType = getEncodingDefaultBuffer(globalObject, scope, callFrame->argument(0));
-    RETURN_IF_EXCEPTION(scope, {});
+    BufferEncodingType encodingType = nodeEncodingOrDefault(encoding, BufferEncodingType::buffer);
 
     RELEASE_AND_RETURN(scope, StringBytes::encode(globalObject, scope, gen.span(), encodingType));
 }
 
-template<typename DiffieHellmanType>
-JSC::EncodedJSValue jsDiffieHellmanProtoFuncGetPublicKeyTemplate(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+template<typename DiffieHellmanType, typename Encoding>
+Bindgen::NodeCryptoEncodedOutputResult jsDiffieHellmanProtoFuncGetPublicKeyTemplate(JSC::JSGlobalObject* globalObject, DiffieHellmanType* thisObject, const std::optional<Encoding>& encoding)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = dynamicDowncast<DiffieHellmanType>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        throwThisTypeError(*globalObject, scope, DiffieHellmanType::info()->className, "getPublicKey"_s);
-        return {};
-    }
 
     auto& dh = thisObject->getImpl();
     auto key = dh.getPublicKey();
@@ -191,23 +171,16 @@ JSC::EncodedJSValue jsDiffieHellmanProtoFuncGetPublicKeyTemplate(JSC::JSGlobalOb
     }
 
     // Handle optional encoding parameter
-    BufferEncodingType encodingType = getEncodingDefaultBuffer(globalObject, scope, callFrame->argument(0));
-    RETURN_IF_EXCEPTION(scope, {});
+    BufferEncodingType encodingType = nodeEncodingOrDefault(encoding, BufferEncodingType::buffer);
 
     RELEASE_AND_RETURN(scope, StringBytes::encode(globalObject, scope, key.span(), encodingType));
 }
 
-template<typename DiffieHellmanType>
-JSC::EncodedJSValue jsDiffieHellmanProtoFuncGetPrivateKeyTemplate(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+template<typename DiffieHellmanType, typename Encoding>
+Bindgen::NodeCryptoEncodedOutputResult jsDiffieHellmanProtoFuncGetPrivateKeyTemplate(JSC::JSGlobalObject* globalObject, DiffieHellmanType* thisObject, const std::optional<Encoding>& encodingValue)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-
-    auto* thisObject = dynamicDowncast<DiffieHellmanType>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        throwThisTypeError(*globalObject, scope, DiffieHellmanType::info()->className, "getPrivateKey"_s);
-        return {};
-    }
 
     auto& dh = thisObject->getImpl();
     auto key = dh.getPrivateKey();
@@ -216,32 +189,39 @@ JSC::EncodedJSValue jsDiffieHellmanProtoFuncGetPrivateKeyTemplate(JSC::JSGlobalO
         return {};
     }
 
-    auto encoding = getEncodingDefaultBuffer(globalObject, scope, callFrame->argument(0));
-    RETURN_IF_EXCEPTION(scope, {});
+    auto encoding = nodeEncodingOrDefault(encodingValue, BufferEncodingType::buffer);
 
     RELEASE_AND_RETURN(scope, StringBytes::encode(globalObject, scope, key.span(), encoding));
 }
 
-template<typename DiffieHellmanType>
-JSC::EncodedJSValue jsDiffieHellmanProtoFuncSetPublicKeyTemplate(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+template<typename DiffieHellmanType, typename Key, typename Encoding>
+JSC::EncodedJSValue jsDiffieHellmanProtoFuncSetPublicKeyTemplate(
+    Bindgen::CppCallContext& context,
+    JSC::JSGlobalObject* globalObject,
+    DiffieHellmanType* thisObject,
+    const std::optional<Key>& keyArg,
+    const std::optional<Encoding>& encoding)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto* thisObject = dynamicDowncast<DiffieHellmanType>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        throwThisTypeError(*globalObject, scope, DiffieHellmanType::info()->className, "setPublicKey"_s);
-        return {};
+    if (!keyArg)
+        return Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "key"_s, "string or an instance of Buffer, TypedArray, or DataView"_s, JSC::jsUndefined());
+
+    BufferEncodingType resolvedEncoding = BufferEncodingType::utf8;
+    if (encoding) {
+        const auto* converted = Bindgen::convertLastAndLease(context, *encoding);
+        RETURN_IF_EXCEPTION(scope, {});
+        if (!converted)
+            return {};
+        if (*converted)
+            resolvedEncoding = nodeEncodingToBufferEncoding(**converted);
     }
 
-    JSC::JSValue keyArg = callFrame->argument(0);
-
-    // Process the public key input
-    auto* keyBuffer = Bun::getArrayBufferOrView(globalObject, scope, keyArg, "key"_s, callFrame->argument(1));
+    auto keyBuffer = Bun::getStringOrBufferBytes(globalObject, scope, *keyArg, resolvedEncoding);
     RETURN_IF_EXCEPTION(scope, {});
-    ASSERT(keyBuffer);
 
-    auto span = keyBuffer->span();
+    auto span = keyBuffer.data;
 
     ncrypto::BignumPointer key(span.data(), span.size());
     if (!key) {
@@ -256,28 +236,37 @@ JSC::EncodedJSValue jsDiffieHellmanProtoFuncSetPublicKeyTemplate(JSC::JSGlobalOb
         return {};
     }
 
-    return JSC::JSValue::encode(callFrame->thisValue());
+    return JSC::JSValue::encode(thisObject);
 }
 
-template<typename DiffieHellmanType>
-JSC::EncodedJSValue jsDiffieHellmanProtoFuncSetPrivateKeyTemplate(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame)
+template<typename DiffieHellmanType, typename Key, typename Encoding>
+JSC::EncodedJSValue jsDiffieHellmanProtoFuncSetPrivateKeyTemplate(
+    Bindgen::CppCallContext& context,
+    JSC::JSGlobalObject* globalObject,
+    DiffieHellmanType* thisObject,
+    const std::optional<Key>& keyArg,
+    const std::optional<Encoding>& encoding)
 {
     JSC::VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto* thisObject = dynamicDowncast<DiffieHellmanType>(callFrame->thisValue());
-    if (!thisObject) [[unlikely]] {
-        throwThisTypeError(*globalObject, scope, DiffieHellmanType::info()->className, "setPrivateKey"_s);
-        return {};
+    if (!keyArg)
+        return Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "key"_s, "string or an instance of Buffer, TypedArray, or DataView"_s, JSC::jsUndefined());
+
+    BufferEncodingType resolvedEncoding = BufferEncodingType::utf8;
+    if (encoding) {
+        const auto* converted = Bindgen::convertLastAndLease(context, *encoding);
+        RETURN_IF_EXCEPTION(scope, {});
+        if (!converted)
+            return {};
+        if (*converted)
+            resolvedEncoding = nodeEncodingToBufferEncoding(**converted);
     }
 
-    JSC::JSValue keyArg = callFrame->argument(0);
-
-    auto* keyBuffer = Bun::getArrayBufferOrView(globalObject, scope, keyArg, "key"_s, callFrame->argument(1));
+    auto keyBuffer = Bun::getStringOrBufferBytes(globalObject, scope, *keyArg, resolvedEncoding);
     RETURN_IF_EXCEPTION(scope, {});
-    ASSERT(keyBuffer);
 
-    auto span = keyBuffer->span();
+    auto span = keyBuffer.data;
     ncrypto::BignumPointer key(span.data(), span.size());
     if (!key) {
         throwError(globalObject, scope, ErrorCode::ERR_INVALID_ARG_VALUE, "Invalid private key"_s);
@@ -291,7 +280,7 @@ JSC::EncodedJSValue jsDiffieHellmanProtoFuncSetPrivateKeyTemplate(JSC::JSGlobalO
         return {};
     }
 
-    return JSC::JSValue::encode(callFrame->thisValue());
+    return JSC::JSValue::encode(thisObject);
 }
 
 } // namespace Bun

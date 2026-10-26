@@ -76,37 +76,31 @@ pub fn setThreadName(name: [:0]const u8) void {
     }
 }
 
-const ExitFn = *const fn () callconv(.c) void;
+pub const addExitCallback = ProcessLifecycle.addExitCallback;
 
-var on_exit_callbacks = std.ArrayListUnmanaged(ExitFn).empty;
-export fn Bun__atexit(function: ExitFn) void {
-    if (std.mem.indexOfScalar(ExitFn, on_exit_callbacks.items, function) == null) {
-        on_exit_callbacks.append(bun.default_allocator, function) catch {};
-    }
+fn bindRunProcessExitHooks(
+    _: bun.bindgen.Args(RunProcessExitHooksSchema),
+) bun.bindgen.Return(RunProcessExitHooksSchema) {
+    runProcessExitHooks();
 }
 
-pub fn addExitCallback(function: ExitFn) void {
-    Bun__atexit(function);
+fn bindRuntimeUserAgent(
+    _: bun.bindgen.Args(RuntimeUserAgentSchema),
+) bun.bindgen.Return(RuntimeUserAgentSchema) {
+    return bun.bindgen.DOMString.fromUTF8(user_agent) catch bun.outOfMemory();
 }
 
 pub fn runExitCallbacks() void {
-    for (on_exit_callbacks.items) |callback| {
-        callback();
-    }
-    on_exit_callbacks.items.len = 0;
+    ProcessLifecycle.runExitCallbacks();
 }
 
-var is_exiting = std.atomic.Value(bool).init(false);
-export fn bun_is_exiting() c_int {
-    return @intFromBool(isExiting());
-}
-pub fn isExiting() bool {
-    return is_exiting.load(.monotonic);
+fn prepareProcessExit() void {
+    ProcessLifecycle.runBeforeExitCallbacks();
 }
 
 /// Flushes stdout and stderr (in exit/quick_exit callback) and exits with the given code.
 pub fn exit(code: u32) noreturn {
-    is_exiting.store(true, .monotonic);
+    prepareProcessExit();
     _ = @atomicRmw(usize, &bun.analytics.Features.exited, .Add, 1, .monotonic);
 
     // If we are crashing, allow the crash handler to finish it's work.
@@ -124,7 +118,7 @@ pub fn exit(code: u32) noreturn {
     switch (Environment.os) {
         .mac => std.c.exit(@bitCast(code)),
         .windows => {
-            Bun__onExit();
+            runProcessExitHooks();
             std.os.windows.ntdll.RtlExitUserProcess(code);
         },
         else => {
@@ -139,8 +133,9 @@ pub fn exit(code: u32) noreturn {
 }
 
 pub fn exitWithoutCleanup(code: u32) noreturn {
-    is_exiting.store(true, .monotonic);
+    prepareProcessExit();
     Output.flush();
+    Output.Source.Stdio.restore();
     if (Environment.isWindows) {
         std.os.windows.ntdll.RtlExitUserProcess(code);
     }
@@ -182,8 +177,6 @@ pub inline fn mimalloc_cleanup(force: bool) void {
         Mimalloc.mi_collect(force);
     }
 }
-// Versions are now handled by build-generated header (bun_dependency_versions.h)
-
 pub fn notimpl() noreturn {
     @branchHint(.cold);
     Output.panic("Not implemented yet!!!!!", .{});
@@ -197,15 +190,14 @@ pub fn crash() noreturn {
 
 pub const BunInfo = struct {
     bun_version: string,
-    platform: analytics.GenerateHeader.GeneratePlatform.Platform,
+    platform: bun.Platform,
 
-    const analytics = bun.analytics;
     const JSON = bun.json;
     const JSAst = bun.ast;
     pub fn generate(comptime Bundler: type, _: Bundler, allocator: std.mem.Allocator) !JSAst.Expr {
         const info = BunInfo{
             .bun_version = Global.package_json_version,
-            .platform = analytics.GenerateHeader.GeneratePlatform.forOS(),
+            .platform = bun.Platform.forOS(),
         };
 
         return try JSON.toAST(allocator, BunInfo, info);
@@ -213,26 +205,15 @@ pub const BunInfo = struct {
 };
 
 pub const user_agent = "Bun/" ++ Global.package_json_version;
-pub export const Bun__userAgent: [*:0]const u8 = Global.user_agent;
 
-comptime {
-    _ = Bun__userAgent;
-}
-
-pub export fn Bun__onExit() void {
+pub fn runProcessExitHooks() void {
     if (comptime bun.Environment.isNative) {
-        bun.jsc.Node.FSEvents.closeAndWait(bun.cli.Cli.io);
-
+        ProcessLifecycle.runShutdownCallbacks();
         runExitCallbacks();
         Output.flush();
-        std.mem.doNotOptimizeAway(&Bun__atexit);
 
         Output.Source.Stdio.restore();
     }
-}
-
-comptime {
-    _ = Bun__onExit;
 }
 
 const string = []const u8;
@@ -246,3 +227,15 @@ const version_string = Environment.version_string;
 const bun = @import("bun");
 const Mimalloc = bun.mimalloc;
 const use_mimalloc = bun.use_mimalloc;
+const ProcessHostBindings = bun.bindgen.Module("ProcessHost");
+const RuntimeUserAgentBindings = bun.bindgen.Module("runtime_user_agent");
+const ProcessLifecycle = @import("./ProcessLifecycle.zig");
+const RunProcessExitHooksSchema = ProcessHostBindings.nativeExport("runProcessExitHooks");
+const RuntimeUserAgentSchema = RuntimeUserAgentBindings.nativeExport("runtimeUserAgent");
+const RunProcessExitHooksBinding = bun.bindgen.Fn(RunProcessExitHooksSchema, bindRunProcessExitHooks);
+const RuntimeUserAgentBinding = bun.bindgen.Fn(RuntimeUserAgentSchema, bindRuntimeUserAgent);
+
+comptime {
+    _ = RunProcessExitHooksBinding;
+    _ = RuntimeUserAgentBinding;
+}

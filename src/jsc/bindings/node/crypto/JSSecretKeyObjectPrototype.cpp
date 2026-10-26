@@ -1,10 +1,12 @@
 #include "JSSecretKeyObjectPrototype.h"
 #include "JSSecretKeyObject.h"
+#include "SchemaBindings.h"
 #include "ErrorCode.h"
 #include "CryptoUtil.h"
 #include "BunProcess.h"
 #include "NodeValidator.h"
 #include "JSBufferEncodingType.h"
+#include "JSBuffer.h"
 #include <JavaScriptCore/TypedArrayInlines.h>
 #include <JavaScriptCore/JSCJSValueInlines.h>
 
@@ -13,70 +15,73 @@ using namespace JSC;
 using namespace WebCore;
 using namespace ncrypto;
 
-JSC_DECLARE_HOST_FUNCTION(jsSecretKeyObjectExport);
-JSC_DECLARE_CUSTOM_GETTER(jsSecretKeyObjectSymmetricKeySize);
-JSC_DECLARE_HOST_FUNCTION(jsSecretKeyObjectToCryptoKey);
+static JSSecretKeyObject* secretKeyObject(JSC::JSValue value)
+{
+    auto* key = dynamicDowncast<JSSecretKeyObject>(value);
+    RELEASE_ASSERT(key);
+    return key;
+}
+
+static JSSecretKeyObject* secretKeyObject(const std::optional<JSC::JSValue>& value)
+{
+    return value ? secretKeyObject(*value) : nullptr;
+}
 
 const JSC::ClassInfo JSSecretKeyObjectPrototype::s_info = { "SecretKeyObject"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSSecretKeyObjectPrototype) };
 
-static const JSC::HashTableValue JSSecretKeyObjectPrototypeTableValues[] = {
-    { "export"_s, static_cast<unsigned>(PropertyAttribute::Function | PropertyAttribute::DontEnum), NoIntrinsic, { HashTableValue::NativeFunctionType, jsSecretKeyObjectExport, 1 } },
-    { "symmetricKeySize"_s, static_cast<unsigned>(PropertyAttribute::CustomAccessor | PropertyAttribute::ReadOnly), NoIntrinsic, { HashTableValue::GetterSetterType, jsSecretKeyObjectSymmetricKeySize, 0 } },
-    // { "toCryptoKey"_s, static_cast<unsigned>(PropertyAttribute::Function | PropertyAttribute::DontEnum), NoIntrinsic, { HashTableValue::NativeFunctionType, jsSecretKeyObjectToCryptoKey, 3 } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_JSSecretKeyObjectPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSSecretKeyObjectPrototype
 
 void JSSecretKeyObjectPrototype::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
-    reifyStaticProperties(vm, JSSecretKeyObjectPrototype::info(), JSSecretKeyObjectPrototypeTableValues, *this);
+    bunBindgenObjectSurface_JSSecretKeyObjectPrototype_install(vm, JSSecretKeyObjectPrototype::info(), *this);
 
-    // intentionally inherit KeyObject's toStringTag
-    // https://github.com/nodejs/node/blob/95b0f9d448832eeb75586c89fab0777a1a4b0610/lib/internal/crypto/keys.js#L146
+    // Inherit KeyObject's toStringTag.
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsSecretKeyObjectExport, (JSGlobalObject * globalObject, CallFrame* callFrame))
+Bindgen::NodeCryptoSecretKeyExportResult Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_secretKeyObjectExport(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_secretKeyObjectExport_Arguments& args)
 {
+    auto* globalObject = &context.globalObject;
     VM& vm = globalObject->vm();
     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
 
-    JSSecretKeyObject* secretKeyObject = dynamicDowncast<JSSecretKeyObject>(callFrame->thisValue());
-    if (!secretKeyObject) {
-        throwThisTypeError(*globalObject, scope, "SecretKeyObject"_s, "export"_s);
+    const bool jwk = args.options && args.options->format &&
+        *args.options->format == Bun::Bindgen::NodeCryptoSecretKeyExportFormat::jwk;
+    auto key = secretKeyObject(args.bindingThis)->handle().symmetricKey().span();
+    Bindgen::NodeCryptoSecretKeyExportResult result;
+    if (jwk) {
+        auto encoded = bufferToStringFromBytes(globalObject, scope, key, BufferEncodingType::base64url);
+        RETURN_IF_EXCEPTION(scope, {});
+        Bindgen::NodeCryptoSecretJwkResult value {
+            .kty = "oct"_s,
+            .k = WTF::move(encoded),
+        };
+        result.set_jwk(WTF::move(value));
+        return result;
+    }
+
+    WTF::Vector<uint8_t> bytes;
+    if (!bytes.tryGrow(key.size())) {
+        throwOutOfMemoryError(globalObject, scope);
         return {};
     }
-
-    KeyObject& handle = secretKeyObject->handle();
-    JSValue optionsValue = callFrame->argument(0);
-
-    RELEASE_AND_RETURN(scope, JSValue::encode(handle.exportSecret(globalObject, scope, optionsValue)));
+    if (!key.empty())
+        memcpy(bytes.mutableSpan().data(), key.data(), key.size());
+    result.set_buffer(WTF::move(bytes));
+    return result;
 }
 
-JSC_DEFINE_CUSTOM_GETTER(jsSecretKeyObjectSymmetricKeySize, (JSGlobalObject*, JSC::EncodedJSValue thisValue, PropertyName propertyName))
+std::optional<double> Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_secretKeyObjectSymmetricKeySize(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_secretKeyObjectSymmetricKeySize_Arguments& args)
 {
-    JSSecretKeyObject* secretKeyObject = dynamicDowncast<JSSecretKeyObject>(JSValue::decode(thisValue));
-    if (!secretKeyObject) {
-        return JSValue::encode(jsUndefined());
-    }
+    JSSecretKeyObject* key = secretKeyObject(args.bindingThis);
+    if (!key)
+        return std::nullopt;
 
-    size_t symmetricKeySize = secretKeyObject->handle().symmetricKey().size();
-    return JSValue::encode(jsNumber(symmetricKeySize));
+    return static_cast<double>(key->handle().symmetricKey().size());
 }
-
-// JSC_DEFINE_HOST_FUNCTION(jsSecretKeyObjectToCryptoKey, (JSGlobalObject * globalObject, CallFrame* callFrame))
-// {
-//     VM& vm = globalObject->vm();
-//     ThrowScope scope = DECLARE_THROW_SCOPE(vm);
-
-//     JSSecretKeyObject* secretKeyObject = dynamicDowncast<JSSecretKeyObject>(callFrame->thisValue());
-//     if (!secretKeyObject) {
-//         throwThisTypeError(*globalObject, scope, "SecretKeyObject"_s, "toCryptoKey"_s);
-//         return {};
-//     }
-
-//     KeyObject& handle = secretKeyObject->handle();
-//     JSValue algorithmValue = callFrame->argument(0);
-//     JSValue extractableValue = callFrame->argument(1);
-//     JSValue keyUsagesValue = callFrame->argument(2);
-
-//     return JSValue::encode(handle.toCryptoKey(globalObject, scope, algorithmValue, extractableValue, keyUsagesValue));
-// }

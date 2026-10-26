@@ -42,6 +42,8 @@ struct us_poll_t {
   uv_poll_t *uv_p;
   LIBUS_SOCKET_DESCRIPTOR fd;
   unsigned char poll_type;
+  unsigned char uv_initialized;
+  unsigned char free_requested;
 };
 
 #endif // LIBUV_H

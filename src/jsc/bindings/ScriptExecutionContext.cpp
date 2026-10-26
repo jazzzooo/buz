@@ -1,13 +1,14 @@
 #include "root.h"
-#include "headers.h"
 #include "ScriptExecutionContext.h"
+#include "SchemaBindings.h"
 #include "ContextDestructionObserver.h"
+#include "MessagePortPipe.h"
 
 #include "libusockets.h"
 #include "_libusockets.h"
 #include "BunClientData.h"
 #include "EventLoopTask.h"
-extern "C" void Bun__startLoop(us_loop_t* loop);
+#include <wtf/HashMap.h>
 
 namespace WebCore {
 static constexpr ScriptExecutionContextIdentifier INITIAL_IDENTIFIER_INTERNAL = 1;
@@ -73,19 +74,26 @@ JSGlobalObject* ScriptExecutionContext::globalObject()
     return m_globalObject;
 }
 
-extern "C" void Bun__eventLoop__incrementRefConcurrently(void* bunVM, int delta);
+RefPtr<MessagePortContext> ScriptExecutionContext::messagePortContext()
+{
+    ASSERT(isContextThread());
+    if (!m_messagePortContext)
+        m_messagePortContext = MessagePortContext::tryCreate(*this);
+    return m_messagePortContext;
+}
 
 void ScriptExecutionContext::refEventLoop()
 {
-    Bun__eventLoop__incrementRefConcurrently(WebCore::clientData(vm())->bunVM, 1);
+    Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_eventLoopRefConcurrently(WebCore::clientData(vm())->bunVM);
 }
 void ScriptExecutionContext::unrefEventLoop()
 {
-    Bun__eventLoop__incrementRefConcurrently(WebCore::clientData(vm())->bunVM, -1);
+    Bun::Bindgen::ZigExports::bunBindgenZig_EventLoop_eventLoopUnrefConcurrently(WebCore::clientData(vm())->bunVM);
 }
 
 ScriptExecutionContext::~ScriptExecutionContext()
 {
+    closeNativeLifetimes();
     checkConsistency();
 
 #if ASSERT_ENABLED
@@ -93,15 +101,11 @@ ScriptExecutionContext::~ScriptExecutionContext()
         Locker locker { allScriptExecutionContextsMapLock };
         ASSERT_WITH_MESSAGE(!allScriptExecutionContextsMap().contains(m_identifier), "A ScriptExecutionContext subclass instance implementing postTask should have already removed itself from the map");
     }
+#endif // ASSERT_ENABLED
+
     m_inScriptExecutionContextDestructor = true;
-#endif // ASSERT_ENABLED
-
-    while (auto* destructionObserver = m_destructionObservers.takeAny())
-        destructionObserver->contextDestroyed();
-
-#if ASSERT_ENABLED
-    m_inScriptExecutionContextDestructor = false;
-#endif // ASSERT_ENABLED
+    while (auto* destructionObserver = m_destructionObservers)
+        destructionObserver->notifyContextDestroyed();
 }
 
 bool ScriptExecutionContext::postTaskTo(ScriptExecutionContextIdentifier identifier, Function<void(ScriptExecutionContext&)>&& task)
@@ -116,20 +120,76 @@ bool ScriptExecutionContext::postTaskTo(ScriptExecutionContextIdentifier identif
     return true;
 }
 
+ScriptExecutionContext::NativeLifetime::~NativeLifetime()
+{
+    detach();
+}
+
+bool ScriptExecutionContext::NativeLifetime::attach(ScriptExecutionContext& context) noexcept
+{
+    ASSERT(context.isContextThread());
+    RELEASE_ASSERT(!m_context);
+    if (!context.m_nativeLifetimesOpen)
+        return false;
+    m_context = &context;
+    m_next = context.m_nativeLifetimes;
+    if (m_next)
+        m_next->m_previous = this;
+    context.m_nativeLifetimes = this;
+    return true;
+}
+
+void ScriptExecutionContext::NativeLifetime::detach() noexcept
+{
+    if (!m_context)
+        return;
+    if (m_previous)
+        m_previous->m_next = m_next;
+    else
+        m_context->m_nativeLifetimes = m_next;
+    if (m_next)
+        m_next->m_previous = m_previous;
+    m_context = nullptr;
+    m_previous = nullptr;
+    m_next = nullptr;
+}
+
+void ScriptExecutionContext::closeNativeLifetimes() noexcept
+{
+    m_nativeLifetimesOpen = false;
+    while (auto* lifetime = m_nativeLifetimes) {
+        lifetime->detach();
+        lifetime->contextClosed();
+    }
+}
+
 void ScriptExecutionContext::didCreateDestructionObserver(ContextDestructionObserver& observer)
 {
-#if ASSERT_ENABLED
-    ASSERT(!m_inScriptExecutionContextDestructor);
-#endif // ASSERT_ENABLED
-    m_destructionObservers.add(&observer);
+    ASSERT(!observer.scriptExecutionContext());
+    ASSERT(!observer.m_previous && !observer.m_next);
+    if (m_inScriptExecutionContextDestructor)
+        return;
+    observer.m_context.store(this, std::memory_order_relaxed);
+    observer.m_next = m_destructionObservers;
+    if (m_destructionObservers)
+        m_destructionObservers->m_previous = &observer;
+    m_destructionObservers = &observer;
 }
 
 void ScriptExecutionContext::willDestroyDestructionObserver(ContextDestructionObserver& observer)
 {
-#if ASSERT_ENABLED
-    ASSERT(!m_inScriptExecutionContextDestructor);
-#endif // ASSERT_ENABLED
-    m_destructionObservers.remove(&observer);
+    ASSERT(observer.scriptExecutionContext() == this);
+    if (observer.m_previous)
+        observer.m_previous->m_next = observer.m_next;
+    else {
+        ASSERT(m_destructionObservers == &observer);
+        m_destructionObservers = observer.m_next;
+    }
+    if (observer.m_next)
+        observer.m_next->m_previous = observer.m_previous;
+    observer.m_previous = nullptr;
+    observer.m_next = nullptr;
+    observer.m_context.store(nullptr, std::memory_order_relaxed);
 }
 
 bool ScriptExecutionContext::isJSExecutionForbidden()
@@ -137,12 +197,10 @@ bool ScriptExecutionContext::isJSExecutionForbidden()
     return !m_vm || m_vm->executionForbidden();
 }
 
-extern "C" void* Bun__getVM();
-
 bool ScriptExecutionContext::isContextThread()
 {
     auto clientData = WebCore::clientData(vm());
-    return clientData && clientData->bunVM == Bun__getVM();
+    return clientData && clientData->bunVM == Bun::Bindgen::ZigExports::bunBindgenZig_virtual_machine_getVirtualMachine();
 }
 
 bool ScriptExecutionContext::ensureOnContextThread(ScriptExecutionContextIdentifier identifier, Function<void(ScriptExecutionContext&)>&& task)
@@ -186,7 +244,7 @@ ScriptExecutionContext* ScriptExecutionContext::getMainThreadScriptExecutionCont
 void ScriptExecutionContext::checkConsistency() const
 {
 #if ASSERT_ENABLED
-    for (auto* destructionObserver : m_destructionObservers)
+    for (auto* destructionObserver = m_destructionObservers; destructionObserver; destructionObserver = destructionObserver->m_next)
         ASSERT(destructionObserver->scriptExecutionContext() == this);
 #endif // ASSERT_ENABLED
 }
@@ -196,12 +254,23 @@ ScriptExecutionContextIdentifier ScriptExecutionContext::generateIdentifier()
     return ++lastUniqueIdentifier;
 }
 
-void ScriptExecutionContext::regenerateIdentifier()
+void ScriptExecutionContext::inheritIdentifierFrom(ScriptExecutionContext& previous)
 {
-
-    m_identifier = ++lastUniqueIdentifier;
-
-    addToContextsMap();
+    RELEASE_ASSERT(this != &previous && m_vm == previous.m_vm);
+    ASSERT(isContextThread());
+    // Concurrent senders must observe a registered context throughout the handoff.
+    {
+        Locker locker { allScriptExecutionContextsMapLock };
+        auto& contexts = allScriptExecutionContextsMap();
+        auto currentEntry = contexts.find(m_identifier);
+        auto previousEntry = contexts.find(previous.m_identifier);
+        RELEASE_ASSERT(currentEntry != contexts.end() && currentEntry->value == this);
+        RELEASE_ASSERT(previousEntry != contexts.end() && previousEntry->value == &previous);
+        currentEntry->value = &previous;
+        previousEntry->value = this;
+        std::swap(m_identifier, previous.m_identifier);
+    }
+    previous.closeNativeLifetimes();
 }
 
 void ScriptExecutionContext::addToContextsMap()
@@ -213,9 +282,12 @@ void ScriptExecutionContext::addToContextsMap()
 
 void ScriptExecutionContext::removeFromContextsMap()
 {
-    Locker locker { allScriptExecutionContextsMapLock };
-    ASSERT(allScriptExecutionContextsMap().contains(m_identifier));
-    allScriptExecutionContextsMap().remove(m_identifier);
+    {
+        Locker locker { allScriptExecutionContextsMapLock };
+        ASSERT(allScriptExecutionContextsMap().contains(m_identifier));
+        allScriptExecutionContextsMap().remove(m_identifier);
+    }
+    closeNativeLifetimes();
 }
 
 ScriptExecutionContext* executionContext(JSC::JSGlobalObject* globalObject)
@@ -228,31 +300,35 @@ ScriptExecutionContext* executionContext(JSC::JSGlobalObject* globalObject)
 void ScriptExecutionContext::postTaskConcurrently(Function<void(ScriptExecutionContext&)>&& lambda)
 {
     auto* task = new EventLoopTask(WTF::move(lambda));
+    if (isContextThread() && !task->attachToContext(*this)) {
+        delete task;
+        return;
+    }
     static_cast<Zig::GlobalObject*>(m_globalObject)->queueTaskConcurrently(task);
 }
 // Executes the task on context's thread asynchronously.
 void ScriptExecutionContext::postTask(Function<void(ScriptExecutionContext&)>&& lambda)
 {
-    auto* task = new EventLoopTask(WTF::move(lambda));
-    static_cast<Zig::GlobalObject*>(m_globalObject)->queueTask(task);
+    postTask(new EventLoopTask(WTF::move(lambda)));
 }
 // Executes the task on context's thread asynchronously.
 void ScriptExecutionContext::postTask(EventLoopTask* task)
 {
+    if (!isContextThread()) {
+        static_cast<Zig::GlobalObject*>(m_globalObject)->queueTaskConcurrently(task);
+        return;
+    }
+    if (!task->attachToContext(*this)) {
+        delete task;
+        return;
+    }
     static_cast<Zig::GlobalObject*>(m_globalObject)->queueTask(task);
 }
 
-// Zig bindings
-extern "C" ScriptExecutionContextIdentifier ScriptExecutionContextIdentifier__forGlobalObject(JSC::JSGlobalObject* globalObject)
-{
-    return defaultGlobalObject(globalObject)->scriptExecutionContext()->identifier();
-}
-
-extern "C" JSC::JSGlobalObject* ScriptExecutionContextIdentifier__getGlobalObject(ScriptExecutionContextIdentifier id)
-{
-    auto* context = ScriptExecutionContext::getScriptExecutionContext(id);
-    if (!context) return nullptr;
-    return context->globalObject();
-}
-
 } // namespace WebCore
+
+bool Bun::Bindgen::Engine::bunBindgenEngine_global_objects_scriptExecutionContextExists(
+    const Bun::Bindgen::Engine::BunBindgenEngine_global_objects_scriptExecutionContextExists_Arguments& args)
+{
+    return WebCore::ScriptExecutionContext::getScriptExecutionContext(args.identifier);
+}

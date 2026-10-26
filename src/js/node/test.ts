@@ -32,9 +32,9 @@ const assert = {
 };
 
 // Delete deprecated methods on assert (required to pass node's tests)
-delete assert.AssertionError;
-delete assert.CallTracker;
-delete assert.strict;
+delete (assert as any).AssertionError;
+delete (assert as any).CallTracker;
+delete (assert as any).strict;
 
 let checkNotInsideTest: (ctx: TestContext | undefined, fn: string) => void;
 
@@ -56,7 +56,7 @@ class TestContext {
   ) {
     this.#insideTest = insideTest;
     this.#name = name;
-    this.#filePath = filePath || parent?.filePath || kDefaultFilePath;
+    this.#filePath = filePath || parent?.filePath || undefined;
     this.#parent = parent;
   }
 

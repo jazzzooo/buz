@@ -27,7 +27,5 @@ pub const AltSvc = @import("./h3_client/AltSvc.zig");
 pub var live_sessions = std.atomic.Value(u32).init(0);
 pub var live_streams = std.atomic.Value(u32).init(0);
 
-pub const TestingAPIs = @import("../http_jsc/headers_jsc.zig").H3TestingAPIs;
-
 const bun = @import("bun");
 const std = @import("std");

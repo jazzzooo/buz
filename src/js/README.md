@@ -1,6 +1,6 @@
 # JS Modules
 
-**TLDR**: If anything here changes, re-run `bun run build`.
+Run `./zig build` from the repository root after changing these sources.
 
 - `./node` contains all `node:*` modules
 - `./bun` contains all `bun:*` modules
@@ -63,31 +63,17 @@ export default {
 
 Keep in mind that **these are not ES modules**. `export default` is only syntax sugar to assign to the variable `$exports`, which is actually how the module exports its contents.
 
-To actually wire up one of these modules to the resolver, that is done separately in `module_resolver.zig`. Maybe in the future we can do codegen for it.
+Binding schemas declare native module surfaces. The build emits their module registry and resolves builtin references at build time.
 
-## Builtin Functions
+## Builtin functions
 
-`./functions` contains isolated functions. Each function within is bundled separately, meaning you may not use global variables, non-type `import`s, and even directly referencing the other functions in these files. `require` is still resolved the same way it does in the modules.
+`./builtins` contains isolated functions, bundled separately. They cannot capture module variables or import runtime values. Builtins reach native code through schema declarations such as `$bindgenFn`, and public functions and methods select a `.builtin` backend in their schemas.
 
-In function files, these are accessible in C++ by using `<file><function>CodeGenerator(vm)`, for example:
-
-```c
-object->putDirectBuiltinFunction(
-  vm,
-  globalObject,
-  identifier,
-  // ReadableStream.ts, `function readableStreamToJSON()`
-  // This returns a FunctionExecutable* (extends JSCell*, but not JSFunction*).
-  readableStreamReadableStreamToJSONCodeGenerator(vm),
-  JSC::PropertyAttribute::DontDelete | 0
-);
-```
+Files marked `// @internal` have generated per-realm function storage and GC visitation. Engine integrations use that storage instead of creating and caching additional copies of the same builtin.
 
 ## Building
 
-Run `bun run build` to bundle all the builtins. The output is placed in `build/debug/js`, where these files are loaded dynamically by `bun-debug` (an exact filepath is inlined into the binary pointing at where you cloned bun, so moving the binary to another machine may not work). In a release build, these get minified and inlined into the binary (Please commit those generated headers).
-
-If you change the list of files or functions, you will have to run `bun run build`.
+Run `./zig build` from the repository root. It bundles the JavaScript and emits the binding artifacts under `build/zig/`. Debug builds load bundled JavaScript from that build directory; release builds embed it. Generated files are build outputs and are not committed.
 
 ## Notes on how the build process works
 

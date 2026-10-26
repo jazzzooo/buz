@@ -1,47 +1,51 @@
 pub const AbortSignal = opaque {
-    extern fn WebCore__AbortSignal__aborted(arg0: *AbortSignal) bool;
-    extern fn WebCore__AbortSignal__abortReason(arg0: *AbortSignal) JSValue;
-    extern fn WebCore__AbortSignal__addListener(arg0: *AbortSignal, arg1: ?*anyopaque, ArgFn2: ?*const fn (?*anyopaque, JSValue) callconv(.c) void) *AbortSignal;
-    extern fn WebCore__AbortSignal__cleanNativeBindings(arg0: *AbortSignal, arg1: ?*anyopaque) void;
-    extern fn WebCore__AbortSignal__create(arg0: *JSGlobalObject) JSValue;
-    extern fn WebCore__AbortSignal__fromJS(JSValue0: JSValue) ?*AbortSignal;
-    extern fn WebCore__AbortSignal__ref(arg0: *AbortSignal) *AbortSignal;
-    extern fn WebCore__AbortSignal__toJS(arg0: *AbortSignal, arg1: *JSGlobalObject) JSValue;
-    extern fn WebCore__AbortSignal__unref(arg0: *AbortSignal) void;
-    extern fn WebCore__AbortSignal__getTimeout(arg0: *AbortSignal) ?*Timeout;
+    pub const Listener = struct {
+        const Context = bun.bindgen.NativeCallbackContext(.vm);
+
+        context: Context,
+        callback: *const fn (Context, bun.bindgen.EngineValueView) void,
+
+        fn init(ctx: anytype, comptime callback: *const fn (@TypeOf(ctx), bun.bindgen.EngineValueView) void) Listener {
+            const Wrapper = struct {
+                fn run(context: Context, reason: bun.bindgen.EngineValueView) void {
+                    callback(context.get(@TypeOf(ctx)), reason);
+                }
+            };
+            return .{
+                .context = .init(ctx),
+                .callback = Wrapper.run,
+            };
+        }
+
+        fn run(this: *Listener, reason: bun.bindgen.EngineValueView) void {
+            this.callback(this.context, reason);
+        }
+    };
+
     pub fn listen(
         this: *AbortSignal,
-        comptime Context: type,
-        ctx: *Context,
-        comptime cb: *const fn (*Context, JSValue) void,
-    ) *AbortSignal {
-        const Wrapper = struct {
-            const call = cb;
-            pub fn callback(
-                ptr: ?*anyopaque,
-                reason: JSValue,
-            ) callconv(.c) void {
-                const val = bun.cast(*Context, ptr.?);
-                call(val, reason);
-            }
+        globalObject: *jsc.JSGlobalObject,
+        listener: *Listener,
+        ctx: anytype,
+        comptime callback: *const fn (@TypeOf(ctx), bun.bindgen.EngineValueView) void,
+    ) bun.JSError!*AbortSignal {
+        listener.* = Listener.init(ctx, callback);
+        const registered_signal = bun.bindgen.Engine(AbortSignalAddListenerSchema).call(globalObject, .{
+            .signal = @ptrCast(this),
+            .listener = @ptrCast(listener),
+        }) catch |err| {
+            this.removeListener(listener);
+            return err;
         };
-
-        return this.addListener(@as(?*anyopaque, @ptrCast(ctx)), Wrapper.callback);
+        return @ptrCast(registered_signal);
     }
 
-    pub fn addListener(
-        this: *AbortSignal,
-        ctx: ?*anyopaque,
-        callback: *const fn (?*anyopaque, JSValue) callconv(.c) void,
-    ) *AbortSignal {
-        return WebCore__AbortSignal__addListener(this, ctx, callback);
+    pub fn removeListener(this: *AbortSignal, listener: *Listener) void {
+        bun.bindgen.Engine(AbortSignalRemoveListenerSchema).call(.{
+            .signal = @ptrCast(this),
+            .listener = @ptrCast(listener),
+        });
     }
-
-    pub fn cleanNativeBindings(this: *AbortSignal, ctx: ?*anyopaque) void {
-        return WebCore__AbortSignal__cleanNativeBindings(this, ctx);
-    }
-
-    extern fn WebCore__AbortSignal__signal(*AbortSignal, *jsc.JSGlobalObject, CommonAbortReason) void;
 
     pub fn signal(
         this: *AbortSignal,
@@ -49,113 +53,85 @@ pub const AbortSignal = opaque {
         reason: CommonAbortReason,
     ) void {
         bun.analytics.Features.abort_signal += 1;
-        return WebCore__AbortSignal__signal(this, globalObject, reason);
+        bun.bindgen.Engine(AbortSignalSignalSchema).call(globalObject, .{
+            .signal = @ptrCast(this),
+            .reason = @backingInt(reason),
+        }) catch return;
     }
 
-    extern fn WebCore__AbortSignal__incrementPendingActivity(*AbortSignal) void;
-    extern fn WebCore__AbortSignal__decrementPendingActivity(*AbortSignal) void;
-
     pub fn pendingActivityRef(this: *AbortSignal) void {
-        return WebCore__AbortSignal__incrementPendingActivity(this);
+        bun.bindgen.Engine(AbortSignalIncrementPendingActivitySchema).call(.{ .signal = @ptrCast(this) });
     }
 
     pub fn pendingActivityUnref(this: *AbortSignal) void {
-        return WebCore__AbortSignal__decrementPendingActivity(this);
+        bun.bindgen.Engine(AbortSignalDecrementPendingActivitySchema).call(.{ .signal = @ptrCast(this) });
     }
 
     /// This function is not threadsafe. aborted is a boolean, not an atomic!
     pub fn aborted(this: *AbortSignal) bool {
-        return WebCore__AbortSignal__aborted(this);
+        return bun.bindgen.Engine(AbortSignalIsAbortedSchema).call(.{ .signal = @ptrCast(this) });
     }
 
-    /// This function is not threadsafe. JSValue cannot safely be passed between threads.
-    pub fn abortReason(this: *AbortSignal) JSValue {
-        return WebCore__AbortSignal__abortReason(this);
+    pub fn abortReasonRoot(this: *AbortSignal, global: *jsc.JSGlobalObject) bun.JSError!bun.bindgen.EngineRoot {
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(global);
+        defer scope.deinit();
+        var result = try scope.engineIn("abort_signals", "abortSignalReason").call(.{
+            .signal = @as(AbortSignalHandle, @ptrCast(this)),
+        });
+        defer result.deinit();
+        return result.toRoot();
     }
 
-    extern fn WebCore__AbortSignal__reasonIfAborted(*AbortSignal, *jsc.JSGlobalObject, *u8) JSValue;
+    pub fn reasonIfAbortedRoot(this: *AbortSignal, global: *jsc.JSGlobalObject) bun.JSError!?bun.bindgen.EngineRoot {
+        if (!this.aborted()) return null;
+        return try this.abortReasonRoot(global);
+    }
 
-    pub const AbortReason = union(enum) {
-        common: CommonAbortReason,
-        js: JSValue,
-
-        pub fn toBodyValueError(this: AbortReason, globalObject: *jsc.JSGlobalObject) jsc.WebCore.Body.Value.ValueError {
-            return switch (this) {
-                .common => |reason| .{ .AbortReason = reason },
-                .js => |value| .{ .JSValue = .create(value, globalObject) },
-            };
-        }
-
-        pub fn toJS(this: AbortReason, global: *jsc.JSGlobalObject) JSValue {
-            return switch (this) {
-                .common => |reason| reason.toJS(global),
-                .js => |value| value,
-            };
-        }
-    };
-
-    pub fn reasonIfAborted(this: *AbortSignal, global: *jsc.JSGlobalObject) ?AbortReason {
-        var reason: u8 = 0;
-        const js_reason = WebCore__AbortSignal__reasonIfAborted(this, global, &reason);
-        if (reason > 0) {
-            bun.debugAssert(js_reason.isUndefined());
-            return .{ .common = @fromBackingInt(@intCast(reason)) };
-        }
-        if (js_reason == .zero) {
-            return null; // not aborted
-        }
-        return .{ .js = js_reason };
+    /// Node's AbortError shape: an `Error` named "AbortError" with code
+    /// "ABORT_ERR" whose `cause` is the signal's abort reason. Node-profile
+    /// APIs reject with this, never with the raw DOMException in `reason`.
+    pub fn wrapAbortErrorRoot(global: *jsc.JSGlobalObject, cause: *const bun.bindgen.EngineRoot) bun.JSError!bun.bindgen.Root {
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(global);
+        defer scope.deinit();
+        var result = try scope.engineIn("errors", "wrapAbortError").call(.{ .cause = cause.operand(&scope).asEngine() });
+        defer result.deinit();
+        return result.toRoot();
     }
 
     pub fn ref(this: *AbortSignal) *AbortSignal {
-        return WebCore__AbortSignal__ref(this);
+        return @ptrCast(bun.bindgen.Engine(AbortSignalRefSchema).call(.{ .signal = @ptrCast(this) }));
     }
 
     pub fn unref(this: *AbortSignal) void {
-        WebCore__AbortSignal__unref(this);
+        bun.bindgen.Engine(AbortSignalUnrefSchema).call(.{ .signal = @ptrCast(this) });
     }
 
-    pub fn detach(this: *AbortSignal, ctx: ?*anyopaque) void {
-        this.cleanNativeBindings(ctx);
+    pub fn deref(this: *AbortSignal) void {
         this.unref();
     }
 
-    pub fn fromJS(value: JSValue) ?*AbortSignal {
-        return WebCore__AbortSignal__fromJS(value);
+    pub fn detach(this: *AbortSignal, listener: *Listener) void {
+        this.removeListener(listener);
+        this.unref();
     }
 
-    pub fn toJS(this: *AbortSignal, global: *JSGlobalObject) JSValue {
-        return WebCore__AbortSignal__toJS(this, global);
-    }
-
-    pub fn create(global: *JSGlobalObject) JSValue {
-        return WebCore__AbortSignal__create(global);
-    }
-
-    extern fn WebCore__AbortSignal__new(*JSGlobalObject) *AbortSignal;
     pub fn new(global: *JSGlobalObject) *AbortSignal {
-        jsc.markBinding(@src());
-        return WebCore__AbortSignal__new(global);
+        return @ptrCast(bun.bindgen.Engine(AbortSignalNewSchema).call(global, .{}) catch unreachable);
     }
 
-    /// Returns a borrowed handle to the internal Timeout, or null.
-    ///
-    /// Lifetime: owned by AbortSignal; may become invalid if the timer fires/cancels.
-    ///
-    /// Thread-safety: not thread-safe; call only on the owning thread/loop.
-    ///
-    /// Usage: if you need to operate on the Timeout (run/cancel/deinit), hold a ref
-    /// to `this` for the duration (e.g., `this.ref(); defer this.unref();`) and avoid
-    /// caching the pointer across turns.
-    pub fn getTimeout(this: *AbortSignal) ?*Timeout {
-        return WebCore__AbortSignal__getTimeout(this);
+    pub fn timeoutDeadline(this: *AbortSignal) ?bun.timespec {
+        const handle = bun.bindgen.Engine(AbortSignalTimeoutSchema).call(.{ .signal = @ptrCast(this) }) orelse return null;
+        const timeout: *const Timeout = @ptrCast(@alignCast(handle));
+        if (timeout.event_loop_timer.state != .ACTIVE) return null;
+        return timeout.event_loop_timer.next;
     }
 
     pub const Timeout = struct {
         event_loop_timer: jsc.API.Timer.EventLoopTimer,
 
-        // The `Timeout`'s lifetime is owned by the AbortSignal.
-        // But this does have a ref count increment.
+        // Released by timer teardown, including cancellation without dispatch.
         signal: *AbortSignal,
 
         /// "epoch" is reused.
@@ -198,46 +174,43 @@ pub const AbortSignal = opaque {
 
         pub fn run(this: *Timeout, vm: *jsc.VirtualMachine) void {
             this.event_loop_timer.state = .FIRED;
-            this.cancel(vm);
-
-            // The signal and its handlers belong to a previous isolated test
-            // file's global; firing now would run them against the new global.
-            // Drop the extra ref that signalAbort() would have released.
-            if (this.generation != vm.test_isolation_generation) {
-                this.signal.unref();
-                return;
-            }
-
-            // Dispatching the signal may cause the Timeout to get freed.
-            dispatch(vm, this.signal);
+            const signal_ptr = this.signal.ref();
+            defer signal_ptr.unref();
+            defer bun.bindgen.Engine(AbortSignalCancelTimeoutSchema).call(.{ .signal = @ptrCast(signal_ptr) });
+            const belongs_to_current_global = this.generation == vm.test_isolation_generation;
+            if (belongs_to_current_global)
+                dispatch(vm, signal_ptr);
         }
 
         fn dispatch(vm: *jsc.VirtualMachine, signal_ptr: *AbortSignal) void {
             const loop = vm.eventLoop();
             loop.enter();
             defer loop.exit();
-            // signalAbort() releases the extra ref from timeout() after all
-            // abort work completes, so we must not unref here.
             signal_ptr.signal(vm.global, .Timeout);
         }
 
         // This may run inside the "signal" call.
         fn deinit(this: *Timeout, vm: *jsc.VirtualMachine) void {
+            const signal_ptr = this.signal;
             this.cancel(vm);
             bun.destroy(this);
+            signal_ptr.unref();
         }
 
         /// Caller is expected to have already ref'd the AbortSignal.
-        export fn AbortSignal__Timeout__create(vm: *jsc.VirtualMachine, signal_: *AbortSignal, milliseconds: u64) *Timeout {
-            return Timeout.init(vm, signal_, milliseconds);
+        fn bindCreate(
+            args: bun.bindgen.Args(AbortSignalTimeoutCreateSchema),
+        ) bun.bindgen.Return(AbortSignalTimeoutCreateSchema) {
+            const vm: *jsc.VirtualMachine = @ptrCast(@alignCast(args.vm));
+            const signal_ptr: *AbortSignal = @ptrCast(@alignCast(args.signal));
+            return @ptrCast(Timeout.init(vm, signal_ptr, args.milliseconds));
         }
 
-        export fn AbortSignal__Timeout__run(this: *Timeout, vm: *jsc.VirtualMachine) void {
-            this.run(vm);
-        }
-
-        export fn AbortSignal__Timeout__deinit(this: *Timeout) void {
-            // Called from ~AbortSignal() / cancelTimer(). The AbortSignal's
+        fn bindDestroy(
+            args: bun.bindgen.Args(AbortSignalTimeoutDestroySchema),
+        ) bun.bindgen.Return(AbortSignalTimeoutDestroySchema) {
+            const this: *Timeout = @ptrCast(@alignCast(args.timeout));
+            // Called from cancelTimer(). The AbortSignal's
             // ScriptExecutionContext may be a dead global under --isolate, so
             // we resolve the VM via the threadlocal instead of taking it as a
             // parameter (which the caller would have to dereference the dead
@@ -245,11 +218,45 @@ pub const AbortSignal = opaque {
             this.deinit(jsc.VirtualMachine.get());
         }
     };
+
+    fn bindRunListener(
+        _: bun.bindgen.CallContext(AbortSignalRunListenerSchema),
+        args: bun.bindgen.Args(AbortSignalRunListenerSchema),
+    ) bun.bindgen.Return(AbortSignalRunListenerSchema) {
+        const listener: *Listener = @ptrCast(@alignCast(args.listener));
+        listener.run(args.reason);
+    }
 };
 
 const bun = @import("bun");
-const CommonAbortReason = @import("./CommonAbortReason.zig").CommonAbortReason;
+const CommonAbortReason = @import("../http_types/CommonAbortReason.zig").CommonAbortReason;
 
 const jsc = bun.jsc;
 const JSGlobalObject = jsc.JSGlobalObject;
-const JSValue = jsc.JSValue;
+
+const AbortSignalBindings = bun.bindgen.Module("abort_signals");
+const AbortSignalIsAbortedSchema = AbortSignalBindings.engineShim("abortSignalIsAborted");
+const AbortSignalAddListenerSchema = AbortSignalBindings.engineShim("abortSignalAddListener");
+const AbortSignalReasonSchema = AbortSignalBindings.engineShim("abortSignalReason");
+const AbortSignalHandle = bun.bindgen.EngineArgumentType(AbortSignalReasonSchema, "signal");
+const AbortSignalTimeoutSchema = AbortSignalBindings.engineShim("abortSignalTimeout");
+const AbortSignalCancelTimeoutSchema = AbortSignalBindings.engineShim("abortSignalCancelTimeout");
+const AbortSignalRefSchema = AbortSignalBindings.engineShim("abortSignalRef");
+const AbortSignalUnrefSchema = AbortSignalBindings.engineShim("abortSignalUnref");
+const AbortSignalIncrementPendingActivitySchema = AbortSignalBindings.engineShim("abortSignalIncrementPendingActivity");
+const AbortSignalDecrementPendingActivitySchema = AbortSignalBindings.engineShim("abortSignalDecrementPendingActivity");
+const AbortSignalNewSchema = AbortSignalBindings.engineShim("abortSignalNew");
+const AbortSignalRemoveListenerSchema = AbortSignalBindings.engineShim("abortSignalRemoveListener");
+const AbortSignalSignalSchema = AbortSignalBindings.engineShim("abortSignalSignal");
+const AbortSignalTimeoutCreateSchema = AbortSignalBindings.nativeExport("abortSignalTimeoutCreate");
+const AbortSignalTimeoutDestroySchema = AbortSignalBindings.nativeExport("abortSignalTimeoutDestroy");
+const AbortSignalRunListenerSchema = AbortSignalBindings.nativeExport("abortSignalRunListener");
+const AbortSignalTimeoutCreateBinding = bun.bindgen.Fn(AbortSignalTimeoutCreateSchema, AbortSignal.Timeout.bindCreate);
+const AbortSignalTimeoutDestroyBinding = bun.bindgen.Fn(AbortSignalTimeoutDestroySchema, AbortSignal.Timeout.bindDestroy);
+const AbortSignalRunListenerBinding = bun.bindgen.Fn(AbortSignalRunListenerSchema, AbortSignal.bindRunListener);
+
+comptime {
+    _ = AbortSignalTimeoutCreateBinding;
+    _ = AbortSignalTimeoutDestroyBinding;
+    _ = AbortSignalRunListenerBinding;
+}

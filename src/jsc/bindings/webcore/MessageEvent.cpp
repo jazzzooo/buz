@@ -30,9 +30,11 @@
 
 // #include "Blob.h"
 #include "EventNames.h"
-#include "JSDOMConvert.h"
+#include "JSDOMWrapperCache.h"
 #include "JSMessageEvent.h"
+#include "WebCoreJSClientData.h"
 #include <JavaScriptCore/JSCInlines.h>
+#include <JavaScriptCore/SlotVisitorMacros.h>
 #include <wtf/TZoneMallocInlines.h>
 #include "blob.h"
 
@@ -90,56 +92,73 @@ Ref<MessageEvent> MessageEvent::create(const AtomString& type, Init&& initialize
 
 MessageEvent::~MessageEvent() = default;
 
-auto MessageEvent::create(JSC::JSGlobalObject& globalObject, Ref<SerializedScriptValue>&& data, RefPtr<MessagePort>&& source, Vector<RefPtr<MessagePort>>&& ports) -> MessageEventWithStrongData
+auto MessageEvent::create(JSC::JSGlobalObject& globalObject, Ref<SerializedScriptValue>&& data, RefPtr<MessagePort>&& source, Vector<RefPtr<MessagePort>>&& ports) -> std::optional<MessageEventWithStrongData>
 {
     return create(globalObject, WTF::move(data), {}, {}, WTF::move(source), WTF::move(ports));
 }
 
-auto MessageEvent::create(JSC::JSGlobalObject& globalObject, Ref<SerializedScriptValue>&& data, const String& origin, const String& lastEventId, RefPtr<MessagePort>&& source, Vector<RefPtr<MessagePort>>&& ports) -> MessageEventWithStrongData
+auto MessageEvent::create(JSC::JSGlobalObject& globalObject, Ref<SerializedScriptValue>&& data, const String& origin, const String& lastEventId, RefPtr<MessagePort>&& source, Vector<RefPtr<MessagePort>>&& ports) -> std::optional<MessageEventWithStrongData>
 {
     auto& vm = globalObject.vm();
-    // Locker<JSC::JSLock> locker(vm.apiLock());
-    auto topExceptionScope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+    auto scope = DECLARE_THROW_SCOPE(vm);
 
     bool didFail = false;
 
     auto deserialized = data->deserialize(globalObject, &globalObject, ports, SerializationErrorMode::NonThrowing, &didFail);
-    if (topExceptionScope.exception()) [[unlikely]]
-        deserialized = jsUndefined();
-
-    JSC::Strong<JSC::Unknown> strongData(vm, deserialized);
+    RETURN_IF_EXCEPTION(scope, std::nullopt);
+    if (didFail)
+        deserialized = jsNull();
 
     auto& eventType = didFail ? eventNames().messageerrorEvent : eventNames().messageEvent;
     auto event = adoptRef(*new MessageEvent(eventType, WTF::move(data), origin, lastEventId, WTF::move(source), WTF::move(ports)));
-    JSC::Strong<JSC::JSObject> strongWrapper(vm, uncheckedDowncast<JSC::JSObject>(toJS(&globalObject, uncheckedDowncast<JSDOMGlobalObject>(&globalObject), event.get())));
-    // Since we've already deserialized the SerializedScriptValue, cache the result so we don't have to deserialize
-    // again the next time JSMessageEvent::data() gets called by the main world.
-    event->cachedData().set(vm, strongWrapper.get(), deserialized);
+    auto wrapperValue = toJS(&globalObject, uncheckedDowncast<JSDOMGlobalObject>(&globalObject), event.get());
+    RETURN_IF_EXCEPTION(scope, std::nullopt);
+    auto* wrapper = uncheckedDowncast<JSMessageEvent>(wrapperValue);
+    wrapper->set_slot_data(vm, deserialized);
 
-    return MessageEventWithStrongData { event, WTF::move(strongWrapper) };
+    return std::optional<MessageEventWithStrongData> { std::in_place, WTF::move(event), vm, wrapper };
 }
 
-void MessageEvent::initMessageEvent(const AtomString& type, bool canBubble, bool cancelable, JSValue data, const String& origin, const String& lastEventId, RefPtr<MessagePort>&& source, Vector<RefPtr<MessagePort>>&& ports)
+void MessageEvent::initMessageEvent(JSC::VM& vm, const AtomString& type, bool canBubble, bool cancelable, Bun::Bindgen::CppAny data, const String& origin, const String& lastEventId, RefPtr<MessagePort>&& source, Vector<RefPtr<MessagePort>>&& ports)
 {
     if (isBeingDispatched())
         return;
 
     initEvent(type, canBubble, cancelable);
 
+    DataType replacedData { JSValueTag {} };
     {
         Locker locker { m_concurrentDataAccessLock };
-        m_data = JSValueTag {};
+        std::swap(m_data, replacedData);
+        m_source.swap(source);
+        m_ports.swap(ports);
     }
-    // FIXME: This code is wrong: we should emit a write-barrier. Otherwise, GC can collect it.
-    // https://bugs.webkit.org/show_bug.cgi?id=236353
-    m_jsData.setWeakly(data);
-    m_cachedData.clear();
+    m_jsData.set(data);
     m_origin = origin;
     m_lastEventId = lastEventId;
-    m_source = WTF::move(source);
-    m_ports = WTF::move(ports);
-    m_cachedPorts.clear();
+    auto* worlds = static_cast<JSVMClientData*>(vm.clientData)->wrapperWorlds();
+    forEachCachedWrapper(worlds, *this, [&vm](JSC::JSObject* object) {
+        auto* wrapper = uncheckedDowncast<JSMessageEvent>(object);
+        wrapper->clear_slot_data();
+        wrapper->clear_slot_ports();
+        vm.writeBarrier(wrapper);
+    });
 }
+
+template<typename Visitor>
+void MessageEvent::visitPorts(Visitor& visitor) const
+{
+    Locker locker { m_concurrentDataAccessLock };
+    if (m_source)
+        visitor.addOpaqueRoot(m_source.get());
+    for (auto& port : m_ports) {
+        if (port)
+            visitor.addOpaqueRoot(port.get());
+    }
+}
+
+template void MessageEvent::visitPorts(JSC::AbstractSlotVisitor&) const;
+template void MessageEvent::visitPorts(JSC::SlotVisitor&) const;
 
 size_t MessageEvent::memoryCost() const
 {
@@ -150,7 +169,9 @@ size_t MessageEvent::memoryCost() const
             [](const Ref<SerializedScriptValue>& data) -> size_t { return data->memoryCost(); },
             [](const String& string) -> size_t { return string.sizeInBytes(); },
             [](const Ref<Blob>& blob) -> size_t { return blob->memoryCost(); },
-            [](const Ref<ArrayBuffer>& buffer) -> size_t { return buffer->byteLength(); }),
+            [](const Ref<ArrayBuffer>& buffer) -> size_t { return buffer->byteLength(); },
+            [](const NodeBufferData& data) -> size_t { return data.buffer->byteLength(); },
+            [](const JSONData& data) -> size_t { return data.text.sizeInBytes(); }),
         m_data);
 }
 

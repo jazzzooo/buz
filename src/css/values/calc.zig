@@ -332,7 +332,7 @@ pub fn Calc(comptime V: type) type {
                 .err => |e| return .{ .err = e },
             };
 
-            switch (CalcUnit.Map.getAnyCase(f) orelse return .{ .err = location.newUnexpectedTokenError(.{ .ident = f }) }) {
+            switch (CalcUnit.Map.getCaseInsensitiveASCII(f) orelse return .{ .err = location.newUnexpectedTokenError(.{ .ident = f }) }) {
                 .calc => {
                     const Closure = struct {
                         ctx: @TypeOf(ctx),

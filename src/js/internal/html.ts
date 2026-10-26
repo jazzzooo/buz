@@ -140,7 +140,7 @@ yourself with Bun.serve().
     return acc.slice(0, i);
   });
 
-  if (path.platform === "win32") {
+  if (process.platform === "win32") {
     longestCommonPath = longestCommonPath.replaceAll("\\", "/");
   }
 
@@ -216,11 +216,11 @@ yourself with Bun.serve().
     },
     {} as Record<string, HTMLBundle>,
   );
-  var server: Server;
+  var server: Server<undefined>;
   getServer: {
     try {
       server = Bun.serve({
-        static: staticRoutes,
+        routes: staticRoutes,
         development:
           env.NODE_ENV !== "production"
             ? {
@@ -246,7 +246,7 @@ yourself with Bun.serve().
         for (let remainingTries = 5; remainingTries > 0; remainingTries--) {
           try {
             server = Bun.serve({
-              static: staticRoutes,
+              routes: staticRoutes,
               development:
                 env.NODE_ENV !== "production"
                   ? {

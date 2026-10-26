@@ -3,10 +3,6 @@
 //! `callconv(.c)` trampolines that recover the typed ext from the raw socket
 //! and forward.
 //!
-//! This replaces `NewSocketHandler.configure`/`unsafeConfigure`/`wrapTLS`,
-//! which did the same trampoline dance per-call at runtime via
-//! `us_socket_context_on_*`. One handler type → one vtable in `.rodata`.
-//!
 //! Handler shape (any subset; missing methods → vtable entry left null):
 //!   pub const Ext = *MySocket;                // what `us_socket_ext` holds
 //!   pub fn onOpen(ext, *us_socket_t, is_client: bool, ip: []const u8) void
@@ -21,15 +17,15 @@
 //!   pub fn onLongTimeout(ext, *us_socket_t) void
 //!   pub fn onEnd(ext, *us_socket_t) void
 //!   pub fn onFd(ext, *us_socket_t, fd: c_int) void
-//!   pub fn onConnectError(ext, *us_socket_t, code: i32) void
-//!   pub fn onConnectingError(*ConnectingSocket, code: i32) void
+//!   pub fn onConnectError(ext, *us_socket_t, failure: uws.ConnectFailure) void
+//!   pub fn onConnectingError(*ConnectingSocket, failure: uws.ConnectFailure) void
 //!   pub fn onHandshake(ext, *us_socket_t, ok: bool, err: us_bun_verify_error_t) void
 
 /// Produce a `*const VTable` for `H`. The result is a comptime address into
 /// `.rodata`; safe to store in any number of `SocketGroup`s.
 pub fn make(comptime H: type) *const VTable {
     const T = Trampolines(H);
-    return &(struct {
+    const Table = struct {
         pub const vt: VTable = .{
             .on_open = if (@hasDecl(H, "onOpen")) T.on_open else null,
             .on_data = if (@hasDecl(H, "onData")) T.on_data else null,
@@ -41,13 +37,15 @@ pub fn make(comptime H: type) *const VTable {
             .on_end = if (@hasDecl(H, "onEnd")) T.on_end else null,
             .on_connect_error = if (@hasDecl(H, "onConnectError")) T.on_connect_error else null,
             .on_connecting_error = if (@hasDecl(H, "onConnectingError")) T.on_connecting_error else null,
+            .on_connecting_timeout = if (@hasDecl(H, "onConnectingTimeout")) T.on_connecting_timeout else null,
+            .on_connecting_long_timeout = if (@hasDecl(H, "onConnectingLongTimeout")) T.on_connecting_long_timeout else null,
             .on_handshake = if (@hasDecl(H, "onHandshake")) T.on_handshake else null,
         };
-    }).vt;
+    };
+    return &Table.vt;
 }
 
-/// The trampolines themselves, exposed so `dispatch.zig` can direct-call them
-/// per-kind without going through the vtable pointer at all.
+/// Exposed so a group can override one event in an otherwise shared table.
 pub fn Trampolines(comptime H: type) type {
     // `Ext` is optional. Handlers that work entirely from `*us_socket_t` (e.g.
     // BunListener — owner comes from `s.group().owner(T)`) omit it and take
@@ -96,13 +94,19 @@ pub fn Trampolines(comptime H: type) type {
             call(s, H.onEnd, .{});
             return s;
         }
-        pub fn on_connect_error(s: *us_socket_t, code: c_int) callconv(.c) ?*us_socket_t {
-            call(s, H.onConnectError, .{@as(i32, code)});
+        pub fn on_connect_error(s: *us_socket_t, failure: *const uws.ConnectFailure) callconv(.c) ?*us_socket_t {
+            call(s, H.onConnectError, .{failure.*});
             return s;
         }
-        pub fn on_connecting_error(cs: *ConnectingSocket, code: c_int) callconv(.c) ?*ConnectingSocket {
-            H.onConnectingError(cs, code);
+        pub fn on_connecting_error(cs: *ConnectingSocket, failure: *const uws.ConnectFailure) callconv(.c) ?*ConnectingSocket {
+            H.onConnectingError(cs, failure.*);
             return cs;
+        }
+        pub fn on_connecting_timeout(cs: *ConnectingSocket) callconv(.c) void {
+            H.onConnectingTimeout(cs);
+        }
+        pub fn on_connecting_long_timeout(cs: *ConnectingSocket) callconv(.c) void {
+            H.onConnectingLongTimeout(cs);
         }
         pub fn on_handshake(s: *us_socket_t, ok: c_int, err: uws.us_bun_verify_error_t, _: ?*anyopaque) callconv(.c) void {
             call(s, H.onHandshake, .{ ok != 0, err });

@@ -105,21 +105,22 @@ public:
     bool isContextStopped() const;
 
     using AddEventListenerOptionsOrBoolean = std::variant<AddEventListenerOptions, bool>;
-    WEBCORE_EXPORT void addEventListenerForBindings(const AtomString& eventType, RefPtr<EventListener>&&, AddEventListenerOptionsOrBoolean&&);
+    WEBCORE_EXPORT void addEventListenerForBindings(JSC::JSGlobalObject&, const AtomString& eventType, RefPtr<EventListener>&&, AddEventListenerOptionsOrBoolean&&);
     using EventListenerOptionsOrBoolean = std::variant<EventListenerOptions, bool>;
     WEBCORE_EXPORT void removeEventListenerForBindings(const AtomString& eventType, RefPtr<EventListener>&&, EventListenerOptionsOrBoolean&&);
     WEBCORE_EXPORT ExceptionOr<bool> dispatchEventForBindings(Event&);
 
-    WEBCORE_EXPORT virtual bool addEventListener(const AtomString& eventType, Ref<EventListener>&&, const AddEventListenerOptions&);
+    WEBCORE_EXPORT virtual Bun::Bindgen::NativeAllocationResult<bool> addEventListener(const AtomString& eventType, Ref<EventListener>&&, const AddEventListenerOptions&);
     WEBCORE_EXPORT virtual bool removeEventListener(const AtomString& eventType, EventListener&, const EventListenerOptions& = {});
 
     WEBCORE_EXPORT virtual void removeAllEventListeners();
     WEBCORE_EXPORT virtual void dispatchEvent(Event&);
+    void dispatchSimpleEvent(const AtomString&);
     WEBCORE_EXPORT virtual void uncaughtExceptionInEventHandler();
 
     // Used for legacy "onevent" attributes.
     template<typename JSMaybeErrorEventListener>
-    void setAttributeEventListener(const AtomString& eventType, JSC::JSValue listener, JSC::JSObject& jsEventTarget);
+    Bun::Bindgen::NativeAllocationResult<void> setAttributeEventListener(const AtomString& eventType, JSC::JSObject* listener, JSC::JSObject& jsEventTarget);
     JSEventListener* attributeEventListener(const AtomString& eventType, DOMWrapperWorld&);
 
     bool hasEventListeners() const;
@@ -168,8 +169,7 @@ private:
     virtual void refEventTarget() = 0;
     virtual void derefEventTarget() = 0;
 
-    void innerInvokeEventListeners(Event&, EventListenerVector, EventInvokePhase);
-    void invalidateEventListenerRegions();
+    void innerInvokeEventListeners(Event&, EventListenerMap::DispatchCursor&, EventInvokePhase);
 };
 
 // EventTargetData lives on the WeakPtrImpl; subclasses no longer need their own storage.

@@ -20,10 +20,15 @@ cron_jobs: std.ArrayListUnmanaged(*bun.api.cron.CronJob) = .empty,
 // TODO: make this per JSGlobalObject instead of global
 // This does not handle ShadowRealm correctly!
 cleanup_hooks: std.ArrayListUnmanaged(CleanupHook) = .empty,
+native_completion_registry_head: ?*jsc.NativeCompletionRegistry = null,
+native_finalizer_queue: jsc.NativeFinalizerQueue = undefined,
+webview_chrome_process: ?*@import("../runtime/webview/ProcessWatcher.zig") = null,
+webview_host_process: ?*@import("../runtime/webview/ProcessWatcher.zig") = null,
 
 file_polls_: ?*Async.FilePoll.Store = null,
 
-global_dns_data: ?*bun.api.dns.GlobalData = null,
+global_dns_resolver: ?*bun.api.dns.Resolver = null,
+dns_resolver_head: ?*bun.api.dns.Resolver = null,
 
 /// Embedded socket groups for kinds that aren't tied to a Listener / server.
 /// Lazily linked into the loop on first socket; never separately allocated.
@@ -61,19 +66,11 @@ default_client_ssl_ctx: ?*uws.SslCtx = null,
 
 mime_types: ?bun.http.MimeType.Map = null,
 
-node_fs_stat_watcher_scheduler: ?bun.ptr.RefPtr(StatWatcherScheduler) = null,
-
-listening_sockets_for_watch_mode: std.ArrayListUnmanaged(bun.FD) = .empty,
-listening_sockets_for_watch_mode_lock: std.Io.Mutex = .init,
-
 fs_watchers_for_isolation: std.ArrayListUnmanaged(*FSWatcher) = .empty,
 stat_watchers_for_isolation: std.ArrayListUnmanaged(*StatWatcher) = .empty,
 
 temp_pipe_read_buffer: ?*PipeReadBuffer = null,
 
-aws_signature_cache: AWSSignatureCache,
-
-s3_default_client: jsc.Strong.Optional = .empty,
 default_csrf_secret: []const u8 = "",
 
 valkey_context: ValkeyContext = .{},
@@ -138,8 +135,6 @@ pub const PathBuf = struct {
 };
 
 const PipeReadBuffer = [256 * 1024]u8;
-const DIGESTED_HMAC_256_LEN = 32;
-
 pub const ProxyEnvStorage = struct {
     HTTP_PROXY: ?*RefCountedEnvValue = null,
     http_proxy: ?*RefCountedEnvValue = null,
@@ -148,7 +143,7 @@ pub const ProxyEnvStorage = struct {
     NO_PROXY: ?*RefCountedEnvValue = null,
     no_proxy: ?*RefCountedEnvValue = null,
 
-    /// Held by Bun__setEnvValue around the slot swap + env.map.put, and by
+    /// Held by proxy-environment writes around the slot swap + env.map.put, and by
     /// the worker around cloneFrom + env.map.cloneWithAllocator. This closes
     /// two races: (1) worker's cloneFrom reading a slot pointer concurrently
     /// with the parent's deref → free on the same pointer; (2) the env.map's
@@ -192,7 +187,7 @@ pub const ProxyEnvStorage = struct {
 
     /// Bump refcounts on all non-null values so a worker can share the
     /// parent's strings. Caller must hold parent.lock — the pointer load
-    /// and ref() are not atomic with respect to Bun__setEnvValue's deref().
+    /// and ref() are not atomic with respect to a proxy-environment overwrite.
     pub fn cloneFrom(self: *ProxyEnvStorage, parent: *const ProxyEnvStorage) void {
         const info = @typeInfo(ProxyEnvStorage).@"struct";
         inline for (info.field_names, info.field_types) |field_name, FieldType| {
@@ -200,22 +195,6 @@ pub const ProxyEnvStorage = struct {
                 if (@field(parent, field_name)) |val| {
                     val.ref();
                     @field(self, field_name) = val;
-                }
-            }
-        }
-    }
-
-    /// Overwrite proxy-var entries in an env map with this storage's reffed
-    /// bytes. Used after map.cloneWithAllocator in the worker so the cloned
-    /// map and the reffed storage agree — defense-in-depth in case the map
-    /// clone captured a snapshot the storage doesn't hold a ref on (e.g. an
-    /// initial-environ value later overwritten by the setter).
-    pub fn syncInto(self: *const ProxyEnvStorage, map: *bun.DotEnv.Map) void {
-        const info = @typeInfo(ProxyEnvStorage).@"struct";
-        inline for (info.field_names, info.field_types) |field_name, FieldType| {
-            if (comptime FieldType == ?*RefCountedEnvValue) {
-                if (@field(self, field_name)) |val| {
-                    bun.handleOom(map.put(field_name, val.bytes));
                 }
             }
         }
@@ -244,72 +223,22 @@ pub const RefCountedEnvValue = struct {
     ref_count: RefCount,
     bytes: []const u8,
 
-    pub fn create(value: []const u8) *RefCountedEnvValue {
-        return bun.new(RefCountedEnvValue, .{
+    pub fn create(value: []const u8) bun.OOM!*RefCountedEnvValue {
+        const bytes = try bun.default_allocator.dupe(u8, value);
+        errdefer bun.default_allocator.free(bytes);
+        const result = try bun.default_allocator.create(RefCountedEnvValue);
+        result.* = .{
             .ref_count = .init(),
-            .bytes = bun.handleOom(bun.default_allocator.dupe(u8, value)),
-        });
+            .bytes = bytes,
+        };
+        return result;
     }
 
     fn destroy(this: *RefCountedEnvValue) void {
         bun.default_allocator.free(this.bytes);
-        bun.destroy(this);
+        bun.default_allocator.destroy(this);
     }
 };
-
-pub const AWSSignatureCache = struct {
-    cache: bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8) = bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8).empty,
-    date: u64 = 0,
-    io: std.Io,
-    lock: std.Io.Mutex = .init,
-
-    pub fn init(io: std.Io) AWSSignatureCache {
-        return .{ .io = io };
-    }
-
-    pub fn clean(this: *@This()) void {
-        for (this.cache.keys()) |cached_key| {
-            bun.default_allocator.free(cached_key);
-        }
-        this.cache.clearRetainingCapacity();
-    }
-
-    pub fn get(this: *@This(), numeric_day: u64, key: []const u8) ?[]const u8 {
-        this.lock.lockUncancelable(this.io);
-        defer this.lock.unlock(this.io);
-        if (this.date == 0) {
-            return null;
-        }
-        if (this.date == numeric_day) {
-            if (this.cache.getKey(key)) |cached| {
-                return cached;
-            }
-        }
-        return null;
-    }
-
-    pub fn set(this: *@This(), numeric_day: u64, key: []const u8, value: [DIGESTED_HMAC_256_LEN]u8) void {
-        this.lock.lockUncancelable(this.io);
-        defer this.lock.unlock(this.io);
-        if (this.date == 0) {
-            this.cache = bun.StringArrayHashMap([DIGESTED_HMAC_256_LEN]u8).empty;
-        } else if (this.date != numeric_day) {
-            // day changed so we clean the old cache
-            this.clean();
-        }
-        this.date = numeric_day;
-        bun.handleOom(this.cache.put(bun.default_allocator, bun.handleOom(bun.default_allocator.dupe(u8, key)), value));
-    }
-    pub fn deinit(this: *@This()) void {
-        this.date = 0;
-        this.clean();
-        this.cache.deinit(bun.default_allocator);
-    }
-};
-
-pub fn awsCache(this: *RareData) *AWSSignatureCache {
-    return &this.aws_signature_cache;
-}
 
 pub fn pipeReadBuffer(this: *RareData) *PipeReadBuffer {
     return this.temp_pipe_read_buffer orelse {
@@ -318,33 +247,8 @@ pub fn pipeReadBuffer(this: *RareData) *PipeReadBuffer {
     };
 }
 
-pub fn addListeningSocketForWatchMode(this: *RareData, socket: bun.FD) void {
-    this.listening_sockets_for_watch_mode_lock.lockUncancelable(this.io);
-    defer this.listening_sockets_for_watch_mode_lock.unlock(this.io);
-    this.listening_sockets_for_watch_mode.append(bun.default_allocator, socket) catch {};
-}
-
-pub fn removeListeningSocketForWatchMode(this: *RareData, socket: bun.FD) void {
-    this.listening_sockets_for_watch_mode_lock.lockUncancelable(this.io);
-    defer this.listening_sockets_for_watch_mode_lock.unlock(this.io);
-    if (std.mem.indexOfScalar(bun.FD, this.listening_sockets_for_watch_mode.items, socket)) |i| {
-        _ = this.listening_sockets_for_watch_mode.swapRemove(i);
-    }
-}
-
-pub fn closeAllListenSocketsForWatchMode(this: *RareData) void {
-    this.listening_sockets_for_watch_mode_lock.lockUncancelable(this.io);
-    defer this.listening_sockets_for_watch_mode_lock.unlock(this.io);
-    for (this.listening_sockets_for_watch_mode.items) |socket| {
-        // Prevent TIME_WAIT state
-        Syscall.disableLinger(socket);
-        socket.close();
-    }
-    this.listening_sockets_for_watch_mode = .{};
-}
-
-pub fn addFSWatcherForIsolation(this: *RareData, watcher: *FSWatcher) void {
-    bun.handleOom(this.fs_watchers_for_isolation.append(bun.default_allocator, watcher));
+pub fn addFSWatcherForIsolation(this: *RareData, watcher: *FSWatcher) bun.OOM!void {
+    try this.fs_watchers_for_isolation.append(bun.default_allocator, watcher);
 }
 
 pub fn removeFSWatcherForIsolation(this: *RareData, watcher: *FSWatcher) void {
@@ -353,8 +257,8 @@ pub fn removeFSWatcherForIsolation(this: *RareData, watcher: *FSWatcher) void {
     }
 }
 
-pub fn addStatWatcherForIsolation(this: *RareData, watcher: *StatWatcher) void {
-    bun.handleOom(this.stat_watchers_for_isolation.append(bun.default_allocator, watcher));
+pub fn addStatWatcherForIsolation(this: *RareData, watcher: *StatWatcher) bun.OOM!void {
+    try this.stat_watchers_for_isolation.append(bun.default_allocator, watcher);
 }
 
 pub fn removeStatWatcherForIsolation(this: *RareData, watcher: *StatWatcher) void {
@@ -365,7 +269,7 @@ pub fn removeStatWatcherForIsolation(this: *RareData, watcher: *StatWatcher) voi
 
 pub fn closeAllWatchersForIsolation(this: *RareData) void {
     while (this.fs_watchers_for_isolation.pop()) |watcher| {
-        watcher.detach();
+        watcher.closeWithoutEmit();
     }
     while (this.stat_watchers_for_isolation.pop()) |watcher| {
         watcher.close();
@@ -424,13 +328,15 @@ pub const HotMap = struct {
         return this._map.get(key) orelse return null;
     }
 
-    pub fn insert(this: *HotMap, key: []const u8, ptr: anytype) void {
-        const entry = bun.handleOom(this._map.getOrPut(this.allocator, key));
+    pub fn insert(this: *HotMap, key: []const u8, ptr: anytype) bun.OOM!void {
+        const owned_key = try this.allocator.dupe(u8, key);
+        errdefer this.allocator.free(owned_key);
+        const entry = try this._map.getOrPut(this.allocator, owned_key);
         if (entry.found_existing) {
             @panic("HotMap already contains key");
         }
 
-        entry.key_ptr.* = bun.handleOom(this.allocator.dupe(u8, key));
+        entry.key_ptr.* = owned_key;
         entry.value_ptr.* = Entry.init(ptr);
     }
 
@@ -445,8 +351,12 @@ pub const HotMap = struct {
 };
 
 pub fn filePolls(this: *RareData, vm: *jsc.VirtualMachine) *Async.FilePoll.Store {
+    return bun.handleOom(this.tryFilePolls(vm));
+}
+
+pub fn tryFilePolls(this: *RareData, vm: *jsc.VirtualMachine) bun.OOM!*Async.FilePoll.Store {
     return this.file_polls_ orelse {
-        this.file_polls_ = vm.allocator.create(Async.FilePoll.Store) catch unreachable;
+        this.file_polls_ = try vm.allocator.create(Async.FilePoll.Store);
         this.file_polls_.?.* = Async.FilePoll.Store.init();
         return this.file_polls_.?;
     };
@@ -469,6 +379,14 @@ pub fn entropySlice(this: *RareData, len: usize) []u8 {
     }
 
     return this.entropy_cache.?.slice(len);
+}
+
+pub fn fillEntropy(this: *RareData, destination: []u8) void {
+    switch (destination.len) {
+        0 => {},
+        1...EntropyCache.size / 8 => bun.copy(u8, destination, this.entropySlice(destination.len)),
+        else => bun.csprng(destination),
+    }
 }
 
 pub const EntropyCache = struct {
@@ -547,6 +465,81 @@ pub fn pushCleanupHook(
     bun.handleOom(this.cleanup_hooks.append(bun.default_allocator, CleanupHook.init(globalThis, ctx, func)));
 }
 
+pub fn nativeCompletionRegistry(
+    this: *RareData,
+    vm: *jsc.VirtualMachine,
+) bun.OOM!*jsc.NativeCompletionRegistry {
+    return this.nativeCompletionRegistryForLoop(vm, vm.eventLoop());
+}
+
+pub fn nativeCompletionRegistryForLoop(
+    this: *RareData,
+    vm: *jsc.VirtualMachine,
+    loop: *jsc.EventLoop,
+) bun.OOM!*jsc.NativeCompletionRegistry {
+    bun.assert(loop.virtual_machine == vm);
+    const registry = loop.native_completion_registry orelse create: {
+        const value = try @import("./NativeCompletionRegistryEngine.zig").create(loop);
+        value.registry_next = this.native_completion_registry_head;
+        if (this.native_completion_registry_head) |head| head.registry_previous = value;
+        this.native_completion_registry_head = value;
+        loop.native_completion_registry = value;
+        break :create value;
+    };
+    if (vm.isShuttingDown()) this.closeNativeCompletions();
+    return registry;
+}
+
+pub fn closeNativeCompletions(this: *RareData) void {
+    var current = this.native_completion_registry_head;
+    while (current) |registry| {
+        current = registry.registry_next;
+        registry.beginClose();
+    }
+    current = this.native_completion_registry_head;
+    while (current) |registry| {
+        current = registry.registry_next;
+        registry.close();
+    }
+}
+
+pub fn resetNativeCompletions(this: *RareData) void {
+    var current = this.native_completion_registry_head;
+    while (current) |registry| {
+        current = registry.registry_next;
+        registry.beginReset();
+    }
+    current = this.native_completion_registry_head;
+    while (current) |registry| {
+        current = registry.registry_next;
+        registry.finishReset();
+    }
+}
+
+pub fn unregisterNativeCompletionRegistry(this: *RareData, registry: *jsc.NativeCompletionRegistry) void {
+    if (registry.registry_previous) |previous| {
+        previous.registry_next = registry.registry_next;
+    } else {
+        bun.assert(this.native_completion_registry_head == registry);
+        this.native_completion_registry_head = registry.registry_next;
+    }
+    if (registry.registry_next) |next| next.registry_previous = registry.registry_previous;
+    registry.registry_previous = null;
+    registry.registry_next = null;
+}
+
+pub fn nativeFinalizerQueue(this: *RareData) *jsc.NativeFinalizerQueue {
+    return &this.native_finalizer_queue;
+}
+
+pub fn drainNativeFinalizers(this: *RareData) void {
+    this.native_finalizer_queue.drain();
+}
+
+pub fn closeNativeFinalizers(this: *RareData) void {
+    this.native_finalizer_queue.close();
+}
+
 pub fn boringEngine(rare: *RareData) *BoringSSL.ENGINE {
     return rare.boring_ssl_engine orelse brk: {
         rare.boring_ssl_engine = BoringSSL.ENGINE_new();
@@ -554,154 +547,48 @@ pub fn boringEngine(rare: *RareData) *BoringSSL.ENGINE {
     };
 }
 
-pub fn stderr(rare: *RareData) *Blob.Store {
-    bun.analytics.Features.@"Bun.stderr" += 1;
-    return rare.stderr_store orelse brk: {
-        var mode: bun.Mode = 0;
-        const fd = bun.FD.fromUV(2);
-
-        switch (Syscall.fstat(fd)) {
-            .result => |stat| {
-                mode = @intCast(stat.mode);
-            },
-            .err => {},
-        }
-
-        const store = Blob.Store.new(.{
-            .ref_count = std.atomic.Value(u32).init(2),
-            .allocator = default_allocator,
-            .data = .{
-                .file = .{
-                    .pathlike = .{
-                        .fd = fd,
-                    },
-                    .is_atty = Output.stderr_descriptor_type == .terminal,
-                    .mode = mode,
-                },
-            },
-        });
-
-        rare.stderr_store = store;
-        break :brk store;
+pub fn stdio(rare: *RareData, kind: bun.FD.Stdio) bun.OOM!*Blob.Store {
+    const cache = switch (kind) {
+        .std_in => blk: {
+            bun.analytics.Features.@"Bun.stdin" += 1;
+            break :blk &rare.stdin_store;
+        },
+        .std_out => blk: {
+            bun.analytics.Features.@"Bun.stdout" += 1;
+            break :blk &rare.stdout_store;
+        },
+        .std_err => blk: {
+            bun.analytics.Features.@"Bun.stderr" += 1;
+            break :blk &rare.stderr_store;
+        },
     };
-}
-
-pub fn stdout(rare: *RareData) *Blob.Store {
-    bun.analytics.Features.@"Bun.stdout" += 1;
-    return rare.stdout_store orelse brk: {
-        var mode: bun.Mode = 0;
-        const fd = bun.FD.fromUV(1);
-
-        switch (Syscall.fstat(fd)) {
-            .result => |stat| {
-                mode = @intCast(stat.mode);
-            },
-            .err => {},
-        }
-        const store = Blob.Store.new(.{
-            .ref_count = std.atomic.Value(u32).init(2),
-            .allocator = default_allocator,
-            .data = .{
-                .file = .{
-                    .pathlike = .{
-                        .fd = fd,
-                    },
-                    .is_atty = Output.stdout_descriptor_type == .terminal,
-                    .mode = mode,
-                },
-            },
-        });
-        rare.stdout_store = store;
-        break :brk store;
+    if (cache.*) |store| return store;
+    const fd = kind.fd();
+    const is_atty = switch (kind) {
+        .std_in => if (fd.unwrapValid()) |valid| bun.sys.isatty(valid) else false,
+        .std_out => Output.stdout_descriptor_type == .terminal,
+        .std_err => Output.stderr_descriptor_type == .terminal,
     };
-}
-
-pub fn stdin(rare: *RareData) *Blob.Store {
-    bun.analytics.Features.@"Bun.stdin" += 1;
-    return rare.stdin_store orelse brk: {
-        var mode: bun.Mode = 0;
-        const fd = bun.FD.fromUV(0);
-
-        switch (Syscall.fstat(fd)) {
-            .result => |stat| {
-                mode = @intCast(stat.mode);
-            },
-            .err => {},
-        }
-        const store = Blob.Store.new(.{
-            .allocator = default_allocator,
-            .ref_count = std.atomic.Value(u32).init(2),
-            .data = .{
-                .file = .{
-                    .pathlike = .{ .fd = fd },
-                    .is_atty = if (fd.unwrapValid()) |valid| bun.sys.isatty(valid) else false,
-                    .mode = mode,
-                },
-            },
-        });
-        rare.stdin_store = store;
-        break :brk store;
-    };
-}
-
-const StdinFdType = enum(i32) {
-    file = 0,
-    pipe = 1,
-    socket = 2,
-};
-
-pub export fn Bun__Process__getStdinFdType(vm: *jsc.VirtualMachine, fd: i32) StdinFdType {
-    const mode = switch (fd) {
-        0 => vm.rareData().stdin().data.file.mode,
-        1 => vm.rareData().stdout().data.file.mode,
-        2 => vm.rareData().stderr().data.file.mode,
-        else => unreachable,
-    };
-    if (bun.S.ISFIFO(@intCast(mode))) {
-        return .pipe;
-    } else if (bun.S.ISSOCK(@intCast(mode))) {
-        return .socket;
-    } else {
-        return .file;
-    }
-}
-
-fn setTLSDefaultCiphersFromJS(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const vm = globalThis.bunVM();
-    const args = callframe.arguments();
-    const ciphers = if (args.len > 0) args[0] else .js_undefined;
-    if (!ciphers.isString()) return globalThis.throwInvalidArgumentTypeValue("ciphers", "string", ciphers);
-    var sliced = try ciphers.toSlice(globalThis, bun.default_allocator);
-    defer sliced.deinit();
-    vm.rareData().setTLSDefaultCiphers(sliced.slice());
-    return .js_undefined;
-}
-
-fn getTLSDefaultCiphersFromJS(globalThis: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-    const vm = globalThis.bunVM();
-    const ciphers = vm.rareData().tlsDefaultCiphers() orelse return try bun.String.createUTF8ForJS(globalThis, bun.uws.get_default_ciphers());
-
-    return try bun.String.createUTF8ForJS(globalThis, ciphers);
-}
-
-comptime {
-    const js_setTLSDefaultCiphers = jsc.toJSHostFn(setTLSDefaultCiphersFromJS);
-    @export(&js_setTLSDefaultCiphers, .{ .name = "Bun__setTLSDefaultCiphers" });
-    const js_getTLSDefaultCiphers = jsc.toJSHostFn(getTLSDefaultCiphersFromJS);
-    @export(&js_getTLSDefaultCiphers, .{ .name = "Bun__getTLSDefaultCiphers" });
+    const store = try Blob.Store.initStdio(fd, is_atty);
+    cache.* = store;
+    return store;
 }
 
 pub fn spawnIPCGroup(rare: *RareData, vm: *jsc.VirtualMachine) *uws.SocketGroup {
     if (rare.spawn_ipc_group.loop == null) {
-        rare.spawn_ipc_group.init(vm.uwsLoop(), null, null);
+        rare.spawn_ipc_group.init(vm.uwsLoop(), socket_vtable.make(SocketHandlers.SpawnIPC), null);
     }
     return &rare.spawn_ipc_group;
 }
 
-pub fn testParallelIPCGroup(rare: *RareData, vm: *jsc.VirtualMachine) *uws.SocketGroup {
+const SocketHandlers = @import("../runtime/socket/UwsHandlersEngine.zig");
+const socket_vtable = @import("../uws_sys/vtable.zig");
+
+pub fn testParallelIPCGroup(rare: *RareData, vm: *jsc.VirtualMachine, vtable: *const uws.SocketGroup.VTable) *uws.SocketGroup {
     if (rare.test_parallel_ipc_group.loop == null) {
-        rare.test_parallel_ipc_group.init(vm.uwsLoop(), null, null);
+        rare.test_parallel_ipc_group.init(vm.uwsLoop(), vtable, null);
     }
+    bun.assert(rare.test_parallel_ipc_group.vtable == vtable);
     return &rare.test_parallel_ipc_group;
 }
 
@@ -710,109 +597,92 @@ pub fn testParallelIPCGroup(rare: *RareData, vm: *jsc.VirtualMachine) *uws.Socke
 /// allocation that was the root of the SSL_CTX-per-connect leak.
 pub fn bunConnectGroup(rare: *RareData, vm: *jsc.VirtualMachine, comptime ssl: bool) *uws.SocketGroup {
     const g = if (ssl) &rare.bun_connect_group_tls else &rare.bun_connect_group_tcp;
-    if (g.loop == null) g.init(vm.uwsLoop(), null, null);
+    if (g.loop == null) g.init(vm.uwsLoop(), SocketHandlers.socketCallbacks(ssl), null);
     return g;
 }
 
-inline fn lazyGroup(rare: *RareData, vm: *jsc.VirtualMachine, comptime field: []const u8) *uws.SocketGroup {
+inline fn lazyGroup(rare: *RareData, vm: *jsc.VirtualMachine, comptime field: []const u8, comptime Handler: type) *uws.SocketGroup {
     const g = &@field(rare, field);
-    if (g.loop == null) g.init(vm.uwsLoop(), null, null);
+    if (g.loop == null) g.init(vm.uwsLoop(), socket_vtable.make(Handler), null);
     return g;
 }
 
 pub fn postgresGroup(rare: *RareData, vm: *jsc.VirtualMachine, comptime ssl: bool) *uws.SocketGroup {
-    return rare.lazyGroup(vm, if (ssl) "postgres_tls_group" else "postgres_group");
+    return rare.lazyGroup(vm, if (ssl) "postgres_tls_group" else "postgres_group", SocketHandlers.Postgres(ssl));
 }
 pub fn mysqlGroup(rare: *RareData, vm: *jsc.VirtualMachine, comptime ssl: bool) *uws.SocketGroup {
-    return rare.lazyGroup(vm, if (ssl) "mysql_tls_group" else "mysql_group");
+    return rare.lazyGroup(vm, if (ssl) "mysql_tls_group" else "mysql_group", SocketHandlers.MySQL(ssl));
 }
 pub fn valkeyGroup(rare: *RareData, vm: *jsc.VirtualMachine, comptime ssl: bool) *uws.SocketGroup {
-    return rare.lazyGroup(vm, if (ssl) "valkey_tls_group" else "valkey_group");
+    return rare.lazyGroup(vm, if (ssl) "valkey_tls_group" else "valkey_group", SocketHandlers.Valkey(ssl));
 }
 pub fn wsUpgradeGroup(rare: *RareData, vm: *jsc.VirtualMachine, comptime ssl: bool) *uws.SocketGroup {
-    return rare.lazyGroup(vm, if (ssl) "ws_upgrade_tls_group" else "ws_upgrade_group");
+    return rare.lazyGroup(vm, if (ssl) "ws_upgrade_tls_group" else "ws_upgrade_group", SocketHandlers.WSUpgrade(ssl));
 }
 pub fn wsClientGroup(rare: *RareData, vm: *jsc.VirtualMachine, comptime ssl: bool) *uws.SocketGroup {
-    return rare.lazyGroup(vm, if (ssl) "ws_client_tls_group" else "ws_client_group");
+    return rare.lazyGroup(vm, if (ssl) "ws_client_tls_group" else "ws_client_group", SocketHandlers.WSClient(ssl));
 }
 
 pub fn sslCtxCache(rare: *RareData) *api.SSLContextCache {
     return &rare.ssl_ctx_cache;
 }
 
-/// Shared `SSL_CTX*` for client connects that didn't supply a custom CA
-/// (`Valkey({tls: true})`, `new WebSocket("wss://…")`). The old code allocated
-/// a fresh `us_socket_context_t` per such case and cached the pointer; now
-/// the SSL_CTX is the only thing worth caching.
-pub fn defaultClientSslCtx(rare: *RareData) *uws.SslCtx {
+/// The VM owns the reference returned to clients without a custom TLS configuration.
+pub fn defaultClientSslCtx(rare: *RareData, failure: *uws.TLSContextFailure) ?*uws.SslCtx {
+    failure.* = .{};
     if (rare.default_client_ssl_ctx == null) {
-        var err: uws.create_bun_socket_error_t = .none;
         // Mode-neutral CTX (VERIFY_NONE). `us_internal_ssl_attach` overrides
         // each client SSL to VERIFY_PEER + the shared bundled-root store, so
         // `new WebSocket("wss://…")` (which shares this CTX and defaults to
         // rejectUnauthorized:true) verifies real servers. Route through the
-        // weak cache so a `tls.connect()` with default options later resolves
+        // context cache so a `tls.connect()` with default options later resolves
         // to the same CTX rather than building a second one with the same
-        // digest. The +1 ref returned here is held for the VM's lifetime, so
-        // the entry never tombstones.
-        rare.default_client_ssl_ctx = rare.ssl_ctx_cache.getOrCreateOpts(.{}, &err) orelse bun.Output.panic(
-            "default client SSL_CTX init failed: {s}",
-            .{err.message() orelse "unknown"},
-        );
+        // digest. This reference remains owned by the VM even if the cache evicts its entry.
+        rare.default_client_ssl_ctx = rare.ssl_ctx_cache.getOrCreateOpts(.{}, failure) orelse return null;
     }
     return rare.default_client_ssl_ctx.?;
 }
 
-pub fn globalDNSResolver(rare: *RareData, vm: *jsc.VirtualMachine) *api.dns.Resolver {
-    if (rare.global_dns_data == null) {
-        rare.global_dns_data = api.dns.GlobalData.init(vm.allocator, vm);
-        rare.global_dns_data.?.resolver.ref(); // live forever
+pub fn globalDNSResolver(rare: *RareData, vm: *jsc.VirtualMachine) bun.OOM!*api.dns.Resolver {
+    if (rare.global_dns_resolver) |resolver| return resolver;
+    const resolver = try api.dns.Resolver.init(vm.allocator, vm);
+    rare.global_dns_resolver = resolver;
+    return resolver;
+}
+
+pub fn registerDNSResolver(this: *RareData, resolver: *api.dns.Resolver) void {
+    resolver.registry_previous = null;
+    resolver.registry_next = this.dns_resolver_head;
+    if (this.dns_resolver_head) |head| head.registry_previous = resolver;
+    this.dns_resolver_head = resolver;
+}
+
+pub fn unregisterDNSResolver(this: *RareData, resolver: *api.dns.Resolver) void {
+    if (resolver.registry_previous) |previous| {
+        previous.registry_next = resolver.registry_next;
+    } else {
+        bun.assert(this.dns_resolver_head == resolver);
+        this.dns_resolver_head = resolver.registry_next;
     }
-
-    return &rare.global_dns_data.?.resolver;
+    if (resolver.registry_next) |next| next.registry_previous = resolver.registry_previous;
+    resolver.registry_previous = null;
+    resolver.registry_next = null;
 }
 
-pub fn nodeFSStatWatcherScheduler(rare: *RareData, vm: *jsc.VirtualMachine) bun.ptr.RefPtr(StatWatcherScheduler) {
-    return (rare.node_fs_stat_watcher_scheduler orelse init: {
-        rare.node_fs_stat_watcher_scheduler = StatWatcherScheduler.init(vm);
-        break :init rare.node_fs_stat_watcher_scheduler.?;
-    }).dupeRef();
-}
-
-pub fn s3DefaultClient(rare: *RareData, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
-    return rare.s3_default_client.get() orelse {
-        const vm = globalThis.bunVM();
-        var aws_options = bun.S3.S3Credentials.getCredentialsWithOptions(
-            vm.transpiler.env.getS3Credentials(),
-            .{},
-            null,
-            null,
-            null,
-            false,
-            globalThis,
-        ) catch |err| switch (err) {
-            error.OutOfMemory => bun.outOfMemory(),
-            error.JSError => {
-                globalThis.reportActiveExceptionAsUnhandled(err);
-                return .js_undefined;
-            },
-            error.JSTerminated => {
-                globalThis.reportActiveExceptionAsUnhandled(err);
-                return .js_undefined;
-            },
-        };
-        defer aws_options.deinit();
-        const client = jsc.WebCore.S3Client.new(.{
-            .credentials = aws_options.credentials.dupe(),
-            .options = aws_options.options,
-            .acl = aws_options.acl,
-            .storage_class = aws_options.storage_class,
-        });
-        const js_client = client.toJS(globalThis);
-        js_client.ensureStillAlive();
-        rare.s3_default_client = .create(js_client, globalThis);
-        return js_client;
-    };
+pub fn closeDNSResolvers(this: *RareData) void {
+    var current = this.dns_resolver_head;
+    if (current) |resolver| resolver.ref();
+    while (current) |resolver| {
+        const next = resolver.registry_next;
+        if (next) |value| value.ref();
+        resolver.shutdown();
+        resolver.deref();
+        current = next;
+    }
+    if (this.global_dns_resolver) |resolver| {
+        this.global_dns_resolver = null;
+        resolver.deref();
+    }
 }
 
 pub fn tlsDefaultCiphers(this: *RareData) ?[:0]const u8 {
@@ -826,9 +696,9 @@ pub fn setTLSDefaultCiphers(this: *RareData, ciphers: []const u8) void {
     this.tls_default_ciphers = bun.handleOom(bun.default_allocator.dupeSentinel(u8, ciphers, 0));
 }
 
-pub fn defaultCSRFSecret(this: *RareData) []const u8 {
+pub fn defaultCSRFSecret(this: *RareData) bun.OOM![]const u8 {
     if (this.default_csrf_secret.len == 0) {
-        const secret = bun.handleOom(bun.default_allocator.alloc(u8, 16));
+        const secret = try bun.default_allocator.alloc(u8, 16);
         bun.csprng(secret);
         this.default_csrf_secret = secret;
     }
@@ -836,15 +706,22 @@ pub fn defaultCSRFSecret(this: *RareData) []const u8 {
 }
 
 pub fn deinit(this: *RareData) void {
+    bun.assert(this.global_dns_resolver == null);
+    inline for (.{ "stdin_store", "stdout_store", "stderr_store" }) |field| {
+        if (@field(this, field)) |store| {
+            @field(this, field) = null;
+            store.deref();
+        }
+    }
+    bun.debugAssert(this.native_finalizer_queue.isClosed());
+    this.closeNativeFinalizers();
     if (this.temp_pipe_read_buffer) |pipe| {
         this.temp_pipe_read_buffer = null;
         bun.default_allocator.destroy(pipe);
     }
 
     this.spawn_sync_event_loop.deinit();
-    this.aws_signature_cache.deinit();
-
-    this.s3_default_client.deinit();
+    bun.assert(this.native_completion_registry_head == null);
     if (this.boring_ssl_engine) |engine| {
         _ = bun.BoringSSL.c.ENGINE_free(engine);
     }
@@ -855,6 +732,7 @@ pub fn deinit(this: *RareData) void {
     this.cleanup_hooks.clearAndFree(bun.default_allocator);
     bun.debugAssert(this.cron_jobs.items.len == 0);
     this.cron_jobs.deinit(bun.default_allocator);
+    this.editor_context.deinit();
     this.path_buf.deinit();
 
     if (this.websocket_deflate) |deflate| {
@@ -892,7 +770,7 @@ const socket_group_fields = .{
 
 /// Drain every embedded socket group. Must run BEFORE JSC teardown — closeAll
 /// fires on_close → JS callbacks → needs a live VM. RareData.deinit() runs
-/// after `WebWorker__teardownJSCVM` (web_worker.zig), so doing the closeAll
+/// after the worker JSC teardown (web_worker.zig), so doing the closeAll
 /// there would dispatch into freed JSC heap.
 pub fn closeAllSocketGroups(this: *RareData, vm: *jsc.VirtualMachine) void {
     // closeAll() dispatches on_close into JS while the VM is still alive, so a
@@ -928,31 +806,33 @@ pub fn websocketDeflate(this: *RareData) *WebSocketDeflate.RareData {
     };
 }
 
-pub const SpawnSyncEventLoop = @import("../event_loop/SpawnSyncEventLoop.zig");
+pub const SpawnSyncEventLoop = @import("../event_loop/SpawnSyncEventLoopEngine.zig");
 
-pub fn spawnSyncEventLoop(this: *RareData, vm: *jsc.VirtualMachine) *SpawnSyncEventLoop {
-    return this.spawn_sync_event_loop.get() orelse brk: {
-        this.spawn_sync_event_loop = .new(undefined);
-        const ptr: *SpawnSyncEventLoop = this.spawn_sync_event_loop.get().?;
-        ptr.init(vm);
-        break :brk ptr;
-    };
+pub const SpawnSyncLoopResult = union(enum) { loop: *SpawnSyncEventLoop, failed: bun.uws.PollFailure };
+
+pub fn spawnSyncEventLoop(this: *RareData, vm: *jsc.VirtualMachine) bun.OOM!SpawnSyncLoopResult {
+    if (this.spawn_sync_event_loop.get()) |loop| return .{ .loop = loop };
+    var owner = try @TypeOf(this.spawn_sync_event_loop).alloc(undefined);
+    const ptr: *SpawnSyncEventLoop = owner.get().?;
+    if (ptr.init(vm)) |failure| {
+        owner.deinitShallow();
+        return .{ .failed = failure };
+    }
+    this.spawn_sync_event_loop = owner;
+    return .{ .loop = ptr };
 }
 
-const UUID = @import("./uuid.zig");
+const UUID = @import("../bun_core/UUID.zig");
 const WebSocketDeflate = @import("../http_jsc/websocket_client/WebSocketDeflate.zig");
 const std = @import("std");
 const EditorContext = @import("../cli/open.zig").EditorContext;
-const FSWatcher = @import("../runtime/node/node_fs_watcher.zig").FSWatcher;
+const FSWatcher = @import("../runtime/node/FSWatcherEngine.zig").FSWatcher;
 const ValkeyContext = @import("../runtime/valkey_jsc/valkey.zig").ValkeyContext;
 
-const StatWatcher = @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcher;
-const StatWatcherScheduler = @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler;
-
+const StatWatcher = @import("../runtime/node/StatWatcherEngine.zig").StatWatcher;
 const bun = @import("bun");
 const Async = bun.Async;
 const Output = bun.Output;
-const Syscall = bun.sys;
 const api = bun.api;
 const default_allocator = bun.default_allocator;
 const jsc = bun.jsc;

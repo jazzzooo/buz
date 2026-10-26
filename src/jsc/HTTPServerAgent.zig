@@ -11,20 +11,19 @@ pub fn isEnabled(this: *const HTTPServerAgent) bool {
 }
 
 //#region Events
-pub fn notifyServerStarted(this: *HTTPServerAgent, instance: jsc.API.AnyServer) void {
+pub fn notifyServerStarted(this: *HTTPServerAgent, instance: jsc.API.AnyServer) bun.OOM!void {
     if (this.agent) |agent| {
+        var address = try bun.bindgen.DOMString.fromBunString(try instance.getURLAsString());
+        defer address.deinit();
         this.next_server_id = .init(this.next_server_id.get() + 1);
         instance.setInspectorServerID(this.next_server_id);
-        var url = bun.handleOom(instance.getURLAsString());
-        defer url.deref();
-
-        agent.notifyServerStarted(
-            this.next_server_id,
-            @intCast(instance.vm().hot_reload_counter),
-            &url,
-            @floatFromInt(bun.timespec.now(.allow_mocked_time).ms()),
-            instance.ptr.ptr(),
-        );
+        bun.bindgen.Engine(InspectorHTTPServerAgentNotifyServerStartedShim).call(.{
+            .agent = @ptrCast(agent),
+            .serverId = this.next_server_id.get(),
+            .address = address.operand(),
+            .startTime = @floatFromInt(bun.timespec.now(.allow_mocked_time).ms()),
+            .serverInstance = @ptrCast(instance.ptr.ptr()),
+        });
     }
 }
 
@@ -34,13 +33,15 @@ pub fn notifyServerStopped(this: *const HTTPServerAgent, server: jsc.API.AnyServ
     }
 }
 
-pub fn notifyServerRoutesUpdated(this: *const HTTPServerAgent, server: jsc.API.AnyServer) !void {
+pub fn notifyServerRoutesUpdated(this: *const HTTPServerAgent, server: jsc.API.AnyServer) bun.OOM!void {
     if (this.agent) |agent| {
         const config = server.config();
-        var routes = std.array_list.Managed(Route).init(bun.default_allocator);
+        var routes = std.array_list.Managed(OwnedRoute).init(bun.default_allocator);
         defer {
             for (routes.items) |*route| {
-                route.deinit();
+                route.path.deinit();
+                route.filePath.deinit();
+                route.scriptUrl.deinit();
             }
             routes.deinit();
         }
@@ -52,104 +53,87 @@ pub fn notifyServerRoutesUpdated(this: *const HTTPServerAgent, server: jsc.API.A
                 for (user_routes) |*user_route| {
                     const decl: *const jsc.API.ServerConfig.RouteDeclaration = &user_route.route;
                     max_id = @max(max_id, user_route.id);
+                    var path = try bun.bindgen.DOMString.fromUTF8(decl.path);
+                    errdefer path.deinit();
                     try routes.append(.{
-                        .route_id = @intCast(user_route.id),
-                        .path = bun.String.init(decl.path),
+                        .routeId = @intCast(user_route.id),
+                        .path = path,
                         .type = .api,
-                        // TODO:
-                        .param_names = null,
-                        .param_names_len = 0,
-                        .script_line = -1,
-                        .file_path = .empty,
+                        .scriptLine = -1,
+                        .filePath = bun.bindgen.DOMString.empty(),
+                        .scriptUrl = bun.bindgen.DOMString.empty(),
                     });
                 }
             },
         }
 
         for (config.static_routes.items) |*route| {
+            var path = try bun.bindgen.DOMString.fromUTF8(route.path);
+            errdefer path.deinit();
+            var file_path = switch (route.route) {
+                .html => |html| try bun.bindgen.DOMString.fromUTF8(html.data.bundle.data.path.slice()),
+                else => bun.bindgen.DOMString.empty(),
+            };
+            errdefer file_path.deinit();
             try routes.append(.{
-                .route_id = @intCast(max_id + 1),
-                .path = bun.String.init(route.path),
+                .routeId = @intCast(max_id + 1),
+                .path = path,
                 .type = switch (route.route) {
                     .html => .html,
-                    .static => .static,
-                    else => .default,
+                    .static => .static_route,
+                    else => .other,
                 },
-                .script_line = -1,
-                // TODO:
-                .param_names = null,
-                .param_names_len = 0,
-                .file_path = switch (route.route) {
-                    .html => |html| bun.String.init(html.data.bundle.data.path),
-                    else => .empty,
-                },
+                .scriptLine = -1,
+                .filePath = file_path,
+                .scriptUrl = bun.bindgen.DOMString.empty(),
             });
             max_id += 1;
         }
 
-        agent.notifyServerRoutesUpdated(server.inspectorServerID(), @intCast(jsc.VirtualMachine.get().hot_reload_counter), routes.items);
+        const route_operands = try bun.default_allocator.alloc(Route, routes.items.len);
+        defer bun.default_allocator.free(route_operands);
+        for (routes.items, route_operands) |*route, *operand| operand.* = route.borrow();
+        try bun.bindgen.Engine(InspectorHTTPServerAgentNotifyServerRoutesUpdatedShim).call(.{
+            .agent = @ptrCast(agent),
+            .serverId = server.inspectorServerID().get(),
+            .hotReloadId = @intCast(jsc.VirtualMachine.get().hot_reload_counter),
+            .routes = route_operands,
+        });
     }
 }
 
 //#endregion
 
-//#region Types
+const Route = std.meta.Elem(@FieldType(bun.bindgen.Args(InspectorHTTPServerAgentNotifyServerRoutesUpdatedShim), "routes"));
 
-pub const Route = extern struct {
-    route_id: RouteId,
-    path: BunString = .empty,
-    type: Type = .default,
-    script_line: i32 = -1,
-    param_names: ?[*]BunString = null,
-    param_names_len: usize = 0,
-    file_path: BunString = .empty,
-    script_id: BunString = .empty,
-    script_url: BunString = .empty,
+const OwnedRoute = struct {
+    routeId: @FieldType(Route, "routeId"),
+    path: bun.bindgen.DOMString,
+    type: @FieldType(Route, "type"),
+    scriptLine: @FieldType(Route, "scriptLine"),
+    filePath: bun.bindgen.DOMString,
+    scriptUrl: bun.bindgen.DOMString,
 
-    pub const Type = enum(u8) {
-        default = 1,
-        api = 2,
-        html = 3,
-        static = 4,
-    };
-
-    pub fn params(this: *const Route) []BunString {
-        const ptr = this.param_names orelse return &[_]BunString{};
-        return ptr[0..this.param_names_len];
-    }
-
-    pub fn deinit(this: *Route) void {
-        for (this.params()) |*param_name| {
-            param_name.deref();
-        }
-        bun.default_allocator.free(this.params());
-        this.path.deref();
-        this.file_path.deref();
-        this.script_id.deref();
-        this.script_url.deref();
+    fn borrow(route: *const OwnedRoute) Route {
+        return .{
+            .routeId = route.routeId,
+            .path = route.path.operand(),
+            .type = route.type,
+            .scriptLine = route.scriptLine,
+            .filePath = route.filePath.operand(),
+            .scriptUrl = route.scriptUrl.operand(),
+        };
     }
 };
 
-//#endregion
-
 //#region C++ agent reference type for Zig
 pub const InspectorHTTPServerAgent = opaque {
-    extern fn Bun__HTTPServerAgent__notifyRequestWillBeSent(agent: *InspectorHTTPServerAgent, requestId: RequestId, serverId: ServerId, routeId: RouteId, url: *const BunString, fullUrl: *const BunString, method: HTTPMethod, headersJson: *const BunString, paramsJson: *const BunString, hasBody: bool, timestamp: f64) void;
-    extern fn Bun__HTTPServerAgent__notifyResponseReceived(agent: *InspectorHTTPServerAgent, requestId: RequestId, serverId: ServerId, statusCode: i32, statusText: *const BunString, headersJson: *const BunString, hasBody: bool, timestamp: f64) void;
-    extern fn Bun__HTTPServerAgent__notifyBodyChunkReceived(agent: *InspectorHTTPServerAgent, requestId: RequestId, serverId: ServerId, flags: i32, chunk: *const BunString, timestamp: f64) void;
-    extern fn Bun__HTTPServerAgent__notifyRequestFinished(agent: *InspectorHTTPServerAgent, requestId: RequestId, serverId: ServerId, timestamp: f64, duration: f64) void;
-    extern fn Bun__HTTPServerAgent__notifyRequestHandlerException(agent: *InspectorHTTPServerAgent, requestId: RequestId, serverId: ServerId, message: *const BunString, url: *const BunString, line: i32, timestamp: f64) void;
-
-    pub fn notifyServerStarted(agent: *InspectorHTTPServerAgent, serverId: ServerId, hotReloadId: HotReloadId, address: *const BunString, startTime: f64, serverInstance: *anyopaque) void {
-        bun.cpp.Bun__HTTPServerAgent__notifyServerStarted(agent, serverId, hotReloadId, address, startTime, serverInstance);
-    }
-
     pub fn notifyServerStopped(agent: *InspectorHTTPServerAgent, serverId: ServerId, timestamp: f64) void {
-        bun.cpp.Bun__HTTPServerAgent__notifyServerStopped(agent, serverId, timestamp);
-    }
-
-    pub fn notifyServerRoutesUpdated(agent: *InspectorHTTPServerAgent, serverId: ServerId, hotReloadId: HotReloadId, routes: []Route) void {
-        bun.cpp.Bun__HTTPServerAgent__notifyServerRoutesUpdated(agent, serverId, hotReloadId, routes.ptr, routes.len);
+        bun.bindgen.Engine(InspectorHTTPServerAgentNotifyServerStoppedShim).call(.{
+            .agent = @ptrCast(agent),
+            .serverId = serverId.get(),
+            .timestamp = timestamp,
+        });
     }
 };
 
@@ -157,9 +141,16 @@ pub const InspectorHTTPServerAgent = opaque {
 
 //#region Zig -> C++
 
-export fn Bun__HTTPServerAgent__setEnabled(agent: ?*InspectorHTTPServerAgent) void {
+fn bindSetAgent(
+    args: bun.bindgen.Args(SetInspectorHTTPServerAgentSchema),
+) bun.bindgen.Return(SetInspectorHTTPServerAgentSchema) {
+    const agent: *InspectorHTTPServerAgent = @ptrCast(args.agent);
     if (jsc.VirtualMachine.get().debugger) |*debugger| {
-        debugger.http_server_agent.agent = agent;
+        if (args.enabled) {
+            debugger.http_server_agent.agent = agent;
+        } else if (debugger.http_server_agent.agent == agent) {
+            debugger.http_server_agent.agent = null;
+        }
     }
 }
 
@@ -175,5 +166,14 @@ pub const HTTPMethod = bun.http.Method;
 const std = @import("std");
 
 const bun = @import("bun");
-const BunString = bun.String;
 const jsc = bun.jsc;
+const InspectorAgentBindings = bun.bindgen.Module("inspector_agents");
+const InspectorHTTPServerAgentNotifyServerStartedShim = InspectorAgentBindings.engineShim("inspectorHTTPServerAgentNotifyServerStarted");
+const InspectorHTTPServerAgentNotifyServerStoppedShim = InspectorAgentBindings.engineShim("inspectorHTTPServerAgentNotifyServerStopped");
+const InspectorHTTPServerAgentNotifyServerRoutesUpdatedShim = InspectorAgentBindings.engineShim("inspectorHTTPServerAgentNotifyServerRoutesUpdated");
+const SetInspectorHTTPServerAgentSchema = InspectorAgentBindings.nativeExport("setInspectorHTTPServerAgent");
+const SetInspectorHTTPServerAgentBinding = bun.bindgen.Fn(SetInspectorHTTPServerAgentSchema, bindSetAgent);
+
+comptime {
+    _ = SetInspectorHTTPServerAgentBinding;
+}

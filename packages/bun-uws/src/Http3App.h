@@ -6,9 +6,6 @@
 
 namespace uWS {
 
-/* TemplatedApp-shaped front for HTTP/3. Route registration and listen()
- * mirror SSLApp so the C ABI in libuwsockets_h3.cpp can stay 1:1 with the
- * existing uws_app_* surface. */
 struct H3App {
     Http3Context *http3Context;
 
@@ -26,24 +23,6 @@ struct H3App {
         if (http3Context) http3Context->free();
     }
 
-#define H3_METHOD(name, verb)                                                            \
-    H3App &&name(std::string_view pattern,                                               \
-                 MoveOnlyFunction<void(Http3Response *, Http3Request *)> &&handler) {    \
-        http3Context->onHttp(verb, pattern, std::move(handler));                         \
-        return std::move(*this);                                                         \
-    }
-    H3_METHOD(get, "get")
-    H3_METHOD(post, "post")
-    H3_METHOD(put, "put")
-    H3_METHOD(del, "delete")
-    H3_METHOD(patch, "patch")
-    H3_METHOD(head, "head")
-    H3_METHOD(options, "options")
-    H3_METHOD(connect, "connect")
-    H3_METHOD(trace, "trace")
-    H3_METHOD(any, "*")
-#undef H3_METHOD
-
     H3App &&listen(const std::string &host, int port, int options,
                    MoveOnlyFunction<void(us_quic_listen_socket_t *)> &&cb) {
         cb(http3Context->listen(host.empty() ? nullptr : host.c_str(), port, options));
@@ -57,9 +36,10 @@ struct H3App {
         return listen({}, port, 0, std::move(cb));
     }
 
-    void clearRoutes() {
-        http3Context->getContextData()->router = decltype(http3Context->getContextData()->router){};
+    void setRequestHandler(void *context, void (*handler)(void *, void *, void *)) {
+        http3Context->getContextData()->requestHandler.set(context, handler);
     }
+
     /* GOAWAY + drain. The engine itself is torn down in the destructor. */
     void close() { http3Context->shutdown(); }
     bool addServerNameWithOptions(const char *hostname, SocketContextOptions options) {

@@ -38,9 +38,7 @@ pub fn getCandidatePackagePatterns(allocator: std.mem.Allocator, log: *bun.logge
         var name_buf: bun.PathBuffer = undefined;
         const json_path: [:0]const u8 = bun.path.joinAbsStringBufZ(workdir, name_buf[0..], &.{"package.json"}, .auto);
 
-        log.msgs.clearRetainingCapacity();
-        log.errors = 0;
-        log.warnings = 0;
+        log.reset();
 
         const json_source = switch (bun.sys.File.toSource(json_path, allocator, .{})) {
             .err => |err| {

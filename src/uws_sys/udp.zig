@@ -1,13 +1,27 @@
 const udp = @This();
 
+pub const CreateFailure = extern struct {
+    system_error: c_int = 0,
+    address_error: c_int = 0,
+    poll_error: uws.PollFailure = .{},
+
+    pub fn systemErrno(this: CreateFailure) ?bun.sys.SystemErrno {
+        return if (this.poll_error.domain != .none)
+            this.poll_error.systemErrno()
+        else
+            (uws.PollFailure{ .domain = .system, .code = this.system_error }).systemErrno();
+    }
+};
+
 pub const Socket = opaque {
-    pub fn create(loop: *Loop, data_cb: *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, drain_cb: *const fn (*udp.Socket) callconv(.c) void, close_cb: *const fn (*udp.Socket) callconv(.c) void, recv_error_cb: *const fn (*udp.Socket, c_int) callconv(.c) void, host: [*c]const u8, port: c_ushort, options: c_int, err: ?*c_int, user_data: ?*anyopaque) ?*udp.Socket {
+    pub fn create(loop: *Loop, data_cb: *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, drain_cb: *const fn (*udp.Socket) callconv(.c) void, close_cb: *const fn (*udp.Socket) callconv(.c) void, recv_error_cb: *const fn (*udp.Socket, c_int) callconv(.c) void, host: [*c]const u8, port: c_ushort, options: c_int, err: *CreateFailure, user_data: ?*anyopaque) ?*udp.Socket {
         return us_create_udp_socket(loop, data_cb, drain_cb, close_cb, recv_error_cb, host, port, options, err, user_data);
     }
 
     pub fn send(this: *udp.Socket, payloads: []const [*]const u8, lengths: []const usize, addresses: []const ?*const anyopaque) c_int {
         bun.assert(payloads.len == lengths.len and payloads.len == addresses.len);
-        return us_udp_socket_send(this, payloads.ptr, lengths.ptr, addresses.ptr, @intCast(payloads.len));
+        const count: c_int = @intCast(@min(payloads.len, std.math.maxInt(c_int)));
+        return us_udp_socket_send(this, payloads.ptr, lengths.ptr, addresses.ptr, count);
     }
 
     pub fn user(this: *udp.Socket) ?*anyopaque {
@@ -71,7 +85,7 @@ pub const Socket = opaque {
         return us_udp_socket_set_source_specific_membership(this, source, group, iface, @intFromBool(drop));
     }
 
-    extern fn us_create_udp_socket(loop: ?*Loop, data_cb: *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, drain_cb: *const fn (*udp.Socket) callconv(.c) void, close_cb: *const fn (*udp.Socket) callconv(.c) void, recv_error_cb: *const fn (*udp.Socket, c_int) callconv(.c) void, host: [*c]const u8, port: c_ushort, options: c_int, err: ?*c_int, user_data: ?*anyopaque) ?*udp.Socket;
+    extern fn us_create_udp_socket(loop: ?*Loop, data_cb: *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, drain_cb: *const fn (*udp.Socket) callconv(.c) void, close_cb: *const fn (*udp.Socket) callconv(.c) void, recv_error_cb: *const fn (*udp.Socket, c_int) callconv(.c) void, host: [*c]const u8, port: c_ushort, options: c_int, err: *CreateFailure, user_data: ?*anyopaque) ?*udp.Socket;
     extern fn us_udp_socket_connect(socket: *udp.Socket, hostname: [*c]const u8, port: c_uint) c_int;
     extern fn us_udp_socket_disconnect(socket: *udp.Socket) c_int;
     extern fn us_udp_socket_send(socket: *udp.Socket, [*c]const [*c]const u8, [*c]const usize, [*c]const ?*const anyopaque, c_int) c_int;

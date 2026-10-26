@@ -10,12 +10,13 @@ pub const Header = extern struct {
     value_len: c_uint,
     qpack_index: c_int = -1,
 
-    pub fn init(name_: []const u8, value_: []const u8, idx: ?Qpack) Header {
+    pub fn init(name_: []const u8, value_: []const u8, idx: ?Qpack) error{HTTP3HeaderEncodingError}!Header {
+        if (name_.len == 0) return error.HTTP3HeaderEncodingError;
         return .{
             .name = name_.ptr,
-            .name_len = @intCast(name_.len),
+            .name_len = std.math.cast(c_uint, name_.len) orelse return error.HTTP3HeaderEncodingError,
             .value = value_.ptr,
-            .value_len = @intCast(value_.len),
+            .value_len = std.math.cast(c_uint, value_.len) orelse return error.HTTP3HeaderEncodingError,
             .qpack_index = if (idx) |i| @backingInt(i) else -1,
         };
     }
@@ -75,7 +76,7 @@ pub const Qpack = enum(u8) {
     /// name is neither forbidden nor in the static table; lowercase it and
     /// send with no index hint.
     pub fn classify(name: []const u8) ?Class {
-        return map.getAnyCase(name);
+        return map.getCaseInsensitiveASCII(name);
     }
 
     const map = bun.ComptimeStringMap(Class, .{
@@ -118,3 +119,4 @@ pub const Qpack = enum(u8) {
 };
 
 const bun = @import("bun");
+const std = @import("std");

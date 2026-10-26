@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string.h>
 #include "./default_ciphers.h"
+#include "SchemaBindings.h"
 
 // System-specific includes for certificate loading
 #include "./root_certs_platform.h"
@@ -18,25 +19,11 @@
 #endif
 static const int root_certs_size = sizeof(root_certs) / sizeof(root_certs[0]);
 
-extern "C" void BUN__warn__extra_ca_load_failed(const char* filename, const char* error_msg);
-
 // Forward declarations for platform-specific functions
 // (Actual implementations are in platform-specific files)
 
-// External variable from Zig CLI arguments
-extern "C" bool Bun__Node__UseSystemCA;
-
-// Helper function to check if system CA should be used
-// Checks both CLI flag (--use-system-ca) and environment variable (NODE_USE_SYSTEM_CA=1)
 static bool us_should_use_system_ca() {
-  // Check CLI flag first
-  if (Bun__Node__UseSystemCA) {
-    return true;
-  }
-  
-  // Check environment variable
-  const char *use_system_ca = getenv("NODE_USE_SYSTEM_CA");
-  return use_system_ca && strcmp(use_system_ca, "1") == 0;
+  return Bun::Bindgen::ZigExports::bunBindgenZig_Process_useSystemCA();
 }
 
 // Platform-specific system certificate loading implementations are separated:
@@ -127,7 +114,9 @@ end:
 
   char error_msg[256];
   ERR_error_string_n(ERR_peek_last_error(), error_msg, sizeof(error_msg));
-  BUN__warn__extra_ca_load_failed(filename, error_msg);
+  Bun::Bindgen::ZigExports::bunBindgenZig_Socket_warnExtraCALoadFailed(
+      std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(filename), strlen(filename) },
+      std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(error_msg), strlen(error_msg) });
   ERR_clear_error();
 
   return NULL;

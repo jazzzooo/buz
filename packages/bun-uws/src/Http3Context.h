@@ -29,22 +29,35 @@ struct Http3Context {
             rd->reset();
 
             Http3Request req(s);
-            if (req.getHeader("expect") == "100-continue") res->writeContinue();
-            cd->router.getUserData() = {res, &req};
-            if (!cd->router.route(req.getMethod(), req.getUrl())) {
-                res->writeStatus("404 Not Found")->end();
+            if (req.getHeader("expect") == "100-continue" && res->writeContinue() != Http3Response::WriteStatus::Complete) {
+                res->close();
+                return;
             }
+            if (const auto handler = cd->requestHandler) {
+                handler(res, &req);
+                return;
+            }
+            if (res->writeStatus("404 Not Found") != Http3Response::WriteStatus::Complete
+                || res->end() != Http3Response::WriteStatus::Complete) res->close();
         });
 
         us_quic_socket_context_on_stream_data(ctx, [](us_quic_stream_t *s, const char *data, unsigned len, int fin) {
             Http3Response *res = (Http3Response *) s;
             Http3ResponseData *rd = res->getHttpResponseData();
-            if (rd->inStream) rd->inStream(res, data, len, fin != 0, rd->userData);
+            if (rd->inStream) {
+                const auto callback = fin ? rd->inStream.take() : rd->inStream;
+                callback(res, data, len, fin != 0);
+            }
         });
 
         us_quic_socket_context_on_stream_writable(ctx, [](us_quic_stream_t *s) {
             Http3Response *res = (Http3Response *) s;
-            if (!res->drain()) us_quic_stream_want_write(s, 1);
+            switch (res->drain()) {
+            case Http3Response::WriteStatus::Complete: break;
+            case Http3Response::WriteStatus::Backpressure: us_quic_stream_want_write(s, 1); break;
+            case Http3Response::WriteStatus::OutOfMemory:
+            case Http3Response::WriteStatus::Failed: res->close(); break;
+            }
         });
 
         us_quic_socket_context_on_stream_close(ctx, [](us_quic_stream_t *s) {
@@ -55,7 +68,8 @@ struct Http3Context {
              * completed case it just drops its pointer so it doesn't outlive
              * this destructor. */
             if (rd->onAborted) {
-                rd->onAborted(res, rd->userData);
+                const auto callback = rd->onAborted.take();
+                callback(res);
             }
             rd->~Http3ResponseData();
         });
@@ -72,19 +86,6 @@ struct Http3Context {
         return (Http3ContextData *) us_quic_socket_context_ext((us_quic_socket_context_t *) this);
     }
 
-    void onHttp(std::string_view method, std::string_view pattern,
-                MoveOnlyFunction<void(Http3Response *, Http3Request *)> &&handler) {
-        Http3ContextData *cd = getContextData();
-        std::vector<std::string_view> methods =
-            method == "*" ? std::vector<std::string_view>{"*"} : std::vector<std::string_view>{method};
-        cd->router.add(methods, pattern, [handler = std::move(handler)](auto *router) mutable {
-            auto &ud = router->getUserData();
-            ud.httpRequest->setYield(false);
-            ud.httpRequest->setParameters(router->getParameters());
-            handler(ud.httpResponse, ud.httpRequest);
-            return !ud.httpRequest->getYield();
-        }, method == "*" ? cd->router.LOW_PRIORITY : cd->router.MEDIUM_PRIORITY);
-    }
 
     us_quic_listen_socket_t *listen(const char *host, int port, int flags) {
         return us_quic_socket_context_listen((us_quic_socket_context_t *) this,

@@ -311,6 +311,19 @@ declare module "bun" {
     | "128KB"
     | "256KB";
 
+  /** Decompression options for incoming WebSocket messages. */
+  type WebSocketDecompressor =
+    | "disable"
+    | "shared"
+    | "dedicated"
+    | "512B"
+    | "1KB"
+    | "2KB"
+    | "4KB"
+    | "8KB"
+    | "16KB"
+    | "32KB";
+
   /**
    * Create a server-side {@link ServerWebSocket} handler for use with {@link Bun.serve}
    *
@@ -482,7 +495,7 @@ declare module "bun" {
           /**
            * Sets the decompression level.
            */
-          decompress?: WebSocketCompressor | boolean;
+          decompress?: WebSocketDecompressor | boolean;
         };
   }
 

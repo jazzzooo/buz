@@ -21,8 +21,10 @@
 
 const MiniEventLoop = @This();
 
-tasks: Queue,
+tasks: Queue = .{},
 concurrent_tasks: ConcurrentTaskQueue = .{},
+native_completion_registry: ?*NativeCompletionRegistry = null,
+closing: bool = false,
 io: std.Io,
 loop: *uws.Loop,
 allocator: std.mem.Allocator,
@@ -32,11 +34,8 @@ background_executor: *bun.BackgroundExecutor,
 file_polls_: ?*Async.FilePoll.Store = null,
 env: ?*bun.DotEnv.Loader = null,
 top_level_dir: []const u8 = "",
-after_event_loop_callback_ctx: ?*anyopaque = null,
-after_event_loop_callback: ?jsc.OpaqueCallback = null,
+pending_file_poll_frees: ?*Async.FilePoll.Store = null,
 pipe_read_buffer: ?*PipeReadBuffer = null,
-stdout_store: ?*bun.webcore.Blob.Store = null,
-stderr_store: ?*bun.webcore.Blob.Store = null,
 const PipeReadBuffer = [256 * 1024]u8;
 
 pub threadlocal var globalInitialized: bool = false;
@@ -44,41 +43,48 @@ pub threadlocal var global: *MiniEventLoop = undefined;
 
 pub const ConcurrentTaskQueue = UnboundedQueue(AnyTaskWithExtraContext, .next);
 
-pub fn initGlobal(io: std.Io, env: ?*bun.DotEnv.Loader, cwd: ?[]const u8) *MiniEventLoop {
+pub fn initGlobal(io: std.Io, env: ?*bun.DotEnv.Loader, cwd: ?[]const u8) anyerror!*MiniEventLoop {
     if (globalInitialized) return global;
-    const loop = MiniEventLoop.init(io, bun.default_allocator, bun.cli.Cli.pinnedThreads().backgroundExecutor());
-    global = bun.handleOom(bun.default_allocator.create(MiniEventLoop));
-    global.* = loop;
-    global.loop.internal_loop_data.setParentEventLoop(bun.jsc.EventLoopHandle.init(global));
-    global.env = env orelse bun.DotEnv.instance orelse env_loader: {
-        const map = bun.handleOom(bun.default_allocator.create(bun.DotEnv.Map));
-        map.* = bun.DotEnv.Map.init(bun.default_allocator);
+    const loop = try MiniEventLoop.init(io, bun.default_allocator, bun.cli.Cli.pinnedThreads().backgroundExecutor());
+    const instance = try bun.default_allocator.create(MiniEventLoop);
+    errdefer bun.default_allocator.destroy(instance);
+    instance.* = loop;
+    errdefer instance.deinit();
 
-        const loader = bun.handleOom(bun.default_allocator.create(bun.DotEnv.Loader));
-        loader.* = bun.DotEnv.Loader.init(map, bun.default_allocator);
-        break :env_loader loader;
-    };
-
-    // Set top_level_dir from provided cwd or get current working directory
+    var owned_cwd: ?[]const u8 = null;
+    errdefer if (owned_cwd) |dir| bun.default_allocator.free(dir);
     if (cwd) |dir| {
-        global.top_level_dir = dir;
-    } else if (global.top_level_dir.len == 0) {
+        instance.top_level_dir = dir;
+    } else if (instance.top_level_dir.len == 0) {
         var buf: bun.PathBuffer = undefined;
         switch (bun.sys.getcwd(&buf)) {
             .result => |p| {
-                global.top_level_dir = bun.default_allocator.dupe(u8, p) catch "";
+                owned_cwd = try bun.default_allocator.dupe(u8, p);
+                instance.top_level_dir = owned_cwd.?;
             },
             .err => {
-                global.top_level_dir = "";
+                instance.top_level_dir = "";
             },
         }
     }
 
+    instance.env = env orelse bun.DotEnv.instance orelse env_loader: {
+        const map = try bun.default_allocator.create(bun.DotEnv.Map);
+        errdefer bun.default_allocator.destroy(map);
+        map.* = bun.DotEnv.Map.init(bun.default_allocator);
+        errdefer map.map.deinit(map.allocator);
+        const loader = try bun.default_allocator.create(bun.DotEnv.Loader);
+        loader.* = bun.DotEnv.Loader.init(map, bun.default_allocator);
+        break :env_loader loader;
+    };
+    instance.loop.internal_loop_data.setParent(instance.parentEventLoop());
+    global = instance;
     globalInitialized = true;
     return global;
 }
 
-const Queue = bun.LinearFifo(*AnyTaskWithExtraContext, .Dynamic);
+const Queue = @import("./NativeTaskQueue.zig");
+const NativeCompletionRegistry = @import("./NativeCompletionRegistry.zig");
 
 pub const Task = AnyTaskWithExtraContext;
 
@@ -99,17 +105,18 @@ pub fn pipeReadBuffer(this: *MiniEventLoop) []u8 {
 }
 
 pub fn onAfterEventLoop(this: *MiniEventLoop) void {
-    if (this.after_event_loop_callback) |cb| {
-        const ctx = this.after_event_loop_callback_ctx;
-        this.after_event_loop_callback = null;
-        this.after_event_loop_callback_ctx = null;
-        cb(ctx);
+    if (bun.take(&this.pending_file_poll_frees)) |store| {
+        store.processDeferredFrees();
     }
 }
 
 pub fn filePolls(this: *MiniEventLoop) *Async.FilePoll.Store {
+    return bun.handleOom(this.tryFilePolls());
+}
+
+pub fn tryFilePolls(this: *MiniEventLoop) bun.OOM!*Async.FilePoll.Store {
     return this.file_polls_ orelse {
-        this.file_polls_ = bun.handleOom(this.allocator.create(Async.FilePoll.Store));
+        this.file_polls_ = try this.allocator.create(Async.FilePoll.Store);
         this.file_polls_.?.* = Async.FilePoll.Store.init();
         return this.file_polls_.?;
     };
@@ -119,20 +126,34 @@ pub fn init(
     io: std.Io,
     allocator: std.mem.Allocator,
     background_executor: *bun.BackgroundExecutor,
-) MiniEventLoop {
+) anyerror!MiniEventLoop {
     return .{
-        .tasks = Queue.init(allocator),
         .io = io,
         .allocator = allocator,
         .background_executor = background_executor,
-        .loop = uws.Loop.get(),
+        .loop = try uws.Loop.ensure(),
     };
 }
 
 pub fn deinit(this: *MiniEventLoop) void {
+    this.closing = true;
+    if (this.native_completion_registry) |registry| {
+        this.native_completion_registry = null;
+        registry.close();
+        registry.release();
+    }
     if (this.background_tasks) |*group| group.deinit();
+    _ = this.tickConcurrentWithCount();
     this.tasks.deinit();
     bun.assert(this.concurrent_tasks.isEmpty());
+}
+
+pub fn nativeCompletionRegistry(this: *MiniEventLoop) bun.OOM!?*NativeCompletionRegistry {
+    if (this.closing) return null;
+    if (this.native_completion_registry) |registry| return registry;
+    const registry = try @import("./NativeCompletionRegistryMini.zig").create(this);
+    this.native_completion_registry = registry;
+    return registry;
 }
 
 pub fn attachBackgroundTasks(this: *MiniEventLoop, group: *bun.BackgroundTaskGroup) void {
@@ -148,28 +169,91 @@ pub fn backgroundTasks(this: *MiniEventLoop) *bun.BackgroundTaskGroup {
     return &this.background_tasks.?;
 }
 
+pub fn parentEventLoop(this: *MiniEventLoop) ParentEventLoop {
+    return .{
+        .context = .init(this),
+        .kind = .mini,
+        .vtable = &parent_event_loop_vtable,
+    };
+}
+
+pub fn runtimeLoopHandle(this: *MiniEventLoop) RuntimeLoopHandle {
+    return .{
+        .context = .init(this),
+        .kind = .mini,
+        .vtable = &runtime_loop_handle_vtable,
+    };
+}
+
+const runtime_loop_handle_vtable = RuntimeLoopHandle.VTable{
+    .io = struct {
+        fn call(context: RuntimeLoopHandle.Context) std.Io {
+            return context.get(*MiniEventLoop).io;
+        }
+    }.call,
+    .file_polls = struct {
+        fn call(context: RuntimeLoopHandle.Context) bun.OOM!*Async.FilePoll.Store {
+            return context.get(*MiniEventLoop).tryFilePolls();
+        }
+    }.call,
+    .platform_loop = struct {
+        fn call(context: RuntimeLoopHandle.Context) *ParentEventLoop.PlatformEventLoop {
+            return context.get(*MiniEventLoop).parentEventLoop().platformEventLoop();
+        }
+    }.call,
+    .pipe_read_buffer = struct {
+        fn call(context: RuntimeLoopHandle.Context) []u8 {
+            return context.get(*MiniEventLoop).pipeReadBuffer();
+        }
+    }.call,
+    .parent_event_loop = struct {
+        fn call(context: RuntimeLoopHandle.Context) ParentEventLoop {
+            return context.get(*MiniEventLoop).parentEventLoop();
+        }
+    }.call,
+};
+
+const parent_event_loop_vtable = ParentEventLoop.VTable{
+    .native_completion_registry = struct {
+        fn call(context: ParentEventLoop.Context) bun.OOM!?*NativeCompletionRegistry {
+            return context.get(*MiniEventLoop).nativeCompletionRegistry();
+        }
+    }.call,
+    .io = struct {
+        fn call(context: ParentEventLoop.Context) std.Io {
+            const loop = context.get(*MiniEventLoop);
+            return loop.io;
+        }
+    }.call,
+    .background_tasks = struct {
+        fn call(context: ParentEventLoop.Context) *bun.BackgroundTaskGroup {
+            const loop = context.get(*MiniEventLoop);
+            return loop.backgroundTasks();
+        }
+    }.call,
+    .runtime_loop_handle = struct {
+        fn call(context: ParentEventLoop.Context) RuntimeLoopHandle {
+            return context.get(*MiniEventLoop).runtimeLoopHandle();
+        }
+    }.call,
+    .platform_event_loop = struct {
+        fn call(context: ParentEventLoop.Context) *PlatformEventLoop {
+            const loop = context.get(*MiniEventLoop);
+            if (comptime Environment.isWindows) return loop.loop.uv_loop;
+            return loop.loop;
+        }
+    }.call,
+};
+
 pub fn tickConcurrentWithCount(this: *MiniEventLoop) usize {
-    var concurrent = this.concurrent_tasks.popBatch();
-    const count = concurrent.count;
-    if (count == 0)
-        return 0;
+    const concurrent = this.concurrent_tasks.popBatch();
+    this.tasks.appendBatch(concurrent);
+    return concurrent.count;
+}
 
-    var iter = concurrent.iterator();
-    const start_count = this.tasks.count;
-    if (start_count == 0) {
-        this.tasks.head = 0;
-    }
-
-    this.tasks.ensureUnusedCapacity(count) catch unreachable;
-    var writable = this.tasks.writableSlice(0);
-    while (iter.next()) |task| {
-        writable[0] = task;
-        writable = writable[1..];
-        this.tasks.count += 1;
-        if (writable.len == 0) break;
-    }
-
-    return this.tasks.count - start_count;
+pub fn cancelTask(this: *MiniEventLoop, task: *AnyTaskWithExtraContext) bool {
+    _ = this.tickConcurrentWithCount();
+    return this.tasks.remove(task);
 }
 
 pub fn tickOnce(
@@ -232,9 +316,18 @@ pub fn enqueueTask(
     comptime Callback: fn (*Context) void,
     comptime field: std.meta.FieldEnum(Context),
 ) void {
-    const TaskType = MiniEventLoop.Task.New(Context, Callback);
-    @field(ctx, @tagName(field)) = TaskType.init(ctx);
-    this.enqueueJSCTask(&@field(ctx, @tagName(field)));
+    const Adapter = struct {
+        fn run(context: AnyTaskWithExtraContext.Context, _: *anyopaque) void {
+            Callback(context.get(*Context));
+        }
+    };
+    @field(ctx, @tagName(field)) = .{ .ctx = .init(ctx), .callback = Adapter.run };
+    const task = &@field(ctx, @tagName(field));
+    if (this.closing) {
+        task.cancel();
+        return;
+    }
+    this.tasks.writeItem(task);
 }
 
 pub fn enqueueTaskConcurrent(this: *MiniEventLoop, task: *AnyTaskWithExtraContext) void {
@@ -250,7 +343,6 @@ pub fn enqueueTaskConcurrentWithExtraCtx(
     comptime Callback: fn (*Context, *ParentContext) void,
     comptime field: std.meta.FieldEnum(Context),
 ) void {
-    jsc.markBinding(@src());
     const TaskType = MiniEventLoop.Task.New(Context, ParentContext, Callback);
     @field(ctx, @tagName(field)) = TaskType.init(ctx);
 
@@ -259,116 +351,20 @@ pub fn enqueueTaskConcurrentWithExtraCtx(
     this.loop.wakeup();
 }
 
-pub fn stderr(this: *MiniEventLoop) *jsc.WebCore.Blob.Store {
-    return this.stderr_store orelse brk: {
-        var mode: bun.Mode = 0;
-        const fd = bun.FD.fromUV(2);
-
-        switch (bun.sys.fstat(fd)) {
-            .result => |stat| {
-                mode = @intCast(stat.mode);
-            },
-            .err => {},
-        }
-
-        const store = jsc.WebCore.Blob.Store.new(.{
-            .ref_count = std.atomic.Value(u32).init(2),
-            .allocator = bun.default_allocator,
-            .data = .{
-                .file = .{
-                    .pathlike = .{
-                        .fd = fd,
-                    },
-                    .is_atty = bun.Output.stderr_descriptor_type == .terminal,
-                    .mode = mode,
-                },
-            },
-        });
-
-        this.stderr_store = store;
-        break :brk store;
-    };
-}
-
-pub fn stdout(this: *MiniEventLoop) *jsc.WebCore.Blob.Store {
-    return this.stdout_store orelse brk: {
-        var mode: bun.Mode = 0;
-        const fd = bun.FD.stdout();
-
-        switch (bun.sys.fstat(fd)) {
-            .result => |stat| {
-                mode = @intCast(stat.mode);
-            },
-            .err => {},
-        }
-
-        const store = jsc.WebCore.Blob.Store.new(.{
-            .ref_count = std.atomic.Value(u32).init(2),
-            .allocator = bun.default_allocator,
-            .data = .{
-                .file = .{
-                    .pathlike = .{
-                        .fd = fd,
-                    },
-                    .is_atty = bun.Output.stdout_descriptor_type == .terminal,
-                    .mode = mode,
-                },
-            },
-        });
-
-        this.stdout_store = store;
-        break :brk store;
-    };
-}
-
-pub const JsVM = struct {
-    vm: *VirtualMachine,
-
-    pub inline fn init(inner: *VirtualMachine) JsVM {
-        return .{
-            .vm = inner,
-        };
-    }
-
-    pub inline fn loop(this: @This()) *jsc.EventLoop {
-        return this.vm.event_loop;
-    }
-
-    pub inline fn allocFilePoll(this: @This()) *bun.Async.FilePoll {
-        return this.vm.rareData().filePolls(this.vm).get();
-    }
-
-    pub inline fn platformEventLoop(this: @This()) *jsc.PlatformEventLoop {
-        return this.vm.event_loop_handle.?;
-    }
-
-    pub inline fn incrementPendingUnrefCounter(this: @This()) void {
-        this.vm.pending_unref_counter +|= 1;
-    }
-
-    pub inline fn filePolls(this: @This()) *Async.FilePoll.Store {
-        return this.vm.rareData().filePolls(this.vm);
-    }
-};
-
 pub const MiniVM = struct {
-    mini: *jsc.MiniEventLoop,
+    mini: *MiniEventLoop,
 
-    pub fn init(inner: *jsc.MiniEventLoop) MiniVM {
+    pub fn init(inner: *MiniEventLoop) MiniVM {
         return .{
             .mini = inner,
         };
     }
 
-    pub inline fn loop(this: @This()) *jsc.MiniEventLoop {
+    pub inline fn loop(this: @This()) *MiniEventLoop {
         return this.mini;
     }
 
-    pub inline fn allocFilePoll(this: @This()) *bun.Async.FilePoll {
-        return this.mini.filePolls().get();
-    }
-
-    pub inline fn platformEventLoop(this: @This()) *jsc.PlatformEventLoop {
+    pub inline fn platformEventLoop(this: @This()) *PlatformEventLoop {
         if (comptime Environment.isWindows) {
             return this.mini.loop.uv_loop;
         }
@@ -385,35 +381,6 @@ pub const MiniVM = struct {
     }
 };
 
-pub const EventLoopKind = enum {
-    js,
-    mini,
-
-    pub fn Type(comptime this: EventLoopKind) type {
-        return switch (this) {
-            .js => EventLoop,
-            .mini => MiniEventLoop,
-        };
-    }
-
-    pub fn refType(comptime this: EventLoopKind) type {
-        return switch (this) {
-            .js => *VirtualMachine,
-            .mini => *jsc.MiniEventLoop,
-        };
-    }
-};
-
-pub fn AbstractVM(inner: anytype) switch (@TypeOf(inner)) {
-    *VirtualMachine => JsVM,
-    *jsc.MiniEventLoop => MiniVM,
-    else => @compileError("Invalid event loop ctx: " ++ @typeName(@TypeOf(inner))),
-} {
-    if (comptime @TypeOf(inner) == *VirtualMachine) return JsVM.init(inner);
-    if (comptime @TypeOf(inner) == *jsc.MiniEventLoop) return MiniVM.init(inner);
-    @compileError("Invalid event loop ctx: " ++ @typeName(@TypeOf(inner)));
-}
-
 const std = @import("std");
 
 const bun = @import("bun");
@@ -421,8 +388,7 @@ const Async = bun.Async;
 const Environment = bun.Environment;
 const uws = bun.uws;
 const UnboundedQueue = bun.threading.UnboundedQueue;
-
-const jsc = bun.jsc;
-const AnyTaskWithExtraContext = jsc.AnyTaskWithExtraContext;
-const EventLoop = jsc.EventLoop;
-const VirtualMachine = jsc.VirtualMachine;
+const AnyTaskWithExtraContext = @import("./AnyTaskWithExtraContext.zig");
+const ParentEventLoop = @import("./ParentEventLoop.zig");
+const RuntimeLoopHandle = @import("./RuntimeLoopHandle.zig");
+const PlatformEventLoop = if (Environment.isPosix) uws.Loop else Async.Loop;

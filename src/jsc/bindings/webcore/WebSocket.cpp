@@ -30,13 +30,14 @@
  */
 
 #include "config.h"
+#include "UTF8View.h"
 #include "WebSocket.h"
 #include "WebSocketDeflate.h"
-#include "headers.h"
 #include "blob.h"
-#include "BunString.h"
-#include "ZigGeneratedClasses.h"
+#include "SchemaBindings.h"
 #include "CloseEvent.h"
+#include "JSDOMExceptionHandling.h"
+#include <JavaScriptCore/TopExceptionScope.h>
 #include <wtf/text/Base64.h>
 // #include "ContentSecurityPolicy.h"
 // #include "DOMWindow.h"
@@ -83,8 +84,6 @@
 
 namespace WebCore {
 WTF_MAKE_TZONE_ALLOCATED_IMPL(WebSocket);
-extern "C" int Bun__getTLSRejectUnauthorizedValue();
-extern "C" bool Bun__isNoProxy(const char* hostname, size_t hostname_len, const char* host, size_t host_len);
 
 static ErrorEvent::Init createErrorEventInit(WebSocket& webSocket, const String& reason, JSC::JSGlobalObject* globalObject)
 {
@@ -167,11 +166,11 @@ static String joinStrings(const Vector<String>& strings, ASCIILiteral separator)
     return builder.toString();
 }
 
-static unsigned saturateAdd(unsigned a, unsigned b)
+static unsigned saturateAdd(unsigned a, size_t b)
 {
-    if (std::numeric_limits<unsigned>::max() - a < b)
+    if (b > std::numeric_limits<unsigned>::max() - a)
         return std::numeric_limits<unsigned>::max();
-    return a + b;
+    return a + static_cast<unsigned>(b);
 }
 
 ASCIILiteral WebSocket::subprotocolSeparator()
@@ -186,29 +185,26 @@ WebSocket::WebSocket(ScriptExecutionContext& context)
 {
     m_state = CONNECTING;
     m_hasPendingActivity.store(true);
-    m_rejectUnauthorized = Bun__getTLSRejectUnauthorizedValue() != 0;
+    m_rejectUnauthorized = Bun::Bindgen::ZigExports::bunBindgenZig_Process_getTLSRejectUnauthorizedValue() != 0;
 }
 
 WebSocket::~WebSocket()
 {
-    if (m_upgradeClient != nullptr) {
-        void* upgradeClient = m_upgradeClient;
-        // Use TLS cancel if connection type is TLS or ProxyTLS (either is a TLS socket to the remote)
-        bool useTLSClient = (m_connectionType == ConnectionType::TLS || m_connectionType == ConnectionType::ProxyTLS);
-        if (useTLSClient) {
-            Bun__WebSocketHTTPSClient__cancel(reinterpret_cast<void*>(upgradeClient));
+    if (hasUpgradeClient()) {
+        if (usesTLSUpgradeClient()) {
+            Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketHTTPSClientCancel(m_upgradeClient.https);
         } else {
-            Bun__WebSocketHTTPClient__cancel(reinterpret_cast<void*>(upgradeClient));
+            Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketHTTPClientCancel(m_upgradeClient.http);
         }
     }
 
     switch (m_connectedWebSocketKind) {
     case ConnectedWebSocketKind::Client: {
-        Bun__WebSocketClient__finalize(reinterpret_cast<void*>(this->m_connectedWebSocket.client));
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientFinalize(this->m_connectedWebSocket.client);
         break;
     }
     case ConnectedWebSocketKind::ClientSSL: {
-        Bun__WebSocketClientTLS__finalize(reinterpret_cast<void*>(this->m_connectedWebSocket.clientSSL));
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientTLSFinalize(this->m_connectedWebSocket.clientSSL);
         break;
     }
     // case ConnectedWebSocketKind::Server: {
@@ -259,12 +255,19 @@ static ExceptionOr<std::optional<ProxyConfig>> setupProxy(const String& proxyUrl
     // Store proxy headers
     if (proxyHeaders) {
         auto headersOrException = FetchHeaders::create(WTF::move(proxyHeaders));
-        if (!headersOrException.hasException()) {
-            auto hdrs = headersOrException.releaseReturnValue();
-            auto iterator = hdrs.get().createIterator(false);
-            while (auto value = iterator.next()) {
-                config.headers.append({ value->key, value->value });
-            }
+        if (headersOrException.hasException())
+            return headersOrException.releaseException();
+        auto hdrs = headersOrException.releaseReturnValue();
+        auto iterator = hdrs.get().createIterator(false);
+        for (;;) {
+            auto next = iterator.next();
+            if (next.hasException())
+                return next.releaseException();
+            auto value = next.releaseReturnValue();
+            if (!value)
+                break;
+            if (!config.headers.tryAppend({ value->key, value->value }))
+                return Exception { OutOfMemoryError };
         }
     }
 
@@ -432,18 +435,16 @@ size_t WebSocket::memoryCost() const
     cost += m_extensions.sizeInBytes();
 
     if (m_connectedWebSocketKind == ConnectedWebSocketKind::Client) {
-        cost += Bun__WebSocketClient__memoryCost(m_connectedWebSocket.client);
+        cost += Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientMemoryCost(m_connectedWebSocket.client);
     } else if (m_connectedWebSocketKind == ConnectedWebSocketKind::ClientSSL) {
-        cost += Bun__WebSocketClientTLS__memoryCost(m_connectedWebSocket.clientSSL);
+        cost += Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientTLSMemoryCost(m_connectedWebSocket.clientSSL);
     }
 
-    if (m_upgradeClient) {
-        // Use TLS cost if connection type is TLS or ProxyTLS
-        bool useTLSClient = (m_connectionType == ConnectionType::TLS || m_connectionType == ConnectionType::ProxyTLS);
-        if (useTLSClient) {
-            cost += Bun__WebSocketHTTPSClient__memoryCost(m_upgradeClient);
+    if (hasUpgradeClient()) {
+        if (usesTLSUpgradeClient()) {
+            cost += Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketHTTPSClientMemoryCost(m_upgradeClient.https);
         } else {
-            cost += Bun__WebSocketHTTPClient__memoryCost(m_upgradeClient);
+            cost += Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketHTTPClientMemoryCost(m_upgradeClient.http);
         }
     }
 
@@ -452,6 +453,7 @@ size_t WebSocket::memoryCost() const
 
 ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& protocols, std::optional<FetchHeaders::Init>&& headersInit, std::optional<ProxyConfig>&& proxyConfig)
 {
+    auto throwScope = DECLARE_THROW_SCOPE(scriptExecutionContext()->jsGlobalObject()->vm());
     // LOG(Network, "WebSocket %p connect() url='%s'", this, url.utf8().data());
     m_url = URL { url };
 
@@ -547,10 +549,6 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
     if (!protocols.isEmpty())
         protocolString = joinStrings(protocols, subprotocolSeparator());
 
-    // Materialize host/path as WTF::String so the BunString wrappers hold a
-    // stable WTFStringImpl backing (preserving 8-bit vs UTF-16 encoding).
-    // ZigString wrappers over non-ASCII Latin1/UTF-16 data lose the encoding
-    // tag and corrupt the HTTP upgrade request build in Zig.
     String hostString = m_url.host().toString();
     auto resource = resourceName(m_url);
     String unixSocketPathString;
@@ -594,20 +592,13 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
             hostString = "localhost"_s;
         }
     }
-    BunString host = Bun::toString(hostString);
-    BunString path = Bun::toString(resource);
-    BunString unixSocketPath = Bun::toString(unixSocketPathString);
-    BunString clientProtocolString = Bun::toString(protocolString);
     uint16_t port = is_secure ? 443 : 80;
     if (auto userPort = m_url.port()) {
         port = userPort.value();
     }
 
-    // Hold WTF::Strings so the BunString wrappers stay valid for the Zig call.
     Vector<String, 8> headerNameStrings;
     Vector<String, 8> headerValueStrings;
-    Vector<BunString, 8> headerNames;
-    Vector<BunString, 8> headerValues;
 
     auto headersOrException = FetchHeaders::create(WTF::move(headersInit));
     if (headersOrException.hasException()) [[unlikely]] {
@@ -617,21 +608,27 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
     }
 
     auto headers = headersOrException.releaseReturnValue();
-    headerNameStrings.reserveInitialCapacity(headers.get().internalHeaders().size());
-    headerValueStrings.reserveInitialCapacity(headers.get().internalHeaders().size());
-    headerNames.reserveInitialCapacity(headers.get().internalHeaders().size());
-    headerValues.reserveInitialCapacity(headers.get().internalHeaders().size());
+    if (!headerNameStrings.tryReserveInitialCapacity(headers.get().internalHeaders().size())
+        || !headerValueStrings.tryReserveInitialCapacity(headers.get().internalHeaders().size())) {
+        m_state = CLOSED;
+        updateHasPendingActivity();
+        return Exception { OutOfMemoryError };
+    }
     // lowerCaseKeys = false so we dont touch the keys casing
     auto iterator = headers.get().createIterator(false);
-    while (auto value = iterator.next()) {
-        headerNameStrings.append(value->key);
-        headerValueStrings.append(value->value);
+    for (;;) {
+        auto next = iterator.next();
+        if (next.hasException()) {
+            m_state = CLOSED;
+            updateHasPendingActivity();
+            return next.releaseException();
+        }
+        auto value = next.releaseReturnValue();
+        if (!value)
+            break;
+        headerNameStrings.unsafeAppendWithoutCapacityCheck(value->key);
+        headerValueStrings.unsafeAppendWithoutCapacityCheck(value->value);
     }
-    for (size_t i = 0; i < headerNameStrings.size(); ++i) {
-        headerNames.unsafeAppendWithoutCapacityCheck(Bun::toString(headerNameStrings[i]));
-        headerValues.unsafeAppendWithoutCapacityCheck(Bun::toString(headerValueStrings[i]));
-    }
-
     // Determine connection type based on proxy usage and TLS requirements
     bool hasProxy = proxyConfig.has_value();
 
@@ -647,7 +644,9 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
         auto hostWithPort = hostName(m_url, is_secure);
         auto hostUtf8 = hostStr.utf8();
         auto hostWithPortUtf8 = hostWithPort.utf8();
-        if (Bun__isNoProxy(hostUtf8.data(), hostUtf8.length(), hostWithPortUtf8.data(), hostWithPortUtf8.length())) {
+        if (Bun::Bindgen::ZigExports::bunBindgenZig_Process_isNoProxy(
+                std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(hostUtf8.data()), hostUtf8.length() },
+                std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(hostWithPortUtf8.data()), hostWithPortUtf8.length() })) {
             proxyConfig = std::nullopt;
             hasProxy = false;
         }
@@ -664,77 +663,80 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
         m_connectionType = is_secure ? ConnectionType::TLS : ConnectionType::Plain;
     }
 
-    this->incPendingActivityCount();
-
-    // Prepare proxy parameters (use local variables, not member fields).
-    // The BunString wrappers reference the underlying WTF::Strings in proxyConfig
-    // and remain valid for the duration of the connect() call.
-    BunString proxyHost = hasProxy ? Bun::toString(proxyConfig->host) : BunString { BunStringTag::Empty };
-    BunString proxyAuth = hasProxy ? Bun::toString(proxyConfig->authorization) : BunString { BunStringTag::Empty };
+    std::optional<String> proxyHost;
+    std::optional<String> proxyAuthorization;
     uint16_t proxyPort = hasProxy ? proxyConfig->port : 0;
 
-    Vector<BunString, 8> proxyHeaderNames;
-    Vector<BunString, 8> proxyHeaderValues;
+    Vector<String, 8> proxyHeaderNames;
+    Vector<String, 8> proxyHeaderValues;
     if (hasProxy) {
-        proxyHeaderNames.reserveInitialCapacity(proxyConfig->headers.size());
-        proxyHeaderValues.reserveInitialCapacity(proxyConfig->headers.size());
+        proxyHost = proxyConfig->host;
+        if (!proxyConfig->authorization.isEmpty())
+            proxyAuthorization = proxyConfig->authorization;
+        if (!proxyHeaderNames.tryReserveInitialCapacity(proxyConfig->headers.size())
+            || !proxyHeaderValues.tryReserveInitialCapacity(proxyConfig->headers.size())) {
+            m_state = CLOSED;
+            updateHasPendingActivity();
+            return Exception { OutOfMemoryError };
+        }
         for (const auto& header : proxyConfig->headers) {
-            proxyHeaderNames.unsafeAppendWithoutCapacityCheck(Bun::toString(header.first));
-            proxyHeaderValues.unsafeAppendWithoutCapacityCheck(Bun::toString(header.second));
+            proxyHeaderNames.unsafeAppendWithoutCapacityCheck(header.first);
+            proxyHeaderValues.unsafeAppendWithoutCapacityCheck(header.second);
         }
     }
 
     // Compute Basic auth from target URL credentials (for WebSocket upgrade request)
-    String targetAuthorization;
+    std::optional<String> targetAuthorization;
     if (!m_url.user().isEmpty()) {
         auto credentials = makeString(m_url.user(), ':', m_url.password());
         auto utf8 = credentials.utf8();
         auto encoded = base64EncodeToString(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(utf8.data()), utf8.length()));
         targetAuthorization = makeString("Basic "_s, encoded);
     }
-    BunString targetAuth = Bun::toString(targetAuthorization);
 
-    // Pass SSLConfig pointer to Zig (ownership transferred - Zig will deinit when connection closes)
-    // After this call, m_sslConfig should not be used by C++ anymore
-    void* sslConfig = m_sslConfig.release();
+    this->incPendingActivityCount();
+    auto* sslConfig = m_sslConfig.release();
 
     // Use TLS client based on connection type:
     // - TLS/ProxyTLS: use TLS socket
     // - Plain/ProxyPlain: use plain socket
     bool useTLSClient = (m_connectionType == ConnectionType::TLS || m_connectionType == ConnectionType::ProxyTLS);
+    auto headerNames = std::span<const WTF::String> { headerNameStrings.span().data(), headerNameStrings.size() };
+    auto headerValues = std::span<const WTF::String> { headerValueStrings.span().data(), headerValueStrings.size() };
+    auto proxyHeadersNames = std::span<const WTF::String> { proxyHeaderNames.span().data(), proxyHeaderNames.size() };
+    auto proxyHeadersValues = std::span<const WTF::String> { proxyHeaderValues.span().data(), proxyHeaderValues.size() };
+    auto optionalSSLConfig = sslConfig ? std::optional<Bun::WebSocketSSLConfigNative*> { sslConfig } : std::nullopt;
+    auto unixSocketPath = is_unix ? std::optional<String> { unixSocketPathString } : std::nullopt;
 
     if (useTLSClient) {
-        this->m_upgradeClient = Bun__WebSocketHTTPSClient__connect(
-            scriptExecutionContext()->jsGlobalObject(), reinterpret_cast<CppWebSocket*>(this),
-            &host, port, &path, &clientProtocolString,
-            headerNames.begin(), headerValues.begin(), headerNames.size(),
-            hasProxy ? &proxyHost : nullptr, proxyPort,
-            (hasProxy && !proxyConfig->authorization.isEmpty()) ? &proxyAuth : nullptr,
-            proxyHeaderNames.begin(), proxyHeaderValues.begin(), proxyHeaderNames.size(),
-            sslConfig, is_secure,
-            targetAuthorization.isEmpty() ? nullptr : &targetAuth,
-            is_unix ? &unixSocketPath : nullptr,
-            m_offerPerMessageDeflate);
+        this->m_upgradeClient.https = Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketHTTPSClientConnect(
+            scriptExecutionContext()->jsGlobalObject(), this,
+            hostString, port, resource, protocolString,
+            headerNames, headerValues,
+            proxyHost, proxyPort, proxyAuthorization,
+            proxyHeadersNames, proxyHeadersValues,
+            optionalSSLConfig, is_secure, targetAuthorization, unixSocketPath,
+            m_offerPerMessageDeflate)
+                                          .value_or(nullptr);
     } else {
-        this->m_upgradeClient = Bun__WebSocketHTTPClient__connect(
-            scriptExecutionContext()->jsGlobalObject(), reinterpret_cast<CppWebSocket*>(this),
-            &host, port, &path, &clientProtocolString,
-            headerNames.begin(), headerValues.begin(), headerNames.size(),
-            hasProxy ? &proxyHost : nullptr, proxyPort,
-            (hasProxy && !proxyConfig->authorization.isEmpty()) ? &proxyAuth : nullptr,
-            proxyHeaderNames.begin(), proxyHeaderValues.begin(), proxyHeaderNames.size(),
-            sslConfig, is_secure,
-            targetAuthorization.isEmpty() ? nullptr : &targetAuth,
-            is_unix ? &unixSocketPath : nullptr,
-            m_offerPerMessageDeflate);
+        this->m_upgradeClient.http = Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketHTTPClientConnect(
+            scriptExecutionContext()->jsGlobalObject(), this,
+            hostString, port, resource, protocolString,
+            headerNames, headerValues,
+            proxyHost, proxyPort, proxyAuthorization,
+            proxyHeadersNames, proxyHeadersValues,
+            optionalSSLConfig, is_secure, targetAuthorization, unixSocketPath,
+            m_offerPerMessageDeflate)
+                                         .value_or(nullptr);
     }
 
-    proxyHeaderValues.clear();
-    proxyHeaderNames.clear();
-    headerValues.clear();
-    headerNames.clear();
+    if (throwScope.exception()) {
+        m_state = CLOSED;
+        decPendingActivityCount();
+        return Exception { ExistingExceptionError };
+    }
 
-    if (this->m_upgradeClient == nullptr) {
+    if (!this->hasUpgradeClient()) {
         m_state = CLOSED;
         if (auto* context = scriptExecutionContext()) {
             context->postTask([this, protectedThis = Ref { *this }](ScriptExecutionContext& context) {
@@ -743,8 +745,8 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
 
                 auto eventInit = createErrorEventInit(protectedThis, "Failed to connect"_s, globalObject);
                 auto message = eventInit.message;
-                protectedThis->dispatchEvent(ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
-                protectedThis->dispatchEvent(CloseEvent::create(false, 1006, WTF::move(message)));
+                ErrorEvent::dispatch(protectedThis.get(), eventInit, EventIsTrusted::Yes);
+                protectedThis->dispatchCloseEvent(false, 1006, message);
 
                 protectedThis->decPendingActivityCount();
             });
@@ -791,78 +793,57 @@ ExceptionOr<void> WebSocket::send(const String& message)
 
 ExceptionOr<void> WebSocket::send(ArrayBuffer& binaryData)
 {
-    // LOG(Network, "WebSocket %p send() Sending ArrayBuffer %p", this, &binaryData);
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-    if (m_state == CLOSING || m_state == CLOSED) {
-        unsigned payloadSize = binaryData.byteLength();
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, payloadSize);
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, getFramingOverhead(payloadSize));
-        return {};
-    }
-    char* data = static_cast<char*>(binaryData.data());
-    size_t length = binaryData.byteLength();
-
-    this->sendWebSocketData(data, length, Opcode::Binary);
-
-    return {};
+    return send({ static_cast<const uint8_t*>(binaryData.data()), binaryData.byteLength() });
 }
 
 ExceptionOr<void> WebSocket::send(ArrayBufferView& arrayBufferView)
 {
-    // LOG(Network, "WebSocket %p send() Sending ArrayBufferView %p", this, &arrayBufferView);
+    auto bufferRef = arrayBufferView.unsharedBuffer();
+    auto* buffer = bufferRef.get();
+    auto* bytes = static_cast<const uint8_t*>(buffer->data()) + arrayBufferView.byteOffset();
+    return send({ bytes, arrayBufferView.byteLength() });
+}
 
+ExceptionOr<void> WebSocket::send(std::span<const uint8_t> bytes)
+{
+    return sendBinary(bytes, Opcode::Binary);
+}
+
+WebCore::ExceptionOr<void> WebCore::WebSocket::send(WebCore::BlobImpl* blob)
+{
+    auto owner = Bun::Bindgen::ZigExports::bunBindgenZig_Blob_blobSharedData(blob);
+    if (!owner)
+        return Exception { OutOfMemoryError };
+    Bun::Bindgen::ByteOwner data { owner.value() };
+    return send(data.bytes());
+}
+
+ExceptionOr<void> WebSocket::sendBinary(std::span<const uint8_t> bytes, Opcode opcode)
+{
     if (m_state == CONNECTING)
         return Exception { InvalidStateError };
     if (m_state == CLOSING || m_state == CLOSED) {
-        unsigned payloadSize = arrayBufferView.byteLength();
+        auto payloadSize = bytes.size();
         m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, payloadSize);
         m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, getFramingOverhead(payloadSize));
         return {};
     }
 
-    auto bufferRef = arrayBufferView.unsharedBuffer();
-    auto* buffer = bufferRef.get();
-    char* baseAddress = reinterpret_cast<char*>(buffer->data()) + arrayBufferView.byteOffset();
-    size_t length = arrayBufferView.byteLength();
-    this->sendWebSocketData(baseAddress, length, Opcode::Binary);
-
+    sendWebSocketData(bytes, opcode);
     return {};
 }
 
-WebCore::ExceptionOr<void> WebCore::WebSocket::send(WebCore::JSBlob* blob)
-{
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-    if (m_state == CLOSING || m_state == CLOSED) {
-        return {};
-    }
-
-    // Get the blob data and send it using existing binary data path
-    void* dataPtr = Blob__getDataPtr(JSC::JSValue::encode(blob));
-    size_t dataSize = Blob__getSize(JSC::JSValue::encode(blob));
-
-    if (dataPtr && dataSize > 0) {
-        this->sendWebSocketData(static_cast<const char*>(dataPtr), dataSize, Opcode::Binary);
-    } else {
-        // Send empty frame for empty blobs
-        this->sendWebSocketData(nullptr, 0, Opcode::Binary);
-    }
-
-    return {};
-}
-
-void WebSocket::sendWebSocketData(const char* baseAddress, size_t length, const Opcode op)
+void WebSocket::sendWebSocketData(std::span<const uint8_t> bytes, const Opcode op)
 {
     switch (m_connectedWebSocketKind) {
     case ConnectedWebSocketKind::Client: {
-        Bun__WebSocketClient__writeBinaryData(this->m_connectedWebSocket.client, reinterpret_cast<const unsigned char*>(baseAddress), length, static_cast<uint8_t>(op));
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientWriteBytes(this->m_connectedWebSocket.client, bytes, static_cast<uint8_t>(op));
         // this->m_connectedWebSocket.client->send({ baseAddress, length }, opCode);
         // this->m_bufferedAmount = this->m_connectedWebSocket.client->getBufferedAmount();
         break;
     }
     case ConnectedWebSocketKind::ClientSSL: {
-        Bun__WebSocketClientTLS__writeBinaryData(this->m_connectedWebSocket.clientSSL, reinterpret_cast<const unsigned char*>(baseAddress), length, static_cast<uint8_t>(op));
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientTLSWriteBytes(this->m_connectedWebSocket.clientSSL, bytes, static_cast<uint8_t>(op));
         break;
     }
     // case ConnectedWebSocketKind::Server: {
@@ -885,15 +866,13 @@ void WebSocket::sendWebSocketString(const String& message, const Opcode op)
 {
     switch (m_connectedWebSocketKind) {
     case ConnectedWebSocketKind::Client: {
-        auto zigStr = Zig::toZigString(message);
-        Bun__WebSocketClient__writeString(this->m_connectedWebSocket.client, &zigStr, static_cast<uint8_t>(op));
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientWriteText(this->m_connectedWebSocket.client, message, static_cast<uint8_t>(op));
         // this->m_connectedWebSocket.client->send({ baseAddress, length }, opCode);
         // this->m_bufferedAmount = this->m_connectedWebSocket.client->getBufferedAmount();
         break;
     }
     case ConnectedWebSocketKind::ClientSSL: {
-        auto zigStr = Zig::toZigString(message);
-        Bun__WebSocketClientTLS__writeString(this->m_connectedWebSocket.clientSSL, &zigStr, static_cast<uint8_t>(op));
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientTLSWriteText(this->m_connectedWebSocket.clientSSL, message, static_cast<uint8_t>(op));
         break;
     }
     // case ConnectedWebSocketKind::Server: {
@@ -931,14 +910,15 @@ void WebSocket::failConnectingWebSocket()
     ASSERT(m_state == CONNECTING);
     m_state = CLOSING;
 
-    if (m_upgradeClient != nullptr) {
-        void* upgradeClient = m_upgradeClient;
-        m_upgradeClient = nullptr;
-        bool useTLSClient = (m_connectionType == ConnectionType::TLS || m_connectionType == ConnectionType::ProxyTLS);
-        if (useTLSClient) {
-            Bun__WebSocketHTTPSClient__cancel(upgradeClient);
+    if (hasUpgradeClient()) {
+        if (usesTLSUpgradeClient()) {
+            auto* upgradeClient = m_upgradeClient.https;
+            clearUpgradeClient();
+            Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketHTTPSClientCancel(upgradeClient);
         } else {
-            Bun__WebSocketHTTPClient__cancel(upgradeClient);
+            auto* upgradeClient = m_upgradeClient.http;
+            clearUpgradeClient();
+            Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketHTTPClientCancel(upgradeClient);
         }
     }
 
@@ -955,14 +935,14 @@ void WebSocket::failConnectingWebSocket()
                 // close event. Matches Chrome/Firefox and npm ws.
                 auto reason = "WebSocket is closed before the connection is established"_s;
                 auto eventInit = createErrorEventInit(protectedThis, reason, context.jsGlobalObject());
-                protectedThis->dispatchEvent(ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
-                protectedThis->dispatchEvent(CloseEvent::create(false, 1006, reason));
+                ErrorEvent::dispatch(protectedThis.get(), eventInit, EventIsTrusted::Yes);
+                protectedThis->dispatchCloseEvent(false, 1006, reason);
             }
-            protectedThis->disablePendingActivity();
+            protectedThis->releaseConnectionActivity();
         });
     } else {
         m_state = CLOSED;
-        disablePendingActivity();
+        releaseConnectionActivity();
     }
     updateHasPendingActivity();
 }
@@ -970,16 +950,16 @@ void WebSocket::failConnectingWebSocket()
 ExceptionOr<void> WebSocket::close(std::optional<unsigned short> optionalCode, const String& reason)
 {
     int code = optionalCode ? optionalCode.value() : static_cast<int>(1000);
+    auto utf8Reason = reason.utf8(StrictConversionReplacingUnpairedSurrogatesWithFFFD);
+    if (utf8Reason.length() > maxReasonSizeInBytes) {
+        return Exception { SyntaxError, "WebSocket close message is too long."_s };
+    }
     if (code == 1000) {
         // LOG(Network, "WebSocket %p close() without code and reason", this);
     } else {
         // LOG(Network, "WebSocket %p close() code=%d reason='%s'", this, code, reason.utf8().data());
         // if (!(code == WebSocketChannel::CloseEventCodeNormalClosure || (WebSocketChannel::CloseEventCodeMinimumUserDefined <= code && code <= WebSocketChannel::CloseEventCodeMaximumUserDefined)))
         //     return Exception { InvalidAccessError };
-        if (reason.length() > maxReasonSizeInBytes) {
-            // scriptExecutionContext()->addConsoleMessage(MessageSource::JS, MessageLevel::Error, "WebSocket close message is too long."_s);
-            return Exception { SyntaxError, "WebSocket close message is too long."_s };
-        }
     }
 
     if (m_state == CLOSING || m_state == CLOSED)
@@ -989,17 +969,16 @@ ExceptionOr<void> WebSocket::close(std::optional<unsigned short> optionalCode, c
         return {};
     }
     m_state = CLOSING;
+    auto reasonBytes = std::span<const uint8_t> { reinterpret_cast<const uint8_t*>(utf8Reason.data()), utf8Reason.length() };
     switch (m_connectedWebSocketKind) {
     case ConnectedWebSocketKind::Client: {
-        ZigString reasonZigStr = Zig::toZigString(reason);
-        Bun__WebSocketClient__close(this->m_connectedWebSocket.client, code, &reasonZigStr);
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientClose(this->m_connectedWebSocket.client, code, reasonBytes);
         updateHasPendingActivity();
         // this->m_bufferedAmount = this->m_connectedWebSocket.client->getBufferedAmount();
         break;
     }
     case ConnectedWebSocketKind::ClientSSL: {
-        ZigString reasonZigStr = Zig::toZigString(reason);
-        Bun__WebSocketClientTLS__close(this->m_connectedWebSocket.clientSSL, code, &reasonZigStr);
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientTLSClose(this->m_connectedWebSocket.clientSSL, code, reasonBytes);
         updateHasPendingActivity();
         // this->m_bufferedAmount = this->m_connectedWebSocket.clientSSL->getBufferedAmount();
         break;
@@ -1018,7 +997,6 @@ ExceptionOr<void> WebSocket::close(std::optional<unsigned short> optionalCode, c
         break;
     }
     }
-    this->m_connectedWebSocketKind = ConnectedWebSocketKind::None;
     updateHasPendingActivity();
     return {};
 }
@@ -1027,7 +1005,7 @@ ExceptionOr<void> WebSocket::terminate()
 {
     // LOG(Network, "WebSocket %p terminate()", this);
 
-    if (m_state == CLOSING || m_state == CLOSED)
+    if (m_state == CLOSED)
         return {};
     if (m_state == CONNECTING) {
         failConnectingWebSocket();
@@ -1036,12 +1014,12 @@ ExceptionOr<void> WebSocket::terminate()
     m_state = CLOSING;
     switch (m_connectedWebSocketKind) {
     case ConnectedWebSocketKind::Client: {
-        Bun__WebSocketClient__cancel(this->m_connectedWebSocket.client);
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientCancel(this->m_connectedWebSocket.client);
         updateHasPendingActivity();
         break;
     }
     case ConnectedWebSocketKind::ClientSSL: {
-        Bun__WebSocketClientTLS__cancel(this->m_connectedWebSocket.clientSSL);
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientTLSCancel(this->m_connectedWebSocket.clientSSL);
         updateHasPendingActivity();
         break;
     }
@@ -1056,18 +1034,7 @@ ExceptionOr<void> WebSocket::terminate()
 
 ExceptionOr<void> WebSocket::ping()
 {
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-
-    // No exception is raised if the connection was once established but has subsequently been closed.
-    if (m_state == CLOSING || m_state == CLOSED) {
-        return {};
-    }
-
-    // Send empty ping frame per RFC 6455 and Node.js ws compatibility
-    this->sendWebSocketData(nullptr, 0, Opcode::Ping);
-
-    return {};
+    return ping(std::span<const uint8_t> {});
 }
 
 ExceptionOr<void> WebSocket::ping(const String& message)
@@ -1092,61 +1059,25 @@ ExceptionOr<void> WebSocket::ping(const String& message)
 
 ExceptionOr<void> WebSocket::ping(ArrayBuffer& binaryData)
 {
-    // LOG(Network, "WebSocket %p ping() Sending ArrayBuffer %p", this, &binaryData);
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-
-    if (m_state == CLOSING || m_state == CLOSED) {
-        unsigned payloadSize = binaryData.byteLength();
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, payloadSize);
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, getFramingOverhead(payloadSize));
-        return {};
-    }
-
-    char* data = static_cast<char*>(binaryData.data());
-    size_t length = binaryData.byteLength();
-    this->sendWebSocketData(data, length, Opcode::Ping);
-
-    return {};
+    return ping({ static_cast<const uint8_t*>(binaryData.data()), binaryData.byteLength() });
 }
 
 ExceptionOr<void> WebSocket::ping(ArrayBufferView& arrayBufferView)
 {
-    // LOG(Network, "WebSocket %p ping() Sending ArrayBufferView %p", this, &arrayBufferView);
-
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-
-    if (m_state == CLOSING || m_state == CLOSED) {
-        unsigned payloadSize = arrayBufferView.byteLength();
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, payloadSize);
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, getFramingOverhead(payloadSize));
-        return {};
-    }
-
     auto bufferRef = arrayBufferView.unsharedBuffer();
     auto* buffer = bufferRef.get();
-    char* baseAddress = reinterpret_cast<char*>(buffer->data()) + arrayBufferView.byteOffset();
-    size_t length = arrayBufferView.byteLength();
-    this->sendWebSocketData(baseAddress, length, Opcode::Ping);
+    auto* bytes = static_cast<const uint8_t*>(buffer->data()) + arrayBufferView.byteOffset();
+    return ping({ bytes, arrayBufferView.byteLength() });
+}
 
-    return {};
+ExceptionOr<void> WebSocket::ping(std::span<const uint8_t> bytes)
+{
+    return sendBinary(bytes, Opcode::Ping);
 }
 
 ExceptionOr<void> WebSocket::pong()
 {
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-
-    // No exception is raised if the connection was once established but has subsequently been closed.
-    if (m_state == CLOSING || m_state == CLOSED) {
-        return {};
-    }
-
-    // Send empty pong frame per RFC 6455 and Node.js ws compatibility
-    this->sendWebSocketData(nullptr, 0, Opcode::Pong);
-
-    return {};
+    return pong(std::span<const uint8_t> {});
 }
 
 ExceptionOr<void> WebSocket::pong(const String& message)
@@ -1171,45 +1102,20 @@ ExceptionOr<void> WebSocket::pong(const String& message)
 
 ExceptionOr<void> WebSocket::pong(ArrayBuffer& binaryData)
 {
-    // LOG(Network, "WebSocket %p pong() Sending ArrayBuffer %p", this, &binaryData);
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-
-    if (m_state == CLOSING || m_state == CLOSED) {
-        unsigned payloadSize = binaryData.byteLength();
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, payloadSize);
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, getFramingOverhead(payloadSize));
-        return {};
-    }
-
-    char* data = static_cast<char*>(binaryData.data());
-    size_t length = binaryData.byteLength();
-    this->sendWebSocketData(data, length, Opcode::Pong);
-
-    return {};
+    return pong({ static_cast<const uint8_t*>(binaryData.data()), binaryData.byteLength() });
 }
 
 ExceptionOr<void> WebSocket::pong(ArrayBufferView& arrayBufferView)
 {
-    // LOG(Network, "WebSocket %p pong() Sending ArrayBufferView %p", this, &arrayBufferView);
-
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-
-    if (m_state == CLOSING || m_state == CLOSED) {
-        unsigned payloadSize = arrayBufferView.byteLength();
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, payloadSize);
-        m_bufferedAmountAfterClose = saturateAdd(m_bufferedAmountAfterClose, getFramingOverhead(payloadSize));
-        return {};
-    }
-
     auto bufferRef = arrayBufferView.unsharedBuffer();
     auto* buffer = bufferRef.get();
-    char* baseAddress = reinterpret_cast<char*>(buffer->data()) + arrayBufferView.byteOffset();
-    size_t length = arrayBufferView.byteLength();
-    this->sendWebSocketData(baseAddress, length, Opcode::Pong);
+    auto* bytes = static_cast<const uint8_t*>(buffer->data()) + arrayBufferView.byteOffset();
+    return pong({ bytes, arrayBufferView.byteLength() });
+}
 
-    return {};
+ExceptionOr<void> WebSocket::pong(std::span<const uint8_t> bytes)
+{
+    return sendBinary(bytes, Opcode::Pong);
 }
 
 const URL& WebSocket::url() const
@@ -1351,13 +1257,13 @@ void WebSocket::didConnect()
         if (this->hasEventListeners("open"_s)) {
             this->incPendingActivityCount();
             // the main reason for dispatching on a separate tick is to handle when you haven't yet attached an event listener
-            dispatchEvent(Event::create(eventNames().openEvent, Event::CanBubble::No, Event::IsCancelable::No));
+            dispatchSimpleEvent(eventNames().openEvent);
             this->decPendingActivityCount();
         } else {
             this->incPendingActivityCount();
             context->postTask([this, protectedThis = Ref { *this }](ScriptExecutionContext& context) {
                 ASSERT(scriptExecutionContext());
-                protectedThis->dispatchEvent(Event::create(eventNames().openEvent, Event::CanBubble::No, Event::IsCancelable::No));
+                protectedThis->dispatchSimpleEvent(eventNames().openEvent);
                 protectedThis->decPendingActivityCount();
             });
         }
@@ -1422,18 +1328,29 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
     //         inspector->didReceiveWebSocketFrame(WebSocketChannelInspector::createFrame(binaryData.data(), binaryData.size(), WebSocketFrame::OpCode::OpCodeBinary));
     // }
     switch (m_binaryType) {
-    case BinaryType::Blob:
+    case BinaryType::Blob: {
+        auto* context = scriptExecutionContext();
+        if (!context) return;
+        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(context->vm());
+        RefPtr<Blob> blob = Blob::create(binaryData, context->jsGlobalObject());
+        if (scope.exception()) [[unlikely]] {
+            if (!scope.clearExceptionExceptTermination()) return;
+            this->incPendingActivityCount();
+            ErrorEvent::Init errorInit;
+            errorInit.message = "Failed to allocate memory for binary data"_s;
+            ErrorEvent::dispatch(*this, errorInit);
+            this->decPendingActivityCount();
+            return;
+        }
         if (this->hasEventListeners(eventName)) {
             // the main reason for dispatching on a separate tick is to handle when you haven't yet attached an event listener
             this->incPendingActivityCount();
-            RefPtr<Blob> blob = Blob::create(binaryData, scriptExecutionContext()->jsGlobalObject());
             dispatchEvent(MessageEvent::create(eventName, blob.releaseNonNull(), m_url.string()));
             this->decPendingActivityCount();
             return;
         }
 
-        if (auto* context = scriptExecutionContext()) {
-            RefPtr<Blob> blob = Blob::create(binaryData, context->jsGlobalObject());
+        {
             this->incPendingActivityCount();
             context->postTask([this, name = eventName, blob = blob.releaseNonNull(), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
                 ASSERT(scriptExecutionContext());
@@ -1443,74 +1360,40 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
         }
 
         break;
-    case BinaryType::ArrayBuffer: {
-        if (this->hasEventListeners(eventName)) {
-            // the main reason for dispatching on a separate tick is to handle when you haven't yet attached an event listener
-            this->incPendingActivityCount();
-            dispatchEvent(MessageEvent::create(eventName, ArrayBuffer::create(binaryData), m_url.string()));
-            this->decPendingActivityCount();
-            return;
-        }
-
-        if (auto* context = scriptExecutionContext()) {
-            auto arrayBuffer = JSC::ArrayBuffer::create(binaryData);
-            this->incPendingActivityCount();
-            context->postTask([this, name = eventName, buffer = WTF::move(arrayBuffer), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
-                ASSERT(scriptExecutionContext());
-                protectedThis->dispatchEvent(MessageEvent::create(name, buffer, m_url.string()));
-                protectedThis->decPendingActivityCount();
-            });
-        }
-
-        break;
     }
+    case BinaryType::ArrayBuffer:
     case BinaryType::NodeBuffer: {
-
-        if (this->hasEventListeners(eventName)) {
-            // the main reason for dispatching on a separate tick is to handle when you haven't yet attached an event listener
+        auto* context = scriptExecutionContext();
+        if (!context)
+            return;
+        auto buffer = JSC::ArrayBuffer::tryCreate(binaryData);
+        if (!buffer) {
             this->incPendingActivityCount();
-            auto scope = DECLARE_TOP_EXCEPTION_SCOPE(scriptExecutionContext()->vm());
-            JSUint8Array* buffer = createBuffer(scriptExecutionContext()->jsGlobalObject(), binaryData);
-
-            if (!buffer || scope.exception()) [[unlikely]] {
-                scope.clearExceptionExceptTermination();
-
-                ErrorEvent::Init errorInit;
-                errorInit.message = "Failed to allocate memory for binary data"_s;
-                dispatchEvent(ErrorEvent::create(eventNames().errorEvent, errorInit));
-                this->decPendingActivityCount();
-                return;
-            }
-
-            JSC::EnsureStillAliveScope ensureStillAlive(buffer);
-            MessageEvent::Init init;
-            init.data = buffer;
-            init.origin = this->m_url.string();
-
-            dispatchEvent(MessageEvent::create(eventName, WTF::move(init), EventIsTrusted::Yes));
+            ErrorEvent::Init errorInit;
+            errorInit.message = "Failed to allocate memory for binary data"_s;
+            ErrorEvent::dispatch(*this, errorInit);
             this->decPendingActivityCount();
             return;
         }
 
-        if (auto* context = scriptExecutionContext()) {
-            auto arrayBuffer = JSC::ArrayBuffer::tryCreate(binaryData);
+        MessageEvent::DataType data;
+        if (m_binaryType == BinaryType::NodeBuffer)
+            data = MessageEvent::NodeBufferData { buffer.releaseNonNull() };
+        else
+            data = buffer.releaseNonNull();
 
+        if (this->hasEventListeners(eventName)) {
             this->incPendingActivityCount();
-
-            context->postTask([name = eventName, buffer = WTF::move(arrayBuffer), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
-                size_t length = buffer->byteLength();
-                auto* globalObject = context.jsGlobalObject();
-                auto* subclassStructure = static_cast<Zig::GlobalObject*>(globalObject)->JSBufferSubclassStructure();
-                JSUint8Array* uint8array = JSUint8Array::create(globalObject, subclassStructure, buffer.copyRef(), 0, length);
-                JSC::EnsureStillAliveScope ensureStillAlive(uint8array);
-                MessageEvent::Init init;
-                init.data = uint8array;
-                init.origin = protectedThis->m_url.string();
-                protectedThis->dispatchEvent(MessageEvent::create(name, WTF::move(init), EventIsTrusted::Yes));
-                protectedThis->decPendingActivityCount();
-            });
+            dispatchEvent(MessageEvent::create(eventName, WTF::move(data), m_url.string()));
+            this->decPendingActivityCount();
+            return;
         }
 
+        this->incPendingActivityCount();
+        context->postTask([name = eventName, data = WTF::move(data), protectedThis = Ref { *this }](ScriptExecutionContext&) mutable {
+            protectedThis->dispatchEvent(MessageEvent::create(name, WTF::move(data), protectedThis->m_url.string()));
+            protectedThis->decPendingActivityCount();
+        });
         break;
     }
     }
@@ -1530,7 +1413,7 @@ void WebSocket::didReceiveClose(CleanStatus wasClean, unsigned short code, WTF::
     // Covers both connect-failure (didFailWithErrorCode →
     // didReceiveClose) and server-initiated close. The consumer's
     // onClose distinguishes by whether onOpen ever fired. Cleanup
-    // (disablePendingActivity) is the caller's job — didFailWithErrorCode
+    // (releaseConnectionActivity) is the caller's job — didFailWithErrorCode
     // posts it after the switch.
     if (m_native.onClose) {
         m_native.onClose(m_native.ctx, code);
@@ -1541,10 +1424,10 @@ void WebSocket::didReceiveClose(CleanStatus wasClean, unsigned short code, WTF::
         this->incPendingActivityCount();
         if (wasConnecting && isConnectionError) {
             auto eventInit = createErrorEventInit(*this, reason, context->jsGlobalObject());
-            dispatchEvent(ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
+            ErrorEvent::dispatch(*this, eventInit, EventIsTrusted::Yes);
         }
         // https://html.spec.whatwg.org/multipage/web-sockets.html#feedback-from-the-protocol:concept-websocket-closed, we should synchronously fire a close event.
-        dispatchEvent(CloseEvent::create(wasClean == CleanStatus::Clean, code, reason));
+        dispatchCloseEvent(wasClean == CleanStatus::Clean, code, reason);
         this->decPendingActivityCount();
     }
 }
@@ -1591,16 +1474,16 @@ void WebSocket::didClose(unsigned unhandledBufferedAmount, unsigned short code, 
     m_bufferedAmount = unhandledBufferedAmount;
     ASSERT(scriptExecutionContext());
     this->m_connectedWebSocketKind = ConnectedWebSocketKind::None;
-    this->m_upgradeClient = nullptr;
+    this->clearUpgradeClient();
 
     // Native callback: state transition above is done, hand off the code.
-    // disablePendingActivity releases the GC-root ref connect() took —
+    // releaseConnectionActivity releases the GC-root ref connect() took —
     // the native consumer holds a RefPtr so GC-rooting doesn't matter,
     // but the count should balance for the ASSERT below and any future
     // consumer of hasPendingActivity().
     if (m_native.onClose) {
         m_native.onClose(m_native.ctx, code);
-        disablePendingActivity();
+        releaseConnectionActivity();
         return;
     }
 
@@ -1609,31 +1492,55 @@ void WebSocket::didClose(unsigned unhandledBufferedAmount, unsigned short code, 
     ASSERT(m_pendingActivityCount > 0);
 
     if (this->hasEventListeners("close"_s)) {
-        this->dispatchEvent(CloseEvent::create(wasClean, code, reason));
+        dispatchCloseEvent(wasClean, code, reason);
 
         // we deinit if possible in the next tick
         if (auto* context = scriptExecutionContext()) {
             context->postTask([this, protectedThis = Ref { *this }](ScriptExecutionContext& context) {
                 ASSERT(scriptExecutionContext());
-                protectedThis->disablePendingActivity();
+                protectedThis->releaseConnectionActivity();
             });
             return;
         }
     } else if (auto* context = scriptExecutionContext()) {
         context->postTask([this, code, wasClean, reason, protectedThis = Ref { *this }](ScriptExecutionContext& context) {
             ASSERT(scriptExecutionContext());
-            protectedThis->dispatchEvent(CloseEvent::create(wasClean, code, reason));
-            protectedThis->disablePendingActivity();
+            protectedThis->dispatchCloseEvent(wasClean, code, reason);
+            protectedThis->releaseConnectionActivity();
         });
         return;
     }
 
-    this->disablePendingActivity();
+    this->releaseConnectionActivity();
 }
 
-void WebSocket::didConnect(us_socket_t* socket, char* bufferedData, size_t bufferedDataSize, const PerMessageDeflateParams* deflate_params, void* customSSLCtx)
+void WebSocket::dispatchCloseEvent(bool wasClean, unsigned short code, const String& reason)
 {
-    this->m_upgradeClient = nullptr;
+    Ref protectedThis { *this };
+    auto* context = scriptExecutionContext();
+    if (!context)
+        return;
+    auto* global = context->globalObject();
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(global->vm());
+    if (!scope.exception()) {
+        auto event = CloseEvent::tryCreate(wasClean, code, reason);
+        if (event)
+            dispatchEvent(*event);
+        else {
+            auto throwScope = DECLARE_THROW_SCOPE(global->vm());
+            throwOutOfMemoryError(global, throwScope);
+        }
+    }
+    if (auto* exception = scope.exception())
+        reportException(global, exception);
+}
+
+void WebSocket::didConnect(us_socket_t* socket, std::span<const uint8_t> bufferedData, const PerMessageDeflateParams* deflate_params, ssl_ctx_st* customSSLCtx)
+{
+    Ref protectedThis { *this };
+    auto* globalObject = scriptExecutionContext()->jsGlobalObject();
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    std::unique_ptr<us_socket_t, decltype(&Bun::Bindgen::Engine::releaseWebSocketUpgradeSocket)> ownedSocket(socket, Bun::Bindgen::Engine::releaseWebSocketUpgradeSocket);
     setExtensionsFromDeflateParams(deflate_params);
 
     // Use TLS WebSocket client if connection type is TLS or ProxyTLS.
@@ -1641,16 +1548,31 @@ void WebSocket::didConnect(us_socket_t* socket, char* bufferedData, size_t buffe
     // For ProxyTLS: connected through HTTPS proxy, socket is TLS (even for ws:// target).
     // For Plain/ProxyPlain: socket is not TLS.
     bool useTLSSocket = (m_connectionType == ConnectionType::TLS || m_connectionType == ConnectionType::ProxyTLS);
+    auto deflateParams = deflate_params ? std::optional<const PerMessageDeflateParams*> { deflate_params } : std::nullopt;
+    auto sslContext = customSSLCtx ? std::optional<ssl_ctx_st*> { customSSLCtx } : std::nullopt;
 
     if (useTLSSocket) {
-        this->m_connectedWebSocket.clientSSL = Bun__WebSocketClientTLS__init(reinterpret_cast<CppWebSocket*>(this), socket, this->scriptExecutionContext()->jsGlobalObject(), reinterpret_cast<unsigned char*>(bufferedData), bufferedDataSize, deflate_params, customSSLCtx);
+        auto client = Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientTLSAdoptSocket(globalObject, this, ownedSocket.release(), bufferedData, deflateParams, sslContext);
+        RETURN_IF_EXCEPTION(scope, void());
+        if (!client) {
+            didFailWithErrorCode(Bun::WebSocketErrorCode::failed_to_connect);
+            return;
+        }
+        this->m_connectedWebSocket.clientSSL = client.value();
         this->m_connectedWebSocketKind = ConnectedWebSocketKind::ClientSSL;
     } else {
-        this->m_connectedWebSocket.client = Bun__WebSocketClient__init(reinterpret_cast<CppWebSocket*>(this), socket, this->scriptExecutionContext()->jsGlobalObject(), reinterpret_cast<unsigned char*>(bufferedData), bufferedDataSize, deflate_params, customSSLCtx);
+        auto client = Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientAdoptSocket(globalObject, this, ownedSocket.release(), bufferedData, deflateParams, sslContext);
+        RETURN_IF_EXCEPTION(scope, void());
+        if (!client) {
+            didFailWithErrorCode(Bun::WebSocketErrorCode::failed_to_connect);
+            return;
+        }
+        this->m_connectedWebSocket.client = client.value();
         this->m_connectedWebSocketKind = ConnectedWebSocketKind::Client;
     }
 
     this->didConnect();
+    RETURN_IF_EXCEPTION(scope, void());
 }
 
 void WebSocket::didFailWithErrorCode(Bun::WebSocketErrorCode code)
@@ -1660,7 +1582,7 @@ void WebSocket::didFailWithErrorCode(Bun::WebSocketErrorCode code)
     if (m_state == CLOSED)
         return;
 
-    this->m_upgradeClient = nullptr;
+    this->clearUpgradeClient();
     if (this->m_connectedWebSocketKind == ConnectedWebSocketKind::ClientSSL) {
         this->m_connectedWebSocket.clientSSL = nullptr;
     } else if (this->m_connectedWebSocketKind == ConnectedWebSocketKind::Client) {
@@ -1824,16 +1746,16 @@ void WebSocket::didFailWithErrorCode(Bun::WebSocketErrorCode code)
     // here; deref directly since there's no loop to post to.
     if (auto* context = scriptExecutionContext()) {
         context->postTask([protectedThis = Ref { *this }](ScriptExecutionContext&) {
-            protectedThis->disablePendingActivity();
+            protectedThis->releaseConnectionActivity();
         });
     } else {
         this->deref();
     }
 }
 
-void WebSocket::disablePendingActivity()
+void WebSocket::releaseConnectionActivity()
 {
-    this->m_pendingActivityCount = 1;
+    // Queued event deliveries retain their own activity references.
     this->decPendingActivityCount();
 }
 
@@ -1844,24 +1766,23 @@ void WebSocket::updateHasPendingActivity()
         !(m_state == CLOSED && m_pendingActivityCount == 0));
 }
 
-// Forward declarations for tunnel mode (defined outside namespace)
-extern "C" void* Bun__WebSocketClient__initWithTunnel(CppWebSocket* ws, void* tunnel, JSC::JSGlobalObject* globalObject, unsigned char* bufferedData, size_t bufferedDataSize, const PerMessageDeflateParams* deflate_params);
-extern "C" void WebSocketProxyTunnel__setConnectedWebSocket(void* tunnel, void* websocket);
-
-void WebSocket::didConnectWithTunnel(void* tunnel, char* bufferedData, size_t bufferedDataSize, const PerMessageDeflateParams* deflate_params)
+void WebSocket::didConnectWithTunnel(Bun::WebSocketProxyTunnelNative* tunnel, std::span<const uint8_t> bufferedData, const PerMessageDeflateParams* deflate_params)
 {
-    this->m_upgradeClient = nullptr;
+    Ref protectedThis { *this };
+    auto* globalObject = scriptExecutionContext()->jsGlobalObject();
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
     setExtensionsFromDeflateParams(deflate_params);
 
     // For wss:// through HTTP proxy, we use a plain (non-TLS) WebSocket client
     // because the TLS is handled by the proxy tunnel
-    this->m_connectedWebSocket.client = Bun__WebSocketClient__initWithTunnel(
-        reinterpret_cast<CppWebSocket*>(this),
+    auto deflateParams = deflate_params ? std::optional<const PerMessageDeflateParams*> { deflate_params } : std::nullopt;
+    this->m_connectedWebSocket.client = Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketClientCreateWithTunnel(
+        globalObject,
+        this,
         tunnel,
-        this->scriptExecutionContext()->jsGlobalObject(),
-        reinterpret_cast<unsigned char*>(bufferedData),
-        bufferedDataSize,
-        deflate_params);
+        bufferedData,
+        deflateParams);
+    RETURN_IF_EXCEPTION(scope, void());
     this->m_connectedWebSocketKind = ConnectedWebSocketKind::Client;
 
     // IMPORTANT: Call didConnect() BEFORE setting the connected websocket on the tunnel.
@@ -1869,111 +1790,130 @@ void WebSocket::didConnectWithTunnel(void* tunnel, char* bufferedData, size_t bu
     // By calling didConnect() first, we ensure the state is OPEN before the tunnel
     // starts forwarding messages to the WebSocket client.
     this->didConnect();
+    RETURN_IF_EXCEPTION(scope, void());
 
     // Now set the connected websocket on the tunnel to start forwarding data
-    WebSocketProxyTunnel__setConnectedWebSocket(tunnel, this->m_connectedWebSocket.client);
+    if (m_connectedWebSocketKind == ConnectedWebSocketKind::Client && m_connectedWebSocket.client)
+        Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketProxyTunnelSetConnectedWebSocket(tunnel, m_connectedWebSocket.client);
 }
 
 } // namespace WebCore
 
-extern "C" void WebSocket__didConnect(WebCore::WebSocket* webSocket, us_socket_t* socket, char* bufferedData, size_t len, const PerMessageDeflateParams* deflate_params, void* customSSLCtx)
+void Bun::Bindgen::Engine::releaseWebSocketUpgradeSocket(us_socket_t* socket)
 {
-    webSocket->didConnect(socket, bufferedData, len, deflate_params, customSSLCtx);
+    ZigExports::bunBindgenZig_websocket_client_discardUpgradeSocket(socket);
 }
 
-extern "C" void WebSocket__didConnectWithTunnel(WebCore::WebSocket* webSocket, void* tunnel, char* bufferedData, size_t len, const PerMessageDeflateParams* deflate_params)
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketClearUpgradeClient(
+    const BunBindgenEngine_websocket_client_webSocketClearUpgradeClient_Arguments& args)
 {
-    webSocket->didConnectWithTunnel(tunnel, bufferedData, len, deflate_params);
+    args.webSocket->clearUpgradeClient();
 }
 
-extern "C" void WebSocket__didAbruptClose(WebCore::WebSocket* webSocket, Bun::WebSocketErrorCode errorCode)
+void Bun::Bindgen::Engine::releaseWebSocketClient(Bun::WebSocketClientNative* client)
 {
-    webSocket->didFailWithErrorCode(errorCode);
-}
-extern "C" void WebSocket__didClose(WebCore::WebSocket* webSocket, uint16_t errorCode, BunString* reason)
-{
-    WTF::String wtf_reason = reason->transferToWTFString();
-    webSocket->didClose(0, errorCode, WTF::move(wtf_reason));
+    ZigExports::bunBindgenZig_websocket_client_webSocketClientFinalize(client);
 }
 
-extern "C" void WebSocket__didReceiveText(WebCore::WebSocket* webSocket, bool clone, const ZigString* str)
+void Bun::Bindgen::Engine::releaseWebSocketClientTLS(Bun::WebSocketClientTLSNative* client)
 {
-    WTF::String wtf_str = clone ? Zig::toStringCopy(*str) : Zig::toString(*str);
-    webSocket->didReceiveMessage(WTF::move(wtf_str));
+    ZigExports::bunBindgenZig_websocket_client_webSocketClientTLSFinalize(client);
 }
-extern "C" void WebSocket__didReceiveBytes(WebCore::WebSocket* webSocket, const uint8_t* bytes, size_t len, const uint8_t op)
+
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketDidConnect(
+    Bun::Bindgen::EngineCallContext&,
+    const BunBindgenEngine_websocket_client_webSocketDidConnect_Arguments& args)
 {
-    auto opcode = static_cast<WebCore::WebSocket::Opcode>(op);
+    args.webSocket->didConnect(
+        args.socket,
+        args.bufferedData,
+        args.deflateParams.value_or(nullptr),
+        args.sslContext.value_or(nullptr));
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketDidConnectWithTunnel(
+    Bun::Bindgen::EngineCallContext&,
+    const BunBindgenEngine_websocket_client_webSocketDidConnectWithTunnel_Arguments& args)
+{
+    args.webSocket->didConnectWithTunnel(
+        args.tunnel,
+        args.bufferedData,
+        args.deflateParams.value_or(nullptr));
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketDidAbruptClose(
+    Bun::Bindgen::EngineCallContext&,
+    const BunBindgenEngine_websocket_client_webSocketDidAbruptClose_Arguments& args)
+{
+    args.webSocket->didFailWithErrorCode(static_cast<Bun::WebSocketErrorCode>(args.errorCode));
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketDidClose(
+    Bun::Bindgen::EngineCallContext&,
+    const BunBindgenEngine_websocket_client_webSocketDidClose_Arguments& args)
+{
+    args.webSocket->didClose(0, args.code, args.reason);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketDidReceiveText(
+    Bun::Bindgen::EngineCallContext&,
+    const BunBindgenEngine_websocket_client_webSocketDidReceiveText_Arguments& args)
+{
+    args.webSocket->didReceiveMessage(WTF::String(args.text));
+}
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketDidReceiveBytes(
+    Bun::Bindgen::EngineCallContext&,
+    const BunBindgenEngine_websocket_client_webSocketDidReceiveBytes_Arguments& args)
+{
+    auto opcode = static_cast<WebCore::WebSocket::Opcode>(args.opcode);
     switch (opcode) {
     case WebCore::WebSocket::Opcode::Binary:
-        webSocket->didReceiveBinaryData("message"_s, { bytes, len });
+        args.webSocket->didReceiveBinaryData("message"_s, args.bytes);
         break;
     case WebCore::WebSocket::Opcode::Ping:
-        webSocket->didReceiveBinaryData("ping"_s, { bytes, len });
+        args.webSocket->didReceiveBinaryData("ping"_s, args.bytes);
         break;
     case WebCore::WebSocket::Opcode::Pong:
-        webSocket->didReceiveBinaryData("pong"_s, { bytes, len });
+        args.webSocket->didReceiveBinaryData("pong"_s, args.bytes);
         break;
     default:
         break;
     }
 }
-extern "C" bool WebSocket__rejectUnauthorized(WebCore::WebSocket* webSocket)
+bool Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketRejectUnauthorized(
+    const BunBindgenEngine_websocket_client_webSocketRejectUnauthorized_Arguments& args)
 {
-    return webSocket->rejectUnauthorized();
+    return args.webSocket->rejectUnauthorized();
 }
 
-extern "C" void WebSocket__incrementPendingActivity(WebCore::WebSocket* webSocket)
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketIncrementPendingActivity(
+    const BunBindgenEngine_websocket_client_webSocketIncrementPendingActivity_Arguments& args)
 {
-    webSocket->incPendingActivityCount();
-}
-extern "C" void WebSocket__decrementPendingActivity(WebCore::WebSocket* webSocket)
-{
-    webSocket->decPendingActivityCount();
+    args.webSocket->incPendingActivityCount();
 }
 
-WebCore::ExceptionOr<void> WebCore::WebSocket::ping(WebCore::JSBlob* blob)
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketDecrementPendingActivity(
+    const BunBindgenEngine_websocket_client_webSocketDecrementPendingActivity_Arguments& args)
 {
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-    if (m_state == CLOSING || m_state == CLOSED) {
-        return {};
-    }
-
-    // Get the blob data and send it using existing binary data path
-    void* dataPtr = Blob__getDataPtr(JSC::JSValue::encode(blob));
-    size_t dataSize = Blob__getSize(JSC::JSValue::encode(blob));
-
-    if (dataPtr && dataSize > 0) {
-        this->sendWebSocketData(static_cast<const char*>(dataPtr), dataSize, Opcode::Ping);
-    } else {
-        // Send empty frame for empty blobs
-        this->sendWebSocketData(nullptr, 0, Opcode::Ping);
-    }
-
-    return {};
+    args.webSocket->decPendingActivityCount();
 }
 
-WebCore::ExceptionOr<void> WebCore::WebSocket::pong(WebCore::JSBlob* blob)
+WebCore::ExceptionOr<void> WebCore::WebSocket::ping(WebCore::BlobImpl* blob)
 {
-    if (m_state == CONNECTING)
-        return Exception { InvalidStateError };
-    if (m_state == CLOSING || m_state == CLOSED) {
-        return {};
-    }
+    auto owner = Bun::Bindgen::ZigExports::bunBindgenZig_Blob_blobSharedData(blob);
+    if (!owner)
+        return Exception { OutOfMemoryError };
+    Bun::Bindgen::ByteOwner data { owner.value() };
+    return ping(data.bytes());
+}
 
-    // Get the blob data and send it using existing binary data path
-    void* dataPtr = Blob__getDataPtr(JSC::JSValue::encode(blob));
-    size_t dataSize = Blob__getSize(JSC::JSValue::encode(blob));
-
-    if (dataPtr && dataSize > 0) {
-        this->sendWebSocketData(static_cast<const char*>(dataPtr), dataSize, Opcode::Pong);
-    } else {
-        // Send empty frame for empty blobs
-        this->sendWebSocketData(nullptr, 0, Opcode::Pong);
-    }
-
-    return {};
+WebCore::ExceptionOr<void> WebCore::WebSocket::pong(WebCore::BlobImpl* blob)
+{
+    auto owner = Bun::Bindgen::ZigExports::bunBindgenZig_Blob_blobSharedData(blob);
+    if (!owner)
+        return Exception { OutOfMemoryError };
+    Bun::Bindgen::ByteOwner data { owner.value() };
+    return pong(data.bytes());
 }
 
 void WebCore::WebSocket::setProtocol(const String& protocol)
@@ -1981,7 +1921,13 @@ void WebCore::WebSocket::setProtocol(const String& protocol)
     m_subprotocol = protocol;
 }
 
-extern "C" void WebSocket__setProtocol(WebCore::WebSocket* webSocket, BunString* protocol)
+void Bun::Bindgen::Engine::bunBindgenEngine_websocket_client_webSocketSetProtocol(
+    const BunBindgenEngine_websocket_client_webSocketSetProtocol_Arguments& args)
 {
-    webSocket->setProtocol(protocol->transferToWTFString());
+    args.webSocket->setProtocol(args.protocol);
+}
+
+void Bun::Bindgen::Engine::releaseWebSocketSSLConfig(Bun::WebSocketSSLConfigNative* config)
+{
+    Bun::Bindgen::ZigExports::bunBindgenZig_websocket_client_webSocketSSLConfigDestroy(config);
 }

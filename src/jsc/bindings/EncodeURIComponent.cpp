@@ -1,14 +1,10 @@
 #include "EncodeURIComponent.h"
 
-// from JSGlobalObjectFunctions.cpp
-
-namespace JSC {
+namespace WebCore {
 
 template<typename CharacterType>
-static WebCore::ExceptionOr<void> encode(VM& vm, const WTF::BitSet<256>& doNotEscape, std::span<const CharacterType> characters, StringBuilder& builder)
+static ExceptionOr<void> encode(const WTF::BitSet<256>& doNotEscape, std::span<const CharacterType> characters, StringBuilder& builder)
 {
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
     // 18.2.6.1.1 Runtime Semantics: Encode ( string, unescapedSet )
     // https://tc39.github.io/ecma262/#sec-encode
 
@@ -17,6 +13,10 @@ static WebCore::ExceptionOr<void> encode(VM& vm, const WTF::BitSet<256>& doNotEs
     };
 
     builder.reserveCapacity(characters.size());
+    if (builder.hasOverflowed())
+        return Exception { OutOfMemoryError };
+    if (characters.empty())
+        return {};
 
     // 4. Repeat
     auto* end = characters.data() + characters.size();
@@ -28,6 +28,8 @@ static WebCore::ExceptionOr<void> encode(VM& vm, const WTF::BitSet<256>& doNotEs
             // 4-c-i. Let S be a String containing only the code unit C.
             // 4-c-ii. Let R be a new String value computed by concatenating the previous value of R and S.
             builder.append(static_cast<Latin1Character>(character));
+            if (builder.hasOverflowed())
+                return Exception { OutOfMemoryError };
             continue;
         }
 
@@ -77,25 +79,28 @@ static WebCore::ExceptionOr<void> encode(VM& vm, const WTF::BitSet<256>& doNotEs
             builder.append('%');
             builder.append(hex(utf8OctetsBuffer[index], 2));
         }
+        if (builder.hasOverflowed())
+            return Exception { OutOfMemoryError };
     }
     return {};
 }
 
-static WebCore::ExceptionOr<void> encode(VM& vm, WTF::StringView view, const WTF::BitSet<256>& doNotEscape, StringBuilder& builder)
+static ExceptionOr<void> encode(WTF::StringView view, const WTF::BitSet<256>& doNotEscape, StringBuilder& builder)
 {
     if (view.is8Bit())
-        return encode(vm, doNotEscape, view.span8(), builder);
-    return encode(vm, doNotEscape, view.span16(), builder);
+        return encode(doNotEscape, view.span8(), builder);
+    return encode(doNotEscape, view.span16(), builder);
 }
 
-WebCore::ExceptionOr<void> encodeURIComponent(VM& vm, WTF::StringView source, StringBuilder& builder)
+ExceptionOr<void> encodeURIComponent(WTF::StringView source, StringBuilder& builder)
 {
+    RELEASE_ASSERT(!builder.crashesOnOverflow());
     static constexpr auto doNotEscapeWhenEncodingURIComponent = makeLatin1CharacterBitSet(
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         "abcdefghijklmnopqrstuvwxyz"
         "0123456789"
         "!'()*-._~");
-    return encode(vm, source, doNotEscapeWhenEncodingURIComponent, builder);
+    return encode(source, doNotEscapeWhenEncodingURIComponent, builder);
 }
 
 }

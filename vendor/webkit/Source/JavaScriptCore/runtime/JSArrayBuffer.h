@@ -48,6 +48,7 @@ public:
 
     // This function will register the new wrapper with the vm's TypedArrayController.
     JS_EXPORT_PRIVATE static JSArrayBuffer* create(VM&, Structure*, RefPtr<ArrayBuffer>&&);
+    JS_EXPORT_PRIVATE static JSArrayBuffer* transferToFixedLength(JSGlobalObject*, ArrayBuffer&);
 
     ArrayBuffer* impl() const { return m_impl; }
     

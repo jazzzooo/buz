@@ -29,7 +29,6 @@
 // #include "CachedResource.h"
 // #include "DocumentLoadTiming.h"
 // #include "OriginAccessPatterns.h"
-#include "PerformanceServerTiming.h"
 // #include "SecurityOrigin.h"
 #include "ResourceLoadTiming.h"
 #include "ServerTimingParser.h"
@@ -71,17 +70,6 @@ ResourceTiming::ResourceTiming(const URL& url, const String& initiatorType, cons
 // {
 //     m_isSameOriginRequest = m_isSameOriginRequest && origin.canRequest(m_url, OriginAccessPatternsForWebProcess::singleton());
 // }
-
-Vector<Ref<PerformanceServerTiming>> ResourceTiming::populateServerTiming() const
-{
-    // To increase privacy, this additional check was proposed at https://github.com/w3c/resource-timing/issues/342 .
-    if (!m_isSameOriginRequest)
-        return {};
-
-    return WTF::map(m_serverTiming, [](auto& entry) {
-        return PerformanceServerTiming::create(String(entry.name), entry.duration, String(entry.description));
-    });
-}
 
 ResourceTiming ResourceTiming::isolatedCopy() const&
 {

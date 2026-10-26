@@ -18,7 +18,7 @@
 //!        JS runtime actually starts; commands that never spin up an event
 //!        loop are short-lived enough not to need it.
 //!
-//!   2. On any clean exit (`Global.exit` → `Bun__onExit`), walks the process
+//!   2. On any clean exit, walks the process
 //!      tree rooted at `getpid()` and SIGKILLs every descendant so children
 //!      Bun spawned don't outlive it.
 //!      - macOS: libproc `proc_listchildpids()`.
@@ -67,6 +67,15 @@ pub fn ppidToWatch() ?std.c.pid_t {
 /// `pre`/`post` lifecycle scripts) — though in practice depth is 1.
 var sync_pgids_buf: [4]std.c.pid_t = @splat(0);
 var sync_pgids: []std.c.pid_t = sync_pgids_buf[0..0];
+var tracked_process_backend: ?TrackedProcessBackend = null;
+
+pub const TrackedProcessBackend = struct {
+    begin: *const fn (c_int, std.c.pid_t) void,
+    release_kqueue: *const fn () void,
+    scan: *const fn () void,
+    remove_exited: *const fn (std.c.pid_t) void,
+    kill: *const fn () void,
+};
 
 /// Returns true if the push was recorded; caller must pop iff true. Depth >4
 /// would lose stack discipline if push were a silent no-op while pop wasn't.
@@ -93,7 +102,7 @@ pub fn killSyncScriptTree() void {
     for (sync_pgids) |pgid| {
         if (pgid > 1) _ = std.c.kill(-pgid, std.posix.SIG.KILL);
     }
-    if (comptime Environment.isMac) Bun__noOrphans_killTracked();
+    killTrackedProcesses();
     // Linux: subreaper-adopted setsid escapees are killed by
     // `killSubreaperAdoptees()` in `spawnPosix`'s disarm defer (which can
     // tell them apart from `Bun.spawn` siblings via the pre-arm snapshot).
@@ -107,7 +116,36 @@ fn killSyncPgroupsAndDescendants() void {
     killDescendants();
 }
 
-extern "c" fn Bun__noOrphans_killTracked() void;
+pub fn registerTrackedProcessBackend(backend: TrackedProcessBackend) void {
+    if (comptime !Environment.isMac) return;
+    std.debug.assert(tracked_process_backend == null);
+    tracked_process_backend = backend;
+}
+
+fn killTrackedProcesses() void {
+    if (comptime !Environment.isMac) return;
+    if (tracked_process_backend) |backend| backend.kill();
+}
+
+pub fn beginTracking(kqueue_fd: c_int, root_pid: std.c.pid_t) void {
+    if (comptime !Environment.isMac) return;
+    if (tracked_process_backend) |backend| backend.begin(kqueue_fd, root_pid);
+}
+
+pub fn releaseTrackingKqueue() void {
+    if (comptime !Environment.isMac) return;
+    if (tracked_process_backend) |backend| backend.release_kqueue();
+}
+
+pub fn scanTrackedProcesses() void {
+    if (comptime !Environment.isMac) return;
+    if (tracked_process_backend) |backend| backend.scan();
+}
+
+pub fn removeTrackedProcess(pid: std.c.pid_t) void {
+    if (comptime !Environment.isMac) return;
+    if (tracked_process_backend) |backend| backend.remove_exited(pid);
+}
 
 /// Whether the spawn-side `linux_pdeathsig` default should apply to a child
 /// being spawned *right now*. `PR_SET_PDEATHSIG` is thread-scoped: it fires
@@ -187,7 +225,7 @@ pub fn enable() void {
 /// Register `EVFILT_PROC`/`NOTE_EXIT` for the original parent on the main
 /// event loop's kqueue. Called from `VirtualMachine.init` once the uws loop is
 /// up. macOS-only; no-op elsewhere and on subsequent calls.
-pub fn installOnEventLoop(handle: jsc.EventLoopHandle) void {
+pub fn installOnEventLoop(handle: bun.RuntimeLoopHandle) void {
     if (comptime !Environment.isMac) return;
     if (!enabled or original_ppid <= 1) return;
     if (event_loop_installed.swap(true, .monotonic)) return;
@@ -198,7 +236,7 @@ pub fn installOnEventLoop(handle: jsc.EventLoopHandle) void {
         bun.Global.exit(exit_code);
     }
 
-    const poll = bun.Async.FilePoll.init(handle, .fromNative(original_ppid), .{}, ParentDeathWatchdog, &instance);
+    const poll = bun.Async.FilePoll.create(handle, .fromNative(original_ppid), .{}, ParentDeathWatchdog, &instance) catch return;
     switch (poll.register(handle.loop(), .process, true)) {
         .result => {
             // Do not keep the event loop alive on this poll's behalf — the
@@ -207,6 +245,7 @@ pub fn installOnEventLoop(handle: jsc.EventLoopHandle) void {
             // `.keeps_event_loop_alive` was set beforehand, which we didn't.
         },
         .err => |err| {
+            poll.deinit();
             // ESRCH: parent already gone before we registered — treat as fired.
             if (err.getErrno() == .SRCH) {
                 bun.Global.exit(exit_code);
@@ -220,11 +259,11 @@ pub fn installOnEventLoop(handle: jsc.EventLoopHandle) void {
 /// `posix_event_loop.zig`'s `onUpdate`. The kqueue `NOTE_EXIT` for our parent
 /// fired.
 pub fn onParentExit(_: *ParentDeathWatchdog) void {
-    // Global.exit → Bun__onExit → onProcessExit → killDescendants.
+    // Global.exit → runProcessExitHooks → onProcessExit → killDescendants.
     bun.Global.exit(exit_code);
 }
 
-/// Registered with `Global.addExitCallback` so it runs from `Bun__onExit`
+/// Registered with `Global.addExitCallback` so it runs from the process exit hooks
 /// (atexit on macOS, at_quick_exit on Linux, and the explicit `Global.exit`
 /// path). C calling convention because that's the exit-callback ABI.
 fn onProcessExit() callconv(.c) void {
@@ -498,4 +537,3 @@ const std = @import("std");
 
 const bun = @import("bun");
 const Environment = bun.Environment;
-const jsc = bun.jsc;

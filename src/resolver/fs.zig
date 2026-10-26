@@ -89,30 +89,28 @@ pub const FileSystem = struct {
     }
 
     pub fn initWithForce(io: std.Io, top_level_dir_: ?stringZ, comptime force: bool) !*FileSystem {
+        if (instance_loaded and !force) return &instance;
         const allocator = bun.default_allocator;
-        var top_level_dir = top_level_dir_ orelse (if (Environment.isBrowser) "/project/" else try bun.getcwdAlloc(allocator));
-        _ = &top_level_dir;
+        const top_level_dir = if (top_level_dir_) |path|
+            try allocator.dupeSentinel(u8, path, 0)
+        else if (Environment.isBrowser)
+            "/project/"
+        else
+            try bun.getcwdAlloc(allocator);
 
-        if (!instance_loaded or force) {
-            instance = FileSystem{
-                .io = io,
-                .top_level_dir = top_level_dir,
-                .fs = Implementation.init(io, top_level_dir),
-                // must always use default_allocator since the other allocators may not be threadsafe when an element resizes
-                .dirname_store = DirnameStore.init(io, bun.default_allocator),
-                .filename_store = FilenameStore.init(io, bun.default_allocator),
-            };
-            instance_loaded = true;
+        instance = FileSystem{
+            .io = io,
+            .top_level_dir = top_level_dir,
+            .fs = Implementation.init(io, top_level_dir),
+            // These stores are shared across threads and outlive individual transpilers.
+            .dirname_store = DirnameStore.init(io, bun.default_allocator),
+            .filename_store = FilenameStore.init(io, bun.default_allocator),
+        };
+        instance_loaded = true;
 
-            _ = DirEntry.EntryStore.init(io, allocator);
-        }
+        _ = DirEntry.EntryStore.init(io, allocator);
 
         return &instance;
-    }
-
-    pub fn deinit(this: *const FileSystem) void {
-        this.dirname_store.deinit();
-        this.filename_store.deinit();
     }
 
     pub const DirEntry = struct {

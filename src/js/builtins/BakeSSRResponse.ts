@@ -4,11 +4,7 @@ export function wrapComponent(
   responseOptions: ConstructorParameters<typeof Response>[1],
   kind: 0 | 1 | 2,
 ) {
-  const bakeGetAsyncLocalStorage = $newCppFunction(
-    "BakeAdditionsToGlobalObject.cpp",
-    "jsFunctionBakeGetAsyncLocalStorage",
-    0,
-  );
+  const bakeGetAsyncLocalStorage = $bindgenFn("BakeInternal.schema.zig", "getAsyncLocalStorage");
 
   return function () {
     // For Response.redirect() / Response.render(), throw the response object so

@@ -272,6 +272,7 @@ pub fn load(
     allocator: Allocator,
     log: *logger.Log,
     manager: ?*PackageManager,
+    parse_context: Dependency.ParseContext,
 ) !SerializerLoadResult {
     var res = SerializerLoadResult{};
     var reader = stream.reader();
@@ -325,6 +326,7 @@ pub fn load(
         allocator,
         log,
         manager,
+        parse_context,
     );
     if ((try stream.reader().takeInt(u64, .little)) != 0) {
         return error.@"Lockfile is malformed (expected 0 at the end)";
@@ -469,7 +471,7 @@ pub fn load(
                     .allocator = allocator,
                     .log = log,
                     .buffer = lockfile.buffers.string_bytes.items,
-                    .package_manager = manager,
+                    .parse = parse_context,
                 };
                 for (overrides_name_hashes.items, override_versions_external.items) |name, value| {
                     map.putAssumeCapacity(name, Dependency.toDependency(value, context));
@@ -533,7 +535,7 @@ pub fn load(
                     .allocator = allocator,
                     .log = log,
                     .buffer = lockfile.buffers.string_bytes.items,
-                    .package_manager = manager,
+                    .parse = parse_context,
                 };
 
                 for (default_dep_names.items, default_deps.items) |dep_name, dep| {

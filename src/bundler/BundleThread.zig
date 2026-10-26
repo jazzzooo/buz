@@ -1,13 +1,12 @@
 /// Used to keep the bundle thread from spinning on Windows
 pub fn timerCallback(_: *bun.windows.libuv.Timer) callconv(.c) void {}
 
-/// Originally, bake.DevServer required a separate bundling thread, but that was
-/// later removed. The bundling thread's scheduling logic is generalized over
-/// the completion structure.
-///
 /// CompletionStruct's interface:
 ///
+/// - `isCancelled` skips queued jobs whose owner has stopped waiting.
 /// - `configureBundler` is used to configure `Bundler`.
+/// - `configureBundleV2` attaches integration capabilities and borrowed inputs.
+/// - `bytecodeGenerator` provides the bytecode compiler capability.
 /// - `completeOnBundleThread` is used to tell the task that it is done.
 pub fn BundleThread(CompletionStruct: type) type {
     return struct {
@@ -78,8 +77,8 @@ pub fn BundleThread(CompletionStruct: type) type {
                 while (instance.queue.pop()) |completion| {
                     generateInNewThread(completion, instance.generation) catch |err| {
                         completion.result = .{ .err = err };
-                        completion.completeOnBundleThread();
                     };
+                    completion.completeOnBundleThread();
                     has_bundled = true;
                 }
                 instance.generation +|= 1;
@@ -95,14 +94,18 @@ pub fn BundleThread(CompletionStruct: type) type {
 
         /// This is called from `Bun.build` in JavaScript.
         fn generateInNewThread(completion: *CompletionStruct, generation: bun.Generation) !void {
+            if (completion.isCancelled()) return error.Canceled;
             var heap = ThreadLocalArena.init();
             defer heap.deinit();
+            var owned_bundle: ?*BundleV2 = null;
+            defer if (owned_bundle) |bundle| bundle.deinitWithoutFreeingArena();
 
             const allocator = heap.allocator();
             var ast_memory_allocator = try allocator.create(js_ast.ASTMemoryAllocator);
             ast_memory_allocator.* = .{ .allocator = allocator };
             ast_memory_allocator.reset();
             ast_memory_allocator.push();
+            defer ast_memory_allocator.pop();
 
             const transpiler = try allocator.create(bun.Transpiler);
 
@@ -114,47 +117,21 @@ pub fn BundleThread(CompletionStruct: type) type {
                 transpiler,
                 null, // TODO: Kit
                 allocator,
-                jsc.AnyEventLoop.init(
-                    completion.io,
-                    allocator,
-                    bun.cli.Cli.pinnedThreads().backgroundExecutor(),
-                ),
-                heap,
+                null,
+                completion.bytecodeGenerator(),
+                heap.borrow(),
             );
 
-            this.plugins = completion.plugins;
-            this.completion = switch (CompletionStruct) {
-                BundleV2.JSBundleCompletionTask => completion,
-                else => @compileError("Unknown completion struct: " ++ CompletionStruct),
-            };
-            // Set the file_map pointer for in-memory file support
-            this.file_map = if (completion.config.files.map.count() > 0)
-                &completion.config.files
-            else
-                null;
-            completion.transpiler = this;
-
-            defer {
-                ast_memory_allocator.pop();
-                this.deinitWithoutFreeingArena();
-            }
+            owned_bundle = this;
+            completion.configureBundleV2(this);
 
             errdefer {
                 // Wait for wait groups to finish. There still may be ongoing work.
                 this.linker.source_maps.line_offset_countdown.wait(this.linker.resolver.io);
                 this.linker.source_maps.quoted_contents_countdown.wait(this.linker.resolver.io);
-
-                var out_log = Logger.Log.init(bun.default_allocator);
-                bun.handleOom(this.transpiler.log.appendToWithRecycled(&out_log, true));
-                completion.log = out_log;
             }
 
             completion.result = .{ .value = try this.runFromJSInNewThread(transpiler.options.entry_points) };
-
-            var out_log = Logger.Log.init(bun.default_allocator);
-            bun.handleOom(this.transpiler.log.appendToWithRecycled(&out_log, true));
-            completion.log = out_log;
-            completion.completeOnBundleThread();
         }
     };
 }
@@ -163,11 +140,9 @@ pub const Ref = bun.ast.Ref;
 
 pub const Index = bun.ast.Index;
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 
-const Logger = @import("../logger/logger.zig");
 const Timer = @import("../perf/system_timer.zig");
 const linker = @import("./linker.zig");
 const options = @import("./options.zig");
@@ -181,7 +156,6 @@ const Transpiler = bun.Transpiler;
 const bake = bun.bake;
 const default_allocator = bun.default_allocator;
 const js_ast = bun.ast;
-const jsc = bun.jsc;
 
 const allocators = bun.allocators;
 const ThreadLocalArena = bun.allocators.MimallocArena;

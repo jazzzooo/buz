@@ -1,12 +1,10 @@
 #pragma once
 
 #include "root.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/InternalFunction.h>
 
 namespace Bun {
-
-JSC_DECLARE_HOST_FUNCTION(callCipher);
-JSC_DECLARE_HOST_FUNCTION(constructCipher);
 
 class JSCipherConstructor final : public JSC::InternalFunction {
 public:
@@ -35,7 +33,7 @@ public:
 
 private:
     JSCipherConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, callCipher, constructCipher)
+        : Base(vm, structure, bun_bindgen_host_NodeCryptoBinding_cipherConstructorCall, bun_bindgen_host_NodeCryptoBinding_cipherConstructorConstruct)
     {
     }
 

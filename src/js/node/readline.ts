@@ -25,7 +25,7 @@
 // ----------------------------------------------------------------------------
 // Section: Imports
 // ----------------------------------------------------------------------------
-const EventEmitter = require("node:events");
+const EventEmitter: typeof import("node:events").EventEmitter = require("node:events");
 const { StringDecoder } = require("node:string_decoder");
 const { promisify } = require("internal/promisify");
 const { SafeStringIterator } = require("internal/primordials");
@@ -41,7 +41,7 @@ const {
   validateNumber,
 } = require("internal/validators");
 
-const internalGetStringWidth = $newZigFunction("string.zig", "String.jsGetStringWidth", 1);
+const internalGetStringWidth = $bindgenFn("StringWidth.schema.zig", "get");
 
 const PromiseReject = Promise.$reject;
 
@@ -681,7 +681,7 @@ function commonPrefix(strings) {
  * moves the cursor to the x and y coordinate on the given stream
  */
 
-function cursorTo(stream, x, y, callback) {
+function cursorTo(stream, x, y?, callback?) {
   if (callback !== undefined) {
     validateFunction(callback, "callback");
   }
@@ -761,7 +761,7 @@ function clearLine(stream, dir, callback) {
  * clears the screen from the current position of the cursor down
  */
 
-function clearScreenDown(stream, callback) {
+function clearScreenDown(stream, callback?) {
   if (callback !== undefined) {
     validateFunction(callback, "callback");
   }
@@ -778,8 +778,8 @@ function clearScreenDown(stream, callback) {
 // Section: Emit keypress events
 // ----------------------------------------------------------------------------
 
-var KEYPRESS_DECODER = Symbol("keypress-decoder");
-var ESCAPE_DECODER = Symbol("escape-decoder");
+const KEYPRESS_DECODER = Symbol("keypress-decoder");
+const ESCAPE_DECODER = Symbol("escape-decoder");
 
 // GNU readline library - keyseq-timeout is 500ms (default)
 var ESCAPE_CODE_TIMEOUT = 500;
@@ -788,7 +788,7 @@ var ESCAPE_CODE_TIMEOUT = 500;
  * accepts a readable Stream instance and makes it emit "keypress" events
  */
 
-function emitKeypressEvents(stream, iface = {}) {
+function emitKeypressEvents(stream, iface: Partial<Interface> = {}) {
   if (stream[KEYPRESS_DECODER]) return;
 
   stream[KEYPRESS_DECODER] = new StringDecoder("utf8");
@@ -872,54 +872,54 @@ var kMaxLengthOfKillRing = 32;
 // Symbols
 
 // Public symbols
-var kLineObjectStream = Symbol("line object stream");
-var kQuestionCancel = Symbol("kQuestionCancel");
-var kQuestion = Symbol("kQuestion");
+const kLineObjectStream = Symbol("line object stream");
+const kQuestionCancel = Symbol("kQuestionCancel");
+const kQuestion = Symbol("kQuestion");
 
 // Private symbols
-var kAddHistory = Symbol("_addHistory");
-var kBeforeEdit = Symbol("_beforeEdit");
-var kDecoder = Symbol("_decoder");
-var kDeleteLeft = Symbol("_deleteLeft");
-var kDeleteLineLeft = Symbol("_deleteLineLeft");
-var kDeleteLineRight = Symbol("_deleteLineRight");
-var kDeleteRight = Symbol("_deleteRight");
-var kDeleteWordLeft = Symbol("_deleteWordLeft");
-var kDeleteWordRight = Symbol("_deleteWordRight");
-var kGetDisplayPos = Symbol("_getDisplayPos");
-var kHistoryNext = Symbol("_historyNext");
-var kHistoryPrev = Symbol("_historyPrev");
-var kInsertString = Symbol("_insertString");
-var kLine = Symbol("_line");
-var kLine_buffer = Symbol("_line_buffer");
-var kKillRing = Symbol("_killRing");
-var kKillRingCursor = Symbol("_killRingCursor");
-var kMoveCursor = Symbol("_moveCursor");
-var kNormalWrite = Symbol("_normalWrite");
-var kOldPrompt = Symbol("_oldPrompt");
-var kOnLine = Symbol("_onLine");
-var kPreviousKey = Symbol("_previousKey");
-var kPrompt = Symbol("_prompt");
-var kPushToKillRing = Symbol("_pushToKillRing");
-var kPushToUndoStack = Symbol("_pushToUndoStack");
-var kQuestionCallback = Symbol("_questionCallback");
-var kRedo = Symbol("_redo");
-var kRedoStack = Symbol("_redoStack");
-var kRefreshLine = Symbol("_refreshLine");
-var kSawKeyPress = Symbol("_sawKeyPress");
-var kSawReturnAt = Symbol("_sawReturnAt");
-var kSetRawMode = Symbol("_setRawMode");
-var kTabComplete = Symbol("_tabComplete");
-var kTabCompleter = Symbol("_tabCompleter");
-var kTtyWrite = Symbol("_ttyWrite");
-var kUndo = Symbol("_undo");
-var kUndoStack = Symbol("_undoStack");
-var kWordLeft = Symbol("_wordLeft");
-var kWordRight = Symbol("_wordRight");
-var kWriteToOutput = Symbol("_writeToOutput");
-var kYank = Symbol("_yank");
-var kYanking = Symbol("_yanking");
-var kYankPop = Symbol("_yankPop");
+const kAddHistory = Symbol("_addHistory");
+const kBeforeEdit = Symbol("_beforeEdit");
+const kDecoder = Symbol("_decoder");
+const kDeleteLeft = Symbol("_deleteLeft");
+const kDeleteLineLeft = Symbol("_deleteLineLeft");
+const kDeleteLineRight = Symbol("_deleteLineRight");
+const kDeleteRight = Symbol("_deleteRight");
+const kDeleteWordLeft = Symbol("_deleteWordLeft");
+const kDeleteWordRight = Symbol("_deleteWordRight");
+const kGetDisplayPos = Symbol("_getDisplayPos");
+const kHistoryNext = Symbol("_historyNext");
+const kHistoryPrev = Symbol("_historyPrev");
+const kInsertString = Symbol("_insertString");
+const kLine = Symbol("_line");
+const kLine_buffer = Symbol("_line_buffer");
+const kKillRing = Symbol("_killRing");
+const kKillRingCursor = Symbol("_killRingCursor");
+const kMoveCursor = Symbol("_moveCursor");
+const kNormalWrite = Symbol("_normalWrite");
+const kOldPrompt = Symbol("_oldPrompt");
+const kOnLine = Symbol("_onLine");
+const kPreviousKey = Symbol("_previousKey");
+const kPrompt = Symbol("_prompt");
+const kPushToKillRing = Symbol("_pushToKillRing");
+const kPushToUndoStack = Symbol("_pushToUndoStack");
+const kQuestionCallback = Symbol("_questionCallback");
+const kRedo = Symbol("_redo");
+const kRedoStack = Symbol("_redoStack");
+const kRefreshLine = Symbol("_refreshLine");
+const kSawKeyPress = Symbol("_sawKeyPress");
+const kSawReturnAt = Symbol("_sawReturnAt");
+const kSetRawMode = Symbol("_setRawMode");
+const kTabComplete = Symbol("_tabComplete");
+const kTabCompleter = Symbol("_tabCompleter");
+const kTtyWrite = Symbol("_ttyWrite");
+const kUndo = Symbol("_undo");
+const kUndoStack = Symbol("_undoStack");
+const kWordLeft = Symbol("_wordLeft");
+const kWordRight = Symbol("_wordRight");
+const kWriteToOutput = Symbol("_writeToOutput");
+const kYank = Symbol("_yank");
+const kYanking = Symbol("_yanking");
+const kYankPop = Symbol("_yankPop");
 
 // Event symbols
 var kFirstEventParam = SymbolFor("nodejs.kFirstEventParam");
@@ -967,14 +967,14 @@ var kFirstEventParam = SymbolFor("nodejs.kFirstEventParam");
 // constructor(input, output, completer, terminal) {
 //   super();
 
-var kOnSelfCloseWithTerminal = Symbol("_onSelfCloseWithTerminal");
-var kOnSelfCloseWithoutTerminal = Symbol("_onSelfCloseWithoutTerminal");
-var kOnKeyPress = Symbol("_onKeyPress");
-var kOnError = Symbol("_onError");
-var kOnData = Symbol("_onData");
-var kOnEnd = Symbol("_onEnd");
-var kOnTermEnd = Symbol("_onTermEnd");
-var kOnResize = Symbol("_onResize");
+const kOnSelfCloseWithTerminal = Symbol("_onSelfCloseWithTerminal");
+const kOnSelfCloseWithoutTerminal = Symbol("_onSelfCloseWithoutTerminal");
+const kOnKeyPress = Symbol("_onKeyPress");
+const kOnError = Symbol("_onError");
+const kOnData = Symbol("_onData");
+const kOnEnd = Symbol("_onEnd");
+const kOnTermEnd = Symbol("_onTermEnd");
+const kOnResize = Symbol("_onResize");
 
 function onSelfCloseWithTerminal() {
   var input = this.input;
@@ -1039,9 +1039,11 @@ function onResize() {
   this[kRefreshLine]();
 }
 
-function InterfaceConstructor(input, output, completer, terminal) {
+type InterfaceConstructorT = new (input?: any, output?: any, completer?: any, terminal?: any) => Interface;
+
+function InterfaceConstructor(this: Interface, input?: any, output?: any, completer?: any, terminal?: any) {
   if (!(this instanceof InterfaceConstructor)) {
-    return new InterfaceConstructor(input, output, completer, terminal);
+    return new (InterfaceConstructor as unknown as InterfaceConstructorT)(input, output, completer, terminal);
   }
 
   EventEmitter.$call(this);
@@ -1200,9 +1202,58 @@ function InterfaceConstructor(input, output, completer, terminal) {
 }
 $toClass(InterfaceConstructor, "InterfaceConstructor", EventEmitter);
 
-var _Interface = class Interface extends InterfaceConstructor {
+type Interface = InstanceType<typeof _Interface>;
+
+var _Interface = class Interface extends (InterfaceConstructor as unknown as new (
+  input?: any,
+  output?: any,
+  completer?: any,
+  terminal?: any,
+) => InstanceType<typeof EventEmitter>) {
+  declare line: string;
+  declare cursor: number;
+  declare history: string[];
+  declare historyIndex: number;
+  declare historySize: number;
+  declare output: any;
+  declare input: any;
+  declare terminal: boolean;
+  declare paused: boolean;
+  declare closed: boolean;
+  declare prevRows: number;
+  declare isCompletionEnabled: boolean;
+  declare escapeCodeTimeout: number;
+  declare _ttyWrite: (s?: string, key?: any) => void;
+  declare tabSize: number;
+  declare crlfDelay: number;
+  declare completer: Function | undefined | null;
+  declare removeHistoryDuplicates: boolean;
+  declare autoCommit: boolean;
+  declare [kSawReturnAt]: number;
+  declare [kSawKeyPress]: boolean;
+  declare [kPreviousKey]: any;
+  declare [kSubstringSearch]: string | null;
+  declare [kUndoStack]: Array<{ text: string; cursor: number }>;
+  declare [kRedoStack]: Array<{ text: string; cursor: number }>;
+  declare [kKillRing]: string[];
+  declare [kKillRingCursor]: number;
+  declare [kLineObjectStream]: any;
+  declare [kDecoder]: any;
+  declare [kOldPrompt]: string;
+  declare [kPrompt]: string;
+  declare [kQuestionCallback]: any;
+  declare [kLine_buffer]: string | null;
+  declare [kOnError]: (err: Error) => void;
+  declare [kOnData]: (data: any) => void;
+  declare [kOnEnd]: () => void;
+  declare [kOnTermEnd]: () => void;
+  declare [kOnKeyPress]: (s: any, key: any) => void;
+  declare [kOnResize]: () => void;
+  declare [kOnSelfCloseWithTerminal]: () => void;
+  declare [kOnSelfCloseWithoutTerminal]: () => void;
+
   // eslint-disable-next-line no-useless-constructor
-  constructor(input, output, completer, terminal) {
+  constructor(input?: any, output?: any, completer?: any, terminal?: any) {
     super(input, output, completer, terminal);
   }
   [Symbol.dispose]() {
@@ -1505,7 +1556,7 @@ var _Interface = class Interface extends InterfaceConstructor {
     var string = StringPrototypeSlice.$call(this.line, 0, this.cursor);
     var value;
     try {
-      value = await this.completer(string);
+      value = await this.completer!(string);
     } catch (err) {
       this[kWriteToOutput](`Tab completion error: ${inspect(err)}`);
       return;
@@ -2064,6 +2115,26 @@ var _Interface = class Interface extends InterfaceConstructor {
       // \r bookkeeping is only relevant if a \n comes right after.
       if (this[kSawReturnAt] && keyName !== "enter") this[kSawReturnAt] = 0;
 
+      const insertRawInput = () => {
+        if (typeof s === "string" && s) {
+          // Erase state of previous searches.
+          lineEnding.lastIndex = 0;
+          let nextMatch;
+          // Keep track of the end of the last match.
+          let lastIndex = 0;
+          while ((nextMatch = RegExpPrototypeExec.$call(lineEnding, s)) !== null) {
+            this[kInsertString](StringPrototypeSlice.$call(s, lastIndex, nextMatch.index));
+            ({ lastIndex } = lineEnding);
+            this[kLine]();
+            // Restore lastIndex as the call to kLine could have mutated it.
+            lineEnding.lastIndex = lastIndex;
+          }
+          // This ensures that the last line is written if it doesn't end in a newline.
+          // Note that the last line may be the first line, in which case this still works.
+          this[kInsertString](StringPrototypeSlice.$call(s, lastIndex));
+        }
+      };
+
       switch (keyName) {
         case "return": // Carriage return, i.e. \r
           this[kSawReturnAt] = DateNow();
@@ -2111,32 +2182,18 @@ var _Interface = class Interface extends InterfaceConstructor {
           this[kHistoryNext]();
           break;
 
-        case "tab":
+        case "tab": {
           // If tab completion enabled, do that...
           if (typeof this.completer === "function" && this.isCompletionEnabled) {
             var lastKeypressWasTab = previousKey && previousKey.name === "tab";
             this[kTabComplete](lastKeypressWasTab);
             break;
           }
-        // falls through
+          insertRawInput();
+          break;
+        }
         default:
-          if (typeof s === "string" && s) {
-            // Erase state of previous searches.
-            lineEnding.lastIndex = 0;
-            let nextMatch;
-            // Keep track of the end of the last match.
-            let lastIndex = 0;
-            while ((nextMatch = RegExpPrototypeExec.$call(lineEnding, s)) !== null) {
-              this[kInsertString](StringPrototypeSlice.$call(s, lastIndex, nextMatch.index));
-              ({ lastIndex } = lineEnding);
-              this[kLine]();
-              // Restore lastIndex as the call to kLine could have mutated it.
-              lineEnding.lastIndex = lastIndex;
-            }
-            // This ensures that the last line is written if it doesn't end in a newline.
-            // Note that the last line may be the first line, in which case this still works.
-            this[kInsertString](StringPrototypeSlice.$call(s, lastIndex));
-          }
+          insertRawInput();
       }
     }
   }
@@ -2154,22 +2211,22 @@ var _Interface = class Interface extends InterfaceConstructor {
     if (this[kLineObjectStream] === undefined) {
       this[kLineObjectStream] = EventEmitter.on(this, "line", {
         close: ["close"],
-        highWatermark: 1024,
+        highWaterMark: 1024,
         [kFirstEventParam]: true,
-      });
+      } as Parameters<typeof EventEmitter.on>[2]);
     }
     return this[kLineObjectStream];
   }
 };
 
-function Interface(input, output, completer, terminal) {
+function Interface(this: Interface, input?, output?, completer?, terminal?) {
   if (!(this instanceof Interface)) {
-    return new Interface(input, output, completer, terminal);
+    return new (Interface as unknown as InterfaceConstructorT)(input, output, completer, terminal);
   }
 
   if (input?.input && typeof input.completer === "function" && input.completer.length !== 2) {
-    var { completer } = input;
-    input.completer = (v, cb) => cb(null, completer(v));
+    const { completer: syncCompleter } = input;
+    input.completer = (v, cb) => cb(null, syncCompleter(v));
   } else if (typeof completer === "function" && completer.length !== 2) {
     var realCompleter = completer;
     completer = (v, cb) => cb(null, realCompleter(v));
@@ -2276,8 +2333,8 @@ Interface.prototype.question[promisify.custom] = {
  * @param {boolean} [terminal]
  * @returns {Interface}
  */
-function createInterface(input, output, completer, terminal) {
-  return new Interface(input, output, completer, terminal);
+function createInterface(input, output?, completer?, terminal?) {
+  return new (Interface as unknown as InterfaceConstructorT)(input, output, completer, terminal);
 }
 
 ObjectDefineProperties(Interface.prototype, {
@@ -2554,7 +2611,7 @@ class Readline {
   #stream;
   #todo = [];
 
-  constructor(stream, options = undefined) {
+  constructor(stream, options?: { autoCommit?: boolean }) {
     isWritable ??= require("node:stream").isWritable;
     if (!isWritable(stream)) throw $ERR_INVALID_ARG_TYPE("stream", "Writable", stream);
     this.#stream = stream;

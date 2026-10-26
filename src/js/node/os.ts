@@ -152,7 +152,22 @@ function bound(binding) {
   };
 }
 
-const out = bound($zig("node_os.zig", "createNodeOsBinding"));
+const out = bound({
+  hostCpuCount: navigator.hardwareConcurrency,
+  cpus: $bindgenFn("node_os.schema.zig", "cpus"),
+  freemem: $bindgenFn("node_os.schema.zig", "freemem"),
+  getPriority: $bindgenFn("node_os.schema.zig", "getPriority"),
+  homedir: $bindgenFn("node_os.schema.zig", "homedir"),
+  hostname: $bindgenFn("node_os.schema.zig", "hostname"),
+  loadavg: $bindgenFn("node_os.schema.zig", "loadavg"),
+  networkInterfaces: $bindgenFn("node_os.schema.zig", "networkInterfaces"),
+  release: $bindgenFn("node_os.schema.zig", "release"),
+  setPriority: $bindgenFn("node_os.schema.zig", "setPriority"),
+  totalmem: $bindgenFn("node_os.schema.zig", "totalmem"),
+  uptime: $bindgenFn("node_os.schema.zig", "uptime"),
+  userInfo: $bindgenFn("node_os.schema.zig", "userInfo"),
+  version: $bindgenFn("node_os.schema.zig", "version"),
+});
 
 symbolToStringify(out, "arch");
 symbolToStringify(out, "availableParallelism");

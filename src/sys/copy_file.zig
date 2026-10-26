@@ -301,7 +301,7 @@ const debug = bun.Output.scoped(.copy_file, .hidden);
 const bun = @import("bun");
 const Environment = bun.Environment;
 const Maybe = bun.sys.Maybe;
-const Platform = bun.analytics.GenerateHeader.GeneratePlatform;
+const Platform = bun.Platform;
 
 const std = @import("std");
 const math = std.math;

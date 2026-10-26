@@ -12,22 +12,9 @@
 #include "InternalModuleRegistryConstants.h"
 #include "wtf/Forward.h"
 
-#include "NativeModuleImpl.h"
+#include "NativeModuleRegistry.h"
+#include "SchemaBindings.h"
 namespace Bun {
-
-extern "C" bool BunTest__shouldGenerateCodeCoverage(BunString sourceURL);
-extern "C" void ByteRangeMapping__generate(BunString sourceURL, BunString code, int sourceID);
-
-static void maybeAddCodeCoverage(JSC::VM& vm, const JSC::SourceCode& code)
-{
-#if ASSERT_ENABLED
-    bool isCodeCoverageEnabled = !!vm.controlFlowProfiler();
-    bool shouldGenerateCodeCoverage = isCodeCoverageEnabled && BunTest__shouldGenerateCodeCoverage(Bun::toString(code.provider()->sourceURL()));
-    if (shouldGenerateCodeCoverage) {
-        ByteRangeMapping__generate(Bun::toString(code.provider()->sourceURL()), Bun::toString(code.provider()->source().toStringWithoutCopying()), code.provider()->asID());
-    }
-#endif
-}
 
 // The `INTERNAL_MODULE_REGISTRY_GENERATE` macro handles inlining code to compile and run a
 // JS builtin that acts as a module. In debug mode, we use a different implementation that reads
@@ -38,7 +25,6 @@ JSC::JSValue generateModule(JSC::JSGlobalObject* globalObject, JSC::VM& vm, cons
     auto throwScope = DECLARE_THROW_SCOPE(vm);
     auto&& origin = SourceOrigin(WTF::URL(urlString));
     SourceCode source = JSC::makeSource(SOURCE, origin, JSC::SourceTaintedOrigin::Untainted, moduleName);
-    maybeAddCodeCoverage(vm, source);
     JSFunction* func
         = JSFunction::create(
             vm, globalObject,
@@ -78,6 +64,7 @@ ALWAYS_INLINE JSC::JSValue generateNativeModule(
     JSC::VM& vm,
     const SyntheticSourceProvider::SyntheticSourceGenerator& generator)
 {
+    RELEASE_ASSERT(generator);
     Vector<JSC::Identifier, 4> propertyNames;
     JSC::MarkedArgumentBuffer arguments;
     auto throwScope = DECLARE_THROW_SCOPE(vm);
@@ -126,8 +113,8 @@ InternalModuleRegistry::InternalModuleRegistry(VM& vm, Structure* structure)
 {
     // Initialize all internal fields to jsUndefined() using setWithoutWriteBarrier
     // to avoid triggering write barriers during construction
-    for (uint8_t i = 0; i < BUN_INTERNAL_MODULE_COUNT; i++) {
-        this->internalField(static_cast<Field>(i)).setWithoutWriteBarrier(jsUndefined());
+    for (size_t i = 0; i < Bindgen::internalModuleCount; i++) {
+        Base::internalField(i).setWithoutWriteBarrier(jsUndefined());
     }
 }
 
@@ -174,19 +161,17 @@ JSValue InternalModuleRegistry::requireId(JSGlobalObject* globalObject, VM& vm, 
 
 #include "InternalModuleRegistry+createInternalModuleById.h"
 
-// This is called like @getInternalField(@internalModuleRegistry, 1) ?? @createInternalModuleById(1)
-// so we want to write it to the internal field when loaded.
-JSC_DEFINE_HOST_FUNCTION(InternalModuleRegistry::jsCreateInternalModuleById, (JSGlobalObject * lexicalGlobalObject, CallFrame* callframe))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_InternalModuleRegistry_createById(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_InternalModuleRegistry_createById_Arguments& args)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     auto& vm = JSC::getVM(lexicalGlobalObject);
     auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto id = callframe->argument(0).toUInt32(lexicalGlobalObject);
-
     auto registry = uncheckedDowncast<Zig::GlobalObject>(lexicalGlobalObject)->internalModuleRegistry();
-    auto mod = registry->createInternalModuleById(lexicalGlobalObject, vm, static_cast<Field>(id));
+    auto mod = registry->requireId(lexicalGlobalObject, vm, args.id);
     RETURN_IF_EXCEPTION(throwScope, {});
-    registry->internalField(static_cast<Field>(id)).set(vm, registry, mod);
-    return JSValue::encode(mod);
+    return mod;
 }
 
 } // namespace Bun

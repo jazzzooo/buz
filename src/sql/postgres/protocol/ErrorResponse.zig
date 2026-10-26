@@ -24,8 +24,6 @@ pub fn decode(this: *@This(), reader: PayloadReader) !void {
     this.* = result;
 }
 
-pub const toJS = @import("../../../sql_jsc/postgres/protocol/error_response_jsc.zig").toJS;
-
 const bun = @import("bun");
 const std = @import("std");
 const FieldMessage = @import("./FieldMessage.zig").FieldMessage;

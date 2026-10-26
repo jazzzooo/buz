@@ -1,5 +1,6 @@
 #include "JSDiffieHellmanGroupPrototype.h"
 #include "JSDiffieHellmanGroup.h"
+#include "SchemaBindings.h"
 #include "DiffieHellmanFunctions.h"
 #include "ErrorCode.h"
 
@@ -10,61 +11,65 @@
 
 namespace Bun {
 
-// Declare host function prototypes
-JSC_DECLARE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGenerateKeys);
-JSC_DECLARE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncComputeSecret);
-JSC_DECLARE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGetPrime);
-JSC_DECLARE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGetGenerator);
-JSC_DECLARE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGetPublicKey);
-JSC_DECLARE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGetPrivateKey);
-
-// Define specific group prototype host functions
-JSC_DEFINE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGenerateKeys, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+static JSDiffieHellmanGroup* diffieHellmanGroupReceiver(JSC::JSValue value)
 {
-    return jsDiffieHellmanProtoFuncGenerateKeysTemplate<JSDiffieHellmanGroup>(globalObject, callFrame);
+    auto* result = dynamicDowncast<JSDiffieHellmanGroup>(value);
+    RELEASE_ASSERT(result);
+    return result;
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncComputeSecret, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bindgen::NodeCryptoEncodedOutputResult Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGenerateKeys(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGenerateKeys_Arguments& args)
 {
-    return jsDiffieHellmanProtoFuncComputeSecretTemplate<JSDiffieHellmanGroup>(globalObject, callFrame);
+    return jsDiffieHellmanProtoFuncGenerateKeysTemplate<JSDiffieHellmanGroup>(&context.globalObject, diffieHellmanGroupReceiver(args.bindingThis), args.encoding);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGetPrime, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bindgen::NodeCryptoEncodedOutputResult Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupComputeSecret(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupComputeSecret_Arguments& args)
 {
-    return jsDiffieHellmanProtoFuncGetPrimeTemplate<JSDiffieHellmanGroup>(globalObject, callFrame);
+    return jsDiffieHellmanProtoFuncComputeSecretTemplate<JSDiffieHellmanGroup>(context, &context.globalObject, diffieHellmanGroupReceiver(args.bindingThis), args.key, args.inputEncoding, args.outputEncoding);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGetGenerator, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bindgen::NodeCryptoEncodedOutputResult Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGetPrime(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGetPrime_Arguments& args)
 {
-    return jsDiffieHellmanProtoFuncGetGeneratorTemplate<JSDiffieHellmanGroup>(globalObject, callFrame);
+    return jsDiffieHellmanProtoFuncGetPrimeTemplate<JSDiffieHellmanGroup>(&context.globalObject, diffieHellmanGroupReceiver(args.bindingThis), args.encoding);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGetPublicKey, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bindgen::NodeCryptoEncodedOutputResult Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGetGenerator(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGetGenerator_Arguments& args)
 {
-    return jsDiffieHellmanProtoFuncGetPublicKeyTemplate<JSDiffieHellmanGroup>(globalObject, callFrame);
+    return jsDiffieHellmanProtoFuncGetGeneratorTemplate<JSDiffieHellmanGroup>(&context.globalObject, diffieHellmanGroupReceiver(args.bindingThis), args.encoding);
 }
 
-JSC_DEFINE_HOST_FUNCTION(jsDiffieHellmanGroupProtoFuncGetPrivateKey, (JSC::JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
+Bindgen::NodeCryptoEncodedOutputResult Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGetPublicKey(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGetPublicKey_Arguments& args)
 {
-    return jsDiffieHellmanProtoFuncGetPrivateKeyTemplate<JSDiffieHellmanGroup>(globalObject, callFrame);
+    return jsDiffieHellmanProtoFuncGetPublicKeyTemplate<JSDiffieHellmanGroup>(&context.globalObject, diffieHellmanGroupReceiver(args.bindingThis), args.encoding);
+}
+
+Bindgen::NodeCryptoEncodedOutputResult Bindgen::Cpp::bunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGetPrivateKey(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeCryptoBinding_diffieHellmanGroupGetPrivateKey_Arguments& args)
+{
+    return jsDiffieHellmanProtoFuncGetPrivateKeyTemplate<JSDiffieHellmanGroup>(&context.globalObject, diffieHellmanGroupReceiver(args.bindingThis), args.encoding);
 }
 
 const JSC::ClassInfo JSDiffieHellmanGroupPrototype::s_info = { "DiffieHellmanGroup"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSDiffieHellmanGroupPrototype) };
 
-static const JSC::HashTableValue JSDiffieHellmanGroupPrototypeTableValues[] = {
-    { "generateKeys"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsDiffieHellmanGroupProtoFuncGenerateKeys, 0 } },
-    { "computeSecret"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsDiffieHellmanGroupProtoFuncComputeSecret, 1 } },
-    { "getPrime"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsDiffieHellmanGroupProtoFuncGetPrime, 0 } },
-    { "getGenerator"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsDiffieHellmanGroupProtoFuncGetGenerator, 0 } },
-    { "getPublicKey"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsDiffieHellmanGroupProtoFuncGetPublicKey, 0 } },
-    { "getPrivateKey"_s, static_cast<unsigned>(JSC::PropertyAttribute::Function), JSC::NoIntrinsic, { JSC::HashTableValue::NativeFunctionType, jsDiffieHellmanGroupProtoFuncGetPrivateKey, 0 } },
-};
+#define BUN_BINDGEN_OBJECT_SURFACE_JSDiffieHellmanGroupPrototype
+#include "ObjectSurfaces.h"
+#undef BUN_BINDGEN_OBJECT_SURFACE_JSDiffieHellmanGroupPrototype
 
 void JSDiffieHellmanGroupPrototype::finishCreation(JSC::VM& vm)
 {
     Base::finishCreation(vm);
-    reifyStaticProperties(vm, JSDiffieHellmanGroup::info(), JSDiffieHellmanGroupPrototypeTableValues, *this);
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+    bunBindgenObjectSurface_JSDiffieHellmanGroupPrototype_install(vm, JSDiffieHellmanGroup::info(), *this);
 }
 
 } // namespace Bun

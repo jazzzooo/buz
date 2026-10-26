@@ -32,16 +32,7 @@
 #include "config.h"
 #include "ErrorEvent.h"
 
-#include "DOMWrapperWorld.h"
-#include "EventNames.h"
-#include <JavaScriptCore/HeapInlines.h>
-#include <JavaScriptCore/StrongInlines.h>
-#include <wtf/TZoneMallocInlines.h>
-
 namespace WebCore {
-using namespace JSC;
-
-WTF_MAKE_TZONE_ALLOCATED_IMPL(ErrorEvent);
 
 ErrorEvent::ErrorEvent(const AtomString& type, const Init& initializer, IsTrusted isTrusted)
     : Event(ErrorEventInterfaceType, type, initializer, isTrusted)
@@ -53,48 +44,6 @@ ErrorEvent::ErrorEvent(const AtomString& type, const Init& initializer, IsTruste
 {
 }
 
-ErrorEvent::ErrorEvent(const AtomString& type, const String& message, const String& fileName, unsigned lineNumber, unsigned columnNumber, JSC::Strong<JSC::Unknown> error)
-    : Event(ErrorEventInterfaceType, type, CanBubble::No, IsCancelable::Yes)
-    , m_message(message)
-    , m_fileName(fileName)
-    , m_lineNumber(lineNumber)
-    , m_columnNumber(columnNumber)
-    , m_error(error.get())
-{
-}
-
-ErrorEvent::ErrorEvent(const String& message, const String& fileName, unsigned lineNumber, unsigned columnNumber, JSC::Strong<JSC::Unknown> error)
-    : ErrorEvent(eventNames().errorEvent, message, fileName, lineNumber, columnNumber, error)
-{
-}
-
 ErrorEvent::~ErrorEvent() = default;
-
-JSValue ErrorEvent::error(JSGlobalObject& globalObject)
-{
-    if (!m_error)
-        return jsNull();
-
-    JSValue error = m_error.getValue();
-    // if (!isWorldCompatible(globalObject, error)) {
-    //     // We need to make sure ErrorEvents do not leak their error property across isolated DOM worlds.
-    //     // Ideally, we would check that the worlds have different privileges but that's not possible yet.
-    //     auto serializedError = trySerializeError(globalObject);
-    //     if (!serializedError)
-    //         return jsNull();
-    //     return serializedError->deserialize(globalObject, &globalObject);
-    // }
-
-    return error;
-}
-
-// RefPtr<SerializedScriptValue> ErrorEvent::trySerializeError(JSGlobalObject& exec)
-// {
-//     // if (!m_serializedError && !m_triedToSerialize) {
-//     //     m_serializedError = SerializedScriptValue::create(exec, m_error.getValue(), SerializationErrorMode::NonThrowing);
-//     //     m_triedToSerialize = true;
-//     // }
-//     return 0;
-// }
 
 } // namespace WebCore

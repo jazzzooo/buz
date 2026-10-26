@@ -1,7 +1,7 @@
 // fs.ReadStream and fs.WriteStream are lazily loaded to avoid importing 'node:stream' until required
 import type { FileSink } from "bun";
 const { Readable, Writable, finished } = require("node:stream");
-const fs: typeof import("node:fs") = require("node:fs");
+const fs = require("node:fs") as unknown as typeof import("node:fs");
 const { read, write, fsync, writev } = fs;
 const { FileHandle, kRef, kUnref, kFd } = (fs.promises as any).$data as {
   FileHandle: { new (): FileHandle };
@@ -625,7 +625,7 @@ function underscoreWriteFast(this: FSStream, data: any, encoding: any, cb: any) 
       if (cb) process.nextTick(cb, null);
       return true;
     }
-  } catch (e) {
+  } catch (e: any) {
     if (cb) process.nextTick(cb, e);
     // If no callback was provided, emit the error on the stream
     if (!hasCallback) {

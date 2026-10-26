@@ -13,6 +13,8 @@ using namespace JSC;
 using namespace WebCore;
 
 class JSMockFunction;
+JSMockFunction* jsMockFunctionCast(JSC::JSValue);
+bool isJSMockFunction(JSC::JSValue) noexcept;
 
 // Wrapper to scope a bunch of GlobalObject properties related to mocks
 class JSMockModule final {
@@ -25,7 +27,6 @@ public:
     V(Structure, mockResultStructure)                \
     V(Structure, mockImplementationStructure)        \
     V(Structure, mockObjectStructure)                \
-    V(Structure, mockModuleStructure)                \
     V(Structure, activeSpySetStructure)              \
     V(JSFunction, withImplementationCleanupFunction) \
     V(JSC::Structure, mockWithImplementationCleanupDataStructure)

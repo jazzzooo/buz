@@ -11,7 +11,7 @@ pub const Linker = struct {
     resolver: *ResolverType,
     resolve_results: *_transpiler.ResolveResults,
     hashed_filenames: HashedFileNameMap,
-    plugin_runner: ?*PluginRunner = null,
+    plugin_resolver: ?PluginResolver = null,
 
     pub const runtime_source_path = "bun:wrap";
 
@@ -24,7 +24,7 @@ pub const Linker = struct {
         resolve_results: *_transpiler.ResolveResults,
         fs: *Fs.FileSystem,
     ) ThisLinker {
-        relative_paths_list = ImportPathsList.init(resolver.io, allocator);
+        relative_paths_list = ImportPathsList.init(resolver.io, bun.default_allocator);
 
         return ThisLinker{
             .allocator = allocator,
@@ -118,7 +118,7 @@ pub const Linker = struct {
                     }
 
                     if (comptime is_bun) {
-                        if (jsc.ModuleLoader.HardcodedModule.Alias.get(import_record.path.text, linker.options.target, .{ .rewrite_jest_for_tests = linker.options.rewrite_jest_for_tests })) |replacement| {
+                        if (HardcodedModule.Alias.get(import_record.path.text, linker.options.target, .{ .rewrite_jest_for_tests = linker.options.rewrite_jest_for_tests })) |replacement| {
                             if (replacement.tag == .builtin and import_record.kind.isCommonJS())
                                 continue;
                             import_record.path.text = replacement.path;
@@ -149,9 +149,9 @@ pub const Linker = struct {
                         }
                     }
 
-                    if (linker.plugin_runner) |runner| {
-                        if (PluginRunner.couldBePlugin(import_record.path.text)) {
-                            if (try runner.onResolve(
+                    if (linker.plugin_resolver) |plugin_resolver| {
+                        if (PluginResolver.couldResolve(import_record.path.text)) {
+                            if (try plugin_resolver.resolve(
                                 import_record.path.text,
                                 file_path.text,
                                 linker.log,
@@ -384,14 +384,14 @@ const Resolver = @import("../resolver/resolver.zig");
 const ResolverType = Resolver.Resolver;
 
 const bun = @import("bun");
+const HardcodedModule = @import("../resolve_builtins/HardcodedModule.zig").HardcodedModule;
 const Environment = bun.Environment;
 const FileDescriptorType = bun.FD;
 const allocators = bun.allocators;
-const jsc = bun.jsc;
 const logger = bun.logger;
 const strings = bun.strings;
 
 const _transpiler = bun.transpiler;
-const PluginRunner = bun.transpiler.PluginRunner;
+const PluginResolver = @import("./PluginResolver.zig");
 const ResolveQueue = _transpiler.ResolveQueue;
 const Transpiler = _transpiler.Transpiler;

@@ -13,50 +13,28 @@ pub fn load() void {
     boring.ERR_load_BIO_strings();
     boring.OpenSSL_add_all_algorithms();
 
-    if (!builtin.is_test) {
-        std.mem.doNotOptimizeAway(&OPENSSL_memory_alloc);
-        std.mem.doNotOptimizeAway(&OPENSSL_memory_get_size);
-        std.mem.doNotOptimizeAway(&OPENSSL_memory_free);
+    @import("../boringssl_sys/Memory.zig").retainSymbols();
+}
+
+pub const ErrorMessage = struct {
+    bytes: [128 + 1 + "BoringSSL ".len]u8,
+
+    pub fn init(code: u32) ErrorMessage {
+        var result: ErrorMessage = .{ .bytes = @splat(0) };
+        const prefix = "BoringSSL ";
+        result.bytes[0..prefix.len].* = prefix.*;
+        const message = result.bytes[prefix.len..];
+        _ = boring.ERR_error_string_n(code, message.ptr, message.len);
+        if (result.bytes[prefix.len] == 0) {
+            _ = std.mem.printSentinel(&result.bytes, "An unknown BoringSSL error occurred: {d}", .{code}, 0) catch unreachable;
+        }
+        return result;
     }
-}
 
-// void*, OPENSSL_memory_alloc, (size_t size)
-// void, OPENSSL_memory_free, (void *ptr)
-// size_t, OPENSSL_memory_get_size, (void *ptr)
-
-// The following three functions can be defined to override default heap
-// allocation and freeing. If defined, it is the responsibility of
-// |OPENSSL_memory_free| to zero out the memory before returning it to the
-// system. |OPENSSL_memory_free| will not be passed NULL pointers.
-//
-// WARNING: These functions are called on every allocation and free in
-// BoringSSL across the entire process. They may be called by any code in the
-// process which calls BoringSSL, including in process initializers and thread
-// destructors. When called, BoringSSL may hold pthreads locks. Any other code
-// in the process which, directly or indirectly, calls BoringSSL may be on the
-// call stack and may itself be using arbitrary synchronization primitives.
-//
-// As a result, these functions may not have the usual programming environment
-// available to most C or C++ code. In particular, they may not call into
-// BoringSSL, or any library which depends on BoringSSL. Any synchronization
-// primitives used must tolerate every other synchronization primitive linked
-// into the process, including pthreads locks. Failing to meet these constraints
-// may result in deadlocks, crashes, or memory corruption.
-
-export fn OPENSSL_memory_alloc(size: usize) ?*anyopaque {
-    return bun.mimalloc.mi_malloc(size);
-}
-
-// BoringSSL always expects memory to be zero'd
-export fn OPENSSL_memory_free(ptr: *anyopaque) void {
-    const len = bun.mimalloc.mi_usable_size(ptr);
-    @memset(@as([*]u8, @ptrCast(ptr))[0..len], 0);
-    bun.mimalloc.mi_free(ptr);
-}
-
-export fn OPENSSL_memory_get_size(ptr: ?*const anyopaque) usize {
-    return bun.mimalloc.mi_usable_size(ptr);
-}
+    pub fn slice(this: *const ErrorMessage) []const u8 {
+        return std.mem.sliceTo(&this.bytes, 0);
+    }
+};
 
 const INET6_ADDRSTRLEN = if (bun.Environment.isWindows) 65 else 46;
 
@@ -105,7 +83,7 @@ pub fn ip2String(ip: *boring.ASN1_OCTET_STRING, outIP: *[INET6_ADDRSTRLEN + 1]u8
 /// `hostname`. Mirrors Node.js `check()` in lib/tls.js for a single pattern.
 fn matchDnsName(pattern: []const u8, hostname: []const u8) bool {
     if (pattern.len == 0) return false;
-    if (!X509.isSafeAltName(pattern, false)) return false;
+    if (!isSafeAltName(pattern, false)) return false;
 
     if (pattern[0] == '*') {
         // RFC 6125 Section 6.4.3: Wildcard must match exactly one label.
@@ -132,6 +110,20 @@ fn matchDnsName(pattern: []const u8, hostname: []const u8) bool {
     }
     // RFC 4343: DNS names are case-insensitive
     return strings.eqlCaseInsensitiveASCII(pattern, hostname, true);
+}
+
+fn isSafeAltName(name: []const u8, utf8: bool) bool {
+    for (name) |byte| {
+        switch (byte) {
+            '"', '\\', ',', '\'' => return false,
+            else => if (utf8) {
+                if (byte < ' ' or byte == '\x7f') return false;
+            } else if (byte < ' ' or byte > '~') {
+                return false;
+            },
+        }
+    }
+    return true;
 }
 
 pub fn checkX509ServerIdentity(
@@ -245,11 +237,7 @@ pub fn checkServerIdentity(
     return false;
 }
 
-pub const ERR_toJS = @import("../runtime/crypto/boringssl_jsc.zig").ERR_toJS;
-
-const X509 = @import("../runtime/api/bun/x509.zig");
 const boring = @import("../boringssl_sys/boringssl.zig");
-const builtin = @import("builtin");
 const c_ares = @import("../cares_sys/c_ares.zig");
 const std = @import("std");
 

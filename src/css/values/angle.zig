@@ -108,7 +108,7 @@ pub const Angle = union(Tag) {
         return angle;
     }
 
-    pub fn tryFromToken(token: *const css.Token) css.Maybe(Angle, void) {
+    pub fn tryFromToken(token: *const css.Token) css.Outcome(Angle, void) {
         if (token.* == .dimension) {
             const value = token.dimension.num.value;
             const unit = token.dimension.unit;

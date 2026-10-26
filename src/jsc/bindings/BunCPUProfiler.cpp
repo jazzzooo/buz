@@ -1,8 +1,8 @@
 #include "root.h"
 #include "BunCPUProfiler.h"
+#include "SchemaBindings.h"
 #include "ZigGlobalObject.h"
 #include "helpers.h"
-#include "BunString.h"
 #include <JavaScriptCore/SamplingProfiler.h>
 #include <JavaScriptCore/VM.h>
 #include <JavaScriptCore/JSGlobalObject.h>
@@ -17,15 +17,6 @@
 #include <wtf/URL.h>
 #include <algorithm>
 #include <limits>
-
-extern "C" void Bun__startCPUProfiler(JSC::VM* vm);
-extern "C" void Bun__stopCPUProfiler(JSC::VM* vm, BunString* outJSON, BunString* outText);
-extern "C" void Bun__setSamplingInterval(int intervalMicroseconds);
-
-void Bun__setSamplingInterval(int intervalMicroseconds)
-{
-    Bun::setSamplingInterval(intervalMicroseconds);
-}
 
 namespace Bun {
 
@@ -930,18 +921,26 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
 
 } // namespace Bun
 
-extern "C" void Bun__startCPUProfiler(JSC::VM* vm)
+void Bun::Bindgen::Engine::bunBindgenEngine_InspectorProfiler_setCPUProfilerSamplingInterval(
+    const Bun::Bindgen::Engine::BunBindgenEngine_InspectorProfiler_setCPUProfilerSamplingInterval_Arguments& args)
 {
-    Bun::startCPUProfiler(*vm);
+    Bun::setSamplingInterval(args.intervalMicroseconds);
 }
 
-extern "C" void Bun__stopCPUProfiler(JSC::VM* vm, BunString* outJSON, BunString* outText)
+void Bun::Bindgen::Engine::bunBindgenEngine_InspectorProfiler_startCPUProfiler(
+    const Bun::Bindgen::Engine::BunBindgenEngine_InspectorProfiler_startCPUProfiler_Arguments& args)
+{
+    Bun::startCPUProfiler(*args.vm);
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_InspectorProfiler_stopCPUProfiler_Return Bun::Bindgen::Engine::bunBindgenEngine_InspectorProfiler_stopCPUProfiler(
+    const Bun::Bindgen::Engine::BunBindgenEngine_InspectorProfiler_stopCPUProfiler_Arguments& args)
 {
     WTF::String jsonResult;
     WTF::String textResult;
-    Bun::stopCPUProfiler(*vm, outJSON ? &jsonResult : nullptr, outText ? &textResult : nullptr);
-    if (outJSON)
-        *outJSON = Bun::toStringRef(jsonResult);
-    if (outText)
-        *outText = Bun::toStringRef(textResult);
+    Bun::stopCPUProfiler(*args.vm, args.includeJSON ? &jsonResult : nullptr, args.includeText ? &textResult : nullptr);
+    return {
+        .json = args.includeJSON ? std::optional { WTF::move(jsonResult) } : std::nullopt,
+        .text = args.includeText ? std::optional { WTF::move(textResult) } : std::nullopt,
+    };
 }

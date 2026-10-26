@@ -2,16 +2,11 @@
 #include "../bindings/ZigGlobalObject.h"
 #include <JavaScriptCore/JSGlobalObject.h>
 
-namespace Zig {
+namespace Bun::Bindgen {
 
-DEFINE_NATIVE_MODULE(NodeStringDecoder)
+inline JSC::JSValue constructNodeStringDecoder(JSC::VM&, JSC::JSObject* object)
 {
-    INIT_NATIVE_MODULE(1);
-
-    put(JSC::Identifier::fromString(vm, "StringDecoder"_s),
-        globalObject->JSStringDecoder());
-
-    RETURN_NATIVE_MODULE();
+    return ::defaultGlobalObject(object->globalObject())->JSStringDecoder();
 }
 
-} // namespace Zig
+} // namespace Bun::Bindgen

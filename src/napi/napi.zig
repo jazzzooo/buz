@@ -1,11 +1,12 @@
-const TODO_EXCEPTION: jsc.C.ExceptionRef = null;
-
+const BindingEscape = bun.bindgen.Escape(@This());
 const log = bun.Output.scoped(.napi, .visible);
 
 /// This is `struct napi_env__` from napi.h
 pub const NapiEnv = opaque {
     pub fn toJS(self: *NapiEnv) *jsc.JSGlobalObject {
-        return NapiEnv__globalObject(self);
+        return @ptrCast(bun.bindgen.Engine(NapiEnvGlobalObjectSchema).call(.{
+            .env = @ptrCast(self),
+        }));
     }
 
     extern fn napi_set_last_error(env: napi_env, status: NapiStatus) napi_status;
@@ -41,17 +42,17 @@ pub const NapiEnv = opaque {
         napi_internal_check_gc(self);
     }
 
-    pub fn getAndClearPendingException(self: *NapiEnv) ?JSValue {
-        var exception: JSValue = undefined;
-        if (NapiEnv__getAndClearPendingException(self, &exception)) {
-            return exception;
-        }
-
-        return null;
+    pub fn reportAndClearPendingException(self: *NapiEnv) bool {
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(self.toJS());
+        defer scope.deinit();
+        const exception = scope.engine(NapiEnvGetAndClearPendingExceptionSchema).call(.{
+            .env = @as(NapiEnvHandle, @ptrCast(self)),
+        }) orelse return false;
+        _ = scope.reportUncaughtException(exception.operand(&scope).asAny(), false);
+        return true;
     }
 
-    extern fn NapiEnv__globalObject(*NapiEnv) *jsc.JSGlobalObject;
-    extern fn NapiEnv__getAndClearPendingException(*NapiEnv, *JSValue) bool;
     extern fn NapiEnv__deref(*NapiEnv) void;
     extern fn NapiEnv__ref(*NapiEnv) void;
 
@@ -83,8 +84,6 @@ pub const napi_ref = *Ref;
 pub const NapiHandleScope = opaque {
     pub extern fn NapiHandleScope__open(env: *NapiEnv, escapable: bool) ?*NapiHandleScope;
     pub extern fn NapiHandleScope__close(env: *NapiEnv, current: ?*NapiHandleScope) void;
-    extern fn NapiHandleScope__append(env: *NapiEnv, value: jsc.JSValue.backing_int) void;
-    extern fn NapiHandleScope__escape(handleScope: *NapiHandleScope, value: jsc.JSValue.backing_int) bool;
 
     /// Create a new handle scope in the given environment, or return null if creating one now is
     /// unsafe (i.e. inside a finalizer)
@@ -102,14 +101,30 @@ pub const NapiHandleScope = opaque {
     /// callbacks, as the value must remain alive as long as the handle scope is active, even if the
     /// native module doesn't keep it visible on the stack.
     pub fn append(env: *NapiEnv, value: jsc.JSValue) void {
-        NapiHandleScope__append(env, @backingInt(value));
+        const global = env.toJS();
+        defer value.ensureStillAlive();
+        var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+        engine_scope.init(global);
+        defer engine_scope.deinit();
+        engine_scope.engine(NapiHandleScopeAppendSchema).call(.{
+            .env = @as(NapiEnvHandle, @ptrCast(env)),
+            .value = BindingEscape.borrowEngineValue(&engine_scope, value),
+        });
     }
 
     /// Move a value from the current handle scope (which must be escapable) to the reserved escape
     /// slot in the parent handle scope, allowing that value to outlive the current handle scope.
     /// Returns an error if escape() has already been called on this handle scope.
-    pub fn escape(self: *NapiHandleScope, value: jsc.JSValue) error{EscapeCalledTwice}!void {
-        if (!NapiHandleScope__escape(self, @backingInt(value))) {
+    pub fn escape(self: *NapiHandleScope, env: *NapiEnv, value: jsc.JSValue) error{EscapeCalledTwice}!void {
+        const global = env.toJS();
+        defer value.ensureStillAlive();
+        var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+        engine_scope.init(global);
+        defer engine_scope.deinit();
+        if (!engine_scope.engine(NapiHandleScopeEscapeSchema).call(.{
+            .scope = @as(NapiHandleScopeHandle, @ptrCast(self)),
+            .value = BindingEscape.borrowEngineValue(&engine_scope, value),
+        })) {
             return error.EscapeCalledTwice;
         }
     }
@@ -118,7 +133,27 @@ pub const NapiHandleScope = opaque {
 pub const napi_handle_scope = ?*NapiHandleScope;
 pub const napi_escapable_handle_scope = ?*NapiHandleScope;
 pub const napi_callback_info = *jsc.CallFrame;
-pub const napi_deferred = *jsc.JSPromise.Strong;
+pub const napi_deferred = *NapiDeferred;
+
+const NapiDeferred = struct {
+    promise: bun.bindgen.OwnedBrandedValue(bun.bindgen.PromiseResult.bindgen_semantic_type),
+    global: *jsc.JSGlobalObject,
+
+    fn init(global: *jsc.JSGlobalObject, promise: bun.bindgen.PromiseResult) bun.JSError!NapiDeferred {
+        return .{
+            .promise = try promise.toOwned(),
+            .global = global,
+        };
+    }
+
+    fn get(this: *const NapiDeferred) jsc.JSValue {
+        return BindingEscape.brandedValue(this.global, &this.promise);
+    }
+
+    fn deinit(this: *NapiDeferred) void {
+        this.promise.deinit();
+    }
+};
 
 /// To ensure napi_values are not collected prematurely after being returned into a native module,
 /// you must use these functions rather than convert between napi_value and jsc.JSValue directly
@@ -132,6 +167,10 @@ pub const napi_value = enum(i64) {
     ) void {
         NapiHandleScope.append(env, val);
         self.* = @fromBackingInt(@intCast(@backingInt(val)));
+    }
+
+    fn setResult(self: *napi_value, env: *NapiEnv, value: bun.bindgen.AnyResult) void {
+        self.set(env, BindingEscape.borrowResultValue(env.toJS(), &value));
     }
 
     pub fn get(self: *const napi_value) jsc.JSValue {
@@ -187,8 +226,21 @@ pub const napi_typedarray_type = enum(c_uint) {
         };
     }
 
-    pub fn toC(this: napi_typedarray_type) jsc.C.JSTypedArrayType {
-        return this.toJSType().toC();
+    pub fn fromJSType(value: jsc.JSValue.JSType) ?napi_typedarray_type {
+        return switch (value) {
+            .Int8Array => .int8_array,
+            .Uint8Array => .uint8_array,
+            .Uint8ClampedArray => .uint8_clamped_array,
+            .Int16Array => .int16_array,
+            .Uint16Array => .uint16_array,
+            .Int32Array => .int32_array,
+            .Uint32Array => .uint32_array,
+            .Float32Array => .float32_array,
+            .Float64Array => .float64_array,
+            .BigInt64Array => .bigint64_array,
+            .BigUint64Array => .biguint64_array,
+            else => null,
+        };
     }
 };
 
@@ -298,7 +350,12 @@ pub export fn napi_create_array(env_: napi_env, result_: ?*napi_value) napi_stat
     const result = result_ orelse {
         return env.invalidArg();
     };
-    result.set(env, (jsc.JSArray.createEmpty(env.toJS(), 0) catch return env.setLastError(.pending_exception)).toJS());
+    const global = env.toJS();
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(global);
+    defer engine_scope.deinit();
+    const array = engine_scope.engine(NapiCreateArraySchema).call(.{ .length = 0 }) catch return env.setLastError(.pending_exception);
+    result.setResult(env, array.asAny(&engine_scope));
     return env.ok();
 }
 pub export fn napi_create_array_with_length(env_: napi_env, length: usize, result_: ?*napi_value) napi_status {
@@ -317,9 +374,12 @@ pub export fn napi_create_array_with_length(env_: napi_env, length: usize, resul
     const len_i32: i32 = @truncate(len_i64);
     const len: u32 = if (len_i32 > 0) @bitCast(len_i32) else 0;
 
-    const array = jsc.JSArray.createEmpty(env.toJS(), len) catch return env.setLastError(.pending_exception);
-    array.ensureStillAlive();
-    result.set(env, array.toJS());
+    const global = env.toJS();
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(global);
+    defer engine_scope.deinit();
+    const array_result = engine_scope.engine(NapiCreateArraySchema).call(.{ .length = len }) catch return env.setLastError(.pending_exception);
+    result.setResult(env, array_result.asAny(&engine_scope));
     return env.ok();
 }
 pub extern fn napi_create_double(_: napi_env, value: f64, result: *napi_value) napi_status;
@@ -387,18 +447,7 @@ pub export fn napi_create_string_latin1(env_: napi_env, str: ?[*]const u8, lengt
 
     log("napi_create_string_latin1: {s}", .{slice});
 
-    if (slice.len == 0) {
-        result.set(env, bun.String.empty.toJS(env.toJS()) catch return env.setLastError(.generic_failure));
-        return env.ok();
-    }
-
-    var string, const bytes = bun.String.createUninitialized(.latin1, slice.len);
-    defer string.deref();
-
-    @memcpy(bytes, slice);
-
-    result.set(env, string.toJS(env.toJS()) catch return env.setLastError(.generic_failure));
-    return env.ok();
+    return setNapiString(env, result, bun.bindgen.DOMString.fromLatin1(slice));
 }
 pub export fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, result_: ?*napi_value) napi_status {
     const env = env_ orelse {
@@ -428,10 +477,7 @@ pub export fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length:
 
     log("napi_create_string_utf8: {s}", .{slice});
 
-    const globalObject = env.toJS();
-    const string = bun.String.createUTF8ForJS(globalObject, slice) catch return env.setLastError(.pending_exception);
-    result.set(env, string);
-    return env.ok();
+    return setNapiString(env, result, bun.bindgen.DOMString.fromUTF8(slice));
 }
 pub export fn napi_create_string_utf16(env_: napi_env, str: ?[*]const char16_t, length: usize, result_: ?*napi_value) napi_status {
     const env = env_ orelse {
@@ -462,15 +508,26 @@ pub export fn napi_create_string_utf16(env_: napi_env, str: ?[*]const char16_t, 
     if (comptime bun.Environment.allow_assert)
         log("napi_create_string_utf16: {d} {f}", .{ slice.len, bun.fmt.FormatUTF16{ .buf = slice[0..@min(slice.len, 512)] } });
 
-    if (slice.len == 0) {
-        result.set(env, bun.String.empty.toJS(env.toJS()) catch return env.setLastError(.generic_failure));
-        return env.ok();
-    }
+    return setNapiString(env, result, bun.bindgen.DOMString.fromUTF16(slice));
+}
 
-    var string, const chars = bun.String.createUninitialized(.utf16, slice.len);
-    @memcpy(chars, slice);
-
-    result.set(env, string.transferToJS(env.toJS()) catch return env.setLastError(.generic_failure));
+fn setNapiString(env: *NapiEnv, result: *napi_value, converted: bun.OOM!bun.bindgen.DOMString) napi_status {
+    const global = env.toJS();
+    var string = converted catch |err| {
+        bun.bindgen.voidFromJSError(err, global);
+        return env.setLastError(.pending_exception);
+    };
+    defer string.deinit();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    const value = scope.engineIn("js_strings", "stringToJS").call(.{
+        .value = string.operand(),
+    }) catch |err| {
+        bun.bindgen.voidFromJSError(err, global);
+        return env.setLastError(.pending_exception);
+    };
+    result.setResult(env, value.asAny(&scope));
     return env.ok();
 }
 
@@ -512,11 +569,13 @@ pub export fn napi_get_prototype(env_: napi_env, object_: napi_value, result_: ?
     if (object == .zero) {
         return env.invalidArg();
     }
-    if (!object.isObject()) {
-        return env.setLastError(.object_expected);
-    }
-
-    result.set(env, JSValue.c(jsc.C.JSObjectGetPrototype(env.toJS().ref(), object.asObjectRef())));
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const operand = BindingEscape.borrowEngineValue(&scope, object);
+    if (!operand.isObject()) return env.setLastError(.object_expected);
+    const prototype = operand.getPrototype() catch return env.setLastError(.pending_exception);
+    result.set(env, BindingEscape.rawCallScopedValue(&scope, prototype.engineView()));
     return env.ok();
 }
 // TODO: bind JSC::ownKeys
@@ -542,7 +601,11 @@ pub export fn napi_is_array(env_: napi_env, value_: napi_value, result_: ?*bool)
     const result = result_ orelse {
         return env.invalidArg();
     };
-    const value = value_.get();
+    const raw = value_.get();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const value = BindingEscape.borrowEngineValue(&scope, raw);
     result.* = value.jsType().isArray();
     return env.ok();
 }
@@ -554,13 +617,17 @@ pub export fn napi_get_array_length(env_: napi_env, value_: napi_value, result_:
     const result = result_ orelse {
         return env.invalidArg();
     };
-    const value = value_.get();
+    const raw = value_.get();
 
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const value = BindingEscape.borrowEngineValue(&scope, raw);
     if (!value.jsType().isArray()) {
         return env.setLastError(.array_expected);
     }
 
-    result.* = @truncate(value.getLength(env.toJS()) catch return env.setLastError(.pending_exception));
+    result.* = @truncate(value.getLength() catch return env.setLastError(.pending_exception));
     return env.ok();
 }
 pub export fn napi_strict_equals(env_: napi_env, lhs_: napi_value, rhs_: napi_value, result_: ?*bool) napi_status {
@@ -571,8 +638,12 @@ pub export fn napi_strict_equals(env_: napi_env, lhs_: napi_value, rhs_: napi_va
     const result = result_ orelse {
         return env.invalidArg();
     };
-    const lhs, const rhs = .{ lhs_.get(), rhs_.get() };
-    result.* = lhs.isStrictEqual(rhs, env.toJS()) catch return env.setLastError(.pending_exception);
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const lhs = BindingEscape.borrowEngineValue(&scope, lhs_.get());
+    const rhs = BindingEscape.borrowEngineValue(&scope, rhs_.get());
+    result.* = lhs.isStrictEqual(rhs) catch return env.setLastError(.pending_exception);
     return env.ok();
 }
 pub extern fn napi_call_function(env: napi_env, recv: napi_value, func: napi_value, argc: usize, argv: [*c]const napi_value, result: *napi_value) napi_status;
@@ -654,31 +725,31 @@ pub export fn napi_make_callback(env_: napi_env, _: *anyopaque, recv_: napi_valu
         return envIsNull();
     };
     const recv, const func = .{ recv_.get(), func_.get() };
-    if (func.isEmptyOrUndefinedOrNull() or (!func.isCallable() and !func.isAsyncContextFrame())) {
-        return env.setLastError(.function_expected);
-    }
-
-    const res = func.call(
-        env.toJS(),
-        if (recv != .zero)
-            recv
-        else
-            .js_undefined,
-        if (arg_count > 0 and args != null)
-            @as([*]const jsc.JSValue, @ptrCast(args.?))[0..arg_count]
-        else
-            &.{},
-    ) catch |err| // TODO: handle errors correctly
-        env.toJS().takeException(err);
-
-    if (maybe_result) |result| {
-        result.set(env, res);
-    }
-
-    // TODO: this is likely incorrect
-    if (res.isAnyError()) {
+    if (func.isEmptyOrUndefinedOrNull()) return env.setLastError(.function_expected);
+    const global = env.toJS();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    const function = BindingEscape.borrowEngineValue(&scope, func);
+    if (!function.isCallable() and !function.isAsyncContextFrame()) return env.setLastError(.function_expected);
+    if (arg_count > 0 and args == null) return env.invalidArg();
+    const arguments = bun.default_allocator.alloc(bun.bindgen.AnyOperand, arg_count) catch |err| {
+        bun.bindgen.voidFromJSError(err, global);
         return env.setLastError(.pending_exception);
-    }
+    };
+    defer bun.default_allocator.free(arguments);
+    if (args) |values| for (values[0..arg_count], arguments) |value, *argument| {
+        argument.* = BindingEscape.borrowEngineValue(&scope, value.get()).asAny();
+    };
+    const returned = scope.engineIn("js_functions", "jsValueCall").call(.{
+        .function = function,
+        .this_value = BindingEscape.borrowEngineValue(&scope, if (recv == .zero) .js_undefined else recv),
+        .arguments = arguments,
+    }) catch |err| {
+        bun.bindgen.voidFromJSError(err, global);
+        return env.setLastError(.pending_exception);
+    };
+    if (maybe_result) |result| result.setResult(env, returned.asAny(&scope));
 
     return env.ok();
 }
@@ -718,7 +789,7 @@ pub export fn napi_escape_handle(env_: napi_env, scope_: napi_escapable_handle_s
     const scope = scope_ orelse {
         return env.invalidArg();
     };
-    scope.escape(escapee.get()) catch return env.setLastError(.escape_called_twice);
+    scope.escape(env, escapee.get()) catch return env.setLastError(.escape_called_twice);
     result.* = escapee;
     return env.ok();
 }
@@ -745,7 +816,10 @@ pub export fn napi_is_error(env_: napi_env, value_: napi_value, result: *bool) n
     };
     env.checkGC();
     const value = value_.get();
-    result.* = value.isAnyError();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    result.* = value != .zero and BindingEscape.borrowEngineValue(&scope, value).isAnyError();
     return env.ok();
 }
 pub extern fn napi_is_exception_pending(env: napi_env, result: *bool) napi_status;
@@ -759,13 +833,81 @@ pub export fn napi_is_arraybuffer(env_: napi_env, value_: napi_value, result_: ?
     const result = result_ orelse {
         return env.invalidArg();
     };
-    const value = value_.get();
+    const raw = value_.get();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const value = BindingEscape.borrowEngineValue(&scope, raw);
     result.* = !value.isNumber() and value.jsTypeLoose() == .ArrayBuffer;
     return env.ok();
 }
 pub extern fn napi_create_arraybuffer(env: napi_env, byte_length: usize, data: [*]const u8, result: *napi_value) napi_status;
 
 pub extern fn napi_create_external_arraybuffer(env: napi_env, external_data: ?*anyopaque, byte_length: usize, finalize_cb: napi_finalize, finalize_hint: ?*anyopaque, result: *napi_value) napi_status;
+
+const UnsafeArrayBufferView = struct {
+    data: ?[*]u8,
+    element_length: usize,
+    byte_length: usize,
+    byte_offset: usize,
+    typed_array_type: jsc.JSValue.JSType,
+    shared: bool,
+    resizable: bool,
+    token: bun.bindgen.ViewToken,
+
+    fn fromEngineValue(value: anytype, token: bun.bindgen.ViewToken) UnsafeArrayBufferView {
+        return .{
+            .data = if (value.data) |data| @ptrCast(data) else null,
+            .element_length = value.length,
+            .byte_length = value.byte_length,
+            .byte_offset = value.byte_offset,
+            .typed_array_type = @fromBackingInt(@intCast(value.cell_type)),
+            .shared = value.shared,
+            .resizable = value.resizable,
+            .token = token,
+        };
+    }
+
+    fn elementLength(this: UnsafeArrayBufferView) usize {
+        this.token.requireActive();
+        return this.element_length;
+    }
+
+    fn byteLength(this: UnsafeArrayBufferView) usize {
+        this.token.requireActive();
+        return this.byte_length;
+    }
+
+    fn byteOffset(this: UnsafeArrayBufferView) usize {
+        this.token.requireActive();
+        return this.byte_offset;
+    }
+
+    fn typedArrayType(this: UnsafeArrayBufferView) jsc.JSValue.JSType {
+        this.token.requireActive();
+        return this.typed_array_type;
+    }
+
+    fn unsafePtr(this: UnsafeArrayBufferView, comptime reason: []const u8) ?[*]u8 {
+        if (reason.len == 0) @compileError("unsafePtr requires a non-empty lifetime reason");
+        this.token.requireActive();
+        return this.data;
+    }
+
+    fn unsafeBytes(this: UnsafeArrayBufferView, comptime reason: []const u8) []u8 {
+        if (reason.len == 0) @compileError("unsafeBytes requires a non-empty lifetime reason");
+        this.token.requireActive();
+        if (this.byte_length == 0) return &.{};
+        return this.data.?[0..this.byte_length];
+    }
+};
+
+fn arrayBufferViewUnsafe(value: bun.bindgen.EngineOperand, scope: *bun.bindgen.FocusedEngineScope) ?UnsafeArrayBufferView {
+    const view = scope.engine(NapiArrayBufferViewUnsafeSchema).call(.{
+        .value = value,
+    }) orelse return null;
+    return UnsafeArrayBufferView.fromEngineValue(view, scope.viewToken());
+}
 
 pub export fn napi_get_arraybuffer_info(env_: napi_env, arraybuffer_: napi_value, data: ?*?[*]u8, byte_length: ?*usize) napi_status {
     log("napi_get_arraybuffer_info", .{});
@@ -774,15 +916,20 @@ pub export fn napi_get_arraybuffer_info(env_: napi_env, arraybuffer_: napi_value
     };
     env.checkGC();
     const arraybuffer = arraybuffer_.get();
-    const array_buffer = arraybuffer.asArrayBuffer(env.toJS()) orelse return env.setLastError(.invalid_arg);
-    if (array_buffer.typed_array_type != .ArrayBuffer) {
+    const global = env.toJS();
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(global);
+    defer engine_scope.deinit();
+    const array_buffer = arrayBufferViewUnsafe(BindingEscape.borrowEngineValue(&engine_scope, arraybuffer), &engine_scope) orelse return env.setLastError(.invalid_arg);
+    defer arraybuffer.ensureStillAlive();
+    if (array_buffer.typedArrayType() != .ArrayBuffer) {
         return env.setLastError(.invalid_arg);
     }
 
     if (data) |dat|
-        dat.* = array_buffer.ptr;
+        dat.* = array_buffer.unsafePtr("the N-API addon keeps the ArrayBuffer reachable and prevents detachment or resizing until it finishes using the returned pointer");
     if (byte_length) |len|
-        len.* = array_buffer.byte_len;
+        len.* = array_buffer.byteLength();
     return env.ok();
 }
 
@@ -795,7 +942,7 @@ pub export fn napi_get_typedarray_info(
     maybe_length: ?*usize,
     maybe_data: ?*?[*]u8,
     maybe_arraybuffer: ?*napi_value,
-    maybe_byte_offset: ?*usize, // note: this is always 0
+    maybe_byte_offset: ?*usize,
 ) napi_status {
     log("napi_get_typedarray_info", .{});
     const env = env_ orelse {
@@ -807,25 +954,33 @@ pub export fn napi_get_typedarray_info(
         return env.invalidArg();
     defer typedarray.ensureStillAlive();
 
-    const array_buffer = typedarray.asArrayBuffer(env.toJS()) orelse return env.invalidArg();
+    const global = env.toJS();
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(global);
+    defer engine_scope.deinit();
+    const array_buffer = arrayBufferViewUnsafe(BindingEscape.borrowEngineValue(&engine_scope, typedarray), &engine_scope) orelse return env.invalidArg();
+    const typed_array_type = napi_typedarray_type.fromJSType(array_buffer.typedArrayType()) orelse return env.invalidArg();
     if (maybe_type) |@"type"|
-        @"type".* = array_buffer.typed_array_type.toTypedArrayType().toNapi() orelse return env.invalidArg();
+        @"type".* = typed_array_type;
 
     // TODO: handle detached
     if (maybe_data) |data|
-        data.* = array_buffer.ptr;
+        data.* = array_buffer.unsafePtr("the N-API addon keeps the typed array reachable and prevents detachment or resizing until it finishes using the returned pointer");
 
     if (maybe_length) |length|
-        length.* = array_buffer.len;
+        length.* = array_buffer.elementLength();
 
-    if (maybe_arraybuffer) |arraybuffer|
-        arraybuffer.set(env, JSValue.c(jsc.C.JSObjectGetTypedArrayBuffer(env.toJS().ref(), typedarray.asObjectRef(), null)));
+    if (maybe_arraybuffer) |arraybuffer| {
+        const backing = engine_scope.engineIn("array_buffers", "jsArrayBufferViewBuffer").call(.{
+            .value = BindingEscape.borrowEngineValue(&engine_scope, typedarray),
+        }) catch return env.setLastError(.pending_exception);
+        switch (backing) {
+            inline else => |value| arraybuffer.setResult(env, value.asAny(&engine_scope)),
+        }
+    }
 
     if (maybe_byte_offset) |byte_offset|
-        // `jsc.ArrayBuffer` used to have an `offset` field, but it was always 0 because `ptr`
-        // already had the offset applied. See <https://github.com/oven-sh/bun/issues/561>.
-        //byte_offset.* = array_buffer.offset;
-        byte_offset.* = 0;
+        byte_offset.* = array_buffer.byteOffset();
     return env.ok();
 }
 pub extern fn napi_create_dataview(env: napi_env, length: usize, arraybuffer: napi_value, byte_offset: usize, result: *napi_value) napi_status;
@@ -838,7 +993,10 @@ pub export fn napi_is_dataview(env_: napi_env, value_: napi_value, result_: ?*bo
         return env.invalidArg();
     };
     const value = value_.get();
-    result.* = !value.isEmptyOrUndefinedOrNull() and value.jsTypeLoose() == .DataView;
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    result.* = !value.isEmptyOrUndefinedOrNull() and BindingEscape.borrowEngineValue(&scope, value).jsTypeLoose() == .DataView;
     return env.ok();
 }
 pub export fn napi_get_dataview_info(
@@ -847,7 +1005,7 @@ pub export fn napi_get_dataview_info(
     maybe_bytelength: ?*usize,
     maybe_data: ?*?[*]u8,
     maybe_arraybuffer: ?*napi_value,
-    maybe_byte_offset: ?*usize, // note: this is always 0
+    maybe_byte_offset: ?*usize,
 ) napi_status {
     log("napi_get_dataview_info", .{});
     const env = env_ orelse {
@@ -855,21 +1013,32 @@ pub export fn napi_get_dataview_info(
     };
     env.checkGC();
     const dataview = dataview_.get();
-    const array_buffer = dataview.asArrayBuffer(env.toJS()) orelse return env.setLastError(.object_expected);
+    if (dataview.isEmptyOrUndefinedOrNull()) return env.setLastError(.object_expected);
+    defer dataview.ensureStillAlive();
+    const global = env.toJS();
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(global);
+    defer engine_scope.deinit();
+    const operand = BindingEscape.borrowEngineValue(&engine_scope, dataview);
+    if (operand.jsTypeLoose() != .DataView) return env.setLastError(.object_expected);
+    const array_buffer = arrayBufferViewUnsafe(operand, &engine_scope) orelse return env.setLastError(.object_expected);
     if (maybe_bytelength) |bytelength|
-        bytelength.* = array_buffer.byte_len;
+        bytelength.* = array_buffer.byteLength();
 
     if (maybe_data) |data|
-        data.* = array_buffer.ptr;
+        data.* = array_buffer.unsafePtr("the N-API addon keeps the DataView reachable and prevents detachment or resizing until it finishes using the returned pointer");
 
-    if (maybe_arraybuffer) |arraybuffer|
-        arraybuffer.set(env, JSValue.c(jsc.C.JSObjectGetTypedArrayBuffer(env.toJS().ref(), dataview.asObjectRef(), null)));
+    if (maybe_arraybuffer) |arraybuffer| {
+        const backing = engine_scope.engineIn("array_buffers", "jsArrayBufferViewBuffer").call(.{
+            .value = BindingEscape.borrowEngineValue(&engine_scope, dataview),
+        }) catch return env.setLastError(.pending_exception);
+        switch (backing) {
+            inline else => |value| arraybuffer.setResult(env, value.asAny(&engine_scope)),
+        }
+    }
 
     if (maybe_byte_offset) |byte_offset|
-        // `jsc.ArrayBuffer` used to have an `offset` field, but it was always 0 because `ptr`
-        // already had the offset applied. See <https://github.com/oven-sh/bun/issues/561>.
-        //byte_offset.* = array_buffer.offset;
-        byte_offset.* = 0;
+        byte_offset.* = array_buffer.byteOffset();
 
     return env.ok();
 }
@@ -896,9 +1065,26 @@ pub export fn napi_create_promise(env_: napi_env, deferred_: ?*napi_deferred, pr
     const promise = promise_ orelse {
         return env.invalidArg();
     };
-    deferred.* = bun.default_allocator.create(jsc.JSPromise.Strong) catch @panic("failed to allocate napi_deferred");
-    deferred.*.* = jsc.JSPromise.Strong.init(env.toJS());
-    promise.set(env, deferred.*.get().asValue(env.toJS()));
+    const global = env.toJS();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    const created = scope.engineIn("promises", "promiseCreate").call(.{}) catch |err| {
+        bun.bindgen.voidFromJSError(err, global);
+        return env.setLastError(.pending_exception);
+    };
+    var retained = NapiDeferred.init(global, created) catch |err| {
+        bun.bindgen.voidFromJSError(err, global);
+        return env.setLastError(.pending_exception);
+    };
+    const owned = bun.default_allocator.create(NapiDeferred) catch {
+        retained.deinit();
+        bun.bindgen.voidFromJSError(error.OutOfMemory, global);
+        return env.setLastError(.pending_exception);
+    };
+    owned.* = retained;
+    deferred.* = owned;
+    promise.set(env, owned.get());
     return env.ok();
 }
 pub export fn napi_resolve_deferred(env_: napi_env, deferred: napi_deferred, resolution_: napi_value) napi_status {
@@ -909,8 +1095,17 @@ pub export fn napi_resolve_deferred(env_: napi_env, deferred: napi_deferred, res
     defer bun.default_allocator.destroy(deferred);
     defer deferred.deinit();
     const resolution = resolution_.get();
-    var prom = deferred.get();
-    prom.resolve(env.toJS(), resolution) catch return env.setLastError(.pending_exception);
+    const global = env.toJS();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    scope.engineIn("promises", "promiseResolve").call(.{
+        .promise = deferred.promise.operand(&scope),
+        .value = BindingEscape.borrowEngineValue(&scope, resolution),
+    }) catch |err| {
+        bun.bindgen.voidFromJSError(err, global);
+        return env.setLastError(.pending_exception);
+    };
     return env.ok();
 }
 pub export fn napi_reject_deferred(env_: napi_env, deferred: napi_deferred, rejection_: napi_value) napi_status {
@@ -921,8 +1116,17 @@ pub export fn napi_reject_deferred(env_: napi_env, deferred: napi_deferred, reje
     defer bun.default_allocator.destroy(deferred);
     defer deferred.deinit();
     const rejection = rejection_.get();
-    var prom = deferred.get();
-    prom.reject(env.toJS(), rejection) catch return env.setLastError(.pending_exception);
+    const global = env.toJS();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(global);
+    defer scope.deinit();
+    scope.engineIn("promises", "promiseReject").call(.{
+        .promise = deferred.promise.operand(&scope),
+        .value = BindingEscape.borrowEngineValue(&scope, rejection),
+    }) catch |err| {
+        bun.bindgen.voidFromJSError(err, global);
+        return env.setLastError(.pending_exception);
+    };
     return env.ok();
 }
 pub export fn napi_is_promise(env_: napi_env, value_: napi_value, is_promise_: ?*bool) napi_status {
@@ -931,16 +1135,20 @@ pub export fn napi_is_promise(env_: napi_env, value_: napi_value, is_promise_: ?
         return envIsNull();
     };
     env.checkGC();
-    const value = value_.get();
+    const raw = value_.get();
     const is_promise = is_promise_ orelse {
         return env.invalidArg();
     };
 
-    if (value == .zero) {
+    if (raw == .zero) {
         return env.invalidArg();
     }
 
-    is_promise.* = value.asAnyPromise() != null;
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const value = BindingEscape.borrowEngineValue(&scope, raw);
+    is_promise.* = value.jsType() == .JSPromise;
     return env.ok();
 }
 pub extern fn napi_run_script(env: napi_env, script: napi_value, result: *napi_value) napi_status;
@@ -953,8 +1161,14 @@ pub export fn napi_create_date(env_: napi_env, time: f64, result_: ?*napi_value)
     const result = result_ orelse {
         return env.invalidArg();
     };
-    var args = [_]jsc.C.JSValueRef{jsc.JSValue.jsNumber(time).asObjectRef()};
-    result.set(env, JSValue.c(jsc.C.JSObjectMakeDate(env.toJS().ref(), 1, &args, TODO_EXCEPTION)));
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const date = scope.engineIn("date_time", "dateInstanceFromNumber").call(.{ .value = time }) catch |err| {
+        bun.bindgen.voidFromJSError(err, env.toJS());
+        return env.setLastError(.pending_exception);
+    };
+    result.setResult(env, date.asAny(&scope));
     return env.ok();
 }
 pub export fn napi_is_date(env_: napi_env, value_: napi_value, is_date_: ?*bool) napi_status {
@@ -966,7 +1180,11 @@ pub export fn napi_is_date(env_: napi_env, value_: napi_value, is_date_: ?*bool)
     const is_date = is_date_ orelse {
         return env.invalidArg();
     };
-    const value = value_.get();
+    const raw = value_.get();
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const value = BindingEscape.borrowEngineValue(&scope, raw);
     is_date.* = value.jsTypeLoose() == .JSDate;
     return env.ok();
 }
@@ -1084,9 +1302,7 @@ pub const napi_async_work = struct {
             this.data,
         );
 
-        if (env.getAndClearPendingException()) |exception| {
-            _ = vm.uncaughtException(global, exception, false);
-        } else if (global.hasException()) {
+        if (!env.reportAndClearPendingException() and global.hasException()) {
             global.reportActiveExceptionAsUnhandled(error.JSError);
         }
     }
@@ -1167,17 +1383,26 @@ pub export fn napi_create_buffer_copy(env_: napi_env, length: usize, data: [*]u8
     const result = result_ orelse {
         return env.invalidArg();
     };
-    var buffer = jsc.JSValue.createBufferFromLength(env.toJS(), length) catch return env.setLastError(.pending_exception);
-    if (buffer.asArrayBuffer(env.toJS())) |array_buf| {
+    const global = env.toJS();
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(global);
+    defer engine_scope.deinit();
+    const buffer = engine_scope.engineIn("array_buffers", "createBufferFromLength").call(.{ .length = @intCast(length) }) catch return env.setLastError(.pending_exception);
+    if (arrayBufferViewUnsafe(buffer.operand(&engine_scope).asEngine(), &engine_scope)) |array_buf| {
         if (length > 0) {
-            @memcpy(array_buf.slice()[0..length], data[0..length]);
+            const destination = array_buf.unsafeBytes("napi_create_buffer_copy initializes a newly allocated Buffer before publishing it");
+            bun.assert(destination.len == length);
+            @memcpy(destination, data[0..length]);
         }
         if (result_data) |ptr| {
-            ptr.* = if (length > 0) array_buf.ptr else null;
+            ptr.* = if (length > 0)
+                array_buf.unsafePtr("the N-API addon keeps the returned Buffer reachable and prevents detachment or resizing until it finishes using the returned pointer")
+            else
+                null;
         }
     }
 
-    result.set(env, buffer);
+    result.setResult(env, buffer.asAny(&engine_scope));
 
     return env.ok();
 }
@@ -1188,15 +1413,20 @@ pub export fn napi_get_buffer_info(env_: napi_env, value_: napi_value, data: ?*?
         return envIsNull();
     };
     const value = value_.get();
-    const array_buf = value.asArrayBuffer(env.toJS()) orelse {
+    defer value.ensureStillAlive();
+    const global = env.toJS();
+    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
+    engine_scope.init(global);
+    defer engine_scope.deinit();
+    const array_buf = arrayBufferViewUnsafe(BindingEscape.borrowEngineValue(&engine_scope, value), &engine_scope) orelse {
         return env.setLastError(.invalid_arg);
     };
 
     if (data) |dat|
-        dat.* = array_buf.ptr;
+        dat.* = array_buf.unsafePtr("the N-API addon keeps the Buffer reachable and prevents detachment or resizing until it finishes using the returned pointer");
 
     if (length) |len|
-        len.* = array_buf.byte_len;
+        len.* = array_buf.byteLength();
 
     return env.ok();
 }
@@ -1341,13 +1571,12 @@ pub const Finalizer = struct {
         this.fun(env, this.data, this.hint);
         napi_internal_remove_finalizer(env, this.fun, this.hint, this.data);
 
-        if (env.toJS().tryTakeException()) |exception| {
-            _ = env.toJS().bunVM().uncaughtException(env.toJS(), exception, false);
-        }
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(env.toJS());
+        defer scope.deinit();
+        if (scope.tryTakeException()) |exception| _ = scope.reportUncaughtException(exception.operand(&scope).asAny(), false);
 
-        if (env.getAndClearPendingException()) |exception| {
-            _ = env.toJS().bunVM().uncaughtException(env.toJS(), exception, false);
-        }
+        _ = env.reportAndClearPendingException();
     }
 
     pub fn deinit(this: *Finalizer) void {
@@ -1378,9 +1607,9 @@ pub const Finalizer = struct {
 // TODO: generate comptime version of this instead of runtime checking
 pub const ThreadSafeFunction = struct {
     pub const Callback = union(enum) {
-        js: jsc.Strong.Optional,
+        js: bun.bindgen.Root.Optional,
         c: struct {
-            js: jsc.Strong.Optional,
+            js: bun.bindgen.Root.Optional,
             napi_threadsafe_function_call_js: napi_threadsafe_function_call_js,
         },
 
@@ -1574,17 +1803,21 @@ pub const ThreadSafeFunction = struct {
         defer this.tracker.didDispatch(globalObject);
 
         switch (this.callback) {
-            .js => |strong| {
-                const js: JSValue = strong.get() orelse .js_undefined;
+            .js => |*strong| {
+                const js: JSValue = BindingEscape.optionalRootValue(globalObject, strong) orelse .js_undefined;
                 if (js.isEmptyOrUndefinedOrNull()) {
                     return;
                 }
 
-                _ = js.call(globalObject, .js_undefined, &.{}) catch |err|
+                var scope: bun.bindgen.FocusedEngineScope = undefined;
+                scope.init(globalObject);
+                defer scope.deinit();
+                const function = BindingEscape.borrowEngineValue(&scope, js);
+                _ = function.call(bun.bindgen.AnyResult.initUndefined(&scope).operand(&scope), &.{}) catch |err|
                     globalObject.reportActiveExceptionAsUnhandled(err);
             },
-            .c => |cb| {
-                const js: JSValue = cb.js.get() orelse .js_undefined;
+            .c => |*cb| {
+                const js: JSValue = BindingEscape.optionalRootValue(globalObject, &cb.js) orelse .js_undefined;
 
                 const handle_scope = NapiHandleScope.open(env, false);
                 defer if (handle_scope) |scope| scope.close(env);
@@ -1722,11 +1955,36 @@ pub export fn napi_create_threadsafe_function(
     };
     const func = func_.get();
 
-    if (call_js_cb == null and (func.isEmptyOrUndefinedOrNull() or (!func.isCallable() and !func.isAsyncContextFrame()))) {
-        return env.setLastError(.function_expected);
+    var scope: bun.bindgen.FocusedEngineScope = undefined;
+    scope.init(env.toJS());
+    defer scope.deinit();
+    const callback_value = if (func == .zero) null else BindingEscape.borrowEngineValue(&scope, func);
+    if (call_js_cb == null) {
+        const callback = callback_value orelse return env.setLastError(.function_expected);
+        if (!callback.isCallable() and !callback.isAsyncContextFrame()) return env.setLastError(.function_expected);
     }
 
     const vm = env.toJS().bunVM();
+    var retained_callback: bun.bindgen.Root.Optional = .empty;
+    if (callback_value) |callback| {
+        const captured = scope.engineIn("AsyncHooks", "asyncContextFrameWithAsyncContextIfNeeded").call(.{
+            .value = callback,
+        }) catch |err| {
+            bun.bindgen.voidFromJSError(err, env.toJS());
+            return env.setLastError(.pending_exception);
+        };
+        if (!scope.engineIn("js_value_inspection", "jsValueIsCallable").call(.{ .value = captured.operand(&scope) }) and
+            !scope.engineIn("AsyncHooks", "jsValueIsAsyncContextFrame").call(.{ .value = captured.operand(&scope) }))
+        {
+            @panic("binding callback root requires a callable value");
+        }
+        const opaque_callback = captured.asAny(&scope);
+        var root = opaque_callback.toRoot() catch |err| {
+            bun.bindgen.voidFromJSError(err, env.toJS());
+            return env.setLastError(.pending_exception);
+        };
+        retained_callback = root.takeOptional();
+    }
     var function = ThreadSafeFunction.new(.{
         .io = vm.io,
         .event_loop = vm.eventLoop(),
@@ -1734,10 +1992,10 @@ pub export fn napi_create_threadsafe_function(
         .callback = if (call_js_cb) |c| .{
             .c = .{
                 .napi_threadsafe_function_call_js = c,
-                .js = if (func == .zero) .empty else jsc.Strong.Optional.create(func.withAsyncContextIfNeeded(env.toJS()), vm.global),
+                .js = retained_callback,
             },
         } else .{
-            .js = if (func == .zero) .empty else jsc.Strong.Optional.create(func.withAsyncContextIfNeeded(env.toJS()), vm.global),
+            .js = retained_callback,
         },
         .ctx = context,
         .queue = ThreadSafeFunction.Queue.init(max_queue_size, bun.default_allocator),
@@ -2429,8 +2687,6 @@ const uv_functions_to_export = if (bun.Environment.isPosix) struct {
 } else struct {};
 
 pub fn fixDeadCodeElimination() void {
-    jsc.markBinding(@src());
-
     inline for (napi_functions_to_export) |fn_name| {
         std.mem.doNotOptimizeAway(&fn_name);
     }
@@ -2504,3 +2760,12 @@ const Async = bun.Async;
 
 const jsc = bun.jsc;
 const JSValue = jsc.JSValue;
+const NapiEnvGlobalObjectSchema = NapiBindings.engineShim("napiEnvGlobalObject");
+const NapiEnvGetAndClearPendingExceptionSchema = NapiBindings.engineShim("napiEnvGetAndClearPendingException");
+const NapiEnvHandle = bun.bindgen.EngineArgumentType(NapiEnvGetAndClearPendingExceptionSchema, "env");
+const NapiHandleScopeAppendSchema = NapiBindings.engineShim("napiHandleScopeAppend");
+const NapiHandleScopeEscapeSchema = NapiBindings.engineShim("napiHandleScopeEscape");
+const NapiHandleScopeHandle = bun.bindgen.EngineArgumentType(NapiHandleScopeEscapeSchema, "scope");
+const NapiBindings = bun.bindgen.Module("NAPI");
+const NapiCreateArraySchema = NapiBindings.engineShim("createArray");
+const NapiArrayBufferViewUnsafeSchema = NapiBindings.engineShim("arrayBufferViewUnsafe");

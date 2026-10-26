@@ -36,7 +36,3 @@ export function highWaterMark(this: any) {
 export function size(chunk) {
   return chunk.byteLength;
 }
-
-export function initializeByteLengthQueuingStrategy(this: any, parameters: any) {
-  $putByIdDirectPrivate(this, "highWaterMark", $extractHighWaterMarkFromQueuingStrategyInit(parameters));
-}

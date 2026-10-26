@@ -26,36 +26,35 @@
 #pragma once
 
 #include "TextCodec.h"
+#include <array>
+#include <initializer_list>
 #include <optional>
-#include <wtf/TZoneMalloc.h>
 
 namespace PAL {
 
 class TextCodecCJK final : public TextCodec {
-    WTF_MAKE_TZONE_ALLOCATED(TextCodecCJK);
-
 public:
-    static void registerEncodingNames(EncodingNameRegistrar);
-    static void registerCodecs(TextCodecRegistrar);
-
-    enum class Encoding : uint8_t;
+    enum class Encoding : uint8_t { EUC_JP, ISO2022JP, Shift_JIS, EUC_KR, Big5, GBK, GB18030 };
     explicit TextCodecCJK(Encoding);
 
 private:
+    void reset() final;
     String decode(std::span<const uint8_t>, bool flush, bool stopOnError, bool& sawError) final;
-    Vector<uint8_t> encode(StringView, UnencodableHandling) const final;
 
     enum class SawError : bool { No,
         Yes };
-    String decodeCommon(std::span<const uint8_t>, bool, bool, bool&, NOESCAPE const Function<SawError(uint8_t, StringBuilder&)>&);
+    template<typename ByteParser>
+    String decodeCommon(std::span<const uint8_t>&, bool, bool, bool&, const ByteParser&);
 
-    String eucJPDecode(std::span<const uint8_t>, bool, bool, bool&);
-    String iso2022JPDecode(std::span<const uint8_t>, bool, bool, bool&);
-    String shiftJISDecode(std::span<const uint8_t>, bool, bool, bool&);
-    String eucKRDecode(std::span<const uint8_t>, bool, bool, bool&);
-    String big5Decode(std::span<const uint8_t>, bool, bool, bool&);
-    String gbkDecode(std::span<const uint8_t>, bool, bool, bool&);
-    String gb18030Decode(std::span<const uint8_t>, bool, bool, bool&);
+    String eucJPDecode(std::span<const uint8_t>&, bool, bool, bool&);
+    String iso2022JPDecode(std::span<const uint8_t>&, bool, bool, bool&);
+    String shiftJISDecode(std::span<const uint8_t>&, bool, bool, bool&);
+    String eucKRDecode(std::span<const uint8_t>&, bool, bool, bool&);
+    String big5Decode(std::span<const uint8_t>&, bool, bool, bool&);
+    String gbkDecode(std::span<const uint8_t>&, bool, bool, bool&);
+    String gb18030Decode(std::span<const uint8_t>&, bool, bool, bool&);
+    void prepend(std::initializer_list<uint8_t>);
+    uint8_t takeByte(std::span<const uint8_t>&);
 
     const Encoding m_encoding;
 
@@ -71,14 +70,15 @@ private:
     ISO2022JPDecoderState m_iso2022JPDecoderState { ISO2022JPDecoderState::ASCII };
     ISO2022JPDecoderState m_iso2022JPDecoderOutputState { ISO2022JPDecoderState::ASCII };
     bool m_iso2022JPOutput { false };
-    std::optional<uint8_t> m_iso2022JPSecondPrependedByte;
 
     uint8_t m_gb18030First { 0x00 };
     uint8_t m_gb18030Second { 0x00 };
     uint8_t m_gb18030Third { 0x00 };
 
     uint8_t m_lead { 0x00 };
-    std::optional<uint8_t> m_prependedByte;
+    // GB18030 restores at most three bytes; the other codecs restore at most two.
+    std::array<uint8_t, 3> m_prependedBytes {};
+    uint8_t m_prependedByteCount { 0 };
 };
 
 } // namespace PAL

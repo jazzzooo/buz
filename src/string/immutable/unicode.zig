@@ -136,35 +136,6 @@ pub fn codepointSize(comptime R: type, r: R) u3_fast {
     };
 }
 
-pub fn convertUTF16ToUTF8(list_: std.array_list.Managed(u8), utf16: []const u16) OOM!std.array_list.Managed(u8) {
-    var list = list_;
-    const result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(
-        utf16,
-        list.allocatedSlice(),
-    );
-    if (result.status == .surrogate) {
-        // Slow path: there was invalid UTF-16, so we need to convert it without simdutf.
-        return toUTF8ListWithTypeBun(&list, utf16, false);
-    }
-
-    list.items.len = result.count;
-    return list;
-}
-
-pub fn convertUTF16ToUTF8WithoutInvalidSurrogatePairs(list_: std.array_list.Managed(u8), utf16: []const u16) error{SurrogatePair}!std.array_list.Managed(u8) {
-    var list = list_;
-    const result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(
-        utf16,
-        list.allocatedSlice(),
-    );
-    if (result.status == .surrogate) {
-        return error.SurrogatePair;
-    }
-
-    list.items.len = result.count;
-    return list;
-}
-
 pub fn convertUTF16ToUTF8Append(list: *std.array_list.Managed(u8), utf16: []const u16) OOM!void {
     const result = bun.simdutf.convert.utf16.to.utf8.with_errors.le(
         utf16,
@@ -173,82 +144,41 @@ pub fn convertUTF16ToUTF8Append(list: *std.array_list.Managed(u8), utf16: []cons
 
     if (result.status == .surrogate) {
         // Slow path: there was invalid UTF-16, so we need to convert it without simdutf.
-        _ = try toUTF8ListWithTypeBun(list, utf16, false);
+        try toUTF8ListWithTypeBun(list, utf16, false);
         return;
     }
 
     list.items.len += result.count;
 }
 
-pub fn toUTF8AllocWithTypeWithoutInvalidSurrogatePairs(allocator: std.mem.Allocator, utf16: []const u16) OOM![]u8 {
-    // previously, this function was an exact copy of `toUTF8AllocWithType`.
-    // TODO: actually make this function behave differently?
-    return toUTF8AllocWithType(allocator, utf16);
-}
-
-pub fn toUTF8AllocWithType(allocator: std.mem.Allocator, utf16: []const u16) OOM![]u8 {
-    if (bun.FeatureFlags.use_simdutf) {
-        const length = bun.simdutf.length.utf8.from.utf16.le(utf16);
-        // add 16 bytes of padding for SIMDUTF
-        var list = try std.array_list.Managed(u8).initCapacity(allocator, length + 16);
-        list = try convertUTF16ToUTF8(list, utf16);
-        return list.toOwnedSlice();
-    }
-
-    var list = try std.array_list.Managed(u8).initCapacity(allocator, utf16.len);
-    list = try toUTF8ListWithType(list, utf16);
-    return list.toOwnedSlice();
-}
-
-pub fn toUTF8ListWithType(list_: std.array_list.Managed(u8), utf16: []const u16) OOM!std.array_list.Managed(u8) {
-    if (bun.FeatureFlags.use_simdutf) {
-        var list = list_;
-        const length = bun.simdutf.length.utf8.from.utf16.le(utf16);
-        try list.ensureTotalCapacityPrecise(length + 16);
-        const buf = try convertUTF16ToUTF8(list, utf16);
-
-        // Commenting out because `convertUTF16ToUTF8` may convert to WTF-8
-        // which uses 3 bytes for invalid surrogates, causing the length to not
-        // match from simdutf.
-        // if (Environment.allow_assert) {
-        //     bun.unsafeAssert(buf.items.len == length);
-        // }
-
-        return buf;
-    }
-
-    var list = list_;
-    return try toUTF8ListWithTypeBun(&list, utf16, false);
-}
-
 pub fn toUTF8AppendToList(list: *std.array_list.Managed(u8), utf16: []const u16) !void {
     if (!bun.FeatureFlags.use_simdutf) {
-        _ = try toUTF8ListWithTypeBun(list, utf16, false);
+        try toUTF8ListWithTypeBun(list, utf16, false);
         return;
     }
     const length = bun.simdutf.length.utf8.from.utf16.le(utf16);
-    try list.ensureUnusedCapacity(length + 16);
+    try list.ensureUnusedCapacity(std.math.add(usize, length, 16) catch return error.OutOfMemory);
     try convertUTF16ToUTF8Append(list, utf16);
 }
 
-pub fn toUTF8FromLatin1(allocator: std.mem.Allocator, latin1: []const u8) !?std.array_list.Managed(u8) {
+pub fn toUTF8FromLatin1(allocator: std.mem.Allocator, latin1: []const u8) OOM!?[]u8 {
     if (isAllASCII(latin1))
         return null;
 
-    const list = try std.array_list.Managed(u8).initCapacity(allocator, latin1.len);
-    return try allocateLatin1IntoUTF8WithList(list, 0, latin1);
+    return try allocateLatin1IntoUTF8(allocator, latin1);
 }
 
 pub fn toUTF8FromLatin1Z(allocator: std.mem.Allocator, latin1: []const u8) !?[:0]u8 {
     if (isAllASCII(latin1))
         return null;
 
-    const list = try std.array_list.Managed(u8).initCapacity(allocator, latin1.len + 1);
-    var list1 = try allocateLatin1IntoUTF8WithList(list, 0, latin1);
-    return try list1.toOwnedSliceSentinel(0);
+    var list = std.array_list.Managed(u8).init(allocator);
+    errdefer list.deinit();
+    try allocateLatin1IntoUTF8WithList(&list, latin1);
+    return try list.toOwnedSliceSentinel(0);
 }
 
-pub fn toUTF8ListWithTypeBun(list: *std.array_list.Managed(u8), utf16: []const u16, comptime skip_trailing_replacement: bool) OOM!(if (skip_trailing_replacement) ?u16 else std.array_list.Managed(u8)) {
+pub fn toUTF8ListWithTypeBun(list: *std.array_list.Managed(u8), utf16: []const u16, comptime skip_trailing_replacement: bool) OOM!(if (skip_trailing_replacement) ?u16 else void) {
     var utf16_remaining = utf16;
 
     while (firstNonASCII16(utf16_remaining)) |i| {
@@ -260,11 +190,7 @@ pub fn toUTF8ListWithTypeBun(list: *std.array_list.Managed(u8), utf16: []const u
         utf16_remaining = utf16_remaining[replacement.len..];
 
         const count: usize = replacement.utf8Width();
-        if (comptime Environment.isNative) {
-            try list.ensureTotalCapacityPrecise(i + count + list.items.len + @as(usize, @intFromFloat((@as(f64, @floatFromInt(@as(u52, @truncate(utf16_remaining.len)))) * 1.2))));
-        } else {
-            try list.ensureTotalCapacityPrecise(i + count + list.items.len + utf16_remaining.len + 4);
-        }
+        try list.ensureUnusedCapacity(std.math.add(usize, i, 4) catch return error.OutOfMemory);
         list.items.len += i;
 
         copyU16IntoU8(list.items[list.items.len - i ..], to_copy);
@@ -284,7 +210,7 @@ pub fn toUTF8ListWithTypeBun(list: *std.array_list.Managed(u8), utf16: []const u
     }
 
     if (utf16_remaining.len > 0) {
-        try list.ensureTotalCapacityPrecise(utf16_remaining.len + list.items.len);
+        try list.ensureUnusedCapacity(utf16_remaining.len);
         const old_len = list.items.len;
         list.items.len += utf16_remaining.len;
         copyU16IntoU8(list.items[old_len..], utf16_remaining);
@@ -295,7 +221,6 @@ pub fn toUTF8ListWithTypeBun(list: *std.array_list.Managed(u8), utf16: []const u
     if (comptime skip_trailing_replacement) {
         return null;
     }
-    return list.*;
 }
 
 pub const EncodeIntoResult = struct {
@@ -305,15 +230,15 @@ pub const EncodeIntoResult = struct {
     written: u32 = 0,
 };
 pub fn allocateLatin1IntoUTF8(allocator: std.mem.Allocator, latin1_: []const u8) ![]u8 {
-    const list = try std.array_list.Managed(u8).initCapacity(allocator, latin1_.len);
-    var foo = try allocateLatin1IntoUTF8WithList(list, 0, latin1_);
-    return try foo.toOwnedSlice();
+    var list = std.array_list.Managed(u8).init(allocator);
+    errdefer list.deinit();
+    try allocateLatin1IntoUTF8WithList(&list, latin1_);
+    return list.toOwnedSlice();
 }
 
-pub fn allocateLatin1IntoUTF8WithList(list_: std.array_list.Managed(u8), offset_into_list: usize, latin1_: []const u8) OOM!std.array_list.Managed(u8) {
+pub fn allocateLatin1IntoUTF8WithList(list: *std.array_list.Managed(u8), latin1_: []const u8) OOM!void {
     var latin1 = latin1_;
-    var i: usize = offset_into_list;
-    var list = list_;
+    var i: usize = list.items.len;
     try list.ensureUnusedCapacity(latin1.len);
 
     while (latin1.len > 0) {
@@ -412,7 +337,7 @@ pub fn allocateLatin1IntoUTF8WithList(list_: std.array_list.Managed(u8), offset_
         while (latin1.len > 0 and latin1[0] > 127) {
             i = @intFromPtr(buf.ptr) - @intFromPtr(list.items.ptr);
             list.items.len = i;
-            try list.ensureUnusedCapacity(2 + latin1.len);
+            try list.ensureUnusedCapacity(std.math.add(usize, latin1.len, 2) catch return error.OutOfMemory);
             buf = list.items.ptr[i..list.capacity];
             buf[0..2].* = latin1ToCodepointBytesAssumeNotASCII(latin1[0]);
             latin1 = latin1[1..];
@@ -424,8 +349,6 @@ pub fn allocateLatin1IntoUTF8WithList(list_: std.array_list.Managed(u8), offset_
     }
 
     log("Latin1 {d} -> UTF8 {d}", .{ latin1_.len, i });
-
-    return list;
 }
 
 pub const UTF16Replacement = struct {
@@ -739,11 +662,15 @@ pub fn eqlUtf16(comptime self: string, other: []const u16) bool {
 }
 
 pub fn toUTF8Alloc(allocator: std.mem.Allocator, js: []const u16) OOM![]u8 {
-    return try toUTF8AllocWithType(allocator, js);
+    var list = std.array_list.Managed(u8).init(allocator);
+    errdefer list.deinit();
+    try toUTF8AppendToList(&list, js);
+    return list.toOwnedSlice();
 }
 
 pub fn toUTF8AllocZ(allocator: std.mem.Allocator, js: []const u16) OOM![:0]u8 {
     var list = std.array_list.Managed(u8).init(allocator);
+    errdefer list.deinit();
     try toUTF8AppendToList(&list, js);
     return list.toOwnedSliceSentinel(0);
 }
@@ -1059,13 +986,11 @@ pub fn toUTF16Alloc(allocator: std.mem.Allocator, bytes: []const u8, comptime fa
             return try output.toOwnedSliceSentinel(0);
         }
 
-        return output.items;
+        return try output.toOwnedSlice();
     }
 
     return null;
 }
-
-pub const TestingAPIs = @import("../../jsc/bun_string_jsc.zig").UnicodeTestingAPIs;
 
 // this one does the thing it's named after
 pub fn toUTF16AllocForReal(allocator: std.mem.Allocator, bytes: []const u8, comptime fail_if_invalid: bool, comptime sentinel: bool) !if (sentinel) [:0]u16 else []u16 {
@@ -1082,13 +1007,23 @@ pub fn toUTF16AllocForReal(allocator: std.mem.Allocator, bytes: []const u8, comp
     };
 }
 
+pub const BufferedUTF16Result = union(enum) {
+    ascii,
+    decoded: struct {
+        output: std.ArrayListUnmanaged(u16),
+        buffered: [3]u8 = @splat(0),
+        buffered_len: u2 = 0,
+    },
+    invalid: []const u8,
+};
+
 pub fn toUTF16AllocMaybeBuffered(
     allocator: std.mem.Allocator,
     bytes: []const u8,
     comptime fail_if_invalid: bool,
     comptime flush: bool,
-) error{ OutOfMemory, InvalidByteSequence }!?struct { []u16, [3]u8, u2 } {
-    const first_non_ascii = strings.firstNonASCII(bytes) orelse return null;
+) error{OutOfMemory}!BufferedUTF16Result {
+    const first_non_ascii = strings.firstNonASCII(bytes) orelse return .ascii;
 
     var output: std.ArrayListUnmanaged(u16) = if (comptime bun.FeatureFlags.use_simdutf) output: {
         const out_length = bun.simdutf.length.utf16.from.utf8(bytes);
@@ -1102,7 +1037,7 @@ pub fn toUTF16AllocMaybeBuffered(
         const res = bun.simdutf.convert.utf8.to.utf16.with_errors.le(bytes, out);
         if (res.status == .success) {
             log("toUTF16 {d} UTF8 -> {d} UTF16", .{ bytes.len, out_length });
-            return .{ out, @splat(0), 0 };
+            return .{ .decoded = .{ .output = .fromOwnedSlice(out) } };
         }
 
         var list = std.ArrayListUnmanaged(u16).fromOwnedSlice(out[0..first_non_ascii]);
@@ -1112,14 +1047,18 @@ pub fn toUTF16AllocMaybeBuffered(
     } else .{};
     errdefer output.deinit(allocator);
 
-    const start = if (output.items.len > 0) first_non_ascii else 0;
-    var remaining = bytes[start..];
+    if (output.items.len == 0 and first_non_ascii > 0) {
+        try output.ensureUnusedCapacity(allocator, first_non_ascii);
+        output.items.len = first_non_ascii;
+        strings.copyU8IntoU16(output.items, bytes[0..first_non_ascii]);
+    }
+    var remaining = bytes[first_non_ascii..];
 
     var non_ascii: ?u32 = 0;
     while (non_ascii) |i| : (non_ascii = strings.firstNonASCII(remaining)) {
         {
             const end = output.items.len;
-            try output.ensureUnusedCapacity(allocator, i + 2); // +2 for UTF16 codepoint
+            try output.ensureUnusedCapacity(allocator, @as(usize, i) + 2);
             output.items.len += i;
             strings.copyU8IntoU16(output.items[end..][0..i], remaining[0..i]);
             remaining = remaining[i..];
@@ -1145,7 +1084,11 @@ pub fn toUTF16AllocMaybeBuffered(
                     2 => .{ remaining[0], remaining[1], 0 },
                     3 => .{ remaining[0], remaining[1], remaining[2] },
                 };
-                return .{ output.items, buffered, @intCast(remaining.len) };
+                return .{ .decoded = .{
+                    .output = output,
+                    .buffered = buffered,
+                    .buffered_len = @intCast(remaining.len),
+                } };
             }
         }
 
@@ -1154,7 +1097,8 @@ pub fn toUTF16AllocMaybeBuffered(
                 if (comptime Environment.allow_assert) {
                     bun.assert(converted.code_point == unicode_replacement);
                 }
-                return error.InvalidByteSequence;
+                output.deinit(allocator);
+                return .{ .invalid = remaining[@max(converted.len, 1)..] };
             }
         }
 
@@ -1168,13 +1112,14 @@ pub fn toUTF16AllocMaybeBuffered(
     }
 
     if (remaining.len > 0) {
-        try output.ensureTotalCapacityPrecise(allocator, output.items.len + remaining.len);
-        output.items.len += remaining.len;
+        const length = std.math.add(usize, output.items.len, remaining.len) catch return error.OutOfMemory;
+        try output.ensureTotalCapacityPrecise(allocator, length);
+        output.items.len = length;
         strings.copyU8IntoU16(output.items[output.items.len - remaining.len ..], remaining);
     }
 
     log("toUTF16 {d} UTF8 -> {d} UTF16", .{ bytes.len, output.items.len });
-    return .{ output.items, @splat(0), 0 };
+    return .{ .decoded = .{ .output = output } };
 }
 
 pub fn utf16CodepointWithFFFD(input: []const u16) UTF16Replacement {
@@ -1653,6 +1598,22 @@ pub fn elementLengthUTF16IntoUTF8(utf16: []const u16) usize {
     }
 
     return count + utf16_remaining.len;
+}
+
+pub fn elementLengthUTF16IntoUTF8WithReplacement(utf16: []const u16) usize {
+    if (bun.FeatureFlags.use_simdutf and bun.simdutf.validate.utf16le(utf16))
+        return bun.simdutf.length.utf8.from.utf16.le(utf16);
+
+    var remaining = utf16;
+    var count: usize = 0;
+    while (firstNonASCII16(remaining)) |index| {
+        count += index;
+        remaining = remaining[index..];
+        const replacement = utf16CodepointWithFFFD(remaining);
+        count += replacement.utf8Width();
+        remaining = remaining[replacement.len..];
+    }
+    return count + remaining.len;
 }
 
 pub fn elementLengthUTF8IntoUTF16(utf8: []const u8) usize {

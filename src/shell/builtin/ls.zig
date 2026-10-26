@@ -118,7 +118,7 @@ pub fn deinit(this: *Ls) void {
     this.alloc_scope.endScope();
 }
 
-pub fn onIOWriterChunk(this: *Ls, _: usize, e: ?jsc.SystemError) Yield {
+pub fn onIOWriterChunk(this: *Ls, _: usize, e: ?bun.sys.SystemError) Yield {
     if (e) |err| err.deref();
     if (this.state == .waiting_write_err) {
         return this.bltn().done(1);
@@ -164,13 +164,7 @@ pub fn onShellLsTaskDone(this: *Ls, task: *ShellLsTask) void {
     output_task.start(null).run();
 }
 
-pub const ShellLsOutputTask = OutputTask(Ls, .{
-    .writeErr = ShellLsOutputTaskVTable.writeErr,
-    .onWriteErr = ShellLsOutputTaskVTable.onWriteErr,
-    .writeOut = ShellLsOutputTaskVTable.writeOut,
-    .onWriteOut = ShellLsOutputTaskVTable.onWriteOut,
-    .onDone = ShellLsOutputTaskVTable.onDone,
-});
+pub const ShellLsOutputTask = OutputTask(Ls, ShellLsOutputTaskVTable);
 
 const ShellLsOutputTaskVTable = struct {
     pub fn writeErr(this: *Ls, childptr: anytype, errbuf: []const u8) ?Yield {
@@ -227,12 +221,12 @@ pub const ShellLsTask = struct {
     /// Cached once per task to avoid repeated syscalls.
     now_secs: u64 = 0,
 
-    event_loop: jsc.EventLoopHandle,
-    concurrent_task: jsc.EventLoopTask,
-    task: jsc.BackgroundTask = .{ .callback = workPoolCallback },
+    scheduler: Interpreter.Scheduler,
+    main_task: Interpreter.Scheduler.Task = .{},
+    task: bun.BackgroundTaskGroup.Task = .{ .callback = workPoolCallback },
 
     pub fn schedule(this: *@This()) void {
-        jsc.BackgroundWork.schedule(this.event_loop.backgroundTasks(), &this.task) catch {
+        bun.BackgroundWork.schedule(this.scheduler.backgroundTasks(), &this.task) catch {
             this.err = Syscall.Error.fromCode(.AGAIN, .scandir);
             this.doneLogic();
         };
@@ -245,7 +239,7 @@ pub const ShellLsTask = struct {
         cwd: bun.FD,
         path: [:0]const u8,
         owned_string: bool,
-        event_loop: jsc.EventLoopHandle,
+        scheduler: Interpreter.Scheduler,
     ) *@This() {
         // We're going to free `task.path` so ensure it is allocated in this
         // scope and NOT a string literal or other string we don't own.
@@ -256,8 +250,7 @@ pub const ShellLsTask = struct {
             .ls = ls,
             .opts = opts,
             .cwd = cwd,
-            .concurrent_task = jsc.EventLoopTask.fromEventLoop(event_loop),
-            .event_loop = event_loop,
+            .scheduler = scheduler,
             .task_count = task_count,
             .path = path,
             .output = std.array_list.Managed(u8).init(ls.alloc_scope.allocator()),
@@ -277,7 +270,7 @@ pub const ShellLsTask = struct {
             },
         ));
 
-        var subtask = @This().create(this.ls, this.opts, this.task_count, this.cwd, new_path, true, this.event_loop);
+        var subtask = @This().create(this.ls, this.opts, this.task_count, this.cwd, new_path, true, this.scheduler);
         _ = this.task_count.fetchAdd(1, .monotonic);
         subtask.print_directory = true;
         subtask.schedule();
@@ -538,7 +531,7 @@ pub const ShellLsTask = struct {
         return err.withPath(bun.handleOom(this.ls.alloc_scope.allocator().dupeSentinel(u8, path[0..path.len], 0)));
     }
 
-    pub fn workPoolCallback(task: *jsc.BackgroundTask) void {
+    pub fn workPoolCallback(task: *bun.BackgroundTaskGroup.Task) void {
         var this: *@This() = @fieldParentPtr("task", task);
         this.run();
         this.doneLogic();
@@ -546,11 +539,7 @@ pub const ShellLsTask = struct {
 
     fn doneLogic(this: *@This()) void {
         debug("Done", .{});
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
-        } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
-        }
+        this.scheduler.enqueue(&this.main_task, this);
     }
 
     pub fn takeOutput(this: *@This()) std.array_list.Managed(u8) {
@@ -1013,7 +1002,6 @@ const Result = Interpreter.Builtin.Result;
 const bun = @import("bun");
 const DirIterator = bun.DirIterator;
 const Syscall = bun.sys;
-const jsc = bun.jsc;
 
 const shell = bun.shell;
 const ExitCode = shell.ExitCode;

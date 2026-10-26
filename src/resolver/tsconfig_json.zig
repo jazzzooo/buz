@@ -10,8 +10,6 @@ fn FlagSet(comptime Type: type) type {
 const JSXFieldSet = FlagSet(options.JSX.Pragma);
 
 pub const TSConfigJSON = struct {
-    pub const new = bun.TrivialNew(@This());
-
     abs_path: string,
 
     // The absolute path of "compilerOptions.baseUrl"
@@ -147,7 +145,7 @@ pub const TSConfigJSON = struct {
         log: *logger.Log,
         source: *const logger.Source,
         json_cache: *cache.Json,
-    ) anyerror!?*TSConfigJSON {
+    ) bun.OOM!?*TSConfigJSON {
         // Unfortunately "tsconfig.json" isn't actually JSON. It's some other
         // format that appears to be defined by the implementation details of the
         // TypeScript compiler.
@@ -156,12 +154,15 @@ pub const TSConfigJSON = struct {
         // these particular files. This is likely not a completely accurate
         // emulation of what the TypeScript compiler does (e.g. string escape
         // behavior may also be different).
-        const json: js_ast.Expr = (json_cache.parseTSConfig(log, source, allocator) catch null) orelse return null;
+        const json: js_ast.Expr = (try json_cache.parseTSConfig(log, source, allocator)) orelse return null;
 
         bun.analytics.Features.tsconfig += 1;
 
         var result: TSConfigJSON = .{ .abs_path = source.path.text, .paths = .empty, .allocator = allocator };
-        errdefer result.paths.deinit(allocator);
+        errdefer {
+            for (result.paths.values()) |values| allocator.free(values);
+            result.paths.deinit(allocator);
+        }
         if (json.asProperty("extends")) |extends_value| {
             if (!source.path.isNodeModule()) {
                 if (extends_value.expr.asString(allocator) orelse null) |str| {
@@ -177,7 +178,7 @@ pub const TSConfigJSON = struct {
             // Parse "baseUrl"
             if (compiler_opts.expr.asProperty("baseUrl")) |base_url_prop| {
                 if ((base_url_prop.expr.asString(allocator))) |base_url| {
-                    result.base_url = parsePathString(allocator, base_url, source) catch return null;
+                    result.base_url = try parsePathString(allocator, base_url, source);
                     has_base_url = true;
                 }
             }
@@ -215,7 +216,7 @@ pub const TSConfigJSON = struct {
             // https://www.typescriptlang.org/docs/handbook/jsx.html#basic-usages
             if (compiler_opts.expr.asProperty("jsx")) |jsx_prop| {
                 if (jsx_prop.expr.asString(allocator)) |str| {
-                    const str_lower = allocator.alloc(u8, str.len) catch unreachable;
+                    const str_lower = try allocator.alloc(u8, str.len);
                     defer allocator.free(str_lower);
                     _ = strings.copyLowercase(str, str_lower);
                     // - We don't support "preserve" yet
@@ -240,7 +241,7 @@ pub const TSConfigJSON = struct {
                     }
 
                     result.jsx.package_name = str;
-                    result.jsx.setImportSource(allocator);
+                    try result.jsx.setImportSource(allocator);
                     result.jsx_flags.insert(.import_source);
                 }
             }
@@ -262,7 +263,7 @@ pub const TSConfigJSON = struct {
                         },
                         .remove => {},
                         else => {
-                            log.addRangeWarningFmt(source, source.rangeOfString(jsx_prop.loc), allocator, "Invalid value \"{s}\" for \"importsNotUsedAsValues\"", .{str}) catch {};
+                            try log.addRangeWarningFmt(source, source.rangeOfString(jsx_prop.loc), allocator, "Invalid value \"{s}\" for \"importsNotUsedAsValues\"", .{str});
                         },
                     }
                 }
@@ -276,7 +277,7 @@ pub const TSConfigJSON = struct {
                             if (str.len > 0) {
                                 // Only warn when there is actually content
                                 // Sometimes, people do "moduleSuffixes": [""]
-                                log.addWarning(source, prefixes.loc, "moduleSuffixes is not supported yet") catch {};
+                                try log.addWarning(source, prefixes.loc, "moduleSuffixes is not supported yet");
                                 break :handle_module_prefixes;
                             }
                         }
@@ -298,7 +299,7 @@ pub const TSConfigJSON = struct {
                             const key_prop = property.key orelse continue;
                             const key = (key_prop.asString(allocator)) orelse continue;
 
-                            if (!TSConfigJSON.isValidTSConfigPathPattern(key, log, source, key_prop.loc, allocator)) {
+                            if (!try TSConfigJSON.isValidTSConfigPathPattern(key, log, source, key_prop.loc, allocator)) {
                                 continue;
                             }
 
@@ -330,14 +331,12 @@ pub const TSConfigJSON = struct {
                                     const array = value_prop.data.e_array.slice();
 
                                     if (array.len > 0) {
-                                        var values = allocator.alloc(string, array.len) catch unreachable;
-                                        errdefer allocator.free(values);
-                                        var count: usize = 0;
+                                        var values = try std.ArrayListUnmanaged(string).initCapacity(allocator, array.len);
+                                        defer values.deinit(allocator);
                                         for (array) |expr| {
                                             if ((expr.asString(allocator))) |str_| {
-                                                const str = parsePathString(allocator, str_, source) catch return null;
-                                                errdefer allocator.free(str);
-                                                if (TSConfigJSON.isValidTSConfigPathPattern(
+                                                const str = try parsePathString(allocator, str_, source);
+                                                if (try TSConfigJSON.isValidTSConfigPathPattern(
                                                     str,
                                                     log,
                                                     source,
@@ -345,7 +344,7 @@ pub const TSConfigJSON = struct {
                                                     allocator,
                                                 ) and
                                                     (has_base_url or
-                                                        TSConfigJSON.isValidTSConfigPathNoBaseURLPattern(
+                                                        try TSConfigJSON.isValidTSConfigPathNoBaseURLPattern(
                                                             str,
                                                             log,
                                                             source,
@@ -353,40 +352,27 @@ pub const TSConfigJSON = struct {
                                                             expr.loc,
                                                         )))
                                                 {
-                                                    values[count] = str;
-                                                    count += 1;
+                                                    values.appendAssumeCapacity(str);
                                                 }
                                             }
                                         }
-                                        if (count > 0) {
-                                            // Invalid patterns are filtered out above, so count <= array.len.
-                                            // Shrink the allocation so the slice stored in the map is exactly
-                                            // what was allocated — callers that later free these values (the
-                                            // extends-merge in resolver.zig) pass the stored slice to
-                                            // Allocator.free, which requires the original length.
-                                            if (count < values.len) {
-                                                values = allocator.realloc(values, count) catch values;
-                                            }
-                                            result.paths.put(
-                                                allocator,
-                                                key,
-                                                values[0..count],
-                                            ) catch unreachable;
-                                        } else {
-                                            // Every entry was invalid; nothing to store. Free the buffer
-                                            // instead of leaking it.
-                                            allocator.free(values);
+                                        if (values.items.len > 0) {
+                                            const owned_values = try values.toOwnedSlice(allocator);
+                                            errdefer allocator.free(owned_values);
+                                            const entry = try result.paths.getOrPut(allocator, key);
+                                            if (entry.found_existing) allocator.free(entry.value_ptr.*);
+                                            entry.value_ptr.* = owned_values;
                                         }
                                     }
                                 },
                                 else => {
-                                    log.addRangeWarningFmt(
+                                    try log.addRangeWarningFmt(
                                         source,
                                         source.rangeOfString(key_prop.loc),
                                         allocator,
                                         "Substitutions for pattern \"{s}\" should be an array",
                                         .{key},
-                                    ) catch {};
+                                    );
                                 },
                             }
                         }
@@ -400,16 +386,18 @@ pub const TSConfigJSON = struct {
             assert(result.base_url.len > 0);
         }
 
-        return TSConfigJSON.new(result);
+        const config = try bun.default_allocator.create(TSConfigJSON);
+        config.* = result;
+        return config;
     }
 
-    pub fn isValidTSConfigPathPattern(text: string, log: *logger.Log, source: *const logger.Source, loc: logger.Loc, allocator: std.mem.Allocator) bool {
+    pub fn isValidTSConfigPathPattern(text: string, log: *logger.Log, source: *const logger.Source, loc: logger.Loc, allocator: std.mem.Allocator) bun.OOM!bool {
         var found_asterisk = false;
         for (text) |c| {
             if (c == '*') {
                 if (found_asterisk) {
                     const r = source.rangeOfString(loc);
-                    log.addRangeWarningFmt(source, r, allocator, "Invalid pattern \"{s}\", must have at most one \"*\" character", .{text}) catch {};
+                    try log.addRangeWarningFmt(source, r, allocator, "Invalid pattern \"{s}\", must have at most one \"*\" character", .{text});
                     return false;
                 }
                 found_asterisk = true;
@@ -419,7 +407,7 @@ pub const TSConfigJSON = struct {
         return true;
     }
 
-    pub fn parseMemberExpressionForJSX(log: *logger.Log, source: *const logger.Source, loc: logger.Loc, text: string, allocator: std.mem.Allocator) ![]string {
+    pub fn parseMemberExpressionForJSX(log: *logger.Log, source: *const logger.Source, loc: logger.Loc, text: string, allocator: std.mem.Allocator) bun.OOM![]string {
         if (text.len == 0) {
             return &([_]string{});
         }
@@ -429,18 +417,18 @@ pub const TSConfigJSON = struct {
         // foo.bar.baz == 3
         // foo.bar.baz.bun == 4
         const parts_count = std.mem.count(u8, text, ".") + @as(usize, @intFromBool(text[text.len - 1] != '.'));
-        var parts = std.array_list.Managed(string).initCapacity(allocator, parts_count) catch unreachable;
+        var parts = try std.array_list.Managed(string).initCapacity(allocator, parts_count);
+        defer parts.deinit();
 
         if (parts_count == 1) {
             if (!js_lexer.isIdentifier(text)) {
                 const warn = source.rangeOfString(loc);
-                log.addRangeWarningFmt(source, warn, allocator, "Invalid JSX member expression: \"{s}\"", .{text}) catch {};
-                parts.deinit();
+                try log.addRangeWarningFmt(source, warn, allocator, "Invalid JSX member expression: \"{s}\"", .{text});
                 return &([_]string{});
             }
 
             parts.appendAssumeCapacity(text);
-            return parts.items;
+            return try parts.toOwnedSlice();
         }
 
         var iter = std.mem.tokenizeScalar(u8, text, '.');
@@ -448,21 +436,20 @@ pub const TSConfigJSON = struct {
         while (iter.next()) |part| {
             if (!js_lexer.isIdentifier(part)) {
                 const warn = source.rangeOfString(loc);
-                log.addRangeWarningFmt(source, warn, allocator, "Invalid JSX member expression: \"{s}\"", .{part}) catch {};
-                parts.deinit();
+                try log.addRangeWarningFmt(source, warn, allocator, "Invalid JSX member expression: \"{s}\"", .{part});
                 return &([_]string{});
             }
             parts.appendAssumeCapacity(part);
         }
 
-        return parts.items;
+        return try parts.toOwnedSlice();
     }
 
     pub fn isSlash(c: u8) bool {
         return c == '/' or c == '\\';
     }
 
-    pub fn isValidTSConfigPathNoBaseURLPattern(text: string, log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator, loc: logger.Loc) bool {
+    pub fn isValidTSConfigPathNoBaseURLPattern(text: string, log: *logger.Log, source: *const logger.Source, allocator: std.mem.Allocator, loc: logger.Loc) bun.OOM!bool {
         var c0: u8 = 0;
         var c1: u8 = 0;
         var c2: u8 = 0;
@@ -509,11 +496,12 @@ pub const TSConfigJSON = struct {
         }
 
         const r = source.rangeOfString(loc);
-        log.addRangeWarningFmt(source, r, allocator, "Non-relative path \"{s}\" is not allowed when \"baseUrl\" is not set (did you forget a leading \"./\"?)", .{text}) catch {};
+        try log.addRangeWarningFmt(source, r, allocator, "Non-relative path \"{s}\" is not allowed when \"baseUrl\" is not set (did you forget a leading \"./\"?)", .{text});
         return false;
     }
 
     pub fn deinit(this: *TSConfigJSON) void {
+        for (this.paths.values()) |values| this.allocator.free(values);
         this.paths.deinit(this.allocator);
         bun.destroy(this);
     }

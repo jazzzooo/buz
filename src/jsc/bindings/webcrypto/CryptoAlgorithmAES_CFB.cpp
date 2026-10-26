@@ -57,63 +57,54 @@ CryptoAlgorithmIdentifier CryptoAlgorithmAES_CFB::identifier() const
     return s_identifier;
 }
 
-void CryptoAlgorithmAES_CFB::encrypt(const CryptoAlgorithmParameters& parameters, Ref<CryptoKey>&& key, Vector<uint8_t>&& plainText, VectorCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext& context, WorkQueue& workQueue)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithmAES_CFB::encrypt(const CryptoAlgorithmParameters& parameters, Ref<CryptoKey>&& key, Vector<uint8_t>&& plainText)
 {
     using namespace CryptoAlgorithmAES_CFBInternal;
 
     auto& aesParameters = downcast<CryptoAlgorithmAesCbcCfbParams>(parameters);
     if (aesParameters.ivVector().size() != IVSIZE) {
-        exceptionCallback(OperationError, "algorithm.iv must contain exactly 16 bytes"_s);
-        return;
+        return Exception { OperationError, "algorithm.iv must contain exactly 16 bytes"_s };
     }
 
-    dispatchOperationInWorkQueue(workQueue, context, WTF::move(callback), WTF::move(exceptionCallback),
-        [parameters = crossThreadCopy(aesParameters), key = WTF::move(key), plainText = WTF::move(plainText)] {
-            return platformEncrypt(parameters, downcast<CryptoKeyAES>(key.get()), plainText);
-        });
+    const auto& operation_parameters = aesParameters;
+    return platformEncrypt(operation_parameters, downcast<CryptoKeyAES>(key.get()), plainText);
 }
 
-void CryptoAlgorithmAES_CFB::decrypt(const CryptoAlgorithmParameters& parameters, Ref<CryptoKey>&& key, Vector<uint8_t>&& cipherText, VectorCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext& context, WorkQueue& workQueue)
+ExceptionOr<Vector<uint8_t>> CryptoAlgorithmAES_CFB::decrypt(const CryptoAlgorithmParameters& parameters, Ref<CryptoKey>&& key, Vector<uint8_t>&& cipherText)
 {
     using namespace CryptoAlgorithmAES_CFBInternal;
 
     auto& aesParameters = downcast<CryptoAlgorithmAesCbcCfbParams>(parameters);
     if (aesParameters.ivVector().size() != IVSIZE) {
-        exceptionCallback(OperationError, "algorithm.iv must contain exactly 16 bytes"_s);
-        return;
+        return Exception { OperationError, "algorithm.iv must contain exactly 16 bytes"_s };
     }
 
-    dispatchOperationInWorkQueue(workQueue, context, WTF::move(callback), WTF::move(exceptionCallback),
-        [parameters = crossThreadCopy(aesParameters), key = WTF::move(key), cipherText = WTF::move(cipherText)] {
-            return platformDecrypt(parameters, downcast<CryptoKeyAES>(key.get()), cipherText);
-        });
+    const auto& operation_parameters = aesParameters;
+    return platformDecrypt(operation_parameters, downcast<CryptoKeyAES>(key.get()), cipherText);
 }
 
-void CryptoAlgorithmAES_CFB::generateKey(const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages, KeyOrKeyPairCallback&& callback, ExceptionCallback&& exceptionCallback, ScriptExecutionContext&)
+ExceptionOr<KeyOrKeyPair> CryptoAlgorithmAES_CFB::generateKey(const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages)
 {
     const auto& aesParameters = downcast<CryptoAlgorithmAesKeyParams>(parameters);
 
     if (usagesAreInvalidForCryptoAlgorithmAES_CFB(usages)) {
-        exceptionCallback(SyntaxError, ""_s);
-        return;
+        return Exception { SyntaxError, ""_s };
     }
 
     auto result = CryptoKeyAES::generate(CryptoAlgorithmIdentifier::AES_CFB, aesParameters.length, extractable, usages);
     if (!result) {
-        exceptionCallback(OperationError, ""_s);
-        return;
+        return Exception { OperationError, ""_s };
     }
 
-    callback(WTF::move(result));
+    return KeyOrKeyPair { WTF::move(result) };
 }
 
-void CryptoAlgorithmAES_CFB::importKey(CryptoKeyFormat format, KeyData&& data, const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages, KeyCallback&& callback, ExceptionCallback&& exceptionCallback)
+ExceptionOr<Ref<CryptoKey>> CryptoAlgorithmAES_CFB::importKey(CryptoKeyFormat format, KeyData&& data, const CryptoAlgorithmParameters& parameters, bool extractable, CryptoKeyUsageBitmap usages)
 {
     using namespace CryptoAlgorithmAES_CFBInternal;
 
     if (usagesAreInvalidForCryptoAlgorithmAES_CFB(usages)) {
-        exceptionCallback(SyntaxError, ""_s);
-        return;
+        return Exception { SyntaxError, ""_s };
     }
 
     RefPtr<CryptoKeyAES> result;
@@ -137,25 +128,22 @@ void CryptoAlgorithmAES_CFB::importKey(CryptoKeyFormat format, KeyData&& data, c
         break;
     }
     default:
-        exceptionCallback(NotSupportedError, ""_s);
-        return;
+        return Exception { NotSupportedError, ""_s };
     }
     if (!result) {
-        exceptionCallback(DataError, ""_s);
-        return;
+        return Exception { DataError, ""_s };
     }
 
-    callback(*result);
+    return Ref<CryptoKey> { *result };
 }
 
-void CryptoAlgorithmAES_CFB::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key, KeyDataCallback&& callback, ExceptionCallback&& exceptionCallback)
+ExceptionOr<KeyData> CryptoAlgorithmAES_CFB::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& key)
 {
     using namespace CryptoAlgorithmAES_CFBInternal;
     const auto& aesKey = downcast<CryptoKeyAES>(key.get());
 
     if (aesKey.key().isEmpty()) {
-        exceptionCallback(OperationError, ""_s);
-        return;
+        return Exception { OperationError, ""_s };
     }
 
     KeyData result;
@@ -182,11 +170,10 @@ void CryptoAlgorithmAES_CFB::exportKey(CryptoKeyFormat format, Ref<CryptoKey>&& 
         break;
     }
     default:
-        exceptionCallback(NotSupportedError, ""_s);
-        return;
+        return Exception { NotSupportedError, ""_s };
     }
 
-    callback(format, WTF::move(result));
+    return WTF::move(result);
 }
 
 ExceptionOr<size_t> CryptoAlgorithmAES_CFB::getKeyLength(const CryptoAlgorithmParameters& parameters)

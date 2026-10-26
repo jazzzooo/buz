@@ -1,49 +1,42 @@
 #pragma once
 #include "root.h"
-#include "headers-handwritten.h"
 #include "JavaScriptCore/SourceOrigin.h"
+#include <JavaScriptCore/ExceptionHelpers.h>
+#include "SchemaBindings.h"
 #include "ZigGlobalObject.h"
-#include "MiString.h"
 
 namespace Bake {
 
-class DevServerSourceProvider;
-
-// Function to be implemented in Zig to register the source provider
-extern "C" void Bun__addDevServerSourceProvider(void* bun_vm, DevServerSourceProvider* opaque_source_provider, BunString* specifier);
-extern "C" void Bun__removeDevServerSourceProvider(void* bun_vm, DevServerSourceProvider* opaque_source_provider, BunString* specifier);
-
 class DevServerSourceProvider final : public JSC::StringSourceProvider {
 public:
-    static Ref<DevServerSourceProvider> create(
+    static RefPtr<DevServerSourceProvider> create(
         JSC::JSGlobalObject* globalObject,
         const String& source,
-        const char* sourceMapJSONPtr,
-        size_t sourceMapJSONLength,
+        std::span<const uint8_t> sourceMapJSON,
         const JSC::SourceOrigin& sourceOrigin,
         String&& sourceURL,
         const TextPosition& startPosition,
         JSC::SourceProviderSourceType sourceType)
     {
-        auto provider = adoptRef(*new DevServerSourceProvider(source, sourceMapJSONPtr, sourceMapJSONLength, sourceOrigin, WTF::move(sourceURL), startPosition, sourceType));
+        auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+        auto provider = adoptRef(*new DevServerSourceProvider(source, sourceOrigin, WTF::move(sourceURL), startPosition, sourceType));
         auto* zigGlobalObject = uncheckedDowncast<::Zig::GlobalObject>(globalObject);
-        auto specifier = Bun::toString(provider->sourceURL());
-        provider->m_globalObject = zigGlobalObject;
-        provider->m_specifier = specifier;
-        Bun__addDevServerSourceProvider(zigGlobalObject->bunVM(), provider.ptr(), &specifier);
-        return provider;
-    }
-
-    MiCString sourceMapJSON() const
-    {
-        return m_sourceMapJSON.asCString();
+        provider->m_bunVM = zigGlobalObject->bunVM();
+        provider->m_specifier = provider->sourceURL();
+        auto registered = Bun::Bindgen::ZigExports::bunBindgenZig_source_providers_addDevServerSourceProvider(provider->m_bunVM, source, provider->m_specifier, sourceMapJSON);
+        if (registered)
+            provider->m_sourceMapRegistration = *registered;
+        RETURN_IF_EXCEPTION(scope, nullptr);
+        if (!registered) {
+            JSC::throwOutOfMemoryError(globalObject, scope);
+            return nullptr;
+        }
+        return WTF::move(provider);
     }
 
 private:
     DevServerSourceProvider(
         const String& source,
-        const char* sourceMapJSONPtr,
-        size_t sourceMapJSONLength,
         const JSC::SourceOrigin& sourceOrigin,
         String&& sourceURL,
         const TextPosition& startPosition,
@@ -55,20 +48,18 @@ private:
               WTF::move(sourceURL),
               startPosition,
               sourceType)
-        , m_sourceMapJSON(sourceMapJSONPtr, sourceMapJSONLength)
     {
     }
 
     ~DevServerSourceProvider()
     {
-        if (m_globalObject) {
-            Bun__removeDevServerSourceProvider(m_globalObject->bunVM(), this, &m_specifier);
-        }
+        if (m_sourceMapRegistration)
+            Bun::Bindgen::ZigExports::bunBindgenZig_source_providers_removeSourceMapRegistration(m_bunVM, m_sourceMapRegistration, m_specifier);
     }
 
-    MiString m_sourceMapJSON;
-    Zig::GlobalObject* m_globalObject;
-    BunString m_specifier;
+    VirtualMachine* m_bunVM = nullptr;
+    uint64_t m_sourceMapRegistration = 0;
+    WTF::String m_specifier;
 };
 
 } // namespace Bake

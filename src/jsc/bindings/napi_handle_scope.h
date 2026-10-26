@@ -96,12 +96,4 @@ extern "C" NapiHandleScopeImpl* NapiHandleScope__open(napi_env env, bool escapab
 // Asserts that `current` is the active handle scope.
 extern "C" void NapiHandleScope__close(napi_env env, NapiHandleScopeImpl* current);
 
-// Store a value in the active handle scope in the given environment
-extern "C" void NapiHandleScope__append(napi_env env, JSC::EncodedJSValue value);
-
-// Put a value from the current handle scope into its escape slot reserved in the outer handle
-// scope. Returns false if the current handle scope is not escapable or if escape has already been
-// called on it.
-extern "C" bool NapiHandleScope__escape(NapiHandleScopeImpl* handle_scope, JSC::EncodedJSValue value);
-
 } // namespace Bun

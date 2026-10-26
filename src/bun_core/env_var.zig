@@ -123,7 +123,7 @@ pub const JENKINS_URL = New(kind.string, "JENKINS_URL", .{});
 pub const MI_VERBOSE = New(kind.boolean, "MI_VERBOSE", .{ .default = false });
 pub const NO_COLOR = New(kind.boolean, "NO_COLOR", .{ .default = false });
 pub const NODE_CHANNEL_FD = New(kind.string, "NODE_CHANNEL_FD", .{});
-/// Set by HostProcess.zig when spawning the WebView host subprocess. The
+/// Set when spawning the WebView host subprocess. The
 /// child's cli.zig checks this before anything else and hands off to C++
 /// Bun__WebView__hostMain. Never returns — no JSC, no VM.
 pub const BUN_INTERNAL_WEBVIEW_HOST = New(kind.string, "BUN_INTERNAL_WEBVIEW_HOST", .{});
@@ -176,7 +176,6 @@ pub const feature_flag = struct {
     pub const BUN_FEATURE_FLAG_DISABLE_ASYNC_TRANSPILER = newFeatureFlag("BUN_FEATURE_FLAG_DISABLE_ASYNC_TRANSPILER", .{});
     pub const BUN_FEATURE_FLAG_DISABLE_ISOLATION_SOURCE_CACHE = newFeatureFlag("BUN_FEATURE_FLAG_DISABLE_ISOLATION_SOURCE_CACHE", .{});
     pub const BUN_FEATURE_FLAG_DISABLE_DNS_CACHE = newFeatureFlag("BUN_FEATURE_FLAG_DISABLE_DNS_CACHE", .{});
-    pub const BUN_FEATURE_FLAG_DISABLE_DNS_CACHE_LIBINFO = newFeatureFlag("BUN_FEATURE_FLAG_DISABLE_DNS_CACHE_LIBINFO", .{});
     pub const BUN_FEATURE_FLAG_DISABLE_INSTALL_INDEX = newFeatureFlag("BUN_FEATURE_FLAG_DISABLE_INSTALL_INDEX", .{});
     /// Disable streaming tarball extraction in `bun install`. When disabled,
     /// the whole .tgz is buffered in memory before being decompressed and
@@ -195,7 +194,6 @@ pub const feature_flag = struct {
     pub const BUN_FEATURE_FLAG_DISABLE_SPAWNSYNC_FAST_PATH = newFeatureFlag("BUN_FEATURE_FLAG_DISABLE_SPAWNSYNC_FAST_PATH", .{});
     pub const BUN_FEATURE_FLAG_DISABLE_SQL_AUTO_PIPELINING = newFeatureFlag("BUN_FEATURE_FLAG_DISABLE_SQL_AUTO_PIPELINING", .{});
     pub const BUN_DISABLE_TRANSPILED_SOURCE_CODE_PREVIEW = newFeatureFlag("BUN_DISABLE_TRANSPILED_SOURCE_CODE_PREVIEW", .{});
-    pub const BUN_FEATURE_FLAG_DISABLE_UV_FS_COPYFILE = newFeatureFlag("BUN_FEATURE_FLAG_DISABLE_UV_FS_COPYFILE", .{});
     pub const BUN_DUMP_STATE_ON_CRASH = newFeatureFlag("BUN_DUMP_STATE_ON_CRASH", .{});
     pub const BUN_ENABLE_EXPERIMENTAL_SHELL_BUILTINS = newFeatureFlag("BUN_ENABLE_EXPERIMENTAL_SHELL_BUILTINS", .{});
     pub const BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE = newFeatureFlag("BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE", .{});

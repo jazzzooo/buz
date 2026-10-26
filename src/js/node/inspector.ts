@@ -3,11 +3,10 @@
 const { hideFromStack, throwNotImplemented } = require("internal/shared");
 const EventEmitter = require("node:events");
 
-// Native profiler functions exposed via $newCppFunction
-const startCPUProfiler = $newCppFunction("JSInspectorProfiler.cpp", "jsFunction_startCPUProfiler", 0);
-const stopCPUProfiler = $newCppFunction("JSInspectorProfiler.cpp", "jsFunction_stopCPUProfiler", 0);
-const setCPUSamplingInterval = $newCppFunction("JSInspectorProfiler.cpp", "jsFunction_setCPUSamplingInterval", 1);
-const isCPUProfilerRunning = $newCppFunction("JSInspectorProfiler.cpp", "jsFunction_isCPUProfilerRunning", 0);
+const startCPUProfiler = $bindgenFn("InspectorProfiler.schema.zig", "startCPUProfiler");
+const stopCPUProfiler = $bindgenFn("InspectorProfiler.schema.zig", "stopCPUProfiler");
+const setCPUSamplingInterval = $bindgenFn("InspectorProfiler.schema.zig", "setCPUSamplingInterval");
+const isCPUProfilerRunning = $bindgenFn("InspectorProfiler.schema.zig", "isCPUProfilerRunning");
 
 function open() {
   throwNotImplemented("node:inspector", 2445);
@@ -56,7 +55,7 @@ class Session extends EventEmitter {
   ) {
     // Handle overloaded signature: post(method, callback)
     if (typeof params === "function") {
-      callback = params;
+      callback = params as typeof callback;
       params = undefined;
     }
 

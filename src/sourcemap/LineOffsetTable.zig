@@ -15,13 +15,29 @@ byte_offset_to_start_of_line: u32 = 0,
 
 pub const List = std.MultiArrayList(LineOffsetTable);
 
+pub fn deinitList(list: *List, allocator: std.mem.Allocator) void {
+    for (list.items(.columns_for_non_ascii)) |*columns| columns.deinit(allocator);
+    list.deinit(allocator);
+    list.* = .empty;
+}
+
+fn appendLine(list: *List, allocator: std.mem.Allocator, byte_offset: u32, non_ascii_offset: u32, columns: []const i32) bun.OOM!void {
+    const owned = try allocator.dupe(i32, columns);
+    errdefer allocator.free(owned);
+    try list.append(allocator, .{
+        .byte_offset_to_start_of_line = byte_offset,
+        .byte_offset_to_first_non_ascii = non_ascii_offset,
+        .columns_for_non_ascii = BabyList(i32).fromOwnedSlice(owned),
+    });
+}
+
 pub fn findLine(byte_offsets_to_start_of_line: []const u32, loc: Logger.Loc) i32 {
     assert(loc.start > -1); // checked by caller
     var original_line: usize = 0;
     const loc_start = @as(usize, @intCast(loc.start));
 
     {
-        var count = @as(usize, @truncate(byte_offsets_to_start_of_line.len));
+        var count = byte_offsets_to_start_of_line.len;
         var i: usize = 0;
         while (count > 0) {
             const step = count / 2;
@@ -35,7 +51,7 @@ pub fn findLine(byte_offsets_to_start_of_line: []const u32, loc: Logger.Loc) i32
         }
     }
 
-    return @as(i32, @intCast(original_line)) - 1;
+    return if (original_line == 0) -1 else @intCast(original_line - 1);
 }
 
 pub fn findIndex(byte_offsets_to_start_of_line: []const u32, loc: Logger.Loc) ?usize {
@@ -43,7 +59,7 @@ pub fn findIndex(byte_offsets_to_start_of_line: []const u32, loc: Logger.Loc) ?u
     var original_line: usize = 0;
     const loc_start = @as(usize, @intCast(loc.start));
 
-    var count = @as(usize, @truncate(byte_offsets_to_start_of_line.len));
+    var count = byte_offsets_to_start_of_line.len;
     var i: usize = 0;
     while (count > 0) {
         const step = count / 2;
@@ -70,23 +86,20 @@ pub fn findIndex(byte_offsets_to_start_of_line: []const u32, loc: Logger.Loc) ?u
     return null;
 }
 
-pub fn generate(allocator: std.mem.Allocator, contents: std.unicode.Wtf8View, approximate_line_count: i32) List {
+pub fn generate(allocator: std.mem.Allocator, contents: std.unicode.Wtf8View, approximate_line_count: usize) bun.OOM!List {
     const bytes = contents.bytes;
+    if (bytes.len > std.math.maxInt(i32)) return error.OutOfMemory;
     var list: List = .empty;
-    // Preallocate the top-level table using the approximate line count from the lexer
-    list.ensureUnusedCapacity(allocator, @as(usize, @intCast(@max(approximate_line_count, 1)))) catch unreachable;
+    errdefer deinitList(&list, allocator);
+    try list.ensureUnusedCapacity(allocator, @min(@max(approximate_line_count, 1), bytes.len + 1));
     var column: i32 = 0;
     var byte_offset_to_first_non_ascii: u32 = 0;
     var line_byte_offset: u32 = 0;
 
-    // the idea here is:
-    // we want to avoid re-allocating this array _most_ of the time
-    // when lines _do_ have unicode characters, they probably still won't be longer than 255 much
     var stack_fallback_buffer: [256]i32 = undefined;
     var stack_fallback: std.heap.BufferFirstAllocator = .init(@ptrCast(&stack_fallback_buffer), allocator);
-    var columns_for_non_ascii = std.array_list.Managed(i32).initCapacity(stack_fallback.allocator(), 120) catch unreachable;
-    const reset_end_index = stack_fallback.fixed_buffer_allocator.end_index;
-    const initial_columns_for_non_ascii = columns_for_non_ascii;
+    var columns_for_non_ascii = try std.array_list.Managed(i32).initCapacity(stack_fallback.allocator(), 120);
+    defer columns_for_non_ascii.deinit();
 
     var iterator = contents.iterator();
     while (iterator.i < bytes.len) {
@@ -95,7 +108,7 @@ pub fn generate(allocator: std.mem.Allocator, contents: std.unicode.Wtf8View, ap
         const cp_len = iterator.i - codepoint_byte_offset;
 
         if (column == 0) {
-            line_byte_offset = @truncate(codepoint_byte_offset);
+            line_byte_offset = @intCast(codepoint_byte_offset);
         }
 
         if (c > 0x7F and columns_for_non_ascii.items.len == 0) {
@@ -106,7 +119,7 @@ pub fn generate(allocator: std.mem.Allocator, contents: std.unicode.Wtf8View, ap
 
         // Update the per-byte column offsets
         if (columns_for_non_ascii.items.len > 0 or c > 0x7F) {
-            columns_for_non_ascii.appendNTimes(column, cp_len) catch unreachable;
+            try columns_for_non_ascii.appendNTimes(column, cp_len);
         } else {
             switch (c) {
                 (@max('\r', '\n') + 1)...127 => {
@@ -135,28 +148,13 @@ pub fn generate(allocator: std.mem.Allocator, contents: std.unicode.Wtf8View, ap
                     continue;
                 }
 
-                // We don't call .toOwnedSlice() because it is expensive to
-                // reallocate the array AND when inside an Arena, it's
-                // hideously expensive
-                var owned = columns_for_non_ascii.items;
-                if (stack_fallback.fixed_buffer_allocator.ownsSlice(std.mem.sliceAsBytes(owned))) {
-                    owned = allocator.dupe(i32, owned) catch unreachable;
-                }
-
-                list.append(allocator, .{
-                    .byte_offset_to_start_of_line = line_byte_offset,
-                    .byte_offset_to_first_non_ascii = byte_offset_to_first_non_ascii,
-                    .columns_for_non_ascii = BabyList(i32).fromOwnedSlice(owned),
-                }) catch unreachable;
+                try appendLine(&list, allocator, line_byte_offset, byte_offset_to_first_non_ascii, columns_for_non_ascii.items);
 
                 column = 0;
                 byte_offset_to_first_non_ascii = 0;
                 line_byte_offset = 0;
 
-                // reset the list to use the stack-allocated memory
-                stack_fallback.fixed_buffer_allocator.reset();
-                stack_fallback.fixed_buffer_allocator.end_index = reset_end_index;
-                columns_for_non_ascii = initial_columns_for_non_ascii;
+                columns_for_non_ascii.clearRetainingCapacity();
             },
             else => {
                 // Mozilla's "source-map" library counts columns using UTF-16 code units
@@ -171,24 +169,33 @@ pub fn generate(allocator: std.mem.Allocator, contents: std.unicode.Wtf8View, ap
     }
 
     if (columns_for_non_ascii.items.len > 0) {
-        columns_for_non_ascii.append(column) catch unreachable;
+        try columns_for_non_ascii.append(column);
     }
-    {
-        var owned = columns_for_non_ascii.toOwnedSlice() catch unreachable;
-        if (stack_fallback.fixed_buffer_allocator.ownsSlice(std.mem.sliceAsBytes(owned))) {
-            owned = allocator.dupe(i32, owned) catch unreachable;
-        }
-        list.append(allocator, .{
-            .byte_offset_to_start_of_line = line_byte_offset,
-            .byte_offset_to_first_non_ascii = byte_offset_to_first_non_ascii,
-            .columns_for_non_ascii = BabyList(i32).fromOwnedSlice(owned),
-        }) catch unreachable;
-    }
+    try appendLine(&list, allocator, line_byte_offset, byte_offset_to_first_non_ascii, columns_for_non_ascii.items);
 
     if (list.capacity > list.len) {
         list.shrinkAndFree(allocator, list.len);
     }
     return list;
+}
+
+test "line offset tables own Unicode rows across allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const repeated: [200][2]u8 = @splat("é".*);
+            const source = "ascii\nxé😀z\r\n" ++ @as([400]u8, @bitCast(repeated)) ++ "\n終";
+            var table = try generate(allocator, try std.unicode.Wtf8View.init(source), 1);
+            defer deinitList(&table, allocator);
+            try std.testing.expectEqualSlices(u32, &.{ 0, 6, 16, 417 }, table.items(.byte_offset_to_start_of_line));
+            try std.testing.expectEqualSlices(u32, &.{ 0, 1, 0, 0 }, table.items(.byte_offset_to_first_non_ascii));
+            const columns = table.items(.columns_for_non_ascii);
+            try std.testing.expectEqual(@as(usize, 0), columns[0].slice().len);
+            try std.testing.expectEqualSlices(i32, &.{ 1, 1, 2, 2, 2, 2, 4, 5, 6 }, columns[1].slice());
+            try std.testing.expectEqual(@as(usize, 401), columns[2].slice().len);
+            try std.testing.expectEqualSlices(i32, &.{ 0, 0, 0, 1 }, columns[3].slice());
+            try std.testing.expectEqual(@as(i32, 3), findLine(table.items(.byte_offset_to_start_of_line), .{ .start = source.len }));
+        }
+    }.run, .{});
 }
 
 const std = @import("std");

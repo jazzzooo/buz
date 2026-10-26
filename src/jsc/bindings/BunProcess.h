@@ -5,6 +5,10 @@
 #include "BunBuiltinNames.h"
 #include "BunClientData.h"
 #include "JSEventEmitter.h"
+#include "JSNextTickQueue.h"
+#include <cstdint>
+#include <optional>
+#include <span>
 
 namespace Zig {
 class GlobalObject;
@@ -13,14 +17,9 @@ class GlobalObject;
 namespace Bun {
 using namespace JSC;
 
-extern "C" int getRSS(size_t* rss);
-
 class Process : public WebCore::JSEventEmitter {
     using Base = WebCore::JSEventEmitter;
 
-    LazyProperty<Process, Structure> m_cpuUsageStructure;
-    LazyProperty<Process, Structure> m_resourceUsageStructure;
-    LazyProperty<Process, Structure> m_memoryUsageStructure;
     LazyProperty<Process, JSObject> m_bindingUV;
     LazyProperty<Process, JSObject> m_bindingNatives;
     // Function that looks up "emit" on "process" and calls it with the provided arguments
@@ -30,8 +29,6 @@ class Process : public WebCore::JSEventEmitter {
     WriteBarrier<JSObject> m_nextTickFunction;
     // https://github.com/nodejs/node/blob/2eff28fb7a93d3f672f80b582f664a7c701569fb/lib/internal/bootstrap/switches/does_own_process_state.js#L113-L116
     WriteBarrier<JSString> m_cachedCwd;
-    WriteBarrier<Unknown> m_argv;
-    WriteBarrier<Unknown> m_execArgv;
 
 public:
     Process(JSC::Structure* structure, WebCore::JSDOMGlobalObject& globalObject, Ref<WebCore::EventEmitter>&& impl)
@@ -55,28 +52,22 @@ public:
     static constexpr unsigned StructureFlags = Base::StructureFlags | HasStaticPropertyTable;
 
     JSValue constructNextTickFn(JSC::VM& vm, Zig::GlobalObject* globalObject);
-    void queueNextTick(JSC::JSGlobalObject* globalObject, const ArgList& args);
-    void queueNextTick(JSC::JSGlobalObject* globalObject, JSValue);
     void queueNextTick(JSC::JSGlobalObject* globalObject, JSValue, JSValue);
+    void queueNextTick(JSC::JSGlobalObject*, JSValue callback, std::span<const JSValue> arguments);
+    std::optional<JSNextTickQueue::PreparedTask> prepareNextTick(Zig::GlobalObject*, JSValue callback, std::span<const JSValue> arguments);
+    std::optional<JSNextTickQueue::PreparedTask> prepareNextTick(Zig::GlobalObject*, JSValue callback, const ArgList& arguments, JSValue receiver = jsUndefined());
 
-    template<size_t NumArgs>
-    void queueNextTick(JSC::JSGlobalObject* globalObject, JSValue func, const JSValue (&args)[NumArgs]);
+    std::optional<JSNextTickQueue::PreparedTask> prepareEmitOnNextTick(Zig::GlobalObject*, ASCIILiteral eventName, JSValue event);
 
-    // Some Node.js events want to be emitted on the next tick rather than synchronously.
-    // This is equivalent to `process.nextTick(() => process.emit(eventName, event))` from JavaScript.
-    void emitOnNextTick(Zig::GlobalObject* globalObject, ASCIILiteral eventName, JSValue event);
-
-    static JSValue emitWarningErrorInstance(JSC::JSGlobalObject* lexicalGlobalObject, JSValue errorInstance);
-    static JSValue emitWarning(JSC::JSGlobalObject* lexicalGlobalObject, JSValue warning, JSValue type, JSValue code, JSValue ctor);
+    static void emitWarningErrorInstance(JSC::JSGlobalObject*, JSC::ErrorInstance*);
+    static void emitWarning(JSC::JSGlobalObject*, const WTF::String& message, const WTF::String& name, const std::optional<WTF::String>& code = std::nullopt);
+    static bool noDeprecation();
+    static void setNoDeprecation(bool);
+    static bool throwDeprecation();
+    static void setThrowDeprecation(bool);
 
     JSString* cachedCwd() { return m_cachedCwd.get(); }
     void setCachedCwd(JSC::VM& vm, JSString* cwd) { m_cachedCwd.set(vm, this, cwd); }
-
-    JSValue getArgv(JSGlobalObject* globalObject);
-    void setArgv(JSGlobalObject* globalObject, JSValue argv);
-
-    JSValue getExecArgv(JSGlobalObject* globalObject);
-    void setExecArgv(JSGlobalObject* globalObject, JSValue execArgv);
 
     static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject,
         JSC::JSValue prototype)
@@ -120,14 +111,11 @@ public:
         return m_uncaughtExceptionCaptureCallback.get();
     }
 
-    inline Structure* cpuUsageStructure() { return m_cpuUsageStructure.getInitializedOnMainThread(this); }
-    inline Structure* resourceUsageStructure() { return m_resourceUsageStructure.getInitializedOnMainThread(this); }
-    inline Structure* memoryUsageStructure() { return m_memoryUsageStructure.getInitializedOnMainThread(this); }
     inline JSObject* bindingUV() { return m_bindingUV.getInitializedOnMainThread(this); }
     inline JSObject* bindingNatives() { return m_bindingNatives.getInitializedOnMainThread(this); }
 };
 
 bool isSignalName(WTF::String input);
-JSC_DECLARE_HOST_FUNCTION(Process_functionDlopen);
+std::optional<uint8_t> signalNumberForName(WTF::StringView name);
 
 } // namespace Bun

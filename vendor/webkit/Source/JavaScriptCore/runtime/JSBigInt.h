@@ -96,6 +96,7 @@ public:
 
     static JSBigInt* createFrom(JSGlobalObject*, VM&, int32_t value);
 
+    static constexpr unsigned maxWordCount() { return maxLengthBits / 64; }
     JS_EXPORT_PRIVATE static JSBigInt* tryCreateFromWords(VM&, std::span<const uint64_t> words, bool sign);
     static JSBigInt* createFromWords(JSGlobalObject*, std::span<const uint64_t> words, bool sign);
 

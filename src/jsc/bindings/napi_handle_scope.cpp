@@ -1,6 +1,7 @@
 #include "napi_handle_scope.h"
 #include "napi.h"
 
+#include "SchemaBindings.h"
 #include "ZigGlobalObject.h"
 
 namespace Bun {
@@ -141,14 +142,26 @@ extern "C" void NapiHandleScope__close(napi_env env, NapiHandleScopeImpl* curren
     return NapiHandleScope::close(env->globalObject(), current);
 }
 
-extern "C" void NapiHandleScope__append(napi_env env, JSC::EncodedJSValue value)
+namespace Bindgen::Engine {
+
+void bunBindgenEngine_NAPI_napiHandleScopeAppend(
+    EngineCallContext& context,
+    const BunBindgenEngine_NAPI_napiHandleScopeAppend_Arguments& args)
 {
-    env->globalObject()->m_currentNapiHandleScopeImpl.get()->append(JSC::JSValue::decode(value));
+    RELEASE_ASSERT(args.env->globalObject() == &context.globalObject);
+    auto* scope = args.env->globalObject()->m_currentNapiHandleScopeImpl.get();
+    RELEASE_ASSERT(scope);
+    scope->append(args.value);
 }
 
-extern "C" bool NapiHandleScope__escape(NapiHandleScopeImpl* handleScope, JSC::EncodedJSValue value)
+bool bunBindgenEngine_NAPI_napiHandleScopeEscape(
+    EngineCallContext& context,
+    const BunBindgenEngine_NAPI_napiHandleScopeEscape_Arguments& args)
 {
-    return handleScope->escape(JSC::JSValue::decode(value));
+    RELEASE_ASSERT(&args.scope->vm() == &context.globalObject.vm());
+    return args.scope->escape(args.value);
+}
+
 }
 
 } // namespace Bun

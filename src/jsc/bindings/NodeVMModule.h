@@ -45,8 +45,6 @@ public:
         Synthetic,
     };
 
-    static NodeVMModule* create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, ArgList args);
-
     const WTF::String& identifier() const { return m_identifier; }
 
     Status status() const { return m_status; }
@@ -65,6 +63,7 @@ public:
     AbstractModuleRecord* moduleRecord(JSC::JSGlobalObject* globalObject);
 
     JSValue evaluate(JSGlobalObject* globalObject, uint32_t timeout, bool breakOnSigint);
+    JSC::Exception* evaluationException() const { return m_evaluationException.get(); }
 
 protected:
     WTF::String m_identifier;
@@ -73,6 +72,7 @@ protected:
     WriteBarrier<JSObject> m_context;
     WriteBarrier<Unknown> m_evaluationResult;
     WriteBarrier<Unknown> m_moduleWrapper;
+    WriteBarrier<JSC::Exception> m_evaluationException;
     WTF::Vector<NodeVMModuleRequest> m_moduleRequests;
     WTF::HashMap<WTF::String, WriteBarrier<JSObject>> m_resolveCache;
 

@@ -30,113 +30,116 @@
 
 #include "config.h"
 #include "DOMFormData.h"
+#include "FormURLEncoding.h"
+#include <algorithm>
 #include "wtf/DebugHeap.h"
-#include <wtf/URLParser.h>
+#include <wtf/SIMDUTF.h>
 
 namespace WebCore {
 
 DEFINE_ALLOCATOR_WITH_HEAP_IDENTIFIER(DOMFormData);
 
-DOMFormData::DOMFormData(ScriptExecutionContext* context)
-    : ContextDestructionObserver(context)
+ExceptionOr<Ref<DOMFormData>> DOMFormData::create()
 {
+    auto* memory = DOMFormDataMalloc::tryMalloc(sizeof(DOMFormData));
+    if (!memory)
+        return Exception { OutOfMemoryError };
+    return adoptRef(*new (memory) DOMFormData());
 }
 
-Ref<DOMFormData> DOMFormData::create(ScriptExecutionContext* context)
+ExceptionOr<Ref<DOMFormData>> DOMFormData::create(std::span<const uint8_t> input)
 {
-    return adoptRef(*new DOMFormData(context));
+    auto result = create();
+    if (result.hasException())
+        return result.releaseException();
+    auto form = result.releaseReturnValue();
+    auto parsed = FormURLEncoding::parse(input, [&](String&& name, String&& value) -> ExceptionOr<void> {
+        if (!form->m_items.tryAppend(Item { WTF::move(name), WTF::move(value) }))
+            return Exception { OutOfMemoryError };
+        return {};
+    });
+    if (parsed.hasException())
+        return parsed.releaseException();
+    return form;
 }
 
-Ref<DOMFormData> DOMFormData::create(ScriptExecutionContext* context, const StringView& urlEncodedString)
+static ExceptionOr<String> normalizeFormString(const String& value)
 {
-    auto newFormData = adoptRef(*new DOMFormData(context));
-    for (auto& entry : WTF::URLParser::parseURLEncodedForm(urlEncodedString)) {
-        newFormData->append(entry.key, entry.value);
-    }
-
-    return newFormData;
+    if (!hasUnpairedSurrogate(value))
+        return String(value);
+    std::span<char16_t> output;
+    auto impl = StringImpl::tryCreateUninitialized(value.length(), output);
+    if (!impl)
+        return Exception { OutOfMemoryError };
+    simdutf::to_well_formed_utf16(value.span16().data(), value.length(), output.data());
+    return String(WTF::move(impl));
 }
 
-String DOMFormData::toURLEncodedString()
+static ExceptionOr<DOMFormData::Item> createStringEntry(const String& name, const String& value)
 {
-    WTF::URLParser::URLEncodedForm form;
-    form.reserveInitialCapacity(m_items.size());
-    for (auto& item : m_items) {
-        if (auto value = std::get_if<String>(&item.data))
-            form.append({ item.name, *value });
-    }
-
-    return WTF::URLParser::serialize(form);
+    auto normalizedName = normalizeFormString(name);
+    if (normalizedName.hasException())
+        return normalizedName.releaseException();
+    auto normalizedValue = normalizeFormString(value);
+    if (normalizedValue.hasException())
+        return normalizedValue.releaseException();
+    return DOMFormData::Item { normalizedName.releaseReturnValue(), normalizedValue.releaseReturnValue() };
 }
 
-extern "C" void DOMFormData__forEach(DOMFormData* form, void* context, void (*callback)(void* context, ZigString*, void*, ZigString*, uint8_t))
+ExceptionOr<DOMFormData::PreparedMutation> DOMFormData::prepareAppend(const String& name, const String& value)
 {
-    for (auto& item : form->items()) {
-        auto name = toZigString(item.name);
-        if (auto value = std::get_if<String>(&item.data)) {
-            auto value_ = toZigString(*value);
-            callback(context, &name, &value_, nullptr, 0);
-        } else if (auto value = std::get_if<RefPtr<Blob>>(&item.data)) {
-            auto filename = toZigString(value->get()->fileName());
-            callback(context, &name, value->get()->impl(), &filename, 1);
-        }
-    }
+    auto entry = createStringEntry(name, value);
+    if (entry.hasException())
+        return entry.releaseException();
+    return prepareMutation(entry.releaseReturnValue(), false);
 }
 
-Ref<DOMFormData> DOMFormData::clone() const
+static ExceptionOr<DOMFormData::Item> createFileEntry(const String& name, Ref<Blob> blob, const String& filename)
 {
-    auto newFormData = adoptRef(*new DOMFormData(scriptExecutionContext()));
-    newFormData->m_items = m_items;
-
-    return newFormData;
+    auto normalizedName = normalizeFormString(name);
+    if (normalizedName.hasException())
+        return normalizedName.releaseException();
+    auto normalizedFilename = normalizeFormString(filename);
+    if (normalizedFilename.hasException())
+        return normalizedFilename.releaseException();
+    auto file = blob->withFileName(normalizedFilename.releaseReturnValue());
+    if (file.hasException())
+        return file.releaseException();
+    return DOMFormData::Item { normalizedName.releaseReturnValue(), file.releaseReturnValue() };
 }
 
-// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#create-an-entry
-static auto createStringEntry(const String& name, const String& value) -> DOMFormData::Item
+ExceptionOr<DOMFormData::PreparedMutation> DOMFormData::prepareAppend(const String& name, Ref<Blob> blob, const String& filename)
 {
-    return {
-        replaceUnpairedSurrogatesWithReplacementCharacter(String(name)),
-        replaceUnpairedSurrogatesWithReplacementCharacter(String(value)),
-    };
+    auto entry = createFileEntry(name, WTF::move(blob), filename);
+    if (entry.hasException())
+        return entry.releaseException();
+    return prepareMutation(entry.releaseReturnValue(), false);
 }
 
-void DOMFormData::append(const String& name, const String& value)
+ExceptionOr<void> DOMFormData::append(const String& name, const String& value)
 {
-    m_items.append(createStringEntry(name, value));
+    auto prepared = prepareAppend(name, value);
+    if (prepared.hasException())
+        return prepared.releaseException();
+    prepared.releaseReturnValue().commit();
+    return {};
 }
 
-void DOMFormData::append(const String& name, RefPtr<Blob> blob, const String& filename)
+ExceptionOr<void> DOMFormData::append(const String& name, Ref<Blob> blob, const String& filename)
 {
-    blob->setFileName(replaceUnpairedSurrogatesWithReplacementCharacter(String(filename)));
-    m_items.append({ replaceUnpairedSurrogatesWithReplacementCharacter(String(name)), blob });
+    auto prepared = prepareAppend(name, WTF::move(blob), filename);
+    if (prepared.hasException())
+        return prepared.releaseException();
+    prepared.releaseReturnValue().commit();
+    return {};
 }
+
 void DOMFormData::remove(const StringView name)
 {
+    RELEASE_ASSERT(!m_mutationPending);
     m_items.removeAllMatching([name](const auto& item) {
         return item.name == name;
     });
-}
-
-auto DOMFormData::get(const StringView name) -> std::optional<FormDataEntryValue>
-{
-    for (auto& item : m_items) {
-        if (item.name == name)
-            return item.data;
-    }
-
-    return std::nullopt;
-}
-
-auto DOMFormData::getAll(const StringView name) -> Vector<FormDataEntryValue>
-{
-    Vector<FormDataEntryValue> result;
-
-    for (auto& item : m_items) {
-        if (item.name == name)
-            result.append(item.data);
-    }
-
-    return result;
 }
 
 bool DOMFormData::has(const StringView name)
@@ -149,40 +152,74 @@ bool DOMFormData::has(const StringView name)
     return false;
 }
 
-void DOMFormData::set(const String& name, const String& value)
+ExceptionOr<DOMFormData::PreparedMutation> DOMFormData::prepareSet(const String& name, const String& value)
 {
-    set(name, { name, value });
+    auto entry = createStringEntry(name, value);
+    if (entry.hasException())
+        return entry.releaseException();
+    return prepareMutation(entry.releaseReturnValue(), true);
 }
 
-void DOMFormData::set(const String& name, RefPtr<Blob> blob, const String& filename)
+ExceptionOr<DOMFormData::PreparedMutation> DOMFormData::prepareSet(const String& name, Ref<Blob> blob, const String& filename)
 {
-    blob->setFileName(filename);
-    set(name, { name, blob });
+    auto entry = createFileEntry(name, WTF::move(blob), filename);
+    if (entry.hasException())
+        return entry.releaseException();
+    return prepareMutation(entry.releaseReturnValue(), true);
 }
 
-void DOMFormData::set(const String& name, Item&& item)
+ExceptionOr<DOMFormData::PreparedMutation> DOMFormData::prepareMutation(Item&& item, bool replace)
 {
-    std::optional<size_t> initialMatchLocation;
-
-    // Find location of the first item with a matching name.
-    for (size_t i = 0; i < m_items.size(); ++i) {
-        if (name == m_items[i].name) {
-            initialMatchLocation = i;
-            break;
+    RELEASE_ASSERT(!m_mutationPending);
+    if (replace) {
+        for (size_t index = 0; index < m_items.size(); ++index) {
+            if (item.name == m_items[index].name)
+                return PreparedMutation { *this, WTF::move(item), index, true };
         }
     }
+    if (!m_items.tryReserveCapacity(static_cast<size_t>(m_items.size()) + 1))
+        return Exception { OutOfMemoryError };
+    return PreparedMutation { *this, WTF::move(item), m_items.size(), false };
+}
 
-    if (initialMatchLocation) {
-        m_items[*initialMatchLocation] = WTF::move(item);
+DOMFormData::PreparedMutation::PreparedMutation(DOMFormData& target, Item&& item, size_t index, bool replacesExisting)
+    : m_target(target)
+    , m_item(WTF::move(item))
+    , m_index(index)
+    , m_replacesExisting(replacesExisting)
+{
+    RELEASE_ASSERT(!target.m_mutationPending);
+    target.m_mutationPending = true;
+}
 
-        m_items.removeAllMatching([&name](const auto& item) {
-            return item.name == name;
-        },
-            *initialMatchLocation + 1);
-        return;
+DOMFormData::PreparedMutation::PreparedMutation(PreparedMutation&& other)
+    : m_target(WTF::move(other.m_target))
+    , m_item(WTF::move(other.m_item))
+    , m_index(other.m_index)
+    , m_replacesExisting(other.m_replacesExisting)
+{
+}
+
+DOMFormData::PreparedMutation::~PreparedMutation()
+{
+    if (m_target)
+        m_target->m_mutationPending = false;
+}
+
+void DOMFormData::PreparedMutation::commit()
+{
+    RELEASE_ASSERT(m_target && m_target->m_mutationPending);
+    auto& items = m_target->m_items;
+    if (m_replacesExisting) {
+        auto name = m_item.name;
+        items[m_index] = WTF::move(m_item);
+        items.removeAllMatching([&name](const auto& item) { return item.name == name; }, m_index + 1);
+    } else {
+        RELEASE_ASSERT(m_index == items.size());
+        items.unsafeAppendWithoutCapacityCheck(WTF::move(m_item));
     }
-
-    m_items.append(WTF::move(item));
+    m_target->m_mutationPending = false;
+    m_target = nullptr;
 }
 
 DOMFormData::Iterator::Iterator(DOMFormData& target)
@@ -205,8 +242,8 @@ size_t DOMFormData::memoryCost() const
     size_t cost = m_items.sizeInBytes();
     for (auto& item : m_items) {
         cost += item.name.sizeInBytes();
-        if (auto value = std::get_if<RefPtr<Blob>>(&item.data)) {
-            cost += value->get()->memoryCost();
+        if (auto value = std::get_if<Ref<Blob>>(&item.data)) {
+            cost += (*value)->memoryCost();
         } else if (auto value = std::get_if<String>(&item.data)) {
             cost += value->sizeInBytes();
         }

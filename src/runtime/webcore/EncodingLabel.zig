@@ -24,7 +24,6 @@ pub const EncodingLabel = enum {
     @"UTF-16BE",
     @"UTF-16LE",
     @"x-user-defined",
-    replacement,
     GBK,
     GB18030,
 
@@ -51,7 +50,6 @@ pub const EncodingLabel = enum {
             .Shift_JIS => "shift_jis",
             .@"EUC-KR" => "euc-kr",
             .@"x-user-defined" => "x-user-defined",
-            .replacement => "replacement",
             .GBK => "gbk",
             .GB18030 => "gb18030",
         };
@@ -223,12 +221,11 @@ pub const EncodingLabel = enum {
 
         // Other
         .{ "x-user-defined", .@"x-user-defined" },
-        .{ "replacement", .replacement },
     });
 
     pub fn which(input_: string) ?EncodingLabel {
         const input = strings.trim(input_, " \t\r\n\x0C");
-        return string_map.getAnyCase(input);
+        return string_map.getCaseInsensitiveASCII(input);
     }
 };
 const string = []const u8;

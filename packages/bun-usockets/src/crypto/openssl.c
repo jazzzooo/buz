@@ -26,16 +26,19 @@
 void *sni_new();
 void sni_free(void *sni, void (*cb)(void *));
 int sni_add(void *sni, const char *hostname, void *user);
+int sni_replace(void *sni, const char *hostname, void *user, void **previous);
 void *sni_remove(void *sni, const char *hostname);
 void *sni_find(void *sni, const char *hostname);
 
 #ifdef LIBUS_USE_OPENSSL
 #include <openssl/bio.h>
+#include <openssl/crypto.h>
 #include <openssl/dh.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #elif LIBUS_USE_WOLFSSL
 #include <wolfssl/openssl/bio.h>
+#include <wolfssl/openssl/crypto.h>
 #include <wolfssl/openssl/dh.h>
 #include <wolfssl/openssl/err.h>
 #include <wolfssl/openssl/ssl.h>
@@ -96,7 +99,7 @@ long us_ssl_ctx_live_count(void) {
 }
 
 /* ex_data indices, registered once at first SSL_CTX/SSL touch:
- *   - us_ctx_ex_idx (SSL_CTX): packed reneg {limit:u32,window:u32}; its
+ *   - us_ctx_ex_idx (SSL_CTX): owned renegotiation policy; its
  *     free_func also decrements ssl_ctx_live so the counter tracks ACTUAL
  *     destruction (refcount→0), not every SSL_CTX_free.
  *   - us_sni_ex_idx (SSL_CTX): per-domain userdata (uWS HttpRouter*).
@@ -115,7 +118,6 @@ long us_ssl_ctx_live_count(void) {
  * the same via std::call_once.) */
 static int us_ctx_ex_idx = -1;
 static int us_sni_ex_idx = -1;
-static int us_ctx_cache_ex_idx = -1;
 static int us_ssl_reneg_state_idx = -1;
 static int us_ssl_listener_ex_idx = -1;
 #ifdef _WIN32
@@ -125,9 +127,10 @@ static INIT_ONCE us_ex_idx_once = INIT_ONCE_STATIC_INIT;
 static pthread_once_t us_ex_idx_once = PTHREAD_ONCE_INIT;
 #endif
 
-#define US_RENEG_PACK(limit, window) ((void *)(uintptr_t)(((uint64_t)(limit) << 32) | (uint32_t)(window)))
-#define US_RENEG_LIMIT(p)  ((uint32_t)((uint64_t)(uintptr_t)(p) >> 32))
-#define US_RENEG_WINDOW(p) ((uint32_t)((uint64_t)(uintptr_t)(p)))
+struct us_ssl_ctx_data_t {
+  uint32_t renegotiation_limit;
+  uint32_t renegotiation_window;
+};
 
 struct us_ssl_reneg_state_t {
   uint64_t window_start_ms;
@@ -136,8 +139,11 @@ struct us_ssl_reneg_state_t {
 
 static void us_ctx_ex_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
                            int index, long argl, void *argp) {
-  (void)parent; (void)ptr; (void)ad; (void)index; (void)argl; (void)argp;
-  atomic_fetch_sub(&ssl_ctx_live, 1);
+  (void)parent; (void)ad; (void)index; (void)argl; (void)argp;
+  if (ptr) {
+    us_free(ptr);
+    atomic_fetch_sub(&ssl_ctx_live, 1);
+  }
 }
 static void us_ssl_reneg_state_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
                                     int index, long argl, void *argp) {
@@ -145,16 +151,9 @@ static void us_ssl_reneg_state_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
   us_free(ptr);
 }
 
-/* Defined in Zig (`SSLContextCache.zig`): tombstones the cache entry on
- * SSL_CTX refcount→0 so the per-VM weak SSL_CTX cache learns the pointer is
- * dead without holding a ref of its own. */
-extern void bun_ssl_ctx_cache_on_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
-                                      int index, long argl, void *argp);
-
 static void us_ex_idx_init(void) {
   us_ctx_ex_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, us_ctx_ex_free);
   us_sni_ex_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
-  us_ctx_cache_ex_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, bun_ssl_ctx_cache_on_free);
   us_ssl_reneg_state_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_reneg_state_free);
   us_ssl_listener_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 }
@@ -180,16 +179,11 @@ static inline int us_ssl_ctx_ex_idx(void) {
   return us_ctx_ex_idx;
 }
 
-int us_ssl_ctx_cache_ex_idx(void) {
-  us_ex_idx_ensure();
-  return us_ctx_cache_ex_idx;
-}
-
 static inline void us_reneg_policy(SSL *ssl, uint32_t *limit, uint32_t *window) {
-  void *packed = us_ctx_ex_idx >= 0
+  const struct us_ssl_ctx_data_t *data = us_ctx_ex_idx >= 0
       ? SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl), us_ctx_ex_idx) : NULL;
-  *limit = packed ? US_RENEG_LIMIT(packed) : 3;
-  *window = packed ? US_RENEG_WINDOW(packed) : 600;
+  *limit = data ? data->renegotiation_limit : 3;
+  *window = data ? data->renegotiation_window : 600;
 }
 
 static inline struct us_ssl_reneg_state_t *us_reneg_state(SSL *ssl) {
@@ -237,14 +231,15 @@ static long BIO_s_custom_ctrl(BIO *bio, int cmd, long num, void *user) {
 static int BIO_s_custom_write(BIO *bio, const char *data, int length) {
   struct loop_ssl_data *loop_ssl_data = (struct loop_ssl_data *)BIO_get_data(bio);
 
-  int written = us_socket_raw_write(loop_ssl_data->ssl_socket, data, length);
+  const struct us_socket_write_result result = us_socket_raw_write_checked(loop_ssl_data->ssl_socket, data, length);
 
   BIO_clear_retry_flags(bio);
-  if (!written) {
+  if (result.status == US_SOCKET_WRITE_FAILED || result.status == US_SOCKET_WRITE_CLOSED) return -1;
+  if (!result.written && result.status == US_SOCKET_WRITE_BACKPRESSURE) {
     BIO_set_retry_write(bio);
     return -1;
   }
-  return written;
+  return result.written;
 }
 
 static int BIO_s_custom_read(BIO *bio, char *dst, int length) {
@@ -434,13 +429,14 @@ static int us_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
   return 1;
 }
 
-/* Drop the strdup'd passphrase. Called as soon as private-key load completes
+/* Drop the owned passphrase. Called as soon as private-key load completes
  * (the only consumer of the passwd_cb), so the secret never outlives ctx
  * construction and SSL_CTX_free() is sufficient on every later path. Also
  * called on the build-error path before SSL_CTX_free. */
 static void ssl_ctx_drop_passphrase(SSL_CTX *ctx) {
   void *password = SSL_CTX_get_default_passwd_cb_userdata(ctx);
   if (password) {
+    OPENSSL_cleanse(password, strlen(password));
     us_free(password);
     SSL_CTX_set_default_passwd_cb_userdata(ctx, NULL);
   }
@@ -448,22 +444,40 @@ static void ssl_ctx_drop_passphrase(SSL_CTX *ctx) {
 
 static void ssl_ctx_build_fail(SSL_CTX *ctx) {
   ssl_ctx_drop_passphrase(ctx);
-  /* ex_data slot already set right after SSL_CTX_new, so the free_func will
-   * decrement ssl_ctx_live on this SSL_CTX_free. */
   SSL_CTX_free(ctx);
 }
 
-/* Exported for quic.c (lsquic configures ALPN/transport-params on the SSL_CTX
- * directly) and as the body of us_ssl_ctx_from_options. */
-SSL_CTX *us_ssl_ctx_build_raw(struct us_bun_socket_context_options_t options,
+SSL_CTX *us_ssl_ctx_from_options(struct us_bun_socket_context_options_t options,
                               enum create_bun_socket_error_t *err) {
   ERR_clear_error();
+  *err = CREATE_BUN_SOCKET_ERROR_NONE;
 
   SSL_CTX *ssl_context = SSL_CTX_new(TLS_method());
+  if (!ssl_context) {
+    *err = CREATE_BUN_SOCKET_ERROR_OUT_OF_MEMORY;
+    return NULL;
+  }
+  const int context_index = us_ssl_ctx_ex_idx();
+  if (context_index < 0) {
+    *err = CREATE_BUN_SOCKET_ERROR_OUT_OF_MEMORY;
+    SSL_CTX_free(ssl_context);
+    return NULL;
+  }
+  struct us_ssl_ctx_data_t *data = us_malloc(sizeof(*data));
+  if (!data) {
+    *err = CREATE_BUN_SOCKET_ERROR_OUT_OF_MEMORY;
+    SSL_CTX_free(ssl_context);
+    return NULL;
+  }
+  data->renegotiation_limit = options.client_renegotiation_limit;
+  data->renegotiation_window = options.client_renegotiation_window;
+  if (!SSL_CTX_set_ex_data(ssl_context, context_index, data)) {
+    *err = CREATE_BUN_SOCKET_ERROR_OUT_OF_MEMORY;
+    us_free(data);
+    SSL_CTX_free(ssl_context);
+    return NULL;
+  }
   atomic_fetch_add(&ssl_ctx_live, 1);
-  /* Register the live-count free_func first thing so every exit (including
-   * build_fail) balances. The packed reneg policy reuses the same slot. */
-  SSL_CTX_set_ex_data(ssl_context, us_ssl_ctx_ex_idx(), NULL);
 
   /* Default options we rely on — changing these breaks the BIO logic. */
   SSL_CTX_set_read_ahead(ssl_context, 1);
@@ -475,11 +489,15 @@ SSL_CTX *us_ssl_ctx_build_raw(struct us_bun_socket_context_options_t options,
   }
 
   if (options.passphrase) {
-#ifdef _WIN32
-    SSL_CTX_set_default_passwd_cb_userdata(ssl_context, (void *)_strdup(options.passphrase));
-#else
-    SSL_CTX_set_default_passwd_cb_userdata(ssl_context, (void *)strdup(options.passphrase));
-#endif
+    const size_t password_size = strlen(options.passphrase) + 1;
+    char *password = us_malloc(password_size);
+    if (!password) {
+      *err = CREATE_BUN_SOCKET_ERROR_OUT_OF_MEMORY;
+      ssl_ctx_build_fail(ssl_context);
+      return NULL;
+    }
+    memcpy(password, options.passphrase, password_size);
+    SSL_CTX_set_default_passwd_cb_userdata(ssl_context, password);
     SSL_CTX_set_default_passwd_cb(ssl_context, passphrase_cb);
   }
 
@@ -589,7 +607,7 @@ SSL_CTX *us_ssl_ctx_build_raw(struct us_bun_socket_context_options_t options,
 
   if (options.ssl_ciphers) {
     if (!SSL_CTX_set_cipher_list(ssl_context, options.ssl_ciphers)) {
-      unsigned long ssl_err = ERR_get_error();
+      unsigned long ssl_err = ERR_peek_error();
       if (!(strlen(options.ssl_ciphers) == 0 && ERR_GET_REASON(ssl_err) == SSL_R_NO_CIPHER_MATCH)) {
         *err = CREATE_BUN_SOCKET_ERROR_INVALID_CIPHERS;
         ssl_ctx_build_fail(ssl_context);
@@ -604,31 +622,6 @@ SSL_CTX *us_ssl_ctx_build_raw(struct us_bun_socket_context_options_t options,
   }
 
   return ssl_context;
-}
-
-SSL_CTX *us_ssl_ctx_from_options(struct us_bun_socket_context_options_t options,
-                                 enum create_bun_socket_error_t *err) {
-  SSL_CTX *ctx = us_ssl_ctx_build_raw(options, err);
-  if (!ctx) return NULL;
-
-  /* SecureContext is mode-neutral (Node lets one back both tls.connect and
-   * tls.createServer), so we can't bake client-vs-server into the CTX. CTX
-   * verify_mode comes purely from options (ca/request_cert/reject_unauthorized)
-   * in build_raw — for a server that decides whether CertificateRequest is
-   * sent, so we MUST NOT force VERIFY_PEER here. The per-SSL client override
-   * (verify mode + trust store) lives in us_internal_ssl_attach. */
-
-  /* Reneg policy is the only Bun-specific config BoringSSL has nowhere to
-   * store. Packed into one ex_data slot (no malloc; the void* IS the value)
-   * so it dies with the SSL_CTX refcount. The slot was already registered in
-   * build_raw for the live counter; this just overwrites its NULL value. */
-  if (options.client_renegotiation_limit || options.client_renegotiation_window) {
-    SSL_CTX_set_ex_data(ctx, us_ssl_ctx_ex_idx(),
-        US_RENEG_PACK(options.client_renegotiation_limit,
-                      options.client_renegotiation_window));
-  }
-
-  return ctx;
 }
 
 /* SSL_CTX's own refcount IS the refcount; SSL_new() takes one more per socket
@@ -1137,25 +1130,30 @@ void *us_internal_ssl_get_native_handle(struct us_socket_t *s) {
   return s->ssl ? s_ssl(s) : NULL;
 }
 
-int us_internal_ssl_write(struct us_socket_t *s, const char *data, int length) {
-  if (us_socket_is_closed(s) || us_internal_ssl_is_shut_down(s) || length == 0) return 0;
+struct us_socket_write_result us_internal_ssl_write_checked(struct us_socket_t *s, const char *data, int length) {
+  if (us_socket_is_closed(s)) return (struct us_socket_write_result){0, US_SOCKET_WRITE_CLOSED};
+  if (us_internal_ssl_is_shut_down(s)) return (struct us_socket_write_result){0, US_SOCKET_WRITE_FAILED};
+  if (length == 0) return (struct us_socket_write_result){0, US_SOCKET_WRITE_COMPLETE};
 
-    struct loop_ssl_data *loop_ssl_data = (struct loop_ssl_data *)s->group->loop->data.ssl_data;
-
+  struct loop_ssl_data *loop_ssl_data = (struct loop_ssl_data *)s->group->loop->data.ssl_data;
   loop_ssl_data->ssl_read_input_length = 0;
   loop_ssl_data->ssl_socket = s;
 
   int written = SSL_write(s_ssl(s), data, length);
-  if (written > 0) return written;
+  if (written > 0) return (struct us_socket_write_result){written,
+      written == length ? US_SOCKET_WRITE_COMPLETE : US_SOCKET_WRITE_BACKPRESSURE};
 
   int err = SSL_get_error(s_ssl(s), written);
   if (err == SSL_ERROR_WANT_READ) {
     s->ssl_write_wants_read = 1;
-  } else if (err == SSL_ERROR_SSL || err == SSL_ERROR_SYSCALL) {
+    return (struct us_socket_write_result){0, US_SOCKET_WRITE_BACKPRESSURE};
+  }
+  if (err == SSL_ERROR_WANT_WRITE) return (struct us_socket_write_result){0, US_SOCKET_WRITE_BACKPRESSURE};
+  if (err == SSL_ERROR_SSL || err == SSL_ERROR_SYSCALL) {
     ERR_clear_error();
     s->ssl_fatal_error = 1;
   }
-  return 0;
+  return (struct us_socket_write_result){0, US_SOCKET_WRITE_FAILED};
 }
 
 void us_internal_ssl_shutdown(struct us_socket_t *s) {
@@ -1249,35 +1247,53 @@ static int sni_cb(SSL *ssl, int *al, void *arg) {
   return SSL_TLSEXT_ERR_OK;
 }
 
-int us_listen_socket_add_server_name(struct us_listen_socket_t *ls,
+static int store_server_name(struct us_listen_socket_t *ls,
                                      const char *hostname_pattern,
-                                     SSL_CTX *ctx, void *user) {
+                                     SSL_CTX *ctx, void *user, int replace) {
   SSL_CTX *default_ctx = ls->ssl_ctx;
-  if (!default_ctx) return -1;
+  if (!default_ctx) return US_SERVER_NAME_INVALID;
 
   if (!ls->sni) {
     ls->sni = sni_new();
-    /* Idempotent across listeners sharing this SSL_CTX — the callback reads
-     * the listener off the SSL, not the arg. */
-    SSL_CTX_set_tlsext_servername_callback(default_ctx, sni_cb);
+    if (!ls->sni) return US_SERVER_NAME_OUT_OF_MEMORY;
   }
+
+  us_ex_idx_ensure();
+  if (us_sni_ex_idx < 0) return US_SERVER_NAME_OUT_OF_MEMORY;
+  void *previous_user = SSL_CTX_get_ex_data(ctx, us_sni_ex_idx);
+  if (!SSL_CTX_set_ex_data(ctx, us_sni_ex_idx, previous_user)) return US_SERVER_NAME_OUT_OF_MEMORY;
 
   struct sni_node_t *node = us_malloc(sizeof(struct sni_node_t));
+  if (!node) return US_SERVER_NAME_OUT_OF_MEMORY;
   node->ctx = ctx;
   node->user = user;
-  SSL_CTX_up_ref(ctx);
-  /* Stash userdata on the SSL_CTX too so per-socket lookup via
-   * SSL_get_SSL_CTX works regardless of which ctx the SNI cb selected. */
-  us_ex_idx_ensure();
-  SSL_CTX_set_ex_data(ctx, us_sni_ex_idx, user);
-
-  if (sni_add(ls->sni, hostname_pattern, node)) {
-    /* Duplicate hostname — propagate so App.h's `if (result != 0)` rollback
-     * (which frees the per-domain HttpRouter it just built) actually fires. */
-    sni_node_destructor(node);
-    return 1;
+  void *previous = NULL;
+  const int result = replace
+      ? sni_replace(ls->sni, hostname_pattern, node, &previous)
+      : sni_add(ls->sni, hostname_pattern, node);
+  if (result != US_SERVER_NAME_OK) {
+    us_free(node);
+    return result;
   }
-  return 0;
+  SSL_CTX_up_ref(ctx);
+  /* The slot was reserved before tree insertion, so committing its value
+   * cannot allocate or fail. */
+  if (!SSL_CTX_set_ex_data(ctx, us_sni_ex_idx, user)) BUN_PANIC("SNI metadata commit failed");
+  SSL_CTX_set_tlsext_servername_callback(default_ctx, sni_cb);
+  sni_node_destructor(previous);
+  return US_SERVER_NAME_OK;
+}
+
+int us_listen_socket_add_server_name(struct us_listen_socket_t *ls,
+                                     const char *hostname_pattern,
+                                     SSL_CTX *ctx, void *user) {
+  return store_server_name(ls, hostname_pattern, ctx, user, 0);
+}
+
+int us_listen_socket_replace_server_name(struct us_listen_socket_t *ls,
+                                         const char *hostname_pattern,
+                                         SSL_CTX *ctx, void *user) {
+  return store_server_name(ls, hostname_pattern, ctx, user, 1);
 }
 
 void us_listen_socket_remove_server_name(struct us_listen_socket_t *ls,
@@ -1318,17 +1334,6 @@ void us_internal_listen_socket_ssl_free(struct us_listen_socket_t *ls) {
   if (us_ssl_listener_ex_idx >= 0 && ls->accept_group) {
     for (struct us_socket_t *s = ls->accept_group->head_sockets; s; s = s->next) {
       if (s->ssl && SSL_get_ex_data((SSL *)s->ssl, us_ssl_listener_ex_idx) == ls) {
-        SSL_set_ex_data((SSL *)s->ssl, us_ssl_listener_ex_idx, NULL);
-      }
-    }
-    /* Mid-handshake sockets (SSL_in_init → low_prio) are *unlinked* from
-     * head_sockets while parked in loop->data.low_prio_head, and they're
-     * exactly the population that will run sni_cb on the next tick. Miss them
-     * here and sni_cb dereferences `ls` after it's freed. Same group-filter as
-     * close_all's drain. */
-    for (struct us_socket_t *s = ls->accept_group->loop->data.low_prio_head; s; s = s->next) {
-      if (s->group == ls->accept_group && s->ssl &&
-          SSL_get_ex_data((SSL *)s->ssl, us_ssl_listener_ex_idx) == ls) {
         SSL_set_ex_data((SSL *)s->ssl, us_ssl_listener_ex_idx, NULL);
       }
     }

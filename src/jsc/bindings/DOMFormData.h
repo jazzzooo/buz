@@ -30,74 +30,85 @@
 
 #pragma once
 
-#include "ContextDestructionObserver.h"
+#include "ExceptionOr.h"
 #include <variant>
 #include <wtf/RefCounted.h>
+#include <wtf/RefPtr.h>
 #include <wtf/text/WTFString.h>
 #include "blob.h"
 
 namespace WebCore {
 
-class ScriptExecutionContext;
-
-template<typename> class ExceptionOr;
-class HTMLElement;
-class HTMLFormElement;
 DECLARE_ALLOCATOR_WITH_HEAP_IDENTIFIER(DOMFormData);
 
-class DOMFormData : public RefCounted<DOMFormData>, public ContextDestructionObserver {
+class DOMFormData : public RefCounted<DOMFormData> {
+    WTF_MAKE_NONCOPYABLE(DOMFormData);
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED_WITH_HEAP_IDENTIFIER(DOMFormData, DOMFormData);
 
 public:
-    using FormDataEntryValue = std::variant<String, RefPtr<Blob>>;
+    using FormDataEntryValue = std::variant<String, Ref<Blob>>;
 
     struct Item {
         String name;
         FormDataEntryValue data;
     };
 
-    // static Ref<DOMFormData> create(ScriptExecutionContext*, const PAL::TextEncoding&);
-    static Ref<DOMFormData> create(ScriptExecutionContext*);
-    static Ref<DOMFormData> create(ScriptExecutionContext*, const StringView& urlEncodedString);
+    // A preparation may span allocation, but must not span reentrant JavaScript.
+    class PreparedMutation {
+        WTF_MAKE_NONCOPYABLE(PreparedMutation);
+
+    public:
+        PreparedMutation(PreparedMutation&&);
+        ~PreparedMutation();
+
+        const Item& item() const { RELEASE_ASSERT(m_target); return m_item; }
+        size_t index() const { return m_index; }
+        void commit();
+
+    private:
+        friend class DOMFormData;
+        PreparedMutation(DOMFormData&, Item&&, size_t index, bool replacesExisting);
+
+        RefPtr<DOMFormData> m_target;
+        Item m_item;
+        size_t m_index;
+        bool m_replacesExisting;
+    };
+
+    static ExceptionOr<Ref<DOMFormData>> create();
+    static ExceptionOr<Ref<DOMFormData>> create(std::span<const uint8_t> urlEncodedBytes);
 
     const Vector<Item>& items() const { return m_items; }
-    // const PAL::TextEncoding& encoding() const { return m_encoding; }
-
-    void append(const String& name, const String& value);
-    void append(const String& name, RefPtr<Blob>, const String& filename = {});
+    ExceptionOr<PreparedMutation> prepareAppend(const String& name, const String& value);
+    ExceptionOr<PreparedMutation> prepareAppend(const String& name, Ref<Blob>, const String& filename);
+    ExceptionOr<PreparedMutation> prepareSet(const String& name, const String& value);
+    ExceptionOr<PreparedMutation> prepareSet(const String& name, Ref<Blob>, const String& filename);
+    ExceptionOr<void> append(const String& name, const String& value);
+    ExceptionOr<void> append(const String& name, Ref<Blob>, const String& filename);
     void remove(const StringView name);
-    std::optional<FormDataEntryValue> get(const StringView name);
-    Vector<FormDataEntryValue> getAll(const StringView name);
     bool has(const StringView name);
-    void set(const String& name, const String& value);
-    void set(const String& name, RefPtr<Blob>, const String& filename = {});
-    Ref<DOMFormData> clone() const;
 
     size_t count() const { return m_items.size(); }
     size_t memoryCost() const;
 
-    String toURLEncodedString();
-
     class Iterator {
     public:
         explicit Iterator(DOMFormData&);
+        size_t index() const { return m_index; }
         std::optional<KeyValuePair<String, FormDataEntryValue>> next();
 
     private:
         Ref<DOMFormData> m_target;
         size_t m_index { 0 };
     };
-    Iterator createIterator() { return Iterator { *this }; }
-    Iterator createIterator(const ScriptExecutionContext* context) { return Iterator { *this }; }
 
 private:
-    // explicit DOMFormData(ScriptExecutionContext*, const PAL::TextEncoding& = PAL::UTF8Encoding());
-    explicit DOMFormData(ScriptExecutionContext*);
+    DOMFormData() = default;
 
-    void set(const String& name, Item&&);
+    ExceptionOr<PreparedMutation> prepareMutation(Item&&, bool replace);
 
-    // PAL::TextEncoding m_encoding;
     Vector<Item> m_items;
+    bool m_mutationPending { false };
 };
 
 } // namespace WebCore

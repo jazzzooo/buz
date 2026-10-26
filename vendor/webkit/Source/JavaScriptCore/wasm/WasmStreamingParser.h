@@ -123,7 +123,7 @@ private:
     size_t m_nextOffset { 0 };
     size_t m_codeOffset { 0 };
 
-    SHA1 m_hasher;
+    WTF::SHA1 m_hasher;
 
     uint32_t m_sectionLength { 0 };
 

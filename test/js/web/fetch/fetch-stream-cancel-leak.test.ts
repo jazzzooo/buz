@@ -8,7 +8,7 @@ import { bunEnv, bunExe } from "harness";
 // readable_stream_ref (a Strong GC root) is not released because:
 //   1. ByteStream.onCancel() doesn't notify the FetchTasklet
 //   2. The HTTP connection stays open, so has_more never becomes false
-//   3. Bun__FetchResponse_finalize sees the Strong ref and skips cleanup
+//   3. FetchTasklet's response finalizer sees the Strong ref and skips cleanup
 //
 // This creates a circular dependency where the Strong ref prevents GC,
 // and the GC finalizer skips cleanup because the Strong ref exists.

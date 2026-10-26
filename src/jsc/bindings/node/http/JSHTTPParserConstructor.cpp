@@ -9,13 +9,17 @@ using namespace JSC;
 
 const ClassInfo JSHTTPParserConstructor::s_info = { "HTTPParser"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSHTTPParserConstructor) };
 
-JSC_DEFINE_HOST_FUNCTION(callHTTPParser, (JSC::JSGlobalObject * lexicalGlobalObject, JSC::CallFrame* callFrame))
+void Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserConstructorCall(
+    Bindgen::CppCallContext&,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserConstructorCall_Arguments&)
 {
-    return JSValue::encode(jsUndefined());
 }
 
-JSC_DEFINE_HOST_FUNCTION(constructHTTPParser, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
+JSC::JSValue Bindgen::Cpp::bunBindgenCpp_NodeHTTP_httpParserConstructorConstruct(
+    Bindgen::CppCallContext& context,
+    const Bindgen::Cpp::BunBindgenCpp_NodeHTTP_httpParserConstructorConstruct_Arguments&)
 {
+    auto* lexicalGlobalObject = &context.globalObject;
     VM& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
     auto* globalObject = defaultGlobalObject(lexicalGlobalObject);
@@ -23,7 +27,7 @@ JSC_DEFINE_HOST_FUNCTION(constructHTTPParser, (JSGlobalObject * lexicalGlobalObj
     Structure* structure = globalObject->m_JSHTTPParserClassStructure.get(globalObject);
     JSHTTPParser* HTTPParser = JSHTTPParser::create(vm, structure, globalObject);
 
-    return JSValue::encode(HTTPParser);
+    return HTTPParser;
 }
 
 void JSHTTPParserConstructor::finishCreation(VM& vm, JSObject* prototype)

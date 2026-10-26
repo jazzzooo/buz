@@ -36,9 +36,10 @@ DOMGuardedObject::DOMGuardedObject(JSDOMGlobalObject& globalObject, JSCell& guar
 {
     if (globalObject.vm().heap.mutatorShouldBeFenced()) {
         Locker locker { globalObject.gcLock() };
-        globalObject.guardedObjects().add(this);
+        globalObject.guardedObjects().append(this);
     } else
-        globalObject.guardedObjects(NoLockingNecessary).add(this);
+        globalObject.guardedObjects(NoLockingNecessary).append(this);
+    m_registeredWithGlobalObject = true;
     globalObject.vm().writeBarrier(&globalObject, &guarded);
 }
 
@@ -68,21 +69,27 @@ void DOMGuardedObject::clear()
 
 void DOMGuardedObject::removeFromGlobalObject()
 {
-    if (!m_globalObject)
+    if (!m_globalObject) {
+        m_registeredWithGlobalObject = false;
+        m_prev = nullptr;
+        m_next = nullptr;
         return;
+    }
 
-    if (m_globalObject->vm().heap.mutatorShouldBeFenced()) {
-        Locker locker { m_globalObject->gcLock() };
-        m_globalObject->guardedObjects().remove(this);
-    } else
-        m_globalObject->guardedObjects(NoLockingNecessary).remove(this);
+    if (m_registeredWithGlobalObject) {
+        if (m_globalObject->vm().heap.mutatorShouldBeFenced()) {
+            Locker locker { m_globalObject->gcLock() };
+            m_globalObject->guardedObjects().remove(this);
+        } else
+            m_globalObject->guardedObjects(NoLockingNecessary).remove(this);
+        m_registeredWithGlobalObject = false;
+    }
 
     m_globalObject.clear();
 }
 
-void DOMGuardedObject::contextDestroyed()
+void DOMGuardedObject::contextDestroyed(ScriptExecutionContext&)
 {
-    ActiveDOMCallback::contextDestroyed();
     clear();
 }
 

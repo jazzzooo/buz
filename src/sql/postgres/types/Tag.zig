@@ -241,11 +241,6 @@ pub const Tag = enum(short) {
         };
     }
 
-    pub const toJSTypedArrayType = tag_jsc.toJSTypedArrayType;
-    pub const toJS = tag_jsc.toJS;
-    pub const fromJS = tag_jsc.fromJS;
-    const tag_jsc = @import("../../../sql_jsc/postgres/types/tag_jsc.zig");
-
     pub fn byteArrayType(comptime T: Tag) !type {
         return comptime switch (T) {
             .int4_array => i32,

@@ -15,29 +15,26 @@
 #include "JavaScriptCore/JSString.h"
 #include "JavaScriptCore/JSModuleNamespaceObject.h"
 #include "ImportMetaObject.h"
+#include "SchemaBindings.h"
 
 namespace Bake {
 
-  
-extern "C" BunString BakeSourceProvider__getSourceSlice(SourceProvider* provider)
-{
-    return Bun::toStringView(provider->source());
-}
-
-extern "C" JSC::EncodedJSValue BakeLoadInitialServerCode(JSC::JSGlobalObject* global, BunString source, bool separateSSRGraph) {
+static JSC::JSValue loadInitialServerCode(JSC::JSGlobalObject* global, const WTF::String& source, bool separateSSRGraph) {
   auto& vm = JSC::getVM(global);
   auto scope = DECLARE_THROW_SCOPE(vm);
 
   String string = "bake://server-runtime.js"_s;
   JSC::SourceOrigin origin = JSC::SourceOrigin(WTF::URL(string));
-  JSC::SourceCode sourceCode = JSC::SourceCode(SourceProvider::create(
+  auto provider = SourceProvider::create(
     global,
-    source.toWTFString(),
+    source,
     origin,
     WTF::move(string),
     WTF::TextPosition(),
     JSC::SourceProviderSourceType::Program
-  ));
+  );
+  RETURN_IF_EXCEPTION(scope, {});
+  JSC::SourceCode sourceCode(provider.releaseNonNull());
 
   JSC::JSValue fnValue = vm.interpreter.executeProgram(sourceCode, global, global);
   RETURN_IF_EXCEPTION(scope, {});
@@ -47,40 +44,45 @@ extern "C" JSC::EncodedJSValue BakeLoadInitialServerCode(JSC::JSGlobalObject* gl
   JSC::JSFunction* fn = uncheckedDowncast<JSC::JSFunction>(fnValue);
   JSC::CallData callData = JSC::getCallData(fn);
 
+  auto* importMeta = Zig::ImportMetaObject::create(global, "bake://server-runtime.js"_s);
+  RETURN_IF_EXCEPTION(scope, {});
+
   JSC::MarkedArgumentBuffer args;
-  args.append(JSC::jsBoolean(separateSSRGraph)); // separateSSRGraph
-  args.append(Zig::ImportMetaObject::create(global, "bake://server-runtime.js"_s)); // importMeta
+  args.append(JSC::jsBoolean(separateSSRGraph));
+  args.append(importMeta);
+  if (args.hasOverflowed()) {
+    JSC::throwOutOfMemoryError(global, scope);
+    return {};
+  }
 
-  RELEASE_AND_RETURN(scope, JSC::JSValue::encode(JSC::profiledCall(global, JSC::ProfilingReason::API, fn, callData, JSC::jsUndefined(), args)));
+  RELEASE_AND_RETURN(scope, JSC::profiledCall(global, JSC::ProfilingReason::API, fn, callData, JSC::jsUndefined(), args));
 }
 
-extern "C" JSC::JSPromise* BakeLoadModuleByKey(GlobalObject* global, JSC::JSString* key) {
-  return JSC::loadAndEvaluateModule(global, key->getString(global), nullptr, nullptr);
-}
-
-extern "C" JSC::EncodedJSValue BakeLoadServerHmrPatch(GlobalObject* global, BunString source) {
+static JSC::JSValue loadServerHmrPatch(JSC::JSGlobalObject* global, const WTF::String& source) {
   JSC::VM&vm = global->vm();
   auto scope = DECLARE_THROW_SCOPE(vm);
 
   String string = "bake://server.patch.js"_s;
   JSC::SourceOrigin origin = JSC::SourceOrigin(WTF::URL(string));
-  JSC::SourceCode sourceCode = JSC::SourceCode(SourceProvider::create(
+  auto provider = SourceProvider::create(
     global,
-    source.toWTFString(),
+    source,
     origin,
     WTF::move(string),
     WTF::TextPosition(),
     JSC::SourceProviderSourceType::Program
-  ));
+  );
+  RETURN_IF_EXCEPTION(scope, {});
+  JSC::SourceCode sourceCode(provider.releaseNonNull());
 
   JSC::JSValue result = vm.interpreter.executeProgram(sourceCode, global, global);
   RETURN_IF_EXCEPTION(scope, {});
 
   RELEASE_ASSERT(result);
-  return JSC::JSValue::encode(result);
+  return result;
 }
 
-extern "C" JSC::EncodedJSValue BakeLoadServerHmrPatchWithSourceMap(GlobalObject* global, BunString source, const char* sourceMapJSONPtr, size_t sourceMapJSONLength) {
+static JSC::JSValue loadServerHmrPatchWithSourceMap(JSC::JSGlobalObject* global, const WTF::String& source, std::span<const uint8_t> sourceMapJSON) {
   JSC::VM&vm = global->vm();
   auto scope = DECLARE_THROW_SCOPE(vm);
 
@@ -90,82 +92,115 @@ extern "C" JSC::EncodedJSValue BakeLoadServerHmrPatchWithSourceMap(GlobalObject*
   // Use DevServerSourceProvider with the source map JSON
   auto provider = DevServerSourceProvider::create(
     global,
-    source.toWTFString(),
-    sourceMapJSONPtr,
-    sourceMapJSONLength,
+    source,
+    sourceMapJSON,
     origin,
     WTF::move(string),
     WTF::TextPosition(),
     JSC::SourceProviderSourceType::Program
   );
   
-  JSC::SourceCode sourceCode = JSC::SourceCode(provider);
+  RETURN_IF_EXCEPTION(scope, {});
+  JSC::SourceCode sourceCode(provider.releaseNonNull());
 
   JSC::JSValue result = vm.interpreter.executeProgram(sourceCode, global, global);
   RETURN_IF_EXCEPTION(scope, {});
 
   RELEASE_ASSERT(result);
-  return JSC::JSValue::encode(result);
+  return result;
 }
 
-extern "C" JSC::EncodedJSValue BakeGetModuleNamespace(
-  JSC::JSGlobalObject* global,
-  JSC::JSValue keyValue
-) {
-  JSC::JSString* key = uncheckedDowncast<JSC::JSString>(keyValue);
+static JSC::JSModuleNamespaceObject* getModuleNamespace(JSC::JSGlobalObject* global, const WTF::String& moduleName) {
   auto& vm = JSC::getVM(global);
-  auto keyIdent = JSC::Identifier::fromString(vm, key->value(global));
+  auto scope = DECLARE_THROW_SCOPE(vm);
+  auto keyIdent = JSC::Identifier::fromString(vm, moduleName);
   auto* entry = global->moduleLoader()->registryEntry(keyIdent);
-  ASSERT(entry); // should have called BakeLoadServerCode and wait for that promise
+  ASSERT(entry);
   auto* module = entry ? entry->record() : nullptr;
   ASSERT(module);
   JSC::JSModuleNamespaceObject* namespaceObject = global->moduleLoader()->getModuleNamespaceObject(global, module);
+  RETURN_IF_EXCEPTION(scope, nullptr);
   ASSERT(namespaceObject);
-  return JSC::JSValue::encode(namespaceObject);
+  return namespaceObject;
 }
 
-extern "C" JSC::EncodedJSValue BakeGetDefaultExportFromModule(
-  JSC::JSGlobalObject* global,
-  JSC::JSValue keyValue
-) {
-  auto& vm = JSC::getVM(global);
-  return JSC::JSValue::encode(uncheckedDowncast<JSC::JSModuleNamespaceObject>(JSC::JSValue::decode(BakeGetModuleNamespace(global, keyValue)))->get(global, vm.propertyNames->defaultKeyword));
-}
-
-// There were issues when trying to use JSValue.get from zig
-extern "C" JSC::EncodedJSValue BakeGetOnModuleNamespace(
-  JSC::JSGlobalObject* global,
-  JSC::JSModuleNamespaceObject* moduleNamespace,
-  const unsigned char* key,
-  size_t keyLength
-) {
-  auto& vm = JSC::getVM(global);
-  const auto propertyString = String(StringImpl::createWithoutCopying({ key, keyLength }));
-  const auto identifier = JSC::Identifier::fromString(vm, propertyString);
-  const auto property = JSC::PropertyName(identifier);
-  return JSC::JSValue::encode(moduleNamespace->get(global, property));
-}
-
-extern "C" JSC::EncodedJSValue BakeRegisterProductionChunk(JSC::JSGlobalObject* global, BunString virtualPathName, BunString source) {
+static JSC::JSValue getDefaultExportFromModule(JSC::JSGlobalObject* global, const WTF::String& moduleName) {
   auto& vm = JSC::getVM(global);
   auto scope = DECLARE_THROW_SCOPE(vm);
-
-  String string = virtualPathName.toWTFString();
-  JSC::JSString* key = JSC::jsString(vm, string);
-  JSC::SourceOrigin origin = JSC::SourceOrigin(WTF::URL(string));
-  JSC::SourceCode sourceCode = JSC::SourceCode(SourceProvider::create(
-    global,
-    source.toWTFString(),
-    origin,
-    WTF::move(string),
-    WTF::TextPosition(),
-    JSC::SourceProviderSourceType::Module
-  ));
-
-  global->moduleLoader()->provideFetch(global, JSC::Identifier::fromString(vm, key->getString(global)), JSC::ScriptFetchParameters::Type::JavaScript, WTF::move(sourceCode));
+  auto* moduleNamespace = getModuleNamespace(global, moduleName);
   RETURN_IF_EXCEPTION(scope, {});
+  RELEASE_AND_RETURN(scope, moduleNamespace->get(global, vm.propertyNames->defaultKeyword));
+}
 
-  return JSC::JSValue::encode(key);
+static std::optional<JSC::JSValue> getCallableExport(
+  JSC::JSGlobalObject* global,
+  const WTF::String& moduleName,
+  Bun::Bindgen::BakeProductionCallableExport kind
+) {
+  auto& vm = JSC::getVM(global);
+  auto scope = DECLARE_THROW_SCOPE(vm);
+  auto* moduleNamespace = getModuleNamespace(global, moduleName);
+  RETURN_IF_EXCEPTION(scope, std::nullopt);
+  JSC::JSValue value;
+  switch (kind) {
+  case Bun::Bindgen::BakeProductionCallableExport::prerender:
+    value = moduleNamespace->get(global, JSC::Identifier::fromString(vm, "prerender"_s));
+    break;
+  case Bun::Bindgen::BakeProductionCallableExport::get_params:
+    value = moduleNamespace->get(global, JSC::Identifier::fromString(vm, "getParams"_s));
+    break;
+  }
+  RETURN_IF_EXCEPTION(scope, std::nullopt);
+  if (!value.isCallable())
+    return std::nullopt;
+  return value;
 }
 
 } // namespace Bake
+
+Bun::Bindgen::Engine::BunBindgenEngine_DevServer_bakeLoadInitialServerCode_Return Bun::Bindgen::Engine::bunBindgenEngine_DevServer_bakeLoadInitialServerCode(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_DevServer_bakeLoadInitialServerCode_Arguments& args)
+{
+    auto* globalObject = &context.globalObject;
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto interfaceValue = Bake::loadInitialServerCode(globalObject, args.source, args.separateSSRGraph);
+    RETURN_IF_EXCEPTION(scope, {});
+    auto* interfaceObject = interfaceValue.getObject();
+    RELEASE_ASSERT(interfaceObject);
+
+    auto handleRequest = interfaceObject->get(globalObject, JSC::Identifier::fromString(vm, "handleRequest"_s));
+    RETURN_IF_EXCEPTION(scope, {});
+    auto registerUpdate = interfaceObject->get(globalObject, JSC::Identifier::fromString(vm, "registerUpdate"_s));
+    RETURN_IF_EXCEPTION(scope, {});
+    return { .handleRequest = handleRequest, .registerUpdate = registerUpdate };
+}
+
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_DevServer_bakeLoadServerHmrPatch(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_DevServer_bakeLoadServerHmrPatch_Arguments& args)
+{
+    return Bake::loadServerHmrPatch(&context.globalObject, args.source);
+}
+
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_DevServer_bakeLoadServerHmrPatchWithSourceMap(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_DevServer_bakeLoadServerHmrPatchWithSourceMap_Arguments& args)
+{
+    return Bake::loadServerHmrPatchWithSourceMap(&context.globalObject, args.source, args.sourceMapJSON);
+}
+
+JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_BakeProduction_bakeGetDefaultExportFromModule(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_BakeProduction_bakeGetDefaultExportFromModule_Arguments& args)
+{
+    return Bake::getDefaultExportFromModule(&context.globalObject, args.moduleName);
+}
+
+Bun::Bindgen::Engine::BunBindgenEngine_BakeProduction_getCallableExport_Return Bun::Bindgen::Engine::bunBindgenEngine_BakeProduction_getCallableExport(
+    Bun::Bindgen::EngineCallContext& context,
+    const Bun::Bindgen::Engine::BunBindgenEngine_BakeProduction_getCallableExport_Arguments& args)
+{
+    return Bake::getCallableExport(&context.globalObject, args.moduleName, args.kind);
+}

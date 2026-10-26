@@ -1060,7 +1060,7 @@ pub const SelectorParser = struct {
             .{ "-moz-any", css.VendorPrefix{ .moz = true } },
         });
 
-        return Map.getAnyCase(name);
+        return Map.getCaseInsensitiveASCII(name);
     }
 
     pub fn parseNonTsPseudoClass(
@@ -1162,7 +1162,7 @@ pub const SelectorParser = struct {
                 .{ "window-inactive", PseudoClass{ .webkit_scrollbar = .window_inactive } },
             });
 
-            if (Map.getAnyCase(name)) |pseudo| {
+            if (Map.getCaseInsensitiveASCII(name)) |pseudo| {
                 break :pseudo_class pseudo;
             } else {
                 if (bun.strings.startsWithChar(name, '_')) {
@@ -1312,7 +1312,7 @@ pub const SelectorParser = struct {
             .{ "view-transition", PseudoElement.view_transition },
         });
 
-        const pseudo_element = Map.getCaseInsensitiveWithEql(name, bun.strings.eqlComptimeIgnoreLen) orelse brk: {
+        const pseudo_element = Map.getCaseInsensitiveASCII(name) orelse brk: {
             if (!bun.strings.startsWithChar(name, '-')) {
                 this.options.warn(loc.newCustomError(SelectorParseErrorKind{ .unsupported_pseudo_class_or_element = name }));
             }
@@ -3032,7 +3032,7 @@ pub fn parse_functional_pseudo_class(
     };
     const Map = bun.ComptimeEnumMap(FunctionalPseudoClass);
 
-    if (Map.getASCIIICaseInsensitive(name)) |functional_pseudo_class| {
+    if (Map.getCaseInsensitiveASCII(name)) |functional_pseudo_class| {
         switch (functional_pseudo_class) {
             .@"nth-child" => return parse_nth_pseudo_class(Impl, parser, input, state.*, .child),
             .@"nth-of-type" => return parse_nth_pseudo_class(Impl, parser, input, state.*, .of_type),
@@ -3087,7 +3087,7 @@ pub fn parse_simple_pseudo_class(
     }
 
     if (state.allowsTreeStructuralPseudoClasses()) {
-        if (TreeStructuralPseudoClassMap.getAnyCase(name)) |pseudo_class| {
+        if (TreeStructuralPseudoClassMap.getCaseInsensitiveASCII(name)) |pseudo_class| {
             switch (pseudo_class) {
                 .@"first-child" => return .{ .result = .{ .nth = NthSelectorData.first(false) } },
                 .@"last-child" => return .{ .result = .{ .nth = NthSelectorData.last(false) } },

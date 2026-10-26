@@ -2,6 +2,7 @@
 
 #include "root.h"
 #include "JavaScriptCore/JSGlobalObject.h"
+#include "DOMWrapperWorld-class.h"
 
 namespace Bun {
 
@@ -16,11 +17,13 @@ protected:
 public:
     GlobalScope(JSC::VM& vm, JSC::Structure* structure)
         : Base(vm, structure)
+        , m_world(WebCore::DOMWrapperWorld::create(vm))
     {
     }
 
     GlobalScope(JSC::VM& vm, JSC::Structure* structure, const JSC::GlobalObjectMethodTable* methodTable)
         : Base(vm, structure, methodTable)
+        , m_world(WebCore::DOMWrapperWorld::create(vm))
     {
     }
 
@@ -28,6 +31,7 @@ public:
     DECLARE_VISIT_CHILDREN;
 
     JSC::Structure* encodeIntoObjectStructure() const { return m_encodeIntoObjectStructure.getInitializedOnMainThread(this); }
+    WebCore::DOMWrapperWorld& world() const { return m_world.get(); }
 
     /**
      * WARNING: You must update visitChildrenImpl() if you add a new field.
@@ -40,6 +44,9 @@ public:
      * those callbacks will eventually never be called anymore. But it'll work the first time!
      */
     LazyProperty<JSGlobalObject, Structure> m_encodeIntoObjectStructure;
+
+private:
+    Ref<WebCore::DOMWrapperWorld> m_world;
 };
 
 } // namespace Bun

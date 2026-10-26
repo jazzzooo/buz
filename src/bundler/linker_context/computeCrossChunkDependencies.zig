@@ -23,7 +23,7 @@ pub fn computeCrossChunkDependencies(c: *LinkerContext, chunks: []Chunk) !void {
     }
 
     {
-        const cross_chunk_dependencies = c.allocator().create(CrossChunkDependencies) catch unreachable;
+        const cross_chunk_dependencies = try c.allocator().create(CrossChunkDependencies);
         defer c.allocator().destroy(cross_chunk_dependencies);
 
         cross_chunk_dependencies.* = .{
@@ -419,7 +419,6 @@ fn computeCrossChunkDependenciesWithChunkMetas(c: *LinkerContext, chunks: []Chun
     }
 }
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 

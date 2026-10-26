@@ -1,6 +1,5 @@
 pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
-const Maybe = css.Maybe;
 const PrintErr = css.PrintErr;
 const Location = css.css_rules.Location;
 const Result = css.Result;
@@ -38,7 +37,7 @@ pub const KeyframesListParser = struct {
             return .{ .err = input.newError(css.BasicParseErrorKind.at_rule_body_invalid) };
         }
 
-        pub fn ruleWithoutBlock(_: *This, _: AtRuleParser.Prelude, _: *const css.ParserState) css.Maybe(AtRuleParser.AtRule, void) {
+        pub fn ruleWithoutBlock(_: *This, _: AtRuleParser.Prelude, _: *const css.ParserState) css.Outcome(AtRuleParser.AtRule, void) {
             return .{ .err = {} };
         }
     };

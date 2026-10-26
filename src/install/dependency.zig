@@ -82,7 +82,7 @@ pub fn cloneWithDifferentBuffers(this: *const Dependency, package_manager: *Pack
             this.version.tag,
             &sliced,
             null,
-            package_manager,
+            ParseContext.fromPackageManager(package_manager),
         ) orelse Dependency.Version{},
         .behavior = this.behavior,
     };
@@ -99,7 +99,19 @@ pub const Context = struct {
     allocator: std.mem.Allocator,
     log: *logger.Log,
     buffer: []const u8,
-    package_manager: ?*PackageManager,
+    parse: ParseContext,
+};
+
+pub const ParseContext = struct {
+    javascript_semantics: JavaScriptSemantics,
+    package_manager: ?*PackageManager = null,
+
+    pub fn fromPackageManager(package_manager: *PackageManager) ParseContext {
+        return .{
+            .javascript_semantics = package_manager.javascript_semantics,
+            .package_manager = package_manager,
+        };
+    }
 };
 
 /// Get the name of the package as it should appear in a remote registry.
@@ -273,7 +285,6 @@ pub const Version = struct {
     literal: String = .{},
     value: Value = .{ .uninitialized = {} },
 
-    pub const toJS = @import("../install_jsc/dependency_jsc.zig").versionToJS;
     pub inline fn npm(this: *const Version) ?NpmInfo {
         return if (this.tag == .npm) this.value.npm else null;
     }
@@ -334,7 +345,7 @@ pub const Version = struct {
             tag,
             sliced,
             ctx.log,
-            ctx.package_manager,
+            ctx.parse,
         ) orelse Dependency.Version.zeroed;
     }
 
@@ -412,8 +423,6 @@ pub const Version = struct {
             .{ "github", .github },
             .{ "catalog", .catalog },
         });
-        pub const fromJS = map.fromJS;
-
         pub fn cmp(this: Tag, other: Tag) std.math.Order {
             // TODO: align with yarn
             return std.math.order(@backingInt(this), @backingInt(other));
@@ -423,7 +432,7 @@ pub const Version = struct {
             return @backingInt(this) < 3;
         }
 
-        pub fn infer(dependency: string) Tag {
+        pub fn infer(javascript_semantics: JavaScriptSemantics, dependency: string) Tag {
             // empty string means `latest`
             if (dependency.len == 0) return .dist_tag;
 
@@ -512,7 +521,7 @@ pub const Version = struct {
                                             if (hosted_git_info.isGitHubShorthand(url["github.com/".len..])) return .github;
                                         }
 
-                                        if (hosted_git_info.HostedGitInfo.fromUrl(allocator, dependency) catch null) |info| {
+                                        if (hosted_git_info.HostedGitInfo.fromUrl(javascript_semantics, allocator, dependency) catch null) |info| {
                                             defer info.deinit();
                                             return hgiToTag(info);
                                         }
@@ -549,7 +558,7 @@ pub const Version = struct {
                                                 if (hosted_git_info.isGitHubShorthand(url["github.com/".len..])) return .github;
                                             }
 
-                                            if (hosted_git_info.HostedGitInfo.fromUrl(allocator, dependency) catch null) |info| {
+                                            if (hosted_git_info.HostedGitInfo.fromUrl(javascript_semantics, allocator, dependency) catch null) |info| {
                                                 defer info.deinit();
                                                 return hgiToTag(info);
                                             }
@@ -595,7 +604,7 @@ pub const Version = struct {
                                 if (hosted_git_info.isGitHubShorthand(path)) return .github;
                             }
 
-                            if (hosted_git_info.HostedGitInfo.fromUrl(allocator, dependency) catch null) |info| {
+                            if (hosted_git_info.HostedGitInfo.fromUrl(javascript_semantics, allocator, dependency) catch null) |info| {
                                 defer info.deinit();
                                 return hgiToTag(info);
                             }
@@ -618,7 +627,7 @@ pub const Version = struct {
                                 url = url["git@".len..];
                             }
 
-                            if (hosted_git_info.HostedGitInfo.fromUrl(allocator, dependency) catch null) |info| {
+                            if (hosted_git_info.HostedGitInfo.fromUrl(javascript_semantics, allocator, dependency) catch null) |info| {
                                 defer info.deinit();
                                 return hgiToTag(info);
                             }
@@ -640,7 +649,7 @@ pub const Version = struct {
                         const remain = dependency["npm:".len + @intFromBool(dependency["npm:".len] == '@') ..];
                         for (remain, 0..) |c, i| {
                             if (c == '@') {
-                                return infer(remain[i + 1 ..]);
+                                return infer(javascript_semantics, remain[i + 1 ..]);
                             }
                         }
 
@@ -694,7 +703,7 @@ pub const Version = struct {
 
             // git@example.com:path/to/repo.git
             if (isSCPLikePath(dependency)) {
-                if (hosted_git_info.HostedGitInfo.fromUrl(allocator, dependency) catch null) |info| {
+                if (hosted_git_info.HostedGitInfo.fromUrl(javascript_semantics, allocator, dependency) catch null) |info| {
                     defer info.deinit();
                     return hgiToTag(info);
                 }
@@ -709,8 +718,6 @@ pub const Version = struct {
 
             return .npm;
         }
-
-        pub const inferFromJS = @import("../install_jsc/dependency_jsc.zig").tagInferFromJS;
     };
 
     pub const NpmInfo = struct {
@@ -795,10 +802,10 @@ pub inline fn parse(
     dependency: string,
     sliced: *const SlicedString,
     log: ?*logger.Log,
-    manager: ?*PackageManager,
+    context: ParseContext,
 ) ?Version {
     const dep = std.mem.trimStart(u8, dependency, " \t\n\r");
-    return parseWithTag(allocator, alias, alias_hash, dep, Version.Tag.infer(dep), sliced, log, manager);
+    return parseWithTag(allocator, alias, alias_hash, dep, Version.Tag.infer(context.javascript_semantics, dep), sliced, log, context);
 }
 
 pub fn parseWithOptionalTag(
@@ -809,7 +816,7 @@ pub fn parseWithOptionalTag(
     tag: ?Dependency.Version.Tag,
     sliced: *const SlicedString,
     log: ?*logger.Log,
-    package_manager: ?*PackageManager,
+    context: ParseContext,
 ) ?Version {
     const dep = std.mem.trimStart(u8, dependency, " \t\n\r");
     return parseWithTag(
@@ -817,10 +824,10 @@ pub fn parseWithOptionalTag(
         alias,
         alias_hash,
         dep,
-        tag orelse Version.Tag.infer(dep),
+        tag orelse Version.Tag.infer(context.javascript_semantics, dep),
         sliced,
         log,
-        package_manager,
+        context,
     );
 }
 
@@ -832,7 +839,7 @@ pub fn parseWithTag(
     tag: Dependency.Version.Tag,
     sliced: *const SlicedString,
     log_: ?*logger.Log,
-    package_manager: ?*PackageManager,
+    context: ParseContext,
 ) ?Version {
     switch (tag) {
         .npm => {
@@ -892,7 +899,7 @@ pub fn parseWithTag(
             };
 
             if (is_alias) {
-                if (package_manager) |pm| {
+                if (context.package_manager) |pm| {
                     pm.known_npm_aliases.put(
                         allocator,
                         alias_hash.?,
@@ -964,7 +971,7 @@ pub fn parseWithTag(
         },
         .github => {
             const info = bun.handleOom(
-                hosted_git_info.HostedGitInfo.fromUrl(allocator, dependency),
+                hosted_git_info.HostedGitInfo.fromUrl(context.javascript_semantics, allocator, dependency),
             ) catch {
                 return null;
             } orelse {
@@ -1176,8 +1183,6 @@ pub fn parseWithTag(
     }
 }
 
-pub const fromJS = @import("../install_jsc/dependency_jsc.zig").dependencyFromJS;
-
 pub const Behavior = packed struct(u8) {
     _unused_1: u1 = 0,
     prod: bool = false,
@@ -1312,6 +1317,7 @@ fn hgiToTag(info: hosted_git_info.HostedGitInfo) Version.Tag {
 const string = []const u8;
 
 const Environment = @import("../bun_core/env.zig");
+const JavaScriptSemantics = @import("../bun_core/JavaScriptSemantics.zig");
 const hosted_git_info = @import("./hosted_git_info.zig");
 const std = @import("std");
 const Repository = @import("./repository.zig").Repository;

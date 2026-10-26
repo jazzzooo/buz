@@ -8,7 +8,6 @@
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <wtf/Forward.h>
 #include <wtf/Noncopyable.h>
-#include "headers-handwritten.h"
 
 namespace Inspector {
 
@@ -49,18 +48,5 @@ private:
     Ref<BunFrontendDevServerBackendDispatcher> m_backendDispatcher;
     bool m_enabled { false };
 };
-
-// C API for Zig to call
-extern "C" {
-void BunFrontendDevServerAgent__notifyClientConnected(InspectorBunFrontendDevServerAgent* agent, int connectionId);
-void BunFrontendDevServerAgent__notifyClientDisconnected(InspectorBunFrontendDevServerAgent* agent, int connectionId);
-void BunFrontendDevServerAgent__notifyBundleStart(InspectorBunFrontendDevServerAgent* agent, const BunString* triggerFiles, size_t triggerFilesLen, int buildId);
-void BunFrontendDevServerAgent__notifyBundleComplete(InspectorBunFrontendDevServerAgent* agent, double durationMs, int buildId);
-void BunFrontendDevServerAgent__notifyBundleFailed(InspectorBunFrontendDevServerAgent* agent, const BunString* buildErrorsPayloadBase64, int buildId);
-void BunFrontendDevServerAgent__notifyClientNavigated(InspectorBunFrontendDevServerAgent* agent, int connectionId, const BunString* url, int routeBundleId);
-void BunFrontendDevServerAgent__notifyClientErrorReported(InspectorBunFrontendDevServerAgent* agent, const BunString* clientErrorPayloadBase64);
-void BunFrontendDevServerAgent__notifyGraphUpdate(InspectorBunFrontendDevServerAgent* agent, const BunString* visualizerPayloadBase64);
-void BunFrontendDevServerAgent__notifyConsoleLog(InspectorBunFrontendDevServerAgent* agent, int devServerId, char kind, const BunString* data);
-}
 
 } // namespace Inspector

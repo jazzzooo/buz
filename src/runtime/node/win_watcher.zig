@@ -7,15 +7,15 @@ pub const PathWatcherManager = struct {
     const log = Output.scoped(.PathWatcherManager, .visible);
 
     watchers: bun.StringArrayHashMap(*PathWatcher) = .empty,
-    vm: *jsc.VirtualMachine,
+    loop: *bun.Async.Loop,
     deinit_on_last_watcher: bool = false,
 
     pub const new = bun.TrivialNew(PathWatcherManager);
 
-    pub fn init(vm: *jsc.VirtualMachine) *PathWatcherManager {
+    pub fn init(runtime: Runtime) *PathWatcherManager {
         return PathWatcherManager.new(.{
             .watchers = .{},
-            .vm = vm,
+            .loop = runtime.loop,
         });
     }
 
@@ -67,33 +67,20 @@ pub const PathWatcher = struct {
     handle: uv.uv_fs_event_t,
     manager: ?*PathWatcherManager,
     emit_in_progress: bool = false,
-    handlers: std.array_hash_map.Auto(*anyopaque, ChangeEvent) = .empty,
+    handlers: std.array_hash_map.Auto(*WatcherCore.CallbackContext, Handler) = .empty,
 
     pub const new = bun.TrivialNew(PathWatcher);
 
     const log = Output.scoped(.@"fs.watch", .visible);
 
-    pub const ChangeEvent = struct {
-        hash: Watcher.HashType = 0,
-        event_type: EventType = .change,
-        timestamp: u64 = 0,
-
-        pub fn emit(this: *ChangeEvent, hash: Watcher.HashType, timestamp: u64, event_type: EventType) bool {
-            const time_diff = timestamp -| this.timestamp;
-            // skip consecutive duplicates
-            if ((this.timestamp == 0 or time_diff > 1) or this.event_type != event_type and this.hash != hash) {
-                this.timestamp = timestamp;
-                this.event_type = event_type;
-                this.hash = hash;
-
-                return true;
-            }
-            return false;
-        }
+    const Handler = struct {
+        duplicate_filter: WatcherCore.DuplicateFilter = .{},
+        callback: WatcherCore.Callback,
+        update_end: WatcherCore.UpdateEndCallback,
     };
 
-    const Callback = *const fn (ctx: ?*anyopaque, event: Event, is_file: bool) void;
-    const UpdateEndCallback = *const fn (ctx: ?*anyopaque) void;
+    const Callback = WatcherCore.Callback;
+    const UpdateEndCallback = WatcherCore.UpdateEndCallback;
 
     fn uvEventCallback(event: *uv.uv_fs_event_t, filename: ?[*:0]const u8, events: c_int, status: uv.ReturnCode) callconv(.c) void {
         if (event.data == null) {
@@ -111,10 +98,9 @@ pub const PathWatcher = struct {
             this.emit_in_progress = true;
             defer this.emit_in_progress = false;
 
-            const ctxs = this.handlers.keys();
-            for (ctxs) |ctx| {
-                onPathUpdateFn(ctx, .{ .@"error" = err }, false);
-                onUpdateEndFn(ctx);
+            for (this.handlers.keys(), this.handlers.values()) |ctx, handler| {
+                handler.callback(ctx, .{ .@"error" = err }, false);
+                handler.update_end(ctx);
             }
             this.maybeDeinit();
 
@@ -132,19 +118,15 @@ pub const PathWatcher = struct {
         );
     }
 
-    pub fn emit(this: *PathWatcher, path: string, hash: Watcher.HashType, timestamp: u64, is_file: bool, event_type: EventType) void {
+    pub fn emit(this: *PathWatcher, path: string, hash: u32, timestamp: u64, is_file: bool, event_type: EventType) void {
         this.emit_in_progress = true;
         var debug_count: if (bun.Environment.isDebug) usize else u0 = 0;
-        for (this.handlers.values(), 0..) |*event, i| {
-            if (event.emit(hash, timestamp, event_type)) {
-                const ctx: *FSWatcher = @ptrCast(@alignCast(this.handlers.keys()[i]));
-                onPathUpdateFn(ctx, event_type.toEvent(switch (ctx.encoding) {
-                    .utf8 => .{ .string = bun.String.cloneUTF8(path) },
-                    else => .{ .bytes_to_free = bun.handleOom(bun.default_allocator.dupeSentinel(u8, path, 0)) },
-                }), is_file);
+        for (this.handlers.keys(), this.handlers.values()) |ctx, *handler| {
+            if (handler.duplicate_filter.shouldEmit(hash, timestamp, event_type)) {
+                handler.callback(ctx, event_type.toEvent(path), is_file);
                 if (comptime bun.Environment.isDebug)
                     debug_count += 1;
-                onUpdateEndFn(ctx);
+                handler.update_end(ctx);
             }
         }
         if (comptime bun.Environment.isDebug)
@@ -188,7 +170,7 @@ pub const PathWatcher = struct {
 
         // uv_fs_event_init on Windows unconditionally returns 0 (vendor/libuv/src/win/fs-event.c).
         // bun.assert evaluates its argument before the inline early-return, so this runs in release too.
-        bun.assert(uv.uv_fs_event_init(manager.vm.uvLoop(), &this.handle) == .zero);
+        bun.assert(uv.uv_fs_event_init(manager.loop, &this.handle) == .zero);
         this.handle.data = this;
 
         // UV_FS_EVENT_RECURSIVE only works for Windows and OSX
@@ -222,7 +204,7 @@ pub const PathWatcher = struct {
         bun.destroy(this);
     }
 
-    pub fn detach(this: *PathWatcher, handler: *anyopaque) void {
+    pub fn detach(this: *PathWatcher, handler: *WatcherCore.CallbackContext) void {
         if (this.handlers.swapRemove(handler)) {
             this.maybeDeinit();
         }
@@ -255,56 +237,45 @@ pub const PathWatcher = struct {
     }
 };
 
+pub const Runtime = struct {
+    loop: *bun.Async.Loop,
+};
+
 pub fn watch(
-    vm: *VirtualMachine,
+    runtime: Runtime,
     path: [:0]const u8,
     recursive: bool,
-    comptime callback: PathWatcher.Callback,
-    comptime updateEnd: PathWatcher.UpdateEndCallback,
-    ctx: *anyopaque,
+    callback: PathWatcher.Callback,
+    update_end: PathWatcher.UpdateEndCallback,
+    ctx: *WatcherCore.CallbackContext,
 ) bun.sys.Maybe(*PathWatcher) {
-    comptime {
-        if (callback != onPathUpdateFn) {
-            @compileError("callback must be onPathUpdateFn");
-        }
-
-        if (updateEnd != onUpdateEndFn) {
-            @compileError("updateEnd must be onUpdateEndFn");
-        }
-    }
-
     if (!bun.Environment.isWindows) {
         @compileError("win_watcher should only be used on Windows");
     }
 
     const manager = default_manager orelse brk: {
-        default_manager = PathWatcherManager.init(vm);
+        default_manager = PathWatcherManager.init(runtime);
         break :brk default_manager.?;
     };
     var watcher = switch (PathWatcher.init(manager, path, recursive)) {
         .err => |err| return .{ .err = err },
         .result => |watcher| watcher,
     };
-    bun.handleOom(watcher.handlers.put(bun.default_allocator, ctx, .{}));
+    bun.handleOom(watcher.handlers.put(bun.default_allocator, ctx, .{
+        .callback = callback,
+        .update_end = update_end,
+    }));
     return .{ .result = watcher };
 }
 
 const string = []const u8;
 
 const std = @import("std");
-const EventType = @import("./path_watcher.zig").PathWatcher.EventType;
+const WatcherCore = @import("./fs_watcher.zig");
+const EventType = WatcherCore.ChangeKind;
 
 const bun = @import("bun");
 const Output = bun.Output;
-const Watcher = bun.Watcher;
-
-const jsc = bun.jsc;
-const VirtualMachine = jsc.VirtualMachine;
-
-const FSWatcher = bun.jsc.Node.fs.Watcher;
-const Event = FSWatcher.Event;
-const onPathUpdateFn = jsc.Node.fs.Watcher.onPathUpdate;
-const onUpdateEndFn = jsc.Node.fs.Watcher.onUpdateEnd;
 
 const windows = bun.windows;
 const uv = windows.libuv;

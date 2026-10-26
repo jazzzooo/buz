@@ -1,19 +1,20 @@
-import type { MySQLAdapter } from "internal/sql/mysql";
-import type { PostgresAdapter } from "internal/sql/postgres";
-import type { BaseQueryHandle, Query } from "internal/sql/query";
-import type { SQLHelper } from "internal/sql/shared";
+const { Query, SQLQueryFlags } = require("internal/sql/query") as (typeof import("internal/sql/query"))["default"];
+const { PostgresAdapter } = require("internal/sql/postgres") as (typeof import("internal/sql/postgres"))["default"];
+const { MySQLAdapter } = require("internal/sql/mysql") as (typeof import("internal/sql/mysql"))["default"];
+const { SQLiteAdapter } = require("internal/sql/sqlite") as (typeof import("internal/sql/sqlite"))["default"];
+const { SQLHelper, parseOptions } = require("internal/sql/shared") as (typeof import("internal/sql/shared"))["default"];
 
-const { Query, SQLQueryFlags } = require("internal/sql/query");
-const { PostgresAdapter } = require("internal/sql/postgres");
-const { MySQLAdapter } = require("internal/sql/mysql");
-const { SQLiteAdapter } = require("internal/sql/sqlite");
-const { SQLHelper, parseOptions } = require("internal/sql/shared");
+type BaseQueryHandle<Connection> = import("internal/sql/query").BaseQueryHandle<Connection>;
+type Query<T, Handle extends BaseQueryHandle<any>> = import("internal/sql/query").Query<T, Handle>;
+type SQLHelper<T> = import("internal/sql/shared").SQLHelper<T>;
+type PostgresAdapter = import("internal/sql/postgres").PostgresAdapter;
+type MySQLAdapter = import("internal/sql/mysql").MySQLAdapter;
 
 const { SQLError, PostgresError, SQLiteError, MySQLError } = require("internal/sql/errors");
 
 const defineProperties = Object.defineProperties;
 
-type TransactionCallback = (sql: (strings: string, ...values: any[]) => Query<any, any>) => Promise<any>;
+type TransactionCallback = Bun.SQL.TransactionContextCallback<any>;
 
 enum ReservedConnectionState {
   acceptQueries = 1 << 0,
@@ -27,7 +28,9 @@ interface TransactionState {
   queries: Set<Query<any, any>>;
 }
 
-function adapterFromOptions(options: Bun.SQL.__internal.DefinedOptions) {
+function adapterFromOptions(
+  options: Bun.SQL.__internal.DefinedOptions,
+): import("internal/sql/shared").DatabaseAdapter<any, any, any> {
   switch (options.adapter) {
     case "postgres":
       return new PostgresAdapter(options);
@@ -41,12 +44,15 @@ function adapterFromOptions(options: Bun.SQL.__internal.DefinedOptions) {
   }
 }
 
-const SQL: typeof Bun.SQL = function SQL(
+// The public type is class-shaped, but the implementation is also directly
+// callable; internal callers use the callable form.
+const SQL = function SQL(
   stringOrUrlOrOptions: Bun.SQL.Options | string | undefined = undefined,
   definitelyOptionsButMaybeEmpty: Bun.SQL.Options = {},
 ): Bun.SQL {
   const connectionInfo = parseOptions(stringOrUrlOrOptions, definitelyOptionsButMaybeEmpty);
   const pool = adapterFromOptions(connectionInfo);
+  type PooledConnection = Parameters<(typeof pool)["release"]>[0];
 
   function onQueryDisconnected(this: Query<any, any>, err: Error) {
     // connection closed mid query this will not be called if the query finishes first
@@ -66,7 +72,7 @@ const SQL: typeof Bun.SQL = function SQL(
     this: Query<any, any>,
     handle: BaseQueryHandle<any>,
     err,
-    connectionHandle: ConnectionHandle,
+    connectionHandle: PooledConnection,
   ) {
     const query = this;
     if (err) {
@@ -175,7 +181,7 @@ const SQL: typeof Bun.SQL = function SQL(
   function queryFromTransaction(
     strings: string | TemplateStringsArray | import("internal/sql/shared.ts").SQLHelper<any> | Query<any, any>,
     values: any[],
-    pooledConnection: PooledPostgresConnection,
+    pooledConnection: PooledConnection,
     transactionQueries: Set<Query<any, any>>,
   ) {
     try {
@@ -199,7 +205,7 @@ const SQL: typeof Bun.SQL = function SQL(
   function unsafeQueryFromTransaction(
     strings: string | TemplateStringsArray | import("internal/sql/shared.ts").SQLHelper<any> | Query<any, any>,
     values: any[],
-    pooledConnection: PooledPostgresConnection,
+    pooledConnection: PooledConnection,
     transactionQueries: Set<Query<any, any>>,
   ) {
     try {
@@ -224,7 +230,7 @@ const SQL: typeof Bun.SQL = function SQL(
     }
   }
 
-  function onTransactionDisconnected(this: TransactionState, err: Error) {
+  function onTransactionDisconnected(this: TransactionState, err?: Error) {
     const reject = this.reject;
     this.connectionState |= ReservedConnectionState.closed;
 
@@ -237,7 +243,7 @@ const SQL: typeof Bun.SQL = function SQL(
     }
   }
 
-  function onReserveConnected(this: Query<any, any>, err: Error | null, pooledConnection) {
+  function onReserveConnected(this: PromiseWithResolvers<Bun.ReservedSQL>, err: Error | null, pooledConnection) {
     const { resolve, reject } = this;
 
     if (err) {
@@ -267,7 +273,7 @@ const SQL: typeof Bun.SQL = function SQL(
       }
       if ($isArray(strings)) {
         // detect if is tagged template
-        if (!$isArray(strings.raw)) {
+        if (!$isArray((strings as unknown as TemplateStringsArray).raw)) {
           return new SQLHelper(strings, values);
         }
       } else if (typeof strings === "object" && !(strings instanceof Query) && !(strings instanceof SQLHelper)) {
@@ -302,7 +308,7 @@ const SQL: typeof Bun.SQL = function SQL(
       }
 
       const sql = pool.getCommitDistributedSQL(name);
-      return await reserved_sql.unsafe(sql);
+      await reserved_sql.unsafe(sql);
     };
     reserved_sql.rollbackDistributed = async function (name: string) {
       if (!pool.getRollbackDistributedSQL) {
@@ -310,7 +316,7 @@ const SQL: typeof Bun.SQL = function SQL(
       }
 
       const sql = pool.getRollbackDistributedSQL(name);
-      return await reserved_sql.unsafe(sql);
+      await reserved_sql.unsafe(sql);
     };
 
     // reserve is allowed to be called inside reserved connection but will return a new reserved connection from the pool
@@ -450,7 +456,7 @@ const SQL: typeof Bun.SQL = function SQL(
     reserved_sql.transaction = reserved_sql.begin;
     reserved_sql.distributed = reserved_sql.beginDistributed;
     reserved_sql.end = reserved_sql.close;
-    resolve(reserved_sql);
+    resolve(reserved_sql as unknown as Bun.ReservedSQL);
   }
   async function onTransactionConnected(
     callback,
@@ -598,7 +604,7 @@ const SQL: typeof Bun.SQL = function SQL(
         return Promise.$reject(pool.connectionClosedError());
       }
 
-      return Promise.$resolve(transaction_sql);
+      return Promise.$resolve(transaction_sql as unknown as Bun.TransactionSQL);
     };
     transaction_sql.commitDistributed = async function (name: string) {
       if (!pool.getCommitDistributedSQL) {
@@ -706,7 +712,7 @@ const SQL: typeof Bun.SQL = function SQL(
       await run_internal_transaction_sql(`${SAVEPOINT_COMMAND} ${save_point_name}`);
 
       try {
-        let result = await savepoint_callback(transaction_sql);
+        let result = await savepoint_callback(transaction_sql as unknown as Bun.TransactionSQL);
         if (RELEASE_SAVEPOINT_COMMAND) {
           // mssql dont have release savepoint
           await run_internal_transaction_sql(`${RELEASE_SAVEPOINT_COMMAND} ${save_point_name}`);
@@ -723,12 +729,18 @@ const SQL: typeof Bun.SQL = function SQL(
       }
     }
     if (distributed) {
-      transaction_sql.savepoint = async (_fn: TransactionCallback, _name?: string): Promise<any> => {
+      transaction_sql.savepoint = async (
+        _fn: string | TransactionCallback,
+        _name?: string | TransactionCallback,
+      ): Promise<any> => {
         throw pool.invalidTransactionStateError("cannot call savepoint inside a distributed transaction");
       };
     } else {
-      transaction_sql.savepoint = async (fn: TransactionCallback, name?: string): Promise<any> => {
-        let savepoint_callback = fn;
+      transaction_sql.savepoint = async (
+        fn: string | TransactionCallback,
+        name?: string | TransactionCallback,
+      ): Promise<any> => {
+        let savepoint_callback = fn as TransactionCallback;
 
         if (
           state.connectionState & ReservedConnectionState.closed ||
@@ -755,7 +767,7 @@ const SQL: typeof Bun.SQL = function SQL(
     try {
       await run_internal_transaction_sql(BEGIN_COMMAND);
       needs_rollback = true;
-      let transaction_result = await callback(transaction_sql);
+      let transaction_result = await callback(transaction_sql as unknown as Bun.TransactionSQL);
       if ($isArray(transaction_result)) {
         transaction_result = await Promise.all(transaction_result);
       }
@@ -827,7 +839,7 @@ const SQL: typeof Bun.SQL = function SQL(
     }
 
     // Try to reserve a connection - adapters that support it will handle appropriately
-    const promiseWithResolvers = Promise.withResolvers();
+    const promiseWithResolvers = Promise.withResolvers<Bun.ReservedSQL>();
     pool.connect(onReserveConnected.bind(promiseWithResolvers), true);
     return promiseWithResolvers.promise;
   };
@@ -845,7 +857,7 @@ const SQL: typeof Bun.SQL = function SQL(
     }
 
     const sqlQuery = pool.getRollbackDistributedSQL(name);
-    return await sql.unsafe(sqlQuery);
+    await sql.unsafe(sqlQuery);
   };
 
   sql.commitDistributed = async function (name: string) {
@@ -858,7 +870,7 @@ const SQL: typeof Bun.SQL = function SQL(
     }
 
     const sqlQuery = pool.getCommitDistributedSQL(name);
-    return await sql.unsafe(sqlQuery);
+    await sql.unsafe(sqlQuery);
   };
 
   sql.beginDistributed = (name: string, fn: TransactionCallback) => {
@@ -900,23 +912,23 @@ const SQL: typeof Bun.SQL = function SQL(
     pool.connect(onTransactionConnected.bind(null, callback, options, resolve, reject, false, false), useReserved);
     return promise;
   };
-  sql.connect = () => {
+  sql.connect = (): Promise<Bun.SQL> => {
     if (pool.closed) {
       return Promise.$reject(pool.connectionClosedError());
     }
 
     if (pool.isConnected()) {
-      return Promise.$resolve(sql);
+      return Promise.$resolve(sql as unknown as Bun.SQL);
     }
 
-    let { resolve, reject, promise } = Promise.withResolvers();
+    let { resolve, reject, promise } = Promise.withResolvers<Bun.SQL>();
     const onConnected = (err, connection) => {
       if (err) {
         return reject(err);
       }
       // we are just measuring the connection here lets release it
       pool.release(connection);
-      resolve(sql);
+      resolve(sql as unknown as Bun.SQL);
     };
 
     pool.connect(onConnected);
@@ -936,7 +948,8 @@ const SQL: typeof Bun.SQL = function SQL(
   sql.transaction = sql.begin;
   sql.distributed = sql.beginDistributed;
   sql.end = sql.close;
-  return sql;
+  // The assembled callable satisfies the class-shaped public type behaviorally.
+  return sql as unknown as Bun.SQL;
 };
 
 var lazyDefaultSQL: Bun.SQL;

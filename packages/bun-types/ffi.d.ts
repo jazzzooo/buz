@@ -9,10 +9,8 @@
  * });
  * ```
  *
- * This is powered by just-in-time compiling C wrappers
- * that convert JavaScript types to C types and back. Internally,
- * bun uses [tinycc](https://github.com/TinyCC/tinycc), so a big thanks
- * goes to Fabrice Bellard and TinyCC maintainers for making this possible.
+ * Calls use libffi to follow the native C ABI. TinyCC compiles C sources
+ * supplied to {@link cc}.
  *
  * @category FFI
  */
@@ -22,9 +20,7 @@ declare module "bun:ffi" {
     /**
      * 8-bit signed integer
      *
-     * Must be a value between -127 and 127
-     *
-     * When passing to a FFI function (C ABI), type coercion is not performed.
+     * Values are converted to a Number, truncated, and reduced to a signed 8-bit integer.
      *
      * In C:
      * ```c
@@ -41,9 +37,7 @@ declare module "bun:ffi" {
     /**
      * 8-bit signed integer
      *
-     * Must be a value between -127 and 127
-     *
-     * When passing to a FFI function (C ABI), type coercion is not performed.
+     * Values are converted to a Number, truncated, and reduced to a signed 8-bit integer.
      *
      * In C:
      * ```c
@@ -61,9 +55,7 @@ declare module "bun:ffi" {
     /**
      * 8-bit unsigned integer
      *
-     * Must be a value between 0 and 255
-     *
-     * When passing to a FFI function (C ABI), type coercion is not performed.
+     * Number inputs are truncated and clamped to 0 through 255; BigInts use their low 8 bits.
      *
      * In C:
      * ```c
@@ -79,9 +71,7 @@ declare module "bun:ffi" {
     /**
      * 8-bit unsigned integer
      *
-     * Must be a value between 0 and 255
-     *
-     * When passing to a FFI function (C ABI), type coercion is not performed.
+     * Number inputs are truncated and clamped to 0 through 255; BigInts use their low 8 bits.
      *
      * In C:
      * ```c
@@ -98,13 +88,11 @@ declare module "bun:ffi" {
     /**
      * 16-bit signed integer
      *
-     * Must be a value between -32768 and 32767
-     *
-     * When passing to a FFI function (C ABI), type coercion is not performed.
+     * Number inputs are truncated and clamped to -32768 through 32767; BigInts use their low 16 bits.
      *
      * In C:
      * ```c
-     * in16_t
+     * int16_t
      * short // on arm64 & x64
      * ```
      *
@@ -117,13 +105,11 @@ declare module "bun:ffi" {
     /**
      * 16-bit signed integer
      *
-     * Must be a value between -32768 and 32767
-     *
-     * When passing to a FFI function (C ABI), type coercion is not performed.
+     * Number inputs are truncated and clamped to -32768 through 32767; BigInts use their low 16 bits.
      *
      * In C:
      * ```c
-     * in16_t
+     * int16_t
      * short // on arm64 & x64
      * ```
      *
@@ -137,9 +123,7 @@ declare module "bun:ffi" {
     /**
      * 16-bit unsigned integer
      *
-     * Must be a value between 0 and 65535, inclusive.
-     *
-     * When passing to a FFI function (C ABI), type coercion is not performed.
+     * Number inputs are truncated and clamped to 0 through 65535; BigInts use their low 16 bits.
      *
      * In C:
      * ```c
@@ -156,9 +140,7 @@ declare module "bun:ffi" {
     /**
      * 16-bit unsigned integer
      *
-     * Must be a value between 0 and 65535, inclusive.
-     *
-     * When passing to a FFI function (C ABI), type coercion is not performed.
+     * Number inputs are truncated and clamped to 0 through 65535; BigInts use their low 16 bits.
      *
      * In C:
      * ```c
@@ -175,6 +157,8 @@ declare module "bun:ffi" {
 
     /**
      * 32-bit signed integer
+     *
+     * Inputs use JavaScript's ToInt32 conversion.
      */
     int32_t = 5,
 
@@ -219,6 +203,8 @@ declare module "bun:ffi" {
 
     /**
      * int64 is a 64-bit signed integer
+     *
+     * Accepts a safe integer Number or an in-range BigInt. Results are BigInts.
      */
     int64_t = 7,
     /**
@@ -228,6 +214,8 @@ declare module "bun:ffi" {
 
     /**
      * 64-bit unsigned integer
+     *
+     * Accepts a nonnegative safe integer Number or an in-range BigInt. Results are BigInts.
      */
     uint64_t = 8,
     /**
@@ -258,7 +246,7 @@ declare module "bun:ffi" {
     /**
      * Boolean value
      *
-     * Must be `true` or `false`. `0` and `1` type coercion is not supported.
+     * Inputs use JavaScript truthiness.
      *
      * In C, this corresponds to:
      * ```c
@@ -271,7 +259,10 @@ declare module "bun:ffi" {
     /**
      * Pointer value
      *
-     * See {@link Bun.FFI.ptr} for more information
+     * Accepts an address, null, an ArrayBuffer or view, or an object with a `ptr` address.
+     * Buffers stay alive and address-stable through the call. Shared and WebAssembly memory are rejected.
+     * A native function that retains a buffer pointer requires the caller to keep its allocation alive
+     * without resizing or detaching it until native use ends. See {@link ptr}.
      *
      * In C:
      * ```c
@@ -313,24 +304,20 @@ declare module "bun:ffi" {
     cstring = 14,
 
     /**
-     * Attempt to coerce `BigInt` into a `Number` if it fits. This improves performance
-     * but means you might get a `BigInt` or you might get a `number`.
+     * Accepts a safe integer Number or an in-range BigInt. Results are Numbers
+     * within the safe integer range and BigInts otherwise.
      *
      * In C, this always becomes `int64_t`
      *
-     * In JavaScript, this could be number or it could be BigInt, depending on what
-     * value is passed in.
      */
     i64_fast = 15,
 
     /**
-     * Attempt to coerce `BigInt` into a `Number` if it fits. This improves performance
-     * but means you might get a `BigInt` or you might get a `number`.
+     * Accepts a nonnegative safe integer Number or an in-range BigInt. Results are
+     * Numbers within the safe integer range and BigInts otherwise.
      *
      * In C, this always becomes `uint64_t`
      *
-     * In JavaScript, this could be number or it could be BigInt, depending on what
-     * value is passed in.
      */
     u64_fast = 16,
     function = 17,
@@ -340,7 +327,8 @@ declare module "bun:ffi" {
     buffer = 20,
   }
 
-  type Pointer = number & { __pointer__: null };
+  type Pointer = (number | bigint) & { __pointer__: null };
+  type PointerInput = Pointer | bigint;
 
   // Only the canonical enum members are listed below. `FFIType` declares
   // several alias members (e.g. `i8` for `int8_t`, `pointer` for `ptr`) that
@@ -361,15 +349,15 @@ declare module "bun:ffi" {
     [FFIType.double]: number;
     [FFIType.float]: number;
     [FFIType.bool]: boolean;
-    [FFIType.ptr]: NodeJS.TypedArray | Pointer | CString | null;
+    [FFIType.ptr]: ArrayBuffer | ArrayBufferView | PointerInput | { ptr: PointerInput } | null | undefined;
     [FFIType.void]: undefined;
-    [FFIType.cstring]: NodeJS.TypedArray | Pointer | CString | null;
+    [FFIType.cstring]: FFITypeToArgsType[FFIType.ptr];
     [FFIType.i64_fast]: number | bigint;
     [FFIType.u64_fast]: number | bigint;
-    [FFIType.function]: Pointer | JSCallback; // cannot be null
+    [FFIType.function]: PointerInput | JSCallback | { ptr: PointerInput };
     [FFIType.napi_env]: unknown;
     [FFIType.napi_value]: unknown;
-    [FFIType.buffer]: NodeJS.TypedArray | DataView;
+    [FFIType.buffer]: ArrayBuffer | ArrayBufferView;
   }
   interface FFITypeToReturnsType {
     [FFIType.char]: number;
@@ -422,9 +410,11 @@ declare module "bun:ffi" {
     ["pointer"]: FFIType.pointer;
     ["void"]: FFIType.void;
     ["cstring"]: FFIType.cstring;
-    ["function"]: FFIType.pointer; // for now
-    ["usize"]: FFIType.uint64_t; // for now
-    ["callback"]: FFIType.pointer; // for now
+    ["function"]: FFIType.function;
+    ["fn"]: FFIType.function;
+    ["usize"]: FFIType.uint64_t;
+    ["size_t"]: FFIType.uint64_t;
+    ["callback"]: FFIType.function;
     ["napi_env"]: FFIType.napi_env;
     ["napi_value"]: FFIType.napi_value;
     ["buffer"]: FFIType.buffer;
@@ -500,7 +490,7 @@ declare module "bun:ffi" {
      * This is useful if the library has already been loaded
      * or if the module is also using Node-API.
      */
-    readonly ptr?: Pointer | bigint;
+    readonly ptr?: PointerInput;
 
     /**
      * Can C/FFI code call this function from a separate thread?
@@ -513,6 +503,8 @@ declare module "bun:ffi" {
      * Thread-safe callbacks are dispatched asynchronously on the JavaScript context that created them,
      * so they must return `void`. Their arguments must be scalar or pointer FFI types; JavaScript-managed
      * types such as `buffer`, `napi_env`, and `napi_value` are not supported.
+     * Argument values are copied; memory referenced by pointers must remain valid until the
+     * JavaScript callback returns.
      *
      * @default false
      */
@@ -525,11 +517,8 @@ declare module "bun:ffi" {
     symbols: ConvertFns<Fns>;
 
     /**
-     * `dlclose` the library, unloading the symbols and freeing allocated memory.
-     *
-     * Once called, the library is no longer usable.
-     *
-     * Calling a function from a library that has been closed is undefined behavior.
+     * Prevent new calls and unload the library after its active calls finish.
+     * Calling a function wrapper after close throws a TypeError. Repeated close calls do nothing.
      */
     close(): void;
   }
@@ -574,15 +563,12 @@ declare module "bun:ffi" {
    * // "1.0.0"
    * ```
    *
-   * This is powered by just-in-time compiling C wrappers
-   * that convert JavaScript types to C types and back. Internally,
-   * bun uses [tinycc](https://github.com/TinyCC/tinycc), so a big thanks
-   * goes to Fabrice Bellard and TinyCC maintainers for making this possible.
+   * Function wrappers retain the library state. Unloading is deferred until active calls finish.
    *
    * @category FFI
    */
   function dlopen<Fns extends Record<string, FFIFunction>>(
-    name: string | import("bun").BunFile | URL,
+    name: string | Uint8Array | import("bun").BunFile | URL,
     symbols: Fns,
   ): Library<Fns>;
 
@@ -622,9 +608,15 @@ declare module "bun:ffi" {
    */
   function cc<Fns extends Record<string, FFIFunction>>(options: {
     /**
-     * File path to an ISO C11 source file to compile and link
+     * ISO C11 source files to compile and link. Paths, file URL strings, URLs,
+     * and Bun.file() values are accepted. The options and source array are not mutated.
      */
-    source: string | import("bun").BunFile | URL;
+    source:
+      | string
+      | Uint8Array
+      | import("bun").BunFile
+      | URL
+      | readonly (string | Uint8Array | import("bun").BunFile | URL)[];
 
     /**
      * Library names to link against
@@ -717,12 +709,9 @@ declare module "bun:ffi" {
    * getVersion.close();
    * ```
    *
-   * This is powered by just-in-time compiling C wrappers
-   * that convert JavaScript types to C types and back. Internally,
-   * bun uses [tinycc](https://github.com/TinyCC/tinycc), so a big thanks
-   * goes to Fabrice Bellard and TinyCC maintainers for making this possible.
+   * The caller keeps the native function's code loaded until all calls finish.
    */
-  function CFunction(fn: FFIFunction & { ptr: Pointer }): CallableFunction & {
+  function CFunction(fn: FFIFunction & { ptr: PointerInput }): CallableFunction & {
     /**
      * Free the memory allocated by the wrapping function
      */
@@ -775,10 +764,7 @@ declare module "bun:ffi" {
    * ];
    * ```
    *
-   * This is powered by just-in-time compiling C wrappers
-   * that convert JavaScript types to C types and back. Internally,
-   * bun uses [tinycc](https://github.com/TinyCC/tinycc), so a big thanks
-   * goes to Fabrice Bellard and TinyCC maintainers for making this possible.
+   * The caller keeps the native functions' code loaded until all calls finish.
    */
   function linkSymbols<Fns extends Record<string, FFIFunction>>(symbols: Fns): Library<Fns>;
 
@@ -796,7 +782,7 @@ declare module "bun:ffi" {
    * reading beyond the bounds of the pointer will crash the program or cause
    * undefined behavior. Use with care!
    */
-  function toBuffer(ptr: Pointer, byteOffset?: number, byteLength?: number): Buffer;
+  function toBuffer(ptr: PointerInput, byteOffset?: number, byteLength?: number): Buffer;
 
   /**
    * Read a pointer as an {@link ArrayBuffer}
@@ -812,7 +798,7 @@ declare module "bun:ffi" {
    * reading beyond the bounds of the pointer will crash the program or cause
    * undefined behavior. Use with care!
    */
-  function toArrayBuffer(ptr: Pointer, byteOffset?: number, byteLength?: number): ArrayBuffer;
+  function toArrayBuffer(ptr: PointerInput, byteOffset?: number, byteLength?: number): ArrayBuffer;
 
   namespace read {
     /**
@@ -827,7 +813,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function u8(ptr: Pointer, byteOffset?: number): number;
+    function u8(ptr: PointerInput, byteOffset?: number): number;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -840,7 +826,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function i8(ptr: Pointer, byteOffset?: number): number;
+    function i8(ptr: PointerInput, byteOffset?: number): number;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -853,7 +839,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function u16(ptr: Pointer, byteOffset?: number): number;
+    function u16(ptr: PointerInput, byteOffset?: number): number;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -866,7 +852,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function i16(ptr: Pointer, byteOffset?: number): number;
+    function i16(ptr: PointerInput, byteOffset?: number): number;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -879,7 +865,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function u32(ptr: Pointer, byteOffset?: number): number;
+    function u32(ptr: PointerInput, byteOffset?: number): number;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -892,7 +878,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function i32(ptr: Pointer, byteOffset?: number): number;
+    function i32(ptr: PointerInput, byteOffset?: number): number;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -905,7 +891,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function f32(ptr: Pointer, byteOffset?: number): number;
+    function f32(ptr: PointerInput, byteOffset?: number): number;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -918,7 +904,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function u64(ptr: Pointer, byteOffset?: number): bigint;
+    function u64(ptr: PointerInput, byteOffset?: number): bigint;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -931,7 +917,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function i64(ptr: Pointer, byteOffset?: number): bigint;
+    function i64(ptr: PointerInput, byteOffset?: number): bigint;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -944,7 +930,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function f64(ptr: Pointer, byteOffset?: number): number;
+    function f64(ptr: PointerInput, byteOffset?: number): number;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -957,7 +943,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function ptr(ptr: Pointer, byteOffset?: number): number;
+    function ptr(ptr: PointerInput, byteOffset?: number): Pointer;
     /**
      * The read function behaves similarly to DataView,
      * but it's usually faster because it doesn't need to create a DataView or ArrayBuffer.
@@ -970,7 +956,7 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    function intptr(ptr: Pointer, byteOffset?: number): number;
+    function intptr(ptr: PointerInput, byteOffset?: number): number | bigint;
   }
 
   /**
@@ -978,8 +964,10 @@ declare module "bun:ffi" {
    *
    * Use this to pass {@link TypedArray} or {@link ArrayBuffer} to C functions.
    *
-   * This is for use with FFI functions. For performance reasons, FFI will
-   * not automatically convert typed arrays to C pointers.
+   * The address refers to the original backing allocation. Keep the buffer
+   * alive and prevent resizing or detachment until every native use finishes.
+   * Shared and WebAssembly-backed buffers are rejected. Addresses outside the
+   * safe-integer Number range are returned as bigint.
    *
    * @param {TypedArray|ArrayBuffer|DataView} view the typed array or array buffer to get the pointer for
    * @param {number} byteOffset optional offset into the view in bytes
@@ -1001,7 +989,7 @@ declare module "bun:ffi" {
    *
    * @category FFI
    */
-  function ptr(view: NodeJS.TypedArray | ArrayBufferLike | DataView, byteOffset?: number): Pointer;
+  function ptr(view: NodeJS.TypedArray | ArrayBuffer | DataView, byteOffset?: number): Pointer;
 
   /**
    * Get a string from a UTF-8 encoded C string
@@ -1054,16 +1042,15 @@ declare module "bun:ffi" {
      * reading beyond the bounds of the pointer will crash the program or cause
      * undefined behavior. Use with care!
      */
-    constructor(ptr: Pointer, byteOffset?: number, byteLength?: number);
+    constructor(ptr: PointerInput, byteOffset?: number, byteLength?: number);
 
     /**
      * The ptr to the C string
      *
-     * This `CString` instance is a clone of the string, so it
-     * is safe to continue using this instance after the `ptr` has been
-     * freed.
+     * The string value is copied. Accessing `arrayBuffer` still requires the
+     * original native allocation to be alive.
      */
-    ptr: Pointer;
+    ptr: PointerInput;
     byteOffset?: number;
     byteLength?: number;
 
@@ -1081,6 +1068,10 @@ declare module "bun:ffi" {
   class JSCallback {
     /**
      * Enable a JavaScript callback function to be passed to C with bun:ffi
+     *
+     * Keep this object reachable while native code holds its pointer. Pointer results
+     * do not transfer ownership; retain their memory or callback owners until native use ends.
+     * Native buffer arguments have no length and must be declared as pointers.
      *
      * @param callback The JavaScript function to be called
      * @param definition The C function definition
@@ -1102,16 +1093,16 @@ declare module "bun:ffi" {
     /**
      * Free the memory allocated for the callback
      *
+     * Stop other native callers before closing. A callback may close itself during a
+     * synchronous invocation. Queued JavaScript deliveries are discarded after close.
+     *
      * If called multiple times, does nothing after the first call.
      */
     close(): void;
   }
 
   /**
-   * View the generated C code for FFI bindings
-   *
-   * You probably won't need this unless there's a bug in the FFI bindings
-   * generator or you're just curious.
+   * View native C signatures for library symbols or a callback.
    */
   function viewSource(symbols: Symbols, is_callback?: false): string[];
   function viewSource(callback: FFIFunction, is_callback: true): string;

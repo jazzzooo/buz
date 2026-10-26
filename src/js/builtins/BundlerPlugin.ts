@@ -1,5 +1,17 @@
-import type { BuildConfig, BunPlugin, OnLoadCallback, OnResolveCallback, PluginBuilder, PluginConstraints } from "bun";
+import type {
+  BuildConfig,
+  BunPlugin,
+  ImportKind,
+  Loader,
+  OnLoadCallback,
+  OnResolveCallback,
+  PluginBuilder,
+  PluginConstraints,
+} from "bun";
 type AnyFunction = (...args: any[]) => any;
+interface BundlerLoadDefer {
+  defer(): Promise<void>;
+}
 
 /**
  * @see `JSBundlerPlugin.h`
@@ -8,18 +20,7 @@ interface BundlerPlugin {
   onLoad: Map<string, [RegExp, OnLoadCallback][]>;
   onResolve: Map<string, [RegExp, OnResolveCallback][]>;
   onEndCallbacks: Array<(build: Bun.BuildOutput) => void | Promise<void>> | undefined;
-  /** Binding to `JSBundlerPlugin__onLoadAsync` */
-  onLoadAsync(
-    internalID,
-    sourceCode: string | Uint8Array | ArrayBuffer | DataView | null,
-    loaderKey: number | null,
-  ): void;
-  /** Binding to `JSBundlerPlugin__onResolveAsync` */
-  onResolveAsync(internalID, a, b, c): void;
-  /** Binding to `JSBundlerPlugin__addError` */
-  addError(internalID: number, error: any, which: number): void;
   addFilter(filter, namespace, number): void;
-  generateDeferPromise(id: number): Promise<void>;
   promises: Array<Promise<any>> | undefined;
 
   onBeforeParse: (filter: RegExp, namespace: string, addon: unknown, symbol: string, external?: unknown) => void;
@@ -56,12 +57,10 @@ export function loadAndResolvePluginsForServe(
   runSetupFn: typeof runSetupFunction,
 ) {
   // Same config as created in HTMLBundle.init
-  let config: BuildConfigExt = {
-    experimentalCss: true,
-    experimentalHtml: true,
+  let config = {
     target: "browser",
     root: bunfig_folder,
-  };
+  } as BuildConfigExt;
 
   class InvalidBundlerPluginError extends TypeError {
     pluginName: string;
@@ -78,7 +77,6 @@ export function loadAndResolvePluginsForServe(
     runSetupFn: typeof runSetupFunction,
     bundlerPlugin: BundlerPlugin,
   ) => {
-    let onstart_promises_array: Array<Promise<any>> | undefined = undefined;
     for (let i = 0; i < plugins.length; i++) {
       let pluginModuleResolved = await Bun.resolve(plugins[i], bunfig_folder);
 
@@ -90,60 +88,17 @@ export function loadAndResolvePluginsForServe(
       if (!pluginModule) throw new InvalidBundlerPluginError(plugins[i], "default export is missing");
       if (pluginModule.name === undefined) throw new InvalidBundlerPluginError(plugins[i], "name is missing");
       if (pluginModule.setup === undefined) throw new InvalidBundlerPluginError(plugins[i], "setup() is missing");
-      onstart_promises_array = await runSetupFn.$apply(bundlerPlugin, [
+      await runSetupFn.$apply(bundlerPlugin, [
         pluginModule.setup,
         config,
-        onstart_promises_array,
+        i === 0,
         i === plugins.length - 1,
         false,
       ]);
     }
-    if (onstart_promises_array !== undefined) {
-      await Promise.all(onstart_promises_array);
-    }
   })(plugins, bunfig_folder, runSetupFn, bundlerPlugin);
 
   return promiseResult;
-}
-
-export function runOnEndCallbacks(
-  this: BundlerPlugin,
-  promise: Promise<Bun.BuildOutput>,
-  buildResult: Bun.BuildOutput,
-  buildRejection: AggregateError | undefined,
-): Promise<void> | void {
-  const callbacks = this.onEndCallbacks;
-  if (!callbacks) return;
-  const promises: PromiseLike<unknown>[] = [];
-
-  for (const callback of callbacks) {
-    try {
-      const result = callback(buildResult);
-
-      if (result && $isPromise(result)) {
-        $arrayPush(promises, result);
-      }
-    } catch (e) {
-      $arrayPush(promises, Promise.$reject(e));
-    }
-  }
-
-  if (promises.length > 0) {
-    // we return the promise here because detecting if the promise was handled or not
-    // in bundle_v2.zig is done by checking if this function did not return undefined
-    return Promise.all(promises).then(
-      () => {
-        if (buildRejection !== undefined) {
-          $rejectPromise(promise, buildRejection);
-        } else {
-          $resolvePromise(promise, buildResult);
-        }
-      },
-      e => {
-        $rejectPromise(promise, e);
-      },
-    );
-  }
 }
 
 /**
@@ -151,18 +106,17 @@ export function runOnEndCallbacks(
  * The `setup` function may define `onLoad`, `onResolve`, `onBeforeParse`, `onStart` callbacks.
  * Those callbacks will be added to the `BundlerPlugin` via cpp functions like `.addFilter()` (see JSBundlerPlugin.cpp)
  *
- * Any `onStart()` callbacks are invoked here and their promises appended to the `promises` array parameter.
- * The `promises` parameter remains undefined if no `onStart()` callbacks are defined.
+ * On-start promises remain on the plugin until its final setup call awaits them.
  */
 export function runSetupFunction(
   this: BundlerPlugin,
   setup: Setup,
   config: BuildConfigExt,
-  promises: Array<Promise<any>> | undefined,
+  is_first: boolean,
   is_last: boolean,
   isBake: boolean,
-): Promise<Promise<any>[]> | Promise<any>[] | undefined {
-  this.promises = promises;
+): Promise<void> | void {
+  if (is_first) this.promises = undefined;
   var onLoadPlugins = new Map<string, [filter: RegExp, callback: OnLoadCallback][]>();
   var onResolvePlugins = new Map<string, [filter: RegExp, OnResolveCallback][]>();
   var onBeforeParsePlugins = new Map<
@@ -179,7 +133,7 @@ export function runSetupFunction(
     if (map === onBeforeParsePlugins) {
       isOnBeforeParse = true;
       // TODO: how to check if it a napi module here?
-      if (!callback || !$isObject(callback) || !callback.$napiDlopenHandle) {
+      if (!callback || !$isObject(callback) || !(callback as any).$napiDlopenHandle) {
         throw new TypeError(
           "onBeforeParse `napiModule` must be a Napi module which exports the `BUN_PLUGIN_NAME` symbol.",
         );
@@ -335,10 +289,9 @@ export function runSetupFunction(
       this.promises = undefined;
     }
 
-    return this.promises;
   };
 
-  var setupResult = setup({
+  var setupResult: any = setup({
     config: config,
     onDispose: notImplementedIssueFn(2771, "On-dispose callbacks"),
     onEnd,
@@ -366,7 +319,7 @@ export function runSetupFunction(
       platform: config.target === "bun" ? "node" : config.target,
     },
     esbuild: {},
-  } as PluginBuilderExt);
+  } as unknown as PluginBuilderExt);
 
   if (setupResult && $isPromise(setupResult)) {
     if ($peekPromiseStatus(setupResult) === 1) {
@@ -390,15 +343,11 @@ export function runSetupFunction(
   return processSetupResult();
 }
 
-export function runOnResolvePlugins(this: BundlerPlugin, specifier, inputNamespace, importer, internalID, kindId) {
-  // Must be kept in sync with ImportRecord.label
-  const kind = $ImportKindIdToLabel[kindId];
-
-  var promiseResult: any = (async (inputPath, inputNamespace, importer, kind) => {
+export function runOnResolvePlugins(this: BundlerPlugin, specifier, inputNamespace, importer, kind: ImportKind) {
+  const promise = (async (inputPath, inputNamespace, importer, kind) => {
     var { onResolve, onLoad } = this;
     var results = onResolve.$get(inputNamespace);
     if (!results) {
-      this.onResolveAsync(internalID, null, null, null);
       return null;
     }
 
@@ -425,12 +374,12 @@ export function runOnResolvePlugins(this: BundlerPlugin, specifier, inputNamespa
           continue;
         }
 
-        var { path, namespace: userNamespace = inputNamespace, external } = result;
+        var { path, namespace: userNamespace = inputNamespace, external } = result as any;
         if (path !== undefined && typeof path !== "string") {
           throw new TypeError("onResolve plugins 'path' field must be a string if provided");
         }
 
-        if (result.namespace !== undefined && typeof result.namespace !== "string") {
+        if (typeof userNamespace !== "string") {
           throw new TypeError("onResolve plugins 'namespace' field must be a string if provided");
         }
 
@@ -467,45 +416,27 @@ export function runOnResolvePlugins(this: BundlerPlugin, specifier, inputNamespa
             throw new TypeError(`Expected onLoad plugin for namespace ${userNamespace} to exist`);
           }
         }
-        this.onResolveAsync(internalID, path, userNamespace, external);
-        return null;
+        return { path, namespace: userNamespace, external: external ?? false };
       }
     }
 
-    this.onResolveAsync(internalID, null, null, null);
     return null;
   })(specifier, inputNamespace, importer, kind);
-
-  while (promiseResult && $isPromise(promiseResult) && $peekPromiseStatus(promiseResult) === 1) {
-    promiseResult = $peekPromiseSettledValue(promiseResult);
-  }
-
-  if (promiseResult && $isPromise(promiseResult)) {
-    promiseResult.then(
-      () => {},
-      e => {
-        this.addError(internalID, e, 0);
-      },
-    );
-  }
+  return $chainPendingPluginPromise(promise);
 }
 
 export function runOnLoadPlugins(
   this: BundlerPlugin,
-  internalID,
+  deferContext: BundlerLoadDefer,
   path,
   namespace,
-  defaultLoaderId,
+  defaultLoader: Loader,
   isServerSide: boolean,
 ) {
-  const LOADERS_MAP = $LoaderLabelToId;
-  const loaderName = $LoaderIdToLabel[defaultLoaderId];
-
-  const generateDefer = () => this.generateDeferPromise(internalID);
-  var promiseResult = (async (internalID, path, namespace, isServerSide, defaultLoader, generateDefer) => {
+  const generateDefer = () => deferContext.defer();
+  const promise = (async (path, namespace, isServerSide, defaultLoader, generateDefer) => {
     var results = this.onLoad.$get(namespace);
     if (!results) {
-      this.onLoadAsync(internalID, null, null);
       return null;
     }
 
@@ -546,38 +477,11 @@ export function runOnLoadPlugins(
           }
         }
 
-        if (!(typeof contents === "string") && !$isTypedArrayView(contents)) {
-          throw new TypeError('onLoad plugins must return an object with "contents" as a string or Uint8Array');
-        }
-
-        if (!(typeof loader === "string")) {
-          throw new TypeError('onLoad plugins must return an object with "loader" as a string');
-        }
-
-        const chosenLoader = LOADERS_MAP[loader];
-        if (chosenLoader === undefined) {
-          throw new TypeError(`Loader ${loader} is not supported.`);
-        }
-
-        this.onLoadAsync(internalID, contents as any, chosenLoader);
-        return null;
+        return { contents, loader };
       }
     }
 
-    this.onLoadAsync(internalID, null, null);
     return null;
-  })(internalID, path, namespace, isServerSide, loaderName, generateDefer);
-
-  while (promiseResult && $isPromise(promiseResult) && $peekPromiseStatus(promiseResult) === 1) {
-    promiseResult = $peekPromiseSettledValue(promiseResult);
-  }
-
-  if (promiseResult && $isPromise(promiseResult)) {
-    promiseResult.then(
-      () => {},
-      e => {
-        this.addError(internalID, e, 1);
-      },
-    );
-  }
+  })(path, namespace, isServerSide, defaultLoader, generateDefer);
+  return $chainPendingPluginPromise(promise);
 }

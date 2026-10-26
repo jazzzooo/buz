@@ -49,12 +49,17 @@ public:
     static ExceptionOr<URLPatternComponent> compile(Ref<JSC::VM>, StringView, EncodingCallbackType, const URLPatternStringOptions&);
     const String& patternString() const { return m_patternString; }
     bool hasRegexGroupsFromPartList() const { return m_hasRegexGroupsFromPartList; }
-    bool matchSpecialSchemeProtocol(JSC::JSGlobalObject*) const;
-    std::optional<URLPatternComponentResult> componentMatch(JSC::JSGlobalObject*, String&& input) const;
+    ExceptionOr<bool> test(JSC::JSGlobalObject*, StringView) const;
+    ExceptionOr<bool> matchSpecialSchemeProtocol(JSC::JSGlobalObject*) const;
+    ExceptionOr<std::optional<URLPatternComponentResult>> componentMatch(JSC::JSGlobalObject*, String&& input) const;
     URLPatternComponent() = default;
+    URLPatternComponent(const URLPatternComponent&) = delete;
+    URLPatternComponent& operator=(const URLPatternComponent&) = delete;
+    URLPatternComponent(URLPatternComponent&&) noexcept;
+    URLPatternComponent& operator=(URLPatternComponent&&) noexcept;
 
 private:
-    URLPatternComponent(String&&, JSC::Strong<JSC::RegExp>&&, Vector<String>&&, bool);
+    URLPatternComponent(String&&, JSC::Strong<JSC::RegExp>&&, Vector<String>&&, bool) noexcept;
 
     String m_patternString;
     JSC::Strong<JSC::RegExp> m_regularExpression;

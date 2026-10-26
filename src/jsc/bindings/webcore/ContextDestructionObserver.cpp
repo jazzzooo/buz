@@ -26,14 +26,12 @@
 
 #include "config.h"
 #include "ContextDestructionObserver.h"
-#include <wtf/RefCountedAndCanMakeWeakPtr.h>
 
 #include "ScriptExecutionContext.h"
 
 namespace WebCore {
 
 ContextDestructionObserver::ContextDestructionObserver(ScriptExecutionContext* scriptExecutionContext)
-    : m_context(nullptr)
 {
     observeContext(scriptExecutionContext);
 }
@@ -43,29 +41,32 @@ ContextDestructionObserver::~ContextDestructionObserver()
     observeContext(nullptr);
 }
 
-RefPtr<ScriptExecutionContext> ContextDestructionObserver::protectedScriptExecutionContext() const
-{
-    return m_context.get();
-}
-
 void ContextDestructionObserver::observeContext(ScriptExecutionContext* scriptExecutionContext)
 {
-    if (m_context) {
-        ASSERT(m_context->isContextThread());
-        m_context->willDestroyDestructionObserver(*this);
+    auto* previous = this->scriptExecutionContext();
+    if (previous == scriptExecutionContext)
+        return;
+    if (previous) {
+        ASSERT(previous->isContextThread());
+        previous->willDestroyDestructionObserver(*this);
     }
 
-    m_context = WeakPtr { scriptExecutionContext, EnableWeakPtrThreadingAssertions::No };
-
-    if (m_context) {
-        ASSERT(m_context->isContextThread());
-        m_context->didCreateDestructionObserver(*this);
+    if (scriptExecutionContext) {
+        ASSERT(scriptExecutionContext->isContextThread());
+        scriptExecutionContext->didCreateDestructionObserver(*this);
     }
 }
 
-void ContextDestructionObserver::contextDestroyed()
+void ContextDestructionObserver::notifyContextDestroyed()
 {
-    m_context = nullptr;
+    auto* context = scriptExecutionContext();
+    RELEASE_ASSERT(context);
+    observeContext(nullptr);
+    contextDestroyed(*context);
+}
+
+void ContextDestructionObserver::contextDestroyed(ScriptExecutionContext&)
+{
 }
 
 } // namespace WebCore

@@ -1,4 +1,6 @@
 #include "InspectorTestReporterAgent.h"
+#include "ErrorStackFrame.h"
+#include "SchemaBindings.h"
 
 #include <JavaScriptCore/InspectorFrontendRouter.h>
 #include <JavaScriptCore/InspectorBackendDispatcher.h>
@@ -20,113 +22,18 @@ namespace Inspector {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(InspectorTestReporterAgent);
 
-// Zig bindings implementation
-extern "C" {
-
-void Bun__TestReporterAgentEnable(Inspector::InspectorTestReporterAgent* agent);
-void Bun__TestReporterAgentDisable(Inspector::InspectorTestReporterAgent* agent);
-
-enum class BunTestType : uint8_t {
-    Test,
-    Describe,
-};
-
-void Bun__TestReporterAgentReportTestFound(Inspector::InspectorTestReporterAgent* agent, JSC::CallFrame* callFrame, int testId, BunString* name, BunTestType item_type, int parentId)
-{
-    auto str = name->toWTFString(BunString::ZeroCopy);
-
-    Protocol::TestReporter::TestType type;
-    switch (item_type) {
-    case BunTestType::Test:
-        type = Protocol::TestReporter::TestType::Test;
-        break;
-    case BunTestType::Describe:
-        type = Protocol::TestReporter::TestType::Describe;
-        break;
-    default:
-        ASSERT_NOT_REACHED();
-    }
-
-    agent->reportTestFound(callFrame, testId, str, type, parentId);
-}
-
-void Bun__TestReporterAgentReportTestFoundWithLocation(Inspector::InspectorTestReporterAgent* agent, int testId, BunString* name, BunTestType item_type, int parentId, BunString* sourceURL, int line)
-{
-    auto str = name->toWTFString(BunString::ZeroCopy);
-    auto sourceURLStr = sourceURL->toWTFString(BunString::ZeroCopy);
-
-    Protocol::TestReporter::TestType type;
-    switch (item_type) {
-    case BunTestType::Test:
-        type = Protocol::TestReporter::TestType::Test;
-        break;
-    case BunTestType::Describe:
-        type = Protocol::TestReporter::TestType::Describe;
-        break;
-    default:
-        ASSERT_NOT_REACHED();
-    }
-
-    agent->reportTestFoundWithLocation(testId, str, type, parentId, sourceURLStr, line);
-}
-
-void Bun__TestReporterAgentReportTestStart(Inspector::InspectorTestReporterAgent* agent, int testId)
-{
-    agent->reportTestStart(testId);
-}
-
-enum class BunTestStatus : uint8_t {
-    // this enum is kept in sync with zig Debugger.zig `pub const TestStatus`
-    Pass,
-    Fail,
-    Timeout,
-    Skip,
-    Todo,
-    SkippedBecauseLabel,
-};
-
-void Bun__TestReporterAgentReportTestEnd(Inspector::InspectorTestReporterAgent* agent, int testId, BunTestStatus bunTestStatus, double elapsed)
-{
-    Protocol::TestReporter::TestStatus status;
-    switch (bunTestStatus) {
-    case BunTestStatus::Pass:
-        status = Protocol::TestReporter::TestStatus::Pass;
-        break;
-    case BunTestStatus::Fail:
-        status = Protocol::TestReporter::TestStatus::Fail;
-        break;
-    case BunTestStatus::Timeout:
-        status = Protocol::TestReporter::TestStatus::Timeout;
-        break;
-    case BunTestStatus::Skip:
-        status = Protocol::TestReporter::TestStatus::Skip;
-        break;
-    case BunTestStatus::Todo:
-        status = Protocol::TestReporter::TestStatus::Todo;
-        break;
-    case BunTestStatus::SkippedBecauseLabel:
-        status = Protocol::TestReporter::TestStatus::Skipped_because_label;
-        break;
-    default:
-        ASSERT_NOT_REACHED();
-    }
-
-    agent->reportTestEnd(testId, status, elapsed);
-}
-}
-
 InspectorTestReporterAgent::InspectorTestReporterAgent(JSC::JSGlobalObject& globalObject)
     : InspectorAgentBase("TestReporter"_s)
     , m_globalObject(globalObject)
-    , m_backendDispatcher(TestReporterBackendDispatcher::create(m_globalObject.inspectorController().backendDispatcher(), this))
-    , m_frontendDispatcher(makeUnique<TestReporterFrontendDispatcher>(const_cast<FrontendRouter&>(m_globalObject.inspectorController().frontendRouter())))
+    , m_backendDispatcher(TestReporterBackendDispatcher::create(globalObject.inspectorController().backendDispatcher(), this))
+    , m_frontendDispatcher(makeUnique<TestReporterFrontendDispatcher>(const_cast<FrontendRouter&>(globalObject.inspectorController().frontendRouter())))
 {
 }
 
 InspectorTestReporterAgent::~InspectorTestReporterAgent()
 {
     if (m_enabled) {
-        Bun__TestReporterAgentDisable(this);
+        Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorTestReporterAgent(this, false);
     }
 }
 
@@ -145,7 +52,7 @@ Protocol::ErrorStringOr<void> InspectorTestReporterAgent::enable()
         return {};
 
     m_enabled = true;
-    Bun__TestReporterAgentEnable(this);
+    Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorTestReporterAgent(this, true);
     return {};
 }
 
@@ -155,7 +62,7 @@ Protocol::ErrorStringOr<void> InspectorTestReporterAgent::disable()
         return {};
 
     m_enabled = false;
-    Bun__TestReporterAgentDisable(this);
+    Bun::Bindgen::ZigExports::bunBindgenZig_inspector_agents_setInspectorTestReporterAgent(this, false);
     return {};
 }
 
@@ -168,7 +75,7 @@ void InspectorTestReporterAgent::reportTestFound(JSC::CallFrame* callFrame, int 
     JSC::SourceID sourceID = 0;
     String sourceURL;
 
-    ZigStackFrame remappedFrame = {};
+    Bun::RemappableStackFrame remappedFrame;
 
     auto* globalObject = &m_globalObject;
     auto& vm = JSC::getVM(globalObject);
@@ -210,15 +117,15 @@ void InspectorTestReporterAgent::reportTestFound(JSC::CallFrame* callFrame, int 
         OrdinalNumber originalLine = OrdinalNumber::fromOneBasedInt(lineColumn.line);
         OrdinalNumber originalColumn = OrdinalNumber::fromOneBasedInt(lineColumn.column);
 
-        remappedFrame.position.line_zero_based = originalLine.zeroBasedInt();
-        remappedFrame.position.column_zero_based = originalColumn.zeroBasedInt();
-        remappedFrame.source_url = Bun::toStringRef(sourceURL);
+        remappedFrame.position.lineZeroBased = originalLine.zeroBasedInt();
+        remappedFrame.position.columnZeroBased = originalColumn.zeroBasedInt();
+        remappedFrame.sourceURL = sourceURL;
 
-        Bun__remapStackFramePositions(Bun::vm(globalObject), &remappedFrame, 1);
+        Bun::remapStackFramePosition(Bun::vm(globalObject), remappedFrame);
 
-        sourceURL = remappedFrame.source_url.toWTFString();
-        lineColumn.line = OrdinalNumber::fromZeroBasedInt(remappedFrame.position.line_zero_based).oneBasedInt();
-        lineColumn.column = OrdinalNumber::fromZeroBasedInt(remappedFrame.position.column_zero_based).oneBasedInt();
+        sourceURL = remappedFrame.sourceURL;
+        lineColumn.line = OrdinalNumber::fromZeroBasedInt(remappedFrame.position.lineZeroBased).oneBasedInt();
+        lineColumn.column = OrdinalNumber::fromZeroBasedInt(remappedFrame.position.columnZeroBased).oneBasedInt();
     }
 
     m_frontendDispatcher->found(
@@ -263,3 +170,64 @@ void InspectorTestReporterAgent::reportTestEnd(int testId, Protocol::TestReporte
 }
 
 } // namespace Inspector
+
+template<typename InspectorTestType>
+static Inspector::Protocol::TestReporter::TestType inspectorTestType(InspectorTestType type)
+{
+    switch (type) {
+    case decltype(type)::test:
+        return Inspector::Protocol::TestReporter::TestType::Test;
+    case decltype(type)::describe:
+        return Inspector::Protocol::TestReporter::TestType::Describe;
+    default:
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorTestReporterAgentReportTestFound(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorTestReporterAgentReportTestFound_Arguments& args)
+{
+    args.agent->reportTestFound(args.callFrame, args.testId, args.name, inspectorTestType(args.itemType), args.parentId);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorTestReporterAgentReportTestFoundWithLocation(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorTestReporterAgentReportTestFoundWithLocation_Arguments& args)
+{
+    args.agent->reportTestFoundWithLocation(args.testId, args.name, inspectorTestType(args.itemType), args.parentId, args.sourceURL, args.line);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorTestReporterAgentReportTestStart(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorTestReporterAgentReportTestStart_Arguments& args)
+{
+    args.agent->reportTestStart(args.testId);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_inspector_agents_inspectorTestReporterAgentReportTestEnd(
+    const Bun::Bindgen::Engine::BunBindgenEngine_inspector_agents_inspectorTestReporterAgentReportTestEnd_Arguments& args)
+{
+    Protocol::TestReporter::TestStatus status;
+    switch (args.status) {
+    case decltype(args.status)::pass:
+        status = Protocol::TestReporter::TestStatus::Pass;
+        break;
+    case decltype(args.status)::fail:
+        status = Protocol::TestReporter::TestStatus::Fail;
+        break;
+    case decltype(args.status)::timeout:
+        status = Protocol::TestReporter::TestStatus::Timeout;
+        break;
+    case decltype(args.status)::skip:
+        status = Protocol::TestReporter::TestStatus::Skip;
+        break;
+    case decltype(args.status)::todo:
+        status = Protocol::TestReporter::TestStatus::Todo;
+        break;
+    case decltype(args.status)::skipped_because_label:
+        status = Protocol::TestReporter::TestStatus::Skipped_because_label;
+        break;
+    default:
+        RELEASE_ASSERT_NOT_REACHED();
+    }
+
+    args.agent->reportTestEnd(args.testId, status, args.elapsed);
+}

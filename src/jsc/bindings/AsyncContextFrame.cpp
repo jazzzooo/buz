@@ -2,6 +2,7 @@
 #include "ZigGlobalObject.h"
 #include "AsyncContextFrame.h"
 #include <JavaScriptCore/AsyncContextSwapScope.h>
+#include <JavaScriptCore/JSPromise.h>
 
 #if ASSERT_ENABLED
 #include <JavaScriptCore/IntegrityInlines.h>
@@ -91,11 +92,6 @@ void auditEverything(JSGlobalObject* globalObject, JSValue value, JSValue thisVa
 }
 #endif
 
-extern "C" JSC::EncodedJSValue AsyncContextFrame__withAsyncContextIfNeeded(JSGlobalObject* globalObject, JSC::EncodedJSValue callback)
-{
-    return JSValue::encode(AsyncContextFrame::withAsyncContextIfNeeded(globalObject, JSValue::decode(callback)));
-}
-
 JSValue AsyncContextFrame::call(JSGlobalObject* global, JSValue functionObject, JSValue thisValue, const ArgList& args)
 {
 #if ASSERT_ENABLED
@@ -117,4 +113,14 @@ JSValue AsyncContextFrame::call(JSGlobalObject* global, JSValue functionObject, 
 
     AsyncContextSwapScope asyncContextScope(global->vm(), global, asyncContext);
     return JSC::profiledCall(global, ProfilingReason::API, functionObject, JSC::getCallData(functionObject), thisValue, args);
+}
+
+bool Bun::Bindgen::TypePredicates::isCallableOrAsyncContext(JSC::JSValue value) noexcept
+{
+    return value.isCallable() || !!dynamicDowncast<AsyncContextFrame>(value);
+}
+
+bool Bun::Bindgen::TypePredicates::isAsyncContextWrappable(JSC::JSValue value) noexcept
+{
+    return isCallableOrAsyncContext(value) || !!dynamicDowncast<JSC::JSPromise>(value);
 }

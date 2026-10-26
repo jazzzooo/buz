@@ -1,4 +1,5 @@
-#include "headers.h"
+#include "ResolvedSource.h"
+#include "ZigVirtualMachine.h"
 #include "root.h"
 
 #pragma once
@@ -9,6 +10,8 @@ class Identifier;
 class SourceCodeKey;
 class SourceProvider;
 } // namespace JSC
+
+struct VirtualMachine;
 
 #include <JavaScriptCore/CachedBytecode.h>
 #include <JavaScriptCore/JSGlobalObject.h>
@@ -22,23 +25,16 @@ class GlobalObject;
 
 void forEachSourceProvider(WTF::Function<void(JSC::SourceID)>);
 JSC::SourceID sourceIDForSourceURL(const WTF::String& sourceURL);
-void* sourceMappingForSourceURL(const WTF::String& sourceURL);
 JSC::SourceOrigin toSourceOrigin(const String& sourceURL, bool isBuiltin);
 class SourceProvider final : public JSC::SourceProvider {
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(SourceProvider);
     using Base = JSC::SourceProvider;
-    using BytecodeCacheGenerator = JSC::BytecodeCacheGenerator;
-    using UnlinkedFunctionExecutable = JSC::UnlinkedFunctionExecutable;
-    using CachedBytecode = JSC::CachedBytecode;
-    using UnlinkedFunctionCodeBlock = JSC::UnlinkedFunctionCodeBlock;
-    using SourceCode = JSC::SourceCode;
-    using CodeSpecializationKind = JSC::CodeSpecializationKind;
     using SourceOrigin = JSC::SourceOrigin;
 
 public:
-    static Ref<SourceProvider> create(
+    static RefPtr<SourceProvider> create(
         Zig::GlobalObject*,
-        ResolvedSource& resolvedSource,
+        ResolvedSource&& resolvedSource,
         JSC::SourceProviderSourceType sourceType = JSC::SourceProviderSourceType::Module,
         bool isBuiltIn = false);
     ~SourceProvider();
@@ -50,33 +46,28 @@ public:
         return m_cachedBytecode.copyRef();
     };
 
-    void updateCache(const UnlinkedFunctionExecutable* executable, const SourceCode&, CodeSpecializationKind kind, const UnlinkedFunctionCodeBlock* codeBlock);
-    void cacheBytecode(const BytecodeCacheGenerator& generator);
-    void commitCachedBytecode();
-    bool isBytecodeCacheEnabled() const;
-    void readOrGenerateByteCodeCache(JSC::VM& vm, const JSC::SourceCode& sourceCode);
     ResolvedSource m_resolvedSource;
-    int readCache(JSC::VM& vm, const JSC::SourceCode& sourceCode);
-    void freeSourceCode();
 
 private:
-    SourceProvider(void* bunVM, ResolvedSource resolvedSource, Ref<WTF::StringImpl>&& sourceImpl,
+    SourceProvider(VirtualMachine* bunVM, ResolvedSource&& resolvedSource, Ref<WTF::StringImpl>&& sourceImpl,
         JSC::SourceTaintedOrigin taintedness,
         const SourceOrigin& sourceOrigin, WTF::String&& sourceURL,
         const TextPosition& startPosition, JSC::SourceProviderSourceType sourceType)
         : Base(sourceOrigin, WTF::move(sourceURL), String(), taintedness, startPosition, sourceType)
+        , m_resolvedSource(WTF::move(resolvedSource))
         , m_bunVM(bunVM)
         , m_source(sourceImpl)
     {
-        m_resolvedSource = resolvedSource;
+        resolvedSource.bytecodeCache.reset();
+        resolvedSource.moduleInfo.reset();
     }
 
     // Stored directly (not via the creating global) so the destructor stays
     // valid when the provider outlives its global under --isolate caching.
-    void* m_bunVM;
+    VirtualMachine* m_bunVM;
+    uint64_t m_sourceMapRegistration = 0;
     RefPtr<JSC::CachedBytecode> m_cachedBytecode;
     Ref<WTF::StringImpl> m_source;
-    unsigned m_hash = 0;
 };
 
 } // namespace Zig

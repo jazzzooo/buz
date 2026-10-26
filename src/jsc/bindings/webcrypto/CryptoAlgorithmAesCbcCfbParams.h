@@ -25,7 +25,6 @@
 
 #pragma once
 
-#include "BufferSource.h"
 #include "CryptoAlgorithmParameters.h"
 #include <wtf/Vector.h>
 
@@ -35,30 +34,14 @@ namespace WebCore {
 
 class CryptoAlgorithmAesCbcCfbParams final : public CryptoAlgorithmParameters {
 public:
-    BufferSource iv;
+    Vector<uint8_t> iv;
 
     Class parametersClass() const final { return Class::AesCbcCfbParams; }
 
     const Vector<uint8_t>& ivVector() const
     {
-        if (!m_ivVector.isEmpty() || !iv.length())
-            return m_ivVector;
-
-        m_ivVector.append(std::span { iv.data(), iv.length() });
-        return m_ivVector;
+        return iv;
     }
-
-    CryptoAlgorithmAesCbcCfbParams isolatedCopy() const
-    {
-        CryptoAlgorithmAesCbcCfbParams result;
-        result.identifier = identifier;
-        result.m_ivVector = ivVector();
-
-        return result;
-    }
-
-private:
-    mutable Vector<uint8_t> m_ivVector;
 };
 
 } // namespace WebCore

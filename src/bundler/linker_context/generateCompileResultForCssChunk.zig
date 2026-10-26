@@ -153,7 +153,6 @@ fn generateCompileResultForCssChunkImpl(worker: *Executor.Worker, c: *LinkerCont
     }
 }
 
-pub const DeferredBatchTask = bun.bundle_v2.DeferredBatchTask;
 pub const Executor = bun.bundle_v2.Executor;
 pub const ParseTask = bun.bundle_v2.ParseTask;
 

@@ -3,11 +3,11 @@
 
 #include "Cookie.h"
 #include "ExceptionOr.h"
-#include <wtf/HashMap.h>
 #include <wtf/Vector.h>
 #include <wtf/RefCounted.h>
 #include <wtf/text/WTFString.h>
-#include <variant>
+#include <span>
+#include <utility>
 
 namespace WebCore {
 
@@ -23,26 +23,28 @@ struct CookieStoreDeleteOptions {
 };
 
 class CookieMap : public RefCounted<CookieMap> {
+    WTF_MAKE_NONCOPYABLE(CookieMap);
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(CookieMap);
+
 public:
     ~CookieMap();
 
-    // Define a simple struct to hold the key-value pair
-
-    static ExceptionOr<Ref<CookieMap>> create(std::variant<Vector<Vector<String>>, HashMap<String, String>, String>&& init, bool throwOnInvalidCookieString = true);
+    static ExceptionOr<Ref<CookieMap>> create();
+    static ExceptionOr<Ref<CookieMap>> create(StringView);
+    static ExceptionOr<Ref<CookieMap>> create(std::span<const Vector<String>>);
+    static ExceptionOr<Ref<CookieMap>> create(std::span<const std::pair<String, String>>);
 
     std::optional<String> get(const String& name) const;
-    Vector<KeyValuePair<String, String>> getAll() const;
-    Vector<Ref<Cookie>> getAllChanges() const { return m_modifiedCookies; }
+    ExceptionOr<Vector<String>> toSetCookieHeaders() const;
 
     bool has(const String& name) const;
 
-    void set(Ref<Cookie>);
+    ExceptionOr<void> set(Ref<Cookie>);
 
-    Ref<CookieMap> clone();
+    ExceptionOr<Ref<CookieMap>> clone() const;
 
     ExceptionOr<void> remove(const CookieStoreDeleteOptions& options);
 
-    JSC::JSValue toJSON(JSC::JSGlobalObject*) const;
     size_t size() const;
     size_t memoryCost() const;
 
@@ -61,14 +63,21 @@ public:
     Iterator createIterator(const void*) { return Iterator { *this }; }
 
 private:
-    CookieMap();
-    CookieMap(Vector<Ref<Cookie>>&& cookies);
+    enum class ChangeKind : uint8_t { Set,
+        Delete };
+    struct Change {
+        Ref<Cookie> cookie;
+        ChangeKind kind;
+    };
+
     CookieMap(Vector<KeyValuePair<String, String>>&& cookies);
+    static ExceptionOr<Ref<CookieMap>> createOriginal(Vector<KeyValuePair<String, String>>&&);
 
     void removeInternal(const String& name);
+    ExceptionOr<void> setChange(Ref<Cookie>, ChangeKind);
 
     Vector<KeyValuePair<String, String>> m_originalCookies;
-    Vector<Ref<Cookie>> m_modifiedCookies;
+    Vector<Change> m_modifiedCookies;
 };
 
 } // namespace WebCore

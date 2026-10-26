@@ -86,14 +86,14 @@ function assignHeaders(object, req) {
   }
 }
 
-function onIncomingMessagePauseNodeHTTPResponse(this: IncomingMessage) {
+function onIncomingMessagePauseNodeHTTPResponse(this: import("node:http").IncomingMessage) {
   const handle = this[kHandle];
   if (handle && !this.destroyed) {
     handle.pause();
   }
 }
 
-function onIncomingMessageResumeNodeHTTPResponse(this: IncomingMessage) {
+function onIncomingMessageResumeNodeHTTPResponse(this: import("node:http").IncomingMessage) {
   const handle = this[kHandle];
   if (handle && !this.destroyed) {
     const resumed = handle.resume();
@@ -135,7 +135,7 @@ function IncomingMessage(req, options = defaultIncomingOpts) {
   } else {
     this[noBodySymbol] = false;
     Readable.$call(this);
-    var { [typeSymbol]: type } = options || {};
+    var { [typeSymbol]: type } = (options || {}) as any;
 
     this[webRequestOrResponse] = req;
     this[typeSymbol] = type;
@@ -170,10 +170,10 @@ function IncomingMessage(req, options = defaultIncomingOpts) {
 }
 
 function onDataIncomingMessage(
-  this: import("node:http").IncomingMessage,
+  this: import("node:http").IncomingMessage & { _dumped?: boolean },
   chunk,
   isLast,
-  aborted: NodeHTTPResponseAbortEvent,
+  aborted: number,
 ) {
   if (aborted === NodeHTTPResponseAbortEvent.abort) {
     this.destroy();
@@ -306,7 +306,7 @@ const IncomingMessagePrototype = {
 
     // Suppress "AbortError" from fetch() because we emit this in the 'aborted' event
     if (isAbortError(err)) {
-      err = undefined;
+      err = null;
     }
     var nodeHTTPResponse = this[kHandle];
     if (nodeHTTPResponse) {
@@ -412,7 +412,13 @@ const IncomingMessagePrototype = {
   set socket(value) {
     this[fakeSocketSymbol] = value;
   },
-} satisfies typeof import("node:http").IncomingMessage.prototype;
+} satisfies Partial<typeof import("node:http").IncomingMessage.prototype> & {
+  constructor: unknown;
+  __proto__: typeof import("node:stream").Readable.prototype;
+  _dumped?: boolean;
+  _dump(): void;
+  _finish(): void;
+};
 IncomingMessage.prototype = IncomingMessagePrototype;
 $setPrototypeDirect.$call(IncomingMessage, Readable);
 

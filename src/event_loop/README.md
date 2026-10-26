@@ -240,8 +240,8 @@ The I/O poll is integrated into the event loop via `us_loop_run_bun_tick()`:
 │                                                              │
 │   1. EMIT PRE-CALLBACK (us_internal_loop_pre)               │
 │                                                              │
-│   2. CALL Bun__JSC_onBeforeWait(jsc_vm)                     │
-│      └─> Notify VM we're about to block                     │
+│   2. CALL before-wait callback                              │
+│      └─> Notify the VM we're about to block                 │
 │                                                              │
 │   3. POLL I/O                                               │
 │      ├─> epoll_pwait2() [Linux]                             │
@@ -267,7 +267,7 @@ The I/O poll is integrated into the event loop via `us_loop_run_bun_tick()`:
 
 When I/O becomes ready (socket readable/writable, file descriptor ready):
 
-1. The poll is dispatched via `us_internal_dispatch_ready_poll()` or `Bun__internal_dispatch_ready_poll()`
+1. The poll is dispatched via `us_internal_dispatch_ready_poll()` or the loop's tagged-poll callback
 2. This triggers the appropriate callback **synchronously during the I/O poll phase**
 3. The callback may:
    - Directly execute JavaScript (must use `EventLoop.enter()/exit()`)

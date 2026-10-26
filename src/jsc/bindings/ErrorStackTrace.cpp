@@ -94,29 +94,8 @@ bool isImplementationVisibilityPrivate(const JSC::StackFrame& frame)
     return implementationVisibility != ImplementationVisibility::Public;
 }
 
-JSCStackTrace JSCStackTrace::fromExisting(JSC::VM& vm, const WTF::Vector<JSC::StackFrame>& existingFrames)
+void getFramesForCaller(JSC::VM& vm, JSC::JSCell* owner, JSC::JSValue caller, WTF::Vector<JSC::StackFrame>& stackTrace, size_t stackTraceLimit)
 {
-    WTF::Vector<JSCStackFrame> newFrames;
-
-    size_t frameCount = existingFrames.size();
-    if (0 == frameCount) {
-        return JSCStackTrace();
-    }
-
-    newFrames.reserveInitialCapacity(frameCount);
-    for (size_t i = 0; i < frameCount; i++) {
-        if (!isImplementationVisibilityPrivate(existingFrames.at(i))) {
-            newFrames.constructAndAppend(vm, existingFrames.at(i));
-        }
-    }
-
-    return JSCStackTrace(newFrames);
-}
-
-void JSCStackTrace::getFramesForCaller(JSC::VM& vm, JSC::CallFrame* callFrame, JSC::JSCell* owner, JSC::JSValue caller, WTF::Vector<JSC::StackFrame>& stackTrace, size_t stackTraceLimit)
-{
-    UNUSED_PARAM(callFrame);
-
     // Delegate to Interpreter::getStackTrace which includes async stack frames
     // (from the await chain via getAsyncStackTrace). The previous hand-rolled
     // StackVisitor::visit walk only collected synchronous frames.
@@ -180,27 +159,6 @@ void JSCStackTrace::getFramesForCaller(JSC::VM& vm, JSC::CallFrame* callFrame, J
 
     if (stackTrace.size() > stackTraceLimit)
         stackTrace.shrink(stackTraceLimit);
-}
-
-JSCStackTrace JSCStackTrace::getStackTraceForThrownValue(JSC::VM& vm, JSC::JSValue thrownValue)
-{
-    const WTF::Vector<JSC::StackFrame>* jscStackTrace = nullptr;
-
-    JSC::Exception* currentException = DECLARE_TOP_EXCEPTION_SCOPE(vm).exception();
-    if (currentException && currentException->value() == thrownValue) {
-        jscStackTrace = &currentException->stack();
-    } else {
-        JSC::ErrorInstance* error = dynamicDowncast<JSC::ErrorInstance>(thrownValue);
-        if (error) {
-            jscStackTrace = error->stackTrace();
-        }
-    }
-
-    if (!jscStackTrace) {
-        return JSCStackTrace();
-    }
-
-    return fromExisting(vm, *jscStackTrace);
 }
 
 static bool isVisibleBuiltinFunction(JSC::CodeBlock* codeBlock)
@@ -295,9 +253,10 @@ JSCStackFrame::JSCStackFrame(JSC::VM& vm, const JSC::StackFrame& frame)
         auto lineColumn = frame.computeLineAndColumn();
         m_sourcePositions = { OrdinalNumber::fromOneBasedInt(lineColumn.line), OrdinalNumber::fromOneBasedInt(lineColumn.column) };
         m_sourcePositionsState = SourcePositionsState::Calculated;
-        auto codeType = frame.codeBlock()->codeType();
-        if (codeType == JSC::FunctionCode || codeType == JSC::EvalCode) {
-            m_isFunctionOrEval = true;
+        if (auto* codeBlock = frame.codeBlock()) {
+            auto codeType = codeBlock->codeType();
+            if (codeType == JSC::FunctionCode || codeType == JSC::EvalCode)
+                m_isFunctionOrEval = true;
         }
     }
 }
@@ -741,9 +700,4 @@ String functionName(JSC::VM& vm, JSC::JSGlobalObject* lexicalGlobalObject, const
 
     return functionName;
 }
-}
-
-extern "C" void Bun__errorInstance__finalize(void* bunErrorData)
-{
-    UNUSED_PARAM(bunErrorData);
 }

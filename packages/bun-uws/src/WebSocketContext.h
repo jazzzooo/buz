@@ -19,6 +19,8 @@
 #define UWS_WEBSOCKETCONTEXT_H
 
 #include "WebSocketContextData.h"
+#include "WebSocketContextLifetime.h"
+#include <new>
 #include "WebSocketProtocol.h"
 #include "WebSocketData.h"
 #include "WebSocket.h"
@@ -37,6 +39,18 @@ private:
 
     us_socket_group_t group{};
     WebSocketContextData<SSL, USERDATA> data;
+    WebSocketContextLifetime lifetime{
+        .group = &group,
+        .context = this,
+        .destroy = [](void *value) { static_cast<WebSocketContext *>(value)->free(); },
+    };
+
+    struct CallbackScope {
+        WebSocketContext *context;
+        explicit CallbackScope(us_socket_t *socket) : context(fromSocket(socket)) { context->ref(); }
+        ~CallbackScope() { context->deref(); }
+    };
+
 
     /* WebSocket::getContextData() recovers &data as
      * (us_socket_group_t*)group.ext + 1 to avoid pulling this header into
@@ -53,6 +67,10 @@ public:
     /* Not constexpr — the ordinals are linked from Zig (`SocketKind.zig`
      * @export) so a reorder there can't silently mis-route us. */
     static unsigned char socketKind() { return SSL ? US_SOCKET_KIND_UWS_WS_TLS : US_SOCKET_KIND_UWS_WS; }
+
+    void ref() { lifetime.ref(); }
+    void deref() { lifetime.deref(); }
+    void attach(WebSocketContextLifetime *&head) { lifetime.attach(head); }
 
     us_socket_group_t *getSocketGroup() {
         return &group;
@@ -206,7 +224,7 @@ private:
             if (!remainingBytes && fin && !webSocketData->controlTipLength) {
                 if (opCode == CLOSE) {
                     auto closeFrame = protocol::parseClosePayload(data, length);
-                    webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
+                    (void) webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
                     return true;
                 } else {
                     if (opCode == PING) {
@@ -235,7 +253,7 @@ private:
                     char *controlBuffer = (char *) webSocketData->fragmentBuffer.data() + webSocketData->fragmentBuffer.length() - webSocketData->controlTipLength;
                     if (opCode == CLOSE) {
                         protocol::CloseFrame closeFrame = protocol::parseClosePayload(controlBuffer, webSocketData->controlTipLength);
-                        webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
+                        (void) webSocket->end(closeFrame.code, std::string_view(closeFrame.message, closeFrame.length));
                         return true;
                     } else {
                         if (opCode == PING) {
@@ -275,6 +293,7 @@ private:
     /* ── vtable handlers (adopted sockets only — never on_open) ──────────── */
 
     static us_socket_t *onClose(us_socket_t *s, int code, void *reason) {
+        CallbackScope callbackScope(s);
         ((AsyncSocket<SSL> *)s)->uncorkWithoutSending();
 
         /* For whatever reason, if we already have emitted close event, do not emit it again */
@@ -304,11 +323,14 @@ private:
 
         /* Destruct in-placed data struct */
         webSocketData->~WebSocketData();
+        /* Release the adopted socket's reference; callbackScope still pins the context. */
+        callbackScope.context->deref();
 
         return s;
     }
 
     static us_socket_t *onData(us_socket_t *s, char *data, int length) {
+        CallbackScope callbackScope(s);
         /* We need the websocket data */
         WebSocketData *webSocketData = (WebSocketData *) (us_socket_ext(s));
 
@@ -331,11 +353,12 @@ private:
         /* This parser has virtually no overhead */
         WebSocketProtocol<isServer, WebSocketContext<SSL, isServer, USERDATA>>::consume(data, (unsigned int) length, (WebSocketState<isServer> *) webSocketData, s);
 
-        /* Uncorking a closed socekt is fine, in fact it is needed */
-        asyncSocket->uncork();
+        const auto uncorked = asyncSocket->uncork();
+        if (uncorked.status == WriteStatus::OutOfMemory) return asyncSocket->closeOnOutOfMemory();
+        if (uncorked.status == WriteStatus::Closed) return s;
 
         /* If uncorking was successful and we are in shutdown state then send TCP FIN */
-        if (asyncSocket->getBufferedAmount() == 0) {
+        if (!asyncSocket->hasPendingOutput()) {
             /* We can now be in shutdown state */
             if (webSocketData->isShuttingDown) {
                 /* Shutting down a closed socket is handled by uSockets and just fine */
@@ -347,14 +370,11 @@ private:
     }
 
     static us_socket_t *onWritable(us_socket_t *s) {
-        /* NOTE: Are we called here corked? If so, the below write code is broken, since
-         * we will have 0 as getBufferedAmount due to writing to cork buffer, then sending TCP FIN before
-         * we actually uncorked and sent off things */
-
         /* It makes sense to check for us_is_shut_down here and return if so, to avoid shutting down twice */
-        if (us_socket_is_shut_down((us_socket_t *) s)) {
+        if (us_socket_is_closed(s) || us_socket_is_shut_down((us_socket_t *) s)) {
             return s;
         }
+        CallbackScope callbackScope(s);
 
         AsyncSocket<SSL> *asyncSocket = (AsyncSocket<SSL> *) s;
         WebSocketData *webSocketData = (WebSocketData *)(us_socket_ext(s));
@@ -364,7 +384,9 @@ private:
         size_t backpressure = asyncSocket->getBufferedAmount();
 
         /* Drain as much as possible */
-        asyncSocket->write(nullptr, 0);
+        const auto uncorked = asyncSocket->uncork();
+        if (uncorked.status == WriteStatus::OutOfMemory) return asyncSocket->closeOnOutOfMemory();
+        if (uncorked.status == WriteStatus::Closed) return s;
 
         /* Behavior: if we actively drain backpressure, always reset timeout (even if we are in shutdown) */
         /* Also reset timeout if we came here with 0 backpressure */
@@ -394,6 +416,7 @@ private:
     }
 
     static us_socket_t *onEnd(us_socket_t *s) {
+        CallbackScope callbackScope(s);
         ((AsyncSocket<SSL> *)s)->uncorkWithoutSending();
 
         /* If we get a fin, we just close I guess */
@@ -403,12 +426,14 @@ private:
     }
 
     static us_socket_t *onLongTimeout(us_socket_t *s) {
-        ((WebSocket<SSL, isServer, USERDATA> *) s)->end(1000, "please reconnect");
+        CallbackScope callbackScope(s);
+        (void) ((WebSocket<SSL, isServer, USERDATA> *) s)->end(1000, "please reconnect");
 
         return s;
     }
 
     static us_socket_t *onTimeout(us_socket_t *s) {
+        CallbackScope callbackScope(s);
         auto *webSocketData = (WebSocketData *)(us_socket_ext(s));
         auto *webSocketContextData = getExtS(s);
 
@@ -416,7 +441,8 @@ private:
             webSocketData->hasTimedOut = true;
             us_socket_timeout(s, webSocketContextData->idleTimeoutComponents.second);
             /* Send ping without being corked */
-            ((AsyncSocket<SSL> *) s)->write("\x89\x00", 2);
+            auto *asyncSocket = reinterpret_cast<AsyncSocket<SSL> *>(s);
+            if (asyncSocket->write("\x89\x00", 2).status == WriteStatus::OutOfMemory) return asyncSocket->closeOnOutOfMemory();
             return s;
         }
 
@@ -428,17 +454,14 @@ private:
     }
 
     static inline const us_socket_vtable_t wsVTable = {
-        /* on_open */         nullptr,
-        /* on_data */         &onData,
-        /* on_fd */           nullptr,
-        /* on_writable */     &onWritable,
-        /* on_close */        &onClose,
-        /* on_timeout */      &onTimeout,
-        /* on_long_timeout */ &onLongTimeout,
-        /* on_end */          &onEnd,
-        /* on_connect_error */nullptr,
-        /* on_connecting_error */ nullptr,
-        /* on_handshake */    nullptr,
+        .on_data = &onData,
+        .on_writable = &onWritable,
+        .on_close = &onClose,
+        .on_timeout = &onTimeout,
+        .on_long_timeout = &onLongTimeout,
+        .on_end = &onEnd,
+        .retain_group = [](us_socket_group_t *group) { static_cast<WebSocketContext *>(us_socket_group_ext(group))->ref(); },
+        .release_group = [](us_socket_group_t *group) { static_cast<WebSocketContext *>(us_socket_group_ext(group))->deref(); },
     };
 
     void free() {
@@ -450,7 +473,8 @@ public:
     /* WebSocket contexts adopt sockets from a parent HTTP context's loop. No
      * SSL_CTX needed — the socket already has its `s->ssl` from accept time. */
     static WebSocketContext *create(Loop *loop, TopicTree<TopicTreeMessage, TopicTreeBigMessage> *topicTree) {
-        WebSocketContext *webSocketContext = new WebSocketContext(topicTree);
+        WebSocketContext *webSocketContext = new (std::nothrow) WebSocketContext(topicTree);
+        if (!webSocketContext) return nullptr;
         us_socket_group_init(&webSocketContext->group, (us_loop_t *) loop, &wsVTable, webSocketContext);
         return webSocketContext;
     }

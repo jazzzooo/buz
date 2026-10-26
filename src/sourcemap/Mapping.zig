@@ -220,12 +220,12 @@ pub const Lookup = struct {
 
     name: ?[]const u8 = null,
 
-    /// This creates a bun.String if the source remap *changes* the source url,
-    /// which is only possible if the executed file differs from the source file:
+    /// Borrows the source map's name, or owns a resolved path when the source
+    /// differs from the executed file:
     ///
     /// - `bun build --sourcemap`, it is another file on disk
     /// - `bun build --compile --sourcemap`, it is an embedded file.
-    pub fn displaySourceURLIfNeeded(lookup: Lookup, base_filename: []const u8) ?bun.String {
+    pub fn displaySourceURLIfNeeded(lookup: Lookup, base_filename: []const u8) bun.OOM!?bun.String.Slice {
         const source_map = lookup.source_map orelse return null;
         // See doc comment on `external_source_names`
         if (source_map.external_source_names.len == 0)
@@ -235,82 +235,16 @@ pub const Lookup = struct {
 
         const name = source_map.external_source_names[@intCast(lookup.mapping.source_index)];
 
-        if (source_map.is_standalone_module_graph) {
-            return bun.String.cloneUTF8(name);
+        if (source_map.source_content == .standalone_module_graph) {
+            return .fromUTF8NeverFree(name);
         }
 
         if (std.fs.path.isAbsolute(base_filename)) {
             const dir = std.fs.path.dirname(base_filename) orelse base_filename;
-            const resolved = bun.handleOom(std.fs.path.resolve(bun.default_allocator, &.{ dir, name }));
-            defer bun.default_allocator.free(resolved);
-            return bun.String.cloneUTF8(resolved);
+            return .init(bun.default_allocator, try std.fs.path.resolve(bun.default_allocator, &.{ dir, name }));
         }
 
-        return bun.String.init(name);
-    }
-
-    /// Only valid if `lookup.source_map.isExternal()`
-    /// This has the possibility of invoking a call to the filesystem.
-    ///
-    /// This data is freed after printed on the assumption that printing
-    /// errors to the console are rare (this isnt used for error.stack)
-    pub fn getSourceCode(lookup: Lookup, base_filename: []const u8) ?bun.jsc.ZigString.Slice {
-        const bytes = bytes: {
-            if (lookup.prefetched_source_code) |code| {
-                break :bytes code;
-            }
-
-            const source_map = lookup.source_map orelse return null;
-            assert(source_map.isExternal());
-
-            const provider = source_map.underlying_provider.provider() orelse
-                return null;
-
-            const index = lookup.mapping.source_index;
-
-            // Standalone module graph source maps are stored (in memory) compressed.
-            // They are decompressed on demand.
-            if (source_map.is_standalone_module_graph) {
-                const serialized = source_map.standaloneModuleGraphData();
-                if (index >= source_map.external_source_names.len)
-                    return null;
-
-                const code = serialized.sourceFileContents(@intCast(index));
-
-                return bun.jsc.ZigString.Slice.fromUTF8NeverFree(code orelse return null);
-            }
-
-            if (provider.getSourceMap(
-                base_filename,
-                source_map.underlying_provider.load_hint,
-                .{ .source_only = @intCast(index) },
-            )) |parsed|
-                if (parsed.source_contents) |contents|
-                    break :bytes contents;
-
-            if (index >= source_map.external_source_names.len)
-                return null;
-
-            const name = source_map.external_source_names[@intCast(index)];
-
-            var buf: bun.PathBuffer = undefined;
-            const normalized = bun.path.joinAbsStringBufZ(
-                std.fs.path.dirname(base_filename) orelse "",
-                &buf,
-                &.{name},
-                .auto,
-            );
-            switch (bun.sys.File.readFrom(
-                std.Io.Dir.cwd(),
-                normalized,
-                bun.default_allocator,
-            )) {
-                .result => |r| break :bytes r,
-                .err => return null,
-            }
-        };
-
-        return bun.jsc.ZigString.Slice.init(bun.default_allocator, bytes);
+        return .fromUTF8NeverFree(name);
     }
 };
 
@@ -343,16 +277,22 @@ pub fn parse(
     bytes: []const u8,
     estimated_mapping_count: ?usize,
     sources_count: i32,
-    input_line_count: usize,
+    input_line_count: ?usize,
     options: struct {
         allow_names: bool = false,
         sort: bool = false,
     },
 ) ParseResult {
     debug("parse mappings ({d} bytes)", .{bytes.len});
+    if (bytes.len > std.math.maxInt(i32)) return .{ .fail = .{
+        .msg = "Source map is too large",
+        .err = error.OutOfMemory,
+        .loc = .{},
+    } };
 
     var mapping = Mapping.List{};
-    errdefer mapping.deinit(allocator);
+    var committed = false;
+    defer if (!committed) mapping.deinit(allocator);
 
     if (estimated_mapping_count) |count| {
         mapping.ensureTotalCapacity(allocator, count) catch {
@@ -370,6 +310,7 @@ pub fn parse(
     var original = LineColumnOffset{ .lines = bun.Ordinal.start, .columns = bun.Ordinal.start };
     var name_index: i32 = 0;
     var source_index: i32 = 0;
+    var max_original_line: usize = 0;
     var needs_sort = false;
     var remain = bytes;
     var has_names = false;
@@ -411,17 +352,18 @@ pub fn parse(
 
         needs_sort = needs_sort or generated_column_delta.value < 0;
 
-        generated.columns = generated.columns.addScalar(generated_column_delta.value);
-        if (generated.columns.zeroBased() < 0) {
+        const generated_column, const generated_column_overflow = @addWithOverflow(generated.columns.zeroBased(), generated_column_delta.value);
+        if (generated_column_overflow != 0 or generated_column < 0) {
             return .{
                 .fail = .{
                     .msg = "Invalid generated column value",
                     .err = error.InvalidGeneratedColumnValue,
-                    .value = generated.columns.zeroBased(),
+                    .value = generated_column,
                     .loc = .{ .start = @as(i32, @intCast(bytes.len - remain.len)) },
                 },
             };
         }
+        generated.columns = .fromZeroBased(generated_column);
 
         remain = remain[generated_column_delta.start..];
 
@@ -454,18 +396,18 @@ pub fn parse(
                 },
             };
         }
-        source_index += source_index_delta.value;
-
-        if (source_index < 0 or source_index >= sources_count) {
+        const next_source_index, const source_index_overflow = @addWithOverflow(source_index, source_index_delta.value);
+        if (source_index_overflow != 0 or next_source_index < 0 or next_source_index >= sources_count) {
             return .{
                 .fail = .{
                     .msg = "Invalid source index value",
                     .err = error.InvalidSourceIndexValue,
-                    .value = source_index,
+                    .value = next_source_index,
                     .loc = .{ .start = @as(i32, @intCast(bytes.len - remain.len)) },
                 },
             };
         }
+        source_index = next_source_index;
         remain = remain[source_index_delta.start..];
 
         // Read the original line
@@ -480,17 +422,18 @@ pub fn parse(
             };
         }
 
-        original.lines = original.lines.addScalar(original_line_delta.value);
-        if (original.lines.zeroBased() < 0) {
+        const original_line, const original_line_overflow = @addWithOverflow(original.lines.zeroBased(), original_line_delta.value);
+        if (original_line_overflow != 0 or original_line < 0) {
             return .{
                 .fail = .{
                     .msg = "Invalid original line value",
                     .err = error.InvalidOriginalLineValue,
-                    .value = original.lines.zeroBased(),
+                    .value = original_line,
                     .loc = .{ .start = @as(i32, @intCast(bytes.len - remain.len)) },
                 },
             };
         }
+        original.lines = .fromZeroBased(original_line);
         remain = remain[original_line_delta.start..];
 
         // Read the original column
@@ -506,17 +449,18 @@ pub fn parse(
             };
         }
 
-        original.columns = original.columns.addScalar(original_column_delta.value);
-        if (original.columns.zeroBased() < 0) {
+        const original_column, const original_column_overflow = @addWithOverflow(original.columns.zeroBased(), original_column_delta.value);
+        if (original_column_overflow != 0 or original_column < 0) {
             return .{
                 .fail = .{
                     .msg = "Invalid original column value",
                     .err = error.InvalidOriginalColumnValue,
-                    .value = original.columns.zeroBased(),
+                    .value = original_column,
                     .loc = .{ .start = @as(i32, @intCast(bytes.len - remain.len)) },
                 },
             };
         }
+        original.columns = .fromZeroBased(original_column);
         remain = remain[original_column_delta.start..];
 
         if (remain.len > 0) {
@@ -544,8 +488,16 @@ pub fn parse(
                     }
                     remain = remain[name_index_delta.start..];
 
+                    const next_name_index, const name_index_overflow = @addWithOverflow(name_index, name_index_delta.value);
+                    if (name_index_overflow != 0 or next_name_index < 0) return .{ .fail = .{
+                        .msg = "Invalid name index value",
+                        .err = error.InvalidNameIndexValue,
+                        .value = next_name_index,
+                        .loc = .{ .start = @intCast(bytes.len - remain.len) },
+                    } };
+                    name_index = next_name_index;
+
                     if (options.allow_names) {
-                        name_index += name_index_delta.value;
                         if (!has_names) {
                             mapping.ensureWithNames(allocator) catch {
                                 return .{
@@ -574,23 +526,83 @@ pub fn parse(
                 },
             }
         }
+        max_original_line = @max(max_original_line, @as(usize, @intCast(original.lines.zeroBased())));
         mapping.append(allocator, &.{
             .generated = generated,
             .original = original,
             .source_index = source_index,
             .name_index = name_index,
-        }) catch |err| bun.handleOom(err);
+        }) catch |err| return .{ .fail = .{
+            .msg = "Out of memory",
+            .err = err,
+            .loc = .{},
+        } };
     }
 
     if (needs_sort and options.sort) {
         mapping.sort();
     }
 
+    committed = true;
     return .{ .success = .{
         .ref_count = .init(),
+        .allocator = allocator,
         .mappings = mapping,
-        .input_line_count = input_line_count,
+        .input_line_count = input_line_count orelse max_original_line,
     } };
+}
+
+test "mapping coordinate accumulation rejects overflow" {
+    const Case = struct { input: []const u8, failure: anyerror };
+    for ([_]Case{
+        .{ .input = "+/////DAAA,CAAA", .failure = error.InvalidGeneratedColumnValue },
+        .{ .input = "ACAA,A+/////DAA", .failure = error.InvalidSourceIndexValue },
+        .{ .input = "AA+/////DA,AACA", .failure = error.InvalidOriginalLineValue },
+        .{ .input = "AAA+/////D,AAAC", .failure = error.InvalidOriginalColumnValue },
+        .{ .input = "AAAAC,AAAA+/////D", .failure = error.InvalidNameIndexValue },
+        .{ .input = "AAAAD", .failure = error.InvalidNameIndexValue },
+    }) |case| {
+        switch (parse(std.testing.allocator, case.input, null, std.math.maxInt(i32), null, .{ .allow_names = true })) {
+            .fail => |failure| try std.testing.expectEqual(case.failure, failure.err),
+            .success => |value| {
+                var unexpected = value;
+                unexpected.mappings.deinit(std.testing.allocator);
+                return error.ExpectedInvalidSourceMap;
+            },
+        }
+    }
+}
+
+test "mapping parse failures release partial storage and preserve allocator ownership" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const parsed = owned: {
+                var value = switch (parse(allocator, "AAAA,CACC", null, 1, null, .{})) {
+                    .success => |result| result,
+                    .fail => |failure| return failure.err,
+                };
+                errdefer value.mappings.deinit(allocator);
+                const result = try allocator.create(ParsedSourceMap);
+                result.* = value;
+                break :owned result;
+            };
+            defer parsed.deref();
+            try std.testing.expect(parsed.findMapping(.fromZeroBased(0), .fromZeroBased(1)) != null);
+            try std.testing.expectEqual(@as(usize, 1), parsed.input_line_count);
+
+            switch (parse(allocator, "AAAA,?", null, 1, 1, .{})) {
+                .fail => |failure| {
+                    if (failure.err == error.OutOfMemory) return error.OutOfMemory;
+                    try std.testing.expectEqual(error.MissingGeneratedColumnValue, failure.err);
+                },
+                .success => |result| {
+                    var unexpected = result;
+                    unexpected.mappings.deinit(allocator);
+                    return error.ExpectedInvalidSourceMap;
+                },
+            }
+        }
+    }.run, .{});
 }
 
 const std = @import("std");

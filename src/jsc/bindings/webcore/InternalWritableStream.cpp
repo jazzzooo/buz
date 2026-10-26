@@ -27,46 +27,41 @@
 #include "InternalWritableStream.h"
 
 #include "Exception.h"
+#include "SchemaBindings.h"
 #include "WebCoreJSClientData.h"
-#include "WebCoreJSBuiltins.h"
+#include "ZigGlobalObject.h"
 
 namespace WebCore {
 
-static ExceptionOr<JSC::JSValue> invokeWritableStreamFunction(JSC::JSGlobalObject& globalObject, const JSC::Identifier& identifier, const JSC::MarkedArgumentBuffer& arguments)
+template<auto factory>
+static ExceptionOr<JSC::JSValue> invokeWritableStreamFunction(JSC::JSGlobalObject& globalObject, JSC::MarkedArgumentBuffer& arguments)
 {
     JSC::VM& vm = globalObject.vm();
     JSC::JSLockHolder lock(vm);
 
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-
-    auto function = globalObject.get(&globalObject, identifier);
-    ASSERT(function.isCallable());
-    scope.assertNoExceptionExceptTermination();
-
-    auto callData = JSC::getCallData(function);
-
-    auto result = call(&globalObject, function, callData, JSC::jsUndefined(), arguments);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    if (arguments.hasOverflowed()) {
+        JSC::throwOutOfMemoryError(&globalObject, scope);
+        return Exception { ExistingExceptionError };
+    }
+    auto function = factory(defaultGlobalObject(&globalObject));
+    RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
+    RELEASE_ASSERT(function.isCallable());
+    auto result = JSC::profiledCall(&globalObject, JSC::ProfilingReason::API, function, JSC::getCallData(function), JSC::jsUndefined(), arguments);
     RETURN_IF_EXCEPTION(scope, Exception { ExistingExceptionError });
 
     return result;
 }
 
-ExceptionOr<Ref<InternalWritableStream>> InternalWritableStream::createFromUnderlyingSink(JSDOMGlobalObject& globalObject, JSC::JSValue underlyingSink, JSC::JSValue strategy)
+ExceptionOr<JSC::JSObject*> InternalWritableStream::createFromUnderlyingSink(JSDOMGlobalObject& globalObject, JSC::MarkedArgumentBuffer& arguments)
 {
-    auto* clientData = static_cast<JSVMClientData*>(globalObject.vm().clientData);
-    auto& privateName = clientData->builtinFunctions().writableStreamInternalsBuiltins().createInternalWritableStreamFromUnderlyingSinkPrivateName();
-
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(underlyingSink);
-    arguments.append(strategy);
-    ASSERT(!arguments.hasOverflowed());
-
-    auto result = invokeWritableStreamFunction(globalObject, privateName, arguments);
+    auto result = invokeWritableStreamFunction<bun_bindgen_source_function_WritableStreamOperations_create_value>(globalObject, arguments);
     if (result.hasException()) [[unlikely]]
         return result.releaseException();
 
-    ASSERT(result.returnValue().isObject());
-    return adoptRef(*new InternalWritableStream(globalObject, *result.returnValue().toObject(&globalObject)));
+    auto* stream = result.returnValue().getObject();
+    RELEASE_ASSERT(stream);
+    return stream;
 }
 
 Ref<InternalWritableStream> InternalWritableStream::fromObject(JSDOMGlobalObject& globalObject, JSC::JSObject& object)
@@ -76,54 +71,22 @@ Ref<InternalWritableStream> InternalWritableStream::fromObject(JSDOMGlobalObject
 
 bool InternalWritableStream::locked() const
 {
-    auto* globalObject = this->globalObject();
-    if (!globalObject)
+    auto* stream = guarded();
+    if (!stream)
         return false;
-
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
-
-    auto* clientData = static_cast<JSVMClientData*>(globalObject->vm().clientData);
-    auto& privateName = clientData->builtinFunctions().writableStreamInternalsBuiltins().isWritableStreamLockedPrivateName();
-
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(guardedObject());
-    ASSERT(!arguments.hasOverflowed());
-
-    auto result = invokeWritableStreamFunction(*globalObject, privateName, arguments);
-    CLEAR_IF_EXCEPTION(scope);
-    return result.hasException() ? false : result.returnValue().isTrue();
+    auto& vm = stream->vm();
+    return !stream->getDirect(vm, builtinNames(vm).writerPrivateName()).isUndefined();
 }
 
-void InternalWritableStream::lock()
+JSC::JSValue InternalWritableStream::abort(JSC::JSGlobalObject& globalObject, const Bun::Bindgen::CppAny* reason)
 {
-    auto* globalObject = this->globalObject();
-    if (!globalObject)
-        return;
-
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
-
-    auto* clientData = static_cast<JSVMClientData*>(globalObject->vm().clientData);
-    auto& privateName = clientData->builtinFunctions().writableStreamInternalsBuiltins().acquireWritableStreamDefaultWriterPrivateName();
-
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(guardedObject());
-    ASSERT(!arguments.hasOverflowed());
-
-    auto result = invokeWritableStreamFunction(*globalObject, privateName, arguments);
-    CLEAR_IF_EXCEPTION(scope);
-}
-
-JSC::JSValue InternalWritableStream::abort(JSC::JSGlobalObject& globalObject, JSC::JSValue reason)
-{
-    auto* clientData = static_cast<JSVMClientData*>(globalObject.vm().clientData);
-    auto& privateName = clientData->builtinFunctions().writableStreamInternalsBuiltins().writableStreamAbortForBindingsPrivateName();
-
-    JSC::MarkedArgumentBuffer arguments;
-    arguments.append(guardedObject());
-    arguments.append(reason);
-    ASSERT(!arguments.hasOverflowed());
-
-    auto result = invokeWritableStreamFunction(globalObject, privateName, arguments);
+    if (reason)
+        reason->appendTo(arguments);
+    else
+        arguments.append(JSC::jsUndefined());
+    auto result = invokeWritableStreamFunction<bun_bindgen_source_function_WritableStreamOperations_abort_value>(globalObject, arguments);
     if (result.hasException())
         return {};
 
@@ -132,14 +95,9 @@ JSC::JSValue InternalWritableStream::abort(JSC::JSGlobalObject& globalObject, JS
 
 JSC::JSValue InternalWritableStream::close(JSC::JSGlobalObject& globalObject)
 {
-    auto* clientData = static_cast<JSVMClientData*>(globalObject.vm().clientData);
-    auto& privateName = clientData->builtinFunctions().writableStreamInternalsBuiltins().writableStreamCloseForBindingsPrivateName();
-
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(guardedObject());
-    ASSERT(!arguments.hasOverflowed());
-
-    auto result = invokeWritableStreamFunction(globalObject, privateName, arguments);
+    auto result = invokeWritableStreamFunction<bun_bindgen_source_function_WritableStreamOperations_close_value>(globalObject, arguments);
     if (result.hasException())
         return {};
 
@@ -148,14 +106,9 @@ JSC::JSValue InternalWritableStream::close(JSC::JSGlobalObject& globalObject)
 
 JSC::JSValue InternalWritableStream::getWriter(JSC::JSGlobalObject& globalObject)
 {
-    auto* clientData = static_cast<JSVMClientData*>(globalObject.vm().clientData);
-    auto& privateName = clientData->builtinFunctions().writableStreamInternalsBuiltins().acquireWritableStreamDefaultWriterPrivateName();
-
     JSC::MarkedArgumentBuffer arguments;
     arguments.append(guardedObject());
-    ASSERT(!arguments.hasOverflowed());
-
-    auto result = invokeWritableStreamFunction(globalObject, privateName, arguments);
+    auto result = invokeWritableStreamFunction<bun_bindgen_source_function_WritableStreamOperations_getWriter_value>(globalObject, arguments);
     if (result.hasException())
         return {};
 

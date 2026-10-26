@@ -58,12 +58,15 @@ struct itimerval {
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netdb.h>
+#include <paths.h>
 #include <pwd.h>
 #if !DARWIN
 #include <spawn.h>
 #endif
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>

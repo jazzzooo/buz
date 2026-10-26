@@ -296,14 +296,28 @@ pub const Ctx = struct {
 /// WebKit sync updates them without touching this file. bmalloc splits into a
 /// C and a C++ archive because the module-level libc-header policy differs
 /// (see newCppLib in exe.zig).
-pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: std.builtin.Optimize, derived_wf: *Step.WriteFile) Ctx {
+pub fn addLibs(
+    b: *Build,
+    deps: *const exe.DepPkgs,
+    mode: exe.Mode,
+    optimize: std.builtin.Optimize,
+    derived_wf: *Step.WriteFile,
+    schema_bindings_dirs: []const LazyPath,
+) Ctx {
     const arena = b.graph.arena;
     const cmake = readCMakeLists(b);
     const manifest = readManifest(b);
 
-    const bmalloc_c = newLib(b, deps, mode, optimize, "webkit-bmalloc-c", false, cmake);
-    const bmalloc_cxx = newLib(b, deps, mode, optimize, "webkit-bmalloc-cxx", true, cmake);
-    const wtf = newLib(b, deps, mode, optimize, "webkit-wtf", true, cmake);
+    const library_optimize: std.builtin.Optimize = if (mode == .debug) .safe else optimize;
+    const bmalloc_c = newLib(b, deps, mode, library_optimize, "webkit-bmalloc-c", false, cmake);
+    const bmalloc_cxx = newLib(b, deps, mode, library_optimize, "webkit-bmalloc-cxx", true, cmake);
+    const wtf = newLib(b, deps, mode, library_optimize, "webkit-wtf", true, cmake);
+    const wtf_bindgen_files = b.addWriteFiles();
+    const run_loop_bun_source = wtf_bindgen_files.addCopyFile(
+        b.path("vendor/webkit/Source/WTF/wtf/bun/RunLoopBun.cpp"),
+        "RunLoopBun.cpp",
+    );
+    for (schema_bindings_dirs) |dir| _ = wtf_bindgen_files.addCopyDirectory(dir, "", .{});
 
     const bmalloc_includes = [_][]const u8{ "bmalloc", "bmalloc/bmalloc", "bmalloc/libpas/src/libpas" };
     const wtf_includes = [_][]const u8{ "WTF", "WTF/wtf", "WTF/wtf/dtoa", "WTF/wtf/fast_float", "WTF/wtf/persistence", "WTF/wtf/simdutf", "WTF/wtf/text", "WTF/wtf/text/icu", "WTF/wtf/threads", "WTF/wtf/unicode", "bmalloc" };
@@ -341,7 +355,10 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: st
     }
     for (manifest.wtf) |tu| {
         wtf.root_module.addCSourceFile(.{
-            .file = b.path(b.fmt("vendor/webkit/{s}", .{tu.path})),
+            .file = if (std.mem.eql(u8, tu.path, "Source/WTF/wtf/bun/RunLoopBun.cpp"))
+                run_loop_bun_source
+            else
+                b.path(b.fmt("vendor/webkit/{s}", .{tu.path})),
             .flags = wtf_flags,
             .language = .cpp,
         });
@@ -380,8 +397,8 @@ pub fn addLibs(b: *Build, deps: *const exe.DepPkgs, mode: exe.Mode, optimize: st
     sync.has_side_effects = true;
     sync.step.name = "sync webkit-derived";
 
-    const jsc = newLib(b, deps, mode, optimize, "webkit-jsc", true, cmake);
-    const jsc_c = newLib(b, deps, mode, optimize, "webkit-jsc-c", false, cmake);
+    const jsc = newLib(b, deps, mode, library_optimize, "webkit-jsc", true, cmake);
+    const jsc_c = newLib(b, deps, mode, library_optimize, "webkit-jsc-c", false, cmake);
     for ([_]*Step.Compile{ jsc, jsc_c }) |lib| {
         lib.step.dependOn(&sync.step);
         const m = lib.root_module;

@@ -16,14 +16,9 @@
     macro(httpCHECKOUT, "CHECKOUT") \
     macro(httpCONNECT, "CONNECT") \
     macro(httpCOPY, "COPY") \
-    macro(ConnectionWasClosed, "The connection was closed.") \
     macro(httpDELETE, "DELETE") \
     macro(httpGET, "GET") \
     macro(httpHEAD, "HEAD") \
-    macro(IN4Loopback, "127.0.0.1") \
-    macro(IN6Any, "::") \
-    macro(IPv4, "IPv4") \
-    macro(IPv6, "IPv6") \
     macro(httpLINK, "LINK") \
     macro(httpLOCK, "LOCK") \
     macro(httpMERGE, "MERGE") \
@@ -35,9 +30,6 @@
     macro(httpMSEARCH, "M-SEARCH") \
     macro(httpNOTIFY, "NOTIFY") \
     macro(httpOPTIONS, "OPTIONS") \
-    macro(OperationFailed, "The operation failed.") \
-    macro(OperationTimedOut, "The operation timed out.") \
-    macro(OperationWasAborted, "The operation was aborted.") \
     macro(httpPATCH, "PATCH") \
     macro(httpPOST, "POST") \
     macro(httpPROPFIND, "PROPFIND") \
@@ -55,62 +47,7 @@
     macro(httpUNLINK, "UNLINK") \
     macro(httpUNLOCK, "UNLOCK") \
     macro(httpUNSUBSCRIBE, "UNSUBSCRIBE") \
-    macro(ascii, "ascii") \
-    macro(base64, "base64") \
-    macro(base64url, "base64url") \
-    macro(binaryTypeArrayBuffer, "arraybuffer") \
-    macro(binaryTypeNodeBuffer, "nodebuffer") \
-    macro(binaryTypeUint8Array, "uint8array") \
-    macro(buffer, "buffer") \
-    macro(ec, "ec") \
-    macro(ed25519, "ed25519") \
-    macro(fetchCors, "cors") \
-    macro(fetchError, "error") \
-    macro(fetchFollow, "follow") \
-    macro(fetchForceCache, "force-cache") \
-    macro(fetchInclude, "include") \
-    macro(fetchManual, "manual") \
-    macro(fetchNavigate, "navigate") \
-    macro(fetchNoCache, "no-cache") \
-    macro(fetchNoCors, "no-cors") \
-    macro(fetchNoStore, "no-store") \
-    macro(fetchOnlyIfCached, "only-if-cached") \
-    macro(fetchReload, "reload") \
-    macro(fetchSameOrigin, "same-origin") \
-    macro(hex, "hex") \
-    macro(ipv4Lower, "ipv4") \
-    macro(ipv6Lower, "ipv6") \
-    macro(latin1, "latin1") \
-    macro(lax, "lax") \
-    macro(none, "none") \
-    macro(rsa, "rsa") \
-    macro(rsaPss, "rsa-pss") \
-    macro(s3Error, "S3Error") \
-    macro(strict, "strict") \
-    macro(jwkCrv, "crv") \
-    macro(jwkD, "d") \
-    macro(jwkDp, "dp") \
-    macro(jwkDq, "dq") \
-    macro(jwkDsa, "DSA") \
-    macro(jwkE, "e") \
-    macro(jwkEc, "EC") \
-    macro(jwkG, "g") \
-    macro(jwkK, "k") \
-    macro(jwkP, "p") \
-    macro(jwkQ, "q") \
-    macro(jwkQi, "qi") \
-    macro(jwkKty, "kty") \
-    macro(jwkN, "n") \
-    macro(jwkOct, "oct") \
-    macro(jwkOkp, "OKP") \
-    macro(jwkRsa, "RSA") \
-    macro(jwkX, "x") \
-    macro(jwkY, "y") \
-    macro(systemError, "SystemError") \
-    macro(ucs2, "ucs2") \
-    macro(utf16le, "utf16le") \
-    macro(utf8, "utf8") \
-    macro(x25519, "x25519")
+    macro(s3Error, "S3Error")
 
 // clang-format on
 

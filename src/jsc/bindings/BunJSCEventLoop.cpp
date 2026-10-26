@@ -1,13 +1,23 @@
 #include "root.h"
 #include "BunClientData.h"
+#include "SchemaBindings.h"
 
 #include <JavaScriptCore/VM.h>
 #include <JavaScriptCore/Heap.h>
+#include <atomic>
 
-extern "C" int Bun__defaultRemainingRunsUntilSkipReleaseAccess;
+static std::atomic_int defaultRemainingRunsUntilSkipReleaseAccess { 10 };
 
-extern "C" void Bun__JSC_onBeforeWait(JSC::VM* _Nonnull vm)
+void Bun::Bindgen::Engine::bunBindgenEngine_garbage_collection_setDefaultRemainingRunsUntilSkipReleaseAccess(
+    const BunBindgenEngine_garbage_collection_setDefaultRemainingRunsUntilSkipReleaseAccess_Arguments& args)
 {
+    defaultRemainingRunsUntilSkipReleaseAccess.store(args.value, std::memory_order_relaxed);
+}
+
+void Bun::Bindgen::Engine::bunBindgenEngine_virtual_machine_vmOnBeforeWait(
+    const BunBindgenEngine_virtual_machine_vmOnBeforeWait_Arguments& args)
+{
+    auto* vm = args.vm;
     ASSERT(vm);
     const bool previouslyHadAccess = vm->heap.hasHeapAccess();
     // sanity check for debug builds to ensure we're not doing a
@@ -48,7 +58,7 @@ extern "C" void Bun__JSC_onBeforeWait(JSC::VM* _Nonnull vm)
         // finalizers that might've been waiting to be run is a good idea.
         // But if you haven't, like if the process is just waiting on I/O
         // then don't bother.
-        const int defaultRemainingRunsUntilSkipReleaseAccess = Bun__defaultRemainingRunsUntilSkipReleaseAccess;
+        const int configuredRemainingRunsUntilSkipReleaseAccess = defaultRemainingRunsUntilSkipReleaseAccess.load(std::memory_order_relaxed);
 
         static thread_local int remainingRunsUntilSkipReleaseAccess = 0;
 
@@ -56,7 +66,7 @@ extern "C" void Bun__JSC_onBeforeWait(JSC::VM* _Nonnull vm)
         // We don't need to use that option, so it should be fine.
         if (vm->didEnterVM) {
             vm->didEnterVM = false;
-            remainingRunsUntilSkipReleaseAccess = defaultRemainingRunsUntilSkipReleaseAccess;
+            remainingRunsUntilSkipReleaseAccess = configuredRemainingRunsUntilSkipReleaseAccess;
         }
 
         if (remainingRunsUntilSkipReleaseAccess-- > 0) {

@@ -1,4 +1,4 @@
-pub const SQLDataCell = extern struct {
+pub const SQLDataCell = struct {
     tag: Tag,
 
     value: Value,
@@ -22,7 +22,7 @@ pub const SQLDataCell = extern struct {
         uint8 = 14,
     };
 
-    pub const Value = extern union {
+    pub const Value = union {
         null: u8,
         string: ?bun.WTF.StringImpl,
         float8: f64,
@@ -40,11 +40,16 @@ pub const SQLDataCell = extern struct {
         uint8: u64,
     };
 
-    pub const Array = extern struct {
+    pub const Array = struct {
         ptr: ?[*]SQLDataCell = null,
         len: u32,
         cap: u32,
-        pub fn slice(this: *Array) []SQLDataCell {
+        pub fn slice(this: *const Array) []const SQLDataCell {
+            const ptr = this.ptr orelse return &.{};
+            return ptr[0..this.len];
+        }
+
+        pub fn mutableSlice(this: *Array) []SQLDataCell {
             const ptr = this.ptr orelse return &.{};
             return ptr[0..this.len];
         }
@@ -62,25 +67,41 @@ pub const SQLDataCell = extern struct {
             bun.default_allocator.free(allocated);
         }
     };
-    pub const Raw = extern struct {
+    pub const Raw = struct {
         ptr: ?[*]const u8 = null,
         len: u64,
+
+        pub fn slice(this: Raw) []const u8 {
+            const ptr = this.ptr orelse return &.{};
+            return ptr[0..@intCast(this.len)];
+        }
     };
-    pub const TypedArray = extern struct {
+    pub const TypedArray = struct {
         head_ptr: ?[*]u8 = null,
         ptr: ?[*]u8 = null,
         len: u32,
         byte_len: u32,
-        type: JSValue.JSType,
+        kind: TypedArrayKind,
 
-        pub fn slice(this: *TypedArray) []u8 {
+        pub fn elementBytes(this: *const TypedArray) []const u8 {
             const ptr = this.ptr orelse return &.{};
-            return ptr[0..this.len];
+            return ptr[0 .. @as(usize, this.len) * this.kind.byteWidth()];
         }
 
-        pub fn byteSlice(this: *TypedArray) []u8 {
+        pub fn ownedAllocation(this: *const TypedArray) []u8 {
             const ptr = this.head_ptr orelse return &.{};
-            return ptr[0..this.len];
+            return ptr[0..this.byte_len];
+        }
+    };
+
+    pub const TypedArrayKind = enum {
+        int32,
+        float32,
+
+        pub fn byteWidth(kind: TypedArrayKind) usize {
+            return switch (kind) {
+                .int32, .float32 => 4,
+            };
         }
     };
 
@@ -104,13 +125,13 @@ pub const SQLDataCell = extern struct {
                 bun.default_allocator.free(slice);
             },
             .array => {
-                for (this.value.array.slice()) |*cell| {
+                for (this.value.array.mutableSlice()) |*cell| {
                     cell.deinit();
                 }
                 this.value.array.deinit();
             },
             .typed_array => {
-                bun.default_allocator.free(this.value.typed_array.byteSlice());
+                bun.default_allocator.free(this.value.typed_array.ownedAllocation());
             },
 
             else => {},
@@ -131,51 +152,7 @@ pub const SQLDataCell = extern struct {
             .value = .{ .null = 0 },
         };
     }
-
-    // TODO: cppbind isn't yet able to detect slice parameters when the next is uint32_t
-    pub fn constructObjectFromDataCell(
-        globalObject: *jsc.JSGlobalObject,
-        encodedArrayValue: jsc.JSValue,
-        cells: [*]SQLDataCell,
-        count: u32,
-        result_mode: u8,
-        layout: ?*const ResultLayout,
-    ) !jsc.JSValue {
-        const slots = if (layout) |value| value.slots else &.{};
-        const flags: u32 = if (layout) |value| @bitCast(value.flags) else 0;
-        const structure = if (layout) |value| value.jsValue() orelse .js_undefined else .js_undefined;
-        const slots_ptr: ?[*]const ResultLayout.Slot = if (slots.len > 0) slots.ptr else null;
-
-        if (comptime bun.Environment.ci_assert) {
-            var scope: jsc.ExceptionValidationScope = undefined;
-            scope.init(globalObject, @src());
-            defer scope.deinit();
-            const value = JSC__constructObjectFromDataCell(globalObject, encodedArrayValue, structure, cells, count, flags, result_mode, slots_ptr, @intCast(slots.len));
-            scope.assertExceptionPresenceMatches(value == .zero);
-            return if (value == .zero) error.JSError else value;
-        } else {
-            const value = JSC__constructObjectFromDataCell(globalObject, encodedArrayValue, structure, cells, count, flags, result_mode, slots_ptr, @intCast(slots.len));
-            if (value == .zero) return error.JSError;
-            return value;
-        }
-    }
-
-    pub extern fn JSC__constructObjectFromDataCell(
-        *jsc.JSGlobalObject,
-        JSValue,
-        JSValue,
-        [*]SQLDataCell,
-        u32,
-        u32, // layout flags
-        u8, // result_mode
-        ?[*]const ResultLayout.Slot,
-        u32,
-    ) JSValue;
 };
 
 const bun = @import("bun");
 const Data = @import("../../sql/shared/Data.zig").Data;
-const ResultLayout = @import("./ResultLayout.zig");
-
-const jsc = bun.jsc;
-const JSValue = jsc.JSValue;

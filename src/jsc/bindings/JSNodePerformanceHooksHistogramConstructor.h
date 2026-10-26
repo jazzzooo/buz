@@ -1,14 +1,12 @@
 #pragma once
 
 #include "root.h"
+#include "SchemaBindings.h"
 #include <JavaScriptCore/InternalFunction.h>
 
 namespace Bun {
 
 using namespace JSC;
-
-JSC_DECLARE_HOST_FUNCTION(jsNodePerformanceHooksHistogramConstructorCall);
-JSC_DECLARE_HOST_FUNCTION(jsNodePerformanceHooksHistogramConstructorConstruct);
 
 class JSNodePerformanceHooksHistogramConstructor final : public JSC::InternalFunction {
 public:
@@ -38,7 +36,7 @@ public:
 
 private:
     JSNodePerformanceHooksHistogramConstructor(JSC::VM& vm, JSC::Structure* structure)
-        : Base(vm, structure, jsNodePerformanceHooksHistogramConstructorCall, jsNodePerformanceHooksHistogramConstructorConstruct)
+        : Base(vm, structure, bun_bindgen_host_PerformanceHistogram_histogramConstructorCall, bun_bindgen_host_PerformanceHistogram_histogramConstructorConstruct)
     {
     }
 

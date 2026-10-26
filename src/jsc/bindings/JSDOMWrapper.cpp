@@ -26,15 +26,6 @@
 #include "JSDOMWrapper.h"
 #include "root.h"
 
-#include "BunBuiltinNames.h"
-
-// #include "DOMWindow.h"
-// #include "DOMWrapperWorld.h"
-// #include "JSDOMWindow.h"
-// #include "JSRemoteDOMWindow.h"
-// #include "SerializedScriptValue.h"
-// #include <JavaScriptCore/Error.h>
-
 namespace WebCore {
 
 STATIC_ASSERT_IS_TRIVIALLY_DESTRUCTIBLE(JSDOMObject);
@@ -42,21 +33,6 @@ STATIC_ASSERT_IS_TRIVIALLY_DESTRUCTIBLE(JSDOMObject);
 JSDOMObject::JSDOMObject(JSC::Structure* structure, JSC::JSGlobalObject& globalObject)
     : Base(globalObject.vm(), structure)
 {
-    // ASSERT(scriptExecutionContext() || globalObject.classInfo(globalObject.vm()) == JSRemoteDOMWindow::info());
-}
-
-JSC::JSValue cloneAcrossWorlds(JSC::JSGlobalObject& lexicalGlobalObject, const JSDOMObject& owner, JSC::JSValue value)
-{
-    if (isWorldCompatible(lexicalGlobalObject, value))
-        return value;
-    // // FIXME: Is it best to handle errors by returning null rather than throwing an exception?
-    // auto serializedValue = SerializedScriptValue::create(lexicalGlobalObject, value, SerializationErrorMode::NonThrowing);
-    // if (!serializedValue)
-    // return JSC::jsNull();
-    // FIXME: Why is owner->globalObject() better than lexicalGlobalObject.lexicalGlobalObject() here?
-    // Unlike this, isWorldCompatible uses lexicalGlobalObject.lexicalGlobalObject(); should the two match?
-    // return serializedValue->deserialize(lexicalGlobalObject, owner.globalObject());
-    return JSC::jsNull();
 }
 
 } // namespace WebCore
