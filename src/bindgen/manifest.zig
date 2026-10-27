@@ -6,10 +6,13 @@ const ir = @import("bindgen_ir");
 const doc = @import("document.zig");
 const Manifest = @This();
 
-// Read metadata through comptime calls so it never becomes an addressable runtime constant.
 pub fn binding() doc.Binding {
     if (!@inComptime()) @compileError("binding metadata is only available at comptime");
-    return @import("binding_ir");
+    // Cache the coercion without giving the IR runtime storage.
+    const Cached = struct {
+        comptime value: doc.Binding = @import("binding_ir"),
+    };
+    return (Cached{}).value;
 }
 
 pub inline fn get(comptime id: anytype) @typeInfo(@FieldType(doc.Binding, @TypeOf(id).table)).pointer.child {
