@@ -33,7 +33,7 @@ pub fn installIsolatedPackages(
 
         // DFS so a deduplicated node's full subtree (and therefore its `peers`)
         // is finalized before any later sibling encounters it.
-        var node_queue: std.ArrayListUnmanaged(QueuedNode) = .empty;
+        var node_queue: std.ArrayList(QueuedNode) = .empty;
         defer node_queue.deinit(lockfile.allocator);
 
         try node_queue.append(lockfile.allocator, .{
@@ -42,7 +42,7 @@ pub fn installIsolatedPackages(
             .pkg_id = 0,
         });
 
-        var dep_ids_sort_buf: std.ArrayListUnmanaged(DependencyID) = .empty;
+        var dep_ids_sort_buf: std.ArrayList(DependencyID) = .empty;
         defer dep_ids_sort_buf.deinit(lockfile.allocator);
 
         // For each package, the peer dependency names declared anywhere in its
@@ -78,8 +78,8 @@ pub fn installIsolatedPackages(
             // dependency with that name resolves to, which may be an `npm:`-aliased
             // target whose package name differs. Index resolutions by *dependency*
             // name so the union below covers every package a peer could become.
-            const peer_targets: []std.ArrayListUnmanaged(PackageID) = try lockfile.allocator.alloc(
-                std.ArrayListUnmanaged(PackageID),
+            const peer_targets: []std.ArrayList(PackageID) = try lockfile.allocator.alloc(
+                std.ArrayList(PackageID),
                 peer_name_count,
             );
             @memset(peer_targets, .empty);
@@ -624,7 +624,7 @@ pub fn installIsolatedPackages(
             peers: Store.OrderedArraySet(Store.Node.TransitivePeer, Store.Node.TransitivePeer.OrderedArraySetCtx),
         };
 
-        var dedupe: std.AutoHashMapUnmanaged(PackageID, std.ArrayListUnmanaged(DedupeInfo)) = .empty;
+        var dedupe: std.AutoHashMapUnmanaged(PackageID, std.ArrayList(DedupeInfo)) = .empty;
         defer dedupe.deinit(lockfile.allocator);
 
         var res_fmt_buf: std.array_list.Managed(u8) = .init(lockfile.allocator);
@@ -753,7 +753,7 @@ pub fn installIsolatedPackages(
             else
                 try .initCapacity(lockfile.allocator, node_nodes[entry.node_id.get()].items.len);
 
-            var new_entry_parents: std.ArrayListUnmanaged(Store.Entry.Id) = try .initCapacity(lockfile.allocator, 1);
+            var new_entry_parents: std.ArrayList(Store.Entry.Id) = try .initCapacity(lockfile.allocator, 1);
             new_entry_parents.appendAssumeCapacity(entry.entry_parent_id);
 
             const hoisted = hoisted: {
@@ -909,7 +909,7 @@ pub fn installIsolatedPackages(
         // child's own hash (still being computed). Two entries that only differ
         // by which side of a cycle they sit on still get distinct hashes via
         // their own store-path bytes.
-        var stack: std.ArrayListUnmanaged(struct { id: Store.Entry.Id, dep_idx: u32, hasher: std.hash.Wyhash }) = .empty;
+        var stack: std.ArrayList(struct { id: Store.Entry.Id, dep_idx: u32, hasher: std.hash.Wyhash }) = .empty;
         defer stack.deinit(manager.allocator);
 
         for (0..store.entries.len) |_root_id| {
@@ -1095,9 +1095,9 @@ pub fn installIsolatedPackages(
             defer manager.allocator.free(on_stack);
             @memset(on_stack, false);
 
-            var scc_stack: std.ArrayListUnmanaged(u32) = .empty;
+            var scc_stack: std.ArrayList(u32) = .empty;
             defer scc_stack.deinit(manager.allocator);
-            var work: std.ArrayListUnmanaged(struct { v: u32, child: u32 }) = .empty;
+            var work: std.ArrayList(struct { v: u32, child: u32 }) = .empty;
             defer work.deinit(manager.allocator);
             var scc_ext: std.array_hash_map.Auto(u64, void) = .empty;
             defer scc_ext.deinit(manager.allocator);
@@ -1180,7 +1180,7 @@ pub fn installIsolatedPackages(
                             // Sorting by *content* (not entry index) is what
                             // makes this stable across projects.
                             scc_ext.clearRetainingCapacity();
-                            var member_sub: std.ArrayListUnmanaged(u64) = .empty;
+                            var member_sub: std.ArrayList(u64) = .empty;
                             defer member_sub.deinit(manager.allocator);
                             var any_ineligible = false;
                             for (members) |m| {

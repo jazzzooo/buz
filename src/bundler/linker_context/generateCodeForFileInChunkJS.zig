@@ -407,7 +407,7 @@ pub fn generateCodeForFileInChunkJS(
                 const is_async = flags.is_async_or_has_async_dependency;
 
                 const ExportHoist = struct {
-                    decls: std.ArrayListUnmanaged(G.Decl),
+                    decls: std.ArrayList(G.Decl),
                     allocator: std.mem.Allocator,
 
                     pub fn wrapIdentifier(w: *@This(), loc: Logger.Loc, ref: Ref) Expr {
@@ -649,7 +649,7 @@ pub fn generateCodeForFileInChunkJS(
 }
 
 pub const DeclCollector = struct {
-    decls: std.ArrayListUnmanaged(CompileResult.DeclInfo) = .empty,
+    decls: std.ArrayList(CompileResult.DeclInfo) = .empty,
     allocator: std.mem.Allocator,
 
     const CompileResult = bun.bundle_v2.CompileResult;
@@ -719,7 +719,7 @@ pub const DeclCollector = struct {
     }
 };
 
-fn mergeAdjacentLocalStmts(stmts: *std.ArrayListUnmanaged(Stmt), allocator: std.mem.Allocator) void {
+fn mergeAdjacentLocalStmts(stmts: *std.ArrayList(Stmt), allocator: std.mem.Allocator) void {
     if (stmts.items.len == 0)
         return;
 

@@ -24,7 +24,7 @@ writer: WriterImpl = if (bun.Environment.isWindows) .{
 } else .{ .close_fd = false },
 fd: MovableIfWindowsFd,
 writers: Writers = .{ .inlined = .{} },
-buf: std.ArrayListUnmanaged(u8) = .empty,
+buf: std.ArrayList(u8) = .empty,
 writer_idx: usize = 0,
 total_bytes_written: usize = 0,
 err: ?bun.sys.SystemError = null,

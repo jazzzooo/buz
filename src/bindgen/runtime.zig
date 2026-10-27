@@ -238,10 +238,10 @@ fn readCallScopedJSValue(global: *jsc.JSGlobalObject, token: ViewToken, value: a
     if (comptime @hasDecl(Value, "bindgen_class_ref_view")) {
         return @fromBackingInt(value.wrapper.encodedForEngine(global, token));
     }
-    if (comptime @hasDecl(Value, "encodedForEngine")) {
-        return @fromBackingInt(value.encodedForEngine(global, token));
+    if (comptime @hasDecl(Value, "bindgen_callback_handle")) {
+        return readJSValue(value.borrowWireForEngine(global, token));
     }
-    return readJSValue(value.borrowWireForEngine(global, token));
+    return @fromBackingInt(value.encodedForEngine(global, token));
 }
 
 fn NativeExportMetadata(comptime export_id: usize) type {
@@ -789,7 +789,6 @@ fn FunctionCallContext(comptime function_id: usize) type {
         pub fn errorContext(context: *const Self, comptime tag: FailureTagType(Function)) DomainErrorContext(Function, tag) {
             return .{ .token = context.viewToken() };
         }
-
     };
     return *const Result_;
 }
@@ -3518,7 +3517,7 @@ pub fn Callback(comptime CallbackType: type) type {
 
 pub fn StringCallbackRegistry(comptime CallbackType: type) type {
     const StoredCallback = Callback(CallbackType);
-    const CallbackList = std.ArrayListUnmanaged(StoredCallback);
+    const CallbackList = std.ArrayList(StoredCallback);
     return struct {
         callbacks: bun.StringHashMapUnmanaged(CallbackList) = .empty,
 
@@ -6909,7 +6908,6 @@ fn NativeCallContextFor(comptime export_id: usize) type {
             if (EngineOperand.init(raw, context.viewToken()).isTerminationException()) return;
             _ = global.bunVM().uncaughtException(global, raw, false);
         }
-
     };
     return *const Result_;
 }

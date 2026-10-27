@@ -17,7 +17,7 @@ pub fn mergeJUnitFragments(
     outfile: []const u8,
     expectations: u32,
 ) void {
-    var body: std.ArrayListUnmanaged(u8) = .empty;
+    var body: std.ArrayList(u8) = .empty;
     defer body.deinit(bun.default_allocator);
     // Crashed workers never reach workerFlushAggregates, so any files they ran
     // (including earlier passing ones) have no fragment. Compute the outer
@@ -66,7 +66,7 @@ pub fn mergeJUnitFragments(
         body_writer_state.finish();
     }
 
-    var contents: std.ArrayListUnmanaged(u8) = .empty;
+    var contents: std.ArrayList(u8) = .empty;
     defer contents.deinit(bun.default_allocator);
     const elapsed_time = @as(f64, @floatFromInt(bun.awakeNanoseconds(io) - start_time)) / std.time.ns_per_s;
     {

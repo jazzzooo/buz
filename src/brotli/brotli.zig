@@ -53,13 +53,13 @@ pub const BrotliReaderArrayList = struct {
     };
 
     input: []const u8,
-    list: *std.ArrayListUnmanaged(u8),
+    list: *std.ArrayList(u8),
     list_allocator: std.mem.Allocator,
     brotli: *BrotliDecoder,
     state: State = .Uninitialized,
     total_in: usize = 0,
 
-    pub fn newWithOptions(input: []const u8, list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, options: DecoderOptions) !*BrotliReaderArrayList {
+    pub fn newWithOptions(input: []const u8, list: *std.ArrayList(u8), allocator: std.mem.Allocator, options: DecoderOptions) !*BrotliReaderArrayList {
         if (!BrotliDecoder.initializeBrotli()) {
             return error.BrotliFailedToLoad;
         }

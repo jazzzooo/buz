@@ -39,10 +39,10 @@ fn Builder(comptime Graph: type) type {
 
     return struct {
         allocator: std.mem.Allocator,
-        nodes: std.ArrayListUnmanaged(Node) = .empty,
-        edges: std.ArrayListUnmanaged(Edge) = .empty,
-        node_edges: std.ArrayListUnmanaged(std.ArrayListUnmanaged(Edge)) = .empty,
-        collections: std.ArrayListUnmanaged(Collection) = .empty,
+        nodes: std.ArrayList(Node) = .empty,
+        edges: std.ArrayList(Edge) = .empty,
+        node_edges: std.ArrayList(std.ArrayList(Edge)) = .empty,
+        collections: std.ArrayList(Collection) = .empty,
         seen: std.AutoHashMapUnmanaged(*const anyopaque, u32) = .empty,
         nodes_transferred: bool = false,
 

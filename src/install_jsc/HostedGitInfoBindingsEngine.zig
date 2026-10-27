@@ -32,12 +32,12 @@ pub fn jsFromUrl(
 
     var as_utf8 = try args.url.toUTF8(allocator);
     defer as_utf8.deinit();
-    const parsed = hgi.HostedGitInfo.fromUrl(PackageManagerEngine.javascript_semantics, allocator, as_utf8.slice()) catch |err| {
+    const parsed = (hgi.HostedGitInfo.fromUrl(PackageManagerEngine.javascript_semantics, allocator, as_utf8.slice()) catch |err| {
         return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.InvalidURL => invalidGitUrl(context),
         };
-    } orelse return null;
+    }) orelse return null;
     defer parsed.deinit();
 
     var result: bun.bindgen.Return(HostedGitFromUrlSchema) = .{

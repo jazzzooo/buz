@@ -1,7 +1,7 @@
 const MutableString = @This();
 
 allocator: Allocator,
-list: std.ArrayListUnmanaged(u8),
+list: std.ArrayList(u8),
 writer_state: std.Io.Writer = .{ .vtable = &.{ .drain = writerDrain }, .buffer = &.{} },
 writer_error: ?Allocator.Error = null,
 
@@ -77,10 +77,7 @@ pub fn bufferedWriter(self: *MutableString) BufferedWriter {
 pub fn init(allocator: Allocator, capacity: usize) Allocator.Error!MutableString {
     return MutableString{
         .allocator = allocator,
-        .list = if (capacity > 0)
-            try std.ArrayListUnmanaged(u8).initCapacity(allocator, capacity)
-        else
-            std.ArrayListUnmanaged(u8).empty,
+        .list = try .initCapacity(allocator, capacity),
     };
 }
 

@@ -929,7 +929,7 @@ pub const Parser = struct {
 
     pub fn parse_impl(self: *Parser) !AST.Script {
         var stmts = ArrayList(AST.Stmt).init(self.alloc);
-        if (self.tokens.len == 0 or self.tokens.len == 1 and self.tokens[0] == .Eof)
+        if (self.tokens.len == 0 or (self.tokens.len == 1 and self.tokens[0] == .Eof))
             return .{ .stmts = stmts.items[0..stmts.items.len] };
 
         while (if (self.inside_subshell == null)
@@ -1707,7 +1707,7 @@ pub const Parser = struct {
     }
 
     fn is_at_end(self: *Parser) bool {
-        return self.peek() == .Eof or self.inside_subshell != null and self.inside_subshell.?.closing_tok() == self.peek();
+        return self.peek() == .Eof or (self.inside_subshell != null and self.inside_subshell.?.closing_tok() == self.peek());
     }
 
     fn expect(self: *Parser, toktag: TokenTag) Token {
@@ -3058,8 +3058,8 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
                         return .{ .start = start, .end = self.j };
                     },
                     else => {
-                        if (!escaped and
-                            (self.in_subshell == .dollar and char == ')') or (self.in_subshell == .backtick and char == '`') or (self.in_subshell == .normal and char == ')'))
+                        if ((!escaped and
+                            (self.in_subshell == .dollar and char == ')')) or (self.in_subshell == .backtick and char == '`') or (self.in_subshell == .normal and char == ')'))
                         {
                             return .{ .start = start, .end = self.j };
                         }

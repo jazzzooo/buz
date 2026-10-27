@@ -16,7 +16,7 @@ pub fn detectCIName(io: std.Io) ?[]const u8 {
 }
 
 fn isCIUncached(io: std.Io) bool {
-    return bun.env_var.CI.get() orelse generated.isCIUncachedGenerated() or detectCIName(io) != null;
+    return (bun.env_var.CI.get() orelse generated.isCIUncachedGenerated()) or detectCIName(io) != null;
 }
 fn detectUncached() ?[]const u8 {
     if (bun.env_var.CI.get() == false) return null;

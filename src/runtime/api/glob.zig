@@ -226,10 +226,10 @@ pub fn __scan(
     const alloc = bun.default_allocator;
 
     var arena = std.heap.ArenaAllocator.init(alloc);
-    const globWalker = this.makeGlobWalker(context, args.options, "scan", alloc, &arena) catch |err| {
+    const globWalker = (this.makeGlobWalker(context, args.options, "scan", alloc, &arena) catch |err| {
         arena.deinit();
         return err;
-    } orelse {
+    }) orelse {
         arena.deinit();
         var completion = context.completion();
         completion.resolve(try bindgen.Return(GlobPullSchema).fromUTF8Slices(&[_][]const u8{}));
@@ -261,10 +261,10 @@ pub fn __scanSync(
     const alloc = bun.default_allocator;
 
     var arena = std.heap.ArenaAllocator.init(alloc);
-    const globWalker = this.makeGlobWalker(context, args.options, "scanSync", alloc, &arena) catch |err| {
+    const globWalker = (this.makeGlobWalker(context, args.options, "scanSync", alloc, &arena) catch |err| {
         arena.deinit();
         return err;
-    } orelse {
+    }) orelse {
         arena.deinit();
         return null;
     };

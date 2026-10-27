@@ -88,13 +88,7 @@ pub fn S3HttpSimpleTask(comptime Scheduler: type) type {
         request: PreparedRequest,
         callback_context: CallbackContext,
         callback: Callback,
-        response_buffer: bun.MutableString = .{
-            .allocator = bun.default_allocator,
-            .list = .{
-                .items = &.{},
-                .capacity = 0,
-            },
-        },
+        response_buffer: bun.MutableString = .initEmpty(bun.default_allocator),
         result: bun.http.HTTPClientResult = .{},
         poll_ref: bun.Async.KeepAlive = bun.Async.KeepAlive.init(),
 
@@ -237,7 +231,7 @@ pub fn S3HttpSimpleTask(comptime Scheduler: type) type {
                         }
                     }
                 }
-                if (!has_error and status == 200 or status == 206) {
+                if ((!has_error and status == 200) or status == 206) {
                     return false;
                 }
             } else if (status == 200 or status == 206) {
@@ -294,13 +288,7 @@ pub fn S3HttpSimpleTask(comptime Scheduler: type) type {
                         200 => {
                             if (this.result.body != null) {
                                 const body = this.response_buffer;
-                                this.response_buffer = .{
-                                    .allocator = bun.default_allocator,
-                                    .list = .{
-                                        .items = &.{},
-                                        .capacity = 0,
-                                    },
-                                };
+                                this.response_buffer = .initEmpty(bun.default_allocator);
                                 callback(.{ .success = body }, this.callback_context);
                             } else {
                                 this.errorWithBody(.failure);
@@ -328,13 +316,7 @@ pub fn S3HttpSimpleTask(comptime Scheduler: type) type {
                     switch (response.status_code) {
                         200, 204, 206 => {
                             const body = this.response_buffer;
-                            this.response_buffer = .{
-                                .allocator = bun.default_allocator,
-                                .list = .{
-                                    .items = &.{},
-                                    .capacity = 0,
-                                },
-                            };
+                            this.response_buffer = .initEmpty(bun.default_allocator);
                             callback(.{
                                 .success = .{
                                     .etag = response.headers.get("etag") orelse "",

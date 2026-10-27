@@ -5,10 +5,10 @@ pub const Report = struct {
     executable_lines: Bitset,
     lines_which_have_executed: Bitset,
     line_hits: LinesHits = .{},
-    functions: std.ArrayListUnmanaged(Block),
+    functions: std.ArrayList(Block),
     functions_which_have_executed: Bitset,
     stmts_which_have_executed: Bitset,
-    stmts: std.ArrayListUnmanaged(Block),
+    stmts: std.ArrayList(Block),
     total_lines: u32 = 0,
 
     pub fn linesCoverageFraction(this: *const Report) f64 {
@@ -360,7 +360,7 @@ pub const ByteRangeMapping = struct {
         errdefer line_hits.deinit(allocator);
         line_hits.len = line_count;
         @memset(line_hits.slice(), 0);
-        var functions = std.ArrayListUnmanaged(Block).empty;
+        var functions = std.ArrayList(Block).empty;
         try functions.ensureTotalCapacityPrecise(allocator, function_blocks.len);
         errdefer functions.deinit(allocator);
         var functions_which_have_executed: Bitset = try Bitset.initEmpty(allocator, function_blocks.len);
@@ -368,7 +368,7 @@ pub const ByteRangeMapping = struct {
         var stmts_which_have_executed: Bitset = try Bitset.initEmpty(allocator, blocks.len);
         errdefer stmts_which_have_executed.deinit(allocator);
 
-        var stmts = std.ArrayListUnmanaged(Block).empty;
+        var stmts = std.ArrayList(Block).empty;
         try stmts.ensureTotalCapacityPrecise(allocator, blocks.len);
         errdefer stmts.deinit(allocator);
 

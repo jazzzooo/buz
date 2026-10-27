@@ -8,7 +8,7 @@ pub const Entry = struct {
 };
 
 entries: Entry.List = .empty,
-buf: std.ArrayListUnmanaged(u8) = .empty,
+buf: std.ArrayList(u8) = .empty,
 allocator: std.mem.Allocator,
 
 pub fn memoryCost(this: *const Headers) usize {

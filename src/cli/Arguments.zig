@@ -349,7 +349,7 @@ pub fn loadConfig(allocator: std.mem.Allocator, user_config_path_: ?string, ctx:
             // "bun"
             (ctx.positionals.len == 0 or
                 // "bun file.js"
-                ctx.positionals.len > 0 and options.defaultLoaders.has(std.fs.path.extension(ctx.positionals[0]))))))
+                (ctx.positionals.len > 0 and options.defaultLoaders.has(std.fs.path.extension(ctx.positionals[0])))))))
     {
         config_path_ = "bunfig.toml";
         auto_loaded = true;

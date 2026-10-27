@@ -89,8 +89,8 @@ const JSFrameworkRouterState = struct {
     router: FrameworkRouter,
     root: []u8,
     style: Style,
-    files: std.ArrayListUnmanaged(bun.String) = .empty,
-    stored_parse_errors: std.ArrayListUnmanaged(struct {
+    files: std.ArrayList(bun.String) = .empty,
+    stored_parse_errors: std.ArrayList(struct {
         rel_path: []const u8,
         log: TinyLog,
     }) = .empty,
@@ -345,13 +345,13 @@ pub const JSFrameworkRouter = struct {
         defer style.deinit();
 
         var log = TinyLog.empty;
-        const parsed = style.parse(filepath.slice(), std.fs.path.extension(filepath.slice()), &log, true, alloc) catch |err| switch (err) {
+        const parsed = (style.parse(filepath.slice(), std.fs.path.extension(filepath.slice()), &log, true, alloc) catch |err| switch (err) {
             error.InvalidRoutePattern => {
                 const message = try std.fmt.allocPrint(alloc, "{s} ({d}:{d})", .{ log.message(), log.cursor_at, log.cursor_len });
                 return context.fail(.invalid_pattern, try bindgen.DOMString.fromUTF8(message));
             },
             else => |e| return e,
-        } orelse
+        }) orelse
             return null;
 
         var rendered = try std.Io.Writer.Allocating.initCapacity(alloc, filepath.slice().len);

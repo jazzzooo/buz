@@ -96,7 +96,7 @@ pub const Store = struct {
         node_id: Node.Id,
         // parent_id: Id,
         dependencies: Dependencies,
-        parents: std.ArrayListUnmanaged(Id) = .empty,
+        parents: std.ArrayList(Id) = .empty,
         step: std.atomic.Value(Installer.Task.Step) = .init(.link_package),
 
         // if true this entry gets symlinked to `node_modules/.bun/node_modules`
@@ -301,12 +301,12 @@ pub const Store = struct {
 
     pub fn OrderedArraySet(comptime T: type, comptime Ctx: type) type {
         return struct {
-            list: std.ArrayListUnmanaged(T) = .empty,
+            list: std.ArrayList(T) = .empty,
 
             pub const empty: @This() = .{};
 
             pub fn initCapacity(allocator: std.mem.Allocator, n: usize) OOM!@This() {
-                const list: std.ArrayListUnmanaged(T) = try .initCapacity(allocator, n);
+                const list: std.ArrayList(T) = try .initCapacity(allocator, n);
                 return .{ .list = list };
             }
 
@@ -389,11 +389,11 @@ pub const Store = struct {
         pkg_id: PackageID,
         parent_id: Id,
 
-        dependencies: std.ArrayListUnmanaged(Ids) = .empty,
+        dependencies: std.ArrayList(Ids) = .empty,
         peers: Peers = .empty,
 
         // each node in this list becomes a symlink in the package's node_modules
-        nodes: std.ArrayListUnmanaged(Id) = .empty,
+        nodes: std.ArrayList(Id) = .empty,
 
         pub const Peers = OrderedArraySet(TransitivePeer, TransitivePeer.OrderedArraySetCtx);
 

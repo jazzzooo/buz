@@ -227,11 +227,11 @@ pub const ModuleInfo = struct {
     /// all strings in wtf-8. index in hashmap = StringID
     gpa: std.mem.Allocator,
     strings_map: std.array_hash_map.Custom(StringMapKey, void, void, true),
-    strings_buf: std.ArrayListUnmanaged(u8),
-    strings_lens: std.ArrayListUnmanaged(u32),
+    strings_buf: std.ArrayList(u8),
+    strings_lens: std.ArrayList(u32),
     requested_modules: std.array_hash_map.Auto(StringID, FetchParameters),
-    buffer: std.ArrayListUnmanaged(StringID),
-    record_kinds: std.ArrayListUnmanaged(RecordKind),
+    buffer: std.ArrayList(StringID),
+    record_kinds: std.ArrayList(RecordKind),
     flags: Flags,
     exported_names: std.array_hash_map.Auto(StringID, void),
     finalized: bool = false,
@@ -265,7 +265,7 @@ pub const ModuleInfo = struct {
 
     fn _addRecord(self: *ModuleInfo, kind: RecordKind, data: []const StringID) !void {
         bun.assert(!self.finalized);
-        bun.assert(data.len == kind.len() catch unreachable);
+        bun.assert(data.len == (kind.len() catch unreachable));
         try self.record_kinds.ensureUnusedCapacity(self.gpa, 1);
         try self.buffer.ensureUnusedCapacity(self.gpa, data.len);
         self.record_kinds.appendAssumeCapacity(kind);

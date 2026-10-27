@@ -26,7 +26,7 @@ fn URLMembers(comptime class_name: []const u8, comptime accessor_message: ?[]con
             var declared = options;
             declared.invalid_this = .{ .failure = .{
                 .kind = .type_error,
-                .message = accessor_message orelse "The " ++ class_name ++ "." ++ name ++ " " ++ kind ++ " can only be used on instances of " ++ class_name,
+                .message = accessor_message orelse ("The " ++ class_name ++ "." ++ name ++ " " ++ kind ++ " can only be used on instances of " ++ class_name),
             } };
             return declared;
         }

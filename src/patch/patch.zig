@@ -296,7 +296,7 @@ pub const PatchFile = struct {
         };
 
         // TODO: i hate this
-        var lines = bun.handleOom(std.ArrayListUnmanaged([]const u8).initCapacity(bun.default_allocator, lines_count));
+        var lines = bun.handleOom(std.ArrayList([]const u8).initCapacity(bun.default_allocator, lines_count));
         defer lines.deinit(bun.default_allocator);
         {
             var iter = std.mem.splitScalar(u8, filebuf, '\n');
@@ -1415,5 +1415,5 @@ const bun = @import("bun");
 const Output = bun.Output;
 const NodeFSCore = @import("../runtime/node/NodeFSCore.zig");
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const Allocator = std.mem.Allocator;

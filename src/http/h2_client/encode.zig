@@ -212,7 +212,7 @@ pub fn drainSendBodies(session: *ClientSession) void {
     }
 }
 
-pub fn encodeHeader(encoder_block: *Hpack.EncoderBlock, encoded: *std.ArrayListUnmanaged(u8), name: []const u8, value: []const u8, never_index: bool) !void {
+pub fn encodeHeader(encoder_block: *Hpack.EncoderBlock, encoded: *std.ArrayList(u8), name: []const u8, value: []const u8, never_index: bool) !void {
     _ = try encoder_block.encodeIntoList(encoded, bun.default_allocator, name, value, never_index);
 }
 

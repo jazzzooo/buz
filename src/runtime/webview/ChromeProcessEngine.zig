@@ -262,7 +262,7 @@ fn spawn(global: *jsc.JSGlobalObject, generation: u64, alloc: std.mem.Allocator,
         break :blk try std.fmt.allocPrintSentinel(alloc, "--user-data-dir=/tmp/bun-chrome-{d}", .{pid}, 0);
     };
 
-    var argv: std.ArrayListUnmanaged(?[*:0]const u8) = .empty;
+    var argv: std.ArrayList(?[*:0]const u8) = .empty;
     try argv.append(alloc, chrome.ptr);
     try argv.append(alloc, dataDir.ptr);
     try argv.append(alloc, "--remote-debugging-pipe");
@@ -334,7 +334,7 @@ fn spawn(global: *jsc.JSGlobalObject, generation: u64, alloc: std.mem.Allocator,
 /// full ws:// URL in out_buf, or null if the file doesn't exist /
 /// is malformed / the profile dir is non-standard.
 ///
-fn readDevToolsActivePort(out_buf: *std.ArrayListUnmanaged(u8)) ?void {
+fn readDevToolsActivePort(out_buf: *std.ArrayList(u8)) ?void {
     // Default profile locations. Multiple Chrome channels (stable/beta/
     // canary) have distinct dirs; try each. Chromium and Edge also
     // respond to the same debugging protocol.
@@ -431,7 +431,7 @@ fn bindEnsure(
 fn bindAutoDetect(
     args: bun.bindgen.Args(ChromeProcessAutoDetectSchema),
 ) bun.bindgen.Return(ChromeProcessAutoDetectSchema) {
-    var output: std.ArrayListUnmanaged(u8) = .empty;
+    var output: std.ArrayList(u8) = .empty;
     defer output.deinit(bun.default_allocator);
     if (readDevToolsActivePort(&output) == null) return 0;
     if (!args.output.write(0, output.items)) return 0;

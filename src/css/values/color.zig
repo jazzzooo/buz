@@ -528,9 +528,9 @@ pub const CssColor = union(enum) {
         var fallbacks = switch (this.*) {
             .current_color, .rgba, .float, .system => return ColorFallbackKind{},
             .lab => |lab| brk: {
-                if (lab.* == .lab or lab.* == .lch and targets.shouldCompileSame(.lab_colors))
+                if (lab.* == .lab or (lab.* == .lch and targets.shouldCompileSame(.lab_colors)))
                     break :brk ColorFallbackKind.andBelow(.{ .lab = true });
-                if (lab.* == .oklab or lab.* == .oklch and targets.shouldCompileSame(.oklab_colors))
+                if (lab.* == .oklab or (lab.* == .oklch and targets.shouldCompileSame(.oklab_colors)))
                     break :brk ColorFallbackKind.andBelow(.{ .oklab = true });
                 return ColorFallbackKind{};
             },

@@ -60,7 +60,7 @@ pub const FallbackHandler = struct {
                 }
 
                 if (@field(this, field_name) == null or
-                    context.targets.browsers != null and !val.isCompatible(context.targets.browsers.?))
+                    (context.targets.browsers != null and !val.isCompatible(context.targets.browsers.?)))
                 {
                     @field(this, field_name) = dest.items.len;
                     dest.append(

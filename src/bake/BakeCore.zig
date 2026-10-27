@@ -184,7 +184,7 @@ pub fn parseCustomPattern(pattern: []const u8, log: *TinyLog, allocator: std.mem
     }
     if (pattern.len == 1) return &.{};
 
-    var parts: std.ArrayListUnmanaged(RoutePart) = .empty;
+    var parts: std.ArrayList(RoutePart) = .empty;
     var start: usize = 1;
     while (true) {
         const end = bun.strings.indexOfCharPos(pattern, '/', start) orelse pattern.len;
@@ -303,7 +303,7 @@ fn parseNextJsRouteSegments(
     comptime convention: RoutingConvention,
 ) ![]RoutePart {
     var index: usize = 1;
-    var parts: std.ArrayListUnmanaged(RoutePart) = .empty;
+    var parts: std.ArrayList(RoutePart) = .empty;
     const stop_characters = switch (convention) {
         .pages => "[",
         .app => "[(@",

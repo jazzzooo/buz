@@ -16,7 +16,7 @@ pub fn writeRequest(session: *ClientSession, stream: *Stream, qs: *quic.Stream) 
     var sfa_buffer: [2048]u8 = undefined;
     var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, bun.default_allocator);
     const alloc = sfa.allocator();
-    var headers: std.ArrayListUnmanaged(quic.Header) = .empty;
+    var headers: std.ArrayList(quic.Header) = .empty;
     defer headers.deinit(alloc);
     const header_count = std.math.add(usize, request.headers.len, 4) catch return error.OutOfMemory;
     try headers.ensureTotalCapacityPrecise(alloc, header_count);

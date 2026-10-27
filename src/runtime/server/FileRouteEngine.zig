@@ -234,10 +234,10 @@ pub fn on(this: *Self, req: uws.AnyRequest, resp: AnyResponse, method: bun.http.
 
     req.setYield(false);
 
-    const body = this.renderHeaders(resp, method, status_code, range, file_type, size) catch |err| {
+    const body = (this.renderHeaders(resp, method, status_code, range, file_type, size) catch |err| {
         if (err != error.ConnectionClosed) resp.forceClose();
         return;
-    } orelse return;
+    }) orelse return;
 
     // Hand ownership of the fd to FileResponseStream; disable the defer close.
     // The route ref taken at the top of on() is released in onStreamComplete.

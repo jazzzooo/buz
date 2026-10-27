@@ -206,7 +206,7 @@ pub fn downloadToPath(this: *const CompileTarget, io: std.Io, javascript_semanti
             }
         }
 
-        var tarball_bytes = std.ArrayListUnmanaged(u8).empty;
+        var tarball_bytes = std.ArrayList(u8).empty;
         {
             refresher.refresh();
             defer compressed_archive_bytes.list.deinit(allocator);

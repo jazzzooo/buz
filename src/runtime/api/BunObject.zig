@@ -1064,11 +1064,11 @@ pub const JSZlib = struct {
                 const estimated_size: u32 = @bitCast(compressed[compressed.len - 4 ..][0..4].*);
                 // If it's > 256 MB, let's rely on dynamic allocation to minimize the risk of OOM.
                 if (estimated_size > 0 and estimated_size < 256 * 1024 * 1024) {
-                    break :brk try std.ArrayListUnmanaged(u8).initCapacity(allocator, @max(estimated_size, 64));
+                    break :brk try std.ArrayList(u8).initCapacity(allocator, @max(estimated_size, 64));
                 }
             }
 
-            break :brk try std.ArrayListUnmanaged(u8).initCapacity(allocator, if (compressed.len > 512) compressed.len else 32);
+            break :brk try std.ArrayList(u8).initCapacity(allocator, if (compressed.len > 512) compressed.len else 32);
         };
         errdefer list.deinit(allocator);
 
@@ -1128,7 +1128,7 @@ pub const JSZlib = struct {
 
         switch (config.library) {
             .zlib => {
-                var list = try std.ArrayListUnmanaged(u8).initCapacity(
+                var list = try std.ArrayList(u8).initCapacity(
                     allocator,
                     if (input.len > 512) input.len else 32,
                 );
@@ -1154,7 +1154,7 @@ pub const JSZlib = struct {
                 const encoding: bun.libdeflate.Encoding = if (is_gzip) .gzip else .deflate;
                 defer compressor.deinit();
 
-                var list = try std.ArrayListUnmanaged(u8).initCapacity(
+                var list = try std.ArrayList(u8).initCapacity(
                     allocator,
                     compressor.maxBytesNeeded(input, encoding),
                 );

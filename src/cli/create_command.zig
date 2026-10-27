@@ -315,9 +315,7 @@ pub const CreateCommand = struct {
 
                 progress.refresh();
 
-                const file_buf = try ctx.allocator.alloc(u8, 16384);
-
-                var tarball_buf_list = std.ArrayListUnmanaged(u8){ .capacity = file_buf.len, .items = file_buf[0..0] };
+                var tarball_buf_list = try std.ArrayList(u8).initCapacity(ctx.allocator, 16384);
                 defer tarball_buf_list.deinit(ctx.allocator);
                 var gunzip = try Zlib.ZlibReaderArrayList.init(tarball_bytes.list.items, &tarball_buf_list, ctx.allocator);
                 defer gunzip.deinit();
@@ -572,8 +570,8 @@ pub const CreateCommand = struct {
         const is_nextjs = false;
         const is_create_react_app = false;
         const create_react_app_entry_point_path: string = "";
-        var preinstall_tasks = std.mem.zeroes(std.ArrayListUnmanaged([]const u8));
-        var postinstall_tasks = std.mem.zeroes(std.ArrayListUnmanaged([]const u8));
+        var preinstall_tasks: std.ArrayList([]const u8) = .empty;
+        var postinstall_tasks: std.ArrayList([]const u8) = .empty;
         var has_dependencies: bool = false;
         const PATH = env_loader.map.get("PATH") orelse "";
 

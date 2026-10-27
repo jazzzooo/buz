@@ -2146,7 +2146,7 @@ fn createSchemaModules(
 fn listFilesAny(b: *Build, dir: []const u8, suffixes: []const []const u8, recursive: bool) []const []const u8 {
     const arena = b.graph.arena;
     const io = b.graph.io;
-    b.dependOnDirectory(b.path(dir));
+    b.dependOnDirectoryContents(b.path(dir));
     var out: std.ArrayList([]const u8) = .empty;
     var handle = std.Io.Dir.openDirAbsolute(io, rootJoin(b, dir), .{ .iterate = true }) catch
         std.debug.panic("cannot open source dir: {s}", .{dir});
@@ -2155,6 +2155,9 @@ fn listFilesAny(b: *Build, dir: []const u8, suffixes: []const []const u8, recurs
         var walker = handle.walk(arena) catch @panic("OOM");
         defer walker.deinit(io);
         while (walker.next(io) catch @panic("walk failed")) |entry| {
+            if (entry.kind == .directory) {
+                b.dependOnDirectoryContents(b.path(b.fmt("{s}/{s}", .{ dir, entry.path })));
+            }
             if (entry.kind != .file) continue;
             if (std.mem.indexOf(u8, entry.path, "node_modules") != null) continue;
             if (!hasAnySuffix(entry.path, suffixes)) continue;
@@ -2182,7 +2185,7 @@ fn hasAnySuffix(path: []const u8, suffixes: []const []const u8) bool {
 fn listDirs(b: *Build, dir: []const u8) []const []const u8 {
     const arena = b.graph.arena;
     const io = b.graph.io;
-    b.dependOnDirectory(b.path(dir));
+    b.dependOnDirectoryContents(b.path(dir));
     var out: std.ArrayList([]const u8) = .empty;
     var handle = std.Io.Dir.openDirAbsolute(io, rootJoin(b, dir), .{ .iterate = true }) catch return &.{};
     defer handle.close(io);

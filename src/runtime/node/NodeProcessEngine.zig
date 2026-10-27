@@ -121,7 +121,7 @@ fn createArgv(comptime Result: type, vm: *jsc.VirtualMachine) bun.OOM!Result {
     const args = allocator.alloc(bun.String, args_count + 2) catch return error.OutOfMemory;
     defer allocator.free(args);
 
-    var args_list: std.ArrayListUnmanaged(bun.String) = .initBuffer(args);
+    var args_list: std.ArrayList(bun.String) = .initBuffer(args);
     defer for (args_list.items) |*arg| arg.deref();
 
     if (vm.standalone_module_graph != null) {

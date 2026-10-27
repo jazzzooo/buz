@@ -788,13 +788,13 @@ pub const RunCommand = struct {
 
         this_transpiler.configureLinker();
 
-        const root_dir_info = this_transpiler.resolver.readDirInfo(this_transpiler.fs.top_level_dir) catch |err| {
+        const root_dir_info = (this_transpiler.resolver.readDirInfo(this_transpiler.fs.top_level_dir) catch |err| {
             if (!log_errors) return error.CouldntReadCurrentDirectory;
             ctx.log.print(Output.errorWriter()) catch {};
             Output.prettyErrorln("<r><red>error<r><d>:<r> <b>{s}<r> loading directory {f}", .{ @errorName(err), bun.fmt.QuotedFormatter{ .text = this_transpiler.fs.top_level_dir } });
             Output.flush();
             return err;
-        } orelse {
+        }) orelse {
             ctx.log.print(Output.errorWriter()) catch {};
             Output.prettyErrorln("error loading current directory", .{});
             Output.flush();
@@ -1298,7 +1298,7 @@ pub const RunCommand = struct {
         // HTTP worker or allocate any Download structs.
         var seen = bun.StringHashMapUnmanaged(void){};
         defer seen.deinit(allocator);
-        var remote_urls = std.ArrayListUnmanaged([]const u8).empty;
+        var remote_urls = std.ArrayList([]const u8).empty;
         defer remote_urls.deinit(allocator);
         for (collector.urls.items) |u| {
             if (!bun.strings.hasPrefixComptime(u, "http://") and
@@ -1314,7 +1314,7 @@ pub const RunCommand = struct {
 
         // Heap-allocate each Download so AsyncHTTP.task has a stable
         // address (see RemoteImageDownload doc comment).
-        var downloads = std.ArrayListUnmanaged(*RemoteImageDownload).empty;
+        var downloads = std.ArrayList(*RemoteImageDownload).empty;
         defer {
             for (downloads.items) |d| {
                 d.response_buffer.deinit();
@@ -1518,7 +1518,7 @@ pub const RunCommand = struct {
             .image_base_dir = image_base_dir,
         };
 
-        const rendered = bun.md.renderToAnsi(
+        const rendered = (bun.md.renderToAnsi(
             contents,
             bun.default_allocator,
             md_opts,
@@ -1530,7 +1530,7 @@ pub const RunCommand = struct {
                 Output.flush();
                 Global.exit(1);
             },
-        } orelse {
+        }) orelse {
             Output.prettyErrorln("<r><red>error<r>: failed to render markdown", .{});
             Output.flush();
             Global.exit(1);
@@ -1926,7 +1926,7 @@ pub const RunCommand = struct {
             } else {
                 const ext = std.fs.path.extension(target_name);
                 const default_loader = options.defaultLoaders.get(ext);
-                if (default_loader != null and default_loader.?.isJavaScriptLikeOrJSON() or target_name.len > 0 and (target_name[0] == '.' or target_name[0] == '/' or std.fs.path.isAbsolute(target_name))) {
+                if ((default_loader != null and default_loader.?.isJavaScriptLikeOrJSON()) or (target_name.len > 0 and (target_name[0] == '.' or target_name[0] == '/' or std.fs.path.isAbsolute(target_name)))) {
                     Output.prettyError("<r><red>error<r><d>:<r> <b>Module not found \"<b>{s}<r>\"\n", .{target_name});
                 } else if (ext.len > 0) {
                     Output.prettyError("<r><red>error<r><d>:<r> <b>File not found \"<b>{s}<r>\"\n", .{target_name});

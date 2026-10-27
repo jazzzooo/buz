@@ -1153,10 +1153,10 @@ fn runWithSourceCode(
     else
         .none;
 
-    if (use_directive == .client and
+    if ((use_directive == .client and
         task.known_target != .bake_server_components_ssr and
         this.ctx.framework != null and
-        this.ctx.framework.?.server_components.?.separate_ssr_graph or
+        this.ctx.framework.?.server_components.?.separate_ssr_graph) or
         // set the target to the client when bundling client-side files
         ((transpiler.options.server_components or transpiler.options.dev_server != null) and
             task.known_target == .browser))

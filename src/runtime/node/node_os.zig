@@ -413,10 +413,10 @@ pub const networkInterfaces = switch (Environment.os) {
 
 const NetworkInterfaceGroup = struct {
     name: []const u8,
-    values: std.ArrayListUnmanaged(NetworkInterface) = .empty,
+    values: std.ArrayList(NetworkInterface) = .empty,
 };
 
-const NetworkInterfaceGroups = std.ArrayListUnmanaged(NetworkInterfaceGroup);
+const NetworkInterfaceGroups = std.ArrayList(NetworkInterfaceGroup);
 
 fn deinitNetworkInterface(value: *NetworkInterface) void {
     value.address.deinit();

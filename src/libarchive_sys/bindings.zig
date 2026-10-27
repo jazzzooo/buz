@@ -1458,7 +1458,7 @@ pub const OLD_ARCHIVE_ENTRY_ACL_STYLE_MARK_DEFAULT = @as(c_int, 2048);
 
 /// Growing memory buffer for archive writes with libarchive callbacks
 pub const GrowingBuffer = struct {
-    list: std.ArrayListUnmanaged(u8) = .empty,
+    list: std.ArrayList(u8) = .empty,
     allocator: std.mem.Allocator,
     had_error: bool = false,
 

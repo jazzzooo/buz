@@ -33,7 +33,7 @@ pub const Fallback = struct {
                     }
                 }
                 if (acc_len > 0) {
-                    try writer.writeByte(alphabet_chars[@as(u6, @truncate((acc << 6 - acc_len)))]);
+                    try writer.writeByte(alphabet_chars[@as(u6, @truncate((acc << (6 - acc_len))))]);
                 }
             }
         };

@@ -12,7 +12,7 @@ pub const OpaqueFileId = bun.GenericIndex(u32, opaque {});
 /// Absolute path to root directory of the router.
 root: []const u8,
 types: []Type,
-routes: std.ArrayListUnmanaged(Route),
+routes: std.ArrayList(Route),
 /// Keys are full URL, with leading /, no trailing /
 /// Value is Route Index
 static_routes: StaticRouteMap,
@@ -122,7 +122,7 @@ pub const Type = struct {
 pub fn initEmpty(root: []const u8, types: []Type, allocator: Allocator) !FrameworkRouter {
     bun.assert(std.fs.path.isAbsolute(root));
 
-    var routes = try std.ArrayListUnmanaged(Route).initCapacity(allocator, types.len);
+    var routes = try std.ArrayList(Route).initCapacity(allocator, types.len);
     errdefer routes.deinit(allocator);
 
     for (types, 0..) |*ty, type_index| {

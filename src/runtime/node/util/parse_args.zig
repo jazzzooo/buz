@@ -89,7 +89,7 @@ const StoredScalar = union(enum) {
 
 const StoredValue = union(enum) {
     single: StoredScalar,
-    multiple: std.ArrayListUnmanaged(StoredScalar),
+    multiple: std.ArrayList(StoredScalar),
 };
 
 const StoredEntry = struct {
@@ -210,7 +210,7 @@ fn storeOption(
     option_idx: ?usize,
     negative: bool,
     options: []const OptionDefinition,
-    values: *std.ArrayListUnmanaged(StoredEntry),
+    values: *std.ArrayList(StoredEntry),
 ) bun.OOM!void {
     if (option_name.eqlBytes("__proto__")) return;
 
@@ -233,7 +233,7 @@ fn storeOption(
     }
 
     const value: StoredValue = if (is_multiple) value: {
-        var items: std.ArrayListUnmanaged(StoredScalar) = .empty;
+        var items: std.ArrayList(StoredScalar) = .empty;
         try items.append(allocator, scalar);
         break :value .{ .multiple = items };
     } else .{ .single = scalar };
@@ -296,7 +296,7 @@ fn parseOptionDefinitions(
     options: anytype,
     allocator: std.mem.Allocator,
 ) bun.bindgen.CallError(ParseArgsSchema)![]OptionDefinition {
-    var definitions: std.ArrayListUnmanaged(OptionDefinition) = .empty;
+    var definitions: std.ArrayList(OptionDefinition) = .empty;
     for (0..options.len()) |index| {
         const entry = options.at(index).?;
         var option = OptionDefinition{
@@ -492,9 +492,9 @@ const ParseArgsState = struct {
     strict: bool,
     allow_negative: bool,
     return_tokens: bool,
-    values: std.ArrayListUnmanaged(StoredEntry) = .empty,
-    positionals: std.ArrayListUnmanaged(TextView) = .empty,
-    tokens: std.ArrayListUnmanaged(Token) = .empty,
+    values: std.ArrayList(StoredEntry) = .empty,
+    positionals: std.ArrayList(TextView) = .empty,
+    tokens: std.ArrayList(Token) = .empty,
 
     fn handleToken(this: *ParseArgsState, token: Token) bun.bindgen.CallError(ParseArgsSchema)!void {
         switch (token) {
@@ -603,7 +603,7 @@ fn finishTokens(state: *const ParseArgsState) bun.OOM!ParseArgsOutputTokens {
 }
 
 fn finishMissingDefaults(state: *const ParseArgsState) bun.OOM!ParseArgsMissingDefaults {
-    var names: std.ArrayListUnmanaged(TextView) = .empty;
+    var names: std.ArrayList(TextView) = .empty;
     for (state.option_defs) |option| {
         if (option.has_default and
             !option.long_name.eqlBytes("__proto__") and
@@ -641,7 +641,7 @@ pub fn parseArgs(
     const allocator = arena.allocator();
     const config = arguments.config;
 
-    var configured_args: std.ArrayListUnmanaged(TextView) = .empty;
+    var configured_args: std.ArrayList(TextView) = .empty;
     if (config) |value| if (value.args) |input| {
         try configured_args.ensureTotalCapacity(allocator, input.len());
         for (0..input.len()) |index| configured_args.appendAssumeCapacity(bindingText(input.at(index).?));

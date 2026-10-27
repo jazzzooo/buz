@@ -85,7 +85,7 @@ env_configure: ?ScriptRunEnvironment = null,
 lockfile: *Lockfile = undefined,
 
 options: Options,
-preinstall_state: std.ArrayListUnmanaged(PreinstallState) = .empty,
+preinstall_state: std.ArrayList(PreinstallState) = .empty,
 postinstall_optimizer: PostinstallOptimizer.List = .{},
 
 global_link_dir: ?std.Io.Dir = null,
@@ -109,7 +109,7 @@ io: std.Io,
 
 // During `installPackages` we learn exactly what dependencies from --trust
 // actually have scripts to run, and we add them to this list
-trusted_deps_to_add_to_package_json: std.ArrayListUnmanaged(string) = .empty,
+trusted_deps_to_add_to_package_json: std.ArrayList(string) = .empty,
 
 any_failed_to_install: bool = false,
 
@@ -585,7 +585,7 @@ pub fn init(
         }
     }
 
-    var original_package_json_path_buf = bun.handleOom(std.ArrayListUnmanaged(u8).initCapacity(ctx.allocator, top_level_dir_no_trailing_slash.len + "/package.json".len + 1));
+    var original_package_json_path_buf = bun.handleOom(std.ArrayList(u8).initCapacity(ctx.allocator, top_level_dir_no_trailing_slash.len + "/package.json".len + 1));
     original_package_json_path_buf.appendSliceAssumeCapacity(top_level_dir_no_trailing_slash);
     original_package_json_path_buf.appendSliceAssumeCapacity(std.fs.path.sep_str ++ "package.json");
     original_package_json_path_buf.appendAssumeCapacity(0);
@@ -828,7 +828,7 @@ pub fn init(
 
     const options = Options{
         .global = cli.global,
-        .max_concurrent_lifecycle_scripts = cli.concurrent_scripts orelse cpu_count * 2,
+        .max_concurrent_lifecycle_scripts = cli.concurrent_scripts orelse (cpu_count * 2),
     };
 
     if (env.get("BUN_INSTALL_VERBOSE") != null) {
@@ -1028,7 +1028,7 @@ pub fn initWithRuntime(
         .preallocated_network_tasks = .init(bun.default_allocator),
         .preallocated_resolve_tasks = .init(bun.default_allocator),
         .options = .{
-            .max_concurrent_lifecycle_scripts = cli.concurrent_scripts orelse cpu_count * 2,
+            .max_concurrent_lifecycle_scripts = cli.concurrent_scripts orelse (cpu_count * 2),
         },
         .active_lifecycle_scripts = .{
             .context = manager,
@@ -1131,7 +1131,7 @@ pub var root_package_json_path: [:0]const u8 = "";
 const default_max_simultaneous_requests_for_bun_install = 64;
 const default_max_simultaneous_requests_for_bun_install_for_proxies = 64;
 
-pub const TaskCallbackList = std.ArrayListUnmanaged(TaskCallbackContext);
+pub const TaskCallbackList = std.ArrayList(TaskCallbackContext);
 const TaskDependencyQueue = std.HashMapUnmanaged(Task.Id, TaskCallbackList, IdentityContext(Task.Id), 80);
 
 const PreallocatedTaskStore = bun.HiveArray(Task, 64).Fallback;

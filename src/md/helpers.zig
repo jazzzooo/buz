@@ -333,7 +333,7 @@ pub fn decodeEntityToUtf8(entity_text: []const u8, out: *[8]u8) ?[]const u8 {
 /// Generate a GitHub-compatible slug from text content.
 /// Modifies text_buf in-place. Uses slug_counts for -N deduplication.
 pub fn generateSlug(
-    text_buf: *std.ArrayListUnmanaged(u8),
+    text_buf: *std.ArrayList(u8),
     slug_counts: *bun.StringHashMapUnmanaged(u32),
     allocator: Allocator,
 ) bun.OOM![]const u8 {
@@ -408,7 +408,7 @@ pub fn generateSlug(
 pub const HeadingIdTracker = struct {
     enabled: bool,
     in_heading: bool = false,
-    text_buf: std.ArrayListUnmanaged(u8) = .empty,
+    text_buf: std.ArrayList(u8) = .empty,
     slug_counts: bun.StringHashMapUnmanaged(u32) = .{},
 
     pub fn init(enabled: bool) HeadingIdTracker {

@@ -771,7 +771,6 @@ const DnsQueryCompletionOps = struct {
         payload.deinit();
         bun.destroy(payload);
     }
-
 };
 
 pub const DnsQueryCompletions = bun.bindgen.MaterializedCompletionSet(.{
@@ -809,7 +808,7 @@ fn completeDnsQuery(completion: *DnsQueryCompletions.Owned, payload: DnsQueryPay
 
 fn appendDnsElement(
     comptime Sequence: type,
-    list: *std.ArrayListUnmanaged(Sequence.Element),
+    list: *std.ArrayList(Sequence.Element),
     element: Sequence.Element,
 ) bun.OOM!void {
     var owned = element;
@@ -895,7 +894,7 @@ fn lookupResultsFromNative(result: GetAddrInfo.Result.List) bun.OOM!?DNSLookupRe
 }
 
 fn lookupResultsFromCares(result: *const c_ares.AddrInfo) bun.OOM!DNSLookupResults {
-    var values: std.ArrayListUnmanaged(DNSLookupResults.Element) = .empty;
+    var values: std.ArrayList(DNSLookupResults.Element) = .empty;
     defer values.deinit(bun.default_allocator);
     errdefer deinitDnsElements(DNSLookupResults, values.items);
 
@@ -989,7 +988,7 @@ fn txtResultElement(node: *const c_ares.struct_ares_txt_reply) bun.OOM!DNSTxtRes
 }
 
 fn appendAnyAddresses(
-    values: *std.ArrayListUnmanaged(DNSAnyResults.Element),
+    values: *std.ArrayList(DNSAnyResults.Element),
     hostent: *const c_ares.hostent_with_ttls,
     comptime ipv6: bool,
 ) bun.OOM!void {
@@ -1009,7 +1008,7 @@ fn appendAnyAddresses(
 }
 
 fn appendAnyHostentStrings(
-    values: *std.ArrayListUnmanaged(DNSAnyResults.Element),
+    values: *std.ArrayList(DNSAnyResults.Element),
     hostent: *const c_ares.struct_hostent,
     comptime ns: bool,
 ) bun.OOM!void {
@@ -1036,7 +1035,7 @@ fn anyRecord(comptime tag: std.meta.Tag(DNSAnyResults.Element), value: anytype) 
 }
 
 fn appendAnyLinked(
-    values: *std.ArrayListUnmanaged(DNSAnyResults.Element),
+    values: *std.ArrayList(DNSAnyResults.Element),
     comptime tag: std.meta.Tag(DNSAnyResults.Element),
     first: anytype,
     comptime convert: anytype,
@@ -1048,7 +1047,7 @@ fn appendAnyLinked(
 }
 
 fn appendAnyTxt(
-    values: *std.ArrayListUnmanaged(DNSAnyResults.Element),
+    values: *std.ArrayList(DNSAnyResults.Element),
     first: *const c_ares.struct_ares_txt_reply,
 ) bun.OOM!void {
     try appendDnsElement(DNSAnyResults, values, .{ .txt = .{
@@ -1062,7 +1061,7 @@ fn txtString(node: *const c_ares.struct_ares_txt_reply) bun.OOM!DNSStringResults
 }
 
 fn anyResults(result: *const c_ares.struct_any_reply) bun.OOM!DNSAnyResults {
-    var values: std.ArrayListUnmanaged(DNSAnyResults.Element) = .empty;
+    var values: std.ArrayList(DNSAnyResults.Element) = .empty;
     defer values.deinit(bun.default_allocator);
     errdefer deinitDnsElements(DNSAnyResults, values.items);
 

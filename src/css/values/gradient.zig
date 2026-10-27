@@ -1653,5 +1653,5 @@ pub fn convertStopsToWebkit(allocator: Allocator, items: *const ArrayList(Gradie
 const bun = @import("bun");
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

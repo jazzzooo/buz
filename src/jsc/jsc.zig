@@ -19,7 +19,7 @@ pub const NodeURL = @import("./NodeURL.zig");
 /// Initialize JavaScriptCore before creating a VM.
 pub fn initialize(eval_mode: bool) void {
     bun.analytics.Features.jsc += 1;
-    var environment: std.ArrayListUnmanaged(u8) = .empty;
+    var environment: std.ArrayList(u8) = .empty;
     defer environment.deinit(bun.default_allocator);
     for (0..bun.environ.len) |reverse_index| {
         const raw_entry = bun.environ[bun.environ.len - reverse_index - 1];

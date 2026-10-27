@@ -1207,7 +1207,7 @@ void JSCommonJSModule::evaluate(
 
     const bool ignoreESModuleAnnotation = resolvedSourceHasKind(source, Bindgen::ResolvedSourceKind::package_json_type_module);
     auto sourceProvider = Zig::SourceProvider::create(globalObject, WTF::move(source), JSC::SourceProviderSourceType::Program, isBuiltIn);
-    RETURN_IF_EXCEPTION(scope, void());
+    RETURN_IF_EXCEPTION(scope, );
     this->ignoreESModuleAnnotation = ignoreESModuleAnnotation;
     if (!isBuiltIn && !globalObject->hasOverriddenModuleWrapper && Bun::IsolatedModuleCache::canUse(vm, globalObject->bunVM())) {
         Bun::IsolatedModuleCache::insert(vm, key, *sourceProvider);
@@ -1361,7 +1361,7 @@ static JSC::SourceCode commonJSModuleSyntheticSourceCode(const SourceOrigin& sou
 
                 JSValue keyValue = identifierToJSValue(vm, moduleKey);
                 JSValue entry = globalObject->requireMap()->get(globalObject, keyValue);
-                RETURN_IF_EXCEPTION(scope, {});
+                RETURN_IF_EXCEPTION(scope, );
 
                 if (entry) {
                     if (auto* moduleObject = dynamicDowncast<JSCommonJSModule>(entry)) {
@@ -1378,7 +1378,7 @@ static JSC::SourceCode commonJSModuleSyntheticSourceCode(const SourceOrigin& sou
                                 // On error, remove the module from the require map
                                 // so that it can be re-evaluated on the next require.
                                 globalObject->requireMap()->remove(globalObject, moduleObject->filename());
-                                RETURN_IF_EXCEPTION(scope, {});
+                                RETURN_IF_EXCEPTION(scope, );
 
                                 scope.throwException(globalObject, exception);
                                 return;
@@ -1386,7 +1386,7 @@ static JSC::SourceCode commonJSModuleSyntheticSourceCode(const SourceOrigin& sou
                         }
 
                         moduleObject->toSyntheticSource(globalObject, moduleKey, exportNames, exportValues);
-                        RETURN_IF_EXCEPTION(scope, {});
+                        RETURN_IF_EXCEPTION(scope, );
                     }
                 } else {
                     // require map was cleared of the entry

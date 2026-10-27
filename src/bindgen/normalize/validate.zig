@@ -837,7 +837,7 @@ fn enumerationRules(c: *Checker, enumeration: schema.Enumeration) Error!void {
 }
 
 fn enumerationNativeValue(options: schema.EnumerationOptions, value: schema.EnumerationValue, index: usize) usize {
-    return value.options.native_value orelse index + @intFromBool(!options.internal_module_registry);
+    return value.options.native_value orelse (index + @intFromBool(!options.internal_module_registry));
 }
 
 fn dictionaryFieldRules(c: *Checker, field: schema.DictionaryField) Error!void {

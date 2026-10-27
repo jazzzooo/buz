@@ -16,7 +16,7 @@ fn trimPathDelimiters(input: string) string {
 pub fn EnvPath(comptime opts: EnvPathOptions) type {
     return struct {
         allocator: std.mem.Allocator,
-        buf: std.ArrayListUnmanaged(u8) = .empty,
+        buf: std.ArrayList(u8) = .empty,
 
         pub fn init(allocator: std.mem.Allocator) @This() {
             return .{ .allocator = allocator };

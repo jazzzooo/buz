@@ -835,7 +835,7 @@ pub const BOM = enum {
     /// The returned slice will always point to the base of the input.
     ///
     /// Requires an arraylist in case it must be grown.
-    pub fn removeAndConvertToUTF8WithoutDealloc(bom: BOM, allocator: std.mem.Allocator, list: *std.ArrayListUnmanaged(u8)) ![]u8 {
+    pub fn removeAndConvertToUTF8WithoutDealloc(bom: BOM, allocator: std.mem.Allocator, list: *std.ArrayList(u8)) ![]u8 {
         const bytes = list.items;
         switch (bom) {
             .utf8 => {
@@ -911,11 +911,9 @@ pub fn toUTF16Alloc(allocator: std.mem.Allocator, bytes: []const u8, comptime fa
                 return error.InvalidByteSequence;
             }
 
-            break :simd .{
-                .items = out[0..i],
-                .capacity = out.len,
-                .allocator = allocator,
-            };
+            var list = std.array_list.Managed(u16).fromOwnedSlice(allocator, out);
+            list.items.len = i;
+            break :simd list;
         } else null;
         var output = output_ orelse fallback: {
             var list = try std.array_list.Managed(u16).initCapacity(allocator, i + 2);
@@ -1010,7 +1008,7 @@ pub fn toUTF16AllocForReal(allocator: std.mem.Allocator, bytes: []const u8, comp
 pub const BufferedUTF16Result = union(enum) {
     ascii,
     decoded: struct {
-        output: std.ArrayListUnmanaged(u16),
+        output: std.ArrayList(u16),
         buffered: [3]u8 = @splat(0),
         buffered_len: u2 = 0,
     },
@@ -1025,7 +1023,7 @@ pub fn toUTF16AllocMaybeBuffered(
 ) error{OutOfMemory}!BufferedUTF16Result {
     const first_non_ascii = strings.firstNonASCII(bytes) orelse return .ascii;
 
-    var output: std.ArrayListUnmanaged(u16) = if (comptime bun.FeatureFlags.use_simdutf) output: {
+    var output: std.ArrayList(u16) = if (comptime bun.FeatureFlags.use_simdutf) output: {
         const out_length = bun.simdutf.length.utf16.from.utf8(bytes);
 
         if (out_length == 0) {
@@ -1040,7 +1038,7 @@ pub fn toUTF16AllocMaybeBuffered(
             return .{ .decoded = .{ .output = .fromOwnedSlice(out) } };
         }
 
-        var list = std.ArrayListUnmanaged(u16).fromOwnedSlice(out[0..first_non_ascii]);
+        var list = std.ArrayList(u16).fromOwnedSlice(out[0..first_non_ascii]);
         list.capacity = out.len;
 
         break :output list;
@@ -1527,7 +1525,7 @@ pub fn copyUTF16IntoUTF8WithBufferImpl(buf: []u8, utf16: []const u16, out_len: u
                         },
                         2 => {
                             remaining[0] = @as(u8, @truncate(0xE0 | (replacement.code_point >> 12)));
-                            remaining[1] = @as(u8, @truncate(0x80 | (replacement.code_point >> 6) & 0x3F));
+                            remaining[1] = @as(u8, @truncate((0x80 | (replacement.code_point >> 6)) & 0x3F));
                             remaining = remaining[remaining.len..];
                         },
                         else => {},
@@ -1542,13 +1540,13 @@ pub fn copyUTF16IntoUTF8WithBufferImpl(buf: []u8, utf16: []const u16, out_len: u
                         },
                         2 => {
                             remaining[0] = @as(u8, @truncate(0xF0 | (replacement.code_point >> 18)));
-                            remaining[1] = @as(u8, @truncate(0x80 | (replacement.code_point >> 12) & 0x3F));
+                            remaining[1] = @as(u8, @truncate((0x80 | (replacement.code_point >> 12)) & 0x3F));
                             remaining = remaining[remaining.len..];
                         },
                         3 => {
                             remaining[0] = @as(u8, @truncate(0xF0 | (replacement.code_point >> 18)));
-                            remaining[1] = @as(u8, @truncate(0x80 | (replacement.code_point >> 12) & 0x3F));
-                            remaining[2] = @as(u8, @truncate(0x80 | (replacement.code_point >> 6) & 0x3F));
+                            remaining[1] = @as(u8, @truncate((0x80 | (replacement.code_point >> 12)) & 0x3F));
+                            remaining[2] = @as(u8, @truncate((0x80 | (replacement.code_point >> 6)) & 0x3F));
                             remaining = remaining[remaining.len..];
                         },
                         else => {},
@@ -1656,7 +1654,7 @@ pub fn utf16EqlString(text: []const u16, str: string) bool {
         if (r1 >= 0xD800 and r1 <= 0xDBFF and i + 1 < n) {
             const r2: i32 = text[i + 1];
             if (r2 >= 0xDC00 and r2 <= 0xDFFF) {
-                r1 = (r1 - 0xD800) << 10 | (r2 - 0xDC00) + 0x10000;
+                r1 = ((r1 - 0xD800) << 10) | ((r2 - 0xDC00) + 0x10000);
                 i += 1;
             }
         }
@@ -1797,7 +1795,7 @@ pub inline fn decodeWTF8RuneTMultibyte(p: *const [4]u8, len: u3_fast, comptime T
     if ((s1 & 0xC0) != 0x80) return zero;
 
     if (len == 2) {
-        const cp = @as(T, p[0] & 0x1F) << 6 | @as(T, s1 & 0x3F);
+        const cp = (@as(T, p[0] & 0x1F) << 6) | @as(T, s1 & 0x3F);
         if (cp < 0x80) return zero;
         return cp;
     }

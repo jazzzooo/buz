@@ -199,7 +199,7 @@ process: *Process,
 stdin: Writable,
 stdout: Readable,
 stderr: Readable,
-stdio_pipes: std.ArrayListUnmanaged(StdioResult) = .empty,
+stdio_pipes: std.ArrayList(StdioResult) = .empty,
 pid_rusage: ?Rusage = null,
 
 /// Terminal attached to this subprocess (if spawned with terminal option)

@@ -60,7 +60,7 @@ pub const ReadFile = struct {
     read_off: SizeType = 0,
     last_modified: ?Store.Timestamp = null,
     opened_fd: bun.FD = .invalid,
-    buffer: std.ArrayListUnmanaged(u8) = .empty,
+    buffer: std.ArrayList(u8) = .empty,
     failure: ?Failure = null,
     onCompleteCtx: *anyopaque,
     onCompleteCallback: ReadFileOnReadFileCallback,

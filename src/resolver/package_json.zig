@@ -108,7 +108,7 @@ pub const PackageJSON = struct {
             80,
         );
 
-        pub const GlobList = std.ArrayListUnmanaged([]const u8);
+        pub const GlobList = std.ArrayList([]const u8);
 
         pub const MixedPatterns = struct {
             exact: Map,
@@ -1602,7 +1602,7 @@ fn encodedSegmentEql(segment: string, comptime expected: string) bool {
             strings.isASCIIHexDigit(segment[index + 1]) and
             strings.isASCIIHexDigit(segment[index + 2]))
         decode: {
-            const byte = strings.toASCIIHexValue(segment[index + 1]) << 4 |
+            const byte = (strings.toASCIIHexValue(segment[index + 1]) << 4) |
                 strings.toASCIIHexValue(segment[index + 2]);
             index += 3;
             break :decode byte;

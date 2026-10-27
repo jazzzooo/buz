@@ -114,12 +114,12 @@ pub fn record(origin_host: []const u8, origin_port: u16, field_value: []const u8
     if (origin_host.len > 256) return;
     const k = key(&buf, origin_host, origin_port);
 
-    const entry = parse(field_value) catch {
+    const entry = (parse(field_value) catch {
         // `clear`
         if (cache.fetchRemove(k)) |kv| bun.default_allocator.free(kv.key);
         log("alt-svc clear {s}", .{k});
         return;
-    } orelse return;
+    }) orelse return;
 
     const now = bun.timespec.realNow().sec;
     if (cache.count() >= max_entries and !cache.contains(k)) {

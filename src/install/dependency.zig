@@ -970,11 +970,11 @@ pub fn parseWithTag(
             };
         },
         .github => {
-            const info = bun.handleOom(
+            const info = (bun.handleOom(
                 hosted_git_info.HostedGitInfo.fromUrl(context.javascript_semantics, allocator, dependency),
             ) catch {
                 return null;
-            } orelse {
+            }) orelse {
                 return null;
             };
             defer info.deinit();

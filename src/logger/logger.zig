@@ -446,7 +446,7 @@ pub const Log = struct {
     warnings: u32 = 0,
     errors: u32 = 0,
     msgs: std.array_list.Managed(Msg),
-    owned_messages: std.ArrayListUnmanaged(StoredMessage) = .empty,
+    owned_messages: std.ArrayList(StoredMessage) = .empty,
     level: Level = if (Environment.isDebug) Level.info else Level.warn,
 
     const StoredMessage = struct {

@@ -488,7 +488,7 @@ pub fn parseQueryCondition(
     };
 
     const first_condition: QueryCondition = first_condition: {
-        const val: u8 = @as(u8, @intFromBool(is_negation)) << 1 | @as(u8, @intFromBool(is_style));
+        const val: u8 = (@as(u8, @intFromBool(is_negation)) << 1) | @as(u8, @intFromBool(is_style));
         // (is_negation, is_style)
         switch (val) {
             // (true, false)
@@ -1564,5 +1564,5 @@ fn writeMinMax(
 const bun = @import("bun");
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

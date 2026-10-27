@@ -34,7 +34,7 @@ pub fn Worker(comptime Coordinator: type) type {
         dispatched_at: i64 = 0,
         /// Worker stdout+stderr since the last `test_done`. Flushed atomically
         /// under the right file header so concurrent files don't interleave.
-        captured: std.ArrayListUnmanaged(u8) = .empty,
+        captured: std.ArrayList(u8) = .empty,
         alive: bool = false,
         /// Set when the process-exit notification arrives. Reaping waits for both
         /// this and `ipc.done` so trailing IPC frames are decoded first.

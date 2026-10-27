@@ -155,14 +155,14 @@ pub const ListContainerType = enum {
 pub fn looksLikeListContainerType(comptime T: type) ?struct { list: ListContainerType, child: type } {
     const tyinfo = @typeInfo(T);
     if (tyinfo == .@"struct") {
-        const field_names = tyinfo.@"struct".field_names;
-        const field_types = tyinfo.@"struct".field_types;
-
-        // Looks like array list
-        if (field_names.len == 2 and
-            std.mem.eql(u8, field_names[0], "items") and
-            std.mem.eql(u8, field_names[1], "capacity"))
-            return .{ .list = .array_list, .child = std.meta.Child(field_types[0]) };
+        if (@hasField(T, "items")) {
+            const items = @typeInfo(@FieldType(T, "items"));
+            if (items == .pointer and items.pointer.size == .slice) {
+                const alignment: ?std.mem.Alignment = if (items.pointer.attrs.@"align") |a| .fromByteUnits(a) else null;
+                if (T == std.array_list.Aligned(items.pointer.child, alignment))
+                    return .{ .list = .array_list, .child = items.pointer.child };
+            }
+        }
 
         // Looks like babylist
         if (@hasDecl(T, "looksLikeContainerTypeBabyList")) {

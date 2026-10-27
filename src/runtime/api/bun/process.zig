@@ -986,7 +986,7 @@ const WaiterThreadPosix = struct {
 
                 // Consume the pending eventfd
                 var buf: [8]u8 = undefined;
-                if (bun.sys.read(this.eventfd, &buf).unwrap() catch 0 > 0) {
+                if ((bun.sys.read(this.eventfd, &buf).unwrap() catch 0) > 0) {
                     continue :outer;
                 }
 
@@ -1954,8 +1954,8 @@ pub const sync = struct {
 
     pub const Result = struct {
         status: Status,
-        stdout: std.array_list.Managed(u8) = .{ .items = &.{}, .allocator = bun.default_allocator, .capacity = 0 },
-        stderr: std.array_list.Managed(u8) = .{ .items = &.{}, .allocator = bun.default_allocator, .capacity = 0 },
+        stdout: std.array_list.Managed(u8) = .init(bun.default_allocator),
+        stderr: std.array_list.Managed(u8) = .init(bun.default_allocator),
 
         pub fn isOK(this: *const Result) bool {
             return this.status.isOK();
@@ -1968,7 +1968,7 @@ pub const sync = struct {
     };
 
     const SyncWindowsPipeReader = struct {
-        chunks: std.array_list.Managed([]u8) = .{ .items = &.{}, .allocator = bun.default_allocator, .capacity = 0 },
+        chunks: std.array_list.Managed([]u8) = .init(bun.default_allocator),
         pipe: *uv.Pipe,
 
         err: bun.sys.E = .SUCCESS,

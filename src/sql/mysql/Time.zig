@@ -14,8 +14,8 @@ pub fn fromMilliseconds(total_ms: f64) Time {
     return .{
         .negative = total_ms < 0,
         .days = @intCast(seconds / 86400),
-        .hours = @intCast(seconds / 3600 % 24),
-        .minutes = @intCast(seconds / 60 % 60),
+        .hours = @intCast((seconds / 3600) % 24),
+        .minutes = @intCast((seconds / 60) % 60),
         .seconds = @intCast(seconds % 60),
         .microseconds = @intFromFloat(milliseconds * 1000),
     };

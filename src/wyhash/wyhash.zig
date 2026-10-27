@@ -17,7 +17,7 @@ fn read_bytes(comptime bytes: u8, data: []const u8) u64 {
 }
 
 fn read_8bytes_swapped(data: []const u8) u64 {
-    return (read_bytes(4, data) << 32 | read_bytes(4, data[4..]));
+    return ((read_bytes(4, data) << 32) | read_bytes(4, data[4..]));
 }
 
 fn mum(a: u64, b: u64) u64 {

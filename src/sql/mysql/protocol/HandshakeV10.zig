@@ -47,7 +47,7 @@ pub fn decodeInternal(this: *HandshakeV10, comptime Context: type, reader: NewRe
 
     // Capability flags (upper 2 bytes)
     const capabilities_upper = try reader.int(u16);
-    this.capability_flags = Capabilities.fromInt(@as(u32, capabilities_upper) << 16 | capabilities_lower);
+    this.capability_flags = Capabilities.fromInt((@as(u32, capabilities_upper) << 16) | capabilities_lower);
 
     // Length of auth plugin data
     var auth_plugin_data_len = try reader.int(u8);

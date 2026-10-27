@@ -246,4 +246,4 @@ pub fn StyleRule(comptime R: type) type {
 }
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;

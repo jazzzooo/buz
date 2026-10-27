@@ -22,7 +22,7 @@ pub const GraphTraceState = struct {
     allocator: Allocator,
     client_bits: std.bit_set.Dynamic,
     server_bits: std.bit_set.Dynamic,
-    failed_files: std.ArrayListUnmanaged(FailedFile) = .empty,
+    failed_files: std.ArrayList(FailedFile) = .empty,
 
     pub const FailedFile = union(enum) {
         client: ClientFileIndex,

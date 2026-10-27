@@ -194,8 +194,6 @@ pub const Arguments = struct {
                     .position = if (args.position orelse null) |integer| @intCast(integer) else null,
                 };
             }
-
-
         };
     }
 
@@ -3583,7 +3581,7 @@ pub fn zigDeleteTree(io: std.Io, self: std.Io.Dir, sub_path: []const u8, kind_hi
     };
 
     var stack_buffer: [16]StackItem = undefined;
-    var stack = std.ArrayListUnmanaged(StackItem).initBuffer(&stack_buffer);
+    var stack = std.ArrayList(StackItem).initBuffer(&stack_buffer);
     defer StackItem.closeAll(stack.items, io);
 
     stack.appendAssumeCapacity(.{

@@ -1,7 +1,7 @@
 pub fn Type(comptime Host: type) type {
     return struct {
         state: enum { idle, err, done } = .idle,
-        buf: std.ArrayListUnmanaged(u8) = .empty,
+        buf: std.ArrayList(u8) = .empty,
 
         pub fn start(this: *@This()) Yield {
             const args = this.bltn().argsSlice();

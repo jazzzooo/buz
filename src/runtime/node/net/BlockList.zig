@@ -210,7 +210,7 @@ pub fn rules(
     var arena = bun.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var values: std.ArrayListUnmanaged([]const u8) = .empty;
+    var values: std.ArrayList([]const u8) = .empty;
 
     const rule_snapshot = try this.snapshot(allocator);
     try values.ensureTotalCapacity(allocator, rule_snapshot.len);

@@ -1,10 +1,6 @@
 const ByteStream = @This();
 
-buffer: std.array_list.Managed(u8) = .{
-    .allocator = bun.default_allocator,
-    .items = &.{},
-    .capacity = 0,
-},
+buffer: std.array_list.Managed(u8) = .init(bun.default_allocator),
 has_received_last_chunk: bool = false,
 pending: streams.Result.Pending = .{ .result = .{ .done = {} } },
 done: bool = false,
@@ -340,11 +336,7 @@ pub fn toAnyBlob(this: *@This()) ?Blob.Any {
     if (this.has_received_last_chunk and this.pending.result != .err) {
         this.compact();
         const buffer = this.buffer;
-        this.buffer = .{
-            .allocator = bun.default_allocator,
-            .items = &.{},
-            .capacity = 0,
-        };
+        this.buffer = .init(bun.default_allocator);
         this.done = true;
         this.pending.result.deinit();
         this.pending.result = .{ .done = {} };

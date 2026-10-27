@@ -64,7 +64,7 @@ pub fn ArrayListAlignedIn(
 
         pub const SentinelSlice = Unmanaged.SentinelSlice;
         pub const Slice = Unmanaged.Slice;
-        pub const Unmanaged = std.ArrayListAlignedUnmanaged(T, alignment);
+        pub const Unmanaged = std.array_list.Aligned(T, alignment);
 
         pub fn init() Self {
             return .initIn(bun.memory.initDefault(Allocator));

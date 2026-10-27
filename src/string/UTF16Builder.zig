@@ -1,7 +1,7 @@
 const UTF16Builder = @This();
 
 allocator: std.mem.Allocator,
-units: std.ArrayListUnmanaged(u16) = .empty,
+units: std.ArrayList(u16) = .empty,
 failed: bool = false,
 
 pub fn init(allocator: std.mem.Allocator) UTF16Builder {

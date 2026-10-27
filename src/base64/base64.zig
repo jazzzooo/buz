@@ -156,7 +156,7 @@ pub fn encodeAlloc(allocator: std.mem.Allocator, source: []const u8) !bun.ByteLi
 }
 
 pub fn decodeLen(source: anytype) usize {
-    var result = source.len / 4 * 3 + source.len % 4 * 3 / 4;
+    var result = source.len / 4 * 3 + (source.len % 4) * 3 / 4;
     if (source.len % 4 == 0 and source.len > 0 and source[source.len - 1] == '=') {
         result -= 1;
         if (source.len > 1 and source[source.len - 2] == '=') {

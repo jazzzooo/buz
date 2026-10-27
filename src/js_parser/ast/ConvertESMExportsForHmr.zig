@@ -3,9 +3,9 @@ last_part: *js_ast.Part,
 // can be a bit more concise for re-exports
 is_in_node_modules: bool,
 imports_seen: std.HashMapUnmanaged(ImportKey, ImportRef, ImportKey.Context, std.hash_map.default_max_load_percentage) = .empty,
-export_star_props: std.ArrayListUnmanaged(G.Property) = .empty,
-export_props: std.ArrayListUnmanaged(G.Property) = .empty,
-stmts: std.ArrayListUnmanaged(Stmt) = .empty,
+export_star_props: std.ArrayList(G.Property) = .empty,
+export_props: std.ArrayList(G.Property) = .empty,
+stmts: std.ArrayList(Stmt) = .empty,
 
 pub fn deinit(ctx: *ConvertESMExportsForHmr, allocator: std.mem.Allocator) void {
     ctx.imports_seen.deinit(allocator);
@@ -642,4 +642,4 @@ const Ref = js_parser.Ref;
 const options = js_parser.options;
 
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;

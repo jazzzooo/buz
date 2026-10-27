@@ -423,12 +423,10 @@ pub const Bytes = struct {
     pub fn initCapacity(bytes: []u8, len: usize, allocator: std.mem.Allocator) bun.OOM!Bytes {
         bun.assert(len <= bytes.len);
         _ = try sizeType(bytes.len);
+        var list = std.array_list.Managed(u8).fromOwnedSlice(allocator, bytes);
+        list.items.len = len;
         return .{
-            .backing = .{ .allocation = .fromManaged(.{
-                .items = bytes[0..len],
-                .capacity = bytes.len,
-                .allocator = allocator,
-            }) },
+            .backing = .{ .allocation = .fromManaged(list) },
             .len = try sizeType(len),
         };
     }

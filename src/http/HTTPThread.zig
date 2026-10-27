@@ -23,7 +23,7 @@ queued_tasks: Queue = Queue{},
 /// `active_requests_count >= max_simultaneous_requests`. Kept in FIFO order
 /// and processed before `queued_tasks` on the next `drainEvents`. Owned by
 /// the HTTP thread; never accessed concurrently.
-deferred_tasks: std.ArrayListUnmanaged(*AsyncHTTP) = .empty,
+deferred_tasks: std.ArrayList(*AsyncHTTP) = .empty,
 /// Set by `drainQueuedShutdowns` when a shutdown's `async_http_id` wasn't in
 /// `socket_async_http_abort_tracker` — the request is either not yet started
 /// (still in `queued_tasks`/`deferred_tasks`) or already done. `drainEvents`
@@ -32,9 +32,9 @@ deferred_tasks: std.ArrayListUnmanaged(*AsyncHTTP) = .empty,
 /// path stays O(1). Owned by the HTTP thread.
 has_pending_queued_abort: bool = false,
 
-queued_shutdowns: std.ArrayListUnmanaged(ShutdownMessage) = .empty,
-queued_writes: std.ArrayListUnmanaged(WriteMessage) = .empty,
-queued_response_body_drains: std.ArrayListUnmanaged(DrainMessage) = .empty,
+queued_shutdowns: std.ArrayList(ShutdownMessage) = .empty,
+queued_writes: std.ArrayList(WriteMessage) = .empty,
+queued_response_body_drains: std.ArrayList(DrainMessage) = .empty,
 
 queued_shutdowns_lock: std.Io.Mutex = .init,
 queued_writes_lock: std.Io.Mutex = .init,

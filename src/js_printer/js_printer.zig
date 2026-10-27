@@ -642,7 +642,7 @@ fn NewPrinter(
 
         symbol_counter: u32 = 0,
 
-        temporary_bindings: std.ArrayListUnmanaged(B.Property) = .empty,
+        temporary_bindings: std.ArrayList(B.Property) = .empty,
 
         binary_expression_stack: std.array_list.Managed(BinaryExpressionVisitor) = undefined,
 
@@ -4102,7 +4102,8 @@ fn NewPrinter(
                     // and export that one instead
                     // This particular code segment does the transform inline by adding an extra pass over export clauses
                     // and then swapRemove'ing them as we go
-                    var array = std.ArrayListUnmanaged(js_ast.ClauseItem){ .items = s.items, .capacity = s.items.len };
+                    var array = std.ArrayList(js_ast.ClauseItem).initBuffer(s.items);
+                    array.items.len = s.items.len;
                     {
                         var i: usize = 0;
                         while (i < array.items.len) {

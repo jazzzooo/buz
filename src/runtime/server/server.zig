@@ -431,7 +431,7 @@ const ServePlugins = struct {
             /// Promise may be empty if the plugin load finishes synchronously.
             plugin: *bun.jsc.API.JSBundler.Plugin,
             promise: bun.jsc.API.JSBundler.Plugin.LoadAndResolvePluginsForServePromise,
-            html_bundle_routes: std.ArrayListUnmanaged(*HTMLBundle.Route),
+            html_bundle_routes: std.ArrayList(*HTMLBundle.Route),
             dev_server: ?*bun.bake.DevServer,
         },
         loaded: *bun.jsc.API.JSBundler.Plugin,

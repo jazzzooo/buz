@@ -8,7 +8,7 @@ pub const LifecycleScriptTimeLog = struct {
     };
 
     mutex: std.Io.Mutex = .init,
-    list: std.ArrayListUnmanaged(Entry) = .empty,
+    list: std.ArrayList(Entry) = .empty,
 
     pub fn appendConcurrent(log: *LifecycleScriptTimeLog, io: std.Io, allocator: std.mem.Allocator, entry: Entry) void {
         log.mutex.lockUncancelable(io);

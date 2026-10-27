@@ -545,10 +545,8 @@ pub const ManagedWriter = struct {
     allocating: std.Io.Writer.Allocating,
 
     pub fn init(list: *std.array_list.Managed(u8)) ManagedWriter {
-        var unmanaged: std.ArrayList(u8) = .{ .items = list.items, .capacity = list.capacity };
+        var unmanaged = list.moveToUnmanaged();
         const allocator = list.allocator;
-        list.items = &.{};
-        list.capacity = 0;
         return .{
             .list = list,
             .allocating = .fromArrayList(allocator, &unmanaged),
@@ -560,9 +558,8 @@ pub const ManagedWriter = struct {
     }
 
     pub fn finish(this: *ManagedWriter) void {
-        const unmanaged = this.allocating.toArrayList();
-        this.list.items = unmanaged.items;
-        this.list.capacity = unmanaged.capacity;
+        var unmanaged = this.allocating.toArrayList();
+        this.list.* = unmanaged.toManaged(this.list.allocator);
     }
 };
 
@@ -3261,7 +3258,7 @@ fn OnceImpl(comptime f: anytype, comptime mode: OnceMode) type {
         fn callThreadedSlow(self: *@This(), args: std.meta.ArgsTuple(@TypeOf(f))) Return {
             @branchHint(.cold);
 
-            std.Io.Threaded.mutexLock(&self.mutex);
+            std.Io.Threaded.mutexLockUncancelable(&self.mutex);
             defer std.Io.Threaded.mutexUnlock(&self.mutex);
 
             self.initialize(args);
@@ -3395,7 +3392,7 @@ pub const mach_port = if (Environment.isMac) std.c.mach_port_t else u32;
 
 pub const asan = @import("./safety/asan.zig");
 
-pub fn contains(item: anytype, list: *const std.ArrayListUnmanaged(@TypeOf(item))) bool {
+pub fn contains(item: anytype, list: *const std.ArrayList(@TypeOf(item))) bool {
     const T = @TypeOf(item);
     return switch (T) {
         u8 => strings.containsChar(list.items, item),

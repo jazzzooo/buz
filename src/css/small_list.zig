@@ -78,7 +78,7 @@ pub fn SmallList(comptime T: type, comptime N: comptime_int) type {
         }
 
         /// NOTE: This will deinit the list
-        pub fn fromList(allocator: Allocator, list: std.ArrayListUnmanaged(T)) @This() {
+        pub fn fromList(allocator: Allocator, list: std.ArrayList(T)) @This() {
             if (list.cap > N) {
                 return .{
                     .capacity = list.cap,

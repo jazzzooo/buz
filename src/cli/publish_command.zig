@@ -481,7 +481,7 @@ pub const PublishCommand = struct {
         writer_finished = true;
     }
 
-    fn appendUnmanagedFmt(buffer: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, comptime format: []const u8, args: anytype) OOM!void {
+    fn appendUnmanagedFmt(buffer: *std.ArrayList(u8), allocator: std.mem.Allocator, comptime format: []const u8, args: anytype) OOM!void {
         var writer_state = bun.UnmanagedWriter.init(buffer, allocator);
         var writer_finished = false;
         defer if (!writer_finished) writer_state.finish();
@@ -598,7 +598,7 @@ pub const PublishCommand = struct {
 
         const publish_req_body = try constructPublishRequestBody(directory_publish, ctx);
 
-        var print_buf: std.ArrayListUnmanaged(u8) = .empty;
+        var print_buf: std.ArrayList(u8) = .empty;
         defer print_buf.deinit(ctx.allocator);
 
         var publish_headers = try constructPublishHeaders(
@@ -775,7 +775,7 @@ pub const PublishCommand = struct {
             }
         };
 
-        while ('\n' != Output.buffered_stdin.reader().takeByte() catch return) {}
+        while ('\n' != (Output.buffered_stdin.reader().takeByte() catch return)) {}
         Open.openURL(auth_url);
     }
 
@@ -784,7 +784,7 @@ pub const PublishCommand = struct {
         ctx: *const Context(directory_publish),
         registry: *const Npm.Registry.Scope,
         response_buf: *MutableString,
-        print_buf: *std.ArrayListUnmanaged(u8),
+        print_buf: *std.ArrayList(u8),
     ) GetOTPError![]const u8 {
         const res_source = logger.Source.initPathString("???", response_buf.list.items);
 
@@ -1269,7 +1269,7 @@ pub const PublishCommand = struct {
                     }
                 };
 
-                var dirs: std.ArrayListUnmanaged(struct { std.Io.Dir, string, bool }) = .empty;
+                var dirs: std.ArrayList(struct { std.Io.Dir, string, bool }) = .empty;
                 defer dirs.deinit(allocator);
 
                 try dirs.append(allocator, .{ bin_dir.stdDir(), normalized_bin_dir, false });
@@ -1332,7 +1332,7 @@ pub const PublishCommand = struct {
     fn constructPublishHeaders(
         io: std.Io,
         allocator: std.mem.Allocator,
-        print_buf: *std.ArrayListUnmanaged(u8),
+        print_buf: *std.ArrayList(u8),
         registry: *const Npm.Registry.Scope,
         maybe_json_len: ?usize,
         maybe_otp: ?[]const u8,
@@ -1401,7 +1401,7 @@ pub const PublishCommand = struct {
         const encoded_tarball_len = std.base64.standard.Encoder.calcSize(ctx.tarball_bytes.len);
         const version_without_build_tag = Dependency.withoutBuildTag(ctx.package_version);
 
-        var buf = try std.ArrayListUnmanaged(u8).initCapacity(
+        var buf = try std.ArrayList(u8).initCapacity(
             ctx.allocator,
             ctx.package_name.len * 5 +
                 version_without_build_tag.len * 4 +

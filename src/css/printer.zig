@@ -562,5 +562,5 @@ pub const Printer = struct {
 const bun = @import("bun");
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

@@ -13,8 +13,8 @@ pub const String = extern struct {
     pub fn from(comptime inlinable_buffer: []const u8) String {
         comptime {
             if (inlinable_buffer.len > max_inline_len or
-                inlinable_buffer.len == max_inline_len and
-                    inlinable_buffer[max_inline_len - 1] >= 0x80)
+                (inlinable_buffer.len == max_inline_len and
+                    inlinable_buffer[max_inline_len - 1] >= 0x80))
             {
                 @compileError("string constant too long to be inlined");
             }
@@ -23,7 +23,7 @@ pub const String = extern struct {
     }
 
     pub const Buf = struct {
-        bytes: *std.ArrayListUnmanaged(u8),
+        bytes: *std.ArrayList(u8),
         allocator: std.mem.Allocator,
         pool: *Builder.StringPool,
 
@@ -326,7 +326,7 @@ pub const String = extern struct {
 
     pub fn initAppendIfNeeded(
         allocator: std.mem.Allocator,
-        buf: *std.ArrayListUnmanaged(u8),
+        buf: *std.ArrayList(u8),
         in: string,
     ) OOM!String {
         return switch (in.len) {
@@ -354,7 +354,7 @@ pub const String = extern struct {
 
     pub fn initAppend(
         allocator: std.mem.Allocator,
-        buf: *std.ArrayListUnmanaged(u8),
+        buf: *std.ArrayList(u8),
         in: string,
     ) OOM!String {
         try buf.appendSlice(allocator, in);

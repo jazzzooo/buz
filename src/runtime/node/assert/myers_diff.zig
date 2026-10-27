@@ -366,7 +366,7 @@ pub const Error = error{
     InputsTooLarge,
 } || Allocator.Error;
 
-const TraceFrame = std.ArrayListUnmanaged(u8);
+const TraceFrame = std.ArrayList(u8);
 
 pub const DiffKind = enum {
     insert,
@@ -596,7 +596,7 @@ pub fn split(
     comptime T: type,
     alloc: Allocator,
     s: []const T,
-) Allocator.Error!std.ArrayListUnmanaged([]const T) {
+) Allocator.Error!std.ArrayList([]const T) {
     comptime {
         if (T != u8 and T != u16) {
             @compileError("Split only supports latin1, utf8, and utf16. Received: " ++ @typeName(T));
@@ -606,7 +606,7 @@ pub fn split(
     //
     // thing
     var it = std.mem.splitScalar(T, s, newline);
-    var lines = std.ArrayListUnmanaged([]const T).empty;
+    var lines = std.ArrayList([]const T).empty;
     try lines.ensureUnusedCapacity(alloc, s.len >> 4);
     errdefer lines.deinit(alloc);
     while (it.next()) |l| {

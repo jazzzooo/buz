@@ -12,21 +12,9 @@ pub fn S3HttpDownloadStreamingTask(comptime Scheduler: type) type {
         signals: bun.http.Signals = .{},
         poll_ref: bun.Async.KeepAlive = bun.Async.KeepAlive.init(),
 
-        response_buffer: bun.MutableString = .{
-            .allocator = bun.default_allocator,
-            .list = .{
-                .items = &.{},
-                .capacity = 0,
-            },
-        },
+        response_buffer: bun.MutableString = .initEmpty(bun.default_allocator),
         mutex: std.Io.Mutex = .init,
-        reported_response_buffer: bun.MutableString = .{
-            .allocator = bun.default_allocator,
-            .list = .{
-                .items = &.{},
-                .capacity = 0,
-            },
-        },
+        reported_response_buffer: bun.MutableString = .initEmpty(bun.default_allocator),
         state: State.AtomicType = State.AtomicType.init(@bitCast(State{})),
 
         pub const State = packed struct(u64) {

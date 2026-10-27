@@ -32,7 +32,7 @@ pub fn handleInternalMessagePrimary(
 
 pub const InternalMsgHolder = struct {
     callback: ?InternalMessageCallback = null,
-    messages: std.ArrayListUnmanaged(bun.bindgen.Root) = .empty,
+    messages: std.ArrayList(bun.bindgen.Root) = .empty,
 
     pub fn isReady(this: *const InternalMsgHolder) bool {
         return this.callback != null;

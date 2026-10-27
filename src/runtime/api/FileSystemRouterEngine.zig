@@ -108,10 +108,10 @@ fn construct(
     vm.transpiler.resolver.log = &log;
     defer vm.transpiler.resolver.log = original_log;
 
-    const root_dir_info = vm.transpiler.resolver.readDirInfo(config.dir.slice()) catch |err| {
+    const root_dir_info = (vm.transpiler.resolver.readDirInfo(config.dir.slice()) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         return LoggerEngine.throwLog(&log, globalThis, "reading root directory");
-    } orelse return globalThis.throw("Unable to find directory: {s}", .{root_dir_path.slice()});
+    }) orelse return globalThis.throw("Unable to find directory: {s}", .{root_dir_path.slice()});
 
     const snapshot = RouteSnapshot.load(scratch.allocator(), vm.transpiler.fs, &config, &log, &vm.transpiler.resolver, root_dir_info) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -155,10 +155,10 @@ fn reload(
     defer vm.transpiler.resolver.log = original_log;
 
     bustDirCache(input.router, globalThis);
-    const root_dir_info = vm.transpiler.resolver.readDirInfo(config.dir.slice()) catch |err| {
+    const root_dir_info = (vm.transpiler.resolver.readDirInfo(config.dir.slice()) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         return LoggerEngine.throwLog(&log, globalThis, "reading root directory");
-    } orelse return globalThis.throw("Unable to find directory: {s}", .{config.dir.slice()});
+    }) orelse return globalThis.throw("Unable to find directory: {s}", .{config.dir.slice()});
 
     const snapshot = RouteSnapshot.load(scratch.allocator(), vm.transpiler.fs, config, &log, &vm.transpiler.resolver, root_dir_info) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;

@@ -8,18 +8,18 @@ pub fn WithTypes(
         const IncrementalResult = @This();
 
         /// Framework routes reached while tracing changed graph edges.
-        framework_routes_affected: std.ArrayListUnmanaged(RouteIndexAndRecurseFlag),
-        html_routes_soft_affected: std.ArrayListUnmanaged(RouteBundleIndex),
+        framework_routes_affected: std.ArrayList(RouteIndexAndRecurseFlag),
+        html_routes_soft_affected: std.ArrayList(RouteBundleIndex),
         /// HTML routes that require a full reload rather than URL rewriting.
-        html_routes_hard_affected: std.ArrayListUnmanaged(RouteBundleIndex),
+        html_routes_hard_affected: std.ArrayList(RouteBundleIndex),
         had_adjusted_edges: bool,
-        client_components_added: std.ArrayListUnmanaged(ServerFileIndex),
-        client_components_removed: std.ArrayListUnmanaged(ServerFileIndex),
+        client_components_added: std.ArrayList(ServerFileIndex),
+        client_components_removed: std.ArrayList(ServerFileIndex),
         /// Removed failures retain their bytes until the next update payload is encoded.
-        failures_removed: std.ArrayListUnmanaged(SerializedFailure),
-        client_components_affected: std.ArrayListUnmanaged(ServerFileIndex),
+        failures_removed: std.ArrayList(SerializedFailure),
+        client_components_affected: std.ArrayList(ServerFileIndex),
         /// Borrows published graph failures until their notification is encoded.
-        failures_added: std.ArrayListUnmanaged(SerializedFailure),
+        failures_added: std.ArrayList(SerializedFailure),
 
         pub const empty: IncrementalResult = .{
             .framework_routes_affected = .empty,

@@ -339,16 +339,9 @@ pub const ShellLsTask = struct {
     }
 
     fn appendOutputFmt(this: *@This(), comptime fmt: []const u8, args: anytype) void {
-        var unmanaged: std.ArrayList(u8) = .{ .items = this.output.items, .capacity = this.output.capacity };
-        this.output.items = &.{};
-        this.output.capacity = 0;
-        var allocating = std.Io.Writer.Allocating.fromArrayList(this.output.allocator, &unmanaged);
-        defer {
-            unmanaged = allocating.toArrayList();
-            this.output.items = unmanaged.items;
-            this.output.capacity = unmanaged.capacity;
-        }
-        allocating.writer.print(fmt, args) catch bun.outOfMemory();
+        var output = bun.ManagedWriter.init(&this.output);
+        defer output.finish();
+        output.writer().print(fmt, args) catch bun.outOfMemory();
     }
 
     fn shouldSkipEntry(this: *@This(), name: [:0]const u8) bool {

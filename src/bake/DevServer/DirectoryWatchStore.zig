@@ -14,9 +14,9 @@ pub fn WithOwner(comptime DevServer: type) type {
 
         /// List of active watchers. Can be re-ordered on removal
         watches: bun.StringArrayHashMap(Entry),
-        dependencies: ArrayListUnmanaged(Dep),
+        dependencies: std.ArrayList(Dep),
         /// Dependencies cannot be re-ordered. This list tracks what indexes are free.
-        dependencies_free_list: ArrayListUnmanaged(Dep.Index),
+        dependencies_free_list: std.ArrayList(Dep.Index),
 
         pub const empty: DirectoryWatchStore = .{
             .watches = .empty,
@@ -311,5 +311,4 @@ const assert = bun.assert;
 const BakeCore = @import("../BakeCore.zig");
 
 const std = @import("std");
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const Allocator = std.mem.Allocator;

@@ -28,7 +28,7 @@ mutex: std.Io.Mutex = .init,
 
 /// Compressed .tgz bytes that have arrived from the HTTP thread but have
 /// not yet been consumed by libarchive.
-pending: std.ArrayListUnmanaged(u8) = .empty,
+pending: std.ArrayList(u8) = .empty,
 
 /// True once the HTTP thread has delivered the final chunk (or an error).
 closed: bool = false,
@@ -55,7 +55,7 @@ draining: std.atomic.Value(bool) = .init(false),
 /// read callback hands out `reading.items[read_pos..]` and advances
 /// `read_pos`; the slice must remain valid until the next callback, so
 /// we only recycle this buffer on the *following* swap.
-reading: std.ArrayListUnmanaged(u8) = .empty,
+reading: std.ArrayList(u8) = .empty,
 read_pos: usize = 0,
 
 archive: ?*lib.Archive = null,
@@ -311,7 +311,7 @@ fn takePending(this: *TarballStream) bool {
         // Previous buffer fully consumed — swap so the HTTP thread can
         // reuse its capacity without reallocating.
         this.reading.clearRetainingCapacity();
-        std.mem.swap(std.ArrayListUnmanaged(u8), &this.reading, &this.pending);
+        std.mem.swap(std.ArrayList(u8), &this.reading, &this.pending);
         this.read_pos = 0;
     } else {
         // libarchive still holds a slice into `reading` (the read

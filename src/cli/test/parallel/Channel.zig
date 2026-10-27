@@ -20,9 +20,9 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
         const Self = @This();
 
         /// Incoming bytes that don't yet form a complete frame.
-        in: std.ArrayListUnmanaged(u8) = .empty,
+        in: std.ArrayList(u8) = .empty,
         /// Outgoing bytes the kernel didn't accept yet.
-        out: std.ArrayListUnmanaged(u8) = .empty,
+        out: std.ArrayList(u8) = .empty,
         done: bool = false,
 
         backend: Backend = .{},
@@ -53,7 +53,7 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
             /// Payload owned by the in-flight uv_write; must stay stable until
             /// the callback. New writes go to `out` until this completes, then
             /// the buffers swap.
-            inflight: std.ArrayListUnmanaged(u8) = .empty,
+            inflight: std.ArrayList(u8) = .empty,
             write_req: uv.uv_write_t = std.mem.zeroes(uv.uv_write_t),
             write_buf: uv.uv_buf_t = uv.uv_buf_t.init(""),
         };
@@ -177,7 +177,7 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
             if (self.out.items.len == 0 or self.backend.inflight.items.len > 0 or self.done) return;
             const pipe = self.backend.pipe orelse return;
             // Swap: out → inflight (stable for uv_write), out becomes empty.
-            std.mem.swap(std.ArrayListUnmanaged(u8), &self.backend.inflight, &self.out);
+            std.mem.swap(std.ArrayList(u8), &self.backend.inflight, &self.out);
             self.backend.write_buf = uv.uv_buf_t.init(self.backend.inflight.items);
             self.backend.write_req.write(pipe.asStream(), &self.backend.write_buf, self, WindowsHandlers.onWrite).unwrap() catch {
                 self.backend.inflight.clearRetainingCapacity();

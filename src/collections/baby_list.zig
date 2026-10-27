@@ -193,7 +193,7 @@ pub fn BabyList(comptime Type: type) type {
             return result;
         }
 
-        pub fn moveToList(this: *Self) std.ArrayListUnmanaged(Type) {
+        pub fn moveToList(this: *Self) std.ArrayList(Type) {
             this.assertOwned();
             defer this.* = .empty;
             return this.list();
@@ -574,10 +574,11 @@ pub fn BabyList(comptime Type: type) type {
             );
         }
 
-        fn list(this: Self) std.ArrayListUnmanaged(Type) {
+        fn list(this: Self) std.ArrayList(Type) {
             return .{
                 .items = this.slice(),
                 .capacity = this.cap,
+                .pointer_stability = .{},
             };
         }
 

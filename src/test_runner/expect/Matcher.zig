@@ -198,7 +198,7 @@ pub fn closeTo(received_value: f64, expected_value: f64, precision: f64) CloseRe
     const expected_difference = math.pow(f64, 10, -precision) / 2;
     const actual_difference = @abs(received_value - expected_value);
     return .{
-        .matched = math.isInf(received_value) and received_value == expected_value or
+        .matched = (math.isInf(received_value) and received_value == expected_value) or
             actual_difference < expected_difference,
         .expected_difference = expected_difference,
         .actual_difference = actual_difference,

@@ -32,7 +32,7 @@ const ColorFallbackKind = css.ColorFallbackKind;
 
 /// PERF: nullable optimization
 pub const TokenList = struct {
-    v: std.ArrayListUnmanaged(TokenOrValue) = .empty,
+    v: std.ArrayList(TokenOrValue) = .empty,
 
     const This = @This();
 
@@ -1550,5 +1550,5 @@ pub fn tryParseColorToken(f: []const u8, state: *const css.ParserState, input: *
 const bun = @import("bun");
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

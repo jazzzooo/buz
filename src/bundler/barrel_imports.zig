@@ -364,7 +364,7 @@ pub fn scheduleBarrelDeferredImports(this: *BundleV2, result: *ParseTask.Result.
     var queue_stack_buffer: [8192]u8 = undefined;
     var queue_stack: std.heap.BufferFirstAllocator = .init(&queue_stack_buffer, this.allocator());
     const queue_alloc = queue_stack.allocator();
-    var queue = std.ArrayListUnmanaged(BarrelWorkItem).empty;
+    var queue = std.ArrayList(BarrelWorkItem).empty;
     defer queue.deinit(queue_alloc);
 
     ni_iter = result.ast.named_imports.iterator();

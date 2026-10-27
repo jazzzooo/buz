@@ -115,7 +115,7 @@ pub const arguments_str: string = "arguments";
 // While the names for Expr, Binding, and Stmt are directly copied from esbuild, those were likely inspired by Go's parser.
 // which is another example of a very fast parser.
 
-pub const ScopeOrderList = std.ArrayListUnmanaged(?ScopeOrder);
+pub const ScopeOrderList = std.ArrayList(?ScopeOrder);
 
 // kept as a static reference
 pub const exports_string_name: string = "exports";
@@ -270,7 +270,7 @@ pub const JSXTag = struct {
 
         // Parse a member expression chain
         // <Button.Red>
-        var member_name = std.ArrayListUnmanaged(u8).empty;
+        var member_name = std.ArrayList(u8).empty;
         defer member_name.deinit(p.allocator);
         if (p.lexer.token == .t_dot) try member_name.appendSlice(p.allocator, name);
         while (p.lexer.token == .t_dot) {
@@ -1160,7 +1160,7 @@ pub const T = js_lexer.T;
 
 pub const std = @import("std");
 pub const AutoHashMap = std.AutoHashMap;
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const ListManaged = std.array_list.Managed;
 const Allocator = std.mem.Allocator;
 

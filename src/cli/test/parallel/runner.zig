@@ -159,7 +159,7 @@ pub fn runAsCoordinator(
 /// `--pass-with-no-tests`, `--parallel` itself — are intentionally not
 /// forwarded.
 fn buildWorkerArgv(arena: std.mem.Allocator, ctx: Command.Context) ![:null]?[*:0]const u8 {
-    var argv: std.ArrayListUnmanaged(?[*:0]const u8) = .empty;
+    var argv: std.ArrayList(?[*:0]const u8) = .empty;
     const opts = &ctx.test_options;
 
     const printZ = struct {
@@ -275,7 +275,7 @@ const WorkerCommands = struct {
     /// Coordinator dispatches one `.run` and waits for `.file_done` before
     /// the next, so a single slot is sufficient. Owned path storage.
     pending_idx: ?u32 = null,
-    pending_path: std.ArrayListUnmanaged(u8) = .empty,
+    pending_path: std.ArrayList(u8) = .empty,
     /// EOF, error, `.shutdown`, or a corrupt frame.
     done: bool = false,
 

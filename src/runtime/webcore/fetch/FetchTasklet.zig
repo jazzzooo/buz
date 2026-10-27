@@ -49,7 +49,6 @@ pub const FetchTasklet = struct {
             payload.deinit();
             bun.destroy(payload);
         }
-
     };
 
     pub const FetchCompletions = bun.bindgen.MaterializedCompletionSet(.{
@@ -507,13 +506,7 @@ pub const FetchTasklet = struct {
                 body.* = body_value;
                 log("onBodyReceived body_value length={}", .{body_value.InternalBlob.bytes.length()});
 
-                this.scheduled_response_buffer = .{
-                    .allocator = bun.default_allocator,
-                    .list = .{
-                        .items = &.{},
-                        .capacity = 0,
-                    },
-                };
+                this.scheduled_response_buffer = .initEmpty(bun.default_allocator);
 
                 if (old == .Locked) {
                     log("onBodyReceived old.resolve", .{});
@@ -956,13 +949,7 @@ pub const FetchTasklet = struct {
         var scheduled_response_buffer = this.scheduled_response_buffer.list;
         // This means we have received part of the body but not the whole thing
         if (scheduled_response_buffer.items.len > 0) {
-            this.scheduled_response_buffer = .{
-                .allocator = bun.default_allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
-            };
+            this.scheduled_response_buffer = .initEmpty(bun.default_allocator);
 
             return .{
                 .owned = .{
@@ -1027,13 +1014,7 @@ pub const FetchTasklet = struct {
                 .bytes = .fromManaged(scheduled_response_buffer.toManaged(bun.default_allocator)),
             },
         };
-        this.scheduled_response_buffer = .{
-            .allocator = bun.default_allocator,
-            .list = .{
-                .items = &.{},
-                .capacity = 0,
-            },
-        };
+        this.scheduled_response_buffer = .initEmpty(bun.default_allocator);
 
         return response;
     }
@@ -1144,13 +1125,7 @@ pub const FetchTasklet = struct {
         const fetch_tasklet = try bun.default_allocator.create(FetchTasklet);
         fetch_tasklet.* = .{
             .http_task = native,
-            .scheduled_response_buffer = .{
-                .allocator = bun.default_allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
-            },
+            .scheduled_response_buffer = .initEmpty(bun.default_allocator),
             .javascript_vm = jsc_vm,
             .request_body = fetch_options.body.take(),
             .global_this = globalThis,

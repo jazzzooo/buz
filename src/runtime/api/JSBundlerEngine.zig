@@ -589,12 +589,12 @@ pub const JSBundler = struct {
             }
 
             if (generated.loader) |*loaders| {
-                var loader_names: std.ArrayListUnmanaged(string) = .empty;
+                var loader_names: std.ArrayList(string) = .empty;
                 errdefer {
                     for (loader_names.items) |name| bun.default_allocator.free(name);
                     loader_names.deinit(allocator);
                 }
-                var loader_values: std.ArrayListUnmanaged(api.Loader) = .empty;
+                var loader_values: std.ArrayList(api.Loader) = .empty;
                 errdefer loader_values.deinit(allocator);
 
                 try loader_names.ensureTotalCapacityPrecise(allocator, loaders.len());

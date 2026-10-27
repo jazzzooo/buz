@@ -8,7 +8,7 @@ failed: bool = false,
 // This must be cloned to handle when the AST store resets
 e_string: ?*JSAst.E.String = null,
 
-pub const Array = std.ArrayListUnmanaged(UpdateRequest);
+pub const Array = std.ArrayList(UpdateRequest);
 
 pub inline fn matches(this: PackageManager.UpdateRequest, dependency: Dependency, string_buf: []const u8) bool {
     return this.name_hash == if (this.name.len == 0)

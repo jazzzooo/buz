@@ -394,6 +394,5 @@ const AnyResponse = bun.uws.AnyResponse;
 const Request = uws.Request;
 
 const std = @import("std");
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

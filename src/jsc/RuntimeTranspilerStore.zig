@@ -461,7 +461,7 @@ pub const RuntimeTranspilerStore = struct {
                 errdefer if (module_info) |info| info.deinit();
 
                 try vm.source_mappings.putMappings(&parse_result.source, .{
-                    .list = .{ .items = @constCast(entry.sourcemap), .capacity = entry.sourcemap.len },
+                    .list = .fromOwnedSlice(@constCast(entry.sourcemap)),
                     .allocator = bun.default_allocator,
                 });
 

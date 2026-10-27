@@ -1401,5 +1401,5 @@ const TypeScript = js_parser.TypeScript;
 const fs = js_parser.fs;
 
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const ListManaged = std.array_list.Managed;

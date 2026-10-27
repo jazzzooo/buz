@@ -80,7 +80,7 @@ pub const FFI = struct {
         errdefer reference.deinit();
 
         const Symbol = struct { name: bun.bindgen.DOMString, index: usize };
-        var symbols: std.ArrayListUnmanaged(Symbol) = .empty;
+        var symbols: std.ArrayList(Symbol) = .empty;
         defer {
             for (symbols.items) |*symbol| {
                 symbol.name.deinit();
@@ -98,7 +98,7 @@ pub const FFI = struct {
         const operation = context.engineIn("FFI", "ffiLibraryInstallSymbols");
         const OperationArgs = @TypeOf(operation).Args;
         const ContextSymbol = @typeInfo(@FieldType(OperationArgs, "symbols")).pointer.child;
-        var context_symbols: std.ArrayListUnmanaged(ContextSymbol) = .empty;
+        var context_symbols: std.ArrayList(ContextSymbol) = .empty;
         defer context_symbols.deinit(bun.default_allocator);
         try context_symbols.ensureTotalCapacity(bun.default_allocator, symbols.items.len);
         for (symbols.items) |*symbol| {
@@ -161,15 +161,15 @@ pub const FFI = struct {
         library_dirs: StringArray = .{},
         include_dirs: StringArray = .{},
         symbols: SymbolsMap = .{},
-        define: std.ArrayListUnmanaged([2][:0]const u8) = .empty,
+        define: std.ArrayList([2][:0]const u8) = .empty,
         // Flags to replace the default flags
         flags: [:0]const u8 = "",
-        deferred_errors: std.ArrayListUnmanaged([]const u8) = .empty,
+        deferred_errors: std.ArrayList([]const u8) = .empty,
         diagnostic_oom: bool = false,
 
         const Source = union(enum) {
             file: [:0]const u8,
-            files: std.ArrayListUnmanaged([:0]const u8),
+            files: std.ArrayList([:0]const u8),
 
             pub fn fromBinding(context: anytype, input: anytype) bun.bindgen.CallError(@TypeOf(context))!Source {
                 switch (input) {
@@ -638,7 +638,7 @@ pub const FFI = struct {
                 bun.default_allocator.free(this.items);
         }
 
-        fn append(context: anytype, items: *std.ArrayListUnmanaged([:0]const u8), value: anytype) bun.bindgen.CallError(@TypeOf(context))!void {
+        fn append(context: anytype, items: *std.ArrayList([:0]const u8), value: anytype) bun.bindgen.CallError(@TypeOf(context))!void {
             if (value.length() == 0) return;
             const text = try value.toOwnedSliceZ(bun.default_allocator);
             errdefer bun.default_allocator.free(text);
@@ -647,7 +647,7 @@ pub const FFI = struct {
         }
 
         pub fn fromBinding(context: anytype, value: anytype) bun.bindgen.CallError(@TypeOf(context))!StringArray {
-            var items: std.ArrayListUnmanaged([:0]const u8) = .empty;
+            var items: std.ArrayList([:0]const u8) = .empty;
             errdefer {
                 for (items.items) |item| bun.default_allocator.free(item);
                 items.deinit(bun.default_allocator);
@@ -696,7 +696,7 @@ pub const FFI = struct {
             var values = try StringArray.fromBinding(context, flags_input);
             defer values.deinit();
             if (values.items.len > 0 or is_array) {
-                var flags: std.ArrayListUnmanaged(u8) = .empty;
+                var flags: std.ArrayList(u8) = .empty;
                 defer flags.deinit(allocator);
                 if (is_array) {
                     try flags.appendSlice(allocator, CompileC.default_tcc_options);
@@ -857,7 +857,7 @@ pub const FFI = struct {
         return arraylist.toOwnedSlice();
     }
 
-    pub fn printSymbols(context: anytype, definitions: anytype) bun.bindgen.CallError(@TypeOf(context))!std.ArrayListUnmanaged([]u8) {
+    pub fn printSymbols(context: anytype, definitions: anytype) bun.bindgen.CallError(@TypeOf(context))!std.ArrayList([]u8) {
         const allocator = bun.default_allocator;
 
         var symbols = try parseSymbols(context, allocator, definitions);
@@ -865,7 +865,7 @@ pub const FFI = struct {
             for (symbols.values()) |*function| function.deinit();
             symbols.deinit(allocator);
         }
-        var sources: std.ArrayListUnmanaged([]u8) = .empty;
+        var sources: std.ArrayList([]u8) = .empty;
         errdefer {
             for (sources.items) |source| allocator.free(source);
             sources.deinit(allocator);
@@ -1062,7 +1062,7 @@ pub const FFI = struct {
         native_data: ?FFIFunctionData = null,
 
         return_type: ABIType = .void_type,
-        arg_types: std.ArrayListUnmanaged(ABIType) = .empty,
+        arg_types: std.ArrayList(ABIType) = .empty,
         threadsafe: bool = false,
         allocator: Allocator,
 

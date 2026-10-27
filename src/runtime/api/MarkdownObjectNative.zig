@@ -201,7 +201,7 @@ pub const MarkdownParseSession = struct {
 const EventRenderer = struct {
     allocator: std.mem.Allocator = bun.default_allocator,
     source: []const u8,
-    events: std.ArrayListUnmanaged(ParseEvent) = .empty,
+    events: std.ArrayList(ParseEvent) = .empty,
     heading_tracker: md.helpers.HeadingIdTracker,
 
     fn init(source: []const u8, heading_ids: bool) EventRenderer {

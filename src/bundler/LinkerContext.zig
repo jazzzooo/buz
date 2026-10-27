@@ -1057,7 +1057,7 @@ pub const LinkerContext = struct {
     pub const StmtList = struct {
         const InsideWrapperPrefix = struct {
             allocator: std.mem.Allocator,
-            stmts: std.ArrayListUnmanaged(Stmt),
+            stmts: std.ArrayList(Stmt),
 
             sync_dependencies_end: usize,
 
@@ -1131,9 +1131,9 @@ pub const LinkerContext = struct {
 
         allocator: std.mem.Allocator,
         inside_wrapper_prefix: InsideWrapperPrefix,
-        outside_wrapper_prefix: std.ArrayListUnmanaged(Stmt),
-        inside_wrapper_suffix: std.ArrayListUnmanaged(Stmt),
-        all_stmts: std.ArrayListUnmanaged(Stmt),
+        outside_wrapper_prefix: std.ArrayList(Stmt),
+        inside_wrapper_suffix: std.ArrayList(Stmt),
+        all_stmts: std.ArrayList(Stmt),
 
         pub fn reset(this: *StmtList) void {
             this.inside_wrapper_prefix.reset();

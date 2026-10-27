@@ -8,7 +8,7 @@ pub const deref = RefCount.deref;
 fd: bun.FD,
 owns_fd: bool = true,
 reader: ReaderImpl,
-buf: std.ArrayListUnmanaged(u8) = .empty,
+buf: std.ArrayList(u8) = .empty,
 readers: Readers = .{ .inlined = .{} },
 next_reader_id: u64 = 0,
 read: usize = 0,

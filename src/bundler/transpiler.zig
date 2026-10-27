@@ -302,7 +302,7 @@ pub const Transpiler = struct {
                 // (or a parent) is unreadable, readDirInfo may return null;
                 // bail out of .env file loading in that case, but process
                 // env vars were already loaded above.
-                const dir_info = this.resolver.readDirInfo(this.fs.top_level_dir) catch return orelse return;
+                const dir_info = (this.resolver.readDirInfo(this.fs.top_level_dir) catch return) orelse return;
 
                 if (dir_info.tsconfig_json) |tsconfig| {
                     this.options.jsx = tsconfig.mergeJSX(this.options.jsx);
@@ -1025,7 +1025,7 @@ pub const Transpiler = struct {
                 };
                 try temp_log.appendTo(transpiler.log);
 
-                var symbols: std.ArrayListUnmanaged(js_ast.Symbol) = .empty;
+                var symbols: std.ArrayList(js_ast.Symbol) = .empty;
                 errdefer symbols.deinit(allocator);
 
                 const parts = brk: {
@@ -1040,14 +1040,14 @@ pub const Transpiler = struct {
                     if (expr.data == .e_object) {
                         const properties: []js_ast.G.Property = expr.data.e_object.properties.slice();
                         if (properties.len > 0) {
-                            var decls = try std.ArrayListUnmanaged(js_ast.G.Decl).initCapacity(
+                            var decls = try std.ArrayList(js_ast.G.Decl).initCapacity(
                                 allocator,
                                 properties.len,
                             );
                             defer decls.deinit(allocator);
 
                             try symbols.ensureTotalCapacityPrecise(allocator, properties.len);
-                            var export_clauses = try std.ArrayListUnmanaged(js_ast.ClauseItem).initCapacity(allocator, properties.len);
+                            var export_clauses = try std.ArrayList(js_ast.ClauseItem).initCapacity(allocator, properties.len);
                             defer export_clauses.deinit(allocator);
                             var duplicate_key_checker = bun.StringHashMap(Ref.Int).init(allocator);
                             defer duplicate_key_checker.deinit();
@@ -1395,13 +1395,13 @@ pub const Transpiler = struct {
                     client_entry_point.* = EntryPoints.ClientEntryPoint{};
                     try client_entry_point.generate(Transpiler, transpiler, path.text, transpiler.options.framework.?.client.path);
 
-                    const entry_point_output_file = transpiler.buildWithResolveResultEager(
+                    const entry_point_output_file = (transpiler.buildWithResolveResultEager(
                         item,
                         import_path_format,
                         Outstream,
                         outstream,
                         client_entry_point,
-                    ) catch continue orelse continue;
+                    ) catch continue) orelse continue;
                     transpiler.output_files.append(entry_point_output_file) catch unreachable;
 
                     js_ast.Expr.Data.Store.reset();
@@ -1411,26 +1411,26 @@ pub const Transpiler = struct {
                     // So we just immediately build it.
                     var item_not_entrypointed = item;
                     item_not_entrypointed.import_kind = .stmt;
-                    const original_output_file = transpiler.buildWithResolveResultEager(
+                    const original_output_file = (transpiler.buildWithResolveResultEager(
                         item_not_entrypointed,
                         import_path_format,
                         Outstream,
                         outstream,
                         null,
-                    ) catch continue orelse continue;
+                    ) catch continue) orelse continue;
                     transpiler.output_files.append(original_output_file) catch unreachable;
 
                     continue;
                 }
             }
 
-            const output_file = transpiler.buildWithResolveResultEager(
+            const output_file = (transpiler.buildWithResolveResultEager(
                 item,
                 import_path_format,
                 Outstream,
                 outstream,
                 null,
-            ) catch continue orelse continue;
+            ) catch continue) orelse continue;
             transpiler.output_files.append(output_file) catch unreachable;
         }
     }

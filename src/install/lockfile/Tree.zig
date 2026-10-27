@@ -14,7 +14,7 @@ dependencies: Lockfile.DependencyIDSlice = .{},
 pub const external_size = @sizeOf(Id) + @sizeOf(PackageID) + @sizeOf(Id) + @sizeOf(Lockfile.DependencyIDSlice);
 pub const External = [external_size]u8;
 pub const Slice = ExternalSlice(Tree);
-pub const List = std.ArrayListUnmanaged(Tree);
+pub const List = std.ArrayList(Tree);
 pub const Id = u32;
 
 pub fn folderName(this: *const Tree, deps: []const Dependency, buf: string) string {
@@ -235,8 +235,8 @@ pub const BuilderMethod = enum {
 pub fn Builder(comptime method: BuilderMethod) type {
     return struct {
         allocator: Allocator,
-        trees: std.ArrayListUnmanaged(Tree) = .empty,
-        dependency_lists: std.ArrayListUnmanaged(Lockfile.DependencyIDList) = .empty,
+        trees: std.ArrayList(Tree) = .empty,
+        dependency_lists: std.ArrayList(Lockfile.DependencyIDList) = .empty,
         resolutions: []PackageID,
         dependencies: []const Dependency,
         resolution_lists: []const Lockfile.DependencyIDSlice,
@@ -249,7 +249,7 @@ pub fn Builder(comptime method: BuilderMethod) type {
         // could be visited multiple times before it's resolved.
         pending_optional_peers: std.array_hash_map.Auto(PackageNameHash, std.array_hash_map.Auto(DependencyID, void)) = .empty,
         manager: if (method == .filter) *const PackageManager else void,
-        sort_buf: std.ArrayListUnmanaged(DependencyID) = .empty,
+        sort_buf: std.ArrayList(DependencyID) = .empty,
         workspace_filters: if (method == .filter) []const WorkspaceFilter else void = if (method == .filter) &.{},
         install_root_dependencies: if (method == .filter) bool else void,
         packages_to_install: if (method == .filter) ?[]const PackageID else void,
@@ -271,8 +271,8 @@ pub fn Builder(comptime method: BuilderMethod) type {
         }
 
         pub const FinishResult = struct {
-            trees: std.ArrayListUnmanaged(Tree),
-            dep_ids: std.ArrayListUnmanaged(DependencyID),
+            trees: std.ArrayList(Tree),
+            dep_ids: std.ArrayList(DependencyID),
         };
 
         fn append(this: *@This(), tree: Tree) OOM!void {

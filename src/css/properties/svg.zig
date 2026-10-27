@@ -72,4 +72,4 @@ pub const TextRendering = css.DefineEnumProperty(@compileError(css.todo_stuff.de
 pub const ImageRendering = css.DefineEnumProperty(@compileError(css.todo_stuff.depth));
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;

@@ -745,7 +745,7 @@ pub fn fastDigitCount(x: u64) u64 {
         42949672960,
         42949672960,
     };
-    return x + table[std.math.log2(x)] >> 32;
+    return (x + table[std.math.log2(x)]) >> 32;
 }
 
 pub const SizeFormatter = struct {

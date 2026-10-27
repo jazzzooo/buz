@@ -107,9 +107,9 @@ pub fn DMP(comptime Unit: type) type {
             return dmp.diffInternal(allocator, before, after, check_lines, deadline);
         }
 
-        const DiffList = std.ArrayListUnmanaged(Diff);
+        const DiffList = std.ArrayList(Diff);
 
-        /// Deinit an `std.ArrayListUnmanaged(Diff)` and the allocated slices of
+        /// Deinit an `std.ArrayList(Diff)` and the allocated slices of
         /// text in each `Diff`.
         pub fn deinitDiffList(allocator: Allocator, diffs: *DiffList) void {
             defer diffs.deinit(allocator);
@@ -450,7 +450,7 @@ pub fn DMP(comptime Unit: type) type {
             const seed = long_text[i .. i + long_text.len / 4];
             var j: isize = -1;
 
-            var best_common: std.ArrayListUnmanaged(Unit) = .empty;
+            var best_common: std.ArrayList(Unit) = .empty;
             defer best_common.deinit(allocator);
             var best_long_text_a: []const Unit = &.{};
             var best_long_text_b: []const Unit = &.{};
@@ -519,10 +519,10 @@ pub fn DMP(comptime Unit: type) type {
             const v_offset = max_d;
             const v_length = 2 * max_d;
 
-            var v1: std.ArrayListUnmanaged(isize) = try .initCapacity(allocator, @intCast(v_length));
+            var v1: std.ArrayList(isize) = try .initCapacity(allocator, @intCast(v_length));
             defer v1.deinit(allocator);
             v1.items.len = @intCast(v_length);
-            var v2: std.ArrayListUnmanaged(isize) = try .initCapacity(allocator, @intCast(v_length));
+            var v2: std.ArrayList(isize) = try .initCapacity(allocator, @intCast(v_length));
             defer v2.deinit(allocator);
             v2.items.len = @intCast(v_length);
 
@@ -724,8 +724,8 @@ pub fn DMP(comptime Unit: type) type {
             var pointer: usize = 0;
             var count_delete: usize = 0;
             var count_insert: usize = 0;
-            var text_delete: std.ArrayListUnmanaged(Unit) = .empty;
-            var text_insert: std.ArrayListUnmanaged(Unit) = .empty;
+            var text_delete: std.ArrayList(Unit) = .empty;
+            var text_insert: std.ArrayList(Unit) = .empty;
             defer {
                 text_delete.deinit(allocator);
                 text_insert.deinit(allocator);
@@ -783,7 +783,7 @@ pub fn DMP(comptime Unit: type) type {
         const LinesToCharsResult = struct {
             chars_1: []const usize,
             chars_2: []const usize,
-            line_array: std.ArrayListUnmanaged([]const Unit),
+            line_array: std.ArrayList([]const Unit),
 
             pub fn deinit(self: *LinesToCharsResult, allocator: Allocator) void {
                 allocator.free(self.chars_1);
@@ -804,7 +804,7 @@ pub fn DMP(comptime Unit: type) type {
             text1: []const Unit,
             text2: []const Unit,
         ) DiffError!LinesToCharsResult {
-            var line_array: std.ArrayListUnmanaged([]const Unit) = .empty;
+            var line_array: std.ArrayList([]const Unit) = .empty;
             errdefer line_array.deinit(allocator);
             var line_hash: StringHashMapUnmanaged(usize) = .empty;
             defer line_hash.deinit(allocator);
@@ -832,13 +832,13 @@ pub fn DMP(comptime Unit: type) type {
         fn diffLinesToCharsMunge(
             allocator: std.mem.Allocator,
             text: []const Unit,
-            line_array: *std.ArrayListUnmanaged([]const Unit),
+            line_array: *std.ArrayList([]const Unit),
             line_hash: *StringHashMapUnmanaged(usize),
         ) DiffError![]const usize {
             if (Unit != u8) @panic("Unit must be u8");
             var line_start: isize = 0;
             var line_end: isize = -1;
-            var chars: std.ArrayListUnmanaged(usize) = .empty;
+            var chars: std.ArrayList(usize) = .empty;
             defer chars.deinit(allocator);
             // Walk the text, pulling out a Substring for each line.
             // TODO this can be handled with a Reader, avoiding all the manual splitting
@@ -879,7 +879,7 @@ pub fn DMP(comptime Unit: type) type {
             var diffs: DiffList = .empty;
             errdefer deinitDiffList(allocator, &diffs);
             try diffs.ensureTotalCapacity(allocator, char_diffs.items.len);
-            var text: std.ArrayListUnmanaged(Unit) = .empty;
+            var text: std.ArrayList(Unit) = .empty;
             defer text.deinit(allocator);
 
             for (char_diffs.items) |*d| {
@@ -905,10 +905,10 @@ pub fn DMP(comptime Unit: type) type {
             var count_delete: usize = 0;
             var count_insert: usize = 0;
 
-            var text_delete: std.ArrayListUnmanaged(Unit) = .empty;
+            var text_delete: std.ArrayList(Unit) = .empty;
             defer text_delete.deinit(allocator);
 
-            var text_insert: std.ArrayListUnmanaged(Unit) = .empty;
+            var text_insert: std.ArrayList(Unit) = .empty;
             defer text_insert.deinit(allocator);
 
             var common_length: usize = undefined;
@@ -1078,7 +1078,7 @@ pub fn DMP(comptime Unit: type) type {
         pub fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!void {
             var changes = false;
             // Stack of indices where equalities are found.
-            var equalities: std.ArrayListUnmanaged(isize) = .empty;
+            var equalities: std.ArrayList(isize) = .empty;
             defer equalities.deinit(allocator);
             // Always equal to equalities[equalitiesLength-1][1]
             var last_equality: ?[]const Unit = null;
@@ -1220,15 +1220,15 @@ pub fn DMP(comptime Unit: type) type {
                     diffs.items[pointer + 1].operation == .equal)
                 {
                     // This is a single edit surrounded by equalities.
-                    var equality_1: std.ArrayListUnmanaged(Unit) = .empty;
+                    var equality_1: std.ArrayList(Unit) = .empty;
                     defer equality_1.deinit(allocator);
                     try equality_1.appendSlice(allocator, diffs.items[pointer - 1].text);
 
-                    var edit: std.ArrayListUnmanaged(Unit) = .empty;
+                    var edit: std.ArrayList(Unit) = .empty;
                     defer edit.deinit(allocator);
                     try edit.appendSlice(allocator, diffs.items[pointer].text);
 
-                    var equality_2: std.ArrayListUnmanaged(Unit) = .empty;
+                    var equality_2: std.ArrayList(Unit) = .empty;
                     defer equality_2.deinit(allocator);
                     try equality_2.appendSlice(allocator, diffs.items[pointer + 1].text);
 
@@ -1254,15 +1254,15 @@ pub fn DMP(comptime Unit: type) type {
 
                     // Second, step character by character right,
                     // looking for the best fit.
-                    var best_equality_1: std.ArrayListUnmanaged(Unit) = .empty;
+                    var best_equality_1: std.ArrayList(Unit) = .empty;
                     defer best_equality_1.deinit(allocator);
                     try best_equality_1.appendSlice(allocator, equality_1.items);
 
-                    var best_edit: std.ArrayListUnmanaged(Unit) = .empty;
+                    var best_edit: std.ArrayList(Unit) = .empty;
                     defer best_edit.deinit(allocator);
                     try best_edit.appendSlice(allocator, edit.items);
 
-                    var best_equality_2: std.ArrayListUnmanaged(Unit) = .empty;
+                    var best_equality_2: std.ArrayList(Unit) = .empty;
                     defer best_equality_2.deinit(allocator);
                     try best_equality_2.appendSlice(allocator, equality_2.items);
 
@@ -1389,7 +1389,7 @@ pub fn DMP(comptime Unit: type) type {
         ) DiffError!void {
             var changes = false;
             // Stack of indices where equalities are found.
-            var equalities: std.ArrayListUnmanaged(usize) = .empty;
+            var equalities: std.ArrayList(usize) = .empty;
             defer equalities.deinit(allocator);
             // Always equal to equalities[equalitiesLength-1][1]
             var last_equality: []const Unit = "";
@@ -1709,7 +1709,7 @@ pub fn DMP(comptime Unit: type) type {
         test diffLinesToChars {
             const allocator = testing.allocator;
             // Convert lines down to characters.
-            var tmp_array_list: std.ArrayListUnmanaged([]const Unit) = .empty;
+            var tmp_array_list: std.ArrayList([]const Unit) = .empty;
             defer tmp_array_list.deinit(allocator);
             try tmp_array_list.append(allocator, "");
             try tmp_array_list.append(allocator, "alpha\n");
@@ -1756,9 +1756,9 @@ pub fn DMP(comptime Unit: type) type {
             const n: Unit = 255;
             tmp_array_list.clearRetainingCapacity();
 
-            var line_list: std.ArrayListUnmanaged(Unit) = .empty;
+            var line_list: std.ArrayList(Unit) = .empty;
             defer line_list.deinit(allocator);
-            var char_list: std.ArrayListUnmanaged(Unit) = .empty;
+            var char_list: std.ArrayList(Unit) = .empty;
             defer char_list.deinit(allocator);
 
             var i: Unit = 1;
@@ -2157,7 +2157,7 @@ pub fn DMP(comptime Unit: type) type {
         }
 
         fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const Unit {
-            var text: [2]std.ArrayListUnmanaged(Unit) = .{ .empty, .empty };
+            var text: [2]std.ArrayList(Unit) = .{ .empty, .empty };
             errdefer {
                 text[0].deinit(allocator);
                 text[1].deinit(allocator);

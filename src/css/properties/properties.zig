@@ -1883,4 +1883,4 @@ const Error = css.Error;
 const SmallList = css.SmallList;
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;

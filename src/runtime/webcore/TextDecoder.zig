@@ -71,10 +71,10 @@ fn decodeUTF16(
     comptime big_endian: bool,
     comptime flush: bool,
 ) error{OutOfMemory}!union(enum) {
-    decoded: std.ArrayListUnmanaged(u16),
+    decoded: std.ArrayList(u16),
     invalid: []const u8,
 } {
-    var output: std.ArrayListUnmanaged(u16) = .empty;
+    var output: std.ArrayList(u16) = .empty;
     errdefer output.deinit(bun.default_allocator);
     try output.ensureTotalCapacity(bun.default_allocator, @divFloor(bytes.len, 2));
 
@@ -207,7 +207,7 @@ pub fn decode(
     };
 }
 
-fn stripInitialBOM(this: *TextDecoder, output: *std.ArrayListUnmanaged(u16)) void {
+fn stripInitialBOM(this: *TextDecoder, output: *std.ArrayList(u16)) void {
     if (this.ignore_bom or this.bom_seen or output.items.len == 0) return;
     this.bom_seen = true;
     if (output.items[0] == 0xfeff) {

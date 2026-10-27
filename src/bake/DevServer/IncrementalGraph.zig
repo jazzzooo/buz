@@ -264,16 +264,16 @@ pub fn WithOwner(comptime DevServer: type, comptime side: BakeCore.Side) type {
         /// Start of a file's 'dependencies' linked list. These are the other
         /// files that have imports to this file. Walk this list to discover
         /// what files are to be reloaded when something changes.
-        first_dep: ArrayListUnmanaged(EdgeIndex.Optional),
+        first_dep: std.ArrayList(EdgeIndex.Optional),
         /// Start of a file's 'imports' linked lists. These are the files that
         /// this file imports.
-        first_import: ArrayListUnmanaged(EdgeIndex.Optional),
+        first_import: std.ArrayList(EdgeIndex.Optional),
         /// `File` objects act as nodes in a directional many-to-many graph,
         /// where edges represent the imports between modules. An 'dependency'
         /// is a file that must to be notified when it `imported` changes. This
         /// is implemented using an array of `Edge` objects that act as linked
         /// list nodes; each file stores the first imports and dependency.
-        edges: ArrayListUnmanaged(Edge),
+        edges: std.ArrayList(Edge),
         /// Free slots use `next_import` as an intrusive link and have no targets.
         free_edge_head: EdgeIndex.Optional,
         free_edge_count: usize,
@@ -281,7 +281,7 @@ pub fn WithOwner(comptime DevServer: type, comptime side: BakeCore.Side) type {
         /// Byte length of every file queued for concatenation
         current_chunk_len: usize = 0,
         /// All part contents
-        current_chunk_parts: ArrayListUnmanaged(switch (side) {
+        current_chunk_parts: std.ArrayList(switch (side) {
             .client => FileIndex,
             // This memory is allocated by the dev server allocator
             .server => bun.ptr.OwnedIn(
@@ -292,13 +292,13 @@ pub fn WithOwner(comptime DevServer: type, comptime side: BakeCore.Side) type {
 
         /// Asset IDs, which can be printed as hex in '/_bun/asset/{hash}.css'
         current_css_files: switch (side) {
-            .client => ArrayListUnmanaged(CssAssetId),
+            .client => std.ArrayList(CssAssetId),
             .server => void,
         },
 
         /// Source maps for server chunks and the file indices to track which
         /// file each chunk comes from
-        current_chunk_source_maps: if (side == .server) ArrayListUnmanaged(CurrentChunkSourceMapData) else void = if (side == .server) .empty,
+        current_chunk_source_maps: if (side == .server) std.ArrayList(CurrentChunkSourceMapData) else void = if (side == .server) .empty,
 
         pub const empty: Self = .{
             .bundled_files = .empty,
@@ -903,7 +903,7 @@ pub fn WithOwner(comptime DevServer: type, comptime side: BakeCore.Side) type {
             var sfb: std.heap.BufferFirstAllocator = .init(@ptrCast(&sfb_buffer), temp_alloc);
             const queue_alloc = sfb.allocator();
 
-            var queue: ArrayListUnmanaged(bun.ast.Index) = .empty;
+            var queue: std.ArrayList(bun.ast.Index) = .empty;
             defer queue.deinit(queue_alloc);
             var visited: AutoArrayHashMap(bun.ast.Index, void) = .empty;
             defer visited.deinit(temp_alloc);
@@ -1802,6 +1802,5 @@ const Owned = bun.ptr.Owned;
 const Shared = bun.ptr.Shared;
 
 const std = @import("std");
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

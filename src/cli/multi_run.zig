@@ -679,10 +679,10 @@ pub fn run(ctx: Command.Context) !noreturn {
         const PATH = try RunCommand.configurePathForRunWithPackageJsonDir(ctx, "", &this_transpiler, null, cwd, ctx.debug.run_in_bun);
 
         // Load package.json scripts
-        const root_dir_info = this_transpiler.resolver.readDirInfo(cwd) catch {
+        const root_dir_info = (this_transpiler.resolver.readDirInfo(cwd) catch {
             Output.prettyErrorln("<r><red>error<r>: Failed to read directory", .{});
             Global.exit(1);
-        } orelse {
+        }) orelse {
             Output.prettyErrorln("<r><red>error<r>: Failed to read directory", .{});
             Global.exit(1);
         };

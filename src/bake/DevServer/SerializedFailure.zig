@@ -114,11 +114,10 @@ pub fn WithTypes(
             // Avoid small re-allocations without requesting so much from the heap
             var sfb_buffer: [65536]u8 = undefined;
             var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, allocator);
-            var payload = std.array_list.Managed(u8).initCapacity(sfb.allocator(), 65536) catch
+            var payload = std.Io.Writer.Allocating.initCapacity(sfb.allocator(), sfb_buffer.len) catch
                 unreachable; // enough space
             defer payload.deinit();
-            var payload_writer = bun.ManagedWriter.init(&payload);
-            const w = payload_writer.writer();
+            const w = &payload.writer;
 
             w.writeInt(u32, @bitCast(owner.encode()), .little) catch return error.OutOfMemory;
 
@@ -129,19 +128,12 @@ pub fn WithTypes(
             for (messages) |*msg| {
                 try writeLogMsg(msg, w);
             }
-            payload_writer.finish();
-
-            if (payload.items.ptr == sfb_buffer[0..].ptr) {
-                return .{ .data = try allocator.dupe(u8, payload.items) };
+            if (w.buffer.ptr == sfb_buffer[0..].ptr) {
+                return .{ .data = try allocator.dupe(u8, w.buffered()) };
             }
-            var owned: std.array_list.Managed(u8) = .{
-                .items = payload.items,
-                .capacity = payload.capacity,
-                .allocator = allocator,
-            };
-            payload = .init(sfb.allocator());
-            defer owned.deinit();
-            return .{ .data = try owned.toOwnedSlice() };
+            var owned = payload.toArrayList();
+            defer owned.deinit(allocator);
+            return .{ .data = try owned.toOwnedSlice(allocator) };
         }
 
         // All "write" functions get a corresponding "read" function in ./client/error.ts

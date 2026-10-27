@@ -73,7 +73,7 @@ pub const ManifestBindings = struct {
             return failParseManifest(context, "manifest is invalid", .{});
         };
 
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(bun.default_allocator);
         var writer_state = bun.UnmanagedWriter.init(&buf, bun.default_allocator);
         var writer_finished = false;

@@ -1,6 +1,6 @@
 const ErrorResponse = @This();
 
-messages: std.ArrayListUnmanaged(FieldMessage) = .empty,
+messages: std.ArrayList(FieldMessage) = .empty,
 
 pub fn format(formatter: ErrorResponse, writer: *std.Io.Writer) !void {
     for (formatter.messages.items) |message| {

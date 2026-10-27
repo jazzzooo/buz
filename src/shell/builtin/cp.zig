@@ -48,7 +48,7 @@ pub fn format(this: *const Cp, writer: *std.Io.Writer) !void {
 /// not known until its corresponding ShellCpTask is executed by the
 /// threadpool.
 const EbusyState = struct {
-    tasks: std.ArrayListUnmanaged(*ShellCpTask) = .empty,
+    tasks: std.ArrayList(*ShellCpTask) = .empty,
     absolute_targets: bun.StringArrayHashMap(void) = .empty,
     absolute_srcs: bun.StringArrayHashMap(void) = .empty,
 
@@ -212,10 +212,10 @@ pub fn onShellCpTaskDone(this: *Cp, task: *ShellCpTask) void {
 
     if (comptime bun.Environment.isWindows) {
         if (task.err) |*err| {
-            if (err.* == .sys and
+            if ((err.* == .sys and
                 err.sys.getErrno() == .BUSY and
                 (task.tgt_absolute != null and
-                    err.sys.path.eqlUTF8(task.tgt_absolute.?)) or
+                    err.sys.path.eqlUTF8(task.tgt_absolute.?))) or
                 (task.src_absolute != null and
                     err.sys.path.eqlUTF8(task.src_absolute.?)))
             {

@@ -380,7 +380,7 @@ pub const H2FrameParser = struct {
     remainingLength: i32 = 0,
     // buffer if more data is needed for the current frame
     readBuffer: MutableString,
-    header_block: std.ArrayListUnmanaged(u8) = .empty,
+    header_block: std.ArrayList(u8) = .empty,
     pending_headers: ?struct { stream_id: u32, flags: u8 } = null,
 
     // local Window limits the download of data
@@ -395,7 +395,7 @@ pub const H2FrameParser = struct {
     maxHeaderListPairs: u32 = 128,
     maxRejectedStreams: u32 = 100,
     maxOutstandingSettings: u32 = 10,
-    pendingSettings: std.ArrayListUnmanaged(FullSettingsPayload) = .empty,
+    pendingSettings: std.ArrayList(FullSettingsPayload) = .empty,
     acknowledgedLocalSettings: FullSettingsPayload = .{},
     rejectedStreams: u32 = 0,
     maxSessionMemory: u32 = 10, //this limit is in MB
@@ -426,7 +426,7 @@ pub const H2FrameParser = struct {
 
     fn beginHeaderBlock(
         this: *H2FrameParser,
-        encoded_headers: *std.ArrayListUnmanaged(u8),
+        encoded_headers: *std.ArrayList(u8),
         alloc: std.mem.Allocator,
     ) !Hpack.EncoderBlock {
         const hpack = if (this.hpack) |*value| value else return error.UnableToEncode;
@@ -546,7 +546,7 @@ pub const H2FrameParser = struct {
             }
         };
         const PendingQueue = struct {
-            data: std.ArrayListUnmanaged(PendingFrame) = .empty,
+            data: std.ArrayList(PendingFrame) = .empty,
             front: usize = 0,
             len: usize = 0,
 
@@ -3213,7 +3213,7 @@ pub const H2FrameParser = struct {
         var buf_fallback: std.heap.BufferFirstAllocator = .init(&shared_request_buffer, bun.default_allocator);
         const alloc = buf_fallback.allocator();
         // Use ArrayList with initial capacity of shared buffer size, doubling when needed
-        var encoded_headers = std.ArrayListUnmanaged(u8).empty;
+        var encoded_headers = std.ArrayList(u8).empty;
         // IMPORTANT: defer cleanup immediately after init to prevent memory leaks on early returns
         defer encoded_headers.deinit(alloc);
         // Pre-allocate to the shared buffer size.
@@ -3479,7 +3479,7 @@ pub const H2FrameParser = struct {
         var buf_fallback: std.heap.BufferFirstAllocator = .init(&shared_request_buffer, bun.default_allocator);
         const alloc = buf_fallback.allocator();
         // Use ArrayList with initial capacity of shared buffer size, doubling when needed
-        var encoded_headers = std.ArrayListUnmanaged(u8).empty;
+        var encoded_headers = std.ArrayList(u8).empty;
         // IMPORTANT: defer cleanup immediately after init to prevent memory leaks on early returns
         defer encoded_headers.deinit(alloc);
         // Pre-allocate to the shared buffer size.
@@ -3842,13 +3842,7 @@ pub const H2FrameParser = struct {
                     .handlers = handlers,
                     .globalThis = globalObject,
                     .allocator = bun.default_allocator,
-                    .readBuffer = .{
-                        .allocator = bun.default_allocator,
-                        .list = .{
-                            .items = &.{},
-                            .capacity = 0,
-                        },
-                    },
+                    .readBuffer = .initEmpty(bun.default_allocator),
                     .streams = bun.U32HashMap(*Stream).init(bun.default_allocator),
                 };
                 break :brk self;
@@ -3858,13 +3852,7 @@ pub const H2FrameParser = struct {
                     .handlers = handlers,
                     .globalThis = globalObject,
                     .allocator = bun.default_allocator,
-                    .readBuffer = .{
-                        .allocator = bun.default_allocator,
-                        .list = .{
-                            .items = &.{},
-                            .capacity = 0,
-                        },
-                    },
+                    .readBuffer = .initEmpty(bun.default_allocator),
                     .streams = bun.U32HashMap(*Stream).init(bun.default_allocator),
                 });
             }

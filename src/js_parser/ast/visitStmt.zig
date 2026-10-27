@@ -1572,5 +1572,5 @@ const options = js_parser.options;
 const statementCaresAboutScope = js_parser.statementCaresAboutScope;
 
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const ListManaged = std.array_list.Managed;

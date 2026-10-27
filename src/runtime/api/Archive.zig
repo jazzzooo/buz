@@ -309,7 +309,7 @@ pub fn extract(
 
 fn ownPatterns(patterns: anytype) bun.OOM!?[]const []const u8 {
     const allocator = bun.default_allocator;
-    var result: std.ArrayListUnmanaged([]const u8) = .empty;
+    var result: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (result.items) |pattern| allocator.free(pattern);
         result.deinit(allocator);
@@ -335,7 +335,7 @@ fn ownPatterns(patterns: anytype) bun.OOM!?[]const []const u8 {
     return try result.toOwnedSlice(allocator);
 }
 
-fn appendPattern(result: *std.ArrayListUnmanaged([]const u8), pattern: anytype) bun.OOM!void {
+fn appendPattern(result: *std.ArrayList([]const u8), pattern: anytype) bun.OOM!void {
     const allocator = bun.default_allocator;
     const utf8 = try pattern.toUTF8(allocator);
     defer utf8.deinit();

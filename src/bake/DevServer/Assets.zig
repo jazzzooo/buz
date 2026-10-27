@@ -10,7 +10,7 @@ pub fn WithTypes(comptime DevServer: type, comptime StaticRoute: type) type {
         /// contained StaticRoute instances when they are stored.
         files: AutoArrayHashMap(u64, *StaticRoute),
         /// Indexed by the same index of `files`. The value is never `0`.
-        refs: ArrayListUnmanaged(u32),
+        refs: std.ArrayList(u32),
 
         const EntryIndex = bun.GenericIndex(u30, Assets);
 
@@ -180,6 +180,5 @@ const MimeType = bun.http.MimeType;
 const AnyBlob = bun.webcore.Blob.Any;
 
 const std = @import("std");
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

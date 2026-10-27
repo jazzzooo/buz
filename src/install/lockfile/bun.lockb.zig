@@ -142,7 +142,7 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
             []PackageNameHash,
             this.overrides.map.keys(),
         );
-        var external_overrides = try std.ArrayListUnmanaged(Dependency.External).initCapacity(z_allocator, this.overrides.map.count());
+        var external_overrides = try std.ArrayList(Dependency.External).initCapacity(z_allocator, this.overrides.map.count());
         defer external_overrides.deinit(z_allocator);
         external_overrides.items.len = this.overrides.map.count();
         for (external_overrides.items, this.overrides.map.values()) |*dest, src| {
@@ -195,7 +195,7 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
             this.catalogs.default.keys(),
         );
 
-        var external_deps_buf: std.ArrayListUnmanaged(Dependency.External) = try .initCapacity(z_allocator, this.catalogs.default.count());
+        var external_deps_buf: std.ArrayList(Dependency.External) = try .initCapacity(z_allocator, this.catalogs.default.count());
         defer external_deps_buf.deinit(z_allocator);
         external_deps_buf.items.len = this.catalogs.default.count();
         for (external_deps_buf.items, this.catalogs.default.values()) |*dest, src| {
@@ -345,7 +345,7 @@ pub fn load(
                     var workspace_package_name_hashes = try Lockfile.Buffers.readArray(
                         stream,
                         allocator,
-                        std.ArrayListUnmanaged(PackageNameHash),
+                        std.ArrayList(PackageNameHash),
                     );
                     defer workspace_package_name_hashes.deinit(allocator);
 
@@ -354,18 +354,18 @@ pub fn load(
                             break :workspace_versions_list try Lockfile.Buffers.readArray(
                                 stream,
                                 allocator,
-                                std.ArrayListUnmanaged(Semver.Version),
+                                std.ArrayList(Semver.Version),
                             );
                         }
 
                         var old_versions_list = try Lockfile.Buffers.readArray(
                             stream,
                             allocator,
-                            std.ArrayListUnmanaged(Semver.VersionType(u32)),
+                            std.ArrayList(Semver.VersionType(u32)),
                         );
                         defer old_versions_list.deinit(allocator);
 
-                        var versions_list: std.ArrayListUnmanaged(Semver.Version) = try .initCapacity(allocator, old_versions_list.items.len);
+                        var versions_list: std.ArrayList(Semver.Version) = try .initCapacity(allocator, old_versions_list.items.len);
                         for (old_versions_list.items) |old_version| {
                             versions_list.appendAssumeCapacity(old_version.migrate());
                         }
@@ -393,13 +393,13 @@ pub fn load(
                     var workspace_paths_hashes = try Lockfile.Buffers.readArray(
                         stream,
                         allocator,
-                        std.ArrayListUnmanaged(PackageNameHash),
+                        std.ArrayList(PackageNameHash),
                     );
                     defer workspace_paths_hashes.deinit(allocator);
                     var workspace_paths_strings = try Lockfile.Buffers.readArray(
                         stream,
                         allocator,
-                        std.ArrayListUnmanaged(String),
+                        std.ArrayList(String),
                     );
                     defer workspace_paths_strings.deinit(allocator);
 
@@ -426,7 +426,7 @@ pub fn load(
                 var trusted_dependencies_hashes = try Lockfile.Buffers.readArray(
                     stream,
                     allocator,
-                    std.ArrayListUnmanaged(u32),
+                    std.ArrayList(u32),
                 );
                 defer trusted_dependencies_hashes.deinit(allocator);
 
@@ -454,7 +454,7 @@ pub fn load(
                 var overrides_name_hashes = try Lockfile.Buffers.readArray(
                     stream,
                     allocator,
-                    std.ArrayListUnmanaged(PackageNameHash),
+                    std.ArrayList(PackageNameHash),
                 );
                 defer overrides_name_hashes.deinit(allocator);
 
@@ -465,7 +465,7 @@ pub fn load(
                 const override_versions_external = try Lockfile.Buffers.readArray(
                     stream,
                     allocator,
-                    std.ArrayListUnmanaged(Dependency.External),
+                    std.ArrayList(Dependency.External),
                 );
                 const context: Dependency.Context = .{
                     .allocator = allocator,
@@ -492,7 +492,7 @@ pub fn load(
                     try Lockfile.Buffers.readArray(
                         stream,
                         allocator,
-                        std.ArrayListUnmanaged(PackageNameAndVersionHash),
+                        std.ArrayList(PackageNameAndVersionHash),
                     );
                 defer patched_dependencies_name_and_version_hashes.deinit(allocator);
 
@@ -503,7 +503,7 @@ pub fn load(
                 const patched_dependencies_paths = try Lockfile.Buffers.readArray(
                     stream,
                     allocator,
-                    std.ArrayListUnmanaged(PatchedDep),
+                    std.ArrayList(PatchedDep),
                 );
 
                 for (patched_dependencies_name_and_version_hashes.items, patched_dependencies_paths.items) |name_hash, patch_path| {
@@ -523,10 +523,10 @@ pub fn load(
             if (next_num == has_catalogs_tag) {
                 lockfile.catalogs = .{};
 
-                var default_dep_names = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayListUnmanaged(String));
+                var default_dep_names = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayList(String));
                 defer default_dep_names.deinit(allocator);
 
-                var default_deps = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayListUnmanaged(Dependency.External));
+                var default_deps = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayList(Dependency.External));
                 defer default_deps.deinit(allocator);
 
                 try lockfile.catalogs.default.ensureTotalCapacity(allocator, default_deps.items.len);
@@ -542,16 +542,16 @@ pub fn load(
                     lockfile.catalogs.default.putAssumeCapacityContext(dep_name, Dependency.toDependency(dep, context), String.arrayHashContext(lockfile, null));
                 }
 
-                var catalog_names = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayListUnmanaged(String));
+                var catalog_names = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayList(String));
                 defer catalog_names.deinit(allocator);
 
                 try lockfile.catalogs.groups.ensureTotalCapacity(allocator, catalog_names.items.len);
 
                 for (catalog_names.items) |catalog_name| {
-                    var catalog_dep_names = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayListUnmanaged(String));
+                    var catalog_dep_names = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayList(String));
                     defer catalog_dep_names.deinit(allocator);
 
-                    var catalog_deps = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayListUnmanaged(Dependency.External));
+                    var catalog_deps = try Lockfile.Buffers.readArray(stream, allocator, std.ArrayList(Dependency.External));
                     defer catalog_deps.deinit(allocator);
 
                     const group = try lockfile.catalogs.getOrPutGroup(lockfile, catalog_name);

@@ -1970,9 +1970,7 @@ pub fn handleOnDataHeaders(
 
     if (this.state.content_encoding_i < response.headers.list.len and !this.state.flags.did_set_content_encoding) {
         // if it compressed with this header, it is no longer because we will decompress it
-        const mutable_headers = std.ArrayListUnmanaged(picohttp.Header){ .items = response.headers.list, .capacity = response.headers.list.len };
         this.state.flags.did_set_content_encoding = true;
-        response.headers = .{ .list = mutable_headers.items };
         this.state.content_encoding_i = std.math.maxInt(@TypeOf(this.state.content_encoding_i));
         // we need to reset the pending response because we removed a header
         this.state.pending_response = response;

@@ -331,7 +331,7 @@ pub const TSConfigJSON = struct {
                                     const array = value_prop.data.e_array.slice();
 
                                     if (array.len > 0) {
-                                        var values = try std.ArrayListUnmanaged(string).initCapacity(allocator, array.len);
+                                        var values = try std.ArrayList(string).initCapacity(allocator, array.len);
                                         defer values.deinit(allocator);
                                         for (array) |expr| {
                                             if ((expr.asString(allocator))) |str_| {

@@ -25,7 +25,7 @@ pub const PackageInstaller = struct {
     command_ctx: Command.Context,
     current_tree_id: Lockfile.Tree.Id = Lockfile.Tree.invalid_id,
 
-    pending_lifecycle_scripts: std.ArrayListUnmanaged(struct {
+    pending_lifecycle_scripts: std.ArrayList(struct {
         list: Lockfile.Package.Scripts.List,
         tree_id: Lockfile.Tree.Id,
         optional: bool,
@@ -146,7 +146,7 @@ pub const PackageInstaller = struct {
         /// Trees are drained breadth first because if the current tree is completed from
         /// the remaining pending installs, then any child tree has a higher chance of
         /// being able to install it's dependencies
-        pending_installs: std.ArrayListUnmanaged(DependencyInstallContext) = .empty,
+        pending_installs: std.ArrayList(DependencyInstallContext) = .empty,
 
         binaries: Bin.PriorityQueue,
 

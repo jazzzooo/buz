@@ -142,14 +142,14 @@ pub fn filter(
     // Reverse graph: for each source index, the list of source indexes that
     // import it. Built once, then used for a backward BFS from every changed
     // file.
-    const importers = try allocator.alloc(std.ArrayListUnmanaged(u32), sources.len);
+    const importers = try allocator.alloc(std.ArrayList(u32), sources.len);
     defer {
         for (importers) |*list| list.deinit(allocator);
         allocator.free(importers);
     }
     for (importers) |*list| list.* = .empty;
 
-    var graph_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    var graph_files: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (graph_files.items) |p| allocator.free(p);
         graph_files.deinit(allocator);
@@ -196,7 +196,7 @@ pub fn filter(
     // BFS backward from every changed file that participates in the graph.
     var affected = try std.bit_set.Dynamic.initEmpty(allocator, sources.len);
     defer affected.deinit(allocator);
-    var queue: std.ArrayListUnmanaged(u32) = .empty;
+    var queue: std.ArrayList(u32) = .empty;
     defer queue.deinit(allocator);
 
     {

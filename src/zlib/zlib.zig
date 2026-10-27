@@ -185,7 +185,7 @@ pub const ZlibReaderArrayList = struct {
     };
 
     input: []const u8,
-    list: *std.ArrayListUnmanaged(u8),
+    list: *std.ArrayList(u8),
     list_allocator: std.mem.Allocator,
     zlib: zStream_struct,
     allocator: std.mem.Allocator,
@@ -209,7 +209,7 @@ pub const ZlibReaderArrayList = struct {
 
     pub fn init(
         input: []const u8,
-        list: *std.ArrayListUnmanaged(u8),
+        list: *std.ArrayList(u8),
         allocator: std.mem.Allocator,
     ) !*ZlibReader {
         const options: Options = .{
@@ -219,11 +219,11 @@ pub const ZlibReaderArrayList = struct {
         return initWithOptions(input, list, allocator, options);
     }
 
-    pub fn initWithOptions(input: []const u8, list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibReader {
+    pub fn initWithOptions(input: []const u8, list: *std.ArrayList(u8), allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibReader {
         return initWithOptionsAndListAllocator(input, list, allocator, allocator, options);
     }
 
-    pub fn initWithOptionsAndListAllocator(input: []const u8, list: *std.ArrayListUnmanaged(u8), list_allocator: std.mem.Allocator, allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibReader {
+    pub fn initWithOptionsAndListAllocator(input: []const u8, list: *std.ArrayList(u8), list_allocator: std.mem.Allocator, allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibReader {
         var zlib_reader = try allocator.create(ZlibReader);
         zlib_reader.* = ZlibReader{
             .input = input,
@@ -283,7 +283,7 @@ pub const ZlibReaderArrayList = struct {
         return null;
     }
 
-    pub fn updateBuffers(this: *ZlibReader, input: []const u8, list: *std.ArrayListUnmanaged(u8), list_allocator: std.mem.Allocator) void {
+    pub fn updateBuffers(this: *ZlibReader, input: []const u8, list: *std.ArrayList(u8), list_allocator: std.mem.Allocator) void {
         bun.assert(this.total_in == this.input.len or this.state == .End or this.state == .Error);
         this.input = input;
         this.total_in = 0;
@@ -581,7 +581,7 @@ pub const ZlibCompressorArrayList = struct {
     };
 
     input: []const u8,
-    list: *std.ArrayListUnmanaged(u8),
+    list: *std.ArrayList(u8),
     list_allocator: std.mem.Allocator,
     zlib: zStream_struct,
     allocator: std.mem.Allocator,
@@ -603,11 +603,11 @@ pub const ZlibCompressorArrayList = struct {
         this.state = .End;
     }
 
-    pub fn init(input: []const u8, list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibCompressor {
+    pub fn init(input: []const u8, list: *std.ArrayList(u8), allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibCompressor {
         return initWithListAllocator(input, list, allocator, allocator, options);
     }
 
-    pub fn initWithListAllocator(input: []const u8, list: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, list_allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibCompressor {
+    pub fn initWithListAllocator(input: []const u8, list: *std.ArrayList(u8), allocator: std.mem.Allocator, list_allocator: std.mem.Allocator, options: Options) ZlibError!*ZlibCompressor {
         const window_bits = if (options.gzip)
             std.math.add(c_int, options.windowBits, 16) catch return error.InvalidArgument
         else

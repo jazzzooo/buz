@@ -208,5 +208,5 @@ fn defineVar(allocator: Allocator, name: []const u8, value: css.Token) css.Prope
 const bun = @import("bun");
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

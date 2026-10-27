@@ -117,7 +117,7 @@ pub fn describe(
     };
 
     return .{
-        .message = message orelse std.fmt.bufPrint(message_buffer, "Failed to bind query: {s}", .{@errorName(err)}) catch "Failed to bind query",
+        .message = (message orelse std.fmt.bufPrint(message_buffer, "Failed to bind query: {s}", .{@errorName(err)})) catch "Failed to bind query",
         .options = .{ .code = code },
     };
 }

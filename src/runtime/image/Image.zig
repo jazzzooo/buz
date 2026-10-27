@@ -513,10 +513,10 @@ fn inputForCurrentThread(this: *Image, snapshot: ?[]const u8) PipelineInput {
 
 pub fn fromClipboard() bun.OOM!?*JSBinding {
     if (comptime codecs.system_backend) |sb| {
-        const bytes = sb.clipboard() catch |e| switch (e) {
+        const bytes = (sb.clipboard() catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             error.BackendUnavailable => return null,
-        } orelse return null;
+        }) orelse return null;
         return try bindingFromOwnedSource(.{ .owned = .fromDefaultAllocatedSlice(bytes) }, .{});
     }
     return null;

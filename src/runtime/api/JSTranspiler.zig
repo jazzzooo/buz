@@ -779,7 +779,6 @@ const TransformCompletionOps = struct {
     }
 
     pub const destroyPayload = TransformTask.deinit;
-
 };
 
 const TransformCompletion = bindgen.MaterializedCompletion(
@@ -1173,7 +1172,7 @@ fn namedImportsToBinding(
     import_records: []const ImportRecord,
     trim_unused_imports: bool,
 ) bun.OOM!Sequence {
-    var values: std.ArrayListUnmanaged(Sequence.Element) = .empty;
+    var values: std.ArrayList(Sequence.Element) = .empty;
     defer values.deinit(bun.default_allocator);
     errdefer for (values.items) |*value| value.path.deinit();
 

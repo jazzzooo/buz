@@ -10,7 +10,7 @@ filter_names: []const []const u8 = &.{},
 path_ignore_patterns: []const []const u8 = &.{},
 dirs_to_scan: Fifo,
 /// Paths to test files found while scanning.
-test_files: std.ArrayListUnmanaged(bun.PathString),
+test_files: std.ArrayList(bun.PathString),
 fs: *FileSystem,
 open_dir_buf: bun.PathBuffer = undefined,
 scan_dir_buf: bun.PathBuffer = undefined,
@@ -36,7 +36,7 @@ pub fn init(
     transpiler: *Transpiler,
     initial_results_capacity: usize,
 ) Allocator.Error!Scanner {
-    const results = try std.ArrayListUnmanaged(bun.PathString).initCapacity(
+    const results = try std.ArrayList(bun.PathString).initCapacity(
         alloc,
         initial_results_capacity,
     );

@@ -1781,5 +1781,5 @@ const floatToInt32 = js_parser.floatToInt32;
 const options = js_parser.options;
 
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const ListManaged = std.array_list.Managed;

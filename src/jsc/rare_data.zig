@@ -15,11 +15,11 @@ postgresql_context: bun.api.Postgres.PostgresSQLContext = .{},
 entropy_cache: ?*EntropyCache = null,
 
 hot_map: ?HotMap = null,
-cron_jobs: std.ArrayListUnmanaged(*bun.api.cron.CronJob) = .empty,
+cron_jobs: std.ArrayList(*bun.api.cron.CronJob) = .empty,
 
 // TODO: make this per JSGlobalObject instead of global
 // This does not handle ShadowRealm correctly!
-cleanup_hooks: std.ArrayListUnmanaged(CleanupHook) = .empty,
+cleanup_hooks: std.ArrayList(CleanupHook) = .empty,
 native_completion_registry_head: ?*jsc.NativeCompletionRegistry = null,
 native_finalizer_queue: jsc.NativeFinalizerQueue = undefined,
 webview_chrome_process: ?*@import("../runtime/webview/ProcessWatcher.zig") = null,
@@ -66,8 +66,8 @@ default_client_ssl_ctx: ?*uws.SslCtx = null,
 
 mime_types: ?bun.http.MimeType.Map = null,
 
-fs_watchers_for_isolation: std.ArrayListUnmanaged(*FSWatcher) = .empty,
-stat_watchers_for_isolation: std.ArrayListUnmanaged(*StatWatcher) = .empty,
+fs_watchers_for_isolation: std.ArrayList(*FSWatcher) = .empty,
+stat_watchers_for_isolation: std.ArrayList(*StatWatcher) = .empty,
 
 temp_pipe_read_buffer: ?*PipeReadBuffer = null,
 

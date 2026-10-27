@@ -23,8 +23,8 @@ pub fn Coordinator(comptime Runtime: type, comptime Reporter: type) type {
         /// Temp dir for per-worker JUnit XML and LCOV coverage fragments; null
         /// when neither was requested.
         worker_tmpdir: ?[:0]const u8,
-        junit_fragments: std.ArrayListUnmanaged([]const u8) = .empty,
-        coverage_fragments: std.ArrayListUnmanaged([]const u8) = .empty,
+        junit_fragments: std.ArrayList([]const u8) = .empty,
+        coverage_fragments: std.ArrayList([]const u8) = .empty,
         /// File index whose `path:` header was most recently written. Result lines
         /// from concurrent workers interleave; whenever the source file changes the
         /// header is re-emitted so every line has visible context. null at start.
@@ -37,7 +37,7 @@ pub fn Coordinator(comptime Runtime: type, comptime Reporter: type) type {
         files_done: u32 = 0,
         spawned_count: u32 = 0,
         live_workers: u32 = 0,
-        crashed_files: std.ArrayListUnmanaged(u32) = .empty,
+        crashed_files: std.ArrayList(u32) = .empty,
         bailed: bool = false,
         last_printed_dot: bool = false,
         /// Kill-on-close Job Object so the OS reaps workers if the coordinator dies
@@ -410,8 +410,8 @@ pub fn Coordinator(comptime Runtime: type, comptime Reporter: type) type {
                 .exited => |e| std.fmt.bufPrint(buf, "exit code {d}", .{e.code}) catch unreachable,
                 // SignalCode is non-exhaustive (`_`); @tagName on an unnamed value
                 // (e.g. Linux RT signals 32–64) is safety-checked illegal behavior.
-                .signaled => |sig| sig.name() orelse
-                    std.fmt.bufPrint(buf, "signal {d}", .{@backingInt(sig)}) catch unreachable,
+                .signaled => |sig| (sig.name() orelse
+                    std.fmt.bufPrint(buf, "signal {d}", .{@backingInt(sig)})) catch unreachable,
                 .err => |e| @tagName(e.getErrno()),
                 .running => "running",
             };

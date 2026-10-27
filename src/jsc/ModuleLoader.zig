@@ -641,7 +641,7 @@ pub fn transpileSourceCode(
                         null;
 
                 jsc_vm.source_mappings.putMappings(source, .{
-                    .list = .{ .items = @constCast(entry.sourcemap), .capacity = entry.sourcemap.len },
+                    .list = .fromOwnedSlice(@constCast(entry.sourcemap)),
                     .allocator = bun.default_allocator,
                 }) catch {};
 

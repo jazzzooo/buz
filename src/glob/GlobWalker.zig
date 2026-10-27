@@ -1840,6 +1840,6 @@ const Syscall = bun.sys;
 const Maybe = bun.sys.Maybe;
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const mem = std.mem;
 const Arena = std.heap.ArenaAllocator;

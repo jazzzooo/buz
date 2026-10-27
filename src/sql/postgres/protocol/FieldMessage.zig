@@ -34,8 +34,8 @@ pub const FieldMessage = union(FieldType) {
         }
     }
 
-    pub fn decodeList(reader: PayloadReader) !std.ArrayListUnmanaged(FieldMessage) {
-        var messages = std.ArrayListUnmanaged(FieldMessage).empty;
+    pub fn decodeList(reader: PayloadReader) !std.ArrayList(FieldMessage) {
+        var messages = std.ArrayList(FieldMessage).empty;
         errdefer {
             for (messages.items) |*message| message.deinit();
             messages.deinit(bun.default_allocator);

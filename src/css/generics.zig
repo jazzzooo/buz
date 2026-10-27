@@ -670,5 +670,5 @@ const bun = @import("bun");
 const logger = bun.logger;
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

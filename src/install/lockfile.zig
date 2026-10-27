@@ -65,7 +65,7 @@ pub const Stream = struct {
     }
 };
 pub const Scripts = struct {
-    pub const Entries = std.ArrayListUnmanaged(string);
+    pub const Entries = std.ArrayList(string);
 
     pub const names = [_]string{
         "preinstall",
@@ -809,7 +809,7 @@ pub const Cloner = struct {
     mapping: []PackageID,
     trees: Tree.List = .empty,
     log: *logger.Log,
-    old_preinstall_state: std.ArrayListUnmanaged(Install.PreinstallState),
+    old_preinstall_state: std.ArrayList(Install.PreinstallState),
     manager: *PackageManager,
 
     pub fn flush(this: *Cloner) anyerror!void {
@@ -1649,12 +1649,12 @@ pub const PackageIDSlice = ExternalSlice(PackageID);
 pub const DependencySlice = ExternalSlice(Dependency);
 pub const DependencyIDSlice = ExternalSlice(DependencyID);
 
-pub const PackageIDList = std.ArrayListUnmanaged(PackageID);
-pub const DependencyList = std.ArrayListUnmanaged(Dependency);
-pub const DependencyIDList = std.ArrayListUnmanaged(DependencyID);
+pub const PackageIDList = std.ArrayList(PackageID);
+pub const DependencyList = std.ArrayList(Dependency);
+pub const DependencyIDList = std.ArrayList(DependencyID);
 
-pub const StringBuffer = std.ArrayListUnmanaged(u8);
-pub const ExternalStringBuffer = std.ArrayListUnmanaged(ExternalString);
+pub const StringBuffer = std.ArrayList(u8);
+pub const ExternalStringBuffer = std.ArrayList(ExternalString);
 
 pub const jsonStringify = @import("./lockfile/lockfile_json_stringify_for_debugging.zig").jsonStringify;
 pub const assertNoUninitializedPadding = @import("./padding_checker.zig").assertNoUninitializedPadding;

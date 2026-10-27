@@ -2040,7 +2040,7 @@ const Position = position.Position;
 const Result = css.Result;
 
 const BabyList = bun.BabyList;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const SmallList = css.SmallList;
 
 `;

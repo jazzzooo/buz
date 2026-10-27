@@ -48,7 +48,7 @@ pub const Internal = struct {
         key: Key,
         io: std.Io,
         result: ?Result = null,
-        notify: std.ArrayListUnmanaged(DNSRequestOwner) = .empty,
+        notify: std.ArrayList(DNSRequestOwner) = .empty,
         // One worker reference survives through the last notification. Each
         // consumer independently holds a reference through cancellation/delivery.
         refcount: usize = 2,

@@ -137,7 +137,7 @@ pub fn decode(bytes: []const u8, max_pixels: u64) codecs.Error!codecs.Decoded {
             // 24-bit reads three bytes; 32-bit reads a native LE u32. Both
             // feed the same mask path so BI_BITFIELDS Just Works.
             const pix: u32 = if (bpp_bytes == 3)
-                @as(u32, row[x * 3]) | @as(u32, row[x * 3 + 1]) << 8 | @as(u32, row[x * 3 + 2]) << 16
+                @as(u32, row[x * 3]) | (@as(u32, row[x * 3 + 1]) << 8) | (@as(u32, row[x * 3 + 2]) << 16)
             else
                 std.mem.readInt(u32, row[x * 4 ..][0..4], .little);
             dst[x * 4 + 0] = to8((pix >> rs) & ((@as(u32, 1) << rw) -% 1), rw);

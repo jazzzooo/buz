@@ -19,18 +19,18 @@ pub const Parser = struct {
     mark_char_map: std.bit_set.Static(256) = std.bit_set.Static(256).empty,
 
     // Dynamic arrays
-    marks: std.ArrayListUnmanaged(Mark) = .empty,
-    containers: std.ArrayListUnmanaged(Container) = .empty,
-    block_bytes: std.ArrayListAlignedUnmanaged(u8, .@"4") = .empty,
-    buffer: std.ArrayListUnmanaged(u8) = .empty,
-    emph_delims: std.ArrayListUnmanaged(EmphDelim) = .empty,
+    marks: std.ArrayList(Mark) = .empty,
+    containers: std.ArrayList(Container) = .empty,
+    block_bytes: std.array_list.Aligned(u8, .@"4") = .empty,
+    buffer: std.ArrayList(u8) = .empty,
+    emph_delims: std.ArrayList(EmphDelim) = .empty,
 
     // Number of active containers
     n_containers: u32 = 0,
 
     // Current block being built
     current_block: ?usize = null,
-    current_block_lines: std.ArrayListUnmanaged(VerbatimLine) = .empty,
+    current_block_lines: std.ArrayList(VerbatimLine) = .empty,
 
     // HTML block tracking
     html_block_type: u8 = 0,
@@ -41,7 +41,7 @@ pub const Parser = struct {
     table_alignments: [types.TABLE_MAXCOLCOUNT]Align = @splat(.default),
 
     // Ref defs
-    ref_defs: std.ArrayListUnmanaged(RefDef) = .empty,
+    ref_defs: std.ArrayList(RefDef) = .empty,
 
     // State
     last_line_has_list_loosening_effect: bool = false,

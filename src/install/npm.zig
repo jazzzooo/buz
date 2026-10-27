@@ -1216,7 +1216,7 @@ pub const PackageManifest = struct {
             defer cache_file.close();
 
             delete: {
-                return loadByFile(allocator, scope, cache_file) catch break :delete orelse break :delete;
+                return (loadByFile(allocator, scope, cache_file) catch break :delete) orelse break :delete;
             }
 
             // delete the outdated/invalid manifest

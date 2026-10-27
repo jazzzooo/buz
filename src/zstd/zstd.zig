@@ -54,7 +54,7 @@ pub fn decompressAlloc(allocator: std.mem.Allocator, src: []const u8) ![]u8 {
     // 1. Content size is unknown, OR
     // 2. Reported size exceeds safety limit (to prevent malicious inputs claiming huge sizes)
     if (size == ZSTD_CONTENTSIZE_UNKNOWN or size > MAX_PREALLOCATE_SIZE) {
-        var list = std.ArrayListUnmanaged(u8).empty;
+        var list = std.ArrayList(u8).empty;
         // `reader.deinit()` below does not free `list`; free it ourselves on any error
         // (init failure, readAll failure, or toOwnedSlice failure).
         errdefer list.deinit(allocator);
@@ -121,7 +121,7 @@ pub const ZstdReaderArrayList = struct {
     };
 
     input: []const u8,
-    list: *std.ArrayListUnmanaged(u8),
+    list: *std.ArrayList(u8),
     list_allocator: std.mem.Allocator,
     allocator: std.mem.Allocator,
     zstd: *c.ZSTD_DStream,
@@ -130,7 +130,7 @@ pub const ZstdReaderArrayList = struct {
 
     pub fn init(
         input: []const u8,
-        list: *std.ArrayListUnmanaged(u8),
+        list: *std.ArrayList(u8),
         allocator: std.mem.Allocator,
     ) !*ZstdReaderArrayList {
         return initWithListAllocator(input, list, allocator, allocator);
@@ -138,7 +138,7 @@ pub const ZstdReaderArrayList = struct {
 
     pub fn initWithListAllocator(
         input: []const u8,
-        list: *std.ArrayListUnmanaged(u8),
+        list: *std.ArrayList(u8),
         list_allocator: std.mem.Allocator,
         allocator: std.mem.Allocator,
     ) !*ZstdReaderArrayList {

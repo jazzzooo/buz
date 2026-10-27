@@ -10,15 +10,15 @@ session: *ClientSession,
 client: ?*HTTPClient,
 
 /// HEADERS + CONTINUATION fragments, decoded once END_HEADERS arrives.
-header_block: std.ArrayListUnmanaged(u8) = .empty,
+header_block: std.ArrayList(u8) = .empty,
 /// DATA payload accumulated across one onData() pass.
-body_buffer: std.ArrayListUnmanaged(u8) = .empty,
+body_buffer: std.ArrayList(u8) = .empty,
 
 /// HPACK is decoded eagerly at parse time so the dynamic table stays
 /// consistent across multiple HEADERS in one read; the resulting strings
 /// land here until `deliverStream` hands them to handleResponseMetadata.
-decoded_bytes: std.ArrayListUnmanaged(u8) = .empty,
-decoded_headers: std.ArrayListUnmanaged(picohttp.Header) = .empty,
+decoded_bytes: std.ArrayList(u8) = .empty,
+decoded_headers: std.ArrayList(picohttp.Header) = .empty,
 /// Final (non-1xx) status code; 0 until the response HEADERS arrive.
 status_code: u32 = 0,
 

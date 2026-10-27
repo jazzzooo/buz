@@ -207,7 +207,7 @@ pub const Specificity = struct {
     }
 
     pub fn fromU32(value: u32) Specificity {
-        bun.assert(value <= MAX_10BIT << 20 | MAX_10BIT << 10 | MAX_10BIT);
+        bun.assert(value <= (MAX_10BIT << 20) | (MAX_10BIT << 10) | MAX_10BIT);
         return Specificity{
             .id_selectors = value >> 20,
             .class_like_selectors = (value >> 10) & MAX_10BIT,
@@ -1038,7 +1038,7 @@ pub const SelectorParser = struct {
                 })));
             }
 
-            var args = std.ArrayListUnmanaged(css.css_properties.custom.TokenOrValue).empty;
+            var args = std.ArrayList(css.css_properties.custom.TokenOrValue).empty;
             if (css.TokenList.parseRaw(input, &args, this.options, 0).asErr()) |e| return .{ .err = e };
 
             return .{ .result = .{ .custom_function = .{
@@ -1167,7 +1167,7 @@ pub const SelectorParser = struct {
             } else {
                 if (bun.strings.startsWithChar(name, '_')) {
                     this.options.warn(loc.newCustomError(SelectorParseErrorKind{ .unsupported_pseudo_class_or_element = name }));
-                } else if (this.options.css_modules != null and bun.strings.eqlCaseInsensitiveASCIIICheckLength(name, "local") or bun.strings.eqlCaseInsensitiveASCIIICheckLength(name, "global")) {
+                } else if ((this.options.css_modules != null and bun.strings.eqlCaseInsensitiveASCIIICheckLength(name, "local")) or bun.strings.eqlCaseInsensitiveASCIIICheckLength(name, "global")) {
                     return .{ .err = loc.newCustomError(SelectorParseErrorKind{ .ambiguous_css_module_class = name }) };
                 }
                 return .{ .result = PseudoClass{ .custom = .{ .name = name } } };
@@ -3593,5 +3593,5 @@ const bun = @import("bun");
 const logger = bun.logger;
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

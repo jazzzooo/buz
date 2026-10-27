@@ -1127,7 +1127,7 @@ pub inline fn err(error_name: anytype, comptime fmt: []const u8, args: anytype) 
     const T = @TypeOf(error_name);
     const info = @typeInfo(T);
 
-    if (comptime T == bun.sys.Error or info == .pointer and info.pointer.child == bun.sys.Error) {
+    if (comptime T == bun.sys.Error or (info == .pointer and info.pointer.child == bun.sys.Error)) {
         const e: bun.sys.Error = error_name;
         const tag_name, const sys_errno = e.getErrorCodeTagName() orelse {
             err("unknown error", fmt, args);

@@ -1033,9 +1033,9 @@ pub const BorderHandler = struct {
                 inline fn shorthand(s: *@This(), comptime p: type, comptime prop_name: []const u8, comptime key: []const u8) void {
                     const has_prop = @field(s.block_start, key) != null and @field(s.block_end, key) != null and @field(s.inline_start, key) != null and @field(s.inline_end, key) != null;
                     if (has_prop) {
-                        if (!is_logical or css.generic.eql(@TypeOf(@field(s.block_start, key)), &@field(s.block_start, key), &@field(s.block_end, key)) and
+                        if (!is_logical or (css.generic.eql(@TypeOf(@field(s.block_start, key)), &@field(s.block_start, key), &@field(s.block_end, key)) and
                             css.generic.eql(@TypeOf(@field(s.block_end, key)), &@field(s.block_end, key), &@field(s.inline_start, key)) and
-                            css.generic.eql(@TypeOf(@field(s.inline_start, key)), &@field(s.inline_start, key), &@field(s.inline_end, key)))
+                            css.generic.eql(@TypeOf(@field(s.inline_start, key)), &@field(s.inline_start, key), &@field(s.inline_end, key))))
                         {
                             const rect = p{
                                 .top = bun.take(&@field(s.block_start, key)).?,

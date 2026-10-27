@@ -126,17 +126,11 @@ pub fn readArray(stream: *Stream, allocator: Allocator, comptime ArrayList: type
     const byte_len = end_pos - start_pos;
     stream.reader_state.seek = end_pos;
 
-    if (byte_len == 0) return ArrayList{
-        .items = &[_]PointerType{},
-        .capacity = 0,
-    };
+    if (byte_len == 0) return .empty;
 
     const misaligned = std.mem.bytesAsSlice(PointerType, stream.buffer[start_pos..end_pos]);
 
-    return ArrayList{
-        .items = try allocator.dupe(PointerType, @as([*]PointerType, @alignCast(misaligned.ptr))[0..misaligned.len]),
-        .capacity = misaligned.len,
-    };
+    return .fromOwnedSlice(try allocator.dupe(PointerType, @alignCast(misaligned)));
 }
 
 pub fn writeArray(comptime StreamType: type, stream: StreamType, comptime Writer: type, writer: Writer, comptime ArrayList: type, array: ArrayList) !void {
@@ -233,7 +227,7 @@ pub fn save(
             }
 
             // It would be faster to buffer these instead of one big allocation
-            var to_clone = try std.ArrayListUnmanaged(Dependency.External).initCapacity(allocator, remaining.len);
+            var to_clone = try std.ArrayList(Dependency.External).initCapacity(allocator, remaining.len);
 
             defer to_clone.deinit(allocator);
             for (remaining) |dep| {
@@ -247,7 +241,7 @@ pub fn save(
             const Type = @TypeOf(items);
             if (comptime Type == Tree) {
                 // We duplicate it here so that alignment bytes are zeroed out
-                var clone = try std.ArrayListUnmanaged(Tree.External).initCapacity(allocator, list.items.len);
+                var clone = try std.ArrayList(Tree.External).initCapacity(allocator, list.items.len);
                 for (list.items) |item| {
                     clone.appendAssumeCapacity(Tree.toExternal(item));
                 }
@@ -256,7 +250,7 @@ pub fn save(
                 try writeArray(StreamType, stream, Writer, writer, Tree.External, clone.items);
             } else {
                 // We duplicate it here so that alignment bytes are zeroed out
-                var clone = try std.ArrayListUnmanaged(std.meta.Child(Type)).initCapacity(allocator, list.items.len);
+                var clone = try std.ArrayList(std.meta.Child(Type)).initCapacity(allocator, list.items.len);
                 clone.appendSliceAssumeCapacity(items);
                 defer clone.deinit(allocator);
 
@@ -289,7 +283,7 @@ pub fn legacyPackageToDependencyID(this: Buffers, dependency_visited: ?*Bitset, 
 
 pub fn load(stream: *Stream, allocator: Allocator, log: *logger.Log, pm_: ?*PackageManager, parse_context: Dependency.ParseContext) !Buffers {
     var this = Buffers{};
-    var external_dependency_list_: std.ArrayListUnmanaged(Dependency.External) = .empty;
+    var external_dependency_list_: std.ArrayList(Dependency.External) = .empty;
 
     inline for (sizes.names) |name| {
         const Type = @TypeOf(@field(this, name));
@@ -300,14 +294,14 @@ pub fn load(stream: *Stream, allocator: Allocator, log: *logger.Log, pm_: ?*Pack
         }
 
         if (comptime Type == @TypeOf(this.dependencies)) {
-            external_dependency_list_ = try readArray(stream, allocator, std.ArrayListUnmanaged(Dependency.External));
+            external_dependency_list_ = try readArray(stream, allocator, std.ArrayList(Dependency.External));
             if (pm_) |pm| {
                 if (pm.options.log_level.isVerbose()) {
                     Output.prettyErrorln("Loaded {d} {s}", .{ external_dependency_list_.items.len, name });
                 }
             }
         } else if (comptime Type == @TypeOf(this.trees)) {
-            var tree_list = try readArray(stream, allocator, std.ArrayListUnmanaged(Tree.External));
+            var tree_list = try readArray(stream, allocator, std.ArrayList(Tree.External));
             defer tree_list.deinit(allocator);
             this.trees = try Tree.List.initCapacity(allocator, tree_list.items.len);
             this.trees.items.len = tree_list.items.len;

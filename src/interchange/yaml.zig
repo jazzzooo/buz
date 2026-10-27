@@ -2222,7 +2222,7 @@ pub fn Parser(comptime enc: Encoding) type {
                             }
                         },
                         .negative, .positive => {
-                            if (parser.next() == '.' and parser.peek(1) == 'i' or parser.peek(1) == 'I') {
+                            if ((parser.next() == '.' and parser.peek(1) == 'i') or parser.peek(1) == 'I') {
                                 try ctx.appendSource('.', parser.pos);
                                 parser.inc(1);
                                 switch (parser.next()) {

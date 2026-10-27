@@ -19,7 +19,7 @@ pub fn HotReloadEvent(comptime DevServer: type) type {
         /// The keys are owned by the file watcher.
         dirs: bun.StringArrayHashMap(void),
         /// Same purpose as `files` but keys do not have an owner.
-        extra_files: std.ArrayListUnmanaged(u8),
+        extra_files: std.ArrayList(u8),
         /// Initialized by the WatcherAtomics.watcherAcquireEvent
         timer: bun.SystemTimer,
         /// This event may be referenced by either DevServer or Watcher thread.
@@ -246,5 +246,4 @@ const DevServerCore = @import("../DevServerCore.zig");
 const DevServerProtocol = @import("../DevServerProtocol.zig");
 
 const std = @import("std");
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const Allocator = std.mem.Allocator;

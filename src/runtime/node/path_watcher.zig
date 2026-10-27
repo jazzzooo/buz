@@ -383,7 +383,7 @@ const Linux = struct {
     /// a recursive watch on `/a` plus a watch on `/a/sub`) end up sharing a wd. Each
     /// owner gets its own subpath so the event can be reported relative to the right
     /// root, and `inotify_rm_watch` is only issued when the last owner detaches.
-    wd_map: std.AutoHashMapUnmanaged(i32, std.ArrayListUnmanaged(WdOwner)) = .{},
+    wd_map: std.AutoHashMapUnmanaged(i32, std.ArrayList(WdOwner)) = .{},
 
     const WdOwner = struct {
         watcher: *PathWatcher,
@@ -395,7 +395,7 @@ const Linux = struct {
     pub const Watch = struct {
         /// All wds belonging to this PathWatcher (one for a file/non-recursive dir,
         /// many for a recursive dir).
-        wds: std.ArrayListUnmanaged(i32) = .empty,
+        wds: std.ArrayList(i32) = .empty,
 
         pub fn deinit(this: *Watch) void {
             this.wds.deinit(bun.default_allocator);
@@ -743,7 +743,7 @@ const Kqueue = struct {
     };
 
     pub const Watch = struct {
-        fds: std.ArrayListUnmanaged(i32) = .empty,
+        fds: std.ArrayList(i32) = .empty,
 
         pub fn deinit(this: *Watch) void {
             this.fds.deinit(bun.default_allocator);

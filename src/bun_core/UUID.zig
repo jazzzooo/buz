@@ -111,7 +111,7 @@ pub fn parse(buf: []const u8) Error!UUID {
         if (hi == 0xff or lo == 0xff) {
             return Error.InvalidUUID;
         }
-        uuid.bytes[j] = hi << 4 | lo;
+        uuid.bytes[j] = (hi << 4) | lo;
     }
 
     return uuid;

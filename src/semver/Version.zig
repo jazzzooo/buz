@@ -657,7 +657,7 @@ pub fn VersionType(comptime IntType: type) type {
                     switch (c) {
                         '+' => {
                             // qualifier  ::= ( '-' pre )? ( '+' build )?
-                            if (state == .pre or state == .none and initial_pre_count > 0) {
+                            if (state == .pre or (state == .none and initial_pre_count > 0)) {
                                 result.tag.pre = sliced_string.sub(input[start..i]).external();
                             }
 

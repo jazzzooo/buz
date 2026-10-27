@@ -154,11 +154,7 @@ pub fn escapeHTMLForLatin1Input(allocator: std.mem.Allocator, latin1: []const u8
             };
 
             var any_needs_escape = false;
-            var buf: std.array_list.Managed(u8) = std.array_list.Managed(u8){
-                .items = &.{},
-                .capacity = 0,
-                .allocator = allocator,
-            };
+            var buf = std.array_list.Managed(u8).init(allocator);
 
             if (comptime Environment.enableSIMD) {
                 // pass #1: scan for any characters that need escaping

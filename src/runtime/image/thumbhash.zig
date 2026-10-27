@@ -143,8 +143,8 @@ fn dct(chan: []const f32, w: u32, h: u32, nx: u32, ny: u32) Channel {
 /// hash is too short. Output is `bun.default_allocator`-owned.
 pub fn decode(hash: []const u8) error{ DecodeFailed, OutOfMemory }!struct { rgba: []u8, w: u32, h: u32 } {
     if (hash.len < 5) return error.DecodeFailed;
-    const h24: u32 = @as(u32, hash[0]) | @as(u32, hash[1]) << 8 | @as(u32, hash[2]) << 16;
-    const h16: u16 = @as(u16, hash[3]) | @as(u16, hash[4]) << 8;
+    const h24: u32 = @as(u32, hash[0]) | (@as(u32, hash[1]) << 8) | (@as(u32, hash[2]) << 16);
+    const h16: u16 = @as(u16, hash[3]) | (@as(u16, hash[4]) << 8);
     const l_dc: f32 = @as(f32, @floatFromInt(h24 & 63)) / 63;
     const p_dc: f32 = @as(f32, @floatFromInt((h24 >> 6) & 63)) / 31.5 - 1;
     const q_dc: f32 = @as(f32, @floatFromInt((h24 >> 12) & 63)) / 31.5 - 1;

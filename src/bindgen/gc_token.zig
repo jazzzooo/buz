@@ -6,7 +6,7 @@ pub const Affinity = enum {
 fn Token(comptime Owner: type, comptime affinity: Affinity, comptime Pointee: ?type) type {
     return opaque {
         const owner = Owner;
-        const pointee = Pointee;
+        pub const pointee = Pointee;
         pub const bindgen_gc_affinity = affinity;
     };
 }

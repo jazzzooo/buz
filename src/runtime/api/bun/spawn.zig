@@ -1,6 +1,6 @@
 const SpawnActions = struct {
     cwd: ?[:0]u8 = null,
-    actions: std.ArrayListUnmanaged(c.BunSpawnAction) = .empty,
+    actions: std.ArrayList(c.BunSpawnAction) = .empty,
 
     pub fn init() !SpawnActions {
         return .{};

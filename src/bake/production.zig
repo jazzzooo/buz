@@ -254,7 +254,7 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     var root_dir_buf: bun.PathBuffer = undefined;
     const root_dir_path = bun.path.joinAbsStringBuf(cwd, &root_dir_buf, &.{"dist"}, .auto);
 
-    var router_types = try std.ArrayListUnmanaged(FrameworkRouter.Type).initCapacity(allocator, options.framework.file_system_router_types.len);
+    var router_types = try std.ArrayList(FrameworkRouter.Type).initCapacity(allocator, options.framework.file_system_router_types.len);
 
     var entry_points: EntryPointMap = .{
         .root = cwd,
@@ -556,7 +556,7 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         for (route_data[0..initialized_routes]) |*data| data.deinit(allocator);
         allocator.free(route_data);
     }
-    var params_buf: std.ArrayListUnmanaged([]const u8) = .empty;
+    var params_buf: std.ArrayList([]const u8) = .empty;
     defer params_buf.deinit(ctx.allocator);
     for (navigatable_routes.items, 0..) |route_index, nav_index| {
         defer params_buf.clearRetainingCapacity();

@@ -37,8 +37,8 @@ pub fn convertStmtsForChunkForDevServer(
 ) !void {
     const hmr_api_ref = ast.wrapper_ref;
     const hmr_api_id = Expr.initIdentifier(hmr_api_ref, Logger.Loc.Empty);
-    var esm_decls: std.ArrayListUnmanaged(B.Array.Item) = .empty;
-    var esm_callbacks: std.ArrayListUnmanaged(Expr) = .empty;
+    var esm_decls: std.ArrayList(B.Array.Item) = .empty;
+    var esm_callbacks: std.ArrayList(Expr) = .empty;
 
     for (ast.import_records.slice()) |*record| {
         if (record.path.is_disabled) continue;

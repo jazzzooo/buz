@@ -110,7 +110,7 @@ pub const BakeAppOptions = struct {
 };
 
 pub const StringRefList = struct {
-    strings: std.ArrayListUnmanaged([]const u8),
+    strings: std.ArrayList([]const u8),
 
     pub const empty: StringRefList = .{ .strings = .empty };
 

@@ -911,5 +911,5 @@ const Decl = G.Decl;
 const Property = G.Property;
 
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const Allocator = std.mem.Allocator;

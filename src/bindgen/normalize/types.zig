@@ -278,7 +278,7 @@ fn normalizeEnumeration(n: *Normalizer, enumeration: *const schema.Enumeration, 
     const options = enumeration.options;
     const values = try n.arena.alloc(ir.EnumerationValue, enumeration.values.len);
     for (enumeration.values, values, 0..) |value, *normalized, index| {
-        const native: u16 = @intCast(value.options.native_value orelse index + @intFromBool(!options.internal_module_registry));
+        const native: u16 = @intCast(value.options.native_value orelse (index + @intFromBool(!options.internal_module_registry)));
         normalized.* = .{
             .value_name = value.name,
             .js_value = value.value,

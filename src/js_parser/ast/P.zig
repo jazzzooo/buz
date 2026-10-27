@@ -482,7 +482,7 @@ pub fn NewParser_(
         /// will be set to the most recently visited node (as a way to mark that this
         /// node has metadata) and "tsNamespaceMemberData" will be set to the metadata.
         ts_namespace: RecentlyVisitedTSNamespace = .{},
-        top_level_enums: std.ArrayListUnmanaged(Ref) = .empty,
+        top_level_enums: std.ArrayList(Ref) = .empty,
 
         scopes_in_order_for_enum: std.array_hash_map.Auto(logger.Loc, []ScopeOrder) = .empty,
 
@@ -6764,7 +6764,7 @@ const renamer = js_parser.renamer;
 const statementCaresAboutScope = js_parser.statementCaresAboutScope;
 
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const Map = std.AutoHashMapUnmanaged;
 const Allocator = std.mem.Allocator;
 const ListManaged = std.array_list.Managed;

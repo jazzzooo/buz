@@ -48,7 +48,7 @@ pub fn installWithManager(
 
                 // if loaded from binary and save-text-lockfile is passed
                 (load_result.ok.format == .binary and
-                    manager.options.save_text_lockfile orelse false)));
+                    (manager.options.save_text_lockfile orelse false))));
 
     // this defaults to false
     // but we force allowing updates to the lockfile when you do bun add
@@ -884,7 +884,7 @@ pub fn installWithManager(
         (load_result == .ok and ((load_result.ok.format == .binary and save_format == .text) or
 
             // make sure old versions are updated
-            load_result.ok.format == .text and save_format == .text and manager.lockfile.text_lockfile_version != TextLockfile.Version.current)) or
+            (load_result.ok.format == .text and save_format == .text and manager.lockfile.text_lockfile_version != TextLockfile.Version.current))) or
 
         // check `save_lockfile` after checking if loaded from binary and save format is text
         // because `save_lockfile` is set to false for `--frozen-lockfile`
@@ -1095,7 +1095,7 @@ pub fn getWorkspaceFilters(manager: *PackageManager, original_cwd: []const u8) !
     const path_buf = bun.path_buffer_pool.get();
     defer bun.path_buffer_pool.put(path_buf);
 
-    var workspace_filters: std.ArrayListUnmanaged(WorkspaceFilter) = .empty;
+    var workspace_filters: std.ArrayList(WorkspaceFilter) = .empty;
     // only populated when subcommand is `.install`
     if (manager.subcommand == .install and manager.options.filter_patterns.len > 0) {
         try workspace_filters.ensureUnusedCapacity(manager.allocator, manager.options.filter_patterns.len);

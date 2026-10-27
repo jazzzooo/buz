@@ -172,7 +172,7 @@ pub fn isNPMPackageNameIgnoreLength(target: string) bool {
         }
     }
 
-    return !scoped or slash_index > 0 and slash_index + 1 < target.len;
+    return !scoped or (slash_index > 0 and slash_index + 1 < target.len);
 }
 
 pub fn isUUID(str: string) bool {
@@ -1233,7 +1233,7 @@ fn _decodeHexToBytes(destination: []u8, comptime Char: type, source: []const Cha
             if (comptime truncate) break;
             return error.InvalidByteSequence;
         }
-        remain[0] = a << 4 | b;
+        remain[0] = (a << 4) | b;
         remain = remain[1..];
         input = input[2..];
     }

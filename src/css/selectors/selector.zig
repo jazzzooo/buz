@@ -1599,5 +1599,5 @@ const bun = @import("bun");
 const bits = bun.bits;
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

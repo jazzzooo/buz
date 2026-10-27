@@ -124,7 +124,7 @@ pub const JSValkeyClient = struct {
     client: Core,
     globalObject: *jsc.JSGlobalObject,
     wrapper: ?RedisClientClass.ActivityWrapper = null,
-    connect_completions: std.ArrayListUnmanaged(bindgen.OwnedCompletion(RedisClientConnectSchema)) = .empty,
+    connect_completions: std.ArrayList(bindgen.OwnedCompletion(RedisClientConnectSchema)) = .empty,
     duplicate_operation: ?*DuplicateOperation = null,
     poll_ref: bun.Async.KeepAlive = .{},
     close_task: jsc.AnyTaskWithExtraContext = .{},

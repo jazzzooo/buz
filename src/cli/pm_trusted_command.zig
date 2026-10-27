@@ -168,7 +168,7 @@ pub const TrustCommand = struct {
         handleLockfileLoadErrors(load_lockfile, pm);
         try pm.updateLockfileIfNeeded(load_lockfile);
 
-        var packages_to_trust: std.ArrayListUnmanaged(string) = .empty;
+        var packages_to_trust: std.ArrayList(string) = .empty;
         defer packages_to_trust.deinit(ctx.allocator);
         try packages_to_trust.ensureUnusedCapacity(ctx.allocator, args[2..].len);
         for (args[2..]) |arg| {
@@ -211,7 +211,7 @@ pub const TrustCommand = struct {
         defer node_modules_path.deinit();
 
         var package_names_to_add: bun.StringArrayHashMap(void) = .empty;
-        var scripts_at_depth: std.array_hash_map.Auto(usize, std.ArrayListUnmanaged(struct {
+        var scripts_at_depth: std.array_hash_map.Auto(usize, std.ArrayList(struct {
             package_id: PackageID,
             scripts_list: Lockfile.Package.Scripts.List,
             skip: bool,

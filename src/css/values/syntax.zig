@@ -406,12 +406,12 @@ pub const SyntaxComponentKind = union(enum) {
 
     fn isIdentStart(c: u8) bool {
         // https://drafts.csswg.org/css-syntax-3/#ident-start-code-point
-        return c >= 'A' and c <= 'Z' or c >= 'a' and c <= 'z' or c >= 0x80 or c == '_';
+        return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or c >= 0x80 or c == '_';
     }
 
     fn isNameCodePoint(c: u8) bool {
         // https://drafts.csswg.org/css-syntax-3/#ident-code-point
-        return isIdentStart(c) or c >= '0' and c <= '9' or c == '-';
+        return isIdentStart(c) or (c >= '0' and c <= '9') or c == '-';
     }
 
     pub fn deepClone(this: *const @This(), allocator: std.mem.Allocator) @This() {
@@ -521,4 +521,4 @@ pub const Multiplier = enum {
 const bun = @import("bun");
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;

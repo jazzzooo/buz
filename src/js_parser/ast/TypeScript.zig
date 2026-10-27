@@ -469,4 +469,4 @@ const Ref = js_parser.Ref;
 const TypeScript = js_parser.TypeScript;
 
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;

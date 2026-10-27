@@ -545,7 +545,7 @@ pub const UpdateInteractiveCommand = struct {
         const packages = lockfile.packages.slice();
         const pkg_resolutions = packages.items(.resolution);
 
-        var workspace_pkg_ids: std.ArrayListUnmanaged(PackageID) = .empty;
+        var workspace_pkg_ids: std.ArrayList(PackageID) = .empty;
         for (pkg_resolutions, 0..) |resolution, pkg_id| {
             if (resolution.tag != .workspace and resolution.tag != .root) continue;
             try workspace_pkg_ids.append(allocator, @intCast(pkg_id));
@@ -566,7 +566,7 @@ pub const UpdateInteractiveCommand = struct {
         const pkg_resolutions = packages.items(.resolution);
         const string_buf = lockfile.buffers.string_bytes.items;
 
-        var workspace_pkg_ids: std.ArrayListUnmanaged(PackageID) = .empty;
+        var workspace_pkg_ids: std.ArrayList(PackageID) = .empty;
         for (pkg_resolutions, 0..) |resolution, pkg_id| {
             if (resolution.tag != .workspace and resolution.tag != .root) continue;
             try workspace_pkg_ids.append(allocator, @intCast(pkg_id));

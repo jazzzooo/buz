@@ -797,5 +797,5 @@ const TypeParameterFlag = js_parser.TypeParameterFlag;
 const TypeScript = js_parser.TypeScript;
 
 const std = @import("std");
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const ListManaged = std.array_list.Managed;

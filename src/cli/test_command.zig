@@ -34,13 +34,13 @@ pub fn writeTestStatusLine(comptime status: bun_test.Execution.Result, writer: a
 // - Add stdout/stderr to the JUnit report
 // - Add timestamp field to the JUnit report
 pub const JunitReporter = struct {
-    contents: std.ArrayListUnmanaged(u8) = .empty,
+    contents: std.ArrayList(u8) = .empty,
     total_metrics: Metrics = .{},
     offset_of_testsuites_value: usize = 0,
     current_file: string = "",
     properties_list_to_repeat_in_every_test_suite: ?[]const u8 = null,
 
-    suite_stack: std.ArrayListUnmanaged(SuiteInfo) = .empty,
+    suite_stack: std.ArrayList(SuiteInfo) = .empty,
     current_depth: u32 = 0,
 
     hostname_value: ?string = null,
@@ -561,9 +561,9 @@ pub const CommandLineReporter = struct {
     /// the terminal.
     worker_ipc_file_idx: ?u32 = null,
 
-    failures_to_repeat_buf: std.ArrayListUnmanaged(u8) = .empty,
-    skips_to_repeat_buf: std.ArrayListUnmanaged(u8) = .empty,
-    todos_to_repeat_buf: std.ArrayListUnmanaged(u8) = .empty,
+    failures_to_repeat_buf: std.ArrayList(u8) = .empty,
+    skips_to_repeat_buf: std.ArrayList(u8) = .empty,
+    todos_to_repeat_buf: std.ArrayList(u8) = .empty,
 
     reporters: struct {
         dots: bool = false,

@@ -90,7 +90,7 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
     }
 
     // Parse the existing JSON response into a PackageManifest using the now-public parse function
-    const parsed_manifest = @import("../install/npm.zig").PackageManifest.parse(
+    const parsed_manifest = (@import("../install/npm.zig").PackageManifest.parse(
         allocator,
         scope,
         &log,
@@ -104,7 +104,7 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
     ) catch |err| {
         Output.err(err, "failed to parse package manifest", .{});
         Global.exit(1);
-    } orelse {
+    }) orelse {
         Output.errGeneric("failed to parse package manifest", .{});
         Global.crash();
     };
@@ -272,9 +272,9 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
         return;
     }
 
-    const pkg_name = manifest.getStringCloned(allocator, "name") catch null orelse name;
-    const pkg_version = manifest.getStringCloned(allocator, "version") catch null orelse version;
-    const license = manifest.getStringCloned(allocator, "license") catch null orelse "";
+    const pkg_name = (manifest.getStringCloned(allocator, "name") catch null) orelse name;
+    const pkg_version = (manifest.getStringCloned(allocator, "version") catch null) orelse version;
+    const license = (manifest.getStringCloned(allocator, "license") catch null) orelse "";
     var dep_count: usize = 0;
     const dependencies_object = manifest.getObject("dependencies");
     if (dependencies_object) |*deps| {
@@ -367,8 +367,8 @@ pub fn view(allocator: std.mem.Allocator, manager: *PackageManager, spec_: strin
         Output.prettyln("\nmaintainers<r><d>:<r>", .{});
         var iter = maint_iter;
         while (iter.next()) |m| {
-            const nm = m.getStringCloned(allocator, "name") catch null orelse "";
-            const em = m.getStringCloned(allocator, "email") catch null orelse "";
+            const nm = (m.getStringCloned(allocator, "name") catch null) orelse "";
+            const em = (m.getStringCloned(allocator, "email") catch null) orelse "";
             if (em.len > 0) {
                 Output.prettyln("<d>-<r> {s} <d>\\<{s}\\><r>", .{ nm, em });
             } else if (nm.len > 0) {

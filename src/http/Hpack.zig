@@ -1,7 +1,7 @@
 const Hpack = @This();
 
 implementation: ?*lshpack.HPACK = null,
-decode_buffer: std.ArrayListUnmanaged(u8) = .empty,
+decode_buffer: std.ArrayList(u8) = .empty,
 encoder_max_capacity: u32,
 decoder_max_capacity: u32,
 pending_encoder_capacity: ?HpackBlock.PendingCapacity = null,
@@ -83,7 +83,7 @@ pub fn setDecoderMaxCapacity(this: *Hpack, capacity: u32) void {
 
 pub fn beginEncoderBlock(
     this: *Hpack,
-    encoded_headers: *std.ArrayListUnmanaged(u8),
+    encoded_headers: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
 ) bun.OOM!EncoderBlock {
     if (encoded_headers.items.len != 0) @panic("HPACK encoder block must begin with an empty output");
@@ -122,7 +122,7 @@ pub const EncoderBlock = struct {
 
     pub fn encodeIntoList(
         block: *EncoderBlock,
-        encoded_headers: *std.ArrayListUnmanaged(u8),
+        encoded_headers: *std.ArrayList(u8),
         allocator: std.mem.Allocator,
         name: []const u8,
         value: []const u8,

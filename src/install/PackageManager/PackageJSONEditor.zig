@@ -488,7 +488,7 @@ pub fn edit(
             }
         }
 
-        var new_dependencies = try std.ArrayListUnmanaged(G.Property)
+        var new_dependencies = try std.ArrayList(G.Property)
             .initCapacity(allocator, dependencies.len + remaining - replacing);
         new_dependencies.expandToCapacity();
 

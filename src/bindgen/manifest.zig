@@ -286,7 +286,6 @@ fn ClassMemberLookup(comptime class_id: ir.ClassId, comptime member_name: []cons
     return Lookup;
 }
 
-
 fn SemanticTypeLookup(comptime kind: ir.TypeKind, comptime name: []const u8) type {
     const Lookup = struct {
         pub const id: ir.TypeId = found: {

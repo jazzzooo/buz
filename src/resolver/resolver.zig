@@ -1414,7 +1414,7 @@ pub const Resolver = struct {
 
     pub fn checkPackagePath(r: *ThisResolver, source_dir: string, unremapped_import_path: string, kind: ast.ImportKind, global_cache: GlobalCache) Result.Union {
         var import_path = unremapped_import_path;
-        var source_dir_info = r.dirInfoCached(source_dir) catch (return .{ .not_found = {} }) orelse dir: {
+        var source_dir_info = (r.dirInfoCached(source_dir) catch (return .{ .not_found = {} })) orelse dir: {
             // It is possible to resolve with a source file that does not exist:
             // A. Bundler plugin refers to a non-existing `resolveDir`.
             // B. `createRequire()` is called with a path that does not exist. This was
@@ -2200,7 +2200,7 @@ pub const Resolver = struct {
                 existing.data.clearAndFree(allocator);
             }
 
-            var dir_entries_ptr = in_place orelse allocator.create(Fs.FileSystem.DirEntry) catch unreachable;
+            var dir_entries_ptr = (in_place orelse allocator.create(Fs.FileSystem.DirEntry)) catch unreachable;
             dir_entries_ptr.* = new_entry;
 
             if (r.store_fd) {
@@ -2904,7 +2904,7 @@ pub const Resolver = struct {
                     existing.data.clearAndFree(allocator);
                 }
                 new_entry.fd = if (r.store_fd) open_dir else .invalid;
-                var dir_entries_ptr = in_place orelse allocator.create(Fs.FileSystem.DirEntry) catch unreachable;
+                var dir_entries_ptr = (in_place orelse allocator.create(Fs.FileSystem.DirEntry)) catch unreachable;
                 dir_entries_ptr.* = new_entry;
                 dir_entries_option = try rfs.entries.put(&cached_dir_entry_result, .{
                     .entries = dir_entries_ptr,
@@ -3786,8 +3786,8 @@ pub const Resolver = struct {
         // https://github.com/microsoft/TypeScript/issues/4595
         if (strings.lastIndexOfChar(base, '.')) |last_dot| {
             const ext = base[last_dot..base.len];
-            if ((strings.eqlComptime(ext, ".js") or strings.eqlComptime(ext, ".jsx") or strings.eqlComptime(ext, ".mjs") and
-                (!FeatureFlags.disable_auto_js_to_ts_in_node_modules or !strings.pathContainsNodeModulesFolder(path))))
+            if ((strings.eqlComptime(ext, ".js") or strings.eqlComptime(ext, ".jsx") or (strings.eqlComptime(ext, ".mjs") and
+                (!FeatureFlags.disable_auto_js_to_ts_in_node_modules or !strings.pathContainsNodeModulesFolder(path)))))
             {
                 const segment = base[0..last_dot];
                 var tail = bufs(.load_as_file)[path.len - base.len ..];

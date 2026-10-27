@@ -70,7 +70,7 @@ fn spawn(global: *jsc.JSGlobalObject, generation: u64, stdoutInherit: bool, stde
     // Child sees fd 3 (first extra_fd → 3+0). The env var is the only
     // signal; no argv changes so `ps` shows a normal `bun` invocation.
     // Same pattern as NODE_CHANNEL_FD in the subprocess binding adapter.
-    var env: std.ArrayListUnmanaged(?[*:0]const u8) = .empty;
+    var env: std.ArrayList(?[*:0]const u8) = .empty;
     const base = try vm.transpiler.env.map.createNullDelimitedEnvMap(alloc);
     try env.ensureTotalCapacity(alloc, base.len + 2);
     env.appendSliceAssumeCapacity(@ptrCast(base));

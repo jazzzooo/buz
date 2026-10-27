@@ -421,10 +421,7 @@ pub const ShellSubprocess = struct {
         cmd_parent: *ShellCmd,
 
         override_env: bool = false,
-        env_array: std.ArrayListUnmanaged(?[*:0]const u8) = .{
-            .items = &.{},
-            .capacity = 0,
-        },
+        env_array: std.ArrayList(?[*:0]const u8) = .empty,
         cwd: []const u8,
         stdio: [3]Stdio = .{
             .ignore,
@@ -496,10 +493,7 @@ pub const ShellSubprocess = struct {
                 .arena = arena,
 
                 .override_env = false,
-                .env_array = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
+                .env_array = .empty,
                 .cwd = scheduler.top_level_dir,
                 .stdio = .{
                     .{ .ignore = {} },

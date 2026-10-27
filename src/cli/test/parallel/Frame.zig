@@ -27,7 +27,7 @@ pub const max_payload: u32 = 64 * 1024 * 1024;
 /// torn header.
 pub const Frame = @This();
 
-buf: std.ArrayListUnmanaged(u8) = .empty,
+buf: std.ArrayList(u8) = .empty,
 
 pub fn begin(self: *Frame, kind: Kind) void {
     self.buf.clearRetainingCapacity();

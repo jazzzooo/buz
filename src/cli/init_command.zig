@@ -223,10 +223,10 @@ pub const InitCommand = struct {
 
     const Assets = struct {
         // "known" assets
-        const @".gitignore" = @embedFile("init/gitignore.default");
-        const @"tsconfig.json" = @embedFile("init/tsconfig.default.json");
-        const @"README.md" = @embedFile("init/README.default.md");
-        const @"README2.md" = @embedFile("init/README2.default.md");
+        pub const @".gitignore" = @embedFile("init/gitignore.default");
+        pub const @"tsconfig.json" = @embedFile("init/tsconfig.default.json");
+        pub const @"README.md" = @embedFile("init/README.default.md");
+        pub const @"README2.md" = @embedFile("init/README2.default.md");
 
         /// Create a new asset file, overriding anything that already exists. Known
         /// assets will have their contents pre-populated; otherwise the file will be empty.
@@ -400,11 +400,11 @@ pub const InitCommand = struct {
                     template = .react_blank;
                     prev_flag_was_react = true;
                     auto_yes = true;
-                } else if ((template == .react_blank and prev_flag_was_react and strings.eqlComptime(arg, "tailwind") or strings.eqlComptime(arg, "--react=tailwind")) or strings.eqlComptime(arg, "r=tailwind")) {
+                } else if ((template == .react_blank and prev_flag_was_react and strings.eqlComptime(arg, "tailwind")) or strings.eqlComptime(arg, "--react=tailwind") or strings.eqlComptime(arg, "r=tailwind")) {
                     template = .react_tailwind;
                     prev_flag_was_react = false;
                     auto_yes = true;
-                } else if ((template == .react_blank and prev_flag_was_react and strings.eqlComptime(arg, "shadcn") or strings.eqlComptime(arg, "--react=shadcn")) or strings.eqlComptime(arg, "r=shadcn")) {
+                } else if ((template == .react_blank and prev_flag_was_react and strings.eqlComptime(arg, "shadcn")) or strings.eqlComptime(arg, "--react=shadcn") or strings.eqlComptime(arg, "r=shadcn")) {
                     template = .react_tailwind_shadcn;
                     prev_flag_was_react = false;
                     auto_yes = true;

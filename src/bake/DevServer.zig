@@ -60,7 +60,7 @@ server: ?bun.jsc.API.AnyServer,
 /// Contains the tree of routes. This structure contains FileIndex
 router: FrameworkRouter,
 /// Every navigatable route has bundling state here.
-route_bundles: ArrayListUnmanaged(RouteBundle),
+route_bundles: std.ArrayList(RouteBundle),
 /// All access into IncrementalGraph is guarded by a ThreadLock. This is
 /// only a debug assertion as contention to this is always a bug; If a bundle is
 /// active and a file is changed, that change is placed into the next bundle.
@@ -200,7 +200,7 @@ current_bundle: ?struct {
     runtime_update: ?*RuntimeUpdate = null,
     runtime_error: ?anyerror = null,
     runtime_rejection: ?bun.bindgen.Root = null,
-    client_chunk_parts: std.ArrayListUnmanaged(IncrementalGraph(.client).FileIndex) = .empty,
+    client_chunk_parts: std.ArrayList(IncrementalGraph(.client).FileIndex) = .empty,
     client_chunk_len: usize = 0,
     completion_task: jsc.IntrusiveTask = undefined,
     completion_node: jsc.ConcurrentTask = .{},
@@ -552,7 +552,7 @@ pub fn init(options: Options) bun.JSOOM!*DevServer {
 
     // Initialize FrameworkRouter
     dev.router = router: {
-        var types = try std.ArrayListUnmanaged(FrameworkRouter.Type).initCapacity(alloc, options.framework.file_system_router_types.len);
+        var types = try std.ArrayList(FrameworkRouter.Type).initCapacity(alloc, options.framework.file_system_router_types.len);
         errdefer types.deinit(alloc);
 
         for (options.framework.file_system_router_types) |fsr| {
@@ -1639,7 +1639,7 @@ fn generateHTMLPayload(dev: *DevServer, route_bundle_index: RouteBundle.Index, r
         "-0000000000000000.js".len +
         script_unref_payload.len;
 
-    var array: std.ArrayListUnmanaged(u8) = try std.ArrayListUnmanaged(u8).initCapacity(dev.allocator(), payload_size);
+    var array: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(dev.allocator(), payload_size);
     errdefer array.deinit(dev.allocator());
     array.appendSliceAssumeCapacity(before_head_end);
 
@@ -1676,7 +1676,7 @@ fn generateJavaScriptCodeForHTMLFile(
     var sfa_state_buffer: [65536]u8 = undefined;
     var sfa_state: std.heap.BufferFirstAllocator = .init(&sfa_state_buffer, dev.allocator());
     const sfa = sfa_state.allocator();
-    var array = bun.handleOom(std.ArrayListUnmanaged(u8).initCapacity(sfa, 65536));
+    var array = bun.handleOom(std.ArrayList(u8).initCapacity(sfa, 65536));
     defer array.deinit(sfa);
     var array_writer = bun.UnmanagedWriter.init(&array, sfa);
     const w = array_writer.writer();
@@ -3766,7 +3766,7 @@ fn encodeSerializedFailures(
 ) bun.OOM!void {
     var all_failures_len: usize = 0;
     for (failures) |fail| all_failures_len += fail.data.len;
-    var all_failures = try std.ArrayListUnmanaged(u8).initCapacity(dev.allocator(), all_failures_len);
+    var all_failures = try std.ArrayList(u8).initCapacity(dev.allocator(), all_failures_len);
     defer all_failures.deinit(dev.allocator());
     for (failures) |fail| all_failures.appendSliceAssumeCapacity(fail.data);
 
@@ -4948,6 +4948,5 @@ const AnyResponse = bun.uws.AnyResponse;
 const Request = uws.Request;
 
 const std = @import("std");
-const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const AutoArrayHashMap = std.array_hash_map.Auto;
 const Allocator = std.mem.Allocator;

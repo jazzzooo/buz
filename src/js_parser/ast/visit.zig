@@ -782,7 +782,7 @@ pub fn Visit(
                 //
                 // The TypeScript compiler itself contains code with this pattern, so
                 // it's important to implement this optimization.
-                var preprocessed_enums: std.ArrayListUnmanaged([]Stmt) = .empty;
+                var preprocessed_enums: std.ArrayList([]Stmt) = .empty;
                 defer preprocessed_enums.deinit(p.allocator);
                 if (p.scopes_in_order_for_enum.count() > 0) {
                     var found: usize = 0;
@@ -1396,5 +1396,5 @@ const options = js_parser.options;
 
 const std = @import("std");
 const AutoHashMap = std.AutoHashMap;
-const List = std.ArrayListUnmanaged;
+const List = std.ArrayList;
 const ListManaged = std.array_list.Managed;

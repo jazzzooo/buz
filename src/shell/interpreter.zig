@@ -1762,7 +1762,7 @@ pub fn OutputTask(
 
 /// All owned memory is assumed to be allocated with `bun.default_allocator`
 pub const OutputSrc = union(enum) {
-    arrlist: std.ArrayListUnmanaged(u8),
+    arrlist: std.ArrayList(u8),
     owned_buf: []const u8,
     borrowed_buf: []const u8,
 

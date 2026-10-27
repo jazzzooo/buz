@@ -462,7 +462,7 @@ pub const BundleV2 = struct {
     pub inline fn transpilerForTarget(noalias this: *BundleV2, target: options.Target) *Transpiler {
         if (!this.transpiler.options.server_components and this.linker.dev_server == null) {
             if (target == .browser and this.transpiler.options.target.isServerSide()) {
-                return this.client_transpiler orelse this.initializeClientTranspiler() catch |e| {
+                return (this.client_transpiler orelse this.initializeClientTranspiler()) catch |e| {
                     std.debug.panic("Failed to initialize client transpiler: {s}", .{@errorName(e)});
                 };
             }
@@ -1480,8 +1480,8 @@ pub const BundleV2 = struct {
         var server = try AstBuilder.init(this.allocator(), &BakeCore.server_virtual_source, this.transpiler.log, this.transpiler.options.hot_module_reloading);
         var client = try AstBuilder.init(this.allocator(), &BakeCore.client_virtual_source, this.transpiler.log, this.transpiler.options.hot_module_reloading);
 
-        var server_manifest_props: std.ArrayListUnmanaged(G.Property) = .empty;
-        var client_manifest_props: std.ArrayListUnmanaged(G.Property) = .empty;
+        var server_manifest_props: std.ArrayList(G.Property) = .empty;
+        var client_manifest_props: std.ArrayList(G.Property) = .empty;
 
         const scbs = this.graph.server_component_boundaries.list.slice();
         const named_exports_array = this.graph.ast.items(.named_exports);
@@ -2736,9 +2736,9 @@ pub const BundleV2 = struct {
 
         // Separate non-failing files into two lists: JS and CSS
         const js_reachable_files = reachable_files: {
-            var css_total_files = try std.ArrayListUnmanaged(Index).initCapacity(this.allocator(), this.graph.css_file_count);
+            var css_total_files = try std.ArrayList(Index).initCapacity(this.allocator(), this.graph.css_file_count);
             try start.css_entry_points.ensureUnusedCapacity(this.allocator(), this.graph.css_file_count);
-            var js_files = try std.ArrayListUnmanaged(Index).initCapacity(this.allocator(), this.graph.ast.len - this.graph.css_file_count - 1);
+            var js_files = try std.ArrayList(Index).initCapacity(this.allocator(), this.graph.ast.len - this.graph.css_file_count - 1);
 
             const asts = this.graph.ast.slice();
             const css_asts = asts.items(.css);

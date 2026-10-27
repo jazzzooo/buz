@@ -176,10 +176,8 @@ pub fn getCpuModel(os: OperatingSystem, arch: Arch) ?Target.Query.CpuModel {
 }
 
 pub fn build(b: *Build) !void {
-    // Configure observes untracked host state (source-directory scans,
-    // toolchain probes, env vars), and the Maker's config-cache manifest does not yet
-    // hash directory dependencies, so a cached configuration would miss new
-    // source files. Keep the cache off.
+    // Configure reads host state and files outside the tracked dependency APIs.
+    // Keep configuration caching disabled until those inputs are declared.
     b.graph.poisonCache();
 
     std.log.info("zig compiler v{s}", .{builtin.zig_version_string});
@@ -881,8 +879,8 @@ fn configureObj(opts: *BunBuildOptions, obj: *Compile) void {
     if (opts.os == .linux) {
         obj.link_emit_relocs = false;
         obj.link_eh_frame_hdr = false;
-        obj.link_function_sections = true;
-        obj.link_data_sections = true;
+        obj.function_sections = true;
+        obj.data_sections = true;
 
         if (opts.optimize == .debug and opts.enable_valgrind) {
             obj.root_module.valgrind = true;

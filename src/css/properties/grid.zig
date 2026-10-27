@@ -530,7 +530,7 @@ pub const GridTemplateAreas = union(enum) {
 
 fn isNameCodepoint(c: u8) bool {
     // alpha numeric, -, _, o
-    return c >= 'a' and c <= 'z' or c >= 'A' and c <= 'Z' or c == '_' or c >= '0' and c <= '9' or c == '-' or c >= 0x80; // codepoints larger than ascii;
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or (c >= '0' and c <= '9') or c == '-' or c >= 0x80; // codepoints larger than ascii;
 }
 
 const std = @import("std");

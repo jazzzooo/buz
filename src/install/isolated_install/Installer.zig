@@ -1480,7 +1480,7 @@ pub const Installer = struct {
 
         const string_buf = this.lockfile.buffers.string_bytes.items;
 
-        var version_buf: std.ArrayListUnmanaged(u8) = .empty;
+        var version_buf: std.ArrayList(u8) = .empty;
         defer version_buf.deinit(bun.default_allocator);
 
         var writer_state = bun.UnmanagedWriter.init(&version_buf, this.lockfile.allocator);

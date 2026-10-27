@@ -128,7 +128,7 @@ pub const Bin = extern struct {
         allocator: std.mem.Allocator,
         bin_expr: JSON.Expr,
         buf: *String.Buf,
-        extern_strings: *std.ArrayListUnmanaged(ExternalString),
+        extern_strings: *std.ArrayList(ExternalString),
     ) OOM!Bin {
         switch (bin_expr.data) {
             .e_object => |obj| {
@@ -477,8 +477,8 @@ pub const Bin = extern struct {
     };
 
     pub const PriorityQueueContext = struct {
-        dependencies: *const std.ArrayListUnmanaged(Dependency),
-        string_buf: *const std.ArrayListUnmanaged(u8),
+        dependencies: *const std.ArrayList(Dependency),
+        string_buf: *const std.ArrayList(u8),
 
         pub fn lessThan(this: PriorityQueueContext, a: Install.DependencyID, b: Install.DependencyID) std.math.Order {
             const deps = this.dependencies.items;

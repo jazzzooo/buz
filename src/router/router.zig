@@ -196,7 +196,7 @@ const RouteLoader = struct {
     log: *Logger.Log,
     index: ?*Route = null,
     static_list: bun.StringHashMap(*Route),
-    all_routes: std.ArrayListUnmanaged(*Route),
+    all_routes: std.ArrayList(*Route),
 
     pub fn appendRoute(this: *RouteLoader, route: Route) bun.OOM!void {
         try this.all_routes.ensureUnusedCapacity(this.allocator, 1);

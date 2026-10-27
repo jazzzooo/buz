@@ -96,7 +96,7 @@ pub const AsyncModule = struct {
         running_tasks: bool = false,
         poll_again: bool = false,
 
-        pub const Map = std.ArrayListUnmanaged(*AsyncModule);
+        pub const Map = std.ArrayList(*AsyncModule);
 
         pub fn initWakeHandler(this: *Queue) PackageManager.WakeHandler {
             bun.assert(this.wake_loop == null);

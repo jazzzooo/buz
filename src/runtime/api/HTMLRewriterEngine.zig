@@ -1,4 +1,4 @@
-const SelectorMap = std.ArrayListUnmanaged(*LOLHTML.HTMLSelector);
+const SelectorMap = std.ArrayList(*LOLHTML.HTMLSelector);
 pub const LOLHTMLContext = struct {
     const RefCount = bun.ptr.RefCount(@This(), "ref_count", deinit, .{});
     pub const ref = RefCount.ref;
@@ -6,8 +6,8 @@ pub const LOLHTMLContext = struct {
 
     ref_count: RefCount,
     selectors: SelectorMap = .empty,
-    element_handlers: std.ArrayListUnmanaged(*ElementHandler) = .empty,
-    document_handlers: std.ArrayListUnmanaged(*DocumentHandler) = .empty,
+    element_handlers: std.ArrayList(*ElementHandler) = .empty,
+    document_handlers: std.ArrayList(*DocumentHandler) = .empty,
     // Shared handlers borrow the failure slot of the currently executing rewriter.
     active_failure: ?*?CallbackFailure = null,
 
@@ -726,13 +726,7 @@ pub const HTMLRewriter = struct {
                 },
             };
 
-            this.bytes = .{
-                .allocator = bun.default_allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
-            };
+            this.bytes = .initEmpty(bun.default_allocator);
 
             prev_value.resolve(
                 bodyValue,
@@ -915,7 +909,7 @@ const ElementHandler = struct {
     onElementCallback: ?bindgen.Callback(ElementHandlerCallbackSchema) = null,
     onCommentCallback: ?bindgen.Callback(ElementCommentHandlerCallbackSchema) = null,
     onTextCallback: ?bindgen.Callback(ElementTextHandlerCallbackSchema) = null,
-    end_tag_handlers: std.ArrayListUnmanaged(*EndTag.Handler) = .empty,
+    end_tag_handlers: std.ArrayList(*EndTag.Handler) = .empty,
     thisObject: HandlerReceiver,
 
     const Listener = ListenerLifecycle(@This(), .{
@@ -1121,8 +1115,6 @@ pub const TextChunk = struct {
     pub const removed = PredicateGetter(@This(), "text_chunk", TextChunkRemovedSchema, LOLHTML.TextChunk.isRemoved).call;
 
     pub const lastInTextNode = PredicateGetter(@This(), "text_chunk", TextChunkLastInTextNodeSchema, LOLHTML.TextChunk.isLastInTextNode).call;
-
-
 };
 
 pub const DocType = struct {
@@ -1138,8 +1130,6 @@ pub const DocType = struct {
     ref_count: RefCount,
     bindgen_state: bindgen.ClassState = .{},
     doctype: bindgen.CallbackBorrow(LOLHTML.DocType, .vm) = .empty,
-
-
 
     /// The doctype name.
     pub const name = StringGetter(@This(), "doctype", DocTypeNameSchema, LOLHTML.DocType.getName, true).call;
@@ -1168,8 +1158,6 @@ pub const DocEnd = struct {
     doc_end: bindgen.CallbackBorrow(LOLHTML.DocEnd, .vm) = .empty,
 
     pub const append = ContentMethod(@This(), "doc_end", DocEndAppendSchema, LOLHTML.DocEnd.append).call;
-
-
 };
 
 pub const Comment = struct {
@@ -1199,8 +1187,6 @@ pub const Comment = struct {
     pub const setText = StringSetter(@This(), "comment", CommentTextSetterSchema, LOLHTML.Comment.setText).call;
 
     pub const removed = PredicateGetter(@This(), "comment", CommentRemovedSchema, LOLHTML.Comment.isRemoved).call;
-
-
 };
 
 pub const EndTag = struct {
@@ -1216,8 +1202,6 @@ pub const EndTag = struct {
     ref_count: RefCount,
     bindgen_state: bindgen.ClassState = .{},
     end_tag: bindgen.CallbackBorrow(LOLHTML.EndTag, .vm) = .empty,
-
-
 
     pub const Handler = struct {
         context: *LOLHTMLContext,
@@ -1482,7 +1466,7 @@ pub const Element = struct {
     ) bindgen.CallError(ElementAttributesSchema)!bindgen.Return(ElementAttributesSchema) {
         const element = this.element.value orelse return null;
         const iterators = this.attribute_iterators.getOptional() orelse create: {
-            const list = try bun.default_allocator.create(std.ArrayListUnmanaged(*AttributeIterator));
+            const list = try bun.default_allocator.create(std.ArrayList(*AttributeIterator));
             list.* = .empty;
             this.attribute_iterators = .init(list);
             break :create list;
@@ -1565,7 +1549,7 @@ const AttributeIteratorNextSchema = AttributeIteratorSchema.member("next");
 const AttributeIteratorValue = bindgen.ResultType(bindgen.DictionaryFieldType(AttributeIteratorNextSchema.ReturnType, "value").child);
 const AttributeIteratorClass = bindgen.Class(AttributeIteratorSchema, AttributeIterator);
 
-fn deinitAttributeIteratorList(iterators: *std.ArrayListUnmanaged(*AttributeIterator)) void {
+fn deinitAttributeIteratorList(iterators: *std.ArrayList(*AttributeIterator)) void {
     for (iterators.items) |iterator| {
         iterator.detach();
         iterator.deref();
@@ -1575,7 +1559,7 @@ fn deinitAttributeIteratorList(iterators: *std.ArrayListUnmanaged(*AttributeIter
 }
 
 const AttributeIteratorList = bindgen.OwnedNativeWithDestructor(
-    std.ArrayListUnmanaged(*AttributeIterator),
+    std.ArrayList(*AttributeIterator),
     deinitAttributeIteratorList,
     .vm,
 );
