@@ -233,7 +233,7 @@ def isKind(token)
 end
 
 def isArch(token)
-    token =~ /\A((x86)|(x86_32)|(x86_64_avx)|(x86_64)|(arm)|(armv7)|(arm64e)|(arm64_lse)|(arm64_sha3)|(arm64)|(32)|(64))\Z/
+    token =~ /\A((x86_64_avx)|(x86_64)|(arm64e)|(arm64_lse)|(arm64_sha3)|(arm64)|(64))\Z/
 end
 
 def isWidth(token)
@@ -321,20 +321,10 @@ class Parser
         result = []
         while isArch(token)
             case token.string
-            when "x86"
-                result << "X86"
-                result << "X86_64"
-            when "x86_32"
-                result << "X86"
             when "x86_64"
                 result << "X86_64"
             when "x86_64_avx"
                 result << "X86_64_AVX"
-            when "arm"
-                result << "ARM_THUMB2"
-                result << "ARM64"
-            when "armv7"
-                result << "ARM_THUMB2"
             when "arm64"
                 result << "ARM64"
             when "arm64e"
@@ -343,9 +333,6 @@ class Parser
                 result << "ARM64_LSE"
             when "arm64_sha3"
                 result << "ARM64_SHA3"
-            when "32"
-                result << "X86"
-                result << "ARM_THUMB2"
             when "64"
                 result << "X86_64"
                 result << "ARM64"
@@ -440,10 +427,20 @@ class Parser
                     when "return"
                         opcode.attributes[:return] = true
                         opcode.attributes[:terminal] = true
+                    when "nocode"
+                        opcode.attributes[:nocode] = true
                     else
                         parseError("Bad / directive")
                     end
                     advance
+                end
+
+                # Attributes are shared by every overload of an opcode, so this has to reject an
+                # unsupported signature on any of them, not just the one carrying /nocode.
+                if opcode.attributes[:nocode]
+                    parseError("/nocode opcode cannot take arguments") unless signature.empty?
+                    parseError("/nocode opcode cannot be a terminal") if opcode.attributes[:terminal]
+                    parseError("/nocode opcode cannot be restricted to an architecture") if opcodeArchs
                 end
 
                 parseArchs
@@ -543,7 +540,7 @@ writeH("Opcode") {
     outp.puts ""
     outp.puts "#if ENABLE(B3_JIT)"
     outp.puts ""
-    outp.puts "#include \"JSExportMacros.h\""
+    outp.puts "#include <JavaScriptCore/JSExportMacros.h>"
     outp.puts "#include <cstdint>"
     outp.puts ""
     outp.puts "#pragma push_macro(\"RotateLeft32\")"
@@ -626,14 +623,12 @@ def matchForms(outp, speed, forms, columnIndex, columnGetter, filter, callback)
     outp.puts "switch (#{columnGetter[columnIndex]}) {"
     groups.each_pair {
         | key, value |
-        outp.puts "#if USE(JSVALUE64)" if key == "BitImm64"
         Kind.argKinds(key).each {
             | argKind |
             outp.puts "case Arg::#{argKind}:"
         }
         matchForms(outp, speed, value, columnIndex + 1, columnGetter, filter, callback)
         outp.puts "break;"
-        outp.puts "#endif // USE(JSVALUE64)" if key == "BitImm64"
     }
     outp.puts "default:"
     outp.puts "break;"
@@ -750,6 +745,12 @@ writeH("OpcodeUtils") {
     outp.puts ""
     outp.puts "#if ENABLE(B3_JIT)"
 
+    outp.puts "#include \"AirCustom.h\""
+    outp.puts "#include \"AirInst.h\""
+    outp.puts "#include \"AirFormTable.h\""
+
+    # The undefs have to follow every #include: <windows.h> defines macros named
+    # after some opcodes, so anything that pulls it in later would put them back.
     outp.puts "#pragma push_macro(\"RotateLeft32\")"
     outp.puts "#pragma push_macro(\"RotateLeft64\")"
     outp.puts "#pragma push_macro(\"RotateRight32\")"
@@ -765,9 +766,6 @@ writeH("OpcodeUtils") {
     outp.puts "#undef LoadFence"
     outp.puts "#undef MemoryFence"
 
-    outp.puts "#include \"AirCustom.h\""
-    outp.puts "#include \"AirInst.h\""
-    outp.puts "#include \"AirFormTable.h\""
     outp.puts "namespace JSC { namespace B3 { namespace Air {"
     
     outp.puts "inline bool opgenHiddenTruth() { return true; }"
@@ -927,6 +925,8 @@ writeH("OpcodeGenerated") {
     outp.puts "#include \"CCallHelpers.h\""
     outp.puts "#include \"wtf/PrintStream.h\""
 
+    # The undefs have to follow every #include: <windows.h> defines macros named
+    # after some opcodes, so anything that pulls it in later would put them back.
     outp.puts "#pragma push_macro(\"RotateLeft32\")"
     outp.puts "#pragma push_macro(\"RotateLeft64\")"
     outp.puts "#pragma push_macro(\"RotateRight32\")"
@@ -1062,7 +1062,7 @@ writeH("OpcodeGenerated") {
                         outp.puts "OPGEN_RETURN(false);"
                     end
                 when "Index"
-                    outp.puts "if (!Arg::isValidIndexForm(this->kind.opcode, args[#{index}].scale(), args[#{index}].offset(), #{arg.widthCode}))"
+                    outp.puts "if (!Arg::isValidIndexForm(args[#{index}].scale(), args[#{index}].offset(), #{arg.widthCode}))"
                     outp.puts "OPGEN_RETURN(false);"
                 when "PreIndex"
                     outp.puts "if (!Arg::isValidIncrementIndexForm(args[#{index}].offset()))"
@@ -1345,6 +1345,8 @@ writeH("OpcodeGenerated") {
         | opcode, overload, form |
         if opcode.custom
             outp.puts "OPGEN_RETURN(#{opcode.name}Custom::generate(*this, jit, context));"
+        elsif opcode.attributes[:nocode]
+            outp.puts "OPGEN_RETURN(result);"
         else
             beginArchs(outp, form.archs)
             if form.altName

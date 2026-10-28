@@ -38,9 +38,9 @@ enum UseKind : uint8_t {
     // The DFG has 3 representations of values used:
 
     // 1. The JSValue representation for a JSValue that must be stored in a GP
-    //    register (or a GP register pair), and follows rules for boxing and unboxing
-    //    that allow the JSValue to be stored as either fully boxed JSValues, or
-    //    unboxed Int32, Booleans, Cells, etc. in 32-bit as appropriate.
+    //    register, and follows rules for boxing and unboxing that allow the
+    //    JSValue to be stored as either fully boxed JSValues, or unboxed Int32,
+    //    Cells, etc. as appropriate.
     UntypedUse, // UntypedUse must come first (value 0).
     Int32Use,
     KnownInt32Use,
@@ -332,7 +332,6 @@ inline UseKind useKindForResult(NodeFlags result)
 
 inline bool checkMayCrashIfInputIsEmpty(UseKind kind)
 {
-#if USE(JSVALUE64)
     switch (kind) {
     case UntypedUse:
     case Int32Use:
@@ -357,10 +356,6 @@ inline bool checkMayCrashIfInputIsEmpty(UseKind kind)
     default:
         return true;
     }
-#else
-    UNUSED_PARAM(kind);
-    return true;
-#endif
 }
 
 } } // namespace JSC::DFG

@@ -40,6 +40,7 @@
 #include <wtf/RefPtr.h>
 #include <wtf/SharedTask.h>
 #include <wtf/ThreadSafeRefCounted.h>
+#include <wtf/ThreadSafeWeakPtr.h>
 #include <wtf/text/WTFString.h>
 
 namespace JSC {
@@ -59,8 +60,60 @@ public:
 
     struct OptimizedCallees {
 #if ENABLE(WEBASSEMBLY_BBQJIT)
-        mutable Lock m_bbqCalleeLock;
-        ThreadSafeWeakOrStrongPtr<BBQCallee> m_bbqCallee WTF_GUARDED_BY_LOCK(m_bbqCalleeLock);
+        class BBQCalleeReference {
+        public:
+            BBQCalleeReference() = default;
+
+            ~BBQCalleeReference()
+            {
+                if (m_isWeak)
+                    std::destroy_at(&m_pointer.weak);
+                else
+                    std::destroy_at(&m_pointer.strong);
+            }
+
+            Lock& lock() const LIFETIME_BOUND WTF_RETURNS_LOCK(m_bbqCalleeLock) { return m_bbqCalleeLock; }
+
+            bool isWeak() const WTF_REQUIRES_LOCK(m_bbqCalleeLock) { return m_isWeak; }
+            bool isStrong() const WTF_REQUIRES_LOCK(m_bbqCalleeLock) { return !isWeak(); }
+
+            RefPtr<BBQCallee> get() const WTF_REQUIRES_LOCK(m_bbqCalleeLock) { return isWeak() ? m_pointer.weak.get() : m_pointer.strong; }
+
+            RefPtr<BBQCallee> convertToWeak() WTF_REQUIRES_LOCK(m_bbqCalleeLock)
+            {
+                ASSERT(isStrong());
+                RefPtr<BBQCallee> strong = WTF::move(m_pointer.strong);
+                std::destroy_at(&m_pointer.strong);
+                std::construct_at(&m_pointer.weak, strong);
+                m_isWeak = true;
+                return strong;
+            }
+
+            BBQCalleeReference& operator=(Ref<BBQCallee>&& strongReference) WTF_REQUIRES_LOCK(m_bbqCalleeLock)
+            {
+                if (m_isWeak) {
+                    std::destroy_at(&m_pointer.weak);
+                    std::construct_at(&m_pointer.strong);
+                    m_isWeak = false;
+                }
+                m_pointer.strong = WTF::move(strongReference);
+                return *this;
+            }
+
+        private:
+            union Pointer {
+                // Whichever member is active is destroyed by ~BBQCalleeReference().
+                ~Pointer() { }
+                RefPtr<BBQCallee> strong { };
+                ThreadSafeWeakPtr<BBQCallee> weak;
+            };
+
+            mutable Lock m_bbqCalleeLock;
+            bool m_isWeak WTF_GUARDED_BY_LOCK(m_bbqCalleeLock) { false };
+            Pointer m_pointer WTF_GUARDED_BY_LOCK(m_bbqCalleeLock);
+        };
+
+        BBQCalleeReference m_bbqCallee;
 #endif
 #if ENABLE(WEBASSEMBLY_OMGJIT)
         RefPtr<OMGCallee> m_omgCallee;
@@ -115,7 +168,7 @@ public:
 #endif
 #if ENABLE(WEBASSEMBLY_BBQJIT)
             {
-                Locker locker { tuple->m_bbqCalleeLock };
+                Locker bbqLocker { tuple->m_bbqCallee.lock() };
                 if (RefPtr callee = tuple->m_bbqCallee.get())
                     return callee;
             }
@@ -124,12 +177,16 @@ public:
         return nullptr;
     }
 
-    RefPtr<JITCallee> tryGetReplacementConcurrently(FunctionCodeIndex functionIndex) const WTF_IGNORES_THREAD_SAFETY_ANALYSIS;
 #if ENABLE(WEBASSEMBLY_BBQJIT)
+    // Tier-up peeks that run on execution threads and deliberately skip m_lock, whose critical
+    // section they would otherwise contend with every compiler thread for. They are sound because a
+    // callee is only reachable through m_optimizedCallees once its code is linked, flushed, and
+    // published; m_bbqCalleeLock covers the pointer itself. Thread safety analysis cannot express
+    // this, hence WTF_IGNORES_THREAD_SAFETY_ANALYSIS.
     RefPtr<BBQCallee> tryGetBBQCalleeForLoopOSRConcurrently(VM&, FunctionCodeIndex) WTF_IGNORES_THREAD_SAFETY_ANALYSIS;
 #endif
 #if ENABLE(WEBASSEMBLY_OMGJIT)
-    RefPtr<OMGCallee> NODELETE tryGetOMGCalleeConcurrently(FunctionCodeIndex) WTF_IGNORES_THREAD_SAFETY_ANALYSIS;
+    RefPtr<OMGCallee> tryGetOMGCalleeConcurrently(FunctionCodeIndex) WTF_IGNORES_THREAD_SAFETY_ANALYSIS;
 #endif
 
     Ref<Callee> wasmEntrypointCalleeFromFunctionIndexSpace(const AbstractLocker& locker, FunctionSpaceIndex functionIndexSpace) WTF_REQUIRES_LOCK(m_lock)
@@ -149,14 +206,30 @@ public:
     }
 
 #if ENABLE(WEBASSEMBLY_BBQJIT) || ENABLE(WEBASSEMBLY_OMGJIT)
-    bool installOptimizedCallee(const AbstractLocker&, const ModuleInformation&, FunctionCodeIndex, Ref<OptimizingJITCallee>&&, const FixedBitVector& outgoingJITDirectCallees) WTF_REQUIRES_LOCK(m_lock);
+    struct CallerCallsiteFlushes {
+        void flush();
+
+        struct Callsite {
+            CodeLocationNearCall<WasmEntryPtrTag> callLocation;
+            CodeLocationLabel<WasmEntryPtrTag> target;
+        };
+
+        // FIXME: These inline capacities were picked semi-randomly. We should figure out if there's a better number.
+        Vector<Callsite, 16> callsites;
+        // The keep-alive references ensure the caller code backing each callsite stays live until flush() runs.
+        // Note: We don't need OMGCallees since their lifetime is equivalent to the CalleeGroup's but it simplifies
+        // the code to do so anyway.
+        Vector<Ref<JITCallee>, 8> keepAliveCallees;
+    };
+
+    bool installOptimizedCallee(Locker<Lock>&, const ModuleInformation&, FunctionCodeIndex, Ref<OptimizingJITCallee>&&, const FixedBitVector& outgoingJITDirectCallees, CallerCallsiteFlushes&) WTF_REQUIRES_LOCK(m_lock);
 #endif
 
 #if ENABLE(WEBASSEMBLY_BBQJIT)
     RefPtr<BBQCallee> bbqCallee(const AbstractLocker& locker, FunctionCodeIndex functionIndex) WTF_REQUIRES_LOCK(m_lock)
     {
         if (auto* tuple = optimizedCalleesTuple(locker, functionIndex)) {
-            Locker locker { tuple->m_bbqCalleeLock };
+            Locker bbqLocker { tuple->m_bbqCallee.lock() };
             return tuple->m_bbqCallee.get();
         }
         return nullptr;
@@ -164,20 +237,6 @@ public:
 
 
     void releaseBBQCallee(const AbstractLocker&, FunctionCodeIndex) WTF_REQUIRES_LOCK(m_lock);
-#endif
-
-#if ENABLE(WEBASSEMBLY_OMGJIT)
-    OMGCallee* omgCallee(const AbstractLocker& locker, FunctionCodeIndex functionIndex) WTF_REQUIRES_LOCK(m_lock)
-    {
-        if (auto* tuple = optimizedCalleesTuple(locker, functionIndex))
-            return tuple->m_omgCallee.get();
-        return nullptr;
-    }
-
-    bool recordOMGOSREntryCallee(const AbstractLocker&, FunctionCodeIndex functionIndex, OMGOSREntryCallee& callee) WTF_REQUIRES_LOCK(m_lock)
-    {
-        return m_osrEntryCallees.add(functionIndex, callee).isNewEntry;
-    }
 #endif
 
     CodePtr<WasmEntryPtrTag>* entrypointLoadLocationFromFunctionIndexSpace(FunctionSpaceIndex functionIndexSpace)
@@ -214,7 +273,6 @@ private:
 #endif
 #if ENABLE(WEBASSEMBLY_OMGJIT)
     friend class OMGPlan;
-    friend class OSREntryPlan;
 #endif
 
     CalleeGroup(VM&, MemoryMode, ModuleInformation&, Ref<IPIntCallees>&&);
@@ -223,8 +281,6 @@ private:
 
     OptimizedCallees* optimizedCalleesTuple(const AbstractLocker&, FunctionCodeIndex index) WTF_REQUIRES_LOCK(m_lock)
     {
-        if (m_currentlyInstallingOptimizedCalleesIndex == index)
-            return &m_currentlyInstallingOptimizedCallees;
         if (m_optimizedCallees.isEmpty())
             return nullptr;
         return &m_optimizedCallees[index];
@@ -232,8 +288,6 @@ private:
 
     const OptimizedCallees* optimizedCalleesTuple(const AbstractLocker&, FunctionCodeIndex index) const WTF_REQUIRES_LOCK(m_lock)
     {
-        if (m_currentlyInstallingOptimizedCalleesIndex == index)
-            return &m_currentlyInstallingOptimizedCallees;
         if (m_optimizedCallees.isEmpty())
             return nullptr;
         return &m_optimizedCallees[index];
@@ -242,18 +296,38 @@ private:
     void ensureOptimizedCalleesSlow(const AbstractLocker&) WTF_REQUIRES_LOCK(m_lock);
 
 #if ENABLE(WEBASSEMBLY_OMGJIT) || ENABLE(WEBASSEMBLY_BBQJIT)
-    bool startInstallingCallee(const AbstractLocker&, FunctionCodeIndex, OptimizingJITCallee&) WTF_REQUIRES_LOCK(m_lock);
-    void finalizeInstallingCallee(const AbstractLocker&, FunctionCodeIndex) WTF_REQUIRES_LOCK(m_lock);
-    void updateCallsitesToCallUs(const AbstractLocker&, CodeLocationLabel<WasmEntryPtrTag> entrypoint, FunctionCodeIndex functionIndex) WTF_REQUIRES_LOCK(m_lock);
+    bool tryReserveCalleeForInstall(const AbstractLocker&, FunctionCodeIndex, OptimizingJITCallee&) WTF_REQUIRES_LOCK(m_lock);
+
+    // Callees are added here for as long as their code is linked but not yet flushed, i.e. across the
+    // window where installOptimizedCallee drops m_lock. Both bookends must run under one lock hold, so
+    // only installOptimizedCallee may call them.
+    void addPendingPublishCallee(const AbstractLocker&, OptimizingJITCallee& callee) WTF_REQUIRES_LOCK(m_lock)
+    {
+        m_pendingPublishCallees.append(callee);
+    }
+
+    void removePendingPublishCallee(const AbstractLocker&, OptimizingJITCallee& callee) WTF_REQUIRES_LOCK(m_lock)
+    {
+        m_pendingPublishCallees.removeFirst(&callee);
+    }
+
+    void updateCallsitesToCallUs(const AbstractLocker&, CodeLocationLabel<WasmEntryPtrTag> entrypoint, FunctionCodeIndex functionIndex, CallerCallsiteFlushes&) WTF_REQUIRES_LOCK(m_lock);
     void reportCallees(const AbstractLocker&, JITCallee* caller, const FixedBitVector& callees) WTF_REQUIRES_LOCK(m_lock);
 #endif
 
     unsigned m_calleeCount;
     MemoryMode m_mode;
 
-    FunctionCodeIndex m_currentlyInstallingOptimizedCalleesIndex WTF_GUARDED_BY_LOCK(m_lock) { };
-    OptimizedCallees m_currentlyInstallingOptimizedCallees WTF_GUARDED_BY_LOCK(m_lock) { };
     FixedVector<OptimizedCallees> m_optimizedCallees WTF_GUARDED_BY_LOCK(m_lock);
+
+#if ENABLE(WEBASSEMBLY_OMGJIT) || ENABLE(WEBASSEMBLY_BBQJIT)
+    // Callees whose code is fully linked but not yet published, i.e. their owner has dropped m_lock to
+    // flush the instruction cache. They are deliberately absent from m_optimizedCallees so execution
+    // threads cannot reach code that has not been flushed yet. They must still be discoverable as
+    // direct-call targets: an installer that links a call to one of these must be able to find the
+    // callee here so it can be relinked (and kept alive) if that callee is retired before we publish.
+    Vector<Ref<OptimizingJITCallee>, 4> m_pendingPublishCallees WTF_GUARDED_BY_LOCK(m_lock);
+#endif
     const Ref<IPIntCallees> m_ipintCallees;
     UncheckedKeyHashMap<uint32_t, RefPtr<JSToWasmCallee>, DefaultHash<uint32_t>, WTF::UnsignedWithZeroKeyHashTraits<uint32_t>> m_jsToWasmCallees WTF_GUARDED_BY_LOCK(m_jsToWasmCalleesLock);
     mutable Lock m_jsToWasmCalleesLock;

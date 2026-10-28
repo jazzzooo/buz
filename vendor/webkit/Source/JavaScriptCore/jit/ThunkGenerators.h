@@ -49,12 +49,12 @@ MacroAssemblerCodeRef<JITThunkPtrTag> throwStackOverflowAtPrologueGenerator(VM&)
 MacroAssemblerCodeRef<JITThunkPtrTag> throwOutOfMemoryErrorGenerator(VM&);
 
 MacroAssemblerCodeRef<JITThunkPtrTag> checkExceptionGenerator(VM&);
-MacroAssemblerCodeRef<JITThunkPtrTag> returnFromBaselineGenerator(VM&);
+MacroAssemblerCodeRef<JITThunkPtrTag> returnFromBaselineGenerator();
 
-MacroAssemblerCodeRef<JITThunkPtrTag> polymorphicThunk(VM&);
-MacroAssemblerCodeRef<JITThunkPtrTag> polymorphicThunkForClosure(VM&);
-MacroAssemblerCodeRef<JITThunkPtrTag> polymorphicTopTierThunk(VM&);
-MacroAssemblerCodeRef<JITThunkPtrTag> polymorphicTopTierThunkForClosure(VM&);
+MacroAssemblerCodeRef<JITThunkPtrTag> polymorphicThunk();
+MacroAssemblerCodeRef<JITThunkPtrTag> polymorphicThunkForClosure();
+MacroAssemblerCodeRef<JITThunkPtrTag> polymorphicTopTierThunk();
+MacroAssemblerCodeRef<JITThunkPtrTag> polymorphicTopTierThunkForClosure();
 
 MacroAssemblerCodeRef<JITThunkPtrTag> virtualThunkForRegularCall(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> virtualThunkForTailCall(VM&);
@@ -71,9 +71,7 @@ MacroAssemblerCodeRef<JITThunkPtrTag> internalFunctionConstructGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> arityFixupGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> unreachableGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> stringGetByValGenerator(VM&);
-#if USE(JSVALUE64)
 MacroAssemblerCodeRef<JITThunkPtrTag> stringEqualThunkGenerator(VM&);
-#endif
 
 MacroAssemblerCodeRef<JITThunkPtrTag> charCodeAtThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> charAtThunkGenerator(VM&);
@@ -108,9 +106,7 @@ MacroAssemblerCodeRef<JITThunkPtrTag> maxThunkGenerator(VM&);
 MacroAssemblerCodeRef<JITThunkPtrTag> minThunkGenerator(VM&);
 #endif
 
-#if USE(JSVALUE64)
 MacroAssemblerCodeRef<JITThunkPtrTag> objectIsThunkGenerator(VM&);
-#endif
 
 } // namespace JSC
 #endif // ENABLE(JIT)

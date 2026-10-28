@@ -396,6 +396,9 @@ private:
     Deque<TimerBase*> m_timers;
 
     Lock m_loopLock;
+    // Due timers with a FireTimerMessage posted but not yet dispatched. The message carries no
+    // TimerBase* (the timer may be stopped/destroyed first); wndProc() takes the next live one here.
+    Deque<TimerBase*> m_timersToFire WTF_GUARDED_BY_LOCK(m_loopLock);
     WindowsMessageHandler m_windowsMessageHandler;
 #elif USE(COCOA_EVENT_LOOP)
     static void performWork(void*);
@@ -520,9 +523,12 @@ inline void releaseAssertIsCurrent(const RunLoop& runLoop) WTF_ASSERTS_ACQUIRED_
     RELEASE_ASSERT(runLoop.isCurrent());
 }
 
+WTF_EXPORT_PRIVATE void callOnRunLoop(RunLoop&, Function<void()>&&);
+
 } // namespace WTF
 
 using WTF::RunLoop;
 using WTF::RunLoopMode;
 using WTF::assertIsCurrent;
 using WTF::releaseAssertIsCurrent;
+using WTF::callOnRunLoop;

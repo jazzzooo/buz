@@ -34,6 +34,7 @@ enum TypeKind : uint32_t;
 
 namespace Wasm {
 enum class TypeKind : int8_t;
+struct Type;
 
 class AddressType {
 public:
@@ -44,19 +45,24 @@ public:
     using enum Kind;
     AddressType() = default;
     AddressType(TypeKind);
-    AddressType(AddressType::Kind);
+    constexpr AddressType(AddressType::Kind addressType)
+        : m_type(addressType)
+    { }
 #if !PLATFORM(PLAYSTATION)
     AddressType(B3::Type);
 #endif
-    explicit AddressType(bool is64bit);
+    explicit constexpr AddressType(bool is64Bit)
+        : m_type(is64Bit ? AddressType::I64 : AddressType::I32)
+    { }
 
     AddressType::Kind type() const { return m_type; }
     TypeKind NODELETE asWasmTypeKind() const;
+    Wasm::Type asWasmType() const;
     B3::TypeKind NODELETE asB3TypeKind() const;
 
     friend bool NODELETE operator==(const AddressType& lhs, const AddressType& rhs);
     friend bool operator!=(const AddressType& lhs, const AddressType& rhs);
-    bool is64Bit() const { return m_type == AddressType::I64; }
+    constexpr bool is64Bit() const { return m_type == AddressType::I64; }
 
 private:
 

@@ -112,15 +112,6 @@ public:
     }
     
 private:
-    template <class Fn>
-    void replaceWithBinaryCall(Fn &&function)
-    {
-        Value* functionAddress = m_insertionSet.insert<ConstPtrValue>(m_index, m_origin, tagCFunction<OperationPtrTag>(function));
-        Value* result = m_insertionSet.insert<CCallValue>(m_index, m_value->type(), m_origin, Effects::none(), functionAddress, m_value->child(0), m_value->child(1));
-        m_value->replaceWithIdentity(result);
-        m_changed = true;
-    }
-
     void processCurrentBlock()
     {
         for (m_index = 0; m_index < m_block->size(); ++m_index) {
@@ -281,14 +272,6 @@ private:
                     break;
                 }
 
-                if constexpr (isARM_THUMB2()) {
-                    if (m_value->type() == Int64)
-                        replaceWithBinaryCall(Math::i64_rem_s);
-                    else
-                        replaceWithBinaryCall(Math::i32_rem_s);
-                    break;
-                }
-
                 if (isARM64()) {
                     Value* divResult = m_insertionSet.insert<Value>(m_index, chill(Div), m_origin, m_value->child(0), m_value->child(1));
                     Value* multipliedBack = m_insertionSet.insert<Value>(m_index, Mul, m_origin, divResult, m_value->child(1));
@@ -301,13 +284,6 @@ private:
             }
 
             case UMod: {
-                if constexpr (isARM_THUMB2()) {
-                    if (m_value->child(0)->type() == Int64)
-                        replaceWithBinaryCall(Math::i64_rem_u);
-                    else
-                        replaceWithBinaryCall(Math::i32_rem_u);
-                    break;
-                }
                 if (isARM64()) {
                     Value* divResult = m_insertionSet.insert<Value>(m_index, UDiv, m_origin, m_value->child(0), m_value->child(1));
                     Value* multipliedBack = m_insertionSet.insert<Value>(m_index, Mul, m_origin, divResult, m_value->child(1));
@@ -318,18 +294,9 @@ private:
                 break;
             }
 
-            case UDiv: {
-                if constexpr (!isARM_THUMB2())
-                    break;
-                if (m_value->type() == Int64)
-                    replaceWithBinaryCall(Math::i64_div_u);
-                else
-                    replaceWithBinaryCall(Math::i32_div_u);
-                break;
-            }
             case FMax:
             case FMin: {
-                if (isX86() || isARM_THUMB2()) {
+                if (isX86()) {
                     bool isMax = m_value->opcode() == FMax;
 
                     Value* a = m_value->child(0);
@@ -391,14 +358,6 @@ private:
             case Div: {
                 if (m_value->isChill())
                     makeDivisionChill(Div);
-                else if (isARM_THUMB2() && (m_value->type() == Int64 || m_value->type() == Int32)) {
-                    BasicBlock* before = m_blockInsertionSet.splitForward(m_block, m_index);
-                    before->replaceLastWithNew<Value>(m_proc, Nop, m_origin);
-                    Value* result = callDivModHelper(before, Div, m_value->child(0), m_value->child(1));
-                    before->appendNewControlValue(m_proc, Jump, m_origin, FrequentedBlock(m_block));
-                    m_value->replaceWithIdentity(result);
-                    m_changed = true;
-                }
                 break;
             }
 
@@ -689,7 +648,7 @@ private:
                     ASSERT(fieldType.is<Wasm::Type>());
                     auto unpacked = fieldType.unpacked();
                     Type b3Type;
-                    switch (unpacked.kind) {
+                    switch (unpacked.kind()) {
                     case Wasm::TypeKind::I32:
                         b3Type = Int32;
                         break;
@@ -762,28 +721,26 @@ private:
                 uint32_t typeIndex = structNew->typeIndex();
                 int32_t allocatorsBaseOffset = structNew->allocatorsBaseOffset();
 
-                size_t allocationSize = JSWebAssemblyStruct::allocationSize(rtt->instancePayloadSize());
+                size_t sizeInBytes = JSWebAssemblyStruct::allocationSize(rtt->instancePayloadSize());
 
                 static_assert(!(MarkedSpace::sizeStep & (MarkedSpace::sizeStep - 1)), "MarkedSpace::sizeStep must be a power of two.");
-                unsigned stepShift = getLSBSet(MarkedSpace::sizeStep);
-                size_t sizeClass = (allocationSize + MarkedSpace::sizeStep - 1) >> stepShift;
-                bool useFastPath = (sizeClass <= (MarkedSpace::largeCutoff >> stepShift));
+                size_t sizeClassIndex = MarkedSpace::sizeClassToIndex(sizeInBytes);
 
                 BasicBlock* before = m_blockInsertionSet.splitForward(m_block, m_index, &m_insertionSet);
                 BasicBlock* slowPath = m_blockInsertionSet.insertBefore(m_block);
 
                 UpsilonValue* fastUpsilon = nullptr;
-                if (useFastPath) {
+                if (sizeInBytes <= MarkedSpace::largeCutoff) {
                     BasicBlock* fastPathContinuation = m_blockInsertionSet.insertBefore(m_block);
 
                     // Replace the Jump added by splitForward with Nop so we can add our own control flow
                     before->replaceLastWithNew<Value>(m_proc, Nop, m_origin);
 
                     // The Instance constructor initializes all the allocators on creation, thus it is never nullptr.
-                    int32_t allocatorOffset = allocatorsBaseOffset + static_cast<int32_t>(sizeClass * sizeof(Allocator));
+                    int32_t allocatorOffset = allocatorsBaseOffset + static_cast<int32_t>(sizeClassIndex * sizeof(Allocator));
                     Value* allocator = before->appendNew<MemoryValue>(m_proc, Load, pointerType(), m_origin, instance, allocatorOffset);
 
-                    Value* cell = emitWasmGCAllocationPatchpoint(before, allocator, fastPathContinuation, slowPath);
+                    Value* cell = emitWasmGCAllocationPatchpoint(before, allocator, fastPathContinuation, slowPath, MarkedSpace::s_sizeClassForSizeStep[sizeClassIndex]);
                     emitWasmGCCellInit(fastPathContinuation, cell, structureID, JSWebAssemblyStruct::typeInfoBlob().blob());
 
                     fastUpsilon = fastPathContinuation->appendNew<UpsilonValue>(m_proc, m_origin, cell);
@@ -848,7 +805,7 @@ private:
                     ASSERT(elementType.is<Wasm::Type>());
                     auto unpacked = elementType.unpacked();
                     Type b3Type;
-                    switch (unpacked.kind) {
+                    switch (unpacked.kind()) {
                     case Wasm::TypeKind::I32:
                         b3Type = Int32;
                         break;
@@ -925,44 +882,66 @@ private:
                 unsigned stepShift = getLSBSet(MarkedSpace::sizeStep);
                 size_t largeCutoffClass = MarkedSpace::largeCutoff >> stepShift;
 
+                // When the element count is known, so is the size class, so we can skip computing it
+                // at runtime and hand the allocator a constant cell size. A constant size needing a
+                // precise allocation has no fast path at all and always goes to the slow path.
+                bool isConstantSize = size->hasInt32();
+                std::optional<unsigned> constantSizeInBytes;
+                if (isConstantSize)
+                    constantSizeInBytes = JSWebAssemblyArray::allocationSizeInBytes(rtt->elementType(), static_cast<unsigned>(size->asInt32()));
+                bool hasFastPath = !isConstantSize || (constantSizeInBytes && constantSizeInBytes.value() <= MarkedSpace::largeCutoff);
+
                 BasicBlock* before = m_blockInsertionSet.splitForward(m_block, m_index, &m_insertionSet);
                 BasicBlock* slowPath = m_blockInsertionSet.insertBefore(m_block);
-                BasicBlock* fastAlloc = m_blockInsertionSet.insertBefore(m_block);
-                BasicBlock* fastInit = m_blockInsertionSet.insertBefore(m_block);
+                BasicBlock* fastAlloc = hasFastPath ? m_blockInsertionSet.insertBefore(m_block) : nullptr;
+                BasicBlock* fastInit = hasFastPath ? m_blockInsertionSet.insertBefore(m_block) : nullptr;
                 BasicBlock* mergeBlock = m_blockInsertionSet.insertBefore(m_block);
 
                 before->replaceLastWithNew<Value>(m_proc, Nop, m_origin);
 
-                auto* extSize = before->appendNew<Value>(m_proc, ZExt32, Int64, m_origin, size);
-                auto* shifted = before->appendNew<Value>(m_proc, Shl, pointerType(), m_origin, extSize, before->appendNew<Const32Value>(m_proc, m_origin, getLSBSet(elementSize)));
-                auto* sizeInBytes = before->appendNew<Value>(m_proc, Add, pointerType(), m_origin, shifted, before->appendNew<ConstPtrValue>(m_proc, m_origin, JSWebAssemblyArray::allocationMetadataSize(elementSize)));
+                Value* sizeClassIndex = nullptr;
+                if (isConstantSize) {
+                    if (hasFastPath)
+                        sizeClassIndex = before->appendNew<ConstPtrValue>(m_proc, m_origin, MarkedSpace::sizeClassToIndex(constantSizeInBytes.value()));
+                    before->appendNewControlValue(m_proc, Jump, m_origin, hasFastPath ? fastAlloc : slowPath);
+                } else {
+                    auto* extSize = before->appendNew<Value>(m_proc, ZExt32, Int64, m_origin, size);
+                    auto* shifted = before->appendNew<Value>(m_proc, Shl, pointerType(), m_origin, extSize, before->appendNew<Const32Value>(m_proc, m_origin, getLSBSet(elementSize)));
+                    auto* sizeInBytes = before->appendNew<Value>(m_proc, Add, pointerType(), m_origin, shifted, before->appendNew<ConstPtrValue>(m_proc, m_origin, JSWebAssemblyArray::allocationMetadataSize(elementSize)));
 
-                auto* rounded = before->appendNew<Value>(m_proc, Add, pointerType(), m_origin, sizeInBytes, before->appendNew<ConstPtrValue>(m_proc, m_origin, MarkedSpace::sizeStep - 1));
-                auto* sizeClassIndex = before->appendNew<Value>(m_proc, ZShr, pointerType(), m_origin, rounded, before->appendNew<Const32Value>(m_proc, m_origin, stepShift));
+                    auto* rounded = before->appendNew<Value>(m_proc, Add, pointerType(), m_origin, sizeInBytes, before->appendNew<ConstPtrValue>(m_proc, m_origin, MarkedSpace::sizeStep - 1));
+                    sizeClassIndex = before->appendNew<Value>(m_proc, ZShr, pointerType(), m_origin, rounded, before->appendNew<Const32Value>(m_proc, m_origin, stepShift));
 
-                auto* isLarge = before->appendNew<Value>(m_proc, Above, m_origin, sizeClassIndex, before->appendNew<ConstPtrValue>(m_proc, m_origin, largeCutoffClass));
-                before->appendNewControlValue(m_proc, B3::Branch, m_origin, isLarge,
-                    { slowPath, FrequencyClass::Rare }, { fastAlloc, FrequencyClass::Normal });
+                    auto* isLarge = before->appendNew<Value>(m_proc, Above, m_origin, sizeClassIndex, before->appendNew<ConstPtrValue>(m_proc, m_origin, largeCutoffClass));
+                    before->appendNewControlValue(m_proc, B3::Branch, m_origin, isLarge,
+                        { slowPath, FrequencyClass::Rare }, { fastAlloc, FrequencyClass::Normal });
+                }
 
-                auto* sizeClassOffset = fastAlloc->appendNew<Value>(m_proc, Mul, pointerType(), m_origin, sizeClassIndex, fastAlloc->appendNew<ConstPtrValue>(m_proc, m_origin, sizeof(Allocator)));
-                auto* allocatorBaseAddr = fastAlloc->appendNew<Value>(m_proc, Add, pointerType(), m_origin, instance, fastAlloc->appendNew<ConstPtrValue>(m_proc, m_origin, allocatorsBaseOffset));
-                auto* allocatorAddr = fastAlloc->appendNew<Value>(m_proc, Add, pointerType(), m_origin, allocatorBaseAddr, sizeClassOffset);
-                auto* allocator = fastAlloc->appendNew<MemoryValue>(m_proc, Load, pointerType(), m_origin, allocatorAddr, 0);
-                allocator->setControlDependent(false);
+                UpsilonValue* fastUpsilon = nullptr;
+                if (hasFastPath) {
+                    auto* sizeClassOffset = fastAlloc->appendNew<Value>(m_proc, Mul, pointerType(), m_origin, sizeClassIndex, fastAlloc->appendNew<ConstPtrValue>(m_proc, m_origin, sizeof(Allocator)));
+                    auto* allocatorBaseAddr = fastAlloc->appendNew<Value>(m_proc, Add, pointerType(), m_origin, instance, fastAlloc->appendNew<ConstPtrValue>(m_proc, m_origin, allocatorsBaseOffset));
+                    auto* allocatorAddr = fastAlloc->appendNew<Value>(m_proc, Add, pointerType(), m_origin, allocatorBaseAddr, sizeClassOffset);
+                    auto* allocator = fastAlloc->appendNew<MemoryValue>(m_proc, Load, pointerType(), m_origin, allocatorAddr, 0);
+                    allocator->setControlDependent(false);
 
-                PatchpointValue* patchpoint = emitWasmGCAllocationPatchpoint(fastAlloc, allocator, fastInit, slowPath);
+                    std::optional<unsigned> constantCellSize;
+                    if (isConstantSize)
+                        constantCellSize = MarkedSpace::s_sizeClassForSizeStep[MarkedSpace::sizeClassToIndex(constantSizeInBytes.value())];
+                    auto* cell = emitWasmGCAllocationPatchpoint(fastAlloc, allocator, fastInit, slowPath, constantCellSize);
 
-                auto* cell = patchpoint;
-                emitWasmGCCellInit(fastInit, cell, structureID, JSWebAssemblyArray::typeInfoBlob().blob());
+                    emitWasmGCCellInit(fastInit, cell, structureID, JSWebAssemblyArray::typeInfoBlob().blob());
 
-                auto* fastUpsilon = fastInit->appendNew<UpsilonValue>(m_proc, m_origin, cell);
-                fastInit->appendNewControlValue(m_proc, Jump, m_origin, mergeBlock);
+                    fastUpsilon = fastInit->appendNew<UpsilonValue>(m_proc, m_origin, cell);
+                    fastInit->appendNewControlValue(m_proc, Jump, m_origin, mergeBlock);
+                }
 
                 auto* slowUpsilon = emitWasmGCSlowPath(slowPath, mergeBlock, instance, typeIndex,
                     tagCFunction<OperationPtrTag>(Wasm::operationWasmArrayNewEmpty), Wasm::ExceptionType::BadArrayNew, size);
 
                 auto* phi = mergeBlock->appendNew<Value>(m_proc, Phi, pointerType(), m_origin);
-                fastUpsilon->setPhi(phi);
+                if (fastUpsilon)
+                    fastUpsilon->setPhi(phi);
                 slowUpsilon->setPhi(phi);
                 mergeBlock->appendNew<MemoryValue>(m_proc, Store, m_origin, size, phi, static_cast<int32_t>(JSWebAssemblyArray::offsetOfSize()));
 
@@ -1032,7 +1011,6 @@ private:
                 break;
             }
 
-#if USE(JSVALUE64)
             case WasmRefCast:
             case WasmRefTest: {
                 WasmRefTypeCheckValue* typeCheck = m_value->as<WasmRefTypeCheckValue>();
@@ -1044,7 +1022,6 @@ private:
                 m_changed = true;
                 break;
             }
-#endif
 
             default:
                 break;
@@ -1065,30 +1042,6 @@ private:
         m_changed = true;
     }
 
-#if USE(JSVALUE32_64)
-    Value* callDivModHelper(BasicBlock* block, Opcode nonChillOpcode, Value* num, Value* den)
-    {
-        Type type = num->type();
-        Value* functionAddress;
-        if (nonChillOpcode == Div) {
-            if (m_value->type() == Int64)
-                functionAddress = block->appendNew<ConstPtrValue>(m_proc, m_origin, tagCFunction<OperationPtrTag>(Math::i64_div_s));
-            else
-                functionAddress = block->appendNew<ConstPtrValue>(m_proc, m_origin, tagCFunction<OperationPtrTag>(Math::i32_div_s));
-        } else {
-            if (m_value->type() == Int64)
-                functionAddress = block->appendNew<ConstPtrValue>(m_proc, m_origin, tagCFunction<OperationPtrTag>(Math::i64_rem_s));
-            else
-                functionAddress = block->appendNew<ConstPtrValue>(m_proc, m_origin, tagCFunction<OperationPtrTag>(Math::i32_rem_s));
-        }
-        return block->appendNew<CCallValue>(m_proc, type, m_origin, Effects::none(), functionAddress, num, den);
-    }
-#else
-    Value* NODELETE callDivModHelper(BasicBlock*, Opcode, Value*, Value*)
-    {
-        RELEASE_ASSERT_NOT_REACHED();
-    }
-#endif
     void makeDivisionChill(Opcode nonChillOpcode)
     {
         ASSERT(nonChillOpcode == Div || nonChillOpcode == Mod);
@@ -1135,11 +1088,7 @@ private:
             FrequentedBlock(normalDivCase, FrequencyClass::Normal),
             FrequentedBlock(shadyDenCase, FrequencyClass::Rare));
 
-        Value* innerResult;
-        if (isARM_THUMB2() && (m_value->type() == Int64 || m_value->type() == Int32))
-            innerResult = callDivModHelper(normalDivCase, nonChillOpcode, num, den);
-        else
-            innerResult = normalDivCase->appendNew<Value>(m_proc, nonChillOpcode, m_origin, num, den);
+        Value* innerResult = normalDivCase->appendNew<Value>(m_proc, nonChillOpcode, m_origin, num, den);
         UpsilonValue* normalResult = normalDivCase->appendNew<UpsilonValue>(
             m_proc, m_origin,
             innerResult);
@@ -1209,11 +1158,12 @@ private:
         const unsigned minCasesForTable = 7;
         const unsigned densityLimit = 4;
         if (end - start >= minCasesForTable) {
-            int64_t firstValue = cases[start].caseValue();
-            int64_t lastValue = cases[end - 1].caseValue();
-            if ((lastValue - firstValue + 1) / (end - start) < densityLimit) {
-                size_t tableSize = lastValue - firstValue + 1 + 1; // + 1 for fallthrough
-                Value* index = before->appendNew<Value>(m_proc, Sub, m_origin, child, before->appendIntConstant(m_proc, m_origin, type, firstValue));
+            CheckedInt64 firstValue = cases[start].caseValue();
+            CheckedInt64 lastValue = cases[end - 1].caseValue();
+            CheckedInt64 range = lastValue - firstValue + 1;
+            if (!range.hasOverflowed() && static_cast<uint64_t>(range.value()) / (end - start) < densityLimit) {
+                size_t tableSize = static_cast<size_t>(range.value()) + 1; // + 1 for fallthrough
+                Value* index = before->appendNew<Value>(m_proc, Sub, m_origin, child, before->appendIntConstant(m_proc, m_origin, type, firstValue.value()));
                 Value* fallthroughIndex = before->appendIntConstant(m_proc, m_origin, type, tableSize - 1);
                 index = before->appendNew<B3::Value>(m_proc, Select, m_origin, before->appendNew<Value>(m_proc, AboveEqual, m_origin, index, fallthroughIndex), fallthroughIndex, index);
 
@@ -1242,7 +1192,7 @@ private:
                     FrequentedBlock block = cases[i].target();
                     int64_t value = cases[i].caseValue();
                     before->appendSuccessor(block);
-                    size_t index = value - firstValue;
+                    size_t index = value - firstValue.value();
                     ASSERT(!handledIndices.get(index));
                     handledIndices.set(index);
                 }
@@ -1333,7 +1283,6 @@ private:
         recursivelyBuildSwitch(cases, fallThrough, medianIndex, true, end, right);
     }
 
-#if USE(JSVALUE64)
     Value* emitRefTestOrCast(WasmRefTypeCheckValue* typeCheck, BasicBlock* before, BasicBlock* continuation)
     {
         enum class CastKind { Cast, Test };
@@ -1373,7 +1322,7 @@ private:
             if (allowNull)
                 return std::nullopt;
 
-            if (Wasm::typeIndexIsType(static_cast<Wasm::TypeIndex>(toHeapType)))
+            if (!Wasm::isTypeIndexHeapType(toHeapType))
                 return std::nullopt;
 
             if (targetRTT->kind() == Wasm::RTTKind::Function)
@@ -1465,7 +1414,7 @@ private:
             currentBlock = nonNullCase;
         }
 
-        if (Wasm::typeIndexIsType(static_cast<Wasm::TypeIndex>(toHeapType))) {
+        if (!Wasm::isTypeIndexHeapType(toHeapType)) {
             switch (static_cast<Wasm::TypeKind>(toHeapType)) {
             case Wasm::TypeKind::Funcref:
             case Wasm::TypeKind::Externref:
@@ -1657,9 +1606,8 @@ private:
 
         return result;
     }
-#endif
 
-    PatchpointValue* emitWasmGCAllocationPatchpoint(BasicBlock* allocBlock, Value* allocator, BasicBlock* fastInit, BasicBlock* slowPath)
+    PatchpointValue* emitWasmGCAllocationPatchpoint(BasicBlock* allocBlock, Value* allocator, BasicBlock* fastInit, BasicBlock* slowPath, std::optional<unsigned> constantCellSize = std::nullopt)
     {
         PatchpointValue* patchpoint = allocBlock->appendNew<PatchpointValue>(m_proc, pointerType(), m_origin);
         if (isARM64()) {
@@ -1684,7 +1632,8 @@ private:
             // AssemblyHelpers::emitAllocate(). That way, the same optimized path is shared by
             // all of the compiler tiers.
             jit.emitAllocateWithNonNullAllocator(
-                params[0].gpr(), JITAllocator::variableNonNull(), allocatorGPR, params.gpScratch(0),
+                params[0].gpr(), constantCellSize ? JITAllocator::variableNonNullWithConstantCellSize(*constantCellSize) : JITAllocator::variableNonNull(),
+                allocatorGPR, params.gpScratch(0),
                 jumpToSlowPath, CCallHelpers::SlowAllocationResult::UndefinedBehavior);
 
             CCallHelpers::Jump jumpToSuccess;

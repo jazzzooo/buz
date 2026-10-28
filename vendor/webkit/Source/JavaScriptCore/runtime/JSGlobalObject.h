@@ -131,6 +131,12 @@ class SymbolTable;
 class WrapperMap;
 class WrapForValidIteratorPrototype;
 
+#if USE(BUN_JSC_ADDITIONS)
+namespace FFI {
+class FFIContext;
+} // namespace FFI
+#endif
+
 enum class ArrayBufferSharingMode : bool;
 enum class CodeGenerationMode : uint8_t;
 enum class ErrorType : uint8_t;
@@ -175,8 +181,6 @@ constexpr bool typeExposedByDefault = true;
     macro(JSPromise, promise, promise, JSPromise, Promise, object, typeExposedByDefault) \
     macro(BigInt, bigInt, bigIntObject, BigIntObject, BigInt, object, typeExposedByDefault) \
     macro(Symbol, symbol, symbolObject, SymbolObject, Symbol, object, typeExposedByDefault) \
-    macro(WeakObjectRef, weakObjectRef, weakObjectRef, JSWeakObjectRef, WeakRef, object, typeExposedByDefault) \
-    macro(FinalizationRegistry, finalizationRegistry, finalizationRegistry, JSFinalizationRegistry, FinalizationRegistry, object, typeExposedByDefault) \
 
 
 #define FOR_EACH_BUILTIN_DERIVED_ITERATOR_TYPE(macro) \
@@ -194,6 +198,8 @@ constexpr bool typeExposedByDefault = true;
     macro(Set, set, set, JSSet, Set, object, typeExposedByDefault) \
     DEFINE_STANDARD_BUILTIN(macro, WeakMap, weakMap) \
     DEFINE_STANDARD_BUILTIN(macro, WeakSet, weakSet) \
+    macro(WeakObjectRef, weakObjectRef, weakObjectRef, JSWeakObjectRef, WeakRef, object, typeExposedByDefault) \
+    macro(FinalizationRegistry, finalizationRegistry, finalizationRegistry, JSFinalizationRegistry, FinalizationRegistry, object, typeExposedByDefault) \
 
 #define FOR_EACH_LAZY_BUILTIN_TYPE(macro) \
     FOR_EACH_LAZY_BUILTIN_TYPE_WITH_DECLARATION(macro) \
@@ -302,6 +308,11 @@ public:
     LazyClassStructure m_dateTimeFormatStructure;
     LazyClassStructure m_numberFormatStructure;
 
+    // Cached collator object for String#localeCompare
+    WriteBarrier<IntlCollator> m_cachedLocaleCompareCollator;
+    String m_cachedLocaleCompareCollatorLocale;
+    uint64_t m_cachedLocaleCompareCollatorLanguagesEpoch { 0 };
+
     LazyClassStructure m_durationStructure;
     LazyClassStructure m_instantStructure;
     LazyClassStructure m_plainDateStructure;
@@ -321,6 +332,7 @@ public:
     LazyProperty<JSGlobalObject, JSFunction> m_objectProtoToStringFunction;
     LazyProperty<JSGlobalObject, JSFunction> m_arrayProtoToStringFunction;
     LazyProperty<JSGlobalObject, JSFunction> m_arrayProtoValuesFunction;
+    LazyProperty<JSGlobalObject, JSFunction> m_asyncFromSyncIteratorProtoNextFunction;
     LazyProperty<JSGlobalObject, JSFunction> m_mapProtoEntriesFunction;
     LazyProperty<JSGlobalObject, JSFunction> m_setProtoValuesFunction;
     LazyProperty<JSGlobalObject, JSFunction> m_stringProtoSymbolIteratorFunction;
@@ -382,6 +394,8 @@ public:
 
 #if USE(BUN_JSC_ADDITIONS)
     WriteBarrierStructureID m_internalFieldTupleStructure;
+    LazyProperty<JSGlobalObject, Structure> m_ffiFunctionStructure;
+    LazyProperty<JSGlobalObject, Structure> m_ffiCallbackStructure;
 #endif
 
     // Lists the actual structures used for having these particular indexing shapes.
@@ -505,6 +519,7 @@ public:
 #if USE(BUN_JSC_ADDITIONS)
     bool m_isAsyncContextTrackingEnabled { false };
     WriteBarrier<InternalFieldTuple> m_asyncContextData;
+    std::unique_ptr<FFI::FFIContext> m_ffiContext;
 #endif
 
 #if ENABLE(REMOTE_INSPECTOR)
@@ -690,7 +705,10 @@ public:
 
     // Every reader of the current JS time, in every tier, must go through
     // this helper: Date.now() (dateNow / operationDateNow), new Date()
-    // (constructDate), Date() (callDate), and Intl (dateNowImpl).
+    // (constructDate), Date() (callDate), and Intl (dateNowImpl). The one
+    // exception is Temporal.Now (systemUTCEpochNanoseconds in TemporalNow.cpp),
+    // which needs the unoverridden clock at nanosecond resolution and so
+    // checks overridenDateNow itself.
     double jsDateNow() const
     {
         double ms = overridenDateNow;
@@ -808,7 +826,7 @@ public:
     JSCallee* globalCallee() LIFETIME_BOUND { return m_globalCallee.get(); }
     JSCallee* evalCallee() LIFETIME_BOUND { return m_evalCallee.get(); }
 
-    // The following accessors return pristine values, even if a script 
+    // The following accessors return primordial values, even if a script
     // replaces the global object's associated property.
 
     GetterSetter* arraySpeciesGetterSetter() const LIFETIME_BOUND { return m_arraySpeciesGetterSetter.get(); }
@@ -823,6 +841,7 @@ public:
     JSIteratorConstructor* iteratorConstructor() const LIFETIME_BOUND { return m_iteratorConstructor.get(); }
 
     IntlCollator* defaultCollator() const LIFETIME_BOUND { return m_defaultCollator.get(this); }
+    IntlCollator* cachedLocaleCompareCollator(JSString* locale);
     bool canDoASCIIUCADUCETLocaleCompare() const { return m_canDoASCIIUCADUCETLocaleCompare; }
     IntlDateTimeFormat* defaultDateTimeFormat() const LIFETIME_BOUND { return m_defaultDateTimeFormat.get(this); }
     IntlDateTimeFormat* defaultDateFormat() const LIFETIME_BOUND { return m_defaultDateFormat.get(this); }
@@ -843,6 +862,7 @@ public:
     JSFunction* arrayProtoToStringFunction() const LIFETIME_BOUND { return m_arrayProtoToStringFunction.get(this); }
     JSFunction* arrayProtoValuesFunction() const LIFETIME_BOUND { return m_arrayProtoValuesFunction.get(this); }
     JSFunction* arrayProtoValuesFunctionConcurrently() const LIFETIME_BOUND { return m_arrayProtoValuesFunction.getConcurrently(); }
+    JSFunction* asyncFromSyncIteratorPrototypeNextFunction() const LIFETIME_BOUND { return m_asyncFromSyncIteratorProtoNextFunction.get(this); }
     JSFunction* mapProtoEntriesFunction() const LIFETIME_BOUND { return m_mapProtoEntriesFunction.get(this); }
     JSFunction* mapProtoEntriesFunctionConcurrently() const LIFETIME_BOUND { return m_mapProtoEntriesFunction.getConcurrently(); }
     JSFunction* setProtoValuesFunction() const LIFETIME_BOUND { return m_setProtoValuesFunction.get(this); }
@@ -1099,6 +1119,9 @@ public:
 
 #if USE(BUN_JSC_ADDITIONS)
     Structure* internalFieldTupleStructure() const { return m_internalFieldTupleStructure.get(); }
+    Structure* ffiFunctionStructure() const { return m_ffiFunctionStructure.get(this); }
+    Structure* ffiCallbackStructure() const { return m_ffiCallbackStructure.get(this); }
+    JS_EXPORT_PRIVATE FFI::FFIContext& ffiContext();
 #endif
 
     JS_EXPORT_PRIVATE void setInspectable(bool);

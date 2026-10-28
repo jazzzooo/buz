@@ -85,7 +85,7 @@ JSValue JSJavaScriptCallFrame::evaluateWithScopeExtension(JSGlobalObject* global
     if (exception)
         throwException(globalObject, scope, exception);
 
-    return result;
+    RELEASE_AND_RETURN(scope, result);
 }
 
 static JSValue valueForScopeType(DebuggerScope* scope)

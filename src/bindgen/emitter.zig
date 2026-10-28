@@ -329,7 +329,6 @@ fn emitCppRawStringLiteral(writer: *Writer, value: []const u8) Error!void {
 const CppRelativePath = struct {
     prefix: []const u8 = "",
     suffix: []const u8 = "",
-
 };
 
 /// A fixed diagnostic path or a path relative to its semantic converter.
@@ -4423,7 +4422,7 @@ fn emitCppNativeDictionarySource(e: *Emitter, writer: *Writer, id: anytype, sour
 }
 
 fn emitCppValueEncodingContract(writer: *Writer) Error!void {
-    try writer.writeAll("#if !USE(JSVALUE64)\n#error \"binding value encoding requires JSVALUE64\"\n#endif\n");
+    try writer.writeAll("static_assert(sizeof(JSC::JSValue) == sizeof(uint64_t));\n");
     const Constant = struct { name: []const u8, value: u64 };
     for ([_]Constant{
         .{ .name = "NumberTag", .value = value_encoding.number_tag },

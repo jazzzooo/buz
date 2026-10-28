@@ -339,6 +339,7 @@ export namespace JSC {
      * Unique script identifier.
      */
     export type ScriptId = string;
+    export type ScriptType = "program" | "module" | "webassembly";
     /**
      * Call frame identifier.
      */
@@ -356,7 +357,7 @@ export namespace JSC {
        */
       lineNumber: number;
       /**
-       * Column number in the script (0-based).
+       * Column number in the script (0-based) or bytecode offset for WebAssembly modules (0-based).
        */
       columnNumber?: number | undefined;
     };
@@ -560,9 +561,17 @@ export namespace JSC {
        */
       endLine: number;
       /**
-       * Length of the last line of the script.
+       * Length of the last line of the script or the end bytecode offset for WebAssembly modules.
        */
       endColumn: number;
+      /**
+       * Identifier of the execution context in which this script was parsed.
+       */
+      executionContextId: Runtime.ExecutionContextId;
+      /**
+       * Type of script.
+       */
+      scriptType: ScriptType;
       /**
        * Determines whether this script is a user extension script.
        */
@@ -576,9 +585,13 @@ export namespace JSC {
        */
       sourceMapURL?: string | undefined;
       /**
-       * True if this script was parsed as a module.
+       * Human-readable name of the script.
        */
-      module?: boolean | undefined;
+      displayName?: string | undefined;
+      /**
+       * Identifier of the network request associated with this script (if any).
+       */
+      requestId?: Network.RequestId | undefined;
     };
     /**
      * Fired when virtual machine fails to parse the script.

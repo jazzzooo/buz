@@ -29,6 +29,7 @@
 
 #if ENABLE(WEBASSEMBLY)
 
+#include "MemoryMode.h"
 #include "WasmBranchHints.h"
 #include "WasmFormat.h"
 #include "WasmModuleDebugInfo.h"
@@ -118,6 +119,15 @@ struct ModuleInformation final : public ThreadSafeRefCounted<ModuleInformation> 
     const MemoryInformation& memory(unsigned index) const { return memories[index]; }
     const TableInformation& table(unsigned index) const { return tables[index]; }
     const GlobalInformation& global(unsigned index) const { return globals[index]; }
+
+    // Signaling relies on 32-bit addresses + PROT_NONE redzone. Memory64 and non-zero
+    // multi-memories must always use explicit bounds checks.
+    MemoryMode memoryModeForAccess(unsigned memoryIndex, MemoryMode memory0Mode) const
+    {
+        if (memoryIndex || memory(memoryIndex).isMemory64())
+            return MemoryMode::BoundsChecking;
+        return memory0Mode;
+    }
 
     bool isDeclaredFunction(FunctionSpaceIndex index) const { return m_declaredFunctions.contains(index); }
     void addDeclaredFunction(FunctionSpaceIndex index) { m_declaredFunctions.set(index); }
@@ -220,6 +230,8 @@ struct ModuleInformation final : public ThreadSafeRefCounted<ModuleInformation> 
     std::optional<uint32_t> numberOfDataSegments;
     using ConstantExpressionAndSourceOffset = std::pair<Vector<uint8_t>, size_t>;
     Vector<ConstantExpressionAndSourceOffset> constantExpressions;
+    Name sourceURL;
+    uint64_t requestIdentifier { 0 };
     Name sourceMappingURL;
 #if ENABLE(WEBASSEMBLY_DEBUGGER)
     std::unique_ptr<Wasm::ModuleDebugInfo> debugInfo;

@@ -27,12 +27,11 @@
 #include "CollectorPhase.h"
 #include "CompleteSubspace.h"
 #include "DeleteAllCodeEffort.h"
+#include "GCCompletionCallback.h"
 #include "GCConductor.h"
 #include "GCIncomingRefCountedSet.h"
 #include "GCMemoryOperations.h"
 #include "GCRequest.h"
-#include "HandleSet.h"
-#include "HeapFinalizerCallback.h"
 #include "HeapObserver.h"
 #include "IsoCellSet.h"
 #include "IsoHeapCellType.h"
@@ -43,6 +42,7 @@
 #include "MarkedSpace.h"
 #include "MutatorState.h"
 #include "PreciseSubspace.h"
+#include "StrongSet.h"
 #include "StructureID.h"
 #include "Synchronousness.h"
 #include "WeakHandleOwner.h"
@@ -212,9 +212,18 @@ class Heap;
 #define FOR_EACH_JSC_WEBASSEMBLY_DYNAMIC_NON_ISO_SUBSPACE(v)
 #endif
 
+#if USE(BUN_JSC_ADDITIONS)
+#define FOR_EACH_JSC_FFI_DYNAMIC_ISO_SUBSPACE(v) \
+    v(ffiFunctionSpace, ffiFunctionHeapCellType, JSFFIFunction) \
+    v(ffiCallbackSpace, ffiCallbackHeapCellType, JSFFICallback)
+#else
+#define FOR_EACH_JSC_FFI_DYNAMIC_ISO_SUBSPACE(v)
+#endif
+
 #define FOR_EACH_JSC_DYNAMIC_ISO_SUBSPACE(v) \
     FOR_EACH_JSC_OBJC_API_DYNAMIC_ISO_SUBSPACE(v) \
     FOR_EACH_JSC_GLIB_API_DYNAMIC_ISO_SUBSPACE(v) \
+    FOR_EACH_JSC_FFI_DYNAMIC_ISO_SUBSPACE(v) \
     \
     v(apiGlobalObjectSpace, apiGlobalObjectHeapCellType, JSAPIGlobalObject) \
     v(apiValueWrapperSpace, cellHeapCellType, JSAPIValueWrapper) \
@@ -485,7 +494,7 @@ public:
     template<typename Functor> inline void forEachCodeBlock(NOESCAPE const Functor&);
     template<typename Functor> inline void forEachCodeBlockIgnoringJITPlans(const AbstractLocker& codeBlockSetLocker, NOESCAPE const Functor&);
 
-    HandleSet* handleSet() LIFETIME_BOUND { return &m_handleSet; }
+    StrongSet* strongSet() LIFETIME_BOUND { return &m_strongSet; }
 
     JS_EXPORT_PRIVATE void willStartIterating();
     JS_EXPORT_PRIVATE void didFinishIterating();
@@ -610,8 +619,8 @@ public:
     
     HeapVerifier* verifier() const LIFETIME_BOUND { return m_verifier.get(); }
     
-    void addHeapFinalizerCallback(const HeapFinalizerCallback&);
-    void removeHeapFinalizerCallback(const HeapFinalizerCallback&);
+    void addGCCompletionCallback(const GCCompletionCallback&);
+    void removeGCCompletionCallback(const GCCompletionCallback&);
     
     void runTaskInParallel(RefPtr<SharedTask<void(SlotVisitor&)>>);
     
@@ -664,7 +673,6 @@ private:
     friend class GCAwareJITStubRoutine;
     friend class GCLogging;
     friend class GCThread;
-    friend class HandleSet;
     friend class HeapUtil;
     friend class HeapVerifier;
     friend class JITStubRoutine;
@@ -746,14 +754,14 @@ private:
     JS_EXPORT_PRIVATE void acquireAccessSlow();
     JS_EXPORT_PRIVATE void releaseAccessSlow();
     
-    bool handleNeedFinalize(unsigned);
-    void handleNeedFinalize();
+    bool handleNeedCollectionEpilogue(unsigned);
+    void handleNeedCollectionEpilogue();
     
     bool relinquishConn(unsigned);
     void finishRelinquishingConn();
     
-    void setNeedFinalize();
-    void waitWhileNeedFinalize();
+    void setNeedCollectionEpilogue();
+    void waitWhileNeedCollectionEpilogue();
     
     void setMutatorWaiting();
     void clearMutatorWaiting();
@@ -789,9 +797,9 @@ private:
     void harvestWeakReferences();
 
     template<typename CellType, typename CellSet>
-    void finalizeMarkedUnconditionalFinalizers(CellSet&, CollectionScope);
+    void reconcileWeakReferencesInMarkedCells(CellSet&, CollectionScope);
 
-    void finalizeUnconditionalFinalizers();
+    void reconcileWeakReferencesAtGCEnd();
 
     void deleteUnmarkedCompiledCode();
     JS_EXPORT_PRIVATE void addToRememberedSet(const JSCell*);
@@ -800,8 +808,8 @@ private:
     void resumeCompilerThreads();
     void gatherExtraHeapData(HeapProfiler&);
     void removeDeadHeapSnapshotNodes(HeapProfiler&);
-    void finalize();
-    void sweepInFinalize();
+    void runCollectionEpilogue();
+    void sweepEagerlyInEpilogue();
     
     void sweepAllLogicallyEmptyWeakBlocks();
     bool sweepNextLogicallyEmptyWeakBlock();
@@ -904,7 +912,7 @@ private:
     Vector<std::unique_ptr<SlotVisitor>> m_parallelSlotVisitors;
     Vector<SlotVisitor*> m_availableParallelSlotVisitors WTF_GUARDED_BY_LOCK(m_parallelSlotVisitorLock);
     
-    HandleSet m_handleSet;
+    StrongSet m_strongSet;
     std::unique_ptr<CodeBlockSet> m_codeBlocks;
     std::unique_ptr<JITStubRoutineSet> m_jitStubRoutines;
     CFinalizerOwner m_cFinalizerOwner;
@@ -932,8 +940,11 @@ private:
     size_t m_indexOfNextLogicallyEmptyWeakBlockToSweep { WTF::notFound };
 
 #if ASSERT_ENABLED
-    friend void setTopGCOwnedDataScopeIfNeeded(const JSCell*, const void*);
-    friend void clearTopGCOwnedDataScopeIfNeeded(const JSCell*, const void*);
+    // JS_EXPORT_PRIVATE matches GCOwnedDataScope.h. Heap.h does not include it, so
+    // whichever declaration a translation unit sees first has to carry the attribute:
+    // adding dllimport in a redeclaration is an error under -Wdll-attribute-on-redeclaration.
+    friend JS_EXPORT_PRIVATE void setTopGCOwnedDataScopeIfNeeded(const JSCell*, const void*);
+    friend JS_EXPORT_PRIVATE void clearTopGCOwnedDataScopeIfNeeded(const JSCell*, const void*);
     const void* m_topGCOwnedDataScope { nullptr };
 #endif
     // Use a SegmentedVector rather than a Vector because we don't want to have to copy in order to grow the buffer.
@@ -949,7 +960,7 @@ private:
 
     Vector<HeapObserver*> m_observers;
     
-    Vector<HeapFinalizerCallback> m_heapFinalizerCallbacks;
+    Vector<GCCompletionCallback> m_gcCompletionCallbacks;
     
     std::unique_ptr<HeapVerifier> m_verifier;
 
@@ -997,7 +1008,7 @@ private:
     static constexpr unsigned mutatorHasConnBit = 1u << 0u; // Must also be protected by threadLock.
     static constexpr unsigned stoppedBit = 1u << 1u; // Only set when !hasAccessBit
     static constexpr unsigned hasAccessBit = 1u << 2u;
-    static constexpr unsigned needFinalizeBit = 1u << 3u;
+    static constexpr unsigned needCollectionEpilogueBit = 1u << 3u;
     static constexpr unsigned mutatorWaitingBit = 1u << 4u; // Allows the mutator to use this as a condition variable.
     Atomic<unsigned> m_worldState;
     bool m_worldIsStopped { false };
@@ -1101,6 +1112,10 @@ public:
     IsoHeapCellType intlSegmentIteratorHeapCellType;
     IsoHeapCellType intlSegmenterHeapCellType;
     IsoHeapCellType intlSegmentsHeapCellType;
+#if USE(BUN_JSC_ADDITIONS)
+    IsoHeapCellType ffiFunctionHeapCellType;
+    IsoHeapCellType ffiCallbackHeapCellType;
+#endif
 #if ENABLE(WEBASSEMBLY)
     IsoHeapCellType webAssemblyExceptionHeapCellType;
     IsoHeapCellType webAssemblyFunctionHeapCellType;
@@ -1215,14 +1230,14 @@ public:
         IsoSubspace space;
         IsoCellSet clearableCodeSet;
         IsoCellSet outputConstraintsSet;
-        IsoCellSet finalizerSet;
+        IsoCellSet weakReconciliationSet;
 
         template<typename... Arguments>
         ScriptExecutableSpaceAndSets(Arguments&&... arguments)
             : space(std::forward<Arguments>(arguments)...)
             , clearableCodeSet(space)
             , outputConstraintsSet(space)
-            , finalizerSet(space)
+            , weakReconciliationSet(space)
         {
         }
 
@@ -1235,7 +1250,7 @@ public:
 
         static IsoCellSet& clearableCodeSetFor(Subspace& space) { return setAndSpaceFor(space).clearableCodeSet; }
         static IsoCellSet& outputConstraintsSetFor(Subspace& space) { return setAndSpaceFor(space).outputConstraintsSet; }
-        static IsoCellSet& finalizerSetFor(Subspace& space) { return setAndSpaceFor(space).finalizerSet; }
+        static IsoCellSet& weakReconciliationSetFor(Subspace& space) { return setAndSpaceFor(space).weakReconciliationSet; }
     };
 
     DYNAMIC_SPACE_AND_SET_DEFINE_MEMBER(evalExecutableSpace, ScriptExecutableSpaceAndSets)

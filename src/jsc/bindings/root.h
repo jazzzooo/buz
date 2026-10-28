@@ -81,7 +81,6 @@
 #include <JavaScriptCore/JSCJSValue.h>
 #include <wtf/text/MakeString.h>
 #include <JavaScriptCore/JSCInlines.h>
-#include <JavaScriptCore/HandleSet.h>
 #include <wtf/Ref.h>
 #include <wtf/ThreadSafeRefCounted.h>
 #endif

@@ -263,19 +263,6 @@
 #define WTF_CPU_ARM_VFP 1
 #endif
 
-/* If CPU(ARM_NEON) is not enabled, we'll conservatively assume only VFP2 or VFPv3D16
-   support is available. Hence, only the first 16 64-bit floating point registers
-   are available. See:
-   NEON registers: http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0473c/CJACABEJ.html
-   VFP2 and VFP3 registers: http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0473c/CIHDIBDG.html
-   NEON to VFP register mapping: http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0473c/CJAIJHFC.html
-*/
-#if CPU(ARM_NEON)
-#define WTF_CPU_ARM_VFP_V3_D32 1
-#else
-#define WTF_CPU_ARM_VFP_V2 1
-#endif
-
 #if defined(__ARM_ARCH_7K__)
 #define WTF_CPU_APPLE_ARMV7K 1
 #endif
@@ -296,10 +283,6 @@
 
 #if !CPU(KNOWN)
 #define WTF_CPU_UNKNOWN 1
-#endif
-
-#if CPU(ARM) || CPU(MIPS) || CPU(RISCV64) || CPU(UNKNOWN)
-#define WTF_CPU_NEEDS_ALIGNED_ACCESS 1
 #endif
 
 /* __LP64__ is not defined on 64bit Windows since it uses LLP64. Using __SIZEOF_POINTER__ is simpler. */
@@ -332,6 +315,6 @@
 #error "Unknown endian"
 #endif
 
-#if !CPU(LITTLE_ENDIAN) && !CPU(BIG_ENDIAN)
+#if !CPU(LITTLE_ENDIAN)
 #error "Unsupported endian"
 #endif

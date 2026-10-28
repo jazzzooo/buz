@@ -1,8 +1,4 @@
 pub const RecordKind = enum(u8) {
-    /// var_name
-    declared_variable,
-    /// let_name
-    lexical_variable,
     /// module_name, import_name, local_name
     import_info_single,
     /// module_name, import_name, local_name
@@ -21,7 +17,6 @@ pub const RecordKind = enum(u8) {
 
     pub fn len(record: RecordKind) !usize {
         return switch (record) {
-            .declared_variable, .lexical_variable => 1,
             .import_info_single => 3,
             .import_info_single_type_script => 3,
             .import_info_namespace => 3,
@@ -38,10 +33,31 @@ pub const RecordKind = enum(u8) {
             .import_info_single, .import_info_single_type_script, .import_info_namespace, .export_info_star => 0,
             .export_info_indirect => 2,
             .export_info_namespace => 1,
-            .declared_variable, .lexical_variable, .export_info_local => null,
+            .export_info_local => null,
             else => unreachable,
         };
     }
+};
+
+pub const ModuleType = enum(u8) { javascript, webassembly, json, host_defined, _ };
+
+pub const ModuleRequest = extern struct {
+    module_name: StringID,
+    fetch_parameters: ModuleInfo.FetchParameters,
+
+    // JSC retains the first attributes for each (specifier, module type) pair.
+    const Context = struct {
+        pub fn hash(_: @This(), request: ModuleRequest) u32 {
+            var hasher = std.hash.Wyhash.init(0);
+            std.hash.autoHash(&hasher, request.module_name);
+            std.hash.autoHash(&hasher, request.fetch_parameters.moduleType());
+            return @truncate(hasher.final());
+        }
+
+        pub fn eql(_: @This(), a: ModuleRequest, b: ModuleRequest, _: usize) bool {
+            return a.module_name == b.module_name and a.fetch_parameters.moduleType() == b.fetch_parameters.moduleType();
+        }
+    };
 };
 
 pub const Flags = packed struct(u8) {
@@ -54,10 +70,10 @@ pub const Flags = packed struct(u8) {
 pub const ModuleInfoDeserialized = struct {
     strings_buf: []const u8,
     strings_lens: []align(1) const u32,
-    requested_modules_keys: []align(1) const StringID,
-    requested_modules_values: []align(1) const ModuleInfo.FetchParameters,
+    requested_modules: []align(1) const ModuleRequest,
     buffer: []align(1) const StringID,
     record_kinds: []align(1) const RecordKind,
+    module_types: []const ModuleType,
     flags: Flags,
     owner: union(enum) {
         module_info,
@@ -105,13 +121,14 @@ pub const ModuleInfoDeserialized = struct {
         const record_kinds_len = std.mem.readInt(u32, try eatC(&rem, 4), .little);
         const record_kinds = try eatSlice(&rem, RecordKind, record_kinds_len);
         _ = try eat(&rem, (4 - (record_kinds_len % 4)) % 4); // alignment padding
+        const module_types = try eatSlice(&rem, ModuleType, record_kinds_len);
+        _ = try eat(&rem, (4 - (record_kinds_len % 4)) % 4); // alignment padding
 
         const buffer_len = std.mem.readInt(u32, try eatC(&rem, 4), .little);
         const buffer = try eatSlice(&rem, StringID, buffer_len);
 
         const requested_modules_len = std.mem.readInt(u32, try eatC(&rem, 4), .little);
-        const requested_modules_keys = try eatSlice(&rem, StringID, requested_modules_len);
-        const requested_modules_values = try eatSlice(&rem, ModuleInfo.FetchParameters, requested_modules_len);
+        const requested_modules = try eatSlice(&rem, ModuleRequest, requested_modules_len);
 
         const flags: Flags = @bitCast((try eatC(&rem, 1))[0]);
         _ = try eat(&rem, 3); // alignment padding
@@ -123,10 +140,10 @@ pub const ModuleInfoDeserialized = struct {
         res.* = .{
             .strings_buf = strings_buf,
             .strings_lens = strings_lens,
-            .requested_modules_keys = requested_modules_keys,
-            .requested_modules_values = requested_modules_values,
+            .requested_modules = requested_modules,
             .buffer = buffer,
             .record_kinds = record_kinds,
+            .module_types = module_types,
             .flags = flags,
             .owner = .{ .allocated_slice = .{
                 .slice = duped,
@@ -146,20 +163,24 @@ pub const ModuleInfoDeserialized = struct {
         }
         if (remaining_strings != 0) return error.BadModuleInfo;
 
-        if (self.requested_modules_keys.len != self.requested_modules_values.len) return error.BadModuleInfo;
-        for (self.requested_modules_keys) |id| {
-            if (@backingInt(id) >= self.strings_lens.len) return error.BadModuleInfo;
+        for (self.requested_modules) |request| {
+            if (@backingInt(request.module_name) >= self.strings_lens.len) return error.BadModuleInfo;
+            switch (request.fetch_parameters) {
+                .none, .javascript, .webassembly, .json => {},
+                else => |kind| if (@backingInt(kind) >= self.strings_lens.len) return error.BadModuleInfo,
+            }
         }
-        for (self.requested_modules_values) |kind| switch (kind) {
-            .none, .javascript, .webassembly, .json => {},
-            else => if (@backingInt(kind) >= self.strings_lens.len) return error.BadModuleInfo,
-        };
 
         for (self.buffer) |id| {
             if (id != .star_default and id != .star_namespace and @backingInt(id) >= self.strings_lens.len) return error.BadModuleInfo;
         }
         var remaining_records = self.buffer;
-        for (self.record_kinds) |kind| {
+        if (self.record_kinds.len != self.module_types.len) return error.BadModuleInfo;
+        for (self.record_kinds, self.module_types) |kind, module_type| {
+            switch (module_type) {
+                .javascript, .webassembly, .json, .host_defined => {},
+                else => return error.BadModuleInfo,
+            }
             const len = kind.len() catch return error.BadModuleInfo;
             if (len > remaining_records.len) return error.BadModuleInfo;
             const record = remaining_records[0..len];
@@ -186,18 +207,19 @@ pub const ModuleInfoDeserialized = struct {
         try self.validate();
         const record_kinds_len = std.math.cast(u32, self.record_kinds.len) orelse return error.BadModuleInfo;
         const buffer_len = std.math.cast(u32, self.buffer.len) orelse return error.BadModuleInfo;
-        const requested_modules_len = std.math.cast(u32, self.requested_modules_keys.len) orelse return error.BadModuleInfo;
+        const requested_modules_len = std.math.cast(u32, self.requested_modules.len) orelse return error.BadModuleInfo;
         const strings_len = std.math.cast(u32, self.strings_lens.len) orelse return error.BadModuleInfo;
         try writer.writeInt(u32, record_kinds_len, .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.record_kinds));
         try writer.splatByteAll(0, (4 - (self.record_kinds.len % 4)) % 4); // alignment padding
+        try writer.writeAll(std.mem.sliceAsBytes(self.module_types));
+        try writer.splatByteAll(0, (4 - (self.module_types.len % 4)) % 4); // alignment padding
 
         try writer.writeInt(u32, buffer_len, .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.buffer));
 
         try writer.writeInt(u32, requested_modules_len, .little);
-        try writer.writeAll(std.mem.sliceAsBytes(self.requested_modules_keys));
-        try writer.writeAll(std.mem.sliceAsBytes(self.requested_modules_values));
+        try writer.writeAll(std.mem.sliceAsBytes(self.requested_modules));
 
         try writer.writeByte(@bitCast(self.flags));
         try writer.splatByteAll(0, 3); // alignment padding
@@ -229,9 +251,10 @@ pub const ModuleInfo = struct {
     strings_map: std.array_hash_map.Custom(StringMapKey, void, void, true),
     strings_buf: std.ArrayList(u8),
     strings_lens: std.ArrayList(u32),
-    requested_modules: std.array_hash_map.Auto(StringID, FetchParameters),
+    requested_modules: std.array_hash_map.Custom(ModuleRequest, void, ModuleRequest.Context, true),
     buffer: std.ArrayList(StringID),
     record_kinds: std.ArrayList(RecordKind),
+    module_types: std.ArrayList(ModuleType),
     flags: Flags,
     exported_names: std.array_hash_map.Auto(StringID, void),
     finalized: bool = false,
@@ -253,35 +276,32 @@ pub const ModuleInfo = struct {
         pub fn hostDefined(value: StringID) FetchParameters {
             return @fromBackingInt(@intCast(@backingInt(value)));
         }
+
+        pub fn moduleType(self: FetchParameters) ModuleType {
+            return switch (self) {
+                .none, .javascript => .javascript,
+                .webassembly => .webassembly,
+                .json => .json,
+                else => .host_defined,
+            };
+        }
     };
 
-    pub const VarKind = enum { declared, lexical };
-    pub fn addVar(self: *ModuleInfo, name: StringID, kind: VarKind) !void {
-        switch (kind) {
-            .declared => try self.addDeclaredVariable(name),
-            .lexical => try self.addLexicalVariable(name),
-        }
-    }
-
-    fn _addRecord(self: *ModuleInfo, kind: RecordKind, data: []const StringID) !void {
+    fn _addRecord(self: *ModuleInfo, kind: RecordKind, data: []const StringID, module_type: ModuleType) !void {
         bun.assert(!self.finalized);
         bun.assert(data.len == (kind.len() catch unreachable));
         try self.record_kinds.ensureUnusedCapacity(self.gpa, 1);
+        try self.module_types.ensureUnusedCapacity(self.gpa, 1);
         try self.buffer.ensureUnusedCapacity(self.gpa, data.len);
         self.record_kinds.appendAssumeCapacity(kind);
+        self.module_types.appendAssumeCapacity(module_type);
         self.buffer.appendSliceAssumeCapacity(data);
     }
-    pub fn addDeclaredVariable(self: *ModuleInfo, id: StringID) !void {
-        try self._addRecord(.declared_variable, &.{id});
+    pub fn addImportInfoSingle(self: *ModuleInfo, module_name: StringID, import_name: StringID, local_name: StringID, only_used_as_type: bool, module_type: ModuleType) !void {
+        try self._addRecord(if (only_used_as_type) .import_info_single_type_script else .import_info_single, &.{ module_name, import_name, local_name }, module_type);
     }
-    pub fn addLexicalVariable(self: *ModuleInfo, id: StringID) !void {
-        try self._addRecord(.lexical_variable, &.{id});
-    }
-    pub fn addImportInfoSingle(self: *ModuleInfo, module_name: StringID, import_name: StringID, local_name: StringID, only_used_as_type: bool) !void {
-        try self._addRecord(if (only_used_as_type) .import_info_single_type_script else .import_info_single, &.{ module_name, import_name, local_name });
-    }
-    pub fn addImportInfoNamespace(self: *ModuleInfo, module_name: StringID, local_name: StringID) !void {
-        try self._addRecord(.import_info_namespace, &.{ module_name, .star_namespace, local_name });
+    pub fn addImportInfoNamespace(self: *ModuleInfo, module_name: StringID, local_name: StringID, module_type: ModuleType) !void {
+        try self._addRecord(.import_info_namespace, &.{ module_name, .star_namespace, local_name }, module_type);
     }
     pub fn addExportInfoIndirect(self: *ModuleInfo, export_name: StringID, import_name: StringID, module_name: StringID) !void {
         try self.addNamedExport(.export_info_indirect, export_name, &.{ export_name, import_name, module_name });
@@ -293,14 +313,14 @@ pub const ModuleInfo = struct {
         try self.addNamedExport(.export_info_namespace, export_name, &.{ export_name, module_name });
     }
     pub fn addExportInfoStar(self: *ModuleInfo, module_name: StringID) !void {
-        try self._addRecord(.export_info_star, &.{module_name});
+        try self._addRecord(.export_info_star, &.{module_name}, .javascript);
     }
 
     fn addNamedExport(self: *ModuleInfo, kind: RecordKind, name: StringID, data: []const StringID) !void {
         bun.assert(!self.finalized);
         if (self.exported_names.contains(name)) return;
         try self.exported_names.ensureUnusedCapacity(self.gpa, 1);
-        try self._addRecord(kind, data);
+        try self._addRecord(kind, data, .javascript);
         self.exported_names.putAssumeCapacityNoClobber(name, {});
     }
 
@@ -316,9 +336,10 @@ pub const ModuleInfo = struct {
             .strings_buf = .empty,
             .strings_lens = .empty,
             .exported_names = .empty,
-            .requested_modules = std.array_hash_map.Auto(StringID, FetchParameters).empty,
+            .requested_modules = .empty,
             .buffer = .empty,
             .record_kinds = .empty,
+            .module_types = .empty,
             .flags = .{ .contains_import_meta = false, .is_typescript = is_typescript },
             ._deserialized = undefined,
         };
@@ -331,6 +352,7 @@ pub const ModuleInfo = struct {
         self.requested_modules.deinit(self.gpa);
         self.buffer.deinit(self.gpa);
         self.record_kinds.deinit(self.gpa);
+        self.module_types.deinit(self.gpa);
     }
     pub fn destroy(self: *ModuleInfo) void {
         const alloc = self.gpa;
@@ -377,9 +399,7 @@ pub const ModuleInfo = struct {
     }
     pub fn requestModule(self: *ModuleInfo, import_record_path: StringID, fetch_parameters: FetchParameters) !void {
         bun.assert(!self.finalized);
-        // jsc only records the attributes of the first import with the given import_record_path. so only put if not exists.
-        const gpres = try self.requested_modules.getOrPut(self.gpa, import_record_path);
-        if (!gpres.found_existing) gpres.value_ptr.* = fetch_parameters;
+        _ = try self.requested_modules.getOrPut(self.gpa, .{ .module_name = import_record_path, .fetch_parameters = fetch_parameters });
     }
 
     pub fn replaceModuleSpecifier(self: *ModuleInfo, old_id: StringID, new_id: StringID) void {
@@ -393,15 +413,23 @@ pub const ModuleInfo = struct {
             }
             offset += kind.len() catch unreachable;
         }
-        if (self.requested_modules.getIndex(old_id)) |old_index| {
-            if (self.requested_modules.getIndex(new_id)) |new_index| {
+        var old_index: usize = 0;
+        while (old_index < self.requested_modules.count()) {
+            var request = self.requested_modules.keys()[old_index];
+            if (request.module_name != old_id) {
+                old_index += 1;
+                continue;
+            }
+            request.module_name = new_id;
+            if (self.requested_modules.getIndex(request)) |new_index| {
                 if (new_index < old_index) {
                     self.requested_modules.orderedRemoveAt(old_index);
-                    return;
+                    continue;
                 }
                 self.requested_modules.orderedRemoveAt(new_index);
             }
-            self.requested_modules.setKey(old_index, new_id);
+            self.requested_modules.setKey(old_index, request);
+            old_index += 1;
         }
     }
 
@@ -424,7 +452,7 @@ pub const ModuleInfo = struct {
 
         {
             var i: usize = 0;
-            for (self.record_kinds.items) |*k| {
+            for (self.record_kinds.items, self.module_types.items) |*k, *module_type| {
                 if (k.* == .export_info_local) {
                     if (local_name_to_module_name.get(self.buffer.items[i + 1])) |ip| {
                         // `import * as z from M; export { z }` is a Namespace export per
@@ -434,6 +462,7 @@ pub const ModuleInfo = struct {
                         k.* = .export_info_indirect;
                         self.buffer.items[i + 1] = ip.import_name;
                         self.buffer.items[i + 2] = ip.module_name;
+                        module_type.* = self.module_types.items[ip.record_kinds_idx];
                         // In TypeScript, the re-exported import may target a type-only
                         // export that was elided. Convert the import to SingleTypeScript
                         // so JSC tolerates it being NotFound during linking.
@@ -449,10 +478,10 @@ pub const ModuleInfo = struct {
         self._deserialized = .{
             .strings_buf = self.strings_buf.items,
             .strings_lens = self.strings_lens.items,
-            .requested_modules_keys = self.requested_modules.keys(),
-            .requested_modules_values = self.requested_modules.values(),
+            .requested_modules = self.requested_modules.keys(),
             .buffer = self.buffer.items,
             .record_kinds = self.record_kinds.items,
+            .module_types = self.module_types.items,
             .flags = self.flags,
             .owner = .module_info,
         };
@@ -501,7 +530,7 @@ test "module metadata updates preserve logical state on allocation failure" {
     }.run, .{});
 }
 
-test "module specifier replacement preserves identifiers and the first request" {
+test "module specifier replacement preserves identifiers and distinct request types" {
     var info = ModuleInfo.init(std.testing.allocator, false);
     defer info.deinit();
     var ids: [32]StringID = undefined;
@@ -510,20 +539,18 @@ test "module specifier replacement preserves identifiers and the first request" 
         id.* = try info.str(try std.fmt.bufPrint(&name_buffer, "module_{d}", .{index}));
         try info.requestModule(id.*, if (index == 0) .json else .javascript);
     }
-    try info.addDeclaredVariable(ids[0]);
-    try info.addImportInfoSingle(ids[0], ids[0], ids[0], false);
+    try info.addImportInfoSingle(ids[0], ids[0], ids[0], false, .json);
     try info.addExportInfoLocal(ids[0], ids[0]);
     try info.addExportInfoIndirect(ids[1], ids[0], ids[0]);
     try info.addExportInfoNamespace(ids[2], ids[0]);
     try info.addExportInfoStar(ids[0]);
 
     info.replaceModuleSpecifier(ids[0], ids[31]);
-    try std.testing.expectEqual(@as(usize, 31), info.requested_modules.count());
-    try std.testing.expectEqual(ids[31], info.requested_modules.keys()[0]);
-    try std.testing.expectEqual(ModuleInfo.FetchParameters.json, info.requested_modules.get(ids[31]).?);
-    try std.testing.expect(!info.requested_modules.contains(ids[0]));
+    try std.testing.expectEqual(@as(usize, 32), info.requested_modules.count());
+    try std.testing.expectEqual(ids[31], info.requested_modules.keys()[0].module_name);
+    try std.testing.expectEqual(ModuleInfo.FetchParameters.json, info.requested_modules.keys()[0].fetch_parameters);
+    try std.testing.expect(!info.requested_modules.contains(.{ .module_name = ids[0], .fetch_parameters = .json }));
     try std.testing.expectEqualSlices(StringID, &.{
-        ids[0],
         ids[31],
         ids[0],
         ids[0],
@@ -539,16 +566,16 @@ test "module specifier replacement preserves identifiers and the first request" 
     }, info.buffer.items);
 
     info.replaceModuleSpecifier(ids[30], ids[31]);
-    try std.testing.expectEqual(@as(usize, 30), info.requested_modules.count());
-    try std.testing.expectEqual(ids[31], info.requested_modules.keys()[0]);
-    try std.testing.expectEqual(ModuleInfo.FetchParameters.json, info.requested_modules.get(ids[31]).?);
-    try std.testing.expect(!info.requested_modules.contains(ids[30]));
+    try std.testing.expectEqual(@as(usize, 31), info.requested_modules.count());
+    try std.testing.expectEqual(ids[31], info.requested_modules.keys()[0].module_name);
+    try std.testing.expectEqual(ModuleInfo.FetchParameters.json, info.requested_modules.keys()[0].fetch_parameters);
+    try std.testing.expect(!info.requested_modules.contains(.{ .module_name = ids[30], .fetch_parameters = .javascript }));
 
     const final_id = try info.str("final.js");
     info.replaceModuleSpecifier(ids[31], final_id);
-    try std.testing.expectEqual(final_id, info.requested_modules.keys()[0]);
-    try std.testing.expectEqual(ModuleInfo.FetchParameters.json, info.requested_modules.get(final_id).?);
-    try std.testing.expect(!info.requested_modules.contains(ids[31]));
+    try std.testing.expectEqual(final_id, info.requested_modules.keys()[0].module_name);
+    try std.testing.expectEqual(ModuleInfo.FetchParameters.json, info.requested_modules.keys()[0].fetch_parameters);
+    try std.testing.expect(!info.requested_modules.contains(.{ .module_name = ids[31], .fetch_parameters = .json }));
 }
 
 test "module metadata rejects corrupt lengths and records" {
@@ -561,18 +588,18 @@ test "module metadata rejects corrupt lengths and records" {
     var info = ModuleInfo.init(std.testing.allocator, false);
     defer info.deinit();
     const name = try info.str("name");
-    try info.addDeclaredVariable(name);
+    try info.addExportInfoLocal(name, name);
     try info.finalize();
     var record = info.asDeserialized().*;
     try record.validate();
     record.record_kinds = &.{@fromBackingInt(255)};
     try std.testing.expectError(error.BadModuleInfo, record.validate());
-    record.record_kinds = &.{.import_info_single};
+    record.record_kinds = &.{.export_info_star};
     try std.testing.expectError(error.BadModuleInfo, record.validate());
-    record.record_kinds = &.{.declared_variable};
-    record.buffer = &.{@fromBackingInt(1)};
+    record.record_kinds = &.{.export_info_local};
+    record.buffer = &.{ @fromBackingInt(1), name, .star_default };
     try std.testing.expectError(error.BadModuleInfo, record.validate());
-    record.buffer = &.{name};
+    record.buffer = &.{ name, name, .star_default };
     record.strings_lens = &.{5};
     try std.testing.expectError(error.BadModuleInfo, record.validate());
 }

@@ -100,6 +100,18 @@ ALWAYS_INLINE uint64_t addressValueToUint64(JSGlobalObject* globalObject, JSValu
     return static_cast<uint64_t>(toNonWrappingUint32(globalObject, value, errorType));
 }
 
+ALWAYS_INLINE JSValue addressValueFromUint64(JSGlobalObject* globalObject, uint64_t value, Wasm::AddressType addressType)
+{
+    if (addressType.is64Bit())
+        return JSBigInt::createFrom(globalObject, value);
+    return jsNumber(static_cast<double>(value));
+}
+
+ALWAYS_INLINE JSString* addressTypeString(VM& vm, Wasm::AddressType addressType)
+{
+    return addressType.is64Bit() ? jsNontrivialString(vm, "i64"_s) : jsNontrivialString(vm, "i32"_s);
+}
+
 ALWAYS_INLINE std::span<const uint8_t> getWasmBufferFromValue(JSGlobalObject* globalObject, JSValue value, const SourceProviderBufferGuard&)
 {
     VM& vm = getVM(globalObject);
@@ -200,7 +212,7 @@ ALWAYS_INLINE JSValue defaultValueForReferenceType(const Wasm::Type type)
 
 ALWAYS_INLINE JSValue toJSValue(JSGlobalObject* globalObject, const Wasm::Type type, uint64_t bits)
 {
-    switch (type.kind) {
+    switch (type.kind()) {
     case Wasm::TypeKind::Void:
         return jsUndefined();
     case Wasm::TypeKind::I32:
@@ -228,7 +240,7 @@ ALWAYS_INLINE uint64_t toWebAssemblyValue(JSGlobalObject* globalObject, const Wa
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    switch (type.kind) {
+    switch (type.kind()) {
     case Wasm::TypeKind::I32:
         RELEASE_AND_RETURN(scope, value.toInt32(globalObject));
     case Wasm::TypeKind::I64:
@@ -260,7 +272,7 @@ ALWAYS_INLINE uint64_t toWebAssemblyValue(JSGlobalObject* globalObject, const Wa
             RELEASE_ASSERT_NOT_REACHED();
         else {
             value = Wasm::internalizeExternref(value);
-            if (!Wasm::TypeInformation::isReferenceValueAssignable(value, type.isNullable(), type.index)) {
+            if (!Wasm::TypeInformation::isReferenceValueAssignable(value, type.isNullable(), type.index())) {
                 // FIXME: provide a better error message here
                 // https://bugs.webkit.org/show_bug.cgi?id=247746
                 return throwVMTypeError(globalObject, scope, "Argument value did not match the reference type"_s);

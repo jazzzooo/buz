@@ -224,8 +224,6 @@ static unsigned asyncTestExpectedPasses { 0 };
 
 }
 
-template<typename Vector>
-static bool fillBufferWithContentsOfFile(const String& fileName, Vector& buffer);
 static RefPtr<Uint8Array> fillBufferWithContentsOfFile(const String& fileName);
 
 class CommandLine;
@@ -239,7 +237,11 @@ static void checkException(GlobalObject*, bool isLastFile, bool hasException, JS
 class Message : public ThreadSafeRefCounted<Message> {
 public:
 #if ENABLE(WEBASSEMBLY)
-    using Content = Variant<ArrayBufferContents, RefPtr<SharedArrayBufferContents>>;
+    struct WasmMemory {
+        RefPtr<SharedArrayBufferContents> contents;
+        Wasm::AddressType addressType;
+    };
+    using Content = Variant<ArrayBufferContents, WasmMemory>;
 #else
     using Content = Variant<ArrayBufferContents>;
 #endif
@@ -616,6 +618,10 @@ private:
 
     void finishCreation(VM& vm, const Vector<String>& arguments)
     {
+        // This shouldn't actually throw in practice, it's a test object. That said, it creates
+        // arrays and such that can generally throw.
+        auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+
         auto& filter = ensurePropertyFilter();
 
         auto addFunction = [&] (VM& vm, ASCIILiteral name, NativeFunction function, unsigned arguments, unsigned attributes = static_cast<unsigned>(PropertyAttribute::DontEnum)) {
@@ -787,8 +793,11 @@ private:
 
         if (!arguments.isEmpty()) {
             JSArray* array = constructEmptyArray(this, nullptr);
-            for (size_t i = 0; i < arguments.size(); ++i)
+            scope.assertNoException();
+            for (size_t i = 0; i < arguments.size(); ++i) {
                 array->putDirectIndex(this, i, jsString(vm, arguments[i]));
+                scope.assertNoException();
+            }
             putDirect(vm, Identifier::fromString(vm, "arguments"_s), array, DontEnum);
         }
 
@@ -1503,6 +1512,27 @@ JSPromise* GlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JSModul
     if (!fetchModuleFromLocalFileSystem(moduleURL, buffer))
         RELEASE_AND_RETURN(scope, rejectWithError(createError(globalObject, makeString("Could not open file '"_s, moduleKey, "'."_s))));
 
+    if (attributes) {
+        switch (attributes->type()) {
+        case ScriptFetchParameters::Type::JSON: {
+            auto source = SourceCode(StringSourceProvider::create(stringFromUTF(buffer), SourceOrigin { moduleURL }, WTF::move(moduleKey), SourceTaintedOrigin::Untainted, TextPosition(), SourceProviderSourceType::JSON));
+            auto sourceCode = JSSourceCode::create(vm, WTF::move(source));
+            scope.release();
+            promise->resolve(globalObject, vm, sourceCode);
+            return promise;
+        }
+        case ScriptFetchParameters::Type::Text: {
+            auto source = SourceCode(StringSourceProvider::create(stringFromUTF(buffer), SourceOrigin { moduleURL }, WTF::move(moduleKey), SourceTaintedOrigin::Untainted, TextPosition(), SourceProviderSourceType::Text));
+            auto sourceCode = JSSourceCode::create(vm, WTF::move(source));
+            scope.release();
+            promise->resolve(globalObject, vm, sourceCode);
+            return promise;
+        }
+        default:
+            break;
+        }
+    }
+
 #if ENABLE(WEBASSEMBLY)
     // FileSystem does not have mime-type header. The JSC shell recognizes WebAssembly's magic header.
     if ((buffer.size() >= 4 && buffer[0] == '\0' && buffer[1] == 'a' && buffer[2] == 's' && buffer[3] == 'm') || (attributes && attributes->type() == ScriptFetchParameters::Type::WebAssembly)) {
@@ -1513,14 +1543,6 @@ JSPromise* GlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JSModul
         return promise;
     }
 #endif
-
-    if (attributes && attributes->type() == ScriptFetchParameters::Type::JSON) {
-        auto source = SourceCode(StringSourceProvider::create(stringFromUTF(buffer), SourceOrigin { moduleURL }, WTF::move(moduleKey), SourceTaintedOrigin::Untainted, TextPosition(), SourceProviderSourceType::JSON));
-        auto sourceCode = JSSourceCode::create(vm, WTF::move(source));
-        scope.release();
-        promise->resolve(globalObject, vm, sourceCode);
-        return promise;
-    }
 
     auto sourceCode = JSSourceCode::create(vm, jscSource(stringFromUTF(buffer), SourceOrigin { moduleURL }, WTF::move(moduleKey), TextPosition(), SourceProviderSourceType::Module));
     scope.release();
@@ -2678,14 +2700,15 @@ JSC_DEFINE_HOST_FUNCTION(functionDollarAgentReceiveBroadcast, (JSGlobalObject* g
             return JSArrayBuffer::create(vm, globalObject->arrayBufferStructure(sharingMode), WTF::move(nativeBuffer));
         }
 #if ENABLE(WEBASSEMBLY)
-        if (std::holds_alternative<RefPtr<SharedArrayBufferContents>>(content)) {
+        if (std::holds_alternative<Message::WasmMemory>(content)) {
             JSWebAssemblyMemory* jsMemory = JSC::JSWebAssemblyMemory::create(vm, globalObject->webAssemblyMemoryStructure());
             auto handler = [&vm, jsMemory](Wasm::Memory::GrowSuccess, PageCount oldPageCount, PageCount newPageCount) { jsMemory->growSuccessCallback(vm, oldPageCount, newPageCount); };
+            auto wasmMemory = std::get<Message::WasmMemory>(WTF::move(content));
             RefPtr<Wasm::Memory> memory;
-            if (auto shared = std::get<RefPtr<SharedArrayBufferContents>>(WTF::move(content)))
-                memory = Wasm::Memory::create(shared.releaseNonNull(), jsMemory->memory().addressType(), WTF::move(handler));
+            if (auto shared = WTF::move(wasmMemory.contents))
+                memory = Wasm::Memory::create(shared.releaseNonNull(), wasmMemory.addressType, WTF::move(handler));
             else
-                memory = Wasm::Memory::createZeroSized(MemorySharingMode::Shared, jsMemory->memory().addressType(), WTF::move(handler));
+                memory = Wasm::Memory::createZeroSized(MemorySharingMode::Shared, wasmMemory.addressType, WTF::move(handler));
             jsMemory->adopt(memory.releaseNonNull());
             return jsMemory;
         }
@@ -2753,8 +2776,8 @@ JSC_DEFINE_HOST_FUNCTION(functionDollarAgentBroadcast, (JSGlobalObject* globalOb
     if (memory && memory->memory().sharingMode() == MemorySharingMode::Shared) {
         Workers::singleton().broadcast(
             [&] (const AbstractLocker& locker, Worker& worker) {
-                RefPtr<SharedArrayBufferContents> contents { memory->memory().shared() };
-                RefPtr<Message> message = adoptRef(new Message(WTF::move(contents), index));
+                Message::WasmMemory wasmMemory { memory->memory().shared(), memory->memory().addressType() };
+                RefPtr<Message> message = adoptRef(new Message(WTF::move(wasmMemory), index));
                 worker.enqueue(locker, message);
             });
         return JSValue::encode(jsUndefined());
@@ -3084,7 +3107,7 @@ JSC_DEFINE_HOST_FUNCTION(functionFinalizationRegistryDeadCount, (JSGlobalObject*
 
 JSC_DEFINE_HOST_FUNCTION(functionIs32BitPlatform, (JSGlobalObject*, CallFrame*))
 {
-#if USE(JSVALUE64)
+#if CPU(ADDRESS64)
     return JSValue::encode(JSValue(JSC::JSValue::JSFalse));
 #else
     return JSValue::encode(JSValue(JSC::JSValue::JSTrue));
@@ -3304,7 +3327,7 @@ JSC_DEFINE_HOST_FUNCTION(functionEnsureArrayStorage, (JSGlobalObject* globalObje
 {
     VM& vm = globalObject->vm();
     for (unsigned i = 0; i < callFrame->argumentCount(); ++i) {
-        if (JSObject* object = dynamicDowncast<JSObject>(callFrame->argument(i)))
+        if (auto* object = dynamicDowncast<JSObjectWithButterfly>(callFrame->argument(i)))
             object->ensureArrayStorage(vm);
     }
     return JSValue::encode(jsUndefined());
@@ -4113,6 +4136,7 @@ static void runInteractive(GlobalObject* globalObject)
     fprintf(stderr, "  --footprint                Dump memory footprint after done executing\n");
     fprintf(stderr, "  --options                  Dumps all JSC VM options and exits\n");
     fprintf(stderr, "  --dumpOptions              Dumps all non-default JSC VM options before continuing\n");
+    fprintf(stderr, "  --enable-all-experimental-features  Enables all JSC feature-flag options (off-by-default in-development features)\n");
     fprintf(stderr, "  --<jsc VM option>=<value>  Sets the specified JSC VM option\n");
 #if USE(LIBPAS)
     fprintf(stderr, "  --crash-vm=<value>         Crash VM on startup due to PGM failure. Options PGMOOBLowerGuardPage, PGMOOBUpperGuardPage, or PGMUAF (For Testing Purposes).\n");
@@ -4317,6 +4341,13 @@ void CommandLine::parseArguments(int argc, char** argv, int start)
         }
         if (!strcmp(arg, "--disableOptionsFreezingForTesting")) {
             JSC::Config::disableFreezingForTesting();
+            continue;
+        }
+        if (!strcmp(arg, "--enable-all-experimental-features")) {
+#define JSC_ENABLE_EXPERIMENTAL_WEB_PREFERENCE_OPTION(name_) \
+            Options::name_() = true;
+            FOR_EACH_JSC_EXPERIMENTAL_WEB_PREFERENCE_OPTION(JSC_ENABLE_EXPERIMENTAL_WEB_PREFERENCE_OPTION)
+#undef JSC_ENABLE_EXPERIMENTAL_WEB_PREFERENCE_OPTION
             continue;
         }
 

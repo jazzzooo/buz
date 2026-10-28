@@ -1,5 +1,5 @@
 Vendored subtree of https://github.com/oven-sh/WebKit
-commit: 549170099226f816a4b204ea1d8fa102fb79eefa (tag autobuild-549170099226f816a4b204ea1d8fa102fb79eefa)
+commit: 0f966e81b78c84bb23213e391bc679c4ef83e56b (tag autobuild-0f966e81b78c84bb23213e391bc679c4ef83e56b)
 paths: Source/JavaScriptCore Source/WTF Source/bmalloc Source/cmake
 
 Bun engine obligations:

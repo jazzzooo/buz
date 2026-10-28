@@ -744,7 +744,7 @@ void Bun::Bindgen::Cpp::bunBindgenCpp_RuntimeFunctions_errorConstructorFuncCaptu
             // Error info was already materialized (e.g. .stack was previously accessed).
             // Don't call setStackFrames — it would leave m_errorInfoMaterialized=true with
             // a non-null m_stackTrace, causing ASSERT(!m_errorInfoMaterialized) in
-            // computeErrorInfo when GC's finalizeUnconditionally finds unmarked frames.
+            // computeErrorInfo when GC's weak-reference reconciliation finds unmarked frames.
             // Eagerly compute and set the .stack property instead.
             OrdinalNumber line;
             OrdinalNumber column;

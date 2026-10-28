@@ -398,13 +398,22 @@ bool JSBoundFunction::canSkipNameAndLengthMaterialization(JSGlobalObject* global
     if (structure->realm() != globalObject)
         return false;
 
+    // Bound functions cannot assume their .length/.name are unchanged, and so cannot skip
+    // materializing them.
+    //
+    // This must be synced with JSFunction::canAssumeNameAndLengthAreOriginal().
     if (structure->classInfoForCells()->isSubClassOf(JSBoundFunction::info()))
-        return true;
+        return false;
+
     if (structure == globalObject->arrowFunctionStructure(true) || structure == globalObject->arrowFunctionStructure(false))
         return true;
     if (structure == globalObject->strictFunctionStructure(true) || structure == globalObject->strictFunctionStructure(false))
         return true;
+    if (structure == globalObject->strictMethodStructure(true) || structure == globalObject->strictMethodStructure(false))
+        return true;
     if (structure == globalObject->sloppyFunctionStructure(true) || structure == globalObject->sloppyFunctionStructure(false))
+        return true;
+    if (structure == globalObject->sloppyMethodStructure(true) || structure == globalObject->sloppyMethodStructure(false))
         return true;
     // Plain host functions now use the lazy reify path for length/name (mirroring JS function and
     // builtin behavior), so an untransitioned hostFunctionStructure means length/name are still

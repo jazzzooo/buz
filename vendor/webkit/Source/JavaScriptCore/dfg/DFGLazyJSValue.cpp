@@ -238,6 +238,20 @@ uintptr_t LazyJSValue::switchLookupValue(SwitchKind kind) const
     return 0;
 }
 
+// LazyJSValue borrows NewStringImpl storage from Graph::m_localStrings, which dies before the
+// deferred materialization runs, so an escaping copy must own it. KnownStringImpl needs no
+// reference: those belong to the unlinked code block, which outlives finalization.
+struct EscapedLazyJSValue {
+    explicit EscapedLazyJSValue(const LazyJSValue& value)
+        : value(value)
+        , ownedString(value.kind() == LazyJSValue::NewStringImpl ? value.stringImpl() : nullptr)
+    {
+    }
+
+    LazyJSValue value;
+    RefPtr<StringImpl> ownedString;
+};
+
 void LazyJSValue::emit(CCallHelpers& jit, JSValueRegs result, Plan& planRef) const
 {
     if (m_kind == KnownValue) {
@@ -246,34 +260,22 @@ void LazyJSValue::emit(CCallHelpers& jit, JSValueRegs result, Plan& planRef) con
     }
 
     // It must be some kind of cell.
-#if USE(JSVALUE32_64)
-    jit.move(CCallHelpers::TrustedImm32(JSValue::CellTag), result.tagGPR());
-#endif
     CCallHelpers::DataLabelPtr label = jit.moveWithPatch(
         CCallHelpers::TrustedImmPtr(static_cast<size_t>(0xd1e7beeflu)),
         result.payloadGPR());
 
-    LazyJSValue thisValue = *this;
-
-    // Once we do this, we're committed. Otherwise we leak memory. Note that we call ref/deref
-    // manually to ensure that there is no concurrency shadiness. We are doing something here
-    // that might be rather brutal: transfering ownership of this string.
-    if (m_kind == NewStringImpl)
-        thisValue.u.stringImpl->ref();
+    EscapedLazyJSValue thisValue { *this };
 
     CodeBlock* codeBlock = jit.codeBlock();
-    
+
     auto* plan = &planRef;
     jit.addLinkTask([=] (LinkBuffer& linkBuffer) {
         auto patchLocation = linkBuffer.locationOf<JITCompilationPtrTag>(label);
         plan->addMainThreadFinalizationTask([=] {
-            JSValue realValue = thisValue.getValue(codeBlock->vm());
+            JSValue realValue = thisValue.value.getValue(codeBlock->vm());
             RELEASE_ASSERT(realValue.isCell());
 
             codeBlock->addConstant(ConcurrentJSLocker(codeBlock->m_lock), realValue);
-
-            if (thisValue.m_kind == NewStringImpl)
-                thisValue.u.stringImpl->deref();
 
             MacroAssembler::repatchPointer(patchLocation, realValue.asCell());
         });

@@ -122,6 +122,8 @@ SpecialPropertyCache& StructureRareData::ensureSpecialPropertyCacheSlow()
 
 inline void StructureRareData::giveUpOnSpecialPropertyCache(CachedSpecialPropertyKey key)
 {
+    // Invalidate the memoized fast-path verdict along with the cache it is derived from.
+    setCachedHasDefaultToPrimitiveFastAndNonObservable(TriState::Indeterminate);
     ensureSpecialPropertyCache().m_cache[static_cast<unsigned>(key)].m_value.setWithoutWriteBarrier(JSCell::seenMultipleCalleeObjects());
 }
 
@@ -220,6 +222,11 @@ void StructureRareData::cacheSpecialPropertySlow(JSGlobalObject* globalObject, V
 
 void StructureRareData::clearCachedSpecialProperty(CachedSpecialPropertyKey key)
 {
+    // The fast-path verdict is derived from every special property except ToJSON, so invalidate it
+    // whenever one of those caches is cleared.
+    if (key != CachedSpecialPropertyKey::ToJSON)
+        setCachedHasDefaultToPrimitiveFastAndNonObservable(TriState::Indeterminate);
+
     auto* objectToStringCache = m_specialPropertyCache.get();
     if (!objectToStringCache)
         return;
@@ -230,7 +237,7 @@ void StructureRareData::clearCachedSpecialProperty(CachedSpecialPropertyKey key)
         cache.m_value.clear();
 }
 
-void StructureRareData::finalizeUnconditionally(VM& vm, CollectionScope)
+void StructureRareData::reconcileWeakReferencesAtGCEnd(VM& vm, CollectionScope)
 {
     if (m_specialPropertyCache) {
         auto clearCacheIfInvalidated = [&](CachedSpecialPropertyKey key) {

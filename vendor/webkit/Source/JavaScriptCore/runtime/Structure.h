@@ -648,6 +648,8 @@ public:
     inline JSValue cachedSpecialProperty(CachedSpecialPropertyKey key); // Defined in StructureInlines.h
     void cacheSpecialProperty(JSGlobalObject*, VM&, JSValue, CachedSpecialPropertyKey, const PropertySlot&);
 
+    inline JSString* defaultToPrimitiveFastAndNonObservable(VM&);
+
     static constexpr ptrdiff_t prototypeOffset()
     {
         return OBJECT_OFFSETOF(Structure, m_prototype);
@@ -885,7 +887,7 @@ public:
         return numberOfSlotsForMaxOffset(maxOffset(), m_inlineCapacity);
     }
 
-    void finalizeUnconditionally(VM&, CollectionScope);
+    void reconcileWeakReferencesAtGCEnd(VM&, CollectionScope);
 
 protected:
     Structure(VM&, StructureVariant, Structure* previous); // Branded/Normal only

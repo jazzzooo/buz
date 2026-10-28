@@ -816,7 +816,7 @@ inline std::strong_ordering codePointCompare(std::span<const CharacterType1> cha
     auto* characters2Ptr = characters2.data();
     size_t position = 0;
 
-#if CPU(REGISTER64) && !CPU(NEEDS_ALIGNED_ACCESS) && CPU(LITTLE_ENDIAN)
+#if CPU(REGISTER64)
     if constexpr (sizeof(CharacterType1) == sizeof(CharacterType2) && (sizeof(CharacterType1) == 1 || sizeof(CharacterType1) == 2)) {
         using ChunkType = std::conditional_t<sizeof(CharacterType1) == 1, uint32_t, uint64_t>;
         constexpr size_t stride = sizeof(ChunkType) / sizeof(CharacterType1);
@@ -945,11 +945,7 @@ inline bool StringImpl::containsOnlyLatin1() const
 {
     if (is8Bit())
         return true;
-    auto characters = span16();
-    char16_t mergedCharacterBits = 0;
-    for (auto character : characters)
-        mergedCharacterBits |= character;
-    return isLatin1(mergedCharacterBits);
+    return charactersAreAllLatin1(span16());
 }
 
 template<bool isSpecialCharacter(char16_t), typename CharacterType, std::size_t Extent> inline bool containsOnly(std::span<const CharacterType, Extent> characters)
@@ -1208,9 +1204,12 @@ inline void StringImpl::deref()
         return;
 #endif
 
-    auto oldRefCount = m_refCount.fetch_sub(s_refCountIncrement, std::memory_order_relaxed);
-    if (oldRefCount != s_refCountIncrement)
-        return;
+    // When this is the only reference nobody else can be racing to add one, so skip the atomic read-modify-write.
+    auto refCount = m_refCount.load(std::memory_order_relaxed);
+    if (refCount != s_refCountIncrement) {
+        if (m_refCount.fetch_sub(s_refCountIncrement, std::memory_order_relaxed) != s_refCountIncrement) [[likely]]
+            return;
+    }
 
     StringImpl::destroy(this);
 }

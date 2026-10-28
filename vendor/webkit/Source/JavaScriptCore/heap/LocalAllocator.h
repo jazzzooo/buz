@@ -47,7 +47,7 @@ public:
     
     unsigned cellSize() const { return m_freeList.cellSize(); }
 
-    void stopAllocating();
+    void stopAllocating(MarkedBlock::Handle::StopAllocatingMode = MarkedBlock::Handle::StopAllocatingMode::Resumable);
     void prepareForAllocation();
     void resumeAllocating();
     void stopAllocatingForGood();
@@ -56,6 +56,9 @@ public:
     static constexpr ptrdiff_t offsetOfCellSize();
 
     BlockDirectory& directory() const { return *m_directory; }
+
+    // Intended for diagnostics only (rdar://157153895)
+    bool isFreeListedCell(const void*) const;
 
 private:
     friend class BlockDirectory;

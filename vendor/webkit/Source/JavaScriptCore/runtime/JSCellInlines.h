@@ -84,21 +84,19 @@ inline JSCell::JSCell(VM&, Structure* structure)
 // Structure must be kept alive somehow (e.g. by JSGlobalObject, or ensureStillAliveHere).
 ALWAYS_INLINE JSCell::JSCell(CreatingWellDefinedBuiltinCellTag, StructureID structureID, uint32_t blob)
     : m_structureID(structureID)
-#if CPU(LITTLE_ENDIAN)
     , m_blob(blob)
-#else
-    , m_indexingTypeAndMisc(static_cast<uint8_t>(blob >> 24))
-    , m_type(std::bit_cast<JSType>(static_cast<uint8_t>(blob >> 16)))
-    , m_flags(std::bit_cast<TypeInfo::InlineTypeFlags>(static_cast<uint8_t>(blob >> 8)))
-    , m_cellState(std::bit_cast<CellState>(static_cast<uint8_t>(blob >> 0)))
-#endif
 {
 }
 
+// finishCreation() marks the end of the cell's construction: after this the cell pointer may escape.
+// Between allocateCell() and here there must be no safepoint (whose conservative stack scan would
+// find this cell), and the cell pointer must not be stored into an already-reachable object (which
+// markers can follow). Either would let the partially constructed cell be visited. Callers that
+// construct a cell whose auxiliary storage is deliberately left uninitialized must extend that
+// window themselves: see ObjectInitializationScope.
 inline void JSCell::finishCreation(VM& vm)
 {
-    // This object is ready to be escaped so the concurrent GC may see it at any time. We have
-    // to make sure that none of our stores sink below here.
+    // Ensure the cell's initializing stores are visible before any store of this cell into an already-reachable object.
     vm.mutatorFence();
 #if ENABLE(GC_VALIDATION)
     ASSERT(vm.isInitializingObject());

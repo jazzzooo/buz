@@ -255,7 +255,6 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
     case IsBigInt:
     case NumberIsInteger:
     case IsObject:
-    case IsTypedArrayView:
     case CheckInBounds:
     case CheckInBoundsInt52:
     case DoubleRep:
@@ -362,7 +361,7 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
         return;
 
     case IsCellWithType:
-        def(PureValue(node, node->queriedType()));
+        def(PureValue(node, node->queriedType().rawValue()));
         return;
 
     case ValueBitNot:
@@ -626,7 +625,10 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
 
     case InvalidationPoint:
         write(SideState);
-        def(HeapLocation(InvalidationPointLoc, Watchpoint_fire), LazyNode(node));
+        // A trap-check InvalidationPoint must stay where it is (see Node::isVMTrapsBreakpointSite()); every other
+        // one is redundant with a dominating InvalidationPoint that no watchpoint fire separates it from.
+        if (!node->isVMTrapsBreakpointSite())
+            def(HeapLocation(InvalidationPointLoc, Watchpoint_fire), LazyNode(node));
         return;
 
     case Flush:
@@ -834,6 +836,7 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
     case CallDirectEval:
     case CallWasm:
     case TailCallInlinedCallerWasm:
+    case CallFFI:
     case CallCustomAccessorGetter:
     case CallCustomAccessorSetter:
     case ToPrimitive:
@@ -856,6 +859,7 @@ void clobberize(Graph& graph, Node* node, const ReadFunctor& read, const WriteFu
     case ResolveScopeForHoistingFuncDeclInEval:
     case ResolveScope:
     case ToObject:
+    case OpenAsyncFromSyncIterator:
     case GetPropertyEnumerator:
     case InstanceOfCustom:
     case ToNumeric:

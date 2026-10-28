@@ -52,7 +52,7 @@ void NodeVMSyntheticModule::createModuleRecord(JSGlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
 
-    SyntheticModuleRecord* moduleRecord = SyntheticModuleRecord::create(globalObject, vm, globalObject->syntheticModuleRecordStructure(), Identifier::fromString(vm, identifier()));
+    SyntheticModuleRecord* moduleRecord = SyntheticModuleRecord::create(globalObject, vm, globalObject->syntheticModuleRecordStructure(), Identifier::fromString(vm, identifier()), SourceProviderSourceType::Synthetic);
 
     m_moduleRecord.set(vm, this, moduleRecord);
 

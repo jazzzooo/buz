@@ -166,7 +166,7 @@ void Bun::Bindgen::Engine::bunBindgenEngine_wtf_threading_prepareForThreadExit(
 void Bun::Bindgen::Engine::bunBindgenEngine_wtf_threading_stackCheckInitialize(
     const Bun::Bindgen::Engine::BunBindgenEngine_wtf_threading_stackCheckInitialize_Arguments&)
 {
-    Bun::stackBoundsForCurrentThread = WTF::StackBounds::currentThreadStackBounds();
+    Bun::stackBoundsForCurrentThread = WTF::StackBounds::currentThreadStackBoundsForEmbedder();
 }
 
 std::optional<size_t> Bun::Bindgen::Engine::bunBindgenEngine_wtf_threading_stackCheckGetEnd(

@@ -17,7 +17,7 @@
 /// Version 18: Include ESM record (module info) with an ES Module, see #15758
 /// Version 19: Sourcemap blob is InternalSourceMap (varint stream + sync points), not VLQ.
 /// Version 20: InternalSourceMap stream is bit-packed windows.
-const expected_version = 31;
+const expected_version = 32;
 
 const debug = Output.scoped(.cache, .visible);
 const MINIMUM_CACHE_SIZE = 50 * 1024;

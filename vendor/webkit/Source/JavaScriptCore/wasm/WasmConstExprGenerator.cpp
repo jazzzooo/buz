@@ -40,11 +40,13 @@
 #include "WasmTypeDefinition.h"
 #include <wtf/Assertions.h>
 #include <wtf/Expected.h>
+#include <wtf/ForbidHeapAllocation.h>
 #include <wtf/text/MakeString.h>
 
 namespace JSC { namespace Wasm {
 
 class ConstExprGenerator {
+    WTF_FORBID_HEAP_ALLOCATION;
 public:
     using ErrorType = String;
     using PartialResult = Expected<void, ErrorType>;
@@ -220,7 +222,7 @@ public:
 
     ExpressionType NODELETE addConstant(Type type, uint64_t value)
     {
-        switch (type.kind) {
+        switch (type.kind()) {
         case TypeKind::I32:
         case TypeKind::I64:
         case TypeKind::F32:
@@ -264,11 +266,11 @@ public:
     [[nodiscard]] PartialResult getGlobal(uint32_t index, ExpressionType& result)
     {
         // Note that this check works for table initializers too, because no globals are registered when the table section is read and the count is 0.
-        WASM_COMPILE_FAIL_IF(index >= m_info.globals.size(), "get_global's index ", index, " exceeds the number of globals ", m_info.globals.size());
-        WASM_COMPILE_FAIL_IF(m_info.globals[index].mutability != Mutability::Immutable, "get_global import kind index ", index, " is mutable ");
+        WASM_COMPILE_FAIL_IF(index >= m_info->globals.size(), "get_global's index ", index, " exceeds the number of globals ", m_info->globals.size());
+        WASM_COMPILE_FAIL_IF(m_info->globals[index].mutability != Mutability::Immutable, "get_global import kind index ", index, " is mutable ");
 
         if (m_mode == Mode::Evaluate) {
-            if (m_info.globals[index].type.kind == TypeKind::V128)
+            if (m_info->globals[index].type.kind() == TypeKind::V128)
                 result = ConstExprValue(m_instance->loadV128Global(index));
             else
                 result = ConstExprValue(m_instance->loadI64Global(index));
@@ -691,17 +693,17 @@ public:
     [[nodiscard]] PartialResult addCrash() CONST_EXPR_STUB
     bool NODELETE usesSIMD() { return false; }
     void NODELETE notifyFunctionUsesSIMD() { }
-    [[nodiscard]] PartialResult addSIMDLoad(ExpressionType, uint32_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDStore(ExpressionType, ExpressionType, uint32_t, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoad(ExpressionType, uint64_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDStore(ExpressionType, ExpressionType, uint64_t, uint8_t) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addSIMDSplat(SIMDLane, ExpressionType, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addSIMDShuffle(v128_t, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addSIMDShift(SIMDLaneOperation, SIMDInfo, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addSIMDExtmul(SIMDLaneOperation, SIMDInfo, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDLoadSplat(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDLoadLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint32_t, uint8_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDStoreLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint32_t, uint8_t, uint8_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDLoadExtend(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
-    [[nodiscard]] PartialResult addSIMDLoadPad(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoadSplat(SIMDLaneOperation, ExpressionType, uint64_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoadLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint64_t, uint8_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDStoreLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint64_t, uint8_t, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoadExtend(SIMDLaneOperation, ExpressionType, uint64_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
+    [[nodiscard]] PartialResult addSIMDLoadPad(SIMDLaneOperation, ExpressionType, uint64_t, ExpressionType&, uint8_t) CONST_EXPR_STUB
     [[nodiscard]] ExpressionType NODELETE addSIMDConstant(v128_t vector)
     {
         RELEASE_ASSERT(Options::useWasmSIMD());
@@ -735,7 +737,7 @@ private:
     Mode m_mode;
     size_t m_offsetInSource { 0 };
     ExpressionType m_result;
-    const ModuleInformation& m_info;
+    const Ref<const ModuleInformation> m_info;
     JSWebAssemblyInstance* m_instance { nullptr };
     bool m_shouldError = false;
     Vector<FunctionSpaceIndex> m_declaredFunctions;

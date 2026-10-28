@@ -32,10 +32,6 @@
 
 namespace JSC { namespace Wasm {
 
-AddressType::AddressType(AddressType::Kind addressType) : m_type(addressType) { };
-
-AddressType::AddressType(bool is64Bit) : m_type(is64Bit ? AddressType::I64 : AddressType::I32) { };
-
 static constexpr const char* invalidAddressTypeConversion = "Invalid Wasm Type to AddressType conversion";
 
 AddressType::AddressType(TypeKind typeKind)
@@ -75,6 +71,18 @@ TypeKind AddressType::asWasmTypeKind() const
         return TypeKind::I32;
     case AddressType::I64:
         return TypeKind::I64;
+    }
+
+    RELEASE_ASSERT_NOT_REACHED(invalidAddressTypeConversion);
+}
+
+Wasm::Type AddressType::asWasmType() const
+{
+    switch (m_type) {
+    case AddressType::I32:
+        return Type { TypeKind::I32, 0 };
+    case AddressType::I64:
+        return Type { TypeKind::I64, 0 };
     }
 
     RELEASE_ASSERT_NOT_REACHED(invalidAddressTypeConversion);

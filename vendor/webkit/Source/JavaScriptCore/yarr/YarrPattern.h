@@ -31,6 +31,8 @@
 #include "YarrFlags.h"
 #include "YarrUnicodeProperties.h"
 #include <array>
+#include <limits>
+#include <wtf/BitSet.h>
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/HashMap.h>
 #include <wtf/OptionSet.h>
@@ -43,6 +45,12 @@ namespace JSC { namespace Yarr {
 
 struct YarrPattern;
 struct PatternDisjunction;
+
+// Superset of the Latin-1 bytes that can begin a match (a clear bit guarantees no match begins
+// there), or nullopt when no sound filter exists. The filter position is selected from the flags:
+// sticky filters at lastIndex; a non-global non-sticky pattern filters at position 0 (only when
+// ^-anchored and not multiline); any other pattern has no filter. Safe to call on a compiler thread.
+std::optional<WTF::BitSet<256>> computeFirstCharacterBitmap(StringView, OptionSet<Flags>);
 
 enum class CompileMode : uint8_t {
     Legacy,
@@ -602,6 +610,7 @@ struct YarrPattern {
         m_numSubpatterns = 0;
         m_initialStartValueFrameLocation = 0;
         m_numDuplicateNamedCaptureGroups = 0;
+        m_maxParenContextFrameSize = 0;
 
         m_containsBackreferences = false;
         m_containsBOL = false;
@@ -643,6 +652,11 @@ struct YarrPattern {
         }
         return anycharCached;
     }
+    // The DotStarEnclosure's two frame slots (YarrStackSpaceForDotStarEnclosure): the offset the
+    // match started from, and the end of the newline-free span known to follow it.
+    unsigned initialStartFrameLocation() const { return m_initialStartValueFrameLocation; }
+    unsigned noNewlineBeforeFrameLocation() const { return m_initialStartValueFrameLocation + 1; }
+
     CharacterClass* newlineCharacterClass()
     {
         if (!newlineCached) {
@@ -762,6 +776,8 @@ struct YarrPattern {
     bool dotAll() const { return m_flags.contains(Flags::DotAll); }
 
     bool hasDuplicateNamedCaptureGroups() const { return !!m_numDuplicateNamedCaptureGroups; }
+    static constexpr unsigned endAnchoredFixedSizeNotSet = std::numeric_limits<unsigned>::max();
+    bool hasEndAnchoredFixedSize() const { return m_endAnchoredFixedSize != endAnchoredFixedSizeNotSet; }
 
     CompileMode compileMode() const
     {
@@ -785,9 +801,13 @@ struct YarrPattern {
     ExecutionMode m_executionMode { ExecutionMode::IncludeSubpatterns };
     OptionSet<Flags> m_flags;
     SpecificPattern m_specificPattern { SpecificPattern::None };
+    unsigned m_endAnchoredFixedSize { endAnchoredFixedSizeNotSet };
     unsigned m_numSubpatterns { 0 };
     unsigned m_initialStartValueFrameLocation { 0 };
     unsigned m_numDuplicateNamedCaptureGroups { 0 };
+    // Maximum interior frame size (m_callFrameSize - (base+4)) of any repeating
+    // ParenthesesSubpattern term.
+    unsigned m_maxParenContextFrameSize { 0 };
     PatternDisjunction* m_body;
     Vector<std::unique_ptr<PatternDisjunction>, 4> m_disjunctions;
     Vector<std::unique_ptr<CharacterClass>> m_userCharacterClasses;
@@ -842,10 +862,15 @@ private:
         uintptr_t begin; // Not really needed for greedy quantifiers.
         uintptr_t matchAmount; // Not really needed for fixed quantifiers.
         uintptr_t backReferenceSize; // Used by greedy quantifiers to backtrack.
+        // A backward (lookbehind) backreference's span lies left of the cursor;
+        // this holds that span's left edge across the compare walk (the JIT's
+        // forward form gets the equivalent from the moving frontier for free).
+        uintptr_t backwardSpanEdge;
 
         static unsigned beginIndex() { return offsetof(BackTrackInfoBackReference, begin) / sizeof(uintptr_t); }
         static unsigned matchAmountIndex() { return offsetof(BackTrackInfoBackReference, matchAmount) / sizeof(uintptr_t); }
         static unsigned backReferenceSizeIndex() { return offsetof(BackTrackInfoBackReference, backReferenceSize) / sizeof(uintptr_t); }
+        static unsigned backwardSpanEdgeIndex() { return offsetof(BackTrackInfoBackReference, backwardSpanEdge) / sizeof(uintptr_t); }
     };
 
     struct BackTrackInfoAlternative {
@@ -863,15 +888,22 @@ private:
     struct BackTrackInfoParenthesesOnce {
         uintptr_t begin;
         uintptr_t returnAddress;
+        // Address of the code that continues a first-character dispatch chain
+        // when the alternative just entered fails (see the dispatched-alternatives
+        // path in YarrJIT).
+        uintptr_t chainResume;
 
         static unsigned beginIndex() { return offsetof(BackTrackInfoParenthesesOnce, begin) / sizeof(uintptr_t); }
         static unsigned returnAddressIndex() { return offsetof(BackTrackInfoParenthesesOnce, returnAddress) / sizeof(uintptr_t); }
+        static unsigned chainResumeIndex() { return offsetof(BackTrackInfoParenthesesOnce, chainResume) / sizeof(uintptr_t); }
     };
 
     struct BackTrackInfoParenthesesTerminal {
         uintptr_t begin;
+        uintptr_t entryPosition;
 
         static unsigned beginIndex() { return offsetof(BackTrackInfoParenthesesTerminal, begin) / sizeof(uintptr_t); }
+        static unsigned entryPositionIndex() { return offsetof(BackTrackInfoParenthesesTerminal, entryPosition) / sizeof(uintptr_t); }
     };
 
     struct BackTrackInfoParentheses {

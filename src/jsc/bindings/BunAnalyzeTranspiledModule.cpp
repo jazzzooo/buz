@@ -44,17 +44,20 @@ JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_compiler_module_records_comp
         return identifiers[index];
     };
 
-    for (const auto& declaration : args.declarations) {
-        using Kind = decltype(declaration.kind);
-        switch (declaration.kind) {
-        case Kind::Declared:
-            args.declaredVariables->add(identifierAt(declaration.identifier));
-            break;
-        case Kind::Lexical:
-            args.lexicalVariables->add(identifierAt(declaration.identifier));
-            break;
+    auto moduleType = [](auto type) -> JSC::ScriptFetchParameters::Type {
+        using Type = decltype(type);
+        switch (type) {
+        case Type::JavaScript:
+            return JSC::ScriptFetchParameters::Type::JavaScript;
+        case Type::WebAssembly:
+            return JSC::ScriptFetchParameters::Type::WebAssembly;
+        case Type::JSON:
+            return JSC::ScriptFetchParameters::Type::JSON;
+        case Type::HostDefined:
+            return JSC::ScriptFetchParameters::Type::HostDefined;
         }
-    }
+        RELEASE_ASSERT_NOT_REACHED();
+    };
 
     auto* moduleRecord = JSC::JSModuleRecord::create(
         globalObject,
@@ -62,8 +65,6 @@ JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_compiler_module_records_comp
         globalObject->moduleRecordStructure(),
         *args.moduleKey,
         *args.sourceCode,
-        *args.declaredVariables,
-        *args.lexicalVariables,
         args.hasImportMeta ? JSC::ImportMetaFeature : 0);
     moduleRecord->m_isTypeScript = args.isTypeScript;
     moduleRecord->setHasTLA(args.hasTLA);
@@ -106,6 +107,7 @@ JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_compiler_module_records_comp
         case Kind::Single:
             moduleRecord->addImportEntry(JSC::JSModuleRecord::ImportEntry {
                 .type = JSC::JSModuleRecord::ImportEntryType::Single,
+                .moduleRequestType = moduleType(import.moduleType),
                 .moduleRequest = identifierAt(import.moduleName),
                 .importName = identifierAt(import.importName),
                 .localName = identifierAt(import.localName),
@@ -114,6 +116,7 @@ JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_compiler_module_records_comp
         case Kind::SingleTypeScript:
             moduleRecord->addImportEntry(JSC::JSModuleRecord::ImportEntry {
                 .type = JSC::JSModuleRecord::ImportEntryType::SingleTypeScript,
+                .moduleRequestType = moduleType(import.moduleType),
                 .moduleRequest = identifierAt(import.moduleName),
                 .importName = identifierAt(import.importName),
                 .localName = identifierAt(import.localName),
@@ -122,6 +125,7 @@ JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_compiler_module_records_comp
         case Kind::Namespace:
             moduleRecord->addImportEntry(JSC::JSModuleRecord::ImportEntry {
                 .type = JSC::JSModuleRecord::ImportEntryType::Namespace,
+                .moduleRequestType = moduleType(import.moduleType),
                 .moduleRequest = identifierAt(import.moduleName),
                 .importName = identifierAt(import.importName),
                 .localName = identifierAt(import.localName),
@@ -137,7 +141,7 @@ JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_compiler_module_records_comp
             moduleRecord->addExportEntry(JSC::JSModuleRecord::ExportEntry::createIndirect(
                 identifierAt(exportEntry.exportName),
                 identifierAt(exportEntry.importName),
-                identifierAt(exportEntry.moduleName)));
+                identifierAt(exportEntry.moduleName), moduleType(exportEntry.moduleType)));
             break;
         case Kind::Local:
             moduleRecord->addExportEntry(JSC::JSModuleRecord::ExportEntry::createLocal(
@@ -147,10 +151,10 @@ JSC::JSValue Bun::Bindgen::Engine::bunBindgenEngine_compiler_module_records_comp
         case Kind::Namespace:
             moduleRecord->addExportEntry(JSC::JSModuleRecord::ExportEntry::createNamespace(
                 identifierAt(exportEntry.exportName),
-                identifierAt(exportEntry.moduleName)));
+                identifierAt(exportEntry.moduleName), moduleType(exportEntry.moduleType)));
             break;
         case Kind::Star:
-            moduleRecord->addStarExportEntry(identifierAt(exportEntry.moduleName));
+            moduleRecord->addStarExportEntry(identifierAt(exportEntry.moduleName), moduleType(exportEntry.moduleType));
             break;
         }
     }
@@ -174,9 +178,6 @@ JSPromise* GlobalObject::moduleLoaderAnalyzeTranspiledModule(JSGlobalObject* glo
         return promise;
     };
 
-    VariableEnvironment declaredVariables = VariableEnvironment();
-    VariableEnvironment lexicalVariables = VariableEnvironment();
-
     auto provider = static_cast<Zig::SourceProvider*>(sourceCode.provider());
 
     if (!provider->m_resolvedSource.moduleInfo) {
@@ -189,8 +190,6 @@ JSPromise* GlobalObject::moduleLoaderAnalyzeTranspiledModule(JSGlobalObject* glo
         globalObject,
         &moduleKey,
         &sourceCode,
-        &declaredVariables,
-        &lexicalVariables,
         moduleInfo);
     auto* moduleRecord = moduleRecordValue ? dynamicDowncast<JSC::JSModuleRecord>(*moduleRecordValue) : nullptr;
     // Under --isolate the same SourceProvider is reused across globals via the
@@ -229,7 +228,7 @@ static JSPromise* fallbackParse(JSGlobalObject* globalObject, const Identifier& 
         RELEASE_AND_RETURN(scope, rejectWithError(error.toErrorObject(globalObject, sourceCode)));
     ASSERT(moduleProgramNode);
 
-    ModuleAnalyzer moduleAnalyzer(globalObject, moduleKey, sourceCode, moduleProgramNode->varDeclarations(), moduleProgramNode->lexicalVariables(), moduleProgramNode->features());
+    ModuleAnalyzer moduleAnalyzer(globalObject, moduleKey, sourceCode, moduleProgramNode->features());
     RETURN_IF_EXCEPTION(scope, promise->rejectWithCaughtException(vm, scope));
 
     auto result = moduleAnalyzer.analyze(*moduleProgramNode);
@@ -264,30 +263,6 @@ String dumpRecordInfo(JSModuleRecord* moduleRecord)
 {
     WTF::StringPrintStream stream;
 
-    {
-        Vector<String> sortedVars;
-        for (const auto& pair : moduleRecord->declaredVariables())
-            sortedVars.append(String(pair.key.get()));
-        std::sort(sortedVars.begin(), sortedVars.end(), [](const String& a, const String& b) {
-            return codePointCompare(a, b) < 0;
-        });
-        stream.print("  varDeclarations:\n");
-        for (const auto& name : sortedVars)
-            stream.print("  - ", name, "\n");
-    }
-
-    {
-        Vector<String> sortedVars;
-        for (const auto& pair : moduleRecord->lexicalVariables())
-            sortedVars.append(String(pair.key.get()));
-        std::sort(sortedVars.begin(), sortedVars.end(), [](const String& a, const String& b) {
-            return codePointCompare(a, b) < 0;
-        });
-        stream.print("  lexicalVariables:\n");
-        for (const auto& name : sortedVars)
-            stream.print("  - ", name, "\n");
-    }
-
     stream.print("  features: (not accessible)\n");
 
     stream.print("\nAnalyzing ModuleRecord key(", moduleRecord->moduleKey().impl(), ")\n");
@@ -316,7 +291,7 @@ String dumpRecordInfo(JSModuleRecord* moduleRecord)
         for (const auto& pair : moduleRecord->importEntries()) {
             WTF::StringPrintStream line;
             auto& importEntry = pair.value;
-            line.print("      import(", importEntry.importName, "), local(", importEntry.localName, "), module(", importEntry.moduleRequest, ")\n");
+            line.print("      import(", importEntry.importName, "), local(", importEntry.localName, "), module(", importEntry.moduleRequest, "), type(", static_cast<uint8_t>(importEntry.moduleRequestType), ")\n");
             sortedImports.append(line.toString());
         }
         std::sort(sortedImports.begin(), sortedImports.end(), [](const String& a, const String& b) {
@@ -337,11 +312,11 @@ String dumpRecordInfo(JSModuleRecord* moduleRecord)
             break;
 
         case AbstractModuleRecord::ExportEntry::Type::Indirect:
-            line.print("      [Indirect] ", "export(", exportEntry.exportName, "), import(", exportEntry.importName, "), module(", exportEntry.moduleName, ")\n");
+            line.print("      [Indirect] ", "export(", exportEntry.exportName, "), import(", exportEntry.importName, "), module(", exportEntry.moduleName, "), type(", static_cast<uint8_t>(exportEntry.moduleRequestType), ")\n");
             break;
 
         case AbstractModuleRecord::ExportEntry::Type::Namespace:
-            line.print("      [Namespace] ", "export(", exportEntry.exportName, "), module(", exportEntry.moduleName, ")\n");
+            line.print("      [Namespace] ", "export(", exportEntry.exportName, "), module(", exportEntry.moduleName, "), type(", static_cast<uint8_t>(exportEntry.moduleRequestType), ")\n");
             break;
         }
         sortedEntries.append(line.toString());
@@ -354,9 +329,9 @@ String dumpRecordInfo(JSModuleRecord* moduleRecord)
 
     {
         Vector<String> sortedStarExports;
-        for (const auto& moduleName : moduleRecord->starExportEntries()) {
+        for (const auto& [moduleName, type] : moduleRecord->starExportEntries()) {
             WTF::StringPrintStream line;
-            line.print("      [Star] module(", moduleName.get(), ")\n");
+            line.print("      [Star] module(", moduleName.get(), "), type(", static_cast<uint8_t>(type), ")\n");
             sortedStarExports.append(line.toString());
         }
         std::sort(sortedStarExports.begin(), sortedStarExports.end(), [](const String& a, const String& b) {

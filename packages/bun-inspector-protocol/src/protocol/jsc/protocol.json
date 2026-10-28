@@ -312,7 +312,8 @@
               },
               "description": "Logging channels."
             }
-          ]
+          ],
+          "targetTypes": ["frame", "page"]
         },
         {
           "name": "setLoggingChannelLevel",
@@ -328,7 +329,8 @@
               "$ref": "ChannelLevel",
               "description": "New level."
             }
-          ]
+          ],
+          "targetTypes": ["frame", "page"]
         }
       ],
       "events": [
@@ -416,6 +418,11 @@
           "description": "Unique script identifier."
         },
         {
+          "id": "ScriptType",
+          "type": "string",
+          "enum": ["program", "module", "webassembly"]
+        },
+        {
           "id": "CallFrameId",
           "type": "string",
           "description": "Call frame identifier."
@@ -439,7 +446,7 @@
               "name": "columnNumber",
               "type": "integer",
               "optional": true,
-              "description": "Column number in the script (0-based)."
+              "description": "Column number in the script (0-based) or bytecode offset for WebAssembly modules (0-based)."
             }
           ]
         },
@@ -1242,7 +1249,17 @@
             {
               "name": "endColumn",
               "type": "integer",
-              "description": "Length of the last line of the script."
+              "description": "Length of the last line of the script or the end bytecode offset for WebAssembly modules."
+            },
+            {
+              "name": "executionContextId",
+              "$ref": "Runtime.ExecutionContextId",
+              "description": "Identifier of the execution context in which this script was parsed."
+            },
+            {
+              "name": "scriptType",
+              "$ref": "ScriptType",
+              "description": "Type of script."
             },
             {
               "name": "isContentScript",
@@ -1263,10 +1280,16 @@
               "description": "URL of source map associated with script (if any)."
             },
             {
-              "name": "module",
-              "type": "boolean",
+              "name": "displayName",
+              "type": "string",
               "optional": true,
-              "description": "True if this script was parsed as a module."
+              "description": "Human-readable name of the script."
+            },
+            {
+              "name": "requestId",
+              "$ref": "Network.RequestId",
+              "optional": true,
+              "description": "Identifier of the network request associated with this script (if any)."
             }
           ]
         },

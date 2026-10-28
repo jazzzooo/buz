@@ -376,10 +376,10 @@ public:
         {
             ASSERT(from < length);
             auto result = input[from];
-            if (decodeSurrogatePairs && from + 1 < length) {
-                if (U16_IS_LEAD(result) && U16_IS_TRAIL(input[from + 1]))
+            if (decodeSurrogatePairs) {
+                if (U16_IS_LEAD(result) && from + 1 < length && U16_IS_TRAIL(input[from + 1]))
                     return U16_GET_SUPPLEMENTARY(result, input[from + 1]);
-                if (U16_IS_TRAIL(result) && U16_IS_LEAD(input[from + 1]))
+                if (U16_IS_TRAIL(result) && from > 0 && U16_IS_LEAD(input[from - 1]))
                     return errorCodePoint;
             }
             return result;
@@ -666,24 +666,20 @@ public:
             } else
                 ch = term.matchDirection() == Forward ? input.readCheckedDontAdvance(negativeInputOffset) : input.tryReadBackward(negativeInputOffset);
 
-            if (oldCh == errorCodePoint || ch == errorCodePoint) {
-                if (term.matchDirection() == Backward)
-                    input.setPos(savedPos);
-                return false;
-            }
-
-            if (oldCh == ch)
-                continue;
-
-            if (term.ignoreCase()) {
-                // See ES 6.0, 21.2.2.8.2 for the definition of Canonicalize(). For non-Unicode
-                // patterns, Unicode values are never allowed to match against ASCII ones.
-                // For Unicode, we need to check all canonical equivalents of a character.
-                if (isLegacyCompilation() && (isASCII(oldCh) || isASCII(ch))) {
-                    if (toASCIIUpper(oldCh) == toASCIIUpper(ch))
-                        continue;
-                } else if (areCanonicallyEquivalent(oldCh, ch, isEitherUnicodeCompilation() ? CanonicalMode::Unicode : CanonicalMode::UCS2))
+            if (oldCh != errorCodePoint && ch != errorCodePoint) {
+                if (oldCh == ch)
                     continue;
+
+                if (term.ignoreCase()) {
+                    // See ES 6.0, 21.2.2.8.2 for the definition of Canonicalize(). For non-Unicode
+                    // patterns, Unicode values are never allowed to match against ASCII ones.
+                    // For Unicode, we need to check all canonical equivalents of a character.
+                    if (isLegacyCompilation() && (isASCII(oldCh) || isASCII(ch))) {
+                        if (toASCIIUpper(oldCh) == toASCIIUpper(ch))
+                            continue;
+                    } else if (areCanonicallyEquivalent(oldCh, ch, isEitherUnicodeCompilation() ? CanonicalMode::Unicode : CanonicalMode::UCS2))
+                        continue;
+                }
             }
 
             if (term.matchDirection() == Forward)
@@ -868,19 +864,17 @@ public:
             // matchDirection is Backward
             if (isEitherUnicodeCompilation()) {
                 backTrack->begin = input.getPos();
+                bool pairsOnly = !term.invert() && term.atom.characterClass->hasOnlyNonBMPCharacters();
                 for (unsigned matchAmount = 0; matchAmount < term.atom.quantityMaxCount; ++matchAmount) {
                     unsigned matchOffset = term.atom.quantityMaxCount - 1 - matchAmount;
-                    if (term.invert()) {
-                        if (!checkCharacterClass(term, term.inputPosition - matchOffset)) {
+                    if (pairsOnly) {
+                        if (!checkCharacterClassDontAdvanceInputForNonBMP(term, term.inputPosition - 2 * matchOffset)) {
                             input.setPos(backTrack->begin);
                             return false;
                         }
-                    } else {
-                        matchOffset = matchOffset * (term.atom.characterClass->hasOnlyNonBMPCharacters() ? 2 : 1);
-                        if (!checkCharacterClassDontAdvanceInputForNonBMP(term, term.inputPosition - matchOffset)) {
-                            input.setPos(backTrack->begin);
-                            return false;
-                        }
+                    } else if (!checkCharacterClass(term, term.inputPosition - matchOffset)) {
+                        input.setPos(backTrack->begin);
+                        return false;
                     }
                 }
 
@@ -917,6 +911,7 @@ public:
             if (input.getPos() < term.inputPosition)
                 return false;
 
+            backTrack->begin = position;
             while ((matchAmount < term.atom.quantityMaxCount) && input.tryUncheckInput(1)) {
                 if (!checkCharacterClass(term, term.inputPosition)) {
                     input.setPos(position);
@@ -962,6 +957,10 @@ public:
                     }
                     // matchDirection Backwards
                     --backTrack->matchAmount;
+                    if (!backTrack->matchAmount) {
+                        input.setPos(backTrack->begin);
+                        return true;
+                    }
                     input.readChecked(term.inputPosition);
                     input.checkInput(1);
                     return true;
@@ -1299,25 +1298,38 @@ public:
     {
         ASSERT(term.type == ByteTerm::Type::ParenthesesSubpatternTerminalBegin);
         ASSERT(term.atom.quantityType == QuantifierType::Greedy);
+        ASSERT(!term.atom.quantityMinCount || term.atom.quantityMinCount == 1);
         ASSERT(term.atom.quantityMaxCount == quantifyInfinite);
         ASSERT(!term.capture());
 
         BackTrackInfoParenthesesTerminal* backTrack = reinterpret_cast<BackTrackInfoParenthesesTerminal*>(context->frame + term.frameLocation);
         backTrack->begin = input.getPos();
+        backTrack->entryPosition = input.getPos();
         return true;
     }
 
     bool NODELETE matchParenthesesTerminalEnd(ByteTerm& term, DisjunctionContext* context)
     {
         ASSERT(term.type == ByteTerm::Type::ParenthesesSubpatternTerminalEnd);
+        ASSERT(!term.atom.quantityMinCount || term.atom.quantityMinCount == 1);
 
         BackTrackInfoParenthesesTerminal* backTrack = reinterpret_cast<BackTrackInfoParenthesesTerminal*>(context->frame + term.frameLocation);
-        // Empty match is a failed match.
-        if (backTrack->begin == input.getPos())
-            return false;
+        if (backTrack->begin == input.getPos()) {
+            // An empty iteration cannot be repeated, so it is only ever acceptable as the single
+            // iteration a minimum of one demands, and only before anything has been consumed.
+            // Clearing entryPosition both records that the minimum is now met and rejects any
+            // further empty iteration.
+            if (!term.atom.quantityMinCount || backTrack->entryPosition != input.getPos())
+                return false;
+            backTrack->entryPosition = notFound;
+        }
+
+        backTrack->begin = input.getPos();
 
         // Successful match! Okay, what's next? - loop around and try to match more!
-        context->term -= (term.atom.parenthesesWidth + 1);
+        // Loop back to the body's first term rather than to ParenthesesSubpatternTerminalBegin,
+        // whose stores initialize the whole group and must not run again per iteration.
+        context->term -= term.atom.parenthesesWidth;
         return true;
     }
 
@@ -1325,11 +1337,19 @@ public:
     {
         ASSERT(term.type == ByteTerm::Type::ParenthesesSubpatternTerminalBegin);
         ASSERT(term.atom.quantityType == QuantifierType::Greedy);
+        ASSERT(!term.atom.quantityMinCount || term.atom.quantityMinCount == 1);
         ASSERT(term.atom.quantityMaxCount == quantifyInfinite);
         ASSERT(!term.capture());
 
         // If we backtrack to this point, we have failed to match this iteration of the parens.
-        // Since this is greedy / zero minimum a failed is also accepted as a match!
+        // Nothing follows a terminal group, so an already satisfied minimum makes that failure an
+        // acceptable end of the match; an unsatisfied one fails the match.
+        if (term.atom.quantityMinCount) {
+            BackTrackInfoParenthesesTerminal* backTrack = reinterpret_cast<BackTrackInfoParenthesesTerminal*>(context->frame + term.frameLocation);
+            if (backTrack->entryPosition == input.getPos())
+                return false;
+        }
+
         context->term += term.atom.parenthesesWidth;
         return true;
     }
@@ -1673,36 +1693,82 @@ public:
 
     bool matchDotStarEnclosure(ByteTerm& term, DisjunctionContext* context)
     {
-        UNUSED_PARAM(term);
+        auto isNewline = [&](unsigned position) {
+            return testCharacterClass(pattern->newlineCharacterClass, input.reread(position));
+        };
+        // A leading ^ holds at position 0, or under /m just past a line terminator.
+        auto isLineStart = [&](unsigned position) {
+            return !position || (term.multiline() && isNewline(position - 1));
+        };
+        // [startOffset, noNewlineBefore) is known to hold no line terminator. It only grows during
+        // a match, so an enclosure rejected for want of a line start (a /g RegExp resumed mid-line)
+        // does not rescan that span for every later occurrence of the wrapped expression. Without
+        // /m a ^ rejected once stays rejected (later occurrences begin no earlier), recorded as
+        // bolUnsatisfiable so those fail at once instead of re-walking their line.
+        ASSERT(noNewlineBefore >= startOffset || noNewlineBefore == bolUnsatisfiable);
+        if (noNewlineBefore == bolUnsatisfiable)
+            return false;
+        auto rejectForBOL = [&]() {
+            if (!term.multiline())
+                noNewlineBefore = bolUnsatisfiable;
+            return false;
+        };
+        unsigned expressionBegin = context->matchBegin;
 
         if (term.dotAll()) {
-            context->matchBegin = startOffset;
+            // Under /s the leading .* reaches back to where matching began and the trailing
+            // .* runs to the end. A leading ^ must still hold at the match start: the start
+            // offset itself, or under /m the first line start after it that does not pass
+            // the wrapped expression.
+            unsigned matchBegin = startOffset;
+            if (term.anchors.m_bol && !isLineStart(matchBegin)) {
+                if (!term.multiline())
+                    return rejectForBOL();
+                matchBegin = std::max(matchBegin, noNewlineBefore);
+                while (matchBegin < expressionBegin && !isNewline(matchBegin))
+                    ++matchBegin;
+                if (matchBegin >= expressionBegin) {
+                    noNewlineBefore = std::max(noNewlineBefore, expressionBegin);
+                    return false; // no line start in [startOffset, expression]; a later occurrence may have one
+                }
+                ++matchBegin; // just past the newline
+            }
+            context->matchBegin = matchBegin;
             context->matchEnd = input.end();
             return true;
         }
 
-        unsigned matchBegin = context->matchBegin;
-
-        if (matchBegin > startOffset) {
+        // Walk back from the expression to the start of its line, but not into the span already
+        // known to be newline-free.
+        unsigned matchBegin = expressionBegin;
+        unsigned bound = std::max(startOffset, noNewlineBefore);
+        if (matchBegin > bound) {
             for (matchBegin--; true; matchBegin--) {
-                if (testCharacterClass(pattern->newlineCharacterClass, input.reread(matchBegin))) {
+                if (isNewline(matchBegin)) {
                     ++matchBegin;
                     break;
                 }
 
-                if (matchBegin == startOffset)
+                if (matchBegin == bound) {
+                    noNewlineBefore = expressionBegin;
+                    matchBegin = startOffset;
                     break;
+                }
             }
-        }
+        } else
+            matchBegin = startOffset;
+
+        // The walk back stopped just past a newline or at the start offset; the latter is a
+        // line start only at 0 or (under /m) when the character before it is a newline, so a
+        // /g RegExp resumed mid-line ("bxxaxx" from lastIndex 3) does not satisfy ^ there.
+        if (term.anchors.m_bol && !isLineStart(matchBegin))
+            return rejectForBOL();
 
         unsigned matchEnd = input.getPos();
 
-        for (; (matchEnd != input.end())
-             && (!testCharacterClass(pattern->newlineCharacterClass, input.reread(matchEnd))); matchEnd++) { }
+        for (; (matchEnd != input.end()) && !isNewline(matchEnd); matchEnd++) { }
 
-        if (((matchBegin && term.anchors.m_bol)
-             || ((matchEnd != input.end()) && term.anchors.m_eol))
-            && !term.multiline())
+        if (term.anchors.m_eol && matchEnd != input.end() && !term.multiline())
             return false;
 
         context->matchBegin = matchBegin;
@@ -1844,7 +1910,7 @@ public:
                 if (isEitherUnicodeCompilation()) {
                     if (!U_IS_BMP(term.atom.patternCharacter)) {
                         for (unsigned matchAmount = 0; matchAmount < currentTerm().atom.quantityMaxCount; ++matchAmount) {
-                            auto inputPosition = term.inputPosition + 2 * matchAmount;
+                            auto inputPosition = term.inputPosition - 2 * matchAmount;
                             if (input.getPos() < inputPosition)
                                 BACKTRACK();
                             if (!checkSurrogatePair(term, inputPosition))
@@ -2096,8 +2162,14 @@ public:
 
             context->matchBegin = input.getPos();
 
-            if (currentTerm().alternative.onceThrough)
-                context->term += currentTerm().alternative.next;
+            while (currentTerm().alternative.onceThrough) {
+                int next = currentTerm().alternative.next;
+                if (next <= 0) {
+                    DUMP_EXTRA("- Return NoMatch\n");
+                    return JSRegExpResult::NoMatch;
+                }
+                context->term += next;
+            }
 
             MATCH_NEXT();
         }
@@ -2228,6 +2300,9 @@ public:
         if (!input.isAvailableInput(0))
             return offsetNoMatch;
 
+        if (pattern->hasEndAnchoredFixedSize() && input.end() >= pattern->m_endAnchoredFixedSize)
+            input.setPos(std::max(input.getPos(), input.end() - pattern->m_endAnchoredFixedSize));
+
         ConcurrentJSLocker locker(pattern->m_lock);
 
         for (unsigned i = 0; i < pattern->m_body->m_numSubpatterns + 1; ++i)
@@ -2253,7 +2328,10 @@ public:
 
         freeDisjunctionContext(context);
 
-        pattern->m_allocator->stopAllocator();
+        // Keep a few overflow pools mapped between matches: patterns whose backtracking contexts
+        // outgrow the head page would otherwise map and unmap them around every match.
+        static constexpr size_t retainedAllocatorOverflowBytes = 64 * KB;
+        pattern->m_allocator->stopAllocator(retainedAllocatorOverflowBytes);
 
         ASSERT((result == JSRegExpResult::Match) == (output[0] != offsetNoMatch));
 
@@ -2266,6 +2344,7 @@ public:
         , output(output)
         , input(input, start, pattern->eitherUnicode())
         , startOffset(start)
+        , noNewlineBefore(start)
         , remainingMatchCount(matchLimit)
     {
     }
@@ -2285,6 +2364,8 @@ private:
     StackCheck m_stackCheck;
     WTF::BumpPointerPool* allocatorPool { nullptr };
     unsigned startOffset;
+    static constexpr unsigned bolUnsatisfiable = std::numeric_limits<unsigned>::max();
+    unsigned noNewlineBefore; // see matchDotStarEnclosure
     unsigned remainingMatchCount;
 };
 
@@ -2360,10 +2441,12 @@ public:
 
     void atomPatternCharacter(char32_t ch, MatchDirection matchDirection, unsigned inputPosition, unsigned frameLocation, Checked<unsigned> quantityMaxCount, QuantifierType quantityType, OptionSet<Flags> flags)
     {
-        if (flags.contains(Flags::IgnoreCase)) {
-            char32_t lo = u_tolower(ch);
-            char32_t hi = u_toupper(ch);
-
+        // For case-insesitive compares, non-ascii characters that have different
+        // upper & lower case representations are converted to a character class.
+        ASSERT(!flags.contains(Flags::IgnoreCase) || isASCIIAlpha(ch) || isCanonicallyUnique(ch, m_pattern.eitherUnicode() ? CanonicalMode::Unicode : CanonicalMode::UCS2));
+        if (flags.contains(Flags::IgnoreCase) && isASCIIAlpha(ch)) {
+            auto lo = toASCIILower(static_cast<Latin1Character>(ch));
+            auto hi = toASCIIUpper(static_cast<Latin1Character>(ch));
             if (lo != hi) {
                 m_bodyDisjunction->terms.append(ByteTerm(lo, hi, inputPosition, frameLocation, quantityMaxCount, quantityType, flags));
                 m_bodyDisjunction->terms.last().m_matchDirection = matchDirection;
@@ -2780,6 +2863,7 @@ public:
                     auto currentInputPosition = currentCountAlreadyChecked - term.inputPosition;
                     if (currentInputPosition.hasOverflowed())
                         return ErrorCode::OffsetTooLarge;
+
                     atomPatternCharacter(term.patternCharacter, matchDirection, currentInputPosition, term.frameLocation, term.quantityMaxCount, term.quantityType, term.m_currentFlags);
                     break;
                 }
@@ -3248,6 +3332,7 @@ static_assert(sizeof(BackTrackInfoBackReference) == (YarrStackSpaceForBackTrackI
 static_assert(sizeof(BackTrackInfoAlternative) == (YarrStackSpaceForBackTrackInfoAlternative * sizeof(uintptr_t)));
 static_assert(sizeof(BackTrackInfoParentheticalAssertion) == (YarrStackSpaceForBackTrackInfoParentheticalAssertion * sizeof(uintptr_t)));
 static_assert(sizeof(BackTrackInfoParenthesesOnce) == (YarrStackSpaceForBackTrackInfoParenthesesOnce * sizeof(uintptr_t)));
+static_assert(sizeof(BackTrackInfoParenthesesTerminal) == (YarrStackSpaceForBackTrackInfoParenthesesTerminal * sizeof(uintptr_t)));
 static_assert(sizeof(Interpreter<char16_t>::BackTrackInfoParentheses) <= (YarrStackSpaceForBackTrackInfoParentheses * sizeof(uintptr_t)));
 
 

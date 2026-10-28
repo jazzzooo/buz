@@ -80,11 +80,7 @@ namespace Constants {
 // The latest version 2, but it is too new at that time.
 static constexpr uint32_t version = 1;
 
-#if CPU(LITTLE_ENDIAN)
 static constexpr uint32_t magic = 0x4a695444;
-#else
-static constexpr uint32_t magic = 0x4454694a;
-#endif
 
 // https://en.wikipedia.org/wiki/Executable_and_Linkable_Format
 #if CPU(X86)
@@ -93,8 +89,6 @@ static constexpr uint32_t elfMachine = 0x03;
 static constexpr uint32_t elfMachine = 0x3E;
 #elif CPU(ARM64)
 static constexpr uint32_t elfMachine = 0xB7;
-#elif CPU(ARM)
-static constexpr uint32_t elfMachine = 0x28;
 #elif CPU(RISCV64)
 static constexpr uint32_t elfMachine = 0xF3;
 #endif

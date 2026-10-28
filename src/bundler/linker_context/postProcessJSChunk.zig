@@ -99,32 +99,9 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
         try cross_chunk_suffix.checkForError();
     }
 
-    // Populate ModuleInfo with declarations collected during parallel printing,
-    // external import records from the original AST, and wrapper refs.
     if (module_info) |mi| {
-        // 1. Add declarations collected by DeclCollector during parallel part printing.
-        // These come from the CONVERTED statements (after convertStmtsForChunk transforms
-        // export default → var, strips exports, etc.), so they match what's actually printed.
-        for (chunk.compile_results_for_chunk) |cr| {
-            const decls = switch (cr) {
-                .javascript => |js| js.decls,
-                else => continue,
-            };
-            for (decls) |decl| {
-                const var_kind: analyze_transpiled_module.ModuleInfo.VarKind = switch (decl.kind) {
-                    .declared => .declared,
-                    .lexical => .lexical,
-                };
-                const string_id = try mi.str(decl.name);
-                try mi.addVar(string_id, var_kind);
-            }
-        }
-
-        // 1b. Check if any source in this chunk uses import.meta. The per-part
-        // parallel printer does not have module_info, so the printer cannot set
-        // this flag during per-part printing. We derive it from the AST instead.
-        // Note: the runtime source (index 0) also uses import.meta (e.g.
-        // `import.meta.require`), so we must not skip it.
+        // Per-part printing has no module_info. Include the runtime source,
+        // which can also use import.meta.
         {
             const all_ast_flags = c.graph.ast.items(.flags);
             for (chunk.content.javascript.parts_in_chunk_in_order) |part_range| {
@@ -135,13 +112,8 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             }
         }
 
-        // 1c. Same idea for top-level await. The new JSC module loader decides
-        // sync vs async evaluation from JSModuleRecord::hasTLA(), which we set
-        // from this bit when constructing the record from cached module_info
-        // (BunAnalyzeTranspiledModule). Without it, a bytecode-compiled module
-        // that contains TLA gets evaluated on the sync path and the suspended
-        // generator is dropped — the entry promise resolves immediately and the
-        // process exits before the awaited value lands.
+        // Wrapped modules handle their own await; only unwrapped sources make
+        // the chunk async.
         {
             const tla_keywords = c.parse_graph.ast.items(.top_level_await_keyword);
             const wraps = c.graph.meta.items(.flags);
@@ -156,7 +128,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
             }
         }
 
-        // 2. Collect truly-external imports from the original AST. Bundled imports
+        // Collect truly-external imports from the original AST. Bundled imports
         // (where source_index is valid) are removed by convertStmtsForChunk and
         // re-created as cross-chunk imports — those are already captured by the
         // printer when it prints cross_chunk_prefix_stmts above. Only truly-external
@@ -194,8 +166,7 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
                                 if (name.ref) |name_ref| {
                                     const local_name = chunk.renamer.nameForSymbol(name_ref);
                                     const local_name_id = try mi.str(local_name);
-                                    try mi.addVar(local_name_id, .lexical);
-                                    try mi.addImportInfoSingle(irp_id, try mi.str("default"), local_name_id, false);
+                                    try mi.addImportInfoSingle(irp_id, try mi.str("default"), local_name_id, false, .javascript);
                                 }
                             }
 
@@ -203,36 +174,17 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
                                 if (item.name.ref) |name_ref| {
                                     const local_name = chunk.renamer.nameForSymbol(name_ref);
                                     const local_name_id = try mi.str(local_name);
-                                    try mi.addVar(local_name_id, .lexical);
-                                    try mi.addImportInfoSingle(irp_id, try mi.str(item.alias), local_name_id, false);
+                                    try mi.addImportInfoSingle(irp_id, try mi.str(item.alias), local_name_id, false, .javascript);
                                 }
                             }
 
                             if (record.flags.contains_import_star) {
                                 const local_name = chunk.renamer.nameForSymbol(s.namespace_ref);
                                 const local_name_id = try mi.str(local_name);
-                                try mi.addVar(local_name_id, .lexical);
-                                try mi.addImportInfoNamespace(irp_id, local_name_id);
+                                try mi.addImportInfoNamespace(irp_id, local_name_id, .javascript);
                             }
                         },
                         else => {},
-                    }
-                }
-            }
-        }
-
-        // 3. Add wrapper-generated declarations (init_xxx, require_xxx) that are
-        // not in any part statement.
-        const all_wrapper_refs = c.graph.ast.items(.wrapper_ref);
-        for (chunk.content.javascript.parts_in_chunk_in_order) |part_range| {
-            const source_index = part_range.source_index.get();
-            if (all_flags[source_index].wrap != .none) {
-                const wrapper_ref = all_wrapper_refs[source_index];
-                if (!wrapper_ref.isEmpty()) {
-                    const name = chunk.renamer.nameForSymbol(wrapper_ref);
-                    if (name.len > 0) {
-                        const string_id = try mi.str(name);
-                        try mi.addVar(string_id, .declared);
                     }
                 }
             }
@@ -588,37 +540,6 @@ pub fn postProcessJSChunk(ctx: GenerateChunkCtx, worker: *Executor.Worker, chunk
         );
     }
     chunk.content.javascript.module_info = module_info;
-}
-
-/// Recursively walk a binding and add all declared names to `ModuleInfo`.
-/// Handles `b_identifier`, `b_array`, `b_object`, and `b_missing`.
-fn addBindingVarsToModuleInfo(
-    mi: *analyze_transpiled_module.ModuleInfo,
-    binding: Binding,
-    var_kind: analyze_transpiled_module.ModuleInfo.VarKind,
-    r: renamer.Renamer,
-    symbols: *const js_ast.Symbol.Map,
-) !void {
-    switch (binding.data) {
-        .b_identifier => |b| {
-            const name = r.nameForSymbol(symbols.follow(b.ref));
-            if (name.len > 0) {
-                const str_id = try mi.str(name);
-                try mi.addVar(str_id, var_kind);
-            }
-        },
-        .b_array => |b| {
-            for (b.items) |item| {
-                try addBindingVarsToModuleInfo(mi, item.binding, var_kind, r, symbols);
-            }
-        },
-        .b_object => |b| {
-            for (b.properties) |prop| {
-                try addBindingVarsToModuleInfo(mi, prop.value, var_kind, r, symbols);
-            }
-        },
-        .b_missing => {},
-    }
 }
 
 pub fn generateEntryPointTailJS(
@@ -1010,22 +931,6 @@ pub fn generateEntryPointTailJS(
             // CommonJS files: https://github.com/guybedford/cjs-module-lexer. Think of
             // this code as an annotation for that parser.
         },
-    }
-
-    // Add generated local declarations from entry point tail to module_info.
-    // This captures vars like `var export_foo = cjs.foo` for CJS export copies.
-    if (module_info) |mi| {
-        for (stmts.items) |stmt| {
-            switch (stmt.data) {
-                .s_local => |s| {
-                    const var_kind: analyze_transpiled_module.ModuleInfo.VarKind = if (s.kind == .k_var) .declared else .lexical;
-                    for (s.decls.slice()) |decl| {
-                        try addBindingVarsToModuleInfo(mi, decl.binding, var_kind, r, &c.graph.symbols);
-                    }
-                },
-                else => {},
-            }
-        }
     }
 
     if (stmts.items.len == 0) {

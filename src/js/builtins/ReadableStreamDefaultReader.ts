@@ -80,7 +80,7 @@ export function readMany(this: ReadableStreamDefaultReader): Bun.ReadableStreamD
     if ($isReadableByteStreamController(controller)) {
       {
         const buf = values[0];
-        if (!(ArrayBuffer.$isView(buf) || buf instanceof ArrayBuffer)) {
+        if (!($bindgenFn("NodeUtil.schema.zig", "isArrayBufferView")(buf) || buf instanceof ArrayBuffer)) {
           $putByValDirect(outValues, 0, new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
         } else {
           $putByValDirect(outValues, 0, buf);
@@ -89,7 +89,7 @@ export function readMany(this: ReadableStreamDefaultReader): Bun.ReadableStreamD
 
       for (var i = 1; i < length; i++) {
         const buf = values[i];
-        if (!(ArrayBuffer.$isView(buf) || buf instanceof ArrayBuffer)) {
+        if (!($bindgenFn("NodeUtil.schema.zig", "isArrayBufferView")(buf) || buf instanceof ArrayBuffer)) {
           $putByValDirect(outValues, i, new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
         } else {
           $putByValDirect(outValues, i, buf);
@@ -133,7 +133,7 @@ export function readMany(this: ReadableStreamDefaultReader): Bun.ReadableStreamD
     if ($isReadableByteStreamController(controller)) {
       for (var i = 0; i < length; i++) {
         const buf = value[i];
-        if (!(ArrayBuffer.$isView(buf) || buf instanceof ArrayBuffer)) {
+        if (!($bindgenFn("NodeUtil.schema.zig", "isArrayBufferView")(buf) || buf instanceof ArrayBuffer)) {
           const { buffer, byteOffset, byteLength } = buf;
           $putByValDirect(value, i, new Uint8Array(buffer, byteOffset, byteLength));
         }

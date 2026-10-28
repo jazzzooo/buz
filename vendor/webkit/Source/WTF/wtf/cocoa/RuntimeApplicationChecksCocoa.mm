@@ -385,6 +385,16 @@ std::optional<audit_token_t> applicationAuditToken()
 
 #endif
 
+bool isInBaseSystem()
+{
+#if PLATFORM(MAC)
+    static bool isBaseSystem = os_variant_is_basesystem("WebKit");
+    return isBaseSystem;
+#else
+    return false;
+#endif
+}
+
 static bool applicationBundleIsEqualTo(const String& bundleIdentifierString)
 {
     return applicationBundleIdentifier() == bundleIdentifierString;
@@ -640,6 +650,12 @@ bool IOSApplication::isDOFUSTouch()
 {
     static bool isDOFUSTouch = applicationBundleIsEqualTo("com.ankama.dofustouch"_s);
     return isDOFUSTouch;
+}
+
+bool IOSApplication::isMoonPlayer()
+{
+    static bool isMoonPlayer = applicationBundleIsEqualTo("com.innovis.moonplayer"_s);
+    return isMoonPlayer;
 }
 
 bool IOSApplication::isMyRideK12()

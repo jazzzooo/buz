@@ -691,8 +691,10 @@ constexpr Effects constantEffectsForOpcode(Opcode opcode)
     case WasmBoundsCheck:
     case WasmStructGet:
     case WasmStructSet:
+    case WasmStructNew:
     case WasmArrayGet:
     case WasmArraySet:
+    case WasmArrayNew:
     case WasmArrayLength:
         return Effects::invalid();
     case Div:
@@ -709,16 +711,6 @@ constexpr Effects constantEffectsForOpcode(Opcode opcode)
     case CheckMul:
     case Check:
         result = Effects::forCheck();
-        break;
-    case WasmStructNew:
-        result.reads = HeapRange::top();
-        result.writes = HeapRange::top();
-        result.exitsSideways = true;
-        break;
-    case WasmArrayNew:
-        result.reads = HeapRange::top();
-        result.writes = HeapRange::top();
-        result.exitsSideways = true;
         break;
     case WasmRefCast:
         result.reads = HeapRange::top();
@@ -891,6 +883,19 @@ Effects Value::effectsSlow() const
         result.controlDependent = true;
         result.readsMutability = Mutability::Immutable;
         break;
+    case WasmStructNew:
+    case WasmArrayNew:
+        // Allocation can trap and can trigger GC, so it reads everything and exits sideways. It
+        // only stores into the object it just produced, which nothing loaded earlier can alias, so
+        // it need not clobber cached field loads. What it must clobber is the collector state a
+        // triggered GC updates: the barrier threshold and the mutator-fence flag. Every allocation
+        // site is followed by a mutator fence that branches on that flag and full-clobbers when
+        // set, so keeping the flag's load from being hoisted above the allocation is what makes
+        // the narrow write range sound for everything else, including cached cell states.
+        result.reads = HeapRange::top();
+        result.writes = opcode() == WasmStructNew ? as<WasmStructNewValue>()->range() : as<WasmArrayNewValue>()->range();
+        result.exitsSideways = true;
+        break;
     default:
         RELEASE_ASSERT_NOT_REACHED();
     }
@@ -926,7 +931,6 @@ ValueKey Value::key() const
     case ZExt32:
     case Clz:
     case Trunc:
-    case TruncHigh:
     case IToD:
     case IToF:
     case FloatToDouble:
@@ -971,7 +975,6 @@ ValueKey Value::key() const
     case CheckAdd:
     case CheckSub:
     case CheckMul:
-    case Stitch:
         return ValueKey(kind(), type(), child(0), child(1));
     case Select:
         return ValueKey(kind(), type(), child(0), child(1), child(2));
@@ -1240,7 +1243,6 @@ Type Value::typeFor(Kind kind, Value* firstChild, Value* secondChild)
     case AboveEqual:
     case BelowEqual:
     case EqualOrUnordered:
-    case TruncHigh:
         return Int32;
     case Trunc:
         return firstChild->type() == Int64 ? Int32 : Float;
@@ -1248,7 +1250,6 @@ Type Value::typeFor(Kind kind, Value* firstChild, Value* secondChild)
     case SExt16To64:
     case SExt32:
     case ZExt32:
-    case Stitch:
         return Int64;
     case FloatToDouble:
     case IToD:

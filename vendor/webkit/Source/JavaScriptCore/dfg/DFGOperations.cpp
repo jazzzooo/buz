@@ -48,6 +48,7 @@
 #include "FTLForOSREntryJITCode.h"
 #include "FTLOSREntry.h"
 #include "FrameTracers.h"
+#include "GCMemoryOperations.h"
 #include "HasOwnPropertyCache.h"
 #include "Interpreter.h"
 #include "InterpreterInlines.h"
@@ -70,6 +71,7 @@
 #include "JSLexicalEnvironmentInlines.h"
 #include "JSMap.h"
 #include "JSMapIterator.h"
+#include "JSMicrotask.h"
 #include "JSPromise.h"
 #include "JSPromiseConstructor.h"
 #include "JSPromiseReaction.h"
@@ -94,6 +96,7 @@
 #include "RegExpGlobalDataInlines.h"
 #include "RegExpMatchesArray.h"
 #include "RegExpObjectInlines.h"
+#include "RegExpPrototype.h"
 #include "Repatch.h"
 #include "ResourceExhaustion.h"
 #include "ScopedArguments.h"
@@ -524,6 +527,30 @@ JSC_DEFINE_JIT_OPERATION(operationCallObjectConstructor, JSCell*, (JSGlobalObjec
     if (value.isUndefinedOrNull())
         OPERATION_RETURN(scope, constructEmptyObject(globalObject, globalObject->objectPrototype()));
     OPERATION_RETURN(scope, value.toObject(globalObject));
+}
+
+JSC_DEFINE_JIT_OPERATION(operationOpenAsyncFromSyncIterator, JSCell*, (JSGlobalObject* globalObject, EncodedJSValue encodedIterable))
+{
+    VM& vm = globalObject->vm();
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    OPERATION_RETURN(scope, createAsyncFromSyncIteratorForIterable(globalObject, JSValue::decode(encodedIterable)));
+}
+
+JSC_DEFINE_JIT_OPERATION(operationEnqueueAsyncGeneratorDriver, void, (JSGlobalObject* globalObject, JSObject* iterator, JSObject* driver, EncodedJSValue resumeValue, MicrotaskCallCache* microtaskCallCache))
+{
+    VM& vm = globalObject->vm();
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    if (auto* generator = dynamicDowncast<JSAsyncGenerator>(iterator))
+        enqueueAsyncGeneratorDriver(globalObject, generator, driver, JSValue::decode(resumeValue), microtaskCallCache);
+    else
+        driveAsyncFromSyncIteratorWithDriver(globalObject, uncheckedDowncast<JSAsyncFromSyncIterator>(iterator), driver, JSValue::decode(resumeValue));
+    OPERATION_RETURN(scope);
 }
 
 JSC_DEFINE_JIT_OPERATION(operationToObject, JSCell*, (JSGlobalObject* globalObject, EncodedJSValue encodedTarget, UniquedStringImpl* errorMessage))
@@ -1323,6 +1350,102 @@ JSC_DEFINE_JIT_OPERATION(operationArrayShift, EncodedJSValue, (JSGlobalObject* g
     OPERATION_RETURN(scope, JSValue::encode(front));
 }
 
+// Preconditions shared by the operationArrayShiftElements* family, which the JIT caller and the
+// array mode speculation together guarantee.
+static ALWAYS_INLINE void assertArrayShiftElementsPreconditions(JSArray* array, unsigned length)
+{
+    UNUSED_PARAM(array);
+    UNUSED_PARAM(length);
+    ASSERT(length >= 2 && length <= JSArray::shiftThreshold);
+    // JSArray::fastShift starts with ensureWritable(vm). We can skip that because
+    // ArrayMode::fromObserved forces Array::Convert whenever a CopyOnWrite mode was observed for a
+    // write, so checkArray has already arrayified the butterfly. indexingType() masks off the
+    // CopyOnWrite bit and so cannot catch a violation on its own: writing into a shared
+    // JSImmutableButterfly would silently corrupt every array sharing it.
+    ASSERT(!isCopyOnWrite(array->indexingMode()));
+    // fastShift also checks holesMustForwardToPrototype() before moving anything. We can skip that
+    // because the ArrayShift case in FixupPhase only marks the array mode sane chain once the
+    // structure speculation pins the array prototype and the arrayPrototypeChainIsSane watchpoint
+    // is registered, which is exactly when that check returns false.
+    ASSERT(!array->holesMustForwardToPrototype());
+}
+
+// Element-move core of fastShift for small non-CopyOnWrite arrays whose prototype chain is known to
+// be sane. There is one entry point per indexing type because the caller speculates on the array
+// mode and so knows statically which one applies. Each returns the empty value without mutating the
+// array when element 0 cannot be handled here, so the caller can fall back to the generic shift
+// path. The caller guarantees 2 <= length <= JSArray::shiftThreshold.
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationArrayShiftElementsInt32, EncodedJSValue, (VM* vmPointer, JSArray* array))
+{
+    VM& vm = *vmPointer;
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+
+    ASSERT(array->indexingType() == ArrayWithInt32);
+    Butterfly* butterfly = array->butterfly();
+    unsigned length = butterfly->publicLength();
+    assertArrayShiftElementsPreconditions(array, length);
+
+    JSValue result = butterfly->contiguous().at(array, 0).get();
+    if (!result) [[unlikely]]
+        return JSValue::encode(JSValue());
+
+    unsigned moveCount = length - 1;
+    // Int32 elements are not cells, so this needs neither gcSafeMemmove nor a write barrier.
+    memmove(butterfly->contiguous().data(), butterfly->contiguous().data() + 1, sizeof(JSValue) * moveCount);
+    butterfly->contiguous().at(array, moveCount).clear();
+    butterfly->setPublicLength(moveCount);
+    return JSValue::encode(result);
+}
+
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationArrayShiftElementsContiguous, EncodedJSValue, (VM* vmPointer, JSArray* array))
+{
+    VM& vm = *vmPointer;
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+
+    ASSERT(array->indexingType() == ArrayWithContiguous);
+    Butterfly* butterfly = array->butterfly();
+    unsigned length = butterfly->publicLength();
+    assertArrayShiftElementsPreconditions(array, length);
+
+    JSValue result = butterfly->contiguous().at(array, 0).get();
+    if (!result) [[unlikely]]
+        return JSValue::encode(JSValue());
+
+    unsigned moveCount = length - 1;
+    gcSafeMemmove(butterfly->contiguous().data(), butterfly->contiguous().data() + 1, sizeof(JSValue) * moveCount);
+    butterfly->contiguous().at(array, moveCount).clear();
+    butterfly->setPublicLength(moveCount);
+    vm.writeBarrier(array);
+    return JSValue::encode(result);
+}
+
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationArrayShiftElementsDouble, EncodedJSValue, (VM* vmPointer, JSArray* array))
+{
+    VM& vm = *vmPointer;
+    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
+    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
+
+    ASSERT(array->indexingType() == ArrayWithDouble);
+    Butterfly* butterfly = array->butterfly();
+    unsigned length = butterfly->publicLength();
+    assertArrayShiftElementsPreconditions(array, length);
+
+    double result = butterfly->contiguousDouble().at(array, 0);
+    // A hole reads back as PNaN and is indistinguishable from a real NaN element, so both bail to
+    // the generic path, which sorts out which one it was.
+    if (result != result) [[unlikely]]
+        return JSValue::encode(JSValue());
+
+    unsigned moveCount = length - 1;
+    // Doubles are not cells, so this needs neither gcSafeMemmove nor a write barrier.
+    memmove(butterfly->contiguousDouble().data(), butterfly->contiguousDouble().data() + 1, sizeof(double) * moveCount);
+    butterfly->contiguousDouble().at(array, moveCount) = PNaN;
+    butterfly->setPublicLength(moveCount);
+    return JSValue::encode(JSValue(JSValue::EncodeAsDouble, result));
+}
+
 static ALWAYS_INLINE JSValue arrayUnshiftSingleImpl(JSGlobalObject* globalObject, VM& vm, JSArray* array, JSValue value)
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -1616,7 +1739,7 @@ static ALWAYS_INLINE JSString* arrayJoinWithStringSeparator(JSGlobalObject* glob
     if (!separator->length() && (array->indexingType() == ArrayWithContiguous || array->indexingType() == ArrayWithInt32)) {
         auto* butterfly = array->butterfly();
         JSOnlyStringsAndInt32sJoiner joiner(StringView { });
-        auto* joined = joiner.tryJoin(globalObject, butterfly->contiguous().data(), length);
+        auto* joined = joiner.tryJoin<ContiguousShape>(globalObject, butterfly->contiguous().data(), length);
         RETURN_IF_EXCEPTION(scope, { });
         if (joined)
             return joined;
@@ -2903,16 +3026,6 @@ JSC_DEFINE_JIT_OPERATION(operationNewWrapForValidIterator, JSCell*, (VM* vmPoint
     auto scope = DECLARE_THROW_SCOPE(vm);
 
     OPERATION_RETURN(scope, JSWrapForValidIterator::createWithInitialValues(vm, structure));
-}
-
-JSC_DEFINE_JIT_OPERATION(operationNewAsyncFromSyncIterator, JSCell*, (VM* vmPointer, Structure* structure))
-{
-    VM& vm = *vmPointer;
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    OPERATION_RETURN(scope, JSAsyncFromSyncIterator::createWithInitialValues(vm, structure));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationNewRegExpStringIterator, JSCell*, (VM* vmPointer, Structure* structure))
@@ -4418,6 +4531,13 @@ JSC_DEFINE_JIT_OPERATION(operationStringProtoFuncReplaceRegExpEmptyStr, JSCell*,
         OPERATION_RETURN(scope, removeAllUsingRegExpSearch(vm, globalObject, thisValue, source, regExp));
     }
 
+    if (regExp->sticky()) {
+        // Matches at exactly lastIndex and updates it; see replaceUsingRegExpSearch.
+        JSValue result = regExpReplaceGeneric(globalObject, searchValue, thisValue, jsEmptyString(vm));
+        OPERATION_RETURN_IF_EXCEPTION(scope, nullptr);
+        OPERATION_RETURN(scope, result.toString(globalObject));
+    }
+
     CallData callData;
     String replacementString;
     OPERATION_RETURN(scope, replaceOneWithStringUsingRegExpSearch(vm, globalObject, thisValue, source, regExp, replacementString));
@@ -5489,13 +5609,6 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationFModOnInts, double, (int32_t a, int32
 {
     return fmod(a, b);
 }
-
-#if USE(JSVALUE32_64)
-JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationRandom, double, (JSGlobalObject* globalObject))
-{
-    return globalObject->weakRandomNumber();
-}
-#endif
 
 JSC_DEFINE_JIT_OPERATION(operationStringFromCharCode, JSCell*, (JSGlobalObject* globalObject, int32_t op1))
 {

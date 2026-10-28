@@ -191,16 +191,24 @@
 
 /* ALWAYS_INLINE */
 
-/* TEMPORARY: Replace ALWAYS_INLINE with plain inline (no __always_inline__ attribute)
- * to debug LTO inlining issues on Alpine Linux.
- * This helps identify if the always_inline attribute is causing the FinalizationRegistry bug. */
+/* In GCC functions marked with no_sanitize_address cannot call functions that are marked with always_inline and not marked with no_sanitize_address.
+ * Therefore we need to give up on the enforcement of ALWAYS_INLINE when building with ASAN. https://gcc.gnu.org/bugzilla/show_bug.cgi?id=67368 */
+#if !defined(ALWAYS_INLINE) && defined(NDEBUG) && !(COMPILER(GCC) && ASAN_ENABLED)
+#define ALWAYS_INLINE inline __attribute__((__always_inline__))
+#endif
+
 #if !defined(ALWAYS_INLINE)
 #define ALWAYS_INLINE inline
 #endif
 
 /* ALWAYS_INLINE_LAMBDA */
 
-/* TEMPORARY: Disable ALWAYS_INLINE_LAMBDA to debug LTO inlining issues on Alpine Linux. */
+/* In GCC functions marked with no_sanitize_address cannot call functions that are marked with always_inline and not marked with no_sanitize_address.
+ * Therefore we need to give up on the enforcement of ALWAYS_INLINE_LAMBDA when building with ASAN. https://gcc.gnu.org/bugzilla/show_bug.cgi?id=67368 */
+#if !defined(ALWAYS_INLINE_LAMBDA) && defined(NDEBUG) && !(COMPILER(GCC) && ASAN_ENABLED)
+#define ALWAYS_INLINE_LAMBDA __attribute__((__always_inline__))
+#endif
+
 #if !defined(ALWAYS_INLINE_LAMBDA)
 #define ALWAYS_INLINE_LAMBDA
 #endif
@@ -295,6 +303,23 @@
 /* RETURNS_NONNULL */
 #if !defined(RETURNS_NONNULL)
 #define RETURNS_NONNULL __attribute__((returns_nonnull))
+#endif
+
+/* PRESERVE_MOST */
+
+// Shrinks the register set a caller must spill around a call.
+// See: https://clang.llvm.org/docs/AttributeReference.html#preserve-most
+//
+// Requires LTO, so the build defines HAVE_PRESERVE_MOST only when LTO is on. Without LTO,
+// LLVM's hot/cold splitting extracts cold regions into separate functions that get the default
+// calling convention, and the preserve_most parent then has to save X9-X15 for them in its entry
+// block (on the hot path), which costs more than the attribute saves. See rdar://183555125.
+#if !defined(PRESERVE_MOST)
+#if defined(HAVE_PRESERVE_MOST) && HAVE_PRESERVE_MOST && defined(__aarch64__)
+#define PRESERVE_MOST __attribute__((preserve_most))
+#else
+#define PRESERVE_MOST
+#endif
 #endif
 
 /* OBJC_CLASS */

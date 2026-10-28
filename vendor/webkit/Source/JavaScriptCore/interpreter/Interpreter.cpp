@@ -49,6 +49,9 @@
 #include "FrameTracers.h"
 #include "GlobalObjectMethodTable.h"
 #include "InlineCallFrame.h"
+#if USE(BUN_JSC_ADDITIONS)
+#include "InternalFieldTuple.h"
+#endif
 #include "InterpreterInlines.h"
 #include "JITCode.h"
 #include "JSArrayInlines.h"
@@ -491,7 +494,16 @@ void Interpreter::getAsyncStackTrace(JSCell* owner, Vector<StackFrame>& results,
     auto getContextValueFromPromise = [&](JSPromise* promise) -> JSValue {
         if (!promise)
             return { };
-        return promise->asyncStackTraceContext();
+        JSValue context = promise->asyncStackTraceContext();
+#if USE(BUN_JSC_ADDITIONS)
+        // JSPromise::resolveWithInternalMicrotaskForAsyncAwait stores
+        // InternalFieldTuple(context, asyncContext) when ALS is active.
+        if (context) {
+            if (auto* tuple = dynamicDowncast<InternalFieldTuple>(context))
+                return tuple->getInternalField(0);
+        }
+#endif
+        return context;
     };
 
     auto getParentGenerator = [&](JSAsyncFunctionGenerator* gen) -> JSAsyncFunctionGenerator* {
@@ -1033,7 +1045,11 @@ void Interpreter::notifyDebuggerOfExceptionToBeThrown(VM& vm, JSGlobalObject* gl
     exception->setDidNotifyInspectorOfThrow();
 }
 
+#if USE(BUN_JSC_ADDITIONS)
+JSValue Interpreter::executeProgram(const SourceCode& source, JSGlobalObject*, JSObject* thisObj, UnlinkedProgramCodeBlock* precompiled)
+#else
 JSValue Interpreter::executeProgram(const SourceCode& source, JSGlobalObject*, JSObject* thisObj)
+#endif
 {
     VM& vm = this->vm();
     auto throwScope = DECLARE_THROW_SCOPE(vm);
@@ -1211,7 +1227,11 @@ failedJSONP:
     // object.
 
     // Compile source to bytecode if necessary:
+#if USE(BUN_JSC_ADDITIONS)
+    JSObject* error = program->initializeGlobalProperties(vm, globalObject, scope, precompiled);
+#else
     JSObject* error = program->initializeGlobalProperties(vm, globalObject, scope);
+#endif
     EXCEPTION_ASSERT(!throwScope.exception() || !error || vm.hasPendingTerminationException());
     RETURN_IF_EXCEPTION(throwScope, throwScope.exception());
     if (error) [[unlikely]]

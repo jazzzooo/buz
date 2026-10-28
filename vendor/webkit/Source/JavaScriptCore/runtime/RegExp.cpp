@@ -27,6 +27,7 @@
 #include "RegExpCache.h"
 #include "RegExpInlines.h"
 #include "YarrJIT.h"
+#include "YarrPattern.h"
 #include <wtf/Assertions.h>
 #include <wtf/Atomics.h>
 #include <wtf/DataLog.h>
@@ -207,6 +208,8 @@ size_t RegExp::estimatedSize(JSCell* cell, VM& vm)
         regexDataSize += jitCode->size();
 #endif
     regexDataSize += thisObject->m_ovector.capacity() * sizeof(int);
+    if (thisObject->m_firstCharacterBitmap.get())
+        regexDataSize += sizeof(WTF::BitSet<256>);
     return Base::estimatedSize(cell, vm) + regexDataSize;
 }
 
@@ -318,7 +321,7 @@ void RegExp::compile(VM* vm, Yarr::CharSize charSize, std::optional<StringView> 
 #if !ENABLE(YARR_JIT_BACKREFERENCES)
         && !pattern.m_containsBackreferences
 #endif
-        && !pattern.m_containsLookbehinds
+        && (!pattern.m_containsLookbehinds || Options::useRegExpLookbehindJIT())
         ) {
         auto& jitCode = ensureRegExpJITCode();
         Yarr::jitCompile(pattern, m_patternString, charSize, sampleString, vm, jitCode, Yarr::ExecutionMode::IncludeSubpatterns);
@@ -340,6 +343,24 @@ void RegExp::compile(VM* vm, Yarr::CharSize charSize, std::optional<StringView> 
         m_state = ParseError;
         return;
     }
+}
+
+const WTF::BitSet<256>* RegExp::firstCharacterBitmap(FirstCharacterFilterPosition position)
+{
+    ASSERT_UNUSED(position, position == FirstCharacterFilterPosition::AtStart ? !globalOrSticky() : sticky());
+    const auto& result = m_firstCharacterBitmap.ensure([&] {
+        auto bitmap = Yarr::computeFirstCharacterBitmap(m_patternString, m_flags);
+        if (!bitmap || bitmap->isFull()) {
+            WTF::BitSet<256> full;
+            full.setAll();
+            return makeUnique<WTF::BitSet<256>>(WTF::move(full));
+        }
+        return makeUnique<WTF::BitSet<256>>(*bitmap);
+    });
+
+    if (result.isFull())
+        return nullptr;
+    return &result;
 }
 
 int RegExp::match(JSGlobalObject* globalObject, StringView s, unsigned startOffset, std::span<int> ovector)
@@ -388,7 +409,7 @@ void RegExp::compileMatchOnly(VM* vm, Yarr::CharSize charSize, std::optional<Str
 #if !ENABLE(YARR_JIT_BACKREFERENCES)
         && !pattern.m_containsBackreferences
 #endif
-        && !pattern.m_containsLookbehinds
+        && (!pattern.m_containsLookbehinds || Options::useRegExpLookbehindJIT())
         ) {
         auto& jitCode = ensureRegExpJITCode();
         Yarr::jitCompile(pattern, m_patternString, charSize, sampleString, vm, jitCode, Yarr::ExecutionMode::MatchOnly);

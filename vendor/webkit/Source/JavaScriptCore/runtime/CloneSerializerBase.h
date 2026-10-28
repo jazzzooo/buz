@@ -58,20 +58,10 @@ concept StructuredCloneSerializerHandler = requires(Derived& d, JSObject* obj, S
 
 namespace StructuredCloneInternal {
 
-#if JSC_ASSUME_LITTLE_ENDIAN
 template<typename T> inline void writeLittleEndian(Vector<uint8_t>& buffer, T value)
 {
     buffer.append(asByteSpan(value));
 }
-#else
-template<typename T> inline void writeLittleEndian(Vector<uint8_t>& buffer, T value)
-{
-    for (unsigned i = 0; i < sizeof(T); i++) {
-        buffer.append(value & 0xFF);
-        value >>= 8;
-    }
-}
-#endif
 
 template<> inline void writeLittleEndian<uint8_t>(Vector<uint8_t>& buffer, uint8_t value)
 {
@@ -83,17 +73,7 @@ template<typename T> inline bool writeLittleEndian(Vector<uint8_t>& buffer, std:
     if (values.size() > std::numeric_limits<uint32_t>::max() / sizeof(T))
         return false;
 
-#if JSC_ASSUME_LITTLE_ENDIAN
     buffer.append(asBytes(values));
-#else
-    for (unsigned i = 0; i < values.size(); i++) {
-        T value = values[i];
-        for (unsigned j = 0; j < sizeof(T); j++) {
-            buffer.append(static_cast<uint8_t>(value & 0xFF));
-            value >>= 8;
-        }
-    }
-#endif
     return true;
 }
 
@@ -431,6 +411,17 @@ protected:
             dumpBigIntData(bigIntValue);
             return true;
         }
+        // The walker descends into JSArray/JSMap/JSSet; never let Derived or the generic error
+        // path claim them as terminals.
+        if (is<JSArray>(*obj) || is<JSMap>(*obj) || is<JSSet>(*obj))
+            return false;
+
+        // Give Derived (the embedder) first refusal. This lets error-like platform objects, such
+        // as WebCore's DOMException (which is an ErrorInstance), be serialized as themselves
+        // rather than as generic Errors by the ErrorInstance path below.
+        if (static_cast<Derived*>(this)->dumpDerivedTerminal(obj, code))
+            return true;
+
         if (auto* errorInstance = dynamicDowncast<ErrorInstance>(obj)) {
             auto errorInformation = extractErrorInformationFromErrorInstance(m_lexicalGlobalObject, *errorInstance);
             if (!errorInformation)
@@ -447,14 +438,7 @@ protected:
             return true;
         }
 
-        // The walker descends into JSArray/JSMap/JSSet; never let Derived claim
-        // them as terminals. Plain objects (JSFinalObject / ObjectPrototype) fall
-        // through to dumpDerivedTerminal so DOM types may opt in, with the walker
-        // catching anything Derived didn't claim.
-        if (is<JSArray>(*obj) || is<JSMap>(*obj) || is<JSSet>(*obj))
-            return false;
-
-        return static_cast<Derived*>(this)->dumpDerivedTerminal(obj, code);
+        return false;
     }
 
     void endObject()

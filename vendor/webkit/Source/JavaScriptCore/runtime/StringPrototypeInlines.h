@@ -35,6 +35,7 @@
 #include "RegExpGlobalData.h"
 #include "RegExpGlobalDataInlines.h"
 #include "RegExpObject.h"
+#include "RegExpObjectInlines.h"
 #include <wtf/Range.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringSearch.h>
@@ -780,9 +781,10 @@ static ALWAYS_INLINE JSString* removeAllUsingRegExpSearch(VM& vm, JSGlobalObject
         lastIndex = result.end;
         startPosition = lastIndex;
 
-        // special case of empty match
+        // special case of empty match: step to the next match start (a whole
+        // surrogate pair for /u, /v, where a match never starts mid-pair).
         if (result.empty()) {
-            startPosition++;
+            startPosition = advanceStringIndex(source, sourceLen, result.end, regExp->eitherUnicode());
             if (startPosition > sourceLen)
                 break;
         }
@@ -1517,6 +1519,11 @@ ALWAYS_INLINE JSString* replaceOneWithStringUsingRegExpSearch(VM& vm, JSGlobalOb
 {
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    if (replacementString.isEmpty()) {
+        if (auto* result = tryTrimSpaces(vm, globalObject, source, string, regExp))
+            return result;
+    }
+
     int* ovector;
     MatchResult result = globalObject->regExpGlobalData().performMatch(globalObject, regExp, string, source, 0, &ovector);
     RETURN_IF_EXCEPTION(scope, nullptr);
@@ -1599,6 +1606,11 @@ ALWAYS_INLINE JSString* replace(VM& vm, JSGlobalObject* globalObject, JSValue th
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     RELEASE_AND_RETURN(scope, replaceUsingStringSearch<replaceMode>(vm, globalObject, string, thisString, WTF::move(searchString), replaceValue));
+}
+
+ALWAYS_INLINE bool isASCIIIdentifierStart(char16_t ch)
+{
+    return isASCIIAlpha(ch) || ch == '_' || ch == '$';
 }
 
 ALWAYS_INLINE char32_t codePointAt(const String& string, unsigned position, unsigned length)

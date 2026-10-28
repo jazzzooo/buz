@@ -779,7 +779,7 @@ declare function $getByIdDirectPrivate<T = any, K extends string = string>(
 declare var $Promise: PromiseConstructor;
 /** Sets an object's prototype without triggering setPrototypeOf traps. Used as `$setPrototypeDirect.$call(obj, proto)`. */
 declare var $setPrototypeDirect: (proto: unknown) => void;
-declare var $ArrayBuffer: typeof ArrayBuffer & { $isView: typeof ArrayBuffer.isView };
+declare var $ArrayBuffer: typeof ArrayBuffer;
 /** Private-name global for the native TextEncoderStreamEncoder class. */
 declare var $TextEncoderStreamEncoder: new () => {
   encode(input: string): Uint8Array | undefined;

@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2015 Andy VanWagoner (andy@vanwagoner.family)
  * Copyright (C) 2016-2025 Apple Inc. All rights reserved.
+ * Copyright (C) 2026 Igalia S.L.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -46,6 +47,7 @@
 #include <unicode/udatpg.h>
 #include <unicode/uenum.h>
 #include <wtf/Range.h>
+#include <wtf/TimeZone.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/unicode/CharacterNames.h>
@@ -738,6 +740,22 @@ void IntlDateTimeFormat::initializeDateTimeFormat(JSGlobalObject* globalObject, 
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    std::optional<IntlDateTimeFormatImplKey> cacheKey;
+    const bool canCache = originalOptions.isUndefined() && (locales.isUndefined() || locales.isString()) && toLocaleStringTimeZone.isNull();
+    if (canCache) {
+        IntlDateTimeFormatImplKey key { .locales = std::nullopt, .required = required, .defaults = defaults, .timeZoneID = WTF::lastTimeZoneID() };
+        if (locales.isString()) {
+            key.locales = asString(locales)->value(globalObject);
+            RETURN_IF_EXCEPTION(scope, void());
+        }
+        if (auto cachedImpl = vm.intlCache().findCachedDateTimeFormatImpl(key)) {
+            setImpl(cachedImpl.releaseNonNull());
+            vm.heap.reportExtraMemoryAllocated(this, estimatedUDateFormatSize);
+            return;
+        }
+        cacheKey = WTF::move(key);
+    }
+
     Vector<String> requestedLocales = canonicalizeLocaleList(globalObject, locales);
     RETURN_IF_EXCEPTION(scope, void());
 
@@ -802,13 +820,15 @@ void IntlDateTimeFormat::initializeDateTimeFormat(JSGlobalObject* globalObject, 
             // Handling "islamicc" candidate for backward compatibility.
             if (calendar == "islamicc"_s)
                 calendar = "islamic-civil"_s;
-            if (Options::useIntlEraMonthcode()) {
-                // https://tc39.es/proposal-intl-era-monthcode/#sec-createdatetimeformat step 9
-                if (calendar == "islamic"_s)
-                    calendar = "islamic-tbla"_s;
-                if (!intlAvailableCalendarIndex().contains(calendar))
-                    calendar = defaultCalendarForLocale(resolved.dataLocale);
-            }
+            // https://tc39.es/proposal-intl-era-monthcode/#sec-createdatetimeformat step 9
+            if (calendar == "islamic"_s)
+                calendar = "islamic-tbla"_s;
+            // Not a numbered CreateDateTimeFormat step; the spec's [[ca]] slot still permits
+            // calendars outside AvailableCalendars() here. Per TG2's resolution closing
+            // AvailableCalendars() and ignoring unsupported "ca" values like "islamic-rgsa"
+            // (https://github.com/tc39/ecma402/blob/main/meetings/notes-2026-01-08.md#intl-era-month-code-99), fall back instead.
+            if (!intlAvailableCalendarIndex().contains(calendar))
+                calendar = defaultCalendarForLocale(resolved.dataLocale);
         }
         impl->m_calendar = WTF::move(calendar);
     }
@@ -1076,6 +1096,9 @@ void IntlDateTimeFormat::initializeDateTimeFormat(JSGlobalObject* globalObject, 
     }
 
     vm.heap.reportExtraMemoryAllocated(this, estimatedUDateFormatSize);
+
+    if (cacheKey)
+        vm.intlCache().cacheDateTimeFormatImpl(*cacheKey, impl.copyRef());
     m_impl = WTF::move(impl);
 }
 
@@ -1372,6 +1395,139 @@ static void NODELETE replaceNarrowNoBreakSpaceOrThinSpaceWithNormalSpace(Contain
     }
 }
 
+// ICU4C-WORKAROUND: rdar://182953351 - Islamic calendars never expose a second era
+// (architecturally locked to one); Coptic has a second era but never selects it.
+// Substitute CLDR's "Before Hijra"/"Anno Martyrum" text ourselves. islamic-tbla's
+// epoch differs from civil/umalqura's by a day, hence the separate branch.
+// needsYearFlip: islamic's raw year has no year-zero skip, unlike Gregorian's native "Before
+// Christ" or Temporal's own eraYear for this era (both use `1 - year`). Coptic's year is already correct.
+// FIXME: doesn't cover formatRange()/formatRangeToParts(); wait for ICU
+// to fix era selection natively rather than extending this further.
+struct EraOverride {
+    ASCIILiteral text;
+    bool needsYearFlip { false };
+};
+static std::optional<EraOverride> proposalEraOverrideString(const String& calendar, double epochMs)
+{
+    if (calendar == "islamic-civil"_s || calendar == "islamic-umalqura"_s) {
+        constexpr double islamicEpoch = -42521558822000.0; // ISO 622-07-19T07:52:58.000Z
+        if (epochMs < islamicEpoch)
+            return EraOverride { "Before Hijra"_s, true };
+        return std::nullopt;
+    }
+    if (calendar == "islamic-tbla"_s) {
+        constexpr double islamicTblaEpoch = -42521645222000.0; // ISO 622-07-18T07:52:58.000Z
+        if (epochMs < islamicTblaEpoch)
+            return EraOverride { "Before Hijra"_s, true };
+        return std::nullopt;
+    }
+    if (calendar == "coptic"_s) {
+        constexpr double copticEpoch = -53184182822000.0; // ISO 284-08-29T07:52:58.000Z
+        if (epochMs < copticEpoch)
+            return EraOverride { "Anno Martyrum"_s };
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+// ICU4C-WORKAROUND: rdar://182953351 - the flipped "Before Hijra" year (1 - year, matching
+// Temporal's eraYear and ICU's native "Before Christ"), read from a clone of the format's own
+// calendar rather than parsed from ICU's rendered text -- under year:"2-digit" that text is
+// already lossily truncated, so flipping it instead of the real value would be wrong.
+static std::optional<String> flippedEraOverrideYear(UDateFormat* format, double value, bool yearIsTwoDigit)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    auto calendar = std::unique_ptr<UCalendar, ICUDeleter<ucal_close>>(ucal_clone(udat_getCalendar(format), &status));
+    if (U_FAILURE(status)) [[unlikely]]
+        return std::nullopt;
+    ucal_setMillis(calendar.get(), value, &status);
+    int32_t year = ucal_get(calendar.get(), UCAL_YEAR, &status);
+    if (U_FAILURE(status)) [[unlikely]]
+        return std::nullopt;
+    int32_t flipped = 1 - year;
+    if (!yearIsTwoDigit)
+        return String::number(flipped);
+    int32_t twoDigit = ((flipped % 100) + 100) % 100;
+    auto digits = String::number(twoDigit);
+    return digits.length() < 2 ? makeString('0', digits) : digits;
+}
+
+// ICU4C-WORKAROUND: rdar://182953351 - see proposalEraOverrideString. Shared by both format() overloads.
+static JSValue formatWithEraOverride(JSGlobalObject* globalObject, UDateFormat* format, double value, const EraOverride& eraOverride, bool yearIsTwoDigit)
+{
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    UErrorCode fieldsStatus = U_ZERO_ERROR;
+    auto fields = std::unique_ptr<UFieldPositionIterator, UFieldPositionIteratorDeleter>(ufieldpositer_open(&fieldsStatus));
+    if (U_FAILURE(fieldsStatus)) [[unlikely]]
+        return throwTypeError(globalObject, scope, "failed to open field position iterator"_s);
+    Vector<char16_t, 32> result;
+    fieldsStatus = callBufferProducingFunction(udat_formatForFields, format, value, result, fields.get());
+    if (U_FAILURE(fieldsStatus)) [[unlikely]]
+        return throwTypeError(globalObject, scope, "failed to format date value"_s);
+    replaceNarrowNoBreakSpaceOrThinSpaceWithNormalSpace(result);
+
+    // Find the era field, and (only if needed) the year field, so both splice in one pass.
+    int32_t eraBegin = -1, eraEnd = -1;
+    int32_t yearBegin = -1, yearEnd = -1;
+    int32_t beginIndex = 0, endIndex = 0;
+    while (true) {
+        auto fieldType = ufieldpositer_next(fields.get(), &beginIndex, &endIndex);
+        if (fieldType < 0)
+            break;
+        if (fieldType == UDAT_ERA_FIELD) {
+            eraBegin = beginIndex;
+            eraEnd = endIndex;
+        } else if (eraOverride.needsYearFlip && fieldType == UDAT_YEAR_FIELD) {
+            yearBegin = beginIndex;
+            yearEnd = endIndex;
+        }
+    }
+
+    StringView resultView(result.span());
+    if (eraBegin < 0) {
+        // ICU can already leave a trailing space where the empty era slot would go;
+        // only add our own separator if one isn't already there.
+        StringBuilder builder;
+        builder.append(resultView);
+        if (resultView.isEmpty() || !WTF::isUnicodeWhitespace(resultView[resultView.length() - 1]))
+            builder.append(' ');
+        builder.append(String(eraOverride.text));
+        return jsString(vm, builder.toString());
+    }
+
+    // Replace the era field, and the year field too when needsYearFlip (see struct above).
+    String yearReplacement;
+    if (yearBegin >= 0) {
+        if (auto flipped = flippedEraOverrideYear(format, value, yearIsTwoDigit))
+            yearReplacement = *flipped;
+    }
+
+    struct ReplacedSpan {
+        int32_t begin;
+        int32_t end;
+        String replacement;
+    };
+    ReplacedSpan spans[2] = { { eraBegin, eraEnd, String(eraOverride.text) }, { -1, -1, { } } };
+    if (!yearReplacement.isNull())
+        spans[1] = { yearBegin, yearEnd, yearReplacement };
+    if (spans[1].begin >= 0 && spans[1].begin < spans[0].begin)
+        std::swap(spans[0], spans[1]);
+
+    StringBuilder builder;
+    int32_t cursor = 0;
+    for (auto& span : spans) {
+        if (span.begin < 0)
+            continue;
+        builder.append(resultView.substring(cursor, span.begin - cursor));
+        builder.append(span.replacement);
+        cursor = span.end;
+    }
+    builder.append(resultView.substring(cursor, resultView.length() - cursor));
+    return jsString(vm, builder.toString());
+}
+
 // https://tc39.es/proposal-temporal/#sec-formatdatetime
 JSValue IntlDateTimeFormat::format(JSGlobalObject* globalObject, double value) const
 {
@@ -1383,9 +1539,14 @@ JSValue IntlDateTimeFormat::format(JSGlobalObject* globalObject, double value) c
     if (!std::isfinite(value))
         return throwRangeError(globalObject, scope, "date value is not finite in DateTimeFormat format()"_s);
 
+    // ICU4C-WORKAROUND: rdar://182953351 - see proposalEraOverrideString; only when era requested.
+    auto eraOverride = m_impl->m_era != Era::None ? proposalEraOverrideString(m_impl->m_calendar, value) : std::nullopt;
+    if (eraOverride)
+        RELEASE_AND_RETURN(scope, formatWithEraOverride(globalObject, m_impl->m_dateFormat.get(), value, *eraOverride, m_impl->m_year == Year::TwoDigit));
+
     Vector<char16_t, 32> result;
     auto status = callBufferProducingFunction(udat_format, m_impl->m_dateFormat.get(), value, result, nullptr);
-    if (U_FAILURE(status))
+    if (U_FAILURE(status)) [[unlikely]]
         return throwTypeError(globalObject, scope, "failed to format date value"_s);
     replaceNarrowNoBreakSpaceOrThinSpaceWithNormalSpace(result);
 
@@ -1455,7 +1616,7 @@ static ASCIILiteral partTypeString(UDateFormatField field)
     return "unknown"_s;
 }
 
-static JSValue buildFormattedDateTimeParts(JSGlobalObject* globalObject, UDateFormat* format, double value, JSString* sourceType)
+static JSValue buildFormattedDateTimeParts(JSGlobalObject* globalObject, UDateFormat* format, double value, JSString* sourceType, std::optional<EraOverride> eraOverride = std::nullopt, bool yearIsTwoDigit = false)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -1485,6 +1646,7 @@ static JSValue buildFormattedDateTimeParts(JSGlobalObject* globalObject, UDateFo
     int32_t previousEndIndex = 0;
     int32_t beginIndex = 0;
     int32_t endIndex = 0;
+    bool sawEra = false;
     while (previousEndIndex < resultLength) {
         auto fieldType = ufieldpositer_next(fields.get(), &beginIndex, &endIndex);
         if (fieldType < 0)
@@ -1495,18 +1657,51 @@ static JSValue buildFormattedDateTimeParts(JSGlobalObject* globalObject, UDateFo
             JSObject* part = sourceType
                 ? createIntlPartObjectWithSource(globalObject, literalString, value, sourceType)
                 : createIntlPartObject(globalObject, literalString, value);
-            parts->push(globalObject, part);
+            parts->putDirectIndex(globalObject, parts->length(), part);
             RETURN_IF_EXCEPTION(scope, { });
         }
         previousEndIndex = endIndex;
 
         if (fieldType >= 0) {
             auto type = jsNontrivialString(vm, partTypeString(UDateFormatField(fieldType)));
-            auto value = jsString(vm, resultStringView.substring(beginIndex, endIndex - beginIndex));
+            JSString* valueStr;
+            {
+                // ICU4C-WORKAROUND: rdar://182953351 - replace era field text with override for islamic-* pre-Hijra / coptic pre-AM.
+                if (eraOverride && fieldType == UDAT_ERA_FIELD) {
+                    valueStr = jsNontrivialString(vm, String(eraOverride->text));
+                    sawEra = true;
+                } else if (eraOverride && eraOverride->needsYearFlip && fieldType == UDAT_YEAR_FIELD) {
+                    // ICU4C-WORKAROUND: rdar://182953351 - flip the year the same way formatWithEraOverride does.
+                    auto flipped = flippedEraOverrideYear(format, value, yearIsTwoDigit);
+                    valueStr = flipped ? jsString(vm, *flipped) : jsString(vm, resultStringView.substring(beginIndex, endIndex - beginIndex));
+                } else
+                    valueStr = jsString(vm, resultStringView.substring(beginIndex, endIndex - beginIndex));
+            }
             JSObject* part = sourceType
-                ? createIntlPartObjectWithSource(globalObject, type, value, sourceType)
-                : createIntlPartObject(globalObject, type, value);
-            parts->push(globalObject, part);
+                ? createIntlPartObjectWithSource(globalObject, type, valueStr, sourceType)
+                : createIntlPartObject(globalObject, type, valueStr);
+            parts->putDirectIndex(globalObject, parts->length(), part);
+            RETURN_IF_EXCEPTION(scope, { });
+        }
+    }
+
+    {
+        // ICU4C-WORKAROUND: rdar://182953351 - append era override as a distinct part when ICU emitted no era field (coptic pre-AM).
+        if (eraOverride && !sawEra) {
+            if (resultStringView.isEmpty() || !WTF::isUnicodeWhitespace(resultStringView[resultLength - 1])) {
+                auto separator = jsSingleCharacterString(vm, static_cast<char16_t>(' '));
+                JSObject* separatorPart = sourceType
+                    ? createIntlPartObjectWithSource(globalObject, literalString, separator, sourceType)
+                    : createIntlPartObject(globalObject, literalString, separator);
+                parts->putDirectIndex(globalObject, parts->length(), separatorPart);
+                RETURN_IF_EXCEPTION(scope, { });
+            }
+            auto type = jsNontrivialString(vm, "era"_s);
+            auto valueStr = jsNontrivialString(vm, String(eraOverride->text));
+            JSObject* part = sourceType
+                ? createIntlPartObjectWithSource(globalObject, type, valueStr, sourceType)
+                : createIntlPartObject(globalObject, type, valueStr);
+            parts->putDirectIndex(globalObject, parts->length(), part);
             RETURN_IF_EXCEPTION(scope, { });
         }
     }
@@ -1927,7 +2122,7 @@ static JSValue buildFormattedDateIntervalParts(JSGlobalObject* globalObject, con
 
         if (previousEndIndex < beginIndex) {
             JSObject* part = createPart(literalString, previousEndIndex, beginIndex - previousEndIndex);
-            parts->push(globalObject, part);
+            parts->putDirectIndex(globalObject, parts->length(), part);
             RETURN_IF_EXCEPTION(scope, { });
             previousEndIndex = beginIndex;
         }
@@ -1950,14 +2145,14 @@ static JSValue buildFormattedDateIntervalParts(JSGlobalObject* globalObject, con
 
         auto type = jsNontrivialString(vm, partTypeString(UDateFormatField(fieldType)));
         JSObject* part = createPart(type, beginIndex, endIndex - beginIndex);
-        parts->push(globalObject, part);
+        parts->putDirectIndex(globalObject, parts->length(), part);
         RETURN_IF_EXCEPTION(scope, { });
         previousEndIndex = endIndex;
     }
 
     if (previousEndIndex < resultLength) {
         JSObject* part = createPart(literalString, previousEndIndex, resultLength - previousEndIndex);
-        parts->push(globalObject, part);
+        parts->putDirectIndex(globalObject, parts->length(), part);
         RETURN_IF_EXCEPTION(scope, { });
     }
 
@@ -2382,9 +2577,14 @@ JSValue IntlDateTimeFormat::format(JSGlobalObject* globalObject, JSValue x) cons
     if (!tempFormat) [[unlikely]]
         return throwTypeError(globalObject, scope, "DateTimeFormat has no fields applicable to this Temporal type"_s);
 
+    // ICU4C-WORKAROUND: rdar://182953351 - see proposalEraOverrideString; only when era requested.
+    auto eraOverride = m_impl->m_era != Era::None ? proposalEraOverrideString(m_impl->m_calendar, record.value) : std::nullopt;
+    if (eraOverride)
+        RELEASE_AND_RETURN(scope, formatWithEraOverride(globalObject, tempFormat, record.value, *eraOverride, m_impl->m_year == Year::TwoDigit));
+
     Vector<char16_t, 32> result;
     auto fmtStatus = callBufferProducingFunction(udat_format, tempFormat, record.value, result, nullptr);
-    if (U_FAILURE(fmtStatus))
+    if (U_FAILURE(fmtStatus)) [[unlikely]]
         return throwTypeError(globalObject, scope, "failed to format date value"_s);
     replaceNarrowNoBreakSpaceOrThinSpaceWithNormalSpace(result);
     return jsString(vm, String(WTF::move(result)));
@@ -2411,7 +2611,9 @@ JSValue IntlDateTimeFormat::formatToParts(JSGlobalObject* globalObject, JSValue 
             return throwTypeError(globalObject, scope, "DateTimeFormat has no fields applicable to this Temporal type"_s);
     }
 
-    RELEASE_AND_RETURN(scope, buildFormattedDateTimeParts(globalObject, fmt, record.value, nullptr));
+    // ICU4C-WORKAROUND: rdar://182953351 - see proposalEraOverrideString; only when era requested.
+    auto eraOverride = m_impl->m_era != Era::None ? proposalEraOverrideString(m_impl->m_calendar, record.value) : std::nullopt;
+    RELEASE_AND_RETURN(scope, buildFormattedDateTimeParts(globalObject, fmt, record.value, nullptr, eraOverride, m_impl->m_year == Year::TwoDigit));
 }
 
 std::unique_ptr<UDateIntervalFormat, UDateIntervalFormatDeleter>

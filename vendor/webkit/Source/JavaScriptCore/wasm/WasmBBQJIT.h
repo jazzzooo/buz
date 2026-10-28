@@ -74,11 +74,6 @@ public:
     static_assert(maxFunctionLocals < 1 << LocalIndexBits);
 
     static constexpr GPRReg wasmScratchGPR = GPRInfo::nonPreservedNonArgumentGPR0; // Scratch registers to hold temporaries in operations.
-#if USE(JSVALUE32_64)
-    static constexpr GPRReg wasmScratchGPR2 = GPRInfo::nonPreservedNonArgumentGPR2;
-#else
-    static constexpr GPRReg wasmScratchGPR2 = InvalidGPRReg;
-#endif
     static constexpr FPRReg wasmScratchFPR = FPRInfo::nonPreservedNonArgumentFPR0;
 
 #if CPU(X86_64)
@@ -87,13 +82,8 @@ public:
     static constexpr GPRReg shiftRCX = InvalidGPRReg;
 #endif
 
-#if USE(JSVALUE64)
     static constexpr GPRReg wasmBaseMemoryPointer = GPRInfo::wasmBaseMemoryPointer;
     static constexpr GPRReg wasmBoundsCheckingSizeRegister = GPRInfo::wasmBoundsCheckingSizeRegister;
-#else
-    static constexpr GPRReg wasmBaseMemoryPointer = InvalidGPRReg;
-    static constexpr GPRReg wasmBoundsCheckingSizeRegister = InvalidGPRReg;
-#endif
 
 public:
     struct Location {
@@ -103,8 +93,7 @@ public:
             Gpr = 2,
             Fpr = 3,
             Global = 4,
-            StackArgument = 5,
-            Gpr2 = 6
+            StackArgument = 5
         };
 
         Location()
@@ -119,8 +108,6 @@ public:
 
         static Location NODELETE fromGPR(GPRReg gpr);
 
-        static Location fromGPR2(GPRReg hi, GPRReg lo);
-
         static Location NODELETE fromFPR(FPRReg fpr);
 
         static Location NODELETE fromGlobal(int32_t globalOffset);
@@ -132,8 +119,6 @@ public:
         bool NODELETE isNone() const;
 
         bool NODELETE isGPR() const;
-
-        bool NODELETE isGPR2() const;
 
         bool NODELETE isFPR() const;
 
@@ -165,10 +150,6 @@ public:
         FPRReg NODELETE asFPR() const;
         Reg asReg() const { return isGPR() ? Reg(asGPR()) : Reg(asFPR()); }
 
-        GPRReg NODELETE asGPRlo() const;
-
-        GPRReg NODELETE asGPRhi() const;
-
         void dump(PrintStream& out) const;
 
         bool NODELETE operator==(Location other) const;
@@ -191,10 +172,6 @@ public:
                 Kind m_padFpr;
                 FPRReg m_fpr;
             };
-            struct {
-                Kind m_padGpr2;
-                GPRReg m_gprhi, m_gprlo;
-            };
         };
     };
 
@@ -205,8 +182,6 @@ public:
     static TypeKind NODELETE pointerType();
 
     static bool NODELETE isFloatingPointType(TypeKind type);
-
-    static bool typeNeedsGPR2(TypeKind type);
 
 public:
     static uint32_t sizeOfType(TypeKind type);
@@ -340,11 +315,7 @@ public:
 
         ALWAYS_INLINE static Value fromPointer(void* pointer)
         {
-#if USE(JSVALUE64)
             return fromI64(std::bit_cast<uintptr_t>(pointer));
-#else
-            return fromI32(std::bit_cast<uintptr_t>(pointer));
-#endif
         }
 
         ALWAYS_INLINE static Value fromRef(TypeKind refType, EncodedJSValue ref)
@@ -410,18 +381,11 @@ public:
             : m_kind(None)
         { }
 
-        int32_t asI64hi() const;
-
-        int32_t asI64lo() const;
-
         void dump(PrintStream& out) const;
 
     private:
         union {
             int32_t m_i32;
-            struct {
-                int32_t lo, hi;
-            } m_i32_pair;
             int64_t m_i64;
             float m_f32;
             double m_f64;
@@ -650,10 +614,6 @@ public:
                 m_preserved.add(location.asGPR(), IgnoreVectors);
             else if (location.isFPR())
                 m_preserved.add(location.asFPR(), Width::Width128);
-            else if (location.isGPR2()) {
-                m_preserved.add(location.asGPRlo(), IgnoreVectors);
-                m_preserved.add(location.asGPRhi(), IgnoreVectors);
-            }
             initializedPreservedSet(args...);
         }
 
@@ -834,7 +794,7 @@ public:
             for (unsigned i = 0; i < predecessor.resultLocations().size(); ++i) {
                 unsigned offset = expressionStack.size() - predecessor.resultLocations().size();
                 // Intentionally not using implicitSlots since results should not include implicit slot.
-                expressionStack[i + offset].value() = Value::fromTemp(expressionStack[i + offset].type().kind, predecessor.enclosedHeight() + i);
+                expressionStack[i + offset].value() = Value::fromTemp(expressionStack[i + offset].type().kind(), predecessor.enclosedHeight() + i);
                 generator.bind(expressionStack[i + offset].value(), predecessor.resultLocations()[i]);
             }
         }
@@ -1148,13 +1108,16 @@ public:
 
     [[nodiscard]] PartialResult setGlobal(uint32_t index, Value value);
 
+    void emitZeroExtendAddressOperand(bool is64Bit, Value operand);
+
     // Memory
 
     inline Location emitCheckAndPreparePointer(Value pointer, uint64_t uoffset, uint32_t sizeOfOperation, uint8_t memoryIndex)
     {
-        if (WTF::sumOverflows<uint64_t>(static_cast<uint64_t>(sizeOfOperation), uoffset)) {
+        if (m_info.memory(memoryIndex).doesAccessOverflow(uoffset, sizeOfOperation)) {
             recordJumpToThrowException(ExceptionType::OutOfBoundsMemoryAccess, m_jit.jump());
-            return Location::fromGPR(wasmBaseMemoryPointer);
+            consume(pointer);
+            return Location::fromGPR(wasmScratchGPR);
         }
 
         ScratchScope<1, 0> scratches(*this);
@@ -1184,7 +1147,8 @@ public:
 
             if (sumOverflows<uint64_t>(constantPointer, boundary)) {
                 recordJumpToThrowException(ExceptionType::OutOfBoundsMemoryAccess, m_jit.jump());
-                return Location::fromGPR(wasmBaseMemoryPointer);
+                consume(pointer);
+                return Location::fromGPR(wasmScratchGPR);
             }
 
             pointerLocation = Location::fromGPR(scratches.gpr(0));
@@ -1193,15 +1157,7 @@ public:
             pointerLocation = loadIfNecessary(pointer);
         ASSERT(pointerLocation.isGPR());
 
-#if USE(JSVALUE32_64)
-        ScratchScope<2, 0> globals(*this);
-        GPRReg wasmBaseMemoryPointer = globals.gpr(0);
-        GPRReg wasmBoundsCheckingSizeRegister = globals.gpr(1);
-        loadWebAssemblyGlobalState(wasmBaseMemoryPointer, wasmBoundsCheckingSizeRegister);
-#endif
-
-        // conservatively force bounds checking if memoryIndex != 0
-        switch (memoryIndex ? MemoryMode::BoundsChecking : m_mode) {
+        switch (m_info.memoryModeForAccess(memoryIndex, m_mode)) {
         case MemoryMode::BoundsChecking: {
             // We're not using signal handling only when the memory is not shared.
             // Regardless of signaling, we must check that no memory access exceeds the current memory size.
@@ -1224,7 +1180,7 @@ public:
         }
 
         case MemoryMode::Signaling: {
-            RELEASE_ASSERT(!m_info.memory(memoryIndex).isMemory64());
+            RELEASE_ASSERT_WITH_SECURITY_IMPLICATION(!m_info.memory(memoryIndex).isMemory64());
             // We've virtually mapped 4GiB+redzone for this memory. Only the user-allocated pages are addressable, contiguously in range [0, current],
             // and everything above is mapped PROT_NONE. We don't need to perform any explicit bounds check in the 4GiB range because WebAssembly register
             // memory accesses are 32-bit. However WebAssembly register + offset accesses perform the addition in 64-bit which can push an access above
@@ -1317,7 +1273,7 @@ public:
         RELEASE_ASSERT_NOT_REACHED();
     }
 
-    Address materializePointer(Location pointerLocation, uint32_t uoffset);
+    Address materializePointer(Location pointerLocation, uint64_t uoffset, Width accessWidth);
 
     constexpr static const char* LOAD_OP_NAMES[14] = {
         "I32Load", "I64Load", "F32Load", "F64Load",
@@ -1970,7 +1926,7 @@ public:
 
     [[nodiscard]] PartialResult addRefIsNull(Value operand, Value& result);
 
-    [[nodiscard]] PartialResult addRefAsNonNull(Value value, Value& result);
+    [[nodiscard]] PartialResult addRefAsNonNull(TypedExpression value, Value& result);
 
     [[nodiscard]] PartialResult addRefEq(Value ref0, Value ref1, Value& result);
 
@@ -2031,7 +1987,7 @@ public:
 
     [[nodiscard]] PartialResult addRethrow(unsigned, ControlType& data);
 
-    [[nodiscard]] PartialResult addThrowRef(ExpressionType exception, std::span<TypedExpression>);
+    [[nodiscard]] PartialResult addThrowRef(TypedExpression exception, std::span<TypedExpression>);
 
     void prepareForExceptions();
 
@@ -2128,9 +2084,9 @@ public:
 
     void NODELETE notifyFunctionUsesSIMD();
 
-    PartialResult addSIMDLoad(ExpressionType, uint32_t, ExpressionType&, uint8_t);
+    PartialResult addSIMDLoad(ExpressionType, uint64_t, ExpressionType&, uint8_t);
 
-    PartialResult addSIMDStore(ExpressionType, ExpressionType, uint32_t, uint8_t);
+    PartialResult addSIMDStore(ExpressionType, ExpressionType, uint64_t, uint8_t);
 
     PartialResult addSIMDSplat(SIMDLane, ExpressionType, ExpressionType&);
 
@@ -2140,15 +2096,15 @@ public:
 
     PartialResult addSIMDExtmul(SIMDLaneOperation, SIMDInfo, ExpressionType, ExpressionType, ExpressionType&);
 
-    PartialResult addSIMDLoadSplat(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t);
+    PartialResult addSIMDLoadSplat(SIMDLaneOperation, ExpressionType, uint64_t, ExpressionType&, uint8_t);
 
-    PartialResult addSIMDLoadLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint32_t, uint8_t, ExpressionType&, uint8_t);
+    PartialResult addSIMDLoadLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint64_t, uint8_t, ExpressionType&, uint8_t);
 
-    PartialResult addSIMDStoreLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint32_t, uint8_t, uint8_t);
+    PartialResult addSIMDStoreLane(SIMDLaneOperation, ExpressionType, ExpressionType, uint64_t, uint8_t, uint8_t);
 
-    PartialResult addSIMDLoadExtend(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t);
+    PartialResult addSIMDLoadExtend(SIMDLaneOperation, ExpressionType, uint64_t, ExpressionType&, uint8_t);
 
-    PartialResult addSIMDLoadPad(SIMDLaneOperation, ExpressionType, uint32_t, ExpressionType&, uint8_t);
+    PartialResult addSIMDLoadPad(SIMDLaneOperation, ExpressionType, uint64_t, ExpressionType&, uint8_t);
 
     void materializeVectorConstant(v128_t, Location);
 
@@ -2285,8 +2241,8 @@ private:
     void emitRestoreCalleeSaves();
 
     WasmOrigin origin();
+    void recordOpcodeOrigin();
 
-    CompilationContext& m_context;
     CCallHelpers& m_jit;
     Module& m_module;
     CalleeGroup& m_calleeGroup;

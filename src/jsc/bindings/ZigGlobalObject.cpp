@@ -255,7 +255,7 @@ std::optional<uint64_t> Bun::Bindgen::Engine::bunBindgenEngine_jsc_initializatio
             JSC::Options::heapGrowthMaxIncrease() = 2.0;
             JSC::Options::useAsyncStackTrace() = true;
             JSC::Options::useExplicitResourceManagement() = true;
-            JSC::Options::useTemporal() = false;
+            JSC::Options::useTemporal() = true;
             JSC::dangerouslyOverrideJSCBytecodeCacheVersion(getWebKitBytecodeCacheVersion());
 
 #ifdef BUN_DEBUG

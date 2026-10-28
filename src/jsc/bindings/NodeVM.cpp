@@ -85,6 +85,9 @@ static JSValue scriptFetchParametersToImportAttributes(JSGlobalObject* globalObj
     case JSC::ScriptFetchParameters::Type::JSON:
         obj->putDirect(vm, vm.propertyNames->type, jsNontrivialString(vm, "json"_s));
         break;
+    case JSC::ScriptFetchParameters::Type::Text:
+        obj->putDirect(vm, vm.propertyNames->type, jsNontrivialString(vm, "text"_s));
+        break;
     case JSC::ScriptFetchParameters::Type::WebAssembly:
         obj->putDirect(vm, vm.propertyNames->type, jsNontrivialString(vm, "webassembly"_s));
         break;

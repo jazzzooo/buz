@@ -610,7 +610,7 @@ inline Structure* StructureTransitionTable::get(PointerKey rep, unsigned attribu
     return map()->get(StructureTransitionTable::Hash::createKey(rep, attributes, transitionKind));
 }
 
-inline void StructureTransitionTable::finalizeUnconditionally(VM& vm, CollectionScope)
+inline void StructureTransitionTable::reconcileWeakReferencesAtGCEnd(VM& vm, CollectionScope)
 {
     if (auto* transition = trySingleTransition()) {
         if (!vm.heap.isMarked(transition))
@@ -694,6 +694,64 @@ inline JSValue Structure::cachedSpecialProperty(CachedSpecialPropertyKey key)
     if (!hasRareData())
         return JSValue();
     return rareData()->cachedSpecialProperty(key);
+}
+
+inline JSString* Structure::defaultToPrimitiveFastAndNonObservable(VM& vm)
+{
+    if (typeInfo().type() != FinalObjectType)
+        return nullptr;
+
+    if (!hasRareData())
+        return nullptr;
+
+    // Use the object's own realm: the cached special properties below were resolved against this
+    // structure's prototype chain, so they must be compared against that realm's primordials.
+    JSGlobalObject* globalObject = this->realm();
+    if (!globalObject) [[unlikely]]
+        return nullptr;
+
+    if (!globalObject->objectPrototypeChainIsSaneWatchpointSet().isStillValid()) [[unlikely]]
+        return nullptr;
+
+    StructureRareData* rareData = this->rareData();
+    switch (rareData->cachedHasDefaultToPrimitiveFastAndNonObservable()) {
+    case TriState::True:
+        return asString(rareData->cachedSpecialProperty(CachedSpecialPropertyKey::ToStringTag));
+    case TriState::False:
+        return nullptr;
+    case TriState::Indeterminate:
+        break;
+    }
+
+    JSValue toPrimitive = rareData->cachedSpecialProperty(CachedSpecialPropertyKey::ToPrimitive);
+    JSValue valueOf = rareData->cachedSpecialProperty(CachedSpecialPropertyKey::ValueOf);
+    JSValue toString = rareData->cachedSpecialProperty(CachedSpecialPropertyKey::ToString);
+    JSValue toStringTag = rareData->cachedSpecialProperty(CachedSpecialPropertyKey::ToStringTag);
+
+    bool definitelySlow = (toPrimitive && !toPrimitive.isUndefined())
+        || (valueOf && valueOf != globalObject->objectProtoValueOfFunction())
+        || (toString && toString != globalObject->objectProtoToStringFunction())
+        || (toStringTag && !toStringTag.isString());
+
+    if (definitelySlow)
+        rareData->setCachedHasDefaultToPrimitiveFastAndNonObservable(TriState::False);
+    else {
+        if (toPrimitive && valueOf && toString && toStringTag) {
+            rareData->setCachedHasDefaultToPrimitiveFastAndNonObservable(TriState::True);
+            return asString(toStringTag);
+        }
+
+        // Memoize Slow only when the verdict is stable. An empty cache with no own special property is
+        // merely not-yet-probed, so leave it Unknown and let a later call reach Fast once it populates.
+        bool hasOwnSpecialProperty = isValidOffset(get(vm, vm.propertyNames->valueOf))
+            || isValidOffset(get(vm, vm.propertyNames->toString))
+            || isValidOffset(get(vm, vm.propertyNames->toPrimitiveSymbol))
+            || isValidOffset(get(vm, vm.propertyNames->toStringTagSymbol));
+        if (hasOwnSpecialProperty)
+            rareData->setCachedHasDefaultToPrimitiveFastAndNonObservable(TriState::False);
+    }
+
+    return nullptr;
 }
 
 inline void Structure::clearCachedPrototypeChain()

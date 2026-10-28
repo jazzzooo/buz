@@ -1236,7 +1236,7 @@ export function createTextStream(_highWaterMark: number) {
         return chunkLength;
       }
 
-      if (!chunk || !($ArrayBuffer.$isView(chunk) || chunk instanceof $ArrayBuffer)) {
+      if (!chunk || !($bindgenFn("NodeUtil.schema.zig", "isArrayBufferView")(chunk) || chunk instanceof $ArrayBuffer)) {
         $throwTypeError("Expected text, ArrayBuffer or ArrayBufferView");
       }
 

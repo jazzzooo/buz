@@ -4474,19 +4474,9 @@ pub const CrossChunkImport = struct {
 };
 
 pub const CompileResult = union(enum) {
-    pub const DeclInfo = struct {
-        pub const Kind = enum(u1) { declared, lexical };
-        name: []const u8,
-        kind: Kind,
-    };
-
     javascript: struct {
         source_index: Index.Int,
         result: js_printer.PrintResult,
-        /// Top-level declarations collected from converted statements during
-        /// parallel printing. Used by postProcessJSChunk to populate ModuleInfo
-        /// without re-scanning the original (unconverted) AST.
-        decls: []const DeclInfo = &.{},
 
         pub fn code(this: @This()) []const u8 {
             return switch (this.result) {
@@ -4556,10 +4546,7 @@ pub const CompileResult = union(enum) {
 
     pub fn deinit(this: *CompileResult, allocator: std.mem.Allocator) void {
         switch (this.*) {
-            .javascript => |*js| {
-                js.result.deinit(allocator);
-                allocator.free(js.decls);
-            },
+            .javascript => |*js| js.result.deinit(allocator),
             .css => |*css| {
                 switch (css.result) {
                     .result => |bytes| allocator.free(bytes),

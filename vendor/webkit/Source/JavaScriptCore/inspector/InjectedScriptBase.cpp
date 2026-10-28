@@ -73,6 +73,8 @@ static RefPtr<JSON::Value> jsToInspectorValue(JSC::JSGlobalObject* globalObject,
     }
 
     if (value.isObject()) {
+        JSC::VM& vm = globalObject->vm();
+        auto scope = DECLARE_THROW_SCOPE(vm);
         if (isJSArray(value)) {
             auto inspectorArray = JSON::Array::create();
             auto& array = *asArray(value);
@@ -94,9 +96,9 @@ static RefPtr<JSON::Value> jsToInspectorValue(JSC::JSGlobalObject* globalObject,
         object.methodTable()->getOwnPropertyNames(&object, globalObject, propertyNames, JSC::DontEnumPropertiesMode::Exclude);
         RETURN_IF_EXCEPTION(scope, nullptr);
         for (auto& name : propertyNames) {
-            auto property = object.get(globalObject, name);
+            auto propertyValue = object.get(globalObject, name);
             RETURN_IF_EXCEPTION(scope, nullptr);
-            auto inspectorValue = jsToInspectorValue(globalObject, property, maxDepth);
+            auto inspectorValue = jsToInspectorValue(globalObject, propertyValue, maxDepth);
             RETURN_IF_EXCEPTION(scope, nullptr);
             if (!inspectorValue)
                 return nullptr;
@@ -114,10 +116,10 @@ RefPtr<JSON::Value> toInspectorValue(JSC::JSGlobalObject* globalObject, JSC::JSV
     // FIXME: Maybe we should move the JSLockHolder stuff to the callers since this function takes a JSValue directly.
     // Doing the locking here made sense when we were trying to abstract the difference between multiple JavaScript engines.
     JSC::JSLockHolder holder(globalObject);
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(globalObject->vm());
+    JSC::VM& vm = globalObject->vm();
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
     auto result = jsToInspectorValue(globalObject, value, JSON::Value::maxDepth);
-    if (scope.exception()) {
-        // Protocol conversion failure must not inject getter exceptions into the paused program.
+    if (scope.exception()) [[unlikely]] {
         scope.clearExceptionExceptTermination();
         return nullptr;
     }

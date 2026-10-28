@@ -53,25 +53,8 @@ class JITCode;
 class JITCompiler;
 
 struct UnlinkedPropertyInlineCache : JSC::UnlinkedPropertyInlineCache {
-    void setUsedRegisters(ScalarRegisterSet value) { m_usedRegisters = value; }
-    void removeUsedRegister(GPRReg reg) { m_usedRegisters.remove(reg); }
-
     CodeOrigin codeOrigin;
     CallSiteIndex callSiteIndex;
-    GPRReg m_baseGPR { InvalidGPRReg };
-    GPRReg m_valueGPR { InvalidGPRReg };
-    GPRReg m_extraGPR { InvalidGPRReg };
-    GPRReg m_extra2GPR { InvalidGPRReg };
-    GPRReg m_propertyCacheGPR { InvalidGPRReg };
-#if USE(JSVALUE32_64)
-    GPRReg m_valueTagGPR { InvalidGPRReg };
-    GPRReg m_baseTagGPR { InvalidGPRReg };
-    GPRReg m_extraTagGPR { InvalidGPRReg };
-    GPRReg m_extra2TagGPR { InvalidGPRReg };
-#endif
-
-private:
-    ScalarRegisterSet m_usedRegisters;
 };
 
 struct UnlinkedCallLinkInfo : JSC::UnlinkedCallLinkInfo {
@@ -215,7 +198,7 @@ public:
 
     explicit JITData(unsigned propertyCacheSize, unsigned poolSize, const JITCode&, ExitVector&&);
 
-    void finalizeUnconditionally()
+    void reconcileWeakReferencesAtGCEnd()
     {
         m_dummyArrayProfile.clear();
     }

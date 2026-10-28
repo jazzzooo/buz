@@ -42,6 +42,18 @@ static constexpr bool verbose = false;
 
 PropertyInlineCache::~PropertyInlineCache() = default;
 
+RepatchingPropertyInlineCache::RepatchingPropertyInlineCache()
+    : PropertyInlineCache(PropertyInlineCacheType::Repatching)
+{
+}
+
+RepatchingPropertyInlineCache::RepatchingPropertyInlineCache(AccessType accessType, CodeOrigin codeOrigin)
+    : PropertyInlineCache(PropertyInlineCacheType::Repatching, accessType, codeOrigin)
+{
+}
+
+RepatchingPropertyInlineCache::~RepatchingPropertyInlineCache() = default;
+
 void PropertyInlineCache::initGetByIdSelf(const ConcurrentJSLockerBase& locker, CodeBlock* codeBlock, Structure* inlineAccessBaseStructure, PropertyOffset offset)
 {
     ASSERT(m_cacheType == CacheType::Unset);
@@ -419,7 +431,7 @@ void PropertyInlineCache::visitAggregateImpl(Visitor& visitor)
 
 DEFINE_VISIT_AGGREGATE(PropertyInlineCache);
 
-void PropertyInlineCache::visitWeak(const ConcurrentJSLockerBase& locker, CodeBlock* codeBlock)
+void PropertyInlineCache::reconcileWeakReferencesAtGCEnd(const ConcurrentJSLockerBase& locker, CodeBlock* codeBlock)
 {
     VM& vm = codeBlock->vm();
     {
@@ -444,18 +456,18 @@ void PropertyInlineCache::visitWeak(const ConcurrentJSLockerBase& locker, CodeBl
 
     if (auto* handlerIC = dynamicDowncast<HandlerPropertyInlineCache>(*this)) {
         if (handlerIC->m_inlinedHandler)
-            isValid &= handlerIC->m_inlinedHandler->visitWeak(vm);
+            isValid &= handlerIC->m_inlinedHandler->reconcileWeakReferencesAtGCEnd(vm);
     }
     if (auto* cursor = m_handler.get()) {
         while (cursor) {
-            isValid &= cursor->visitWeak(vm);
+            isValid &= cursor->reconcileWeakReferencesAtGCEnd(vm);
             cursor = cursor->next();
         }
     }
 
     if (auto* repatchingIC = dynamicDowncast<RepatchingPropertyInlineCache>(*this)) {
         if (repatchingIC->m_stub)
-            isValid &= repatchingIC->m_stub->visitWeak(vm);
+            isValid &= repatchingIC->m_stub->isStillLive(vm);
     }
 
     if (isValid)
@@ -643,121 +655,76 @@ static CodePtr<OperationPtrTag> NODELETE slowOperationFromUnlinkedPropertyInline
     return { };
 }
 
-void PropertyInlineCache::initializePredefinedRegisters()
+PropertyInlineCache::Registers PropertyInlineCache::registers() const
 {
+    if (auto* repatching = dynamicDowncast<RepatchingPropertyInlineCache>(*this))
+        return repatching->m_registers;
+
+    Registers registers;
     switch (accessType) {
     case AccessType::DeleteByValStrict:
     case AccessType::DeleteByValSloppy:
-        m_baseGPR = BaselineJITRegisters::DelByVal::baseJSR.payloadGPR();
-        m_extraGPR = BaselineJITRegisters::DelByVal::propertyJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::DelByVal::resultJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::DelByVal::propertyCacheGPR;
-#if USE(JSVALUE32_64)
-        m_baseTagGPR = BaselineJITRegisters::DelByVal::baseJSR.tagGPR();
-        m_extraTagGPR = BaselineJITRegisters::DelByVal::propertyJSR.tagGPR();
-        m_valueTagGPR = BaselineJITRegisters::DelByVal::resultJSR.tagGPR();
-#endif
+        registers.baseGPR = BaselineJITRegisters::DelByVal::baseJSR.payloadGPR();
+        registers.extraGPR = BaselineJITRegisters::DelByVal::propertyJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::DelByVal::resultJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::DelByVal::propertyCacheGPR;
         break;
     case AccessType::DeleteByIdStrict:
     case AccessType::DeleteByIdSloppy:
-        m_baseGPR = BaselineJITRegisters::DelById::baseJSR.payloadGPR();
-        m_extraGPR = InvalidGPRReg;
-        m_valueGPR = BaselineJITRegisters::DelById::resultJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::DelById::propertyCacheGPR;
-#if USE(JSVALUE32_64)
-        m_baseTagGPR = BaselineJITRegisters::DelById::baseJSR.tagGPR();
-        m_extraTagGPR = InvalidGPRReg;
-        m_valueTagGPR = BaselineJITRegisters::DelById::resultJSR.tagGPR();
-#endif
+        registers.baseGPR = BaselineJITRegisters::DelById::baseJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::DelById::resultJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::DelById::propertyCacheGPR;
         break;
     case AccessType::GetByVal:
     case AccessType::GetPrivateName:
-        m_baseGPR = BaselineJITRegisters::GetByVal::baseJSR.payloadGPR();
-        m_extraGPR = BaselineJITRegisters::GetByVal::propertyJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::GetByVal::resultJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::GetByVal::propertyCacheGPR;
+        registers.baseGPR = BaselineJITRegisters::GetByVal::baseJSR.payloadGPR();
+        registers.extraGPR = BaselineJITRegisters::GetByVal::propertyJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::GetByVal::resultJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::GetByVal::propertyCacheGPR;
         if (accessType == AccessType::GetByVal)
-            m_arrayProfileGPR = BaselineJITRegisters::GetByVal::profileGPR;
-#if USE(JSVALUE32_64)
-        m_baseTagGPR = BaselineJITRegisters::GetByVal::baseJSR.tagGPR();
-        m_extraTagGPR = BaselineJITRegisters::GetByVal::propertyJSR.tagGPR();
-        m_valueTagGPR = BaselineJITRegisters::GetByVal::resultJSR.tagGPR();
-#endif
+            registers.arrayProfileGPR = BaselineJITRegisters::GetByVal::profileGPR;
         break;
     case AccessType::InstanceOf:
-        prototypeIsKnownObject = false;
-        m_baseGPR = BaselineJITRegisters::Instanceof::valueJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::Instanceof::resultJSR.payloadGPR();
-        m_extraGPR = BaselineJITRegisters::Instanceof::protoJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::Instanceof::propertyCacheGPR;
-#if USE(JSVALUE32_64)
-        m_baseTagGPR = BaselineJITRegisters::Instanceof::valueJSR.tagGPR();
-        m_valueTagGPR = InvalidGPRReg;
-        m_extraTagGPR = BaselineJITRegisters::Instanceof::protoJSR.tagGPR();
-#endif
+        registers.baseGPR = BaselineJITRegisters::Instanceof::valueJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::Instanceof::resultJSR.payloadGPR();
+        registers.extraGPR = BaselineJITRegisters::Instanceof::protoJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::Instanceof::propertyCacheGPR;
         break;
     case AccessType::InByVal:
     case AccessType::HasPrivateName:
     case AccessType::HasPrivateBrand:
-        m_baseGPR = BaselineJITRegisters::InByVal::baseJSR.payloadGPR();
-        m_extraGPR = BaselineJITRegisters::InByVal::propertyJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::InByVal::resultJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::InByVal::propertyCacheGPR;
+        registers.baseGPR = BaselineJITRegisters::InByVal::baseJSR.payloadGPR();
+        registers.extraGPR = BaselineJITRegisters::InByVal::propertyJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::InByVal::resultJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::InByVal::propertyCacheGPR;
         if (accessType == AccessType::InByVal)
-            m_arrayProfileGPR = BaselineJITRegisters::InByVal::profileGPR;
-#if USE(JSVALUE32_64)
-        m_baseTagGPR = BaselineJITRegisters::InByVal::baseJSR.tagGPR();
-        m_extraTagGPR = BaselineJITRegisters::InByVal::propertyJSR.tagGPR();
-        m_valueTagGPR = BaselineJITRegisters::InByVal::resultJSR.tagGPR();
-#endif
+            registers.arrayProfileGPR = BaselineJITRegisters::InByVal::profileGPR;
         break;
     case AccessType::InById:
-        m_extraGPR = InvalidGPRReg;
-        m_baseGPR = BaselineJITRegisters::InById::baseJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::InById::resultJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::InById::propertyCacheGPR;
-#if USE(JSVALUE32_64)
-        m_extraTagGPR = InvalidGPRReg;
-        m_baseTagGPR = BaselineJITRegisters::InById::baseJSR.tagGPR();
-        m_valueTagGPR = BaselineJITRegisters::InById::resultJSR.tagGPR();
-#endif
+        registers.baseGPR = BaselineJITRegisters::InById::baseJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::InById::resultJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::InById::propertyCacheGPR;
         break;
     case AccessType::GetByIdDirect:
     case AccessType::GetById:
     case AccessType::GetPrivateNameById:
-        m_extraGPR = InvalidGPRReg;
-        m_baseGPR = BaselineJITRegisters::GetById::baseJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::GetById::resultJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::GetById::propertyCacheGPR;
-#if USE(JSVALUE32_64)
-        m_extraTagGPR = InvalidGPRReg;
-        m_baseTagGPR = BaselineJITRegisters::GetById::baseJSR.tagGPR();
-        m_valueTagGPR = BaselineJITRegisters::GetById::resultJSR.tagGPR();
-#endif
+        registers.baseGPR = BaselineJITRegisters::GetById::baseJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::GetById::resultJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::GetById::propertyCacheGPR;
         break;
     case AccessType::GetByIdWithThis:
-        m_baseGPR = BaselineJITRegisters::GetByIdWithThis::baseJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::GetByIdWithThis::resultJSR.payloadGPR();
-        m_extraGPR = BaselineJITRegisters::GetByIdWithThis::thisJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::GetByIdWithThis::propertyCacheGPR;
-#if USE(JSVALUE32_64)
-        m_baseTagGPR = BaselineJITRegisters::GetByIdWithThis::baseJSR.tagGPR();
-        m_valueTagGPR = BaselineJITRegisters::GetByIdWithThis::resultJSR.tagGPR();
-        m_extraTagGPR = BaselineJITRegisters::GetByIdWithThis::thisJSR.tagGPR();
-#endif
+        registers.baseGPR = BaselineJITRegisters::GetByIdWithThis::baseJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::GetByIdWithThis::resultJSR.payloadGPR();
+        registers.extraGPR = BaselineJITRegisters::GetByIdWithThis::thisJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::GetByIdWithThis::propertyCacheGPR;
         break;
     case AccessType::GetByValWithThis:
-#if USE(JSVALUE64)
-        m_baseGPR = BaselineJITRegisters::GetByValWithThis::baseJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::GetByValWithThis::resultJSR.payloadGPR();
-        m_extraGPR = BaselineJITRegisters::GetByValWithThis::thisJSR.payloadGPR();
-        m_extra2GPR = BaselineJITRegisters::GetByValWithThis::propertyJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::GetByValWithThis::propertyCacheGPR;
-        m_arrayProfileGPR = BaselineJITRegisters::GetByValWithThis::profileGPR;
-#else
-        // Registers are exhausted, we cannot have this IC on 32bit.
-        RELEASE_ASSERT_NOT_REACHED();
-#endif
+        registers.baseGPR = BaselineJITRegisters::GetByValWithThis::baseJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::GetByValWithThis::resultJSR.payloadGPR();
+        registers.extraGPR = BaselineJITRegisters::GetByValWithThis::thisJSR.payloadGPR();
+        registers.extra2GPR = BaselineJITRegisters::GetByValWithThis::propertyJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::GetByValWithThis::propertyCacheGPR;
+        registers.arrayProfileGPR = BaselineJITRegisters::GetByValWithThis::profileGPR;
         break;
     case AccessType::PutByIdStrict:
     case AccessType::PutByIdSloppy:
@@ -765,15 +732,9 @@ void PropertyInlineCache::initializePredefinedRegisters()
     case AccessType::PutByIdDirectSloppy:
     case AccessType::DefinePrivateNameById:
     case AccessType::SetPrivateNameById:
-        m_extraGPR = InvalidGPRReg;
-        m_baseGPR = BaselineJITRegisters::PutById::baseJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::PutById::valueJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::PutById::propertyCacheGPR;
-#if USE(JSVALUE32_64)
-        m_extraTagGPR = InvalidGPRReg;
-        m_baseTagGPR = BaselineJITRegisters::PutById::baseJSR.tagGPR();
-        m_valueTagGPR = BaselineJITRegisters::PutById::valueJSR.tagGPR();
-#endif
+        registers.baseGPR = BaselineJITRegisters::PutById::baseJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::PutById::valueJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::PutById::propertyCacheGPR;
         break;
     case AccessType::PutByValStrict:
     case AccessType::PutByValSloppy:
@@ -781,31 +742,21 @@ void PropertyInlineCache::initializePredefinedRegisters()
     case AccessType::PutByValDirectSloppy:
     case AccessType::DefinePrivateNameByVal:
     case AccessType::SetPrivateNameByVal:
-        m_baseGPR = BaselineJITRegisters::PutByVal::baseJSR.payloadGPR();
-        m_extraGPR = BaselineJITRegisters::PutByVal::propertyJSR.payloadGPR();
-        m_valueGPR = BaselineJITRegisters::PutByVal::valueJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::PutByVal::propertyCacheGPR;
+        registers.baseGPR = BaselineJITRegisters::PutByVal::baseJSR.payloadGPR();
+        registers.extraGPR = BaselineJITRegisters::PutByVal::propertyJSR.payloadGPR();
+        registers.valueGPR = BaselineJITRegisters::PutByVal::valueJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::PutByVal::propertyCacheGPR;
         if (accessType != AccessType::DefinePrivateNameByVal && accessType != AccessType::SetPrivateNameByVal)
-            m_arrayProfileGPR = BaselineJITRegisters::PutByVal::profileGPR;
-#if USE(JSVALUE32_64)
-        m_baseTagGPR = BaselineJITRegisters::PutByVal::baseJSR.tagGPR();
-        m_extraTagGPR = BaselineJITRegisters::PutByVal::propertyJSR.tagGPR();
-        m_valueTagGPR = BaselineJITRegisters::PutByVal::valueJSR.tagGPR();
-#endif
+            registers.arrayProfileGPR = BaselineJITRegisters::PutByVal::profileGPR;
         break;
     case AccessType::SetPrivateBrand:
     case AccessType::CheckPrivateBrand:
-        m_valueGPR = InvalidGPRReg;
-        m_baseGPR = BaselineJITRegisters::PrivateBrand::baseJSR.payloadGPR();
-        m_extraGPR = BaselineJITRegisters::PrivateBrand::propertyJSR.payloadGPR();
-        m_propertyCacheGPR = BaselineJITRegisters::PrivateBrand::propertyCacheGPR;
-#if USE(JSVALUE32_64)
-        m_valueTagGPR = InvalidGPRReg;
-        m_baseTagGPR = BaselineJITRegisters::PrivateBrand::baseJSR.tagGPR();
-        m_extraTagGPR = BaselineJITRegisters::PrivateBrand::propertyJSR.tagGPR();
-#endif
+        registers.baseGPR = BaselineJITRegisters::PrivateBrand::baseJSR.payloadGPR();
+        registers.extraGPR = BaselineJITRegisters::PrivateBrand::propertyJSR.payloadGPR();
+        registers.propertyCacheGPR = BaselineJITRegisters::PrivateBrand::propertyCacheGPR;
         break;
     }
+    return registers;
 }
 
 void HandlerPropertyInlineCache::initializeFromUnlinkedPropertyInlineCache(VM& vm, CodeBlock* codeBlock, const BaselineUnlinkedPropertyInlineCache& unlinkedPropertyCache)
@@ -833,7 +784,6 @@ void HandlerPropertyInlineCache::initializeFromUnlinkedPropertyInlineCache(VM& v
         bufferingCountdown = 1;
 
     m_slowOperation = slowOperationFromUnlinkedPropertyInlineCache(unlinkedPropertyCache);
-    initializePredefinedRegisters();
 }
 
 #if ENABLE(DFG_JIT)
@@ -869,7 +819,6 @@ void HandlerPropertyInlineCache::initializeFromDFGUnlinkedPropertyInlineCache(Co
         bufferingCountdown = 1;
 
     m_slowOperation = slowOperationFromUnlinkedPropertyInlineCache(unlinkedPropertyCache);
-    initializePredefinedRegisters();
 }
 #endif
 
@@ -974,7 +923,7 @@ void PropertyInlineCache::resetStubAsJumpInAccess(CodeBlock* codeBlock)
         return;
     }
 
-    rewireStubAsJumpInAccess(codeBlock, InlineCacheHandler::createNonHandlerSlowPath(slowPathStartLocation));
+    rewireStubAsJumpInAccess(codeBlock, InlineCacheHandler::createNonHandlerSlowPath(downcast<RepatchingPropertyInlineCache>(*this).slowPathStartLocation));
 }
 
 Vector<AccessCase*, 16> PropertyInlineCache::listedAccessCases(const AbstractLocker&) const

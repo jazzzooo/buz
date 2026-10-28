@@ -47,11 +47,7 @@ JSValue ValueRecovery::recover(CallFrame* callFrame) const
     case CellDisplacedInJSStack:
         return callFrame->r(virtualRegister()).unboxedCell();
     case BooleanDisplacedInJSStack:
-#if USE(JSVALUE64)
         return callFrame->r(virtualRegister()).jsValue();
-#else
-        return jsBoolean(callFrame->r(virtualRegister()).unboxedBoolean());
-#endif
     case Constant:
         return constant();
     default:
@@ -77,9 +73,6 @@ void ValueRecovery::dumpInContext(PrintStream& out, DumpContext* context) const
     case UnboxedStrictInt52InGPR:
         out.print("strictInt52(", gpr(), ")");
         return;
-    case UnboxedBooleanInGPR:
-        out.print("bool(", gpr(), ")");
-        return;
     case UnboxedCellInGPR:
         out.print("cell(", gpr(), ")");
         return;
@@ -89,22 +82,12 @@ void ValueRecovery::dumpInContext(PrintStream& out, DumpContext* context) const
     case UnboxedDoubleInFPR:
         out.print("double(", fpr(), ")");
         return;
-#if USE(JSVALUE32_64)
-    case InPair:
-        out.print("pair(", tagGPR(), ", ", payloadGPR(), ")");
-        return;
-#endif
     case DisplacedInJSStack:
         out.print("*", virtualRegister());
         return;
     case Int32DisplacedInJSStack:
         out.print("*int32(", virtualRegister(), ")");
         return;
-#if USE(JSVALUE32_64)
-    case Int32TagDisplacedInJSStack:
-        out.print("*int32Tag(", virtualRegister(), ")");
-        return;
-#endif
     case Int52DisplacedInJSStack:
         out.print("*int52(", virtualRegister(), ")");
         return;

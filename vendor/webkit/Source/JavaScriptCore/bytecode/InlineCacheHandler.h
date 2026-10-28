@@ -30,7 +30,6 @@
 #include "AccessCase.h"
 #include "CallLinkInfo.h"
 #include "JITStubRoutine.h"
-#include "PropertyInlineCacheClearingWatchpoint.h"
 #include <wtf/RefCounted.h>
 
 namespace JSC {
@@ -40,6 +39,7 @@ class InlineCacheCompiler;
 class InlineCacheHandlerWithJSCall;
 class PolymorphicAccessJITStubRoutine;
 class PropertyInlineCache;
+class PropertyInlineCacheClearingWatchpoint;
 
 enum class CacheType : int8_t {
     Unset,
@@ -61,6 +61,8 @@ public:
     static Ref<InlineCacheHandler> create(Ref<InlineCacheHandler>&&, CodeBlock*, PropertyInlineCache&, Ref<PolymorphicAccessJITStubRoutine>&&, std::unique_ptr<PropertyInlineCacheClearingWatchpoint>&&, unsigned callLinkInfoCount);
     static Ref<InlineCacheHandler> createPreCompiled(Ref<InlineCacheHandler>&&, CodeBlock*, PropertyInlineCache&, Ref<PolymorphicAccessJITStubRoutine>&&, std::unique_ptr<PropertyInlineCacheClearingWatchpoint>&&, AccessCase&, CacheType);
 
+    ~InlineCacheHandler();
+
     void operator delete(InlineCacheHandler*, std::destroying_delete_t);
 
     CodePtr<JITStubRoutinePtrTag> callTarget() const { return m_callTarget; }
@@ -77,7 +79,7 @@ public:
     }
 
     // If this returns false then we are requesting a reset of the owning PropertyInlineCache.
-    bool visitWeak(VM&);
+    bool reconcileWeakReferencesAtGCEnd(VM&);
 
     void dump(PrintStream&) const;
 
@@ -170,7 +172,7 @@ protected:
     std::unique_ptr<PropertyInlineCacheClearingWatchpoint> m_watchpoint;
 };
 
-#if !ASSERT_ENABLED && !ASAN_ENABLED && CPU(ARM64) && CPU(ADDRESS64)
+#if !ASSERT_ENABLED && !ASAN_ENABLED && CPU(ARM64)
 static_assert(InlineCacheHandler::offsetOfUid() == 40, "InlineCacheHandler hot field layout drifted.");
 #endif
 

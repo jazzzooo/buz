@@ -652,34 +652,6 @@ fn NewPrinter(
         const Printer = @This();
 
         const may_have_module_info = is_bun_platform and !rewrite_esm_to_cjs;
-        const TopLevelAndIsExport = if (!may_have_module_info) struct {} else struct {
-            is_export: bool = false,
-            is_top_level: ?analyze_transpiled_module.ModuleInfo.VarKind = null,
-        };
-        const TopLevel = if (!may_have_module_info) struct {
-            pub inline fn init(_: IsTopLevel) @This() {
-                return .{};
-            }
-            pub inline fn subVar(_: @This()) @This() {
-                return .{};
-            }
-            pub inline fn isTopLevel(_: @This()) bool {
-                return false;
-            }
-        } else struct {
-            is_top_level: IsTopLevel = .no,
-            pub inline fn init(is_top_level: IsTopLevel) @This() {
-                return .{ .is_top_level = is_top_level };
-            }
-            pub fn subVar(self: @This()) @This() {
-                if (self.is_top_level == .no) return @This().init(.no);
-                return @This().init(.var_only);
-            }
-            pub inline fn isTopLevel(self: @This()) bool {
-                return self.is_top_level != .no;
-            }
-        };
-        const IsTopLevel = enum { yes, var_only, no };
         inline fn moduleInfo(self: *const Printer) ?*analyze_transpiled_module.ModuleInfo {
             if (!may_have_module_info) return null;
             return self.module_info;
@@ -1070,25 +1042,6 @@ fn NewPrinter(
 
                 p.printSemicolonAfterStatement();
             }
-
-            // Record var declarations for module_info. printGlobalBunImportStatement
-            // bypasses printDeclStmt/printBinding, so we must record vars explicitly.
-            if (may_have_module_info) {
-                if (p.moduleInfo()) |mi| {
-                    if (import.star_name_loc != null) {
-                        const name = p.renamer.nameForSymbol(import.namespace_ref);
-                        bun.handleOom(mi.addVar(bun.handleOom(mi.str(name)), .declared));
-                    }
-                    if (import.default_name) |default| {
-                        const name = p.renamer.nameForSymbol(default.ref.?);
-                        bun.handleOom(mi.addVar(bun.handleOom(mi.str(name)), .declared));
-                    }
-                    for (import.items) |item| {
-                        const name = p.renamer.nameForSymbol(item.name.ref.?);
-                        bun.handleOom(mi.addVar(bun.handleOom(mi.str(name)), .declared));
-                    }
-                }
-            }
         }
 
         pub inline fn printSpaceBeforeIdentifier(
@@ -1131,30 +1084,30 @@ fn NewPrinter(
             }
         }
 
-        pub fn printBody(p: *Printer, stmt: Stmt, tlmtlo: TopLevel) void {
+        pub fn printBody(p: *Printer, stmt: Stmt) void {
             switch (stmt.data) {
                 .s_block => |block| {
                     p.printSpace();
-                    p.printBlock(stmt.loc, block.stmts, block.close_brace_loc, tlmtlo);
+                    p.printBlock(stmt.loc, block.stmts, block.close_brace_loc);
                     p.printNewline();
                 },
                 else => {
                     p.printNewline();
                     p.indent();
-                    p.printStmt(stmt, tlmtlo) catch unreachable;
+                    p.printStmt(stmt) catch unreachable;
                     p.unindent();
                 },
             }
         }
 
-        pub fn printBlockBody(p: *Printer, stmts: []const Stmt, tlmtlo: TopLevel) void {
+        pub fn printBlockBody(p: *Printer, stmts: []const Stmt) void {
             for (stmts) |stmt| {
                 p.printSemicolonIfNeeded();
-                p.printStmt(stmt, tlmtlo) catch unreachable;
+                p.printStmt(stmt) catch unreachable;
             }
         }
 
-        pub fn printBlock(p: *Printer, loc: logger.Loc, stmts: []const Stmt, close_brace_loc: ?logger.Loc, tlmtlo: TopLevel) void {
+        pub fn printBlock(p: *Printer, loc: logger.Loc, stmts: []const Stmt, close_brace_loc: ?logger.Loc) void {
             p.addSourceMapping(loc);
             p.print("{");
             if (stmts.len > 0) {
@@ -1162,7 +1115,7 @@ fn NewPrinter(
                 p.printNewline();
 
                 p.indent();
-                p.printBlockBody(stmts, tlmtlo);
+                p.printBlockBody(stmts);
                 p.unindent();
 
                 p.printIndent();
@@ -1175,7 +1128,7 @@ fn NewPrinter(
             p.needs_semicolon = false;
         }
 
-        pub fn printDecls(p: *Printer, comptime keyword: string, decls_: []G.Decl, flags: ExprFlag.Set, tlm: TopLevelAndIsExport) void {
+        pub fn printDecls(p: *Printer, comptime keyword: string, decls_: []G.Decl, flags: ExprFlag.Set, is_export: bool) void {
             p.print(keyword);
             p.printSpace();
             var decls = decls_;
@@ -1283,7 +1236,7 @@ fn NewPrinter(
                             .is_single_line = true,
                         };
                         const binding = Binding.init(&b_object, target_e_dot.target.loc);
-                        p.printBinding(binding, tlm);
+                        p.printBinding(binding, is_export);
                     }
 
                     p.printWhitespacer(ws(" = "));
@@ -1299,7 +1252,7 @@ fn NewPrinter(
             }
 
             {
-                p.printBinding(decls[0].binding, tlm);
+                p.printBinding(decls[0].binding, is_export);
 
                 if (decls[0].value) |value| {
                     p.printWhitespacer(ws(" = "));
@@ -1311,7 +1264,7 @@ fn NewPrinter(
                 p.print(",");
                 p.printSpace();
 
-                p.printBinding(decl.binding, tlm);
+                p.printBinding(decl.binding, is_export);
 
                 if (decl.value) |value| {
                     p.printWhitespacer(ws(" = "));
@@ -1385,7 +1338,7 @@ fn NewPrinter(
                     p.print("...");
                 }
 
-                p.printBinding(arg.binding, .{});
+                p.printBinding(arg.binding, false);
 
                 if (arg.default) |default| {
                     p.printWhitespacer(ws(" = "));
@@ -1401,7 +1354,7 @@ fn NewPrinter(
         pub fn printFunc(p: *Printer, func: G.Fn) void {
             p.printFnArgs(func.open_parens_loc, func.args, func.flags.contains(.has_rest_arg), false);
             p.printSpace();
-            p.printBlock(func.body.loc, func.body.stmts, null, TopLevel.init(.no));
+            p.printBlock(func.body.loc, func.body.stmts, null);
         }
 
         pub fn printClass(p: *Printer, class: G.Class) void {
@@ -1425,7 +1378,7 @@ fn NewPrinter(
                 if (item.kind == .class_static_block) {
                     p.print("static");
                     p.printSpace();
-                    p.printBlock(item.class_static_block.?.loc, item.class_static_block.?.stmts.slice(), null, TopLevel.init(.no));
+                    p.printBlock(item.class_static_block.?.loc, item.class_static_block.?.stmts.slice(), null);
                     p.printNewline();
                     continue;
                 }
@@ -2611,7 +2564,7 @@ fn NewPrinter(
                     }
 
                     if (!wasPrinted) {
-                        p.printBlock(e.body.loc, e.body.stmts, null, TopLevel.init(.no));
+                        p.printBlock(e.body.loc, e.body.stmts, null);
                     }
 
                     if (wrap) {
@@ -3589,19 +3542,18 @@ fn NewPrinter(
             p.printExpr(initial, .comma, ExprFlag.None());
         }
 
-        pub fn printBinding(p: *Printer, binding: Binding, tlm: TopLevelAndIsExport) void {
+        pub fn printBinding(p: *Printer, binding: Binding, is_export: bool) void {
             switch (binding.data) {
                 .b_missing => {},
                 .b_identifier => |b| {
                     p.printSpaceBeforeIdentifier();
                     p.addSourceMapping(binding.loc);
                     p.printSymbol(b.ref);
-                    if (may_have_module_info) {
+                    if (may_have_module_info and is_export) {
                         if (p.moduleInfo()) |mi| {
                             const local_name = p.renamer.nameForSymbol(b.ref);
                             const name_id = bun.handleOom(mi.str(local_name));
-                            if (tlm.is_top_level) |vk| bun.handleOom(mi.addVar(name_id, vk));
-                            if (tlm.is_export) bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
+                            bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
                         }
                     }
                 },
@@ -3630,7 +3582,7 @@ fn NewPrinter(
                                 p.print("...");
                             }
 
-                            p.printBinding(item.binding, tlm);
+                            p.printBinding(item.binding, is_export);
 
                             p.maybePrintDefaultBindingValue(item);
 
@@ -3677,7 +3629,7 @@ fn NewPrinter(
                                     p.print("]:");
                                     p.printSpace();
 
-                                    p.printBinding(property.value, tlm);
+                                    p.printBinding(property.value, is_export);
                                     p.maybePrintDefaultBindingValue(property);
                                     continue;
                                 }
@@ -3702,11 +3654,10 @@ fn NewPrinter(
                                                 switch (property.value.data) {
                                                     .b_identifier => |id| {
                                                         if (str.eql(string, p.renamer.nameForSymbol(id.ref))) {
-                                                            if (may_have_module_info) {
+                                                            if (may_have_module_info and is_export) {
                                                                 if (p.moduleInfo()) |mi| {
                                                                     const name_id = bun.handleOom(mi.str(str.data));
-                                                                    if (tlm.is_top_level) |vk| bun.handleOom(mi.addVar(name_id, vk));
-                                                                    if (tlm.is_export) bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
+                                                                    bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
                                                                 }
                                                             }
                                                             p.maybePrintDefaultBindingValue(property);
@@ -3726,12 +3677,11 @@ fn NewPrinter(
                                             switch (property.value.data) {
                                                 .b_identifier => |id| {
                                                     if (strings.utf16EqlString(str.slice16(), p.renamer.nameForSymbol(id.ref))) {
-                                                        if (may_have_module_info) {
+                                                        if (may_have_module_info and is_export) {
                                                             if (p.moduleInfo()) |mi| {
                                                                 const str8 = str.slice(p.options.allocator);
                                                                 const name_id = bun.handleOom(mi.str(str8));
-                                                                if (tlm.is_top_level) |vk| bun.handleOom(mi.addVar(name_id, vk));
-                                                                if (tlm.is_export) bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
+                                                                bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
                                                             }
                                                         }
                                                         p.maybePrintDefaultBindingValue(property);
@@ -3753,7 +3703,7 @@ fn NewPrinter(
                                 p.printSpace();
                             }
 
-                            p.printBinding(property.value, tlm);
+                            p.printBinding(property.value, is_export);
                             p.maybePrintDefaultBindingValue(property);
                         }
 
@@ -3779,7 +3729,7 @@ fn NewPrinter(
             }
         }
 
-        pub fn printStmt(p: *Printer, stmt: Stmt, tlmtlo: TopLevel) !void {
+        pub fn printStmt(p: *Printer, stmt: Stmt) !void {
             const prev_stmt_tag = p.prev_stmt_tag;
 
             defer {
@@ -3820,13 +3770,10 @@ fn NewPrinter(
                     p.printIdentifier(local_name);
                     p.printFunc(s.func);
 
-                    if (may_have_module_info) {
+                    if (may_have_module_info and s.func.flags.contains(.is_export)) {
                         if (p.moduleInfo()) |mi| {
                             const name_id = bun.handleOom(mi.str(local_name));
-                            // function declarations are lexical (block-scoped in modules);
-                            // only record at true top-level, not inside blocks.
-                            if (tlmtlo.is_top_level == .yes) bun.handleOom(mi.addVar(name_id, .lexical));
-                            if (s.func.flags.contains(.is_export)) bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
+                            bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
                         }
                     }
 
@@ -3860,13 +3807,10 @@ fn NewPrinter(
                     p.printIdentifier(nameStr);
                     p.printClass(s.class);
 
-                    if (may_have_module_info) {
+                    if (may_have_module_info and s.is_export) {
                         if (p.moduleInfo()) |mi| {
                             const name_id = bun.handleOom(mi.str(nameStr));
-                            // class declarations are lexical (block-scoped in modules);
-                            // only record at true top-level, not inside blocks.
-                            if (tlmtlo.is_top_level == .yes) bun.handleOom(mi.addVar(name_id, .lexical));
-                            if (s.is_export) bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
+                            bun.handleOom(mi.addExportInfoLocal(name_id, name_id));
                         }
                     }
 
@@ -3909,7 +3853,6 @@ fn NewPrinter(
                             if (may_have_module_info) {
                                 if (p.moduleInfo()) |mi| {
                                     bun.handleOom(mi.addExportInfoLocal(bun.handleOom(mi.str("default")), .star_default));
-                                    bun.handleOom(mi.addVar(.star_default, .lexical));
                                 }
                             }
                             return;
@@ -3943,7 +3886,6 @@ fn NewPrinter(
                                         if (p.moduleInfo()) |mi| {
                                             const local_name: analyze_transpiled_module.StringID = if (func_name) |f| bun.handleOom(mi.str(f)) else .star_default;
                                             bun.handleOom(mi.addExportInfoLocal(bun.handleOom(mi.str("default")), local_name));
-                                            bun.handleOom(mi.addVar(local_name, .lexical));
                                         }
                                     }
 
@@ -3966,7 +3908,6 @@ fn NewPrinter(
                                         if (p.moduleInfo()) |mi| {
                                             const local_name: analyze_transpiled_module.StringID = if (class_name) |f| bun.handleOom(mi.str(f)) else .star_default;
                                             bun.handleOom(mi.addExportInfoLocal(bun.handleOom(mi.str("default")), local_name));
-                                            bun.handleOom(mi.addVar(local_name, .lexical));
                                         }
                                     }
 
@@ -4246,42 +4187,41 @@ fn NewPrinter(
                     p.addSourceMapping(stmt.loc);
                     switch (s.kind) {
                         .k_const => {
-                            p.printDeclStmt(s.is_export, "const", s.decls.slice(), tlmtlo);
+                            p.printDeclStmt(s.is_export, "const", s.decls.slice());
                         },
                         .k_let => {
-                            p.printDeclStmt(s.is_export, "let", s.decls.slice(), tlmtlo);
+                            p.printDeclStmt(s.is_export, "let", s.decls.slice());
                         },
                         .k_var => {
-                            p.printDeclStmt(s.is_export, "var", s.decls.slice(), tlmtlo);
+                            p.printDeclStmt(s.is_export, "var", s.decls.slice());
                         },
                         .k_using => {
-                            p.printDeclStmt(s.is_export, "using", s.decls.slice(), tlmtlo);
+                            p.printDeclStmt(s.is_export, "using", s.decls.slice());
                         },
                         .k_await_using => {
-                            p.printDeclStmt(s.is_export, "await using", s.decls.slice(), tlmtlo);
+                            p.printDeclStmt(s.is_export, "await using", s.decls.slice());
                         },
                     }
                 },
                 .s_if => |s| {
                     p.printIndent();
-                    p.printIf(s, stmt.loc, tlmtlo.subVar());
+                    p.printIf(s, stmt.loc);
                 },
                 .s_do_while => |s| {
                     p.printIndent();
                     p.printSpaceBeforeIdentifier();
                     p.addSourceMapping(stmt.loc);
                     p.print("do");
-                    const sub_var = tlmtlo.subVar();
                     switch (s.body.data) {
                         .s_block => {
                             p.printSpace();
-                            p.printBlock(s.body.loc, s.body.data.s_block.stmts, s.body.data.s_block.close_brace_loc, sub_var);
+                            p.printBlock(s.body.loc, s.body.data.s_block.stmts, s.body.data.s_block.close_brace_loc);
                             p.printSpace();
                         },
                         else => {
                             p.printNewline();
                             p.indent();
-                            p.printStmt(s.body, sub_var) catch unreachable;
+                            p.printStmt(s.body) catch unreachable;
                             p.printSemicolonIfNeeded();
                             p.unindent();
                             p.printIndent();
@@ -4309,7 +4249,7 @@ fn NewPrinter(
                     p.printSpace();
                     p.printExpr(s.value, .lowest, ExprFlag.None());
                     p.print(")");
-                    p.printBody(s.body, tlmtlo.subVar());
+                    p.printBody(s.body);
                 },
                 .s_for_of => |s| {
                     p.printIndent();
@@ -4329,7 +4269,7 @@ fn NewPrinter(
                     p.printSpace();
                     p.printExpr(s.value, .comma, ExprFlag.None());
                     p.print(")");
-                    p.printBody(s.body, tlmtlo.subVar());
+                    p.printBody(s.body);
                 },
                 .s_while => |s| {
                     p.printIndent();
@@ -4340,7 +4280,7 @@ fn NewPrinter(
                     p.print("(");
                     p.printExpr(s.test_, .lowest, ExprFlag.None());
                     p.print(")");
-                    p.printBody(s.body, tlmtlo.subVar());
+                    p.printBody(s.body);
                 },
                 .s_with => |s| {
                     p.printIndent();
@@ -4351,7 +4291,7 @@ fn NewPrinter(
                     p.print("(");
                     p.printExpr(s.value, .lowest, ExprFlag.None());
                     p.print(")");
-                    p.printBody(s.body, tlmtlo.subVar());
+                    p.printBody(s.body);
                 },
                 .s_label => |s| {
                     if (!p.options.minify_whitespace and p.options.indent.count > 0) {
@@ -4361,7 +4301,7 @@ fn NewPrinter(
                     p.addSourceMapping(stmt.loc);
                     p.printSymbol(s.name.ref orelse Output.panic("Internal error: expected label to have a name", .{}));
                     p.print(":");
-                    p.printBody(s.stmt, tlmtlo.subVar());
+                    p.printBody(s.stmt);
                 },
                 .s_try => |s| {
                     p.printIndent();
@@ -4369,8 +4309,7 @@ fn NewPrinter(
                     p.addSourceMapping(stmt.loc);
                     p.print("try");
                     p.printSpace();
-                    const sub_var_try = tlmtlo.subVar();
-                    p.printBlock(s.body_loc, s.body, null, sub_var_try);
+                    p.printBlock(s.body_loc, s.body, null);
 
                     if (s.catch_) |catch_| {
                         p.printSpace();
@@ -4379,18 +4318,18 @@ fn NewPrinter(
                         if (catch_.binding) |binding| {
                             p.printSpace();
                             p.print("(");
-                            p.printBinding(binding, .{});
+                            p.printBinding(binding, false);
                             p.print(")");
                         }
                         p.printSpace();
-                        p.printBlock(catch_.body_loc, catch_.body, null, sub_var_try);
+                        p.printBlock(catch_.body_loc, catch_.body, null);
                     }
 
                     if (s.finally) |finally| {
                         p.printSpace();
                         p.print("finally");
                         p.printSpace();
-                        p.printBlock(finally.loc, finally.stmts, null, sub_var_try);
+                        p.printBlock(finally.loc, finally.stmts, null);
                     }
 
                     p.printNewline();
@@ -4421,7 +4360,7 @@ fn NewPrinter(
                     }
 
                     p.print(")");
-                    p.printBody(s.body, tlmtlo.subVar());
+                    p.printBody(s.body);
                 },
                 .s_switch => |s| {
                     p.printIndent();
@@ -4452,13 +4391,11 @@ fn NewPrinter(
                         }
 
                         p.print(":");
-
-                        const sub_var_case = tlmtlo.subVar();
                         if (c.body.len == 1) {
                             switch (c.body[0].data) {
                                 .s_block => {
                                     p.printSpace();
-                                    p.printBlock(c.body[0].loc, c.body[0].data.s_block.stmts, c.body[0].data.s_block.close_brace_loc, sub_var_case);
+                                    p.printBlock(c.body[0].loc, c.body[0].data.s_block.stmts, c.body[0].data.s_block.close_brace_loc);
                                     p.printNewline();
                                     continue;
                                 },
@@ -4470,7 +4407,7 @@ fn NewPrinter(
                         p.indent();
                         for (c.body) |st| {
                             p.printSemicolonIfNeeded();
-                            p.printStmt(st, sub_var_case) catch unreachable;
+                            p.printStmt(st) catch unreachable;
                         }
                         p.unindent();
                     }
@@ -4660,31 +4597,28 @@ fn NewPrinter(
                             if (s.default_name) |name| {
                                 const local_name = p.renamer.nameForSymbol(name.ref.?);
                                 const local_name_id = bun.handleOom(mi.str(local_name));
-                                bun.handleOom(mi.addVar(local_name_id, .lexical));
-                                bun.handleOom(mi.addImportInfoSingle(irp_id, bun.handleOom(mi.str("default")), local_name_id, false));
+                                bun.handleOom(mi.addImportInfoSingle(irp_id, bun.handleOom(mi.str("default")), local_name_id, false, fetch_parameters.moduleType()));
                             }
 
                             for (s.items) |item| {
                                 const local_name = p.renamer.nameForSymbol(item.name.ref.?);
                                 const local_name_id = bun.handleOom(mi.str(local_name));
-                                bun.handleOom(mi.addVar(local_name_id, .lexical));
                                 // In bundled output, all surviving imports are value imports
                                 // (tree-shaking already removed type-only ones). The finalize()
                                 // step handles re-export type-script conversion separately.
-                                bun.handleOom(mi.addImportInfoSingle(irp_id, bun.handleOom(mi.str(item.alias)), local_name_id, false));
+                                bun.handleOom(mi.addImportInfoSingle(irp_id, bun.handleOom(mi.str(item.alias)), local_name_id, false, fetch_parameters.moduleType()));
                             }
 
                             if (record.flags.contains_import_star) {
                                 const local_name = p.renamer.nameForSymbol(s.namespace_ref);
-                                bun.handleOom(mi.addVar(bun.handleOom(mi.str(local_name)), .lexical));
-                                bun.handleOom(mi.addImportInfoNamespace(irp_id, bun.handleOom(mi.str(local_name))));
+                                bun.handleOom(mi.addImportInfoNamespace(irp_id, bun.handleOom(mi.str(local_name)), fetch_parameters.moduleType()));
                             }
                         }
                     }
                 },
                 .s_block => |s| {
                     p.printIndent();
-                    p.printBlock(stmt.loc, s.stmts, s.close_brace_loc, tlmtlo.subVar());
+                    p.printBlock(stmt.loc, s.stmts, s.close_brace_loc);
                     p.printNewline();
                 },
                 .s_debugger => {
@@ -4818,19 +4752,19 @@ fn NewPrinter(
                 .s_local => |s| {
                     switch (s.kind) {
                         .k_var => {
-                            p.printDecls("var", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), .{});
+                            p.printDecls("var", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), false);
                         },
                         .k_let => {
-                            p.printDecls("let", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), .{});
+                            p.printDecls("let", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), false);
                         },
                         .k_const => {
-                            p.printDecls("const", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), .{});
+                            p.printDecls("const", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), false);
                         },
                         .k_using => {
-                            p.printDecls("using", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), .{});
+                            p.printDecls("using", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), false);
                         },
                         .k_await_using => {
-                            p.printDecls("await using", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), .{});
+                            p.printDecls("await using", s.decls.slice(), ExprFlag.Set.init(.{ .forbid_in = true }), false);
                         },
                     }
                 },
@@ -4841,7 +4775,7 @@ fn NewPrinter(
                 },
             }
         }
-        pub fn printIf(p: *Printer, s: *const S.If, loc: logger.Loc, tlmtlo: TopLevel) void {
+        pub fn printIf(p: *Printer, s: *const S.If, loc: logger.Loc) void {
             p.printSpaceBeforeIdentifier();
             p.addSourceMapping(loc);
             p.print("if");
@@ -4853,7 +4787,7 @@ fn NewPrinter(
             switch (s.yes.data) {
                 .s_block => |block| {
                     p.printSpace();
-                    p.printBlock(s.yes.loc, block.stmts, block.close_brace_loc, tlmtlo);
+                    p.printBlock(s.yes.loc, block.stmts, block.close_brace_loc);
 
                     if (s.no != null) {
                         p.printSpace();
@@ -4868,7 +4802,7 @@ fn NewPrinter(
                         p.printNewline();
 
                         p.indent();
-                        p.printStmt(s.yes, tlmtlo) catch unreachable;
+                        p.printStmt(s.yes) catch unreachable;
                         p.unindent();
                         p.needs_semicolon = false;
 
@@ -4883,7 +4817,7 @@ fn NewPrinter(
                     } else {
                         p.printNewline();
                         p.indent();
-                        p.printStmt(s.yes, tlmtlo) catch unreachable;
+                        p.printStmt(s.yes) catch unreachable;
                         p.unindent();
 
                         if (s.no != null) {
@@ -4902,16 +4836,16 @@ fn NewPrinter(
                 switch (no_block.data) {
                     .s_block => {
                         p.printSpace();
-                        p.printBlock(no_block.loc, no_block.data.s_block.stmts, null, tlmtlo);
+                        p.printBlock(no_block.loc, no_block.data.s_block.stmts, null);
                         p.printNewline();
                     },
                     .s_if => {
-                        p.printIf(no_block.data.s_if, no_block.loc, tlmtlo);
+                        p.printIf(no_block.data.s_if, no_block.loc);
                     },
                     else => {
                         p.printNewline();
                         p.indent();
-                        p.printStmt(no_block, tlmtlo) catch unreachable;
+                        p.printStmt(no_block) catch unreachable;
                         p.unindent();
                     },
                 }
@@ -4995,20 +4929,11 @@ fn NewPrinter(
             }
         }
 
-        pub fn printDeclStmt(p: *Printer, is_export: bool, comptime keyword: string, decls: []G.Decl, tlmtlo: TopLevel) void {
+        pub fn printDeclStmt(p: *Printer, is_export: bool, comptime keyword: string, decls: []G.Decl) void {
             if (!rewrite_esm_to_cjs and is_export) {
                 p.print("export ");
             }
-            const tlm: TopLevelAndIsExport = if (may_have_module_info) .{
-                .is_export = is_export,
-                .is_top_level = if (comptime strings.eqlComptime(keyword, "var"))
-                    (if (tlmtlo.isTopLevel()) .declared else null)
-                else
-                    // let/const are block-scoped: only record at true top-level,
-                    // not inside blocks where subVar() downgrades to .var_only.
-                    (if (tlmtlo.is_top_level == .yes) .lexical else null),
-            } else .{};
-            p.printDecls(keyword, decls, ExprFlag.None(), tlm);
+            p.printDecls(keyword, decls, ExprFlag.None(), is_export);
             p.printSemicolonAfterStatement();
             if (rewrite_esm_to_cjs and is_export and decls.len > 0) {
                 for (decls) |decl| {
@@ -5053,7 +4978,7 @@ fn NewPrinter(
                             p.print("}");
                         },
                         else => {
-                            p.printBinding(decl.binding, .{});
+                            p.printBinding(decl.binding, false);
                         },
                     }
                     p.print(")");
@@ -5386,7 +5311,7 @@ fn NewPrinter(
                 p.printFnArgs(func.open_parens_loc, func.args, func.flags.contains(.has_rest_arg), false);
                 p.print(" => {\n");
                 p.indent();
-                p.printBlockBody(func.body.stmts, TopLevel.init(.no));
+                p.printBlockBody(func.body.stmts);
                 p.unindent();
                 p.printIndent();
                 p.print("}, ");
@@ -5863,14 +5788,13 @@ pub fn printAst(
         if (PrinterType.may_have_module_info) {
             if (printer.moduleInfo()) |mi| {
                 mi.flags.contains_import_meta = true;
-                bun.handleOom(mi.addVar(bun.handleOom(mi.str("require")), .declared));
             }
         }
     }
 
     for (tree.parts.slice()) |part| {
         for (part.stmts) |stmt| {
-            try printer.printStmt(stmt, PrinterType.TopLevel.init(.yes));
+            try printer.printStmt(stmt);
             if (printer.writer.getError()) {} else |err| {
                 return err;
             }
@@ -6071,7 +5995,7 @@ pub fn printWithWriterAndPlatform(
 
         for (parts) |part| {
             for (part.stmts) |stmt| {
-                printer.printStmt(stmt, PrinterType.TopLevel.init(.yes)) catch |err| {
+                printer.printStmt(stmt) catch |err| {
                     return .{ .err = err };
                 };
                 if (printer.writer.getError()) {} else |err| {
@@ -6148,7 +6072,7 @@ pub fn printCommonJS(
 
     for (tree.parts.slice()) |part| {
         for (part.stmts) |stmt| {
-            try printer.printStmt(stmt, PrinterType.TopLevel.init(.yes));
+            try printer.printStmt(stmt);
             if (printer.writer.getError()) {} else |err| {
                 return err;
             }

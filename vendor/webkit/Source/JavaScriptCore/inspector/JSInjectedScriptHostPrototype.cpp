@@ -162,7 +162,7 @@ JSC_DEFINE_HOST_FUNCTION(jsInjectedScriptHostPrototypeFunctionProxyTargetValue, 
     if (!castedThis)
         return throwVMTypeError(globalObject, scope);
 
-    return JSValue::encode(castedThis->proxyTargetValue(callFrame));
+    RELEASE_AND_RETURN(scope, JSValue::encode(castedThis->proxyTargetValue(callFrame)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsInjectedScriptHostPrototypeFunctionWeakRefTargetValue, (JSGlobalObject* globalObject, CallFrame* callFrame))
@@ -188,7 +188,7 @@ JSC_DEFINE_HOST_FUNCTION(jsInjectedScriptHostPrototypeFunctionWeakMapSize, (JSGl
     if (!castedThis)
         return throwVMTypeError(globalObject, scope);
 
-    return JSValue::encode(castedThis->weakMapSize(globalObject, callFrame));
+    RELEASE_AND_RETURN(scope, JSValue::encode(castedThis->weakMapSize(globalObject, callFrame)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsInjectedScriptHostPrototypeFunctionWeakMapEntries, (JSGlobalObject* globalObject, CallFrame* callFrame))
@@ -214,7 +214,7 @@ JSC_DEFINE_HOST_FUNCTION(jsInjectedScriptHostPrototypeFunctionWeakSetSize, (JSGl
     if (!castedThis)
         return throwVMTypeError(globalObject, scope);
 
-    return JSValue::encode(castedThis->weakSetSize(globalObject, callFrame));
+    RELEASE_AND_RETURN(scope, JSValue::encode(castedThis->weakSetSize(globalObject, callFrame)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsInjectedScriptHostPrototypeFunctionWeakSetEntries, (JSGlobalObject* globalObject, CallFrame* callFrame))
