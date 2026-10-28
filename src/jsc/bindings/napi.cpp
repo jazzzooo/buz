@@ -7,7 +7,7 @@
 #include "JavaScriptCore/JSCast.h"
 #include "SchemaBindings.h"
 #include "ZigGlobalObject.h"
-#include "JavaScriptCore/JSGlobalObject.h"
+#include "JavaScriptCore/JSGlobalObjectInlines.h"
 #include "JavaScriptCore/SourceCode.h"
 #include "js_native_api.h"
 #include "napi_handle_scope.h"
@@ -23,6 +23,9 @@
 #include <wtf/text/StringImpl.h>
 #include <JavaScriptCore/JSMicrotask.h>
 #include <JavaScriptCore/ObjectConstructor.h>
+#include <JavaScriptCore/PropertyNameArray.h>
+#include <JavaScriptCore/ProxyObject.h>
+#include <JavaScriptCore/StringObject.h>
 #include <JavaScriptCore/JSModuleLoader.h>
 #include <wtf/text/StringView.h>
 #include <wtf/text/StringBuilder.h>
@@ -30,6 +33,7 @@
 #include <span>
 #include "BufferEncodingType.h"
 #include <JavaScriptCore/AggregateError.h>
+#include <JavaScriptCore/ArgList.h>
 #include <JavaScriptCore/BytecodeIndex.h>
 #include <JavaScriptCore/CallFrame.h>
 #include <JavaScriptCore/CallFrameInlines.h>
@@ -42,7 +46,7 @@
 #include <JavaScriptCore/ExceptionScope.h>
 #include <JavaScriptCore/FunctionConstructor.h>
 #include <JavaScriptCore/Heap.h>
-#include <JavaScriptCore/Identifier.h>
+#include <JavaScriptCore/IdentifierInlines.h>
 #include <JavaScriptCore/InitializeThreading.h>
 #include <JavaScriptCore/IteratorOperations.h>
 #include <JavaScriptCore/JSArray.h>
@@ -1791,82 +1795,95 @@ extern "C" napi_status napi_create_typedarray(
 
 namespace Zig {
 
+static JSArray* collectNapiPropertyNames(JSGlobalObject* globalObject, JSObject* object,
+    napi_key_collection_mode keyMode, napi_key_filter keyFilter, napi_key_conversion keyConversion)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    IdentifierSet seen;
+    MarkedArgumentBuffer keys;
+    unsigned prototypeCount = 0;
+
+    while (object) {
+        EnsureStillAliveScope ensureObject(object);
+        PropertyNameArrayBuilder ownKeys(vm, PropertyNameMode::StringsAndSymbols, PrivateSymbolMode::Exclude);
+        object->methodTable()->getOwnPropertyNames(object, globalObject, ownKeys, DontEnumPropertiesMode::Include);
+        RETURN_IF_EXCEPTION(scope, nullptr);
+
+        // Node only applies the enumerable attribute filter to Proxy keys.
+        unsigned attributeFilter = object->inherits<ProxyObject>()
+            ? keyFilter & napi_key_enumerable
+            : keyFilter & (napi_key_enumerable | napi_key_writable | napi_key_configurable);
+        auto* stringObject = dynamicDowncast<StringObject>(object);
+
+        for (const auto& key : ownKeys) {
+            if (keyFilter & (key.isSymbol() ? napi_key_skip_symbols : napi_key_skip_strings))
+                continue;
+
+            bool include = true;
+            auto index = parseIndex(key);
+            // String wrapper character indices bypass Node's attribute filters.
+            bool stringIndex = stringObject && index && *index < stringObject->internalValue()->length();
+            if (attributeFilter && !stringIndex) {
+                PropertyDescriptor descriptor;
+                bool found = object->getOwnPropertyDescriptor(globalObject, key, descriptor);
+                RETURN_IF_EXCEPTION(scope, nullptr);
+                if (!found)
+                    continue;
+
+                include = (!(attributeFilter & napi_key_enumerable) || descriptor.enumerable())
+                    && (!(attributeFilter & napi_key_configurable) || descriptor.configurable())
+                    && (!(attributeFilter & napi_key_writable) || descriptor.isAccessorDescriptor() || descriptor.writable());
+            }
+
+            // A filtered own property still shadows the same key on a prototype.
+            if (keyMode == napi_key_include_prototypes && !seen.add(key.impl()).isNewEntry)
+                continue;
+            if (include) {
+                keys.append(index && keyConversion == napi_key_keep_numbers ? jsNumber(*index) : identifierToJSValue(vm, key));
+                if (keys.hasOverflowed()) {
+                    throwOutOfMemoryError(globalObject, scope);
+                    return nullptr;
+                }
+            }
+        }
+
+        if (keyMode == napi_key_own_only)
+            break;
+
+        JSValue prototype = object->getPrototype(globalObject);
+        RETURN_IF_EXCEPTION(scope, nullptr);
+        if (prototype.isNull())
+            break;
+        if (++prototypeCount > JSObject::maximumPrototypeChainDepth) {
+            throwStackOverflowError(globalObject, scope);
+            return nullptr;
+        }
+        object = asObject(prototype);
+    }
+
+    RELEASE_AND_RETURN(scope, constructArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), keys));
+}
+
 extern "C" napi_status napi_get_all_property_names(
     napi_env env, napi_value objectNapi, napi_key_collection_mode key_mode,
     napi_key_filter key_filter, napi_key_conversion key_conversion,
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
+    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, objectNapi);
-    auto objectValue = toJS(objectNapi);
-    auto* object = objectValue.getObject();
+    auto* globalObject = toJS(env);
+    auto* object = toJS(objectNapi).toObject(globalObject);
     NAPI_RETURN_EARLY_IF_FALSE(env, object, napi_object_expected);
-
-    DontEnumPropertiesMode jsc_key_mode = key_mode == napi_key_include_prototypes ? DontEnumPropertiesMode::Include : DontEnumPropertiesMode::Exclude;
-    PropertyNameMode jsc_property_mode = PropertyNameMode::StringsAndSymbols;
-    // TODO verify changing == to & is correct
-    if (key_filter & napi_key_skip_symbols) {
-        jsc_property_mode = PropertyNameMode::Strings;
-    } else if (key_filter & napi_key_skip_strings) {
-        jsc_property_mode = PropertyNameMode::Symbols;
-    } else {
-        // JSC requires key mode to be Include if property mode is StringsAndSymbols
-        jsc_key_mode = DontEnumPropertiesMode::Include;
-    }
-
-    auto globalObject = toJS(env);
-
-    JSArray* exportKeys = nullptr;
-    if (key_mode == napi_key_include_prototypes) {
-        exportKeys = allPropertyKeys(globalObject, object, jsc_property_mode, jsc_key_mode);
-    } else {
-        exportKeys = ownPropertyKeys(globalObject, object, jsc_property_mode, jsc_key_mode);
-    }
-
     NAPI_RETURN_IF_EXCEPTION(env);
+    NAPI_RETURN_EARLY_IF_FALSE(env, key_mode == napi_key_include_prototypes || key_mode == napi_key_own_only, napi_invalid_arg);
+    NAPI_RETURN_EARLY_IF_FALSE(env, key_conversion == napi_key_keep_numbers || key_conversion == napi_key_numbers_to_strings, napi_invalid_arg);
 
-    constexpr auto filter_by_any_descriptor = static_cast<napi_key_filter>(napi_key_enumerable | napi_key_writable | napi_key_configurable);
-    // avoid expensive iteration if they don't care whether keys are enumerable, writable, or configurable
-    if (key_filter & filter_by_any_descriptor) {
-        JSArray* filteredKeys = JSArray::create(JSC::getVM(globalObject), globalObject->originalArrayStructureForIndexingType(ArrayWithContiguous), 0);
-        for (unsigned i = 0; i < exportKeys->getArrayLength(); i++) {
-            JSValue key = exportKeys->get(globalObject, i);
-            PropertyDescriptor desc;
-
-            if (key_mode == napi_key_include_prototypes) {
-                // Climb up the prototype chain to find inherited properties
-                JSObject* current_object = object;
-                while (!current_object->getOwnPropertyDescriptor(globalObject, key.toPropertyKey(globalObject), desc)) {
-                    JSObject* proto = current_object->getPrototype(globalObject).getObject();
-                    if (!proto) {
-                        break;
-                    }
-                    current_object = proto;
-                }
-            } else {
-                object->getOwnPropertyDescriptor(globalObject, key.toPropertyKey(globalObject), desc);
-            }
-
-            bool include = true;
-            if (key_filter & napi_key_enumerable) {
-                include = include && desc.enumerable();
-            }
-            if (key_filter & napi_key_writable) {
-                include = include && desc.writable();
-            }
-            if (key_filter & napi_key_configurable) {
-                include = include && desc.configurable();
-            }
-
-            if (include) {
-                filteredKeys->push(globalObject, key);
-            }
-        }
-        exportKeys = filteredKeys;
-    }
-
-    *result = toNapi(JSValue(exportKeys), globalObject);
+    JSArray* keys = collectNapiPropertyNames(globalObject, object, key_mode, key_filter, key_conversion);
+    NAPI_RETURN_IF_EXCEPTION(env);
+    *result = toNapi(keys, globalObject);
     NAPI_RETURN_SUCCESS(env);
 }
 
@@ -1978,22 +1995,8 @@ extern "C" napi_status napi_coerce_to_object(napi_env env, napi_value value, nap
 extern "C" napi_status napi_get_property_names(napi_env env, napi_value object,
     napi_value* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ARG(env, object);
-    NAPI_CHECK_ARG(env, result);
-    JSValue jsValue = toJS(object);
-    JSObject* jsObject = jsValue.getObject();
-    NAPI_RETURN_EARLY_IF_FALSE(env, jsObject, napi_object_expected);
-
-    Zig::GlobalObject* globalObject = toJS(env);
-
-    JSC::EnsureStillAliveScope ensureStillAlive(jsValue);
-    JSValue value = JSC::allPropertyKeys(globalObject, jsObject, PropertyNameMode::Strings, DontEnumPropertiesMode::Exclude);
-    NAPI_RETURN_IF_EXCEPTION(env);
-    JSC::EnsureStillAliveScope ensureStillAlive1(value);
-
-    *result = toNapi(value, globalObject);
-    NAPI_RETURN_SUCCESS(env);
+    return napi_get_all_property_names(env, object, napi_key_include_prototypes,
+        static_cast<napi_key_filter>(napi_key_enumerable | napi_key_skip_symbols), napi_key_numbers_to_strings, result);
 }
 
 extern "C" napi_status napi_create_buffer(napi_env env, size_t length,
