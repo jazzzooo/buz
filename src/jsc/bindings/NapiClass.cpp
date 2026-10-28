@@ -34,21 +34,9 @@ JSC_HOST_CALL_ATTRIBUTES JSC::EncodedJSValue NapiClass_ConstructorFunction(JSC::
     JSValue newTarget;
 
     if constexpr (ConstructCall) {
-        // Use ::get instead of ::getIfPropertyExists here so that DontEnum is ignored.
-        auto prototypeValue = napi->get(globalObject, vm.propertyNames->prototype);
-        RETURN_IF_EXCEPTION(scope, {});
-        NapiPrototype* prototype = dynamicDowncast<NapiPrototype>(prototypeValue);
-
-        if (!prototype) {
-            JSC::throwVMError(globalObject, scope, JSC::createTypeError(globalObject, "NapiClass constructor is missing the prototype"_s));
-            return {};
-        }
-
         newTarget = callFrame->newTarget();
         JSObject* thisValue;
-        // Match the behavior from
-        // https://github.com/oven-sh/WebKit/blob/397dafc9721b8f8046f9448abb6dbc14efe096d3/Source/JavaScriptCore/runtime/ObjectConstructor.cpp#L118-L145
-        if (newTarget && newTarget != napi) {
+        if (newTarget != napi) {
             JSGlobalObject* functionGlobalObject = getFunctionRealm(globalObject, asObject(newTarget));
             RETURN_IF_EXCEPTION(scope, {});
             Structure* baseStructure = functionGlobalObject->objectStructureForObjectConstructor();
@@ -56,9 +44,11 @@ JSC_HOST_CALL_ATTRIBUTES JSC::EncodedJSValue NapiClass_ConstructorFunction(JSC::
             RETURN_IF_EXCEPTION(scope, {});
             thisValue = constructEmptyObject(vm, objectStructure);
         } else {
-            thisValue = prototype->subclass(globalObject, asObject(newTarget));
+            Structure* baseStructure = napi->env()->globalObject()->NapiPrototypeStructure();
+            Structure* objectStructure = InternalFunction::createSubclassStructure(globalObject, asObject(newTarget), baseStructure);
+            RETURN_IF_EXCEPTION(scope, {});
+            thisValue = NapiPrototype::create(vm, objectStructure);
         }
-        RETURN_IF_EXCEPTION(scope, {});
         callFrame->setThisValue(thisValue);
     }
 
@@ -79,11 +69,9 @@ JSC_HOST_CALL_ATTRIBUTES JSC::EncodedJSValue NapiClass_ConstructorFunction(JSC::
     }
 }
 
-NapiClass* NapiClass::create(VM& vm, napi_env env, WTF::String name,
+NapiClass* NapiClass::create(VM& vm, napi_env env, const WTF::String& name,
     napi_callback constructor,
-    void* data,
-    size_t property_count,
-    const napi_property_descriptor* properties)
+    void* data, NapiPrototype* prototype)
 {
     NativeExecutable* executable = vm.getHostFunction(
         // for normal call
@@ -92,42 +80,22 @@ NapiClass* NapiClass::create(VM& vm, napi_env env, WTF::String name,
         // for constructor call
         NapiClass_ConstructorFunction<true>, 0, name);
     Structure* structure = env->globalObject()->NapiClassStructure();
-    NapiClass* napiClass = new (NotNull, allocateCell<NapiClass>(vm)) NapiClass(vm, executable, env, structure, data);
-    napiClass->finishCreation(vm, name, constructor, data, property_count, properties);
+    NapiClass* napiClass = new (NotNull, allocateCell<NapiClass>(vm)) NapiClass(vm, executable, env, structure, constructor, data);
+    napiClass->finishCreation(vm, prototype);
     return napiClass;
 }
 
-void NapiClass::finishCreation(VM& vm, const String& name, napi_callback constructor,
-    void* data,
-    size_t property_count,
-    const napi_property_descriptor* properties)
+void NapiClass::finishCreation(VM& vm, NapiPrototype* prototype)
 {
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
-    this->m_constructor = constructor;
     auto globalObject = static_cast<Zig::GlobalObject*>(this->globalObject());
 
-    this->putDirect(vm, vm.propertyNames->name, jsString(vm, name), JSC::PropertyAttribute::DontEnum | 0);
-
-    NapiPrototype* prototype = NapiPrototype::create(vm, globalObject->NapiPrototypeStructure());
-
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-    auto env = m_env;
-
-    for (size_t i = 0; i < property_count; i++) {
-        const napi_property_descriptor& property = properties[i];
-
-        if (property.attributes & napi_static) {
-            Napi::defineProperty(env, this, property);
-        } else {
-            Napi::defineProperty(env, prototype, property);
-        }
-
-        RETURN_IF_EXCEPTION(throwScope, void());
-    }
-
-    this->putDirect(vm, vm.propertyNames->prototype, prototype, JSC::PropertyAttribute::DontEnum | 0);
-    prototype->putDirect(vm, vm.propertyNames->constructor, this, JSC::PropertyAttribute::DontEnum | 0);
+    if (!prototype)
+        prototype = NapiPrototype::create(vm, globalObject->NapiPrototypeStructure());
+    this->putDirect(vm, vm.propertyNames->prototype, prototype, JSC::PropertyAttribute::DontEnum | JSC::PropertyAttribute::DontDelete);
+    if (!prototype->getDirect(vm, vm.propertyNames->constructor))
+        prototype->putDirect(vm, vm.propertyNames->constructor, this, JSC::PropertyAttribute::DontEnum | 0);
 }
 
 const ClassInfo NapiClass::s_info = { "Function"_s, &NapiClass::Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(NapiClass) };

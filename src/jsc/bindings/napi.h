@@ -123,8 +123,6 @@ private:
 };
 
 using HookSet = std::unordered_set<EitherCleanupHook, EitherCleanupHook::Hash>;
-
-void defineProperty(napi_env env, JSC::JSObject* to, const napi_property_descriptor& property);
 }
 
 struct napi_async_cleanup_hook_handle__ {
@@ -780,6 +778,8 @@ static inline napi_ref toNapi(NapiRef* val)
     return reinterpret_cast<napi_ref>(val);
 }
 
+class NapiPrototype;
+
 class NapiClass final : public JSC::JSFunction {
 public:
     using Base = JSFunction;
@@ -805,11 +805,9 @@ public:
 
     DECLARE_EXPORT_INFO;
 
-    JS_EXPORT_PRIVATE static NapiClass* create(VM&, napi_env, WTF::String name,
+    JS_EXPORT_PRIVATE static NapiClass* create(VM&, napi_env, const WTF::String& name,
         napi_callback constructor,
-        void* data,
-        size_t property_count,
-        const napi_property_descriptor* properties);
+        void* data, NapiPrototype* prototype = nullptr);
 
     static Structure* createStructure(VM& vm, JSGlobalObject* globalObject, JSValue prototype)
     {
@@ -818,22 +816,19 @@ public:
     }
 
     inline napi_callback constructor() const { return m_constructor; }
-    inline void*& dataPtr() { return m_dataPtr; }
-    inline void* const& dataPtr() const { return m_dataPtr; }
+    inline void* dataPtr() const { return m_dataPtr; }
     inline napi_env env() const { return m_env; }
 
 private:
-    NapiClass(VM& vm, NativeExecutable* executable, napi_env env, Structure* structure, void* data)
+    NapiClass(VM& vm, NativeExecutable* executable, napi_env env, Structure* structure, napi_callback constructor, void* data)
         : Base(vm, executable, env->globalObject(), structure)
         , m_dataPtr(data)
+        , m_constructor(constructor)
         , m_env(env)
     {
     }
 
-    void finishCreation(VM&, const String& name, napi_callback constructor,
-        void* data,
-        size_t property_count,
-        const napi_property_descriptor* properties);
+    void finishCreation(VM&, NapiPrototype*);
 
     void* m_dataPtr = nullptr;
     napi_callback m_constructor = nullptr;
@@ -868,16 +863,6 @@ public:
     {
         ASSERT(globalObject);
         return Structure::create(vm, globalObject, prototype, TypeInfo(ObjectType, StructureFlags), info());
-    }
-
-    NapiPrototype* subclass(JSC::JSGlobalObject* globalObject, JSC::JSObject* newTarget)
-    {
-        VM& vm = globalObject->vm();
-        Structure* structure = JSC::InternalFunction::createSubclassStructure(globalObject, newTarget, this->structure());
-        if (!structure) {
-            return nullptr;
-        }
-        return NapiPrototype::create(vm, structure);
     }
 
     NapiRef* napiRef = nullptr;

@@ -23,6 +23,7 @@
 #include <wtf/text/StringImpl.h>
 #include <JavaScriptCore/JSMicrotask.h>
 #include <JavaScriptCore/ObjectConstructor.h>
+#include <JavaScriptCore/PropertyDescriptor.h>
 #include <JavaScriptCore/PropertyNameArray.h>
 #include <JavaScriptCore/ProxyObject.h>
 #include <JavaScriptCore/StringObject.h>
@@ -30,6 +31,7 @@
 #include <wtf/text/StringView.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/text/WTFString.h>
+#include <wtf/Expected.h>
 #include <span>
 #include "BufferEncodingType.h"
 #include <JavaScriptCore/AggregateError.h>
@@ -57,9 +59,7 @@
 #include "JSFFIFunction.h"
 #include <JavaScriptCore/JavaScript.h>
 #include "napi.h"
-#include <JavaScriptCore/GetterSetter.h>
 #include <JavaScriptCore/JSSourceCode.h>
-#include <JavaScriptCore/JSNativeStdFunction.h>
 #include <JavaScriptCore/BigIntObject.h>
 #include <JavaScriptCore/JSWeakMapInlines.h>
 #include "ScriptExecutionContext.h"
@@ -277,26 +277,6 @@ void Napi::NapiRefSelfDeletingWeakHandleOwner::finalize(JSC::Handle<JSC::Unknown
     delete weakValue;
 }
 
-static uint32_t getPropertyAttributes(const napi_property_descriptor& prop)
-{
-    uint32_t result = 0;
-    const uint32_t attributes = static_cast<uint32_t>(prop.attributes);
-
-    if (!(attributes & static_cast<napi_property_attributes>(napi_key_configurable))) {
-        result |= JSC::PropertyAttribute::DontDelete;
-    }
-
-    if (!(attributes & static_cast<napi_property_attributes>(napi_key_enumerable))) {
-        result |= JSC::PropertyAttribute::DontEnum;
-    }
-
-    if (!(attributes & napi_key_writable || prop.setter != nullptr)) {
-        result |= JSC::PropertyAttribute::ReadOnly;
-    }
-
-    return result;
-}
-
 void NAPICallFrame::extract(size_t* argc, napi_value* argv, napi_value* this_arg, void** data, Zig::GlobalObject* globalObject)
 {
 
@@ -323,84 +303,67 @@ void NAPICallFrame::extract(size_t* argc, napi_value* argv, napi_value* this_arg
     }
 }
 
-void Napi::defineProperty(napi_env env, JSC::JSObject* to, const napi_property_descriptor& property)
+// ASCII names can be looked up in the atom table without allocating an intermediate String.
+static JSC::Identifier identifierFromUtf8(JSC::VM& vm, const char* utf8Name)
 {
-    Zig::GlobalObject* globalObject = env->globalObject();
-    JSC::VM& vm = JSC::getVM(globalObject);
+    std::span<const Latin1Character> utf8Span { reinterpret_cast<const Latin1Character*>(utf8Name), strlen(utf8Name) };
+    return WTF::charactersAreAllASCII(utf8Span)
+        ? JSC::Identifier::fromString(vm, utf8Span)
+        : JSC::Identifier::fromString(vm, WTF::String::fromUTF8ReplacingInvalidSequences(utf8Span));
+}
+
+static Expected<Identifier, napi_status> propertyName(napi_env env, const napi_property_descriptor& property)
+{
+    auto* globalObject = env->globalObject();
+    auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    void* dataPtr = property.data;
 
-    auto getPropertyName = [&]() -> JSC::Identifier {
-        if (property.utf8name != nullptr) {
-            size_t len = strlen(property.utf8name);
-            if (len > 0) {
-                return JSC::Identifier::fromString(vm, WTF::String::fromUTF8({ property.utf8name, len }).isolatedCopy());
-            }
-        }
+    if (property.utf8name)
+        return identifierFromUtf8(vm, property.utf8name);
 
-        if (!property.name) {
-            throwVMError(globalObject, scope, JSC::createTypeError(globalObject, "Property name is required"_s));
-            return JSC::Identifier();
-        }
+    JSValue value = toJS(property.name);
+    if (!value || (!value.isString() && !value.isSymbol()))
+        return makeUnexpected(napi_name_expected);
+    auto name = value.toPropertyKey(globalObject);
+    RETURN_IF_EXCEPTION(scope, makeUnexpected(napi_pending_exception));
+    return name;
+}
 
-        JSValue nameValue = toJS(property.name);
-        return nameValue.toPropertyKey(globalObject);
-    };
+static napi_status defineProperty(napi_env env, JSObject* target, const Identifier& propertyName, const napi_property_descriptor& property)
+{
+    auto* globalObject = env->globalObject();
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
 
-    JSC::Identifier propertyName = getPropertyName();
-    RETURN_IF_EXCEPTION(scope, void());
-    if (!propertyName.isSymbol() && propertyName.isEmpty()) {
-        return;
-    }
-
-    if (property.method) {
-        WTF::String name;
-        if (!propertyName.isSymbol()) {
-            name = propertyName.string();
-        }
-
-        JSValue value = NapiClass::create(vm, env, name, property.method, dataPtr, 0, nullptr);
-        RETURN_IF_EXCEPTION(scope, void());
-        to->putDirect(vm, propertyName, value, getPropertyAttributes(property));
-        return;
-    }
-
-    if (property.getter != nullptr || property.setter != nullptr) {
-        JSC::JSObject* getter = nullptr;
-        JSC::JSObject* setter = nullptr;
-
+    PropertyDescriptor descriptor;
+    descriptor.setEnumerable(property.attributes & napi_enumerable);
+    descriptor.setConfigurable(property.attributes & napi_configurable);
+    napi_status rejected = napi_invalid_arg;
+    if (property.getter || property.setter) {
         if (property.getter) {
             auto name = makeString("get "_s, propertyName.isSymbol() ? String() : propertyName.string());
-            getter = NapiClass::create(vm, env, name, property.getter, dataPtr, 0, nullptr);
-            RETURN_IF_EXCEPTION(scope, void());
-        } else {
-            JSC::JSNativeStdFunction* getterFunction = JSC::JSNativeStdFunction::create(
-                JSC::getVM(globalObject), globalObject, 0, String(), [](JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame) -> JSC::EncodedJSValue {
-                    return JSValue::encode(JSC::jsUndefined());
-                });
-            getter = getterFunction;
+            descriptor.setGetter(NapiClass::create(vm, env, name, property.getter, property.data));
         }
-
         if (property.setter) {
             auto name = makeString("set "_s, propertyName.isSymbol() ? String() : propertyName.string());
-            setter = NapiClass::create(vm, env, name, property.setter, dataPtr, 0, nullptr);
-            RETURN_IF_EXCEPTION(scope, void());
+            descriptor.setSetter(NapiClass::create(vm, env, name, property.setter, property.data));
         }
-
-        auto getterSetter = JSC::GetterSetter::create(vm, globalObject, getter, setter);
-        to->putDirectAccessor(globalObject, propertyName, getterSetter, PropertyAttribute::Accessor | getPropertyAttributes(property));
-        RETURN_IF_EXCEPTION(scope, void());
     } else {
-        JSC::JSValue value = toJS(property.value);
-
-        if (value.isEmpty()) {
-            value = JSC::jsUndefined();
+        JSValue value;
+        if (property.method) {
+            auto name = propertyName.isSymbol() ? String() : propertyName.string();
+            value = NapiClass::create(vm, env, name, property.method, property.data);
+            rejected = napi_generic_failure;
+        } else {
+            value = toJS(property.value);
         }
-
-        PropertyDescriptor descriptor(value, getPropertyAttributes(property));
-        to->methodTable()->defineOwnProperty(to, globalObject, propertyName, descriptor, false);
-        RETURN_IF_EXCEPTION(scope, void());
+        descriptor.setValue(value ? value : jsUndefined());
+        descriptor.setWritable(property.attributes & napi_writable);
     }
+
+    bool defined = target->methodTable()->defineOwnProperty(target, globalObject, propertyName, descriptor, false);
+    RETURN_IF_EXCEPTION(scope, napi_pending_exception);
+    return defined ? napi_ok : rejected;
 }
 
 extern "C" napi_status napi_set_property(napi_env env, napi_value target,
@@ -593,21 +556,6 @@ extern "C" napi_status napi_has_own_property(napi_env env, napi_value object,
     NAPI_RETURN_IF_EXCEPTION(env);
     *result = hasOwnProperty;
     NAPI_RETURN_SUCCESS(env);
-}
-
-// For ASCII input (the common case), avoids UTF-8 decoding overhead by going
-// directly through Identifier::fromString(VM&, span<Latin1>), which uses the
-// span for a hash lookup in the atom string table without creating an
-// intermediate WTF::String. If the atom already exists, no copy occurs at all.
-// If the atom does not exist and gets inserted into the table, the characters
-// are cloned because we cannot guarantee the lifetime of the input span.
-JSC::Identifier identifierFromUtf8(JSC::VM& vm, const char* utf8Name)
-{
-    size_t utf8Len = strlen(utf8Name);
-    std::span<const Latin1Character> utf8Span { reinterpret_cast<const Latin1Character*>(utf8Name), utf8Len };
-    return WTF::charactersAreAllASCII(utf8Span)
-        ? JSC::Identifier::fromString(vm, utf8Span)
-        : JSC::Identifier::fromString(vm, WTF::String::fromUTF8(utf8Span));
 }
 
 extern "C" napi_status napi_set_named_property(napi_env env, napi_value object,
@@ -986,7 +934,7 @@ extern "C" napi_status napi_create_function(napi_env env, const char* utf8name,
         name = WTF::String::fromUTF8({ utf8name, length == NAPI_AUTO_LENGTH ? strlen(utf8name) : length });
     }
 
-    auto function = NapiClass::create(vm, env, name, cb, data, 0, nullptr);
+    auto function = NapiClass::create(vm, env, name, cb, data);
 
     ASSERT(function->isCallable());
     *result = toNapi(JSValue(function), globalObject);
@@ -1026,10 +974,13 @@ napi_define_properties(napi_env env, napi_value object, size_t property_count,
     JSC::JSObject* objectObject = objectValue.getObject();
     NAPI_RETURN_EARLY_IF_FALSE(env, objectObject, napi_object_expected);
 
-    for (size_t i = 0; i < property_count; i++) {
-        Napi::defineProperty(env, objectObject, properties[i]);
-
+    for (const auto& property : std::span { properties, property_count }) {
+        auto name = propertyName(env, property);
         NAPI_RETURN_IF_EXCEPTION(env);
+        NAPI_RETURN_EARLY_IF_FALSE(env, name, name.error());
+        auto status = defineProperty(env, objectObject, *name, property);
+        NAPI_RETURN_IF_EXCEPTION(env);
+        NAPI_RETURN_EARLY_IF_FALSE(env, status == napi_ok, status);
     }
 
     NAPI_RETURN_SUCCESS(env);
@@ -1897,10 +1848,12 @@ extern "C" napi_status napi_define_class(napi_env env,
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
+    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, utf8name);
     NAPI_CHECK_ARG(env, constructor);
     NAPI_RETURN_EARLY_IF_FALSE(env, properties || property_count == 0, napi_invalid_arg);
+    NAPI_RETURN_EARLY_IF_FALSE(env, length == NAPI_AUTO_LENGTH || length <= INT_MAX, napi_invalid_arg);
 
     Zig::GlobalObject* globalObject = toJS(env);
     JSC::VM& vm = JSC::getVM(globalObject);
@@ -1908,15 +1861,48 @@ extern "C" napi_status napi_define_class(napi_env env,
     if (len == NAPI_AUTO_LENGTH) {
         len = strlen(utf8name);
     }
-    auto name = WTF::String::fromUTF8(std::span { utf8name, len }).isolatedCopy();
-    NapiClass* napiClass = NapiClass::create(vm, env, name, constructor, data, property_count, properties);
-    JSValue value = JSValue(napiClass);
-    JSC::EnsureStillAliveScope ensureStillAlive1(value);
-    if (data != nullptr) {
-        napiClass->dataPtr() = data;
+    auto name = WTF::String::fromUTF8ReplacingInvalidSequences(std::span { reinterpret_cast<const char8_t*>(utf8name), len });
+    struct PrototypeProperty {
+        Identifier name;
+        const napi_property_descriptor* descriptor;
+    };
+    Vector<PrototypeProperty, 8> prototypeProperties;
+    UncheckedKeyHashMap<RefPtr<UniquedStringImpl>, size_t, IdentifierRepHash> prototypeIndexes;
+    for (const auto& property : std::span { properties, property_count }) {
+        if (property.attributes & napi_static)
+            continue;
+        auto key = propertyName(env, property);
+        NAPI_RETURN_IF_EXCEPTION(env);
+        NAPI_RETURN_EARLY_IF_FALSE(env, key, key.error());
+        auto entry = prototypeIndexes.add(key->impl(), prototypeProperties.size());
+        if (entry.isNewEntry)
+            prototypeProperties.append({ WTF::move(*key), &property });
+        else if (property.getter || property.setter) {
+            // Class accessor declarations replace both sides, including an absent getter or setter.
+            prototypeProperties[entry.iterator->value].descriptor = &property;
+        }
     }
 
-    *result = toNapi(value, globalObject);
+    auto* prototype = NapiPrototype::create(vm, globalObject->NapiPrototypeStructure());
+    for (const auto& property : prototypeProperties) {
+        auto status = defineProperty(env, prototype, property.name, *property.descriptor);
+        NAPI_RETURN_IF_EXCEPTION(env);
+        NAPI_RETURN_EARLY_IF_FALSE(env, status == napi_ok, status);
+    }
+    auto* napiClass = NapiClass::create(vm, env, name, constructor, data, prototype);
+    for (const auto& property : std::span { properties, property_count }) {
+        if (!(property.attributes & napi_static))
+            continue;
+        auto key = propertyName(env, property);
+        NAPI_RETURN_IF_EXCEPTION(env);
+        NAPI_RETURN_EARLY_IF_FALSE(env, key, key.error());
+        auto status = defineProperty(env, napiClass, *key, property);
+        NAPI_RETURN_IF_EXCEPTION(env);
+        NAPI_RETURN_EARLY_IF_FALSE(env, status == napi_ok, status);
+    }
+
+    NAPI_RETURN_IF_EXCEPTION(env);
+    *result = toNapi(napiClass, globalObject);
     NAPI_RETURN_SUCCESS(env);
 }
 
