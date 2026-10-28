@@ -348,36 +348,17 @@ pub fn LinearFifo(
             return &self.buf[index];
         }
 
-        /// Remove one item at `offset` and MOVE all items after it up one.
+        /// Remove the item at `offset`, preserving the order of the remaining items.
         pub fn orderedRemoveItem(self: *Self, offset: usize) void {
+            assert(offset < self.count);
             if (offset == 0) return self.discard(1);
 
-            assert(offset < self.count);
-
-            if (self.buf.len - self.head >= self.count) {
-                // If it doesnt overflow past the end, there is one copy to be done
-                const rest = self.buf[self.head + offset ..];
-                bun.copy(T, rest[0 .. rest.len - 1], rest[1..]);
-            } else {
-                var index = self.head + offset;
-                if (powers_of_two) {
-                    index &= self.buf.len - 1;
-                } else {
-                    index %= self.buf.len;
-                }
-                if (index < self.head) {
-                    // If the item to remove is before the head, one slice is moved.
-                    const rest = self.buf[index .. self.count - self.head];
-                    bun.copy(T, rest[0 .. rest.len - 1], rest[1..]);
-                } else {
-                    // The items before and after the head have to be shifted
-                    const wrap = self.buf[0];
-                    const right = self.buf[index..];
-                    bun.copy(T, right[0 .. right.len - 1], right[1..]);
-                    self.buf[self.buf.len - 1] = wrap;
-                    const left = self.buf[0 .. self.head - self.count];
-                    bun.copy(T, left[0 .. left.len - 1], left[1..]);
-                }
+            const first = self.readableSliceMut(offset);
+            const second = self.readableSliceMut(offset + first.len);
+            @memmove(first[0 .. first.len - 1], first[1..]);
+            if (second.len > 0) {
+                first[first.len - 1] = second[0];
+                @memmove(second[0 .. second.len - 1], second[1..]);
             }
             self.count -= 1;
         }
