@@ -139,14 +139,12 @@ private:
     std::optional<JSC::SuspendExceptionScope> m_suspendException;
 };
 
-#define NAPI_PREAMBLE(_env)                                                              \
-    NAPI_CHECK_ENV(_env);                                                                \
-    NAPI_CHECK_ENV_NOT_IN_GC(_env);                                                      \
+#define NAPI_PREAMBLE(_env)                                                           \
+    NAPI_CHECK_ENV_NOT_IN_GC(_env);                                                   \
     NapiCallScope napi_preamble_scope__(_env, NapiCallScope::Exceptions::RejectPending); \
     NAPI_RETURN_IF_EXCEPTION(_env)
 
 #define NAPI_PREAMBLE_UNGATED(_env) \
-    NAPI_CHECK_ENV(_env);           \
     NAPI_CHECK_ENV_NOT_IN_GC(_env); \
     NapiCallScope napi_preamble_scope__(_env, NapiCallScope::Exceptions::PreservePending)
 
@@ -166,8 +164,9 @@ private:
 
 // Assert that the environment is not performing garbage collection
 #define NAPI_CHECK_ENV_NOT_IN_GC(_env) \
-    do {                               \
-        (_env)->checkGC();             \
+    do {                             \
+        NAPI_CHECK_ENV(_env);        \
+        (_env)->checkGC();           \
     } while (0)
 
 // Return the specified code if condition is false. Only use for input validation.
@@ -448,7 +447,6 @@ extern "C" napi_status napi_set_element(napi_env env, napi_value object_,
 
     JSValue object = toJS(object_);
     JSValue value = toJS(value_);
-    NAPI_RETURN_EARLY_IF_FALSE(env, !object.isEmpty() && !value.isEmpty(), napi_invalid_arg);
 
     auto globalObject = toJS(env);
     JSObject* jsObject = object.getObject();
@@ -466,7 +464,6 @@ extern "C" napi_status napi_has_element(napi_env env, napi_value object_,
     NAPI_CHECK_ARG(env, result);
 
     JSValue object = toJS(object_);
-    NAPI_RETURN_EARLY_IF_FALSE(env, !object.isEmpty(), napi_invalid_arg);
 
     JSObject* jsObject = object.getObject();
     NAPI_RETURN_EARLY_IF_FALSE(env, jsObject, napi_array_expected);
@@ -1254,6 +1251,7 @@ extern "C" napi_status napi_detach_arraybuffer(napi_env env,
     napi_value arraybuffer)
 {
     NAPI_PREAMBLE_UNGATED(env);
+    NAPI_CHECK_ARG(env, arraybuffer);
     Zig::GlobalObject* globalObject = toJS(env);
     JSC::VM& vm = JSC::getVM(globalObject);
 
@@ -1312,12 +1310,8 @@ extern "C" napi_status napi_is_exception_pending(napi_env env, bool* result)
 extern "C" napi_status napi_get_and_clear_last_exception(napi_env env,
     napi_value* result)
 {
-    NAPI_CHECK_ENV(env);
     NAPI_CHECK_ENV_NOT_IN_GC(env);
-
-    if (!result) [[unlikely]] {
-        return napi_set_last_error(env, napi_invalid_arg);
-    }
+    NAPI_CHECK_ARG(env, result);
 
     auto globalObject = toJS(env);
     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(JSC::getVM(globalObject));
@@ -1515,6 +1509,7 @@ extern "C" JS_EXPORT napi_status node_api_create_buffer_from_arraybuffer(napi_en
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
+    NAPI_CHECK_ARG(env, arraybuffer);
     NAPI_CHECK_ARG(env, result);
 
     JSC::JSArrayBuffer* jsArrayBuffer = dynamicDowncast<JSC::JSArrayBuffer>(toJS(arraybuffer));
@@ -2515,10 +2510,6 @@ extern "C" napi_status napi_typeof(napi_env env, napi_value val,
     NAPI_CHECK_ARG(env, result);
 
     JSValue value = toJS(val);
-    if (value.isEmpty()) {
-        *result = napi_object;
-        return napi_clear_last_error(env);
-    }
 
     if (value.isCell()) {
         JSCell* cell = value.asCell();
@@ -2859,6 +2850,7 @@ extern "C" napi_status napi_new_instance(napi_env env, napi_value constructor,
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
+    NAPI_CHECK_ARG(env, constructor);
     NAPI_CHECK_ARG(env, result);
     NAPI_RETURN_EARLY_IF_FALSE(env, argc == 0 || argv, napi_invalid_arg);
     JSValue constructorValue = toJS(constructor);
@@ -2884,7 +2876,10 @@ extern "C" napi_status napi_new_instance(napi_env env, napi_value constructor,
 extern "C" napi_status napi_instanceof(napi_env env, napi_value object, napi_value constructor, bool* result)
 {
     NAPI_PREAMBLE(env);
+    NAPI_CHECK_ARG(env, object);
     NAPI_CHECK_ARG(env, result);
+    *result = false;
+    NAPI_CHECK_ARG(env, constructor);
 
     Zig::GlobalObject* globalObject = toJS(env);
 
@@ -2899,9 +2894,7 @@ extern "C" napi_status napi_instanceof(napi_env env, napi_value object, napi_val
         return napi_set_last_error(env, napi_pending_exception);
     }
 
-    if (!constructorObject->structure()->typeInfo().implementsHasInstance()) [[unlikely]] {
-        *result = false;
-    } else {
+    if (constructorObject->structure()->typeInfo().implementsHasInstance()) {
         bool hasInstance = constructorObject->hasInstance(globalObject, objectValue);
         NAPI_RETURN_IF_EXCEPTION(env);
         *result = hasInstance;
@@ -2938,12 +2931,7 @@ extern "C" napi_status napi_call_function(napi_env env, napi_value recv,
         gcSafeMemcpy<JSValue>(buffer, reinterpret_cast<const JSValue*>(argv), sizeof(JSValue) * argc);
     });
 
-    JSValue thisValue = toJS(recv);
-    if (thisValue.isEmpty()) {
-        thisValue = JSC::jsUndefined();
-    }
-
-    JSValue res = AsyncContextFrame::call(globalObject, funcValue, thisValue, args);
+    JSValue res = AsyncContextFrame::call(globalObject, funcValue, toJS(recv), args);
 
     if (result) {
         if (res.isEmpty()) {
