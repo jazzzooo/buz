@@ -1,6 +1,6 @@
 import { deserialize, serialize } from "bun:jsc";
 import { describe, expect, test } from "bun:test";
-import { bunEnv, bunExe, isASAN, isWindows } from "harness";
+import { bunEnv, bunExe, isASAN, isWindows, rss } from "harness";
 import v8 from "node:v8";
 
 describe("structuredClone with Blob and File", () => {
@@ -744,7 +744,7 @@ describe("structuredClone with Blob and File", () => {
         afterContentType + 2, // store_tag + bytes_len partially read
         afterBytes, // bytes + Store allocated, stored_name len read fails
         afterStoredName, // heap *Blob allocated, is_jsdom_file read fails
-        full.length - 1, // File name read fails (last byte missing)
+        full.length - 1, // v3 File name read fails (last byte missing)
       ];
       const payloads = cuts.map(n => full.slice(0, n));
       // All of these must hit the error path; if one accidentally succeeds
@@ -767,10 +767,10 @@ describe("structuredClone with Blob and File", () => {
       // with it the window is flat modulo a few MiB of noise.
       for (let i = 0; i < 1000; i++) attempt();
       Bun.gc(true);
-      const rssBefore = process.memoryUsage.rss();
+      const rssBefore = rss();
       for (let i = 0; i < 1500; i++) attempt();
       Bun.gc(true);
-      const rssAfter = process.memoryUsage.rss();
+      const rssAfter = rss();
 
       const deltaMiB = (rssAfter - rssBefore) / 1024 / 1024;
       // ASAN's quarantine retains freed allocations (default 256 MB) so the

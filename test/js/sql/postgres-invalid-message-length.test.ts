@@ -21,14 +21,14 @@ import { listeningServer, pgAuthenticationOk, pgCString, pgRaw, pgReadyForQuery 
 // One mock server for the file; each test sets `current` before connecting and
 // the accept handler latches it per connection. A per-test server flaked on
 // Windows CI with ERR_POSTGRES_CONNECTION_REFUSED (loopback SYN not retransmitted).
-let current!: { atStartup: Buffer[]; atQuery?: Buffer[] };
+let current!: { atStartup: Buffer[]; atQuery?: Buffer[]; authenticationOk?: boolean };
 const { port, server } = await listeningServer(socket => {
-  const { atStartup, atQuery } = current;
+  const { atStartup, atQuery, authenticationOk } = current;
   let startup = true;
   socket.on("data", data => {
     if (startup) {
       startup = false;
-      socket.write(Buffer.concat([pgAuthenticationOk(), ...atStartup]));
+      socket.write(Buffer.concat([...(authenticationOk === false ? [] : [pgAuthenticationOk()]), ...atStartup]));
       return;
     }
     if (atQuery && data[0] === 0x51 /* 'Q' */) socket.write(Buffer.concat(atQuery));
@@ -73,12 +73,12 @@ async function queryError(frames: Buffer[]): Promise<any> {
   }
 }
 
-// Each entry drives a backend-message decoder with a length field that is
-// smaller than the message requires or negative. All of them must fail the
-// connection with the same protocol error.
+// Each entry drives a backend-message decoder with a length field that cannot
+// be valid: below the 4 bytes the field itself occupies, or negative (the
+// field is a signed Int32). All of them must fail the connection with the
+// same protocol error.
 const malformed: { name: string; frame: Buffer }[] = [
   // ReadyForQuery is Byte1('Z') Int32(5) Byte1(status); only the length lies.
-  { name: "ReadyForQuery declaring length 4", frame: pgRaw("Z", Buffer.from("I"), 4) },
   { name: "ReadyForQuery declaring length 3", frame: pgRaw("Z", Buffer.from("I"), 3) },
   { name: "ReadyForQuery declaring length 0", frame: pgRaw("Z", Buffer.from("I"), 0) },
   // writeInt32BE(-1) puts 0xFFFFFFFF on the wire, the signed high half.
@@ -108,6 +108,26 @@ test("postgres: CommandComplete declaring length 3 fails the in-flight query", a
     code: "ERR_POSTGRES_INVALID_MESSAGE_LENGTH",
     name: "PostgresError",
   });
+});
+
+test("postgres: ReadyForQuery before AuthenticationOk rejects the connection instead of marking it ready", async () => {
+  current = { atStartup: [pgReadyForQuery()], authenticationOk: false };
+  const db = new SQL({ url: `postgres://postgres@127.0.0.1:${port}/postgres`, max: 1, connectionTimeout: 1 });
+  try {
+    let err: any;
+    try {
+      await db.connect();
+      throw new Error("expected connect() to reject");
+    } catch (e) {
+      err = e;
+    }
+    expect({ code: err.code, name: err.name }).toEqual({
+      code: "ERR_POSTGRES_UNEXPECTED_MESSAGE",
+      name: "PostgresError",
+    });
+  } finally {
+    await db.close({ timeout: 0 });
+  }
 });
 
 // Boundary: a length of exactly 4 is a complete frame with an empty payload.

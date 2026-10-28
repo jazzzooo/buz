@@ -2,9 +2,14 @@ import { pathToFileURL } from "bun";
 import { describe, expect, test } from "bun:test";
 import { bunEnv, bunExe, isWindows } from "harness";
 
-// On Windows, UNC paths map the first segment to the URL host, which can fail
-// URL validation. On POSIX, these inputs resolve to paths under cwd with an
-// empty host, so construction succeeds.
+// On Windows, UNC paths map the first segment to the URL host. When that
+// segment is not a valid URL host (e.g. `\\?\C:\foo` → host `%3F`, or
+// `\\@\share` → host `@`), DOMURL::create throws and toJSNewlyCreated returns
+// an empty JSValue. Without an exception check, the subsequent
+// jsCast<JSDOMURL*>(...)->wrapped() dereferences null and crashes.
+//
+// On POSIX, fileURLWithFileSystemPath always produces an empty host so
+// construction never fails; these inputs just resolve to paths under cwd.
 describe("Bun.pathToFileURL with inputs that fail URL construction", () => {
   const inputs = [
     "\\\\?\\C:\\Windows\\System32", // Windows extended-length path prefix

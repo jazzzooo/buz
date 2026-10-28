@@ -13,6 +13,7 @@ export type ServiceName =
   | "mysql_plain"
   | "mysql_native_password"
   | "mysql_tls"
+  | "mariadb_plain"
   | "redis_plain"
   | "redis_unified"
   | "minio"
@@ -50,6 +51,7 @@ const serviceMeta: Record<ServiceName, { ports: number[]; tls?: ServiceInfo["tls
   },
   mysql_plain: { ports: [3306] },
   mysql_native_password: { ports: [3306] },
+  mariadb_plain: { ports: [3306] },
   mysql_tls: {
     ports: [3306],
     tls: {
@@ -217,8 +219,9 @@ class DockerComposeHelper {
   }
 
   private async doUp(service: ServiceName): Promise<void> {
-    // Pre-build the service so build time does not consume the health-check
-    // timeout below. This is a no-op for image-only services.
+    // Pre-build the service (a no-op for image-only services) so build time
+    // doesn't eat into the `up --wait` timeout below. CI pre-bakes everything
+    // via buildServices(); this covers local dev where that wasn't run.
     const buildResult = await this.exec(["build", service]);
     if (buildResult.exitCode !== 0) {
       throw new Error(`Failed to build service ${service}: ${buildResult.stderr}`);
@@ -312,7 +315,7 @@ class DockerComposeHelper {
     }
 
     return new Promise((resolve, reject) => {
-      const socket = new net.Socket();
+      const socket = net.connect(socketPath);
       let buffer = "";
       let replied = false;
       socket.setEncoding("utf8");
@@ -338,16 +341,11 @@ class DockerComposeHelper {
         }
       });
       socket.on("error", () => {
-        if (replied) return;
-        replied = true;
-        resolve(null);
+        if (!replied) resolve(null);
       });
       socket.on("close", () => {
-        if (replied) return;
-        replied = true;
-        resolve(null);
+        if (!replied) resolve(null);
       });
-      socket.connect(socketPath);
     });
   }
 
@@ -499,6 +497,40 @@ class DockerComposeHelper {
 
     throw new Error(`TCP connection to ${host}:${port} timed out`);
   }
+
+  /**
+   * Pull all Docker images explicitly - useful for CI
+   */
+  async pullImages(): Promise<void> {
+    console.log("Pulling Docker images...");
+    const { exitCode, stderr } = await this.exec(["pull", "--ignore-pull-failures"]);
+
+    if (exitCode !== 0) {
+      // Don't fail on pull errors since some services need building
+      console.warn(`Warning during image pull: ${stderr}`);
+    }
+  }
+
+  /**
+   * Build all services that need building - useful for CI
+   */
+  async buildServices(): Promise<void> {
+    // Bare `compose build` builds every service that has a `build:` section,
+    // so there's no hardcoded list to keep in sync as services are converted.
+    console.log("Building all services with a build section...");
+    const { exitCode, stderr } = await this.exec(["build"]);
+    if (exitCode !== 0) {
+      throw new Error(`Failed to build services: ${stderr}`);
+    }
+  }
+
+  /**
+   * Prepare all images (pull and build) - useful for CI
+   */
+  async prepareImages(): Promise<void> {
+    await this.pullImages();
+    await this.buildServices();
+  }
 }
 
 // Global instance
@@ -534,6 +566,18 @@ export async function down(): Promise<void> {
 
 export async function waitTcp(host: string, port: number, timeout?: number): Promise<void> {
   return getHelper().waitTcp(host, port, timeout);
+}
+
+export async function pullImages(): Promise<void> {
+  return getHelper().pullImages();
+}
+
+export async function buildServices(): Promise<void> {
+  return getHelper().buildServices();
+}
+
+export async function prepareImages(): Promise<void> {
+  return getHelper().prepareImages();
 }
 
 // Higher-level wrappers for tests

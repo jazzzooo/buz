@@ -1,6 +1,6 @@
 // Regression guard for the TCPSocket/TLSSocket wrapper retention model.
 //
-// TCPSocket/TLSSocket hold their generated wrapper reference strongly while the
+// TCPSocket/TLSSocket hold their JS wrapper via jsc.JSRef: strong while the
 // socket is active so callbacks can always recover the wrapper, weak once the
 // socket is closed so GC can reclaim it. This test exercises both directions.
 
@@ -9,9 +9,13 @@ import { expect, test } from "bun:test";
 import { bunEnv, bunExe, isWindows, tls as tlsCert } from "harness";
 
 test("socket.data setter works inside connectError", async () => {
-  // handleConnectError must downgrade the wrapper reference rather than erase
-  // it before invoking the callback. The data setter resolves that wrapper, so
-  // the assignment remains valid and the data round-trips.
+  // Before the JSRef migration, handleConnectError reset the cached raw
+  // JSValue to .zero *before* invoking the connectError callback. The
+  // `socket.data = x` setter then called `dataSetCached(.zero, ...)` —
+  // a null JSCell — which segfaulted (release) / tripped UBSan (debug).
+  // With JSRef the wrapper is downgraded (not zeroed) and setData resolves
+  // the wrapper via getThisValue(), so the assignment works and the data
+  // round-trips.
   //
   // Run in a subprocess so a crash is observed as a non-zero exit instead
   // of taking down the test runner.
@@ -252,9 +256,9 @@ test("tls.connect over a Duplex roots the origin and listener thunks through the
 });
 
 test("node:net reconnect after connectError does not accumulate wrappers", async () => {
-  // node:net reuses the same native socket across reconnects.
-  // handleConnectError downgrades the wrapper reference, so subsequent
-  // getThisValue() calls return the same
+  // node:net reuses the same native socket across reconnects. With JSRef,
+  // handleConnectError downgrades the wrapper (instead of clearing the raw
+  // JSValue cache), so subsequent getThisValue() calls return the same
   // wrapper rather than creating orphaned duplicates that each call
   // finalize() on GC.
   await using proc = Bun.spawn({

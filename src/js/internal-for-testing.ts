@@ -698,10 +698,6 @@ export const timerInternals = {
 export const decodeURIComponentSIMD = $bindgenFn("bindgen_test.schema.zig", "decodeURIComponentSIMD");
 
 export const getDevServerDeinitCount = $bindgenFn("DevServer.schema.zig", "getDeinitCountForTesting");
-export const fileWatcherStartWithUnavailableIo: () => string = $bindgenFn(
-  "InternalTesting.schema.zig",
-  "fileWatcherStartWithUnavailableIo",
-);
 export const getCounters = $bindgenFn("InternalTesting.schema.zig", "createCountersObject");
 export const hasNonReifiedStatic = $bindgenFn("bindgen_test.schema.zig", "hasNonReifiedStatic");
 

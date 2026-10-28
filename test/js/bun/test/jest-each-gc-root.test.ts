@@ -1,6 +1,10 @@
-// The array passed to test.each / describe.each must stay rooted between
-// creating ScopeFunctions and registering the callback. Collecting it in that
-// gap would leave callAsFunction iterating freed storage.
+// test.each(arr) / describe.each(arr) create a ScopeFunctions whose Zig struct
+// stores `arr` as a raw jsc.JSValue. The codegen for `values: ["each"]` in
+// jest.classes.ts emits a C++ `m_each` WriteBarrier that visitChildren walks,
+// but the Zig side never called `eachSetCached` to populate it — so the only
+// reference to `arr` lived in unmanaged memory the GC never scans. If GC ran
+// between `.each(arr)` and the trailing `("name", cb)` call, the array could
+// be collected and `callAsFunction` would iterate a freed cell.
 //
 // useZombieMode scribbles 0xbadbeef0 over swept cells so the dangling access
 // manifests as a hard crash / wrong-type error instead of a heisenbug.

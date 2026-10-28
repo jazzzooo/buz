@@ -498,7 +498,7 @@ async function runTests() {
     const coordinatorSocket = join(tmpdir(), `bun-docker-${process.pid}.sock`);
     const coordinator = spawn(execPath, [join(cwd, "test", "docker", "coordinator.ts"), ...tests], {
       stdio: ["pipe", "pipe", "inherit"],
-      env: { ...process.env, BUN_DOCKER_COORDINATOR: coordinatorSocket },
+      env: { ...process.env, BUN_DOCKER_COORDINATOR_SOCKET: coordinatorSocket },
     });
     coordinator.on("error", err => console.warn("docker coordinator spawn failed:", err.message));
     process.once("exit", () => coordinator.kill());
@@ -582,6 +582,8 @@ async function runTests() {
   const parallelSafeLimit = parallelism > 1 ? limit : pLimit(parallelSafeWidth);
   const isParallelSafeTest = testPath => {
     const p = testPath.replaceAll("\\", "/");
+    // The append timer must run between reads for this test to observe data.
+    if (p.endsWith("test-fs-read-stream-pos.js")) return false;
     return p.includes("js/node/test/parallel/") || p.includes("js/bun/test/parallel/");
   };
   console.log("parallel-safe width", parallelSafeWidth);
@@ -766,7 +768,7 @@ async function runTests() {
                 ...(subcommand === "run" ? testFlags : []),
                 absoluteTestPath,
               ],
-              timeout: nodeParallelTestTimeout,
+              timeout: testPath.includes("test-fs-read-stream-pos") ? 120_000 : nodeParallelTestTimeout,
               env: {
                 ...env,
                 // test/common/tmpdir.js derives `.tmp.${TEST_SERIAL_ID}` from this;

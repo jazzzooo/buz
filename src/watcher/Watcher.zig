@@ -765,26 +765,6 @@ pub fn onMaybeWatchDirectory(watch: *Watcher, file_path: string, dir_fd: bun.FD)
     }
 }
 
-pub const TestingAPIs = struct {
-    pub fn startWithUnavailableIo(
-        _: bun.bindgen.CallContext(StartWithUnavailableIoSchema),
-        _: bun.bindgen.Args(StartWithUnavailableIoSchema),
-    ) bun.JSError!bun.bindgen.DOMString {
-        var threaded = std.Io.Threaded.init_single_threaded;
-        var watcher: Watcher = undefined;
-        watcher.io = threaded.io();
-        watcher.task = null;
-        watcher.running = .init(false);
-
-        watcher.start() catch |err| {
-            bun.assert(watcher.task == null);
-            bun.assert(!watcher.running.load(.acquire));
-            return bun.bindgen.DOMString.fromUTF8(@errorName(err));
-        };
-        @panic("single-threaded Io unexpectedly provided concurrency");
-    }
-};
-
 const string = []const u8;
 
 const WatcherTrace = @import("./WatcherTrace.zig");
@@ -798,11 +778,3 @@ const Environment = bun.Environment;
 const FeatureFlags = bun.FeatureFlags;
 const Output = bun.Output;
 const strings = bun.strings;
-
-const InternalTestingBindings = bun.bindgen.Module("InternalTesting");
-const StartWithUnavailableIoSchema = InternalTestingBindings.function("fileWatcherStartWithUnavailableIo");
-const StartWithUnavailableIoBinding = bun.bindgen.Fn(StartWithUnavailableIoSchema, TestingAPIs.startWithUnavailableIo);
-
-comptime {
-    _ = StartWithUnavailableIoBinding;
-}

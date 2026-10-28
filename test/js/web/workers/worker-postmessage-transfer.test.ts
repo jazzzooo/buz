@@ -1,6 +1,6 @@
 // Worker-side self.postMessage(message, transfer) overload resolution.
 //
-// self.postMessage() must accept both postMessage(msg, [transferable]) and
+// jsFunctionPostMessage() must accept both postMessage(msg, [transferable]) and
 // postMessage(msg, { transfer: [transferable] }) just like the parent-side
 // Worker#postMessage / MessagePort#postMessage do. Previously the array form
 // was treated as an options object whose .transfer is undefined, so buffers

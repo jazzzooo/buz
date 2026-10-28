@@ -3,7 +3,7 @@ import { bunEnv, bunExe } from "harness";
 
 // `computeHasPendingActivity` used to return `true` whenever `ipc_data` was
 // non-null. Nothing ever set `ipc_data` back to `null`, so every
-// `Bun.spawn({ ipc })` subprocess kept its wrapper reference strong for the
+// `Bun.spawn({ ipc })` subprocess kept its JSRef in Strong mode for the
 // lifetime of the VM — even after the child exited, the IPC socket closed,
 // and `handleIPCClose` ran. That pinned the JSSubprocess plus its captured
 // stdout/stderr buffers until process exit.
@@ -71,7 +71,7 @@ test("Subprocess with ipc is collectable after the child exits", async () => {
   expect(stderrLines).toBe("");
   const { collected, iters } = JSON.parse(stdout.trim());
   // The regression is bimodal: without the fix, zero wrappers are collected
-  // (`ipc_data != null` keeps every wrapper reference strong forever); with the fix,
+  // (`ipc_data != null` keeps every JSRef Strong forever); with the fix,
   // all-but-at-most-one are. The very last `proc` can remain conservatively
   // rooted via the final async frame on some platforms (observed on Windows
   // and with `Bun.sleep(0)` on POSIX), so tolerate N-1.

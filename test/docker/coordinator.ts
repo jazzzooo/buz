@@ -8,13 +8,14 @@
  * each process shell out to compose (and retrying on conflicts), exactly one
  * process does: scripts/runner.node.mjs spawns this coordinator once per
  * shard, with the shard's test paths on argv and a unix socket path in
- * BUN_DOCKER_COORDINATOR. ensure() in test/docker/index.ts connects to
+ * BUN_DOCKER_COORDINATOR_SOCKET. ensure() in test/docker/index.ts connects to
  * that socket, sends the service name, and waits for the ready message with
  * the port mapping; the in-flight map below collapses concurrent requests for
  * one service onto a single `compose up --wait`.
  *
- * The path→service map below predicts which services argv's tests need and
- * starts them at launch, so they're healthy by the time the first test asks.
+ * This also subsumes the old warmup-ci.ts: the path→service map below
+ * predicts which services argv's tests need and starts them at launch, so
+ * they're healthy by the time the first test asks.
  *
  * Lifetime is tied to the runner: stdin is a pipe from it, and EOF means the
  * runner is gone.
@@ -32,14 +33,15 @@ import { prestartMap as prestartMapRaw } from "./prestart-map.mjs";
 // it to schedule docker-backed test files last within the shard.
 const prestartMap = prestartMapRaw as Record<string, readonly ServiceName[]>;
 
-const socketPath = process.env.BUN_DOCKER_COORDINATOR;
+const socketPath = process.env.BUN_DOCKER_COORDINATOR_SOCKET;
 if (!socketPath) {
-  console.error("coordinator: BUN_DOCKER_COORDINATOR is not set");
+  console.error("coordinator: BUN_DOCKER_COORDINATOR_SOCKET is not set");
   process.exit(1);
 }
 
-// This process owns Compose, while test processes may only request services
-// through its socket.
+// This process IS the coordinator: its ensure() must run compose directly,
+// never proxy to another coordinator whose socket leaked in through the
+// environment.
 delete process.env.BUN_DOCKER_COORDINATOR;
 
 // Collapse concurrent requests for one service onto a single ensureServiceNow(),
@@ -49,9 +51,11 @@ delete process.env.BUN_DOCKER_COORDINATOR;
 // wall time of every container-backed test file in the shard. A settled result
 // is still never trusted blindly: each new request re-validates the cached
 // mapping with one TCP connect per published port and falls back to the full
-// ensure() when any probe fails. A container that dies mid-run tears down its
-// docker-proxy port bindings, so the next request restarts it instead of
-// receiving stale connection details.
+// ensure() when any probe fails. That preserves the self-healing every test
+// file's own ensure() provided before the coordinator existed — a container
+// that died mid-run (host OOM kill, server crash) tears down its docker-proxy
+// port bindings, so the probe fails and the next request restarts it — without
+// handing out dead ports after a mid-run container crash.
 const inflight = new Map<ServiceName, Promise<ServiceInfo>>();
 const lastGood = new Map<ServiceName, ServiceInfo>();
 

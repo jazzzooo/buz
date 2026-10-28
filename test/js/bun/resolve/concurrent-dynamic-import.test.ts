@@ -5,7 +5,7 @@ import { bunEnv, bunExe, tempDir } from "harness";
 // transpile/fetch settles must both resolve. Under the new C++ module loader
 // each call gets its own embedder fetch promise (the registry entry is created
 // only after the first fetch settles), so the loser of that race must still be
-// resolved by the async-module fulfillment binding rather than left pending forever.
+// resolved by Bun__onFulfillAsyncModule rather than left pending forever.
 test("concurrent dynamic imports of the same module both resolve", async () => {
   using dir = tempDir("concurrent-dyn-import", {
     "shared.ts": `export const heavy = "H";`,

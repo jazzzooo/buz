@@ -659,11 +659,6 @@ const functions = .{
         b.size,
         .{ .backend = .zig, .length = 1, .profile = .exact },
     ),
-    b.function("fileWatcherStartWithUnavailableIo", .{}, b.dom_string, .{
-        .backend = .zig,
-        .length = 0,
-        .profile = .exact,
-    }),
 };
 
 pub const schema = b.module("InternalTesting", functions);

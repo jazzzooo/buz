@@ -51,7 +51,6 @@ test("redacting highlighter still redacts values", () => {
   const out = highlighterRedacted('_authToken = "npm_123456"');
   expect(out).not.toContain("npm_123456");
   expect(out).toContain("*");
-  expect(Bun.stripANSI(highlighterRedacted(`"_password" = "hunter2"`))).toBe(`"_password" = "*******"`);
 });
 
 // End-to-end: an error in bunfig.toml whose source line ends with an

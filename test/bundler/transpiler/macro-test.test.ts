@@ -134,7 +134,7 @@ test("ireturnapromise", async () => {
 });
 
 // A numeric key >= 100000 (JSC's MIN_SPARSE_ARRAY_INDEX) makes the property put inside
-// JSC__JSObject__putDirectToPropertyKey takes a path that can throw, so the binding must check for
+// JSC__JSValue__putToPropertyKey take a path that can throw, so the binding must check for
 // an exception. BUN_JSC_validateExceptionChecks=1 aborts the child if the check is missing.
 test("object argument with a sparse numeric key", async () => {
   using dir = tempDir("macro-sparse-key", {
@@ -157,6 +157,29 @@ test("object argument with a sparse numeric key", async () => {
     exitCode: 0,
     signalCode: null,
   });
+});
+
+test("object destructuring of a macro result keeps every bound property regardless of key order or repeated keys", async () => {
+  using dir = tempDir("macro-destructure-object", {
+    "m.ts": `export function m() {\n  return { a: 1, c: 2 };\n}\n`,
+    "index.ts": [
+      `import { m } from "./m.ts" with { type: "macro" };`,
+      `const { c, a } = m();`,
+      `const { a: x, a: y, c: z } = m();`,
+      `console.log(JSON.stringify([c, a, x, y, z]));`,
+      ``,
+    ].join("\n"),
+  });
+  await using proc = Bun.spawn({
+    cmd: [bunExe(), "run", "index.ts"],
+    env: bunEnv,
+    cwd: String(dir),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+  expect({ lastLine: stdout.trim().split("\n").pop(), stderr }).toEqual({ lastLine: "[2,1,1,1,2]", stderr: "" });
+  expect(exitCode).toBe(0);
 });
 
 describe("--no-macros", () => {
