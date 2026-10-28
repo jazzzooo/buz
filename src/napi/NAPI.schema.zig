@@ -30,13 +30,18 @@ const unsafe_array_buffer_view = b.dictionaryWithOptions("NAPIUnsafeArrayBufferV
 }, .{ .cpp_name = "NAPIUnsafeArrayBufferView" });
 
 const engine_shims = .{
-    b.engineShim("createArray", .{b.argument("length", b.size, .{})}, b.js_array, .current_realm_throwing),
     b.engineShim("arrayBufferViewUnsafe", .{b.argument("value", b.engine_value, .{})}, b.optional(unsafe_array_buffer_view), .current_realm_unchecked),
     b.engineShim(
         "napiEnvGlobalObject",
         .{b.argument("env", napi_env, .{})},
         engine_types.global_object,
         .vm_thread_nonthrowing,
+    ),
+    b.engineShim(
+        "napiEnvCheckException",
+        .{b.argument("env", napi_env, .{})},
+        b.boolean,
+        .current_realm_unchecked,
     ),
     b.engineShim(
         "napiEnvGetAndClearPendingException",

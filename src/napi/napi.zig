@@ -42,6 +42,15 @@ pub const NapiEnv = opaque {
         napi_internal_check_gc(self);
     }
 
+    fn hasException(self: *NapiEnv) bool {
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(self.toJS());
+        defer scope.deinit();
+        return scope.engine(NapiBindings.engineShim("napiEnvCheckException")).call(.{
+            .env = @as(NapiEnvHandle, @ptrCast(self)),
+        });
+    }
+
     pub fn reportAndClearPendingException(self: *NapiEnv) bool {
         var scope: bun.bindgen.FocusedEngineScope = undefined;
         scope.init(self.toJS());
@@ -341,47 +350,8 @@ pub export fn napi_get_boolean(env_: napi_env, value: bool, result_: ?*napi_valu
     result.set(env, JSValue.jsBoolean(value));
     return env.ok();
 }
-pub export fn napi_create_array(env_: napi_env, result_: ?*napi_value) napi_status {
-    log("napi_create_array", .{});
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    env.checkGC();
-    const result = result_ orelse {
-        return env.invalidArg();
-    };
-    const global = env.toJS();
-    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
-    engine_scope.init(global);
-    defer engine_scope.deinit();
-    const array = engine_scope.engine(NapiCreateArraySchema).call(.{ .length = 0 }) catch return env.setLastError(.pending_exception);
-    result.setResult(env, array.asAny(&engine_scope));
-    return env.ok();
-}
-pub export fn napi_create_array_with_length(env_: napi_env, length: usize, result_: ?*napi_value) napi_status {
-    log("napi_create_array_with_length", .{});
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    env.checkGC();
-    const result = result_ orelse {
-        return env.invalidArg();
-    };
-
-    // https://github.com/nodejs/node/blob/14c68e3b536798e25f810ed7ae180a5cde9e47d3/deps/v8/src/api/api.cc#L8163-L8174
-    // size_t immediately cast to int as argument to Array::New, then min 0
-    const len_i64: i64 = @bitCast(length);
-    const len_i32: i32 = @truncate(len_i64);
-    const len: u32 = if (len_i32 > 0) @bitCast(len_i32) else 0;
-
-    const global = env.toJS();
-    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
-    engine_scope.init(global);
-    defer engine_scope.deinit();
-    const array_result = engine_scope.engine(NapiCreateArraySchema).call(.{ .length = len }) catch return env.setLastError(.pending_exception);
-    result.setResult(env, array_result.asAny(&engine_scope));
-    return env.ok();
-}
+pub extern fn napi_create_array(env_: napi_env, result_: ?*napi_value) napi_status;
+pub extern fn napi_create_array_with_length(env_: napi_env, length: usize, result_: ?*napi_value) napi_status;
 pub extern fn napi_create_double(_: napi_env, value: f64, result: *napi_value) napi_status;
 pub export fn napi_create_int32(env_: napi_env, value: i32, result_: ?*napi_value) napi_status {
     log("napi_create_int32", .{});
@@ -419,117 +389,9 @@ pub export fn napi_create_int64(env_: napi_env, value: i64, result_: ?*napi_valu
     result.set(env, JSValue.jsNumber(value));
     return env.ok();
 }
-pub export fn napi_create_string_latin1(env_: napi_env, str: ?[*]const u8, length: usize, result_: ?*napi_value) napi_status {
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    const result: *napi_value = result_ orelse {
-        return env.invalidArg();
-    };
-
-    const slice: []const u8 = brk: {
-        if (str) |ptr| {
-            if (NAPI_AUTO_LENGTH == length) {
-                break :brk std.mem.sliceTo(@as([*:0]const u8, @ptrCast(ptr)), 0);
-            } else if (length > std.math.maxInt(i32)) {
-                return env.invalidArg();
-            } else {
-                break :brk ptr[0..length];
-            }
-        }
-
-        if (length == 0) {
-            break :brk &.{};
-        } else {
-            return env.invalidArg();
-        }
-    };
-
-    log("napi_create_string_latin1: {s}", .{slice});
-
-    return setNapiString(env, result, bun.bindgen.DOMString.fromLatin1(slice));
-}
-pub export fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, result_: ?*napi_value) napi_status {
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    const result: *napi_value = result_ orelse {
-        return env.invalidArg();
-    };
-
-    const slice: []const u8 = brk: {
-        if (str) |ptr| {
-            if (NAPI_AUTO_LENGTH == length) {
-                break :brk std.mem.sliceTo(@as([*:0]const u8, @ptrCast(ptr)), 0);
-            } else if (length > std.math.maxInt(i32)) {
-                return env.invalidArg();
-            } else {
-                break :brk ptr[0..length];
-            }
-        }
-
-        if (length == 0) {
-            break :brk &.{};
-        } else {
-            return env.invalidArg();
-        }
-    };
-
-    log("napi_create_string_utf8: {s}", .{slice});
-
-    return setNapiString(env, result, bun.bindgen.DOMString.fromUTF8(slice));
-}
-pub export fn napi_create_string_utf16(env_: napi_env, str: ?[*]const char16_t, length: usize, result_: ?*napi_value) napi_status {
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    const result: *napi_value = result_ orelse {
-        return env.invalidArg();
-    };
-
-    const slice: []const u16 = brk: {
-        if (str) |ptr| {
-            if (NAPI_AUTO_LENGTH == length) {
-                break :brk std.mem.sliceTo(@as([*:0]const u16, @ptrCast(ptr)), 0);
-            } else if (length > std.math.maxInt(i32)) {
-                return env.invalidArg();
-            } else {
-                break :brk ptr[0..length];
-            }
-        }
-
-        if (length == 0) {
-            break :brk &.{};
-        } else {
-            return env.invalidArg();
-        }
-    };
-
-    if (comptime bun.Environment.allow_assert)
-        log("napi_create_string_utf16: {d} {f}", .{ slice.len, bun.fmt.FormatUTF16{ .buf = slice[0..@min(slice.len, 512)] } });
-
-    return setNapiString(env, result, bun.bindgen.DOMString.fromUTF16(slice));
-}
-
-fn setNapiString(env: *NapiEnv, result: *napi_value, converted: bun.OOM!bun.bindgen.DOMString) napi_status {
-    const global = env.toJS();
-    var string = converted catch |err| {
-        bun.bindgen.voidFromJSError(err, global);
-        return env.setLastError(.pending_exception);
-    };
-    defer string.deinit();
-    var scope: bun.bindgen.FocusedEngineScope = undefined;
-    scope.init(global);
-    defer scope.deinit();
-    const value = scope.engineIn("js_strings", "stringToJS").call(.{
-        .value = string.operand(),
-    }) catch |err| {
-        bun.bindgen.voidFromJSError(err, global);
-        return env.setLastError(.pending_exception);
-    };
-    result.setResult(env, value.asAny(&scope));
-    return env.ok();
-}
+pub extern fn napi_create_string_latin1(env_: napi_env, str: ?[*]const u8, length: usize, result_: ?*napi_value) napi_status;
+pub extern fn napi_create_string_utf8(env_: napi_env, str: ?[*]const u8, length: usize, result_: ?*napi_value) napi_status;
+pub extern fn napi_create_string_utf16(env_: napi_env, str: ?[*]const char16_t, length: usize, result_: ?*napi_value) napi_status;
 
 pub extern fn napi_create_symbol(env: napi_env, description: napi_value, result: *napi_value) napi_status;
 pub extern fn napi_create_error(env: napi_env, code: napi_value, msg: napi_value, result: *napi_value) napi_status;
@@ -562,6 +424,7 @@ pub export fn napi_get_prototype(env_: napi_env, object_: napi_value, result_: ?
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     const result = result_ orelse {
         return env.invalidArg();
     };
@@ -614,6 +477,7 @@ pub export fn napi_get_array_length(env_: napi_env, value_: napi_value, result_:
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     const result = result_ orelse {
         return env.invalidArg();
     };
@@ -635,6 +499,7 @@ pub export fn napi_strict_equals(env_: napi_env, lhs_: napi_value, rhs_: napi_va
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     const result = result_ orelse {
         return env.invalidArg();
     };
@@ -724,6 +589,7 @@ pub export fn napi_make_callback(env_: napi_env, _: *anyopaque, recv_: napi_valu
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     const recv, const func = .{ recv_.get(), func_.get() };
     if (func.isEmptyOrUndefinedOrNull()) return env.setLastError(.function_expected);
     const global = env.toJS();
@@ -1059,6 +925,7 @@ pub export fn napi_create_promise(env_: napi_env, deferred_: ?*napi_deferred, pr
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     const deferred = deferred_ orelse {
         return env.invalidArg();
     };
@@ -1092,6 +959,7 @@ pub export fn napi_resolve_deferred(env_: napi_env, deferred: napi_deferred, res
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     defer bun.default_allocator.destroy(deferred);
     defer deferred.deinit();
     const resolution = resolution_.get();
@@ -1113,6 +981,7 @@ pub export fn napi_reject_deferred(env_: napi_env, deferred: napi_deferred, reje
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     defer bun.default_allocator.destroy(deferred);
     defer deferred.deinit();
     const rejection = rejection_.get();
@@ -1158,6 +1027,7 @@ pub export fn napi_create_date(env_: napi_env, time: f64, result_: ?*napi_value)
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     const result = result_ orelse {
         return env.invalidArg();
     };
@@ -1380,6 +1250,7 @@ pub export fn napi_create_buffer_copy(env_: napi_env, length: usize, data: [*]u8
     const env = env_ orelse {
         return envIsNull();
     };
+    if (env.hasException()) return env.setLastError(.pending_exception);
     const result = result_ orelse {
         return env.invalidArg();
     };
@@ -2767,5 +2638,4 @@ const NapiHandleScopeAppendSchema = NapiBindings.engineShim("napiHandleScopeAppe
 const NapiHandleScopeEscapeSchema = NapiBindings.engineShim("napiHandleScopeEscape");
 const NapiHandleScopeHandle = bun.bindgen.EngineArgumentType(NapiHandleScopeEscapeSchema, "scope");
 const NapiBindings = bun.bindgen.Module("NAPI");
-const NapiCreateArraySchema = NapiBindings.engineShim("createArray");
 const NapiArrayBufferViewUnsafeSchema = NapiBindings.engineShim("arrayBufferViewUnsafe");

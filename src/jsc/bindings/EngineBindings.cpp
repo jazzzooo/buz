@@ -1231,14 +1231,6 @@ JSC::JSValue bunBindgenEngine_array_buffers_createUninitializedUint8Array(
         args.length);
 }
 
-JSC::JSValue bunBindgenEngine_NAPI_createArray(
-    EngineCallContext& context,
-    const BunBindgenEngine_NAPI_createArray_Arguments& args)
-{
-    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
-    RELEASE_AND_RETURN(scope, JSC::constructEmptyArray(&context.globalObject, nullptr, args.length));
-}
-
 JSC::JSValue bunBindgenEngine_UpgradedDuplex_createHandlerArray(
     EngineCallContext& context,
     const BunBindgenEngine_UpgradedDuplex_createHandlerArray_Arguments& args)

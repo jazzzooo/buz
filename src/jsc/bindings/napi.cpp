@@ -46,6 +46,8 @@
 #include <JavaScriptCore/ErrorInstance.h>
 #include <JavaScriptCore/Exception.h>
 #include <JavaScriptCore/ExceptionScope.h>
+#include <JavaScriptCore/DeferTermination.h>
+#include <JavaScriptCore/FrameTracers.h>
 #include <JavaScriptCore/FunctionConstructor.h>
 #include <JavaScriptCore/Heap.h>
 #include <JavaScriptCore/IdentifierInlines.h>
@@ -79,28 +81,79 @@
 #include <JavaScriptCore/BuiltinNames.h>
 #include <wtf/TZoneMallocInlines.h>
 #include "AsyncContextFrame.h"
+#include "StringConversion.h"
 
 using namespace JSC;
 using namespace Zig;
 
-// Every NAPI function should use this at the start. It does the following:
-// - if NAPI_VERBOSE is 1, log that the function was called
-// - if env is nullptr, return napi_invalid_arg
-// - if there is a pending exception, return napi_pending_exception
-// No do..while is used as this declares a variable that other macros need to use
-#define NAPI_PREAMBLE(_env)                                             \
-    NAPI_LOG_CURRENT_FUNCTION;                                          \
-    NAPI_CHECK_ARG(_env, _env);                                         \
-    /* If you need to throw or clear exceptions, use a local scope. */   \
-    auto napi_preamble_scope__ = DECLARE_TOP_EXCEPTION_SCOPE(_env->vm()); \
-    NAPI_RETURN_IF_VM_EXCEPTION(_env)
+class NapiCallScope {
+    WTF_MAKE_NONCOPYABLE(NapiCallScope);
 
-// Use when inspecting an existing exception or delegating boundary checks to a helper.
-// Status-returning addon entry points must not leave an outermost ThrowScope for native callers.
-#define NAPI_PREAMBLE_NO_THROW_SCOPE(_env) \
-    do {                                   \
-        NAPI_LOG_CURRENT_FUNCTION;         \
-        NAPI_CHECK_ARG(_env, _env);        \
+public:
+    enum class Exceptions { RejectPending,
+        PreservePending };
+
+    NapiCallScope(napi_env env, Exceptions exceptions)
+        : m_env(env)
+        , m_exceptions(exceptions)
+        , m_scope(DECLARE_TOP_EXCEPTION_SCOPE(env->vm()))
+    {
+        if (exceptions == Exceptions::PreservePending) {
+            // Native-only operations must finish even while JS execution is being terminated.
+            // Leave the request armed for the next JS entry or return to the VM.
+            m_deferTermination.emplace(env->vm());
+            m_suspendException.emplace(env->vm());
+        }
+    }
+
+    ~NapiCallScope()
+    {
+        if (m_suspendException) {
+            auto* exception = m_scope.exception();
+            m_suspendException.reset();
+            // A new failure, such as OOM, takes precedence over the suspended exception.
+            if (exception) {
+                m_env->clearPendingException();
+                auto scope = DECLARE_THROW_SCOPE(m_env->vm());
+                JSC::throwException(m_env->globalObject(), scope, exception);
+            }
+            (void)m_scope.exception();
+        }
+    }
+
+    bool hasException()
+    {
+        if (m_exceptions == Exceptions::RejectPending && m_env->hasPendingException())
+            return true;
+        m_env->vm().hasExceptionsAfterHandlingTraps();
+        return m_scope.exception();
+    }
+
+    void assertNoException() { m_scope.assertNoException(); }
+
+private:
+    napi_env m_env;
+    Exceptions m_exceptions;
+    JSC::TopExceptionScope m_scope;
+    std::optional<JSC::DeferTerminationForAWhile> m_deferTermination;
+    std::optional<JSC::SuspendExceptionScope> m_suspendException;
+};
+
+#define NAPI_PREAMBLE(_env)                                                              \
+    NAPI_CHECK_ENV(_env);                                                                \
+    NAPI_CHECK_ENV_NOT_IN_GC(_env);                                                      \
+    NapiCallScope napi_preamble_scope__(_env, NapiCallScope::Exceptions::RejectPending); \
+    NAPI_RETURN_IF_EXCEPTION(_env)
+
+#define NAPI_PREAMBLE_UNGATED(_env) \
+    NAPI_CHECK_ENV(_env);           \
+    NAPI_CHECK_ENV_NOT_IN_GC(_env); \
+    NapiCallScope napi_preamble_scope__(_env, NapiCallScope::Exceptions::PreservePending)
+
+#define NAPI_CHECK_ENV(_env)        \
+    do {                            \
+        NAPI_LOG_CURRENT_FUNCTION;  \
+        NAPI_CHECK_ARG(_env, _env); \
     } while (0)
 
 // Return an error code if arg is null. Only use for input validation.
@@ -125,18 +178,11 @@ using namespace Zig;
         }                                                 \
     } while (0)
 
-// Return an error code if an exception was thrown after NAPI_PREAMBLE
-#define NAPI_RETURN_IF_VM_EXCEPTION(_env) RETURN_IF_EXCEPTION(napi_preamble_scope__, napi_set_last_error((_env), napi_pending_exception))
-
-#define NAPI_RETURN_IF_EXCEPTION_WITH_SCOPE(_env, _scope)                                   \
-    do {                                                                                    \
-        RETURN_IF_EXCEPTION((_scope), napi_set_last_error((_env), napi_pending_exception)); \
-        if ((_env)->hasPendingException()) {                                                \
-            return napi_set_last_error((_env), napi_pending_exception);                     \
-        }                                                                                   \
+#define NAPI_RETURN_IF_EXCEPTION(_env)                                  \
+    do {                                                                \
+        if (napi_preamble_scope__.hasException())                       \
+            return napi_set_last_error((_env), napi_pending_exception); \
     } while (0)
-
-#define NAPI_RETURN_IF_EXCEPTION(_env) NAPI_RETURN_IF_EXCEPTION_WITH_SCOPE((_env), napi_preamble_scope__)
 
 // Return indicating that no error occurred in a NAPI function, and an exception is not expected
 #define NAPI_RETURN_SUCCESS(_env)                        \
@@ -591,7 +637,6 @@ extern "C" napi_status napi_create_arraybuffer(napi_env env,
 
 {
     NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
     NAPI_CHECK_ARG(env, result);
 
     Zig::GlobalObject* globalObject = toJS(env);
@@ -614,7 +659,7 @@ extern "C" napi_status napi_create_arraybuffer(napi_env env,
 
 extern "C" napi_status napi_is_buffer(napi_env env, napi_value value, bool* result)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, value);
     NAPI_CHECK_ARG(env, result);
 
@@ -627,7 +672,7 @@ extern "C" napi_status napi_is_buffer(napi_env env, napi_value value, bool* resu
 
 extern "C" napi_status napi_is_typedarray(napi_env env, napi_value value, bool* result)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, value);
     NAPI_CHECK_ARG(env, result);
 
@@ -922,7 +967,6 @@ extern "C" napi_status napi_create_function(napi_env env, const char* utf8name,
     void* data, napi_value* result)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, cb);
 
@@ -951,14 +995,14 @@ extern "C" napi_status napi_get_cb_info(
     napi_value* this_arg, // [out] Receives the JS 'this' arg for the call
     void** data) // [out] Receives the data pointer for the callback
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
     NAPI_CHECK_ARG(env, cbinfo);
 
     auto* callFrame = reinterpret_cast<NAPICallFrame*>(cbinfo);
     Zig::GlobalObject* globalObject = toJS(env);
 
     callFrame->extract(argc, argv, this_arg, data, globalObject);
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" napi_status
@@ -966,7 +1010,6 @@ napi_define_properties(napi_env env, napi_value object, size_t property_count,
     const napi_property_descriptor* properties)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, object);
     NAPI_RETURN_EARLY_IF_FALSE(env, properties || property_count == 0, napi_invalid_arg);
 
@@ -1024,10 +1067,9 @@ static napi_status throwErrorWithCStrings(napi_env env, const char* code_utf8, c
 // never calls toString, never throws
 static napi_status createErrorWithNapiValues(napi_env env, napi_value code, napi_value message, JSC::ErrorType type, napi_value* result)
 {
+    NAPI_PREAMBLE_UNGATED(env);
     auto* globalObject = toJS(env);
     auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
-    RETURN_IF_EXCEPTION(scope, napi_pending_exception);
 
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, message);
@@ -1038,22 +1080,21 @@ static napi_status createErrorWithNapiValues(napi_env env, napi_value code, napi
         napi_string_expected);
 
     auto wtf_code = js_code.isEmpty() ? WTF::String() : js_code.getString(globalObject);
-    RETURN_IF_EXCEPTION(scope, napi_set_last_error(env, napi_pending_exception));
+    NAPI_RETURN_IF_EXCEPTION(env);
     auto wtf_message = js_message.getString(globalObject);
-    RETURN_IF_EXCEPTION(scope, napi_set_last_error(env, napi_pending_exception));
+    NAPI_RETURN_IF_EXCEPTION(env);
 
     *result = toNapi(
         createErrorWithCode(vm, globalObject, wtf_code, wtf_message, type),
         globalObject);
-    RETURN_IF_EXCEPTION(scope, napi_set_last_error(env, napi_pending_exception));
-    return napi_set_last_error(env, napi_ok);
+    NAPI_RETURN_SUCCESS_UNLESS_EXCEPTION(env);
 }
 
 extern "C" napi_status napi_throw_error(napi_env env,
     const char* code,
     const char* msg)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
+    NAPI_PREAMBLE(env);
     return throwErrorWithCStrings(env, code, msg, JSC::ErrorType::Error);
 }
 
@@ -1061,8 +1102,7 @@ extern "C" napi_status napi_create_reference(napi_env env, napi_value value,
     uint32_t initial_refcount,
     napi_ref* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, value);
 
@@ -1099,8 +1139,7 @@ extern "C" napi_status napi_add_finalizer(napi_env env, napi_value js_object,
     void* finalize_hint,
     napi_ref* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, js_object);
     NAPI_CHECK_ARG(env, finalize_cb);
     Zig::GlobalObject* globalObject = toJS(env);
@@ -1133,17 +1172,16 @@ extern "C" JS_EXPORT napi_status node_api_post_finalizer(napi_env env,
     void* finalize_data,
     void* finalize_hint)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
     NAPI_CHECK_ARG(env, finalize_cb);
     napi_internal_enqueue_finalizer(env, finalize_cb, finalize_data, finalize_hint);
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" napi_status napi_reference_unref(napi_env env, napi_ref ref,
     uint32_t* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, ref);
 
     NapiRef* napiRef = toJS(ref);
@@ -1165,8 +1203,7 @@ extern "C" napi_status napi_reference_unref(napi_env env, napi_ref ref,
 extern "C" napi_status napi_get_reference_value(napi_env env, napi_ref ref,
     napi_value* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, ref);
     NAPI_CHECK_ARG(env, result);
     NapiRef* napiRef = toJS(ref);
@@ -1178,8 +1215,7 @@ extern "C" napi_status napi_get_reference_value(napi_env env, napi_ref ref,
 extern "C" napi_status napi_reference_ref(napi_env env, napi_ref ref,
     uint32_t* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, ref);
     NapiRef* napiRef = toJS(ref);
     napiRef->ref();
@@ -1191,8 +1227,7 @@ extern "C" napi_status napi_reference_ref(napi_env env, napi_ref ref,
 
 extern "C" napi_status napi_delete_reference(napi_env env, napi_ref ref)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, ref);
     NapiRef* napiRef = toJS(ref);
     delete napiRef;
@@ -1203,8 +1238,7 @@ extern "C" napi_status napi_is_detached_arraybuffer(napi_env env,
     napi_value arraybuffer,
     bool* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, arraybuffer);
     NAPI_CHECK_ARG(env, result);
 
@@ -1219,8 +1253,7 @@ extern "C" napi_status napi_is_detached_arraybuffer(napi_env env,
 extern "C" napi_status napi_detach_arraybuffer(napi_env env,
     napi_value arraybuffer)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     Zig::GlobalObject* globalObject = toJS(env);
     JSC::VM& vm = JSC::getVM(globalObject);
 
@@ -1239,7 +1272,7 @@ extern "C" napi_status napi_adjust_external_memory(napi_env env,
     int64_t change_in_bytes,
     int64_t* adjusted_value)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
     NAPI_CHECK_ARG(env, adjusted_value);
 
     JSC::Heap& heap = toJS(env)->vm().heap;
@@ -1248,7 +1281,7 @@ extern "C" napi_status napi_adjust_external_memory(napi_env env,
         heap.deprecatedReportExtraMemory(change_in_bytes);
     }
     *adjusted_value = heap.extraMemorySize();
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" napi_status napi_is_exception_pending(napi_env env, bool* result)
@@ -1279,7 +1312,7 @@ extern "C" napi_status napi_is_exception_pending(napi_env env, bool* result)
 extern "C" napi_status napi_get_and_clear_last_exception(napi_env env,
     napi_value* result)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
+    NAPI_CHECK_ENV(env);
     NAPI_CHECK_ENV_NOT_IN_GC(env);
 
     if (!result) [[unlikely]] {
@@ -1319,8 +1352,6 @@ extern "C" napi_status napi_fatal_exception(napi_env env,
 extern "C" napi_status napi_throw(napi_env env, napi_value error)
 {
     NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     if (env->isFinishingFinalizers()) {
         return napi_set_last_error(env, env->napiModule().nm_version >= 10 ? napi_cannot_run_js : napi_pending_exception);
     }
@@ -1333,8 +1364,7 @@ extern "C" napi_status node_api_symbol_for(napi_env env,
     const char* utf8description,
     size_t length, napi_value* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
 
     auto* globalObject = toJS(env);
@@ -1359,8 +1389,6 @@ extern "C" napi_status node_api_create_syntax_error(napi_env env,
     napi_value msg,
     napi_value* result)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
     return createErrorWithNapiValues(env, code, msg, JSC::ErrorType::SyntaxError, result);
 }
 
@@ -1368,14 +1396,14 @@ extern "C" napi_status node_api_throw_syntax_error(napi_env env,
     const char* code,
     const char* msg)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
+    NAPI_PREAMBLE(env);
     return throwErrorWithCStrings(env, code, msg, JSC::ErrorType::SyntaxError);
 }
 
 extern "C" napi_status napi_throw_type_error(napi_env env, const char* code,
     const char* msg)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
+    NAPI_PREAMBLE(env);
     return throwErrorWithCStrings(env, code, msg, JSC::ErrorType::TypeError);
 }
 
@@ -1383,8 +1411,6 @@ extern "C" napi_status napi_create_type_error(napi_env env, napi_value code,
     napi_value msg,
     napi_value* result)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
     return createErrorWithNapiValues(env, code, msg, JSC::ErrorType::TypeError, result);
 }
 
@@ -1398,7 +1424,7 @@ node_api_create_external_string_latin1(napi_env env,
     bool* copied)
 {
     // https://nodejs.org/api/n-api.html#node_api_create_external_string_latin1
-    NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, str);
     NAPI_CHECK_ARG(env, result);
 
@@ -1433,7 +1459,7 @@ node_api_create_external_string_utf16(napi_env env,
     bool* copied)
 {
     // https://nodejs.org/api/n-api.html#node_api_create_external_string_utf16
-    NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, str);
     NAPI_CHECK_ARG(env, result);
 
@@ -1489,7 +1515,6 @@ extern "C" JS_EXPORT napi_status node_api_create_buffer_from_arraybuffer(napi_en
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, result);
 
     JSC::JSArrayBuffer* jsArrayBuffer = dynamicDowncast<JSC::JSArrayBuffer>(toJS(arraybuffer));
@@ -1519,24 +1544,22 @@ extern "C" JS_EXPORT napi_status node_api_create_buffer_from_arraybuffer(napi_en
 extern "C" JS_EXPORT napi_status node_api_get_module_file_name(napi_env env,
     const char** result)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
     NAPI_CHECK_ARG(env, result);
     *result = env->filename;
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" napi_status napi_create_error(napi_env env, napi_value code,
     napi_value msg,
     napi_value* result)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
     return createErrorWithNapiValues(env, code, msg, JSC::ErrorType::Error, result);
 }
 extern "C" napi_status napi_throw_range_error(napi_env env, const char* code,
     const char* msg)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
+    NAPI_PREAMBLE(env);
     return throwErrorWithCStrings(env, code, msg, JSC::ErrorType::RangeError);
 }
 
@@ -1573,8 +1596,7 @@ extern "C" napi_status napi_object_seal(napi_env env, napi_value object_value)
 
 extern "C" napi_status napi_get_global(napi_env env, napi_value* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     Zig::GlobalObject* globalObject = toJS(env);
     // TODO change to global? or find another way to avoid JSGlobalProxy
@@ -1586,8 +1608,6 @@ extern "C" napi_status napi_create_range_error(napi_env env, napi_value code,
     napi_value msg,
     napi_value* result)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
     return createErrorWithNapiValues(env, code, msg, JSC::ErrorType::RangeError, result);
 }
 
@@ -1595,8 +1615,7 @@ extern "C" napi_status napi_get_new_target(napi_env env,
     napi_callback_info cbinfo,
     napi_value* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     // handle:
     // - if they call this function when it was originally a getter/setter call
     // - if they call this function without a result
@@ -1615,7 +1634,6 @@ extern "C" napi_status napi_create_dataview(napi_env env, size_t length,
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     Zig::GlobalObject* globalObject = toJS(env);
     NAPI_CHECK_ARG(env, arraybuffer);
     NAPI_CHECK_ARG(env, result);
@@ -1822,7 +1840,6 @@ extern "C" napi_status napi_get_all_property_names(
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, objectNapi);
     auto* globalObject = toJS(env);
@@ -1848,7 +1865,6 @@ extern "C" napi_status napi_define_class(napi_env env,
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, utf8name);
     NAPI_CHECK_ARG(env, constructor);
@@ -2048,13 +2064,6 @@ extern "C" napi_status napi_create_external_buffer(napi_env env, size_t length,
 {
     NAPI_PREAMBLE(env);
     NAPI_CHECK_ARG(env, result);
-    // Match Node.js: reject while a napi exception is pending before
-    // adopting data. NAPI_RETURN_IF_EXCEPTION below also consults
-    // hasPendingException(), so without this early return a stashed
-    // napi_throw* exception would pass the preamble, let createFromBytes
-    // adopt data, then bail after JSUint8Array::create succeeded but
-    // before arm(), orphaning a GC cell with a disarmed destructor.
-    NAPI_RETURN_EARLY_IF_FALSE(env, !env->hasPendingException(), napi_pending_exception);
 
     Zig::GlobalObject* globalObject = toJS(env);
     JSC::VM& vm = JSC::getVM(globalObject);
@@ -2100,11 +2109,6 @@ extern "C" napi_status napi_create_external_arraybuffer(napi_env env, void* exte
 {
     NAPI_PREAMBLE(env);
     NAPI_CHECK_ARG(env, result);
-    // Match Node.js: reject while a napi exception is pending before
-    // adopting external_data, so the caller cleanly retains ownership.
-    // Checking after JSArrayBuffer::create would orphan a GC cell that
-    // still points at external_data with a disarmed destructor.
-    NAPI_RETURN_EARLY_IF_FALSE(env, !env->hasPendingException(), napi_pending_exception);
 
     Zig::GlobalObject* globalObject = toJS(env);
     JSC::VM& vm = JSC::getVM(globalObject);
@@ -2135,8 +2139,7 @@ extern "C" napi_status napi_create_external_arraybuffer(napi_env env, void* exte
 extern "C" napi_status napi_create_double(napi_env env, double value,
     napi_value* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     *result = toNapi(jsNumber(value), toJS(env));
     NAPI_RETURN_SUCCESS(env);
@@ -2145,8 +2148,7 @@ extern "C" napi_status napi_create_double(napi_env env, double value,
 extern "C" napi_status napi_get_value_double(napi_env env, napi_value value,
     double* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, value);
     JSValue jsValue = toJS(value);
@@ -2158,8 +2160,7 @@ extern "C" napi_status napi_get_value_double(napi_env env, napi_value value,
 
 extern "C" napi_status napi_get_value_int32(napi_env env, napi_value value, int32_t* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, value);
     JSValue jsValue = toJS(value);
@@ -2171,8 +2172,7 @@ extern "C" napi_status napi_get_value_int32(napi_env env, napi_value value, int3
 
 extern "C" napi_status napi_get_value_uint32(napi_env env, napi_value value, uint32_t* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, value);
     JSValue jsValue = toJS(value);
@@ -2184,8 +2184,7 @@ extern "C" napi_status napi_get_value_uint32(napi_env env, napi_value value, uin
 
 extern "C" napi_status napi_get_value_int64(napi_env env, napi_value value, int64_t* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, value);
     JSValue jsValue = toJS(value);
@@ -2216,18 +2215,73 @@ enum class NapiStringEncoding : uint8_t {
     latin1,
 };
 
-template<NapiStringEncoding...>
-struct BufferElement {
-    using Type = char;
-};
+template<NapiStringEncoding encoding>
+using NapiStringCharacter = std::conditional_t<encoding == NapiStringEncoding::utf16, char16_t, char>;
 
-template<>
-struct BufferElement<NapiStringEncoding::utf16> {
-    using Type = char16_t;
-};
+template<typename Output, typename Input>
+static WTF::String copyNapiString(std::span<const Input> input)
+{
+    if (input.size() > Bun::stringSyntheticAllocationLimit())
+        return {};
+    std::span<Output> output;
+    auto impl = WTF::StringImpl::tryCreateUninitialized(input.size(), output);
+    if (!impl)
+        return {};
+    std::copy(input.begin(), input.end(), output.begin());
+    return WTF::String(WTF::move(impl));
+}
+
+template<NapiStringEncoding encoding>
+static napi_status createString(napi_env env, const NapiStringCharacter<encoding>* str, size_t length, napi_value* result)
+{
+    NAPI_PREAMBLE_UNGATED(env);
+    NAPI_CHECK_ARG(env, result);
+    NAPI_RETURN_EARLY_IF_FALSE(env, str || length == 0, napi_invalid_arg);
+    if (length == NAPI_AUTO_LENGTH)
+        length = std::char_traits<NapiStringCharacter<encoding>>::length(str);
+    NAPI_RETURN_EARLY_IF_FALSE(env, length <= INT_MAX, napi_invalid_arg);
+
+    WTF::String string;
+    if (!length)
+        string = emptyString();
+    else if constexpr (encoding == NapiStringEncoding::utf16) {
+        auto input = std::span { str, length };
+        string = WTF::charactersAreAllLatin1(input) ? copyNapiString<Latin1Character>(input) : copyNapiString<char16_t>(input);
+    } else if constexpr (encoding == NapiStringEncoding::latin1)
+        string = copyNapiString<Latin1Character>(std::span { reinterpret_cast<const Latin1Character*>(str), length });
+    else {
+        auto decoded = Bun::decodeUTF8ReplacingInvalidSequences(std::span { reinterpret_cast<const uint8_t*>(str), length });
+        if (decoded)
+            string = WTF::move(*decoded);
+    }
+
+    auto* globalObject = toJS(env);
+    if (string.isNull()) [[unlikely]] {
+        auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+        JSC::throwOutOfMemoryError(globalObject, scope);
+        return napi_set_last_error(env, napi_pending_exception);
+    }
+    *result = toNapi(JSC::jsString(globalObject->vm(), WTF::move(string)), globalObject);
+    NAPI_RETURN_SUCCESS(env);
+}
+
+extern "C" napi_status napi_create_string_utf8(napi_env env, const char* str, size_t length, napi_value* result)
+{
+    return createString<NapiStringEncoding::utf8>(env, str, length, result);
+}
+
+extern "C" napi_status napi_create_string_latin1(napi_env env, const char* str, size_t length, napi_value* result)
+{
+    return createString<NapiStringEncoding::latin1>(env, str, length, result);
+}
+
+extern "C" napi_status napi_create_string_utf16(napi_env env, const char16_t* str, size_t length, napi_value* result)
+{
+    return createString<NapiStringEncoding::utf16>(env, str, length, result);
+}
 
 template<NapiStringEncoding EncodeTo>
-napi_status napi_get_value_string_any_encoding(napi_env env, napi_value napiValue, typename BufferElement<EncodeTo>::Type* buf, size_t bufsize, size_t* writtenPtr)
+napi_status napi_get_value_string_any_encoding(napi_env env, napi_value napiValue, NapiStringCharacter<EncodeTo>* buf, size_t bufsize, size_t* writtenPtr)
 {
     constexpr auto encoding = [] {
         if constexpr (EncodeTo == NapiStringEncoding::utf8)
@@ -2239,16 +2293,16 @@ napi_status napi_get_value_string_any_encoding(napi_env env, napi_value napiValu
             return Bun::Bindgen::BufferEncoding::latin1;
         }
     }();
-    NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, napiValue);
     JSValue jsValue = toJS(napiValue);
     NAPI_RETURN_EARLY_IF_FALSE(env, jsValue.isString(), napi_string_expected);
 
     Zig::GlobalObject* globalObject = toJS(env);
     JSString* jsString = jsValue.toString(globalObject);
-    NAPI_RETURN_IF_VM_EXCEPTION(env);
+    NAPI_RETURN_IF_EXCEPTION(env);
     const auto view = jsString->view(globalObject);
-    NAPI_RETURN_IF_VM_EXCEPTION(env);
+    NAPI_RETURN_IF_EXCEPTION(env);
 
     if (buf == nullptr) {
         // they just want to know the length
@@ -2345,32 +2399,22 @@ extern "C" napi_status napi_get_value_string_utf8(napi_env env,
     size_t bufsize,
     size_t* writtenPtr)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
-    // this function does set_last_error
     return napi_get_value_string_any_encoding<NapiStringEncoding::utf8>(env, napiValue, buf, bufsize, writtenPtr);
 }
 
 extern "C" napi_status napi_get_value_string_latin1(napi_env env, napi_value napiValue, char* buf, size_t bufsize, size_t* writtenPtr)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
-    // this function does set_last_error
     return napi_get_value_string_any_encoding<NapiStringEncoding::latin1>(env, napiValue, buf, bufsize, writtenPtr);
 }
 
 extern "C" napi_status napi_get_value_string_utf16(napi_env env, napi_value napiValue, char16_t* buf, size_t bufsize, size_t* writtenPtr)
 {
-    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
-    // this function does set_last_error
     return napi_get_value_string_any_encoding<NapiStringEncoding::utf16>(env, napiValue, buf, bufsize, writtenPtr);
 }
 
 extern "C" napi_status napi_get_value_bool(napi_env env, napi_value value, bool* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, value);
     NAPI_CHECK_ARG(env, result);
     JSValue jsValue = toJS(value);
@@ -2412,10 +2456,26 @@ extern "C" napi_status napi_delete_element(napi_env env, napi_value objectValue,
     NAPI_RETURN_SUCCESS_UNLESS_EXCEPTION(env);
 }
 
+extern "C" napi_status napi_create_array_with_length(napi_env env, size_t length, napi_value* result)
+{
+    NAPI_PREAMBLE_UNGATED(env);
+    NAPI_CHECK_ARG(env, result);
+    auto* globalObject = toJS(env);
+    // Node passes the size through V8's signed int length and clamps negative values to zero.
+    auto* array = JSC::constructEmptyArray(globalObject, nullptr, std::max(0, static_cast<int>(length)));
+    NAPI_RETURN_IF_EXCEPTION(env);
+    *result = toNapi(array, globalObject);
+    NAPI_RETURN_SUCCESS(env);
+}
+
+extern "C" napi_status napi_create_array(napi_env env, napi_value* result)
+{
+    return napi_create_array_with_length(env, 0, result);
+}
+
 extern "C" napi_status napi_create_object(napi_env env, napi_value* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
 
     Zig::GlobalObject* globalObject = toJS(env);
@@ -2551,8 +2611,7 @@ static_assert(std::is_same_v<JSBigInt::Digit, uint64_t>, "All NAPI bigint functi
 
 extern "C" napi_status napi_get_value_bigint_int64(napi_env env, napi_value value, int64_t* result, bool* lossless)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, value);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, lossless);
@@ -2585,8 +2644,7 @@ extern "C" napi_status napi_get_value_bigint_int64(napi_env env, napi_value valu
 
 extern "C" napi_status napi_get_value_bigint_uint64(napi_env env, napi_value value, uint64_t* result, bool* lossless)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, value);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, lossless);
@@ -2612,8 +2670,7 @@ extern "C" napi_status napi_get_value_bigint_words(napi_env env,
     size_t* word_count,
     uint64_t* words)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, value);
     NAPI_CHECK_ARG(env, word_count);
     JSValue jsValue = toJS(value);
@@ -2646,8 +2703,7 @@ extern "C" napi_status napi_get_value_bigint_words(napi_env env,
 extern "C" napi_status napi_get_value_external(napi_env env, napi_value value,
     void** result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, value);
     auto* external = dynamicDowncast<Bun::NapiExternal>(toJS(value));
@@ -2661,18 +2717,17 @@ extern "C" napi_status napi_get_value_external(napi_env env, napi_value value,
 extern "C" napi_status napi_get_instance_data(napi_env env,
     void** data)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
     NAPI_CHECK_ARG(env, data);
 
     *data = env->instanceData;
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" napi_status napi_run_script(napi_env env, napi_value script,
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, script);
     NAPI_CHECK_ARG(env, result);
     JSValue scriptValue = toJS(script);
@@ -2705,17 +2760,17 @@ extern "C" napi_status napi_set_instance_data(napi_env env,
     napi_finalize finalize_cb,
     void* finalize_hint)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
 
     env->instanceData = data;
     env->instanceDataFinalizer = Bun::NapiFinalizer { finalize_cb, finalize_hint };
 
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" napi_status napi_create_bigint_uint64(napi_env env, uint64_t value, napi_value* result)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     auto* globalObject = toJS(env);
     auto* bigint = JSBigInt::createFrom(globalObject, value);
@@ -2727,7 +2782,7 @@ extern "C" napi_status napi_create_bigint_uint64(napi_env env, uint64_t value, n
 
 extern "C" napi_status napi_create_bigint_int64(napi_env env, int64_t value, napi_value* result)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
     auto* globalObject = toJS(env);
     auto* bigint = JSBigInt::createFrom(globalObject, value);
@@ -2744,7 +2799,6 @@ extern "C" napi_status napi_create_bigint_words(napi_env env,
     napi_value* result)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, result);
     NAPI_CHECK_ARG(env, words);
     NAPI_RETURN_EARLY_IF_FALSE(env, word_count <= INT_MAX, napi_invalid_arg);
@@ -2772,8 +2826,7 @@ extern "C" napi_status napi_create_bigint_words(napi_env env,
 extern "C" napi_status napi_create_symbol(napi_env env, napi_value description,
     napi_value* result)
 {
-    NAPI_PREAMBLE(env);
-    NAPI_CHECK_ENV_NOT_IN_GC(env);
+    NAPI_PREAMBLE_UNGATED(env);
     NAPI_CHECK_ARG(env, result);
 
     Zig::GlobalObject* globalObject = toJS(env);
@@ -2831,7 +2884,6 @@ extern "C" napi_status napi_new_instance(napi_env env, napi_value constructor,
 extern "C" napi_status napi_instanceof(napi_env env, napi_value object, napi_value constructor, bool* result)
 {
     NAPI_PREAMBLE(env);
-    NAPI_RETURN_IF_EXCEPTION(env);
     NAPI_CHECK_ARG(env, result);
 
     Zig::GlobalObject* globalObject = toJS(env);
@@ -2863,10 +2915,6 @@ extern "C" napi_status napi_call_function(napi_env env, napi_value recv,
     const napi_value* argv,
     napi_value* result)
 {
-    if (env->throwPendingException()) {
-        return napi_set_last_error(env, napi_pending_exception);
-    }
-
     NAPI_PREAMBLE(env);
     NAPI_CHECK_ARG(env, recv);
     NAPI_RETURN_EARLY_IF_FALSE(env, argc == 0 || argv, napi_invalid_arg);
@@ -2951,32 +2999,32 @@ extern "C" JS_EXPORT napi_status napi_add_env_cleanup_hook(napi_env env,
     void (*function)(void*),
     void* data)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
     if (function) {
         env->addCleanupHook(function, data);
     }
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" JS_EXPORT napi_status napi_add_async_cleanup_hook(napi_env env,
     napi_async_cleanup_hook function,
     void* data, napi_async_cleanup_hook_handle* handle_out)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
     if (function) {
         napi_async_cleanup_hook_handle handle = env->addAsyncCleanupHook(function, data);
         if (handle_out) {
             *handle_out = handle;
         }
     }
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" JS_EXPORT napi_status napi_remove_env_cleanup_hook(napi_env env,
     void (*function)(void*),
     void* data)
 {
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
 
     // Always attempt removal like Node.js (no VM terminating check)
     // Node.js has no such check in RemoveEnvironmentCleanupHook
@@ -2985,7 +3033,7 @@ extern "C" JS_EXPORT napi_status napi_remove_env_cleanup_hook(napi_env env,
         env->removeCleanupHook(function, data);
     }
 
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" JS_EXPORT napi_status napi_remove_async_cleanup_hook(napi_async_cleanup_hook_handle handle)
@@ -2997,13 +3045,13 @@ extern "C" JS_EXPORT napi_status napi_remove_async_cleanup_hook(napi_async_clean
     }
 
     napi_env env = handle->env;
-    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ENV(env);
 
     // Always attempt removal like Node.js (no VM terminating check)
     // Node.js has no such check in napi_remove_async_cleanup_hook
     env->removeAsyncCleanupHook(handle);
 
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" void napi_internal_cleanup_env_cpp(napi_env env)
@@ -3044,6 +3092,16 @@ JSC::JSGlobalObject* bunBindgenEngine_NAPI_napiEnvGlobalObject(
     const BunBindgenEngine_NAPI_napiEnvGlobalObject_Arguments& args)
 {
     return args.env->globalObject();
+}
+
+bool bunBindgenEngine_NAPI_napiEnvCheckException(
+    EngineCallContext& context,
+    const BunBindgenEngine_NAPI_napiEnvCheckException_Arguments& args)
+{
+    RELEASE_ASSERT(args.env->globalObject() == &context.globalObject);
+    args.env->checkGC();
+    NapiCallScope scope(args.env, NapiCallScope::Exceptions::RejectPending);
+    return scope.hasException();
 }
 
 std::optional<JSC::JSValue> bunBindgenEngine_NAPI_napiEnvGetAndClearPendingException(
