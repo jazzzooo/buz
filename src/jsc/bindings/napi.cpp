@@ -659,6 +659,129 @@ extern "C" napi_status napi_create_arraybuffer(napi_env env,
     NAPI_RETURN_SUCCESS(env);
 }
 
+extern "C" napi_status napi_get_arraybuffer_info(napi_env env, napi_value value, void** data, size_t* byte_length)
+{
+    NAPI_PREAMBLE_UNGATED(env);
+    NAPI_CHECK_ARG(env, value);
+    auto* buffer = dynamicDowncast<JSC::JSArrayBuffer>(toJS(value));
+    NAPI_RETURN_EARLY_IF_FALSE(env, buffer && buffer->impl(), napi_invalid_arg);
+
+    if (data)
+        *data = buffer->impl()->data();
+    if (byte_length)
+        *byte_length = buffer->impl()->byteLength();
+    NAPI_RETURN_SUCCESS(env);
+}
+
+static void getArrayBufferViewInfo(Zig::GlobalObject* globalObject, JSC::JSArrayBufferView* view,
+    void** data, napi_value* arraybuffer, size_t* byteOffset)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    EnsureStillAliveScope ensureView(view);
+
+    // Materializing the backing buffer can replace a fast typed array's storage.
+    // Do this before publishing any pointer, even if the addon only asks for data.
+    JSC::ArrayBuffer* backing = nullptr;
+    if (arraybuffer) {
+        auto* buffer = view->possiblySharedJSBuffer(globalObject);
+        RETURN_IF_EXCEPTION(scope, void());
+        backing = buffer->impl();
+        *arraybuffer = toNapi(buffer, globalObject);
+    } else if (data) {
+        backing = view->possiblySharedBuffer();
+        if (!backing) {
+            throwOutOfMemoryError(globalObject, scope);
+            return;
+        }
+    }
+
+    size_t offset = view->byteOffset();
+    if (data) {
+        auto* bytes = static_cast<uint8_t*>(backing->data());
+        *data = bytes ? bytes + offset : nullptr;
+    }
+    if (byteOffset)
+        *byteOffset = offset;
+}
+
+extern "C" napi_status napi_get_buffer_info(napi_env env, napi_value value, void** data, size_t* length)
+{
+    NAPI_PREAMBLE_UNGATED(env);
+    NAPI_CHECK_ARG(env, value);
+    auto* view = dynamicDowncast<JSC::JSArrayBufferView>(toJS(value));
+    NAPI_RETURN_EARLY_IF_FALSE(env, view, napi_invalid_arg);
+
+    getArrayBufferViewInfo(toJS(env), view, data, nullptr, nullptr);
+    NAPI_RETURN_IF_EXCEPTION(env);
+    if (length)
+        *length = view->byteLength();
+    NAPI_RETURN_SUCCESS(env);
+}
+
+static std::optional<napi_typedarray_type> getNapiTypedArrayType(JSC::JSType type)
+{
+    switch (type) {
+    case JSC::Int8ArrayType:
+        return napi_int8_array;
+    case JSC::Uint8ArrayType:
+        return napi_uint8_array;
+    case JSC::Uint8ClampedArrayType:
+        return napi_uint8_clamped_array;
+    case JSC::Int16ArrayType:
+        return napi_int16_array;
+    case JSC::Uint16ArrayType:
+        return napi_uint16_array;
+    case JSC::Int32ArrayType:
+        return napi_int32_array;
+    case JSC::Uint32ArrayType:
+        return napi_uint32_array;
+    case JSC::Float32ArrayType:
+        return napi_float32_array;
+    case JSC::Float64ArrayType:
+        return napi_float64_array;
+    case JSC::BigInt64ArrayType:
+        return napi_bigint64_array;
+    case JSC::BigUint64ArrayType:
+        return napi_biguint64_array;
+    default:
+        return std::nullopt;
+    }
+}
+
+extern "C" napi_status napi_get_typedarray_info(napi_env env, napi_value value, napi_typedarray_type* type,
+    size_t* length, void** data, napi_value* arraybuffer, size_t* byte_offset)
+{
+    NAPI_PREAMBLE_UNGATED(env);
+    NAPI_CHECK_ARG(env, value);
+    auto* view = dynamicDowncast<JSC::JSArrayBufferView>(toJS(value));
+    NAPI_RETURN_EARLY_IF_FALSE(env, view, napi_invalid_arg);
+    auto arrayType = getNapiTypedArrayType(view->type());
+    NAPI_RETURN_EARLY_IF_FALSE(env, arrayType, napi_invalid_arg);
+
+    getArrayBufferViewInfo(toJS(env), view, data, arraybuffer, byte_offset);
+    NAPI_RETURN_IF_EXCEPTION(env);
+    if (type)
+        *type = *arrayType;
+    if (length)
+        *length = view->length();
+    NAPI_RETURN_SUCCESS(env);
+}
+
+extern "C" napi_status napi_get_dataview_info(napi_env env, napi_value value, size_t* byte_length,
+    void** data, napi_value* arraybuffer, size_t* byte_offset)
+{
+    NAPI_PREAMBLE_UNGATED(env);
+    NAPI_CHECK_ARG(env, value);
+    auto* view = dynamicDowncast<JSC::JSDataView>(toJS(value));
+    NAPI_RETURN_EARLY_IF_FALSE(env, view, napi_invalid_arg);
+
+    getArrayBufferViewInfo(toJS(env), view, data, arraybuffer, byte_offset);
+    NAPI_RETURN_IF_EXCEPTION(env);
+    if (byte_length)
+        *byte_length = view->byteLength();
+    NAPI_RETURN_SUCCESS(env);
+}
+
 extern "C" napi_status napi_is_buffer(napi_env env, napi_value value, bool* result)
 {
     NAPI_PREAMBLE_UNGATED(env);
@@ -2001,28 +2124,55 @@ extern "C" napi_status napi_get_property_names(napi_env env, napi_value object,
         static_cast<napi_key_filter>(napi_key_enumerable | napi_key_skip_symbols), napi_key_numbers_to_strings, result);
 }
 
-extern "C" napi_status napi_create_buffer(napi_env env, size_t length,
-    void** data,
-    napi_value* result)
+static JSC::JSUint8Array* createNapiBuffer(Zig::GlobalObject* globalObject, size_t length)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    if (length > MAX_ARRAY_BUFFER_SIZE) {
+        throwException(globalObject, scope, createErrorWithCode(vm, globalObject, "ERR_BUFFER_TOO_LARGE"_s, makeString("Cannot create a Buffer larger than "_s, MAX_ARRAY_BUFFER_SIZE, " bytes"_s), JSC::ErrorType::Error));
+        return nullptr;
+    }
+
+    auto backing = JSC::ArrayBuffer::tryCreateUninitialized(length, 1);
+    if (!backing) {
+        throwException(globalObject, scope, createErrorWithCode(vm, globalObject, "ERR_MEMORY_ALLOCATION_FAILED"_s, "Array buffer allocation failed"_s, JSC::ErrorType::Error));
+        return nullptr;
+    }
+    RELEASE_AND_RETURN(scope, JSC::JSUint8Array::create(globalObject, globalObject->JSBufferSubclassStructure(), WTF::move(backing), 0, length));
+}
+
+extern "C" napi_status napi_create_buffer(napi_env env, size_t length, void** data, napi_value* result)
 {
     NAPI_PREAMBLE(env);
     NAPI_CHECK_ARG(env, result);
 
     Zig::GlobalObject* globalObject = toJS(env);
-    auto* subclassStructure = globalObject->JSBufferSubclassStructure();
+    auto* buffer = createNapiBuffer(globalObject, length);
+    if (napi_preamble_scope__.hasException())
+        return napi_set_last_error(env, napi_generic_failure);
 
-    // In Node.js, napi_create_buffer is uninitialized memory.
-    auto* uint8Array = JSC::JSUint8Array::createUninitialized(globalObject, subclassStructure, length);
-    NAPI_RETURN_IF_EXCEPTION(env);
+    *result = toNapi(buffer, globalObject);
+    if (data)
+        *data = length ? buffer->typedVector() : nullptr;
+    NAPI_RETURN_SUCCESS(env);
+}
 
-    if (data != nullptr) {
-        // Node.js' code looks like this:
-        //    *data = node::Buffer::Data(buffer);
-        // That means they unconditionally update the data pointer.
-        *data = length > 0 ? uint8Array->typedVector() : nullptr;
-    }
+extern "C" napi_status napi_create_buffer_copy(napi_env env, size_t length, const void* data,
+    void** result_data, napi_value* result)
+{
+    NAPI_PREAMBLE(env);
+    NAPI_CHECK_ARG(env, result);
 
-    *result = toNapi(uint8Array, globalObject);
+    auto* globalObject = toJS(env);
+    auto* buffer = createNapiBuffer(globalObject, length);
+    if (napi_preamble_scope__.hasException())
+        return napi_set_last_error(env, napi_generic_failure);
+
+    if (length)
+        memcpy(buffer->typedVector(), data, length);
+    *result = toNapi(buffer, globalObject);
+    if (result_data)
+        *result_data = length ? buffer->typedVector() : nullptr;
     NAPI_RETURN_SUCCESS(env);
 }
 

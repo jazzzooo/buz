@@ -219,39 +219,6 @@ pub const napi_typedarray_type = enum(c_uint) {
     float64_array = 8,
     bigint64_array = 9,
     biguint64_array = 10,
-
-    pub fn toJSType(this: napi_typedarray_type) jsc.JSValue.JSType {
-        return switch (this) {
-            .int8_array => .Int8Array,
-            .uint8_array => .Uint8Array,
-            .uint8_clamped_array => .Uint8ClampedArray,
-            .int16_array => .Int16Array,
-            .uint16_array => .Uint16Array,
-            .int32_array => .Int32Array,
-            .uint32_array => .Uint32Array,
-            .float32_array => .Float32Array,
-            .float64_array => .Float64Array,
-            .bigint64_array => .BigInt64Array,
-            .biguint64_array => .BigUint64Array,
-        };
-    }
-
-    pub fn fromJSType(value: jsc.JSValue.JSType) ?napi_typedarray_type {
-        return switch (value) {
-            .Int8Array => .int8_array,
-            .Uint8Array => .uint8_array,
-            .Uint8ClampedArray => .uint8_clamped_array,
-            .Int16Array => .int16_array,
-            .Uint16Array => .uint16_array,
-            .Int32Array => .int32_array,
-            .Uint32Array => .uint32_array,
-            .Float32Array => .float32_array,
-            .Float64Array => .float64_array,
-            .BigInt64Array => .bigint64_array,
-            .BigUint64Array => .biguint64_array,
-            else => null,
-        };
-    }
 };
 
 pub const NapiStatus = enum(c_uint) {
@@ -713,142 +680,9 @@ pub extern fn napi_create_arraybuffer(env: napi_env, byte_length: usize, data: [
 
 pub extern fn napi_create_external_arraybuffer(env: napi_env, external_data: ?*anyopaque, byte_length: usize, finalize_cb: napi_finalize, finalize_hint: ?*anyopaque, result: *napi_value) napi_status;
 
-const UnsafeArrayBufferView = struct {
-    data: ?[*]u8,
-    element_length: usize,
-    byte_length: usize,
-    byte_offset: usize,
-    typed_array_type: jsc.JSValue.JSType,
-    shared: bool,
-    resizable: bool,
-    token: bun.bindgen.ViewToken,
-
-    fn fromEngineValue(value: anytype, token: bun.bindgen.ViewToken) UnsafeArrayBufferView {
-        return .{
-            .data = if (value.data) |data| @ptrCast(data) else null,
-            .element_length = value.length,
-            .byte_length = value.byte_length,
-            .byte_offset = value.byte_offset,
-            .typed_array_type = @fromBackingInt(@intCast(value.cell_type)),
-            .shared = value.shared,
-            .resizable = value.resizable,
-            .token = token,
-        };
-    }
-
-    fn elementLength(this: UnsafeArrayBufferView) usize {
-        this.token.requireActive();
-        return this.element_length;
-    }
-
-    fn byteLength(this: UnsafeArrayBufferView) usize {
-        this.token.requireActive();
-        return this.byte_length;
-    }
-
-    fn byteOffset(this: UnsafeArrayBufferView) usize {
-        this.token.requireActive();
-        return this.byte_offset;
-    }
-
-    fn typedArrayType(this: UnsafeArrayBufferView) jsc.JSValue.JSType {
-        this.token.requireActive();
-        return this.typed_array_type;
-    }
-
-    fn unsafePtr(this: UnsafeArrayBufferView, comptime reason: []const u8) ?[*]u8 {
-        if (reason.len == 0) @compileError("unsafePtr requires a non-empty lifetime reason");
-        this.token.requireActive();
-        return this.data;
-    }
-
-    fn unsafeBytes(this: UnsafeArrayBufferView, comptime reason: []const u8) []u8 {
-        if (reason.len == 0) @compileError("unsafeBytes requires a non-empty lifetime reason");
-        this.token.requireActive();
-        if (this.byte_length == 0) return &.{};
-        return this.data.?[0..this.byte_length];
-    }
-};
-
-fn arrayBufferViewUnsafe(value: bun.bindgen.EngineOperand, scope: *bun.bindgen.FocusedEngineScope) ?UnsafeArrayBufferView {
-    const view = scope.engine(NapiArrayBufferViewUnsafeSchema).call(.{
-        .value = value,
-    }) orelse return null;
-    return UnsafeArrayBufferView.fromEngineValue(view, scope.viewToken());
-}
-
-pub export fn napi_get_arraybuffer_info(env_: napi_env, arraybuffer_: napi_value, data: ?*?[*]u8, byte_length: ?*usize) napi_status {
-    log("napi_get_arraybuffer_info", .{});
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    env.checkGC();
-    const arraybuffer = arraybuffer_.get() orelse return env.invalidArg();
-    const global = env.toJS();
-    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
-    engine_scope.init(global);
-    defer engine_scope.deinit();
-    const array_buffer = arrayBufferViewUnsafe(BindingEscape.borrowEngineValue(&engine_scope, arraybuffer), &engine_scope) orelse return env.setLastError(.invalid_arg);
-    defer arraybuffer.ensureStillAlive();
-    if (array_buffer.typedArrayType() != .ArrayBuffer) {
-        return env.setLastError(.invalid_arg);
-    }
-
-    if (data) |dat|
-        dat.* = array_buffer.unsafePtr("the N-API addon keeps the ArrayBuffer reachable and prevents detachment or resizing until it finishes using the returned pointer");
-    if (byte_length) |len|
-        len.* = array_buffer.byteLength();
-    return env.ok();
-}
-
+pub extern fn napi_get_arraybuffer_info(env: napi_env, arraybuffer: napi_value, data: ?*?[*]u8, byte_length: ?*usize) napi_status;
 pub extern fn napi_is_typedarray(napi_env, napi_value, *bool) napi_status;
-
-pub export fn napi_get_typedarray_info(
-    env_: napi_env,
-    typedarray_: napi_value,
-    maybe_type: ?*napi_typedarray_type,
-    maybe_length: ?*usize,
-    maybe_data: ?*?[*]u8,
-    maybe_arraybuffer: ?*napi_value,
-    maybe_byte_offset: ?*usize,
-) napi_status {
-    log("napi_get_typedarray_info", .{});
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    env.checkGC();
-    const typedarray = typedarray_.get() orelse return env.invalidArg();
-    defer typedarray.ensureStillAlive();
-
-    const global = env.toJS();
-    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
-    engine_scope.init(global);
-    defer engine_scope.deinit();
-    const array_buffer = arrayBufferViewUnsafe(BindingEscape.borrowEngineValue(&engine_scope, typedarray), &engine_scope) orelse return env.invalidArg();
-    const typed_array_type = napi_typedarray_type.fromJSType(array_buffer.typedArrayType()) orelse return env.invalidArg();
-    if (maybe_type) |@"type"|
-        @"type".* = typed_array_type;
-
-    // TODO: handle detached
-    if (maybe_data) |data|
-        data.* = array_buffer.unsafePtr("the N-API addon keeps the typed array reachable and prevents detachment or resizing until it finishes using the returned pointer");
-
-    if (maybe_length) |length|
-        length.* = array_buffer.elementLength();
-
-    if (maybe_arraybuffer) |arraybuffer| {
-        const backing = engine_scope.engineIn("array_buffers", "jsArrayBufferViewBuffer").call(.{
-            .value = BindingEscape.borrowEngineValue(&engine_scope, typedarray),
-        }) catch return env.setLastError(.pending_exception);
-        switch (backing) {
-            inline else => |value| arraybuffer.setResult(env, value.asAny(&engine_scope)),
-        }
-    }
-
-    if (maybe_byte_offset) |byte_offset|
-        byte_offset.* = array_buffer.byteOffset();
-    return env.ok();
-}
+pub extern fn napi_get_typedarray_info(env: napi_env, typedarray: napi_value, array_type: ?*napi_typedarray_type, length: ?*usize, data: ?*?[*]u8, arraybuffer: ?*napi_value, byte_offset: ?*usize) napi_status;
 pub extern fn napi_create_dataview(env: napi_env, length: usize, arraybuffer: napi_value, byte_offset: usize, result: *napi_value) napi_status;
 pub export fn napi_is_dataview(env_: napi_env, value_: napi_value, result_: ?*bool) napi_status {
     log("napi_is_dataview", .{});
@@ -866,48 +700,7 @@ pub export fn napi_is_dataview(env_: napi_env, value_: napi_value, result_: ?*bo
     result.* = BindingEscape.borrowEngineValue(&scope, value).jsTypeLoose() == .DataView;
     return env.ok();
 }
-pub export fn napi_get_dataview_info(
-    env_: napi_env,
-    dataview_: napi_value,
-    maybe_bytelength: ?*usize,
-    maybe_data: ?*?[*]u8,
-    maybe_arraybuffer: ?*napi_value,
-    maybe_byte_offset: ?*usize,
-) napi_status {
-    log("napi_get_dataview_info", .{});
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    env.checkGC();
-    const dataview = dataview_.get() orelse return env.invalidArg();
-    defer dataview.ensureStillAlive();
-    const global = env.toJS();
-    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
-    engine_scope.init(global);
-    defer engine_scope.deinit();
-    const operand = BindingEscape.borrowEngineValue(&engine_scope, dataview);
-    if (operand.jsTypeLoose() != .DataView) return env.invalidArg();
-    const array_buffer = arrayBufferViewUnsafe(operand, &engine_scope) orelse return env.invalidArg();
-    if (maybe_bytelength) |bytelength|
-        bytelength.* = array_buffer.byteLength();
-
-    if (maybe_data) |data|
-        data.* = array_buffer.unsafePtr("the N-API addon keeps the DataView reachable and prevents detachment or resizing until it finishes using the returned pointer");
-
-    if (maybe_arraybuffer) |arraybuffer| {
-        const backing = engine_scope.engineIn("array_buffers", "jsArrayBufferViewBuffer").call(.{
-            .value = BindingEscape.borrowEngineValue(&engine_scope, dataview),
-        }) catch return env.setLastError(.pending_exception);
-        switch (backing) {
-            inline else => |value| arraybuffer.setResult(env, value.asAny(&engine_scope)),
-        }
-    }
-
-    if (maybe_byte_offset) |byte_offset|
-        byte_offset.* = array_buffer.byteOffset();
-
-    return env.ok();
-}
+pub extern fn napi_get_dataview_info(env: napi_env, dataview: napi_value, byte_length: ?*usize, data: ?*?[*]u8, arraybuffer: ?*napi_value, byte_offset: ?*usize) napi_status;
 pub export fn napi_get_version(env_: napi_env, result_: ?*u32) napi_status {
     log("napi_get_version", .{});
     const env = env_ orelse {
@@ -1229,62 +1022,9 @@ pub export fn napi_fatal_error(location_ptr: ?[*:0]const u8, location_len: usize
 }
 pub extern fn napi_create_buffer(env: napi_env, length: usize, data: ?**anyopaque, result: *napi_value) napi_status;
 pub extern fn napi_create_external_buffer(env: napi_env, length: usize, data: ?*anyopaque, finalize_cb: napi_finalize, finalize_hint: ?*anyopaque, result: *napi_value) napi_status;
-pub export fn napi_create_buffer_copy(env_: napi_env, length: usize, data: [*]u8, result_data: ?*?*anyopaque, result_: ?*napi_value) napi_status {
-    log("napi_create_buffer_copy: {d}", .{length});
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    if (env.hasException()) return env.setLastError(.pending_exception);
-    const result = result_ orelse {
-        return env.invalidArg();
-    };
-    const global = env.toJS();
-    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
-    engine_scope.init(global);
-    defer engine_scope.deinit();
-    const buffer = engine_scope.engineIn("array_buffers", "createBufferFromLength").call(.{ .length = @intCast(length) }) catch return env.setLastError(.pending_exception);
-    if (arrayBufferViewUnsafe(buffer.operand(&engine_scope).asEngine(), &engine_scope)) |array_buf| {
-        if (length > 0) {
-            const destination = array_buf.unsafeBytes("napi_create_buffer_copy initializes a newly allocated Buffer before publishing it");
-            bun.assert(destination.len == length);
-            @memcpy(destination, data[0..length]);
-        }
-        if (result_data) |ptr| {
-            ptr.* = if (length > 0)
-                array_buf.unsafePtr("the N-API addon keeps the returned Buffer reachable and prevents detachment or resizing until it finishes using the returned pointer")
-            else
-                null;
-        }
-    }
-
-    result.setResult(env, buffer.asAny(&engine_scope));
-
-    return env.ok();
-}
+pub extern fn napi_create_buffer_copy(env: napi_env, length: usize, data: ?*const anyopaque, result_data: ?*?*anyopaque, result: ?*napi_value) napi_status;
 extern fn napi_is_buffer(napi_env, napi_value, *bool) napi_status;
-pub export fn napi_get_buffer_info(env_: napi_env, value_: napi_value, data: ?*?[*]u8, length: ?*usize) napi_status {
-    log("napi_get_buffer_info", .{});
-    const env = env_ orelse {
-        return envIsNull();
-    };
-    const value = value_.get() orelse return env.invalidArg();
-    defer value.ensureStillAlive();
-    const global = env.toJS();
-    var engine_scope: bun.bindgen.FocusedEngineScope = undefined;
-    engine_scope.init(global);
-    defer engine_scope.deinit();
-    const array_buf = arrayBufferViewUnsafe(BindingEscape.borrowEngineValue(&engine_scope, value), &engine_scope) orelse {
-        return env.setLastError(.invalid_arg);
-    };
-
-    if (data) |dat|
-        dat.* = array_buf.unsafePtr("the N-API addon keeps the Buffer reachable and prevents detachment or resizing until it finishes using the returned pointer");
-
-    if (length) |len|
-        len.* = array_buf.byteLength();
-
-    return env.ok();
-}
+pub extern fn napi_get_buffer_info(env: napi_env, value: napi_value, data: ?*?[*]u8, length: ?*usize) napi_status;
 
 extern fn node_api_create_syntax_error(napi_env, napi_value, napi_value, *napi_value) napi_status;
 extern fn node_api_symbol_for(napi_env, [*]const c_char, usize, *napi_value) napi_status;
@@ -2529,7 +2269,6 @@ const NapiHandleScopeAppendSchema = NapiBindings.engineShim("napiHandleScopeAppe
 const NapiHandleScopeEscapeSchema = NapiBindings.engineShim("napiHandleScopeEscape");
 const NapiHandleScopeHandle = bun.bindgen.EngineArgumentType(NapiHandleScopeEscapeSchema, "scope");
 const NapiBindings = bun.bindgen.Module("NAPI");
-const NapiArrayBufferViewUnsafeSchema = NapiBindings.engineShim("arrayBufferViewUnsafe");
 const PollCleanupHooksSchema = NapiBindings.nativeExport("pollCleanupHooks");
 
 comptime {

@@ -1807,101 +1807,19 @@ BunBindgenEngine_errors_jsValueToError_Return bunBindgenEngine_errors_jsValueToE
 }
 
 struct ArrayBufferViewData {
-    uint8_t* data;
-    size_t length;
-    size_t byteLength;
-    size_t byteOffset;
-    JSC::JSType cellType;
+    std::span<const uint8_t> bytes;
     bool shared;
-    bool resizable;
 };
 
 static std::optional<ArrayBufferViewData> arrayBufferViewData(JSC::JSValue value)
 {
-    if (!value.isCell())
-        return std::nullopt;
-
-    void* data = nullptr;
-    size_t length = 0;
-    size_t byteLength = 0;
-    size_t byteOffset = 0;
-    JSC::JSType cellType;
-    bool shared = false;
-    bool resizable = false;
-
-    switch (value.asCell()->type()) {
-    case JSC::JSType::Uint8ArrayType:
-    case JSC::JSType::Int8ArrayType:
-    case JSC::JSType::DataViewType:
-    case JSC::JSType::Uint8ClampedArrayType:
-    case JSC::JSType::Int16ArrayType:
-    case JSC::JSType::Uint16ArrayType:
-    case JSC::JSType::Int32ArrayType:
-    case JSC::JSType::Uint32ArrayType:
-    case JSC::JSType::Float16ArrayType:
-    case JSC::JSType::Float32ArrayType:
-    case JSC::JSType::Float64ArrayType:
-    case JSC::JSType::BigInt64ArrayType:
-    case JSC::JSType::BigUint64ArrayType: {
-        auto* view = uncheckedDowncast<JSC::JSArrayBufferView>(value);
-        data = view->vector();
-        length = view->length();
-        byteLength = view->byteLength();
-        byteOffset = view->byteOffset();
-        cellType = view->type();
-        shared = view->isShared();
-        resizable = view->isResizableOrGrowableShared();
-        break;
+    if (auto* view = dynamicDowncast<JSC::JSArrayBufferView>(value))
+        return ArrayBufferViewData { view->span(), view->isShared() };
+    if (auto* jsBuffer = dynamicDowncast<JSC::JSArrayBuffer>(value)) {
+        if (auto* buffer = jsBuffer->impl())
+            return ArrayBufferViewData { buffer->span(), buffer->isShared() };
     }
-    case JSC::JSType::ArrayBufferType: {
-        auto* buffer = uncheckedDowncast<JSC::JSArrayBuffer>(value)->impl();
-        if (!buffer)
-            return std::nullopt;
-        data = buffer->data();
-        length = buffer->byteLength();
-        byteLength = buffer->byteLength();
-        cellType = JSC::JSType::ArrayBufferType;
-        shared = buffer->isShared();
-        resizable = buffer->isResizableOrGrowableShared();
-        break;
-    }
-    case JSC::JSType::ObjectType:
-    case JSC::JSType::FinalObjectType:
-        if (auto* view = dynamicDowncast<JSC::JSArrayBufferView>(value)) {
-            data = view->vector();
-            length = view->length();
-            byteLength = view->byteLength();
-            byteOffset = view->byteOffset();
-            cellType = view->type();
-            shared = view->isShared();
-            resizable = view->isResizableOrGrowableShared();
-        } else if (auto* jsBuffer = dynamicDowncast<JSC::JSArrayBuffer>(value)) {
-            auto* buffer = jsBuffer->impl();
-            if (!buffer)
-                return std::nullopt;
-            data = buffer->data();
-            length = buffer->byteLength();
-            byteLength = buffer->byteLength();
-            cellType = JSC::JSType::ArrayBufferType;
-            shared = buffer->isShared();
-            resizable = buffer->isResizableOrGrowableShared();
-        } else {
-            return std::nullopt;
-        }
-        break;
-    default:
-        return std::nullopt;
-    }
-
-    return ArrayBufferViewData {
-        .data = static_cast<uint8_t*>(data),
-        .length = length,
-        .byteLength = byteLength,
-        .byteOffset = byteOffset,
-        .cellType = cellType,
-        .shared = shared,
-        .resizable = resizable,
-    };
+    return std::nullopt;
 }
 
 BunBindgenEngine_array_buffers_jsValueCopyArrayBufferView_Return bunBindgenEngine_array_buffers_jsValueCopyArrayBufferView(
@@ -1913,9 +1831,9 @@ BunBindgenEngine_array_buffers_jsValueCopyArrayBufferView_Return bunBindgenEngin
         return std::nullopt;
 
     WTF::Vector<uint8_t> bytes;
-    if (view->byteLength) {
-        RELEASE_ASSERT(view->data);
-        if (!bytes.tryAppend(std::span<const uint8_t> { view->data, view->byteLength })) {
+    if (!view->bytes.empty()) {
+        RELEASE_ASSERT(view->bytes.data());
+        if (!bytes.tryAppend(view->bytes)) {
             auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
             JSC::throwOutOfMemoryError(&context.globalObject, scope);
             return std::nullopt;
@@ -1931,42 +1849,6 @@ bool bunBindgenEngine_array_buffers_jsValueArrayBufferIsShared(
 {
     auto view = arrayBufferViewData(args.value);
     return view && view->shared;
-}
-
-BunBindgenEngine_NAPI_arrayBufferViewUnsafe_Return bunBindgenEngine_NAPI_arrayBufferViewUnsafe(
-    EngineCallContext&,
-    const BunBindgenEngine_NAPI_arrayBufferViewUnsafe_Arguments& args)
-{
-    auto view = arrayBufferViewData(args.value);
-    if (!view)
-        return std::nullopt;
-
-    return BunBindgenEngine_NAPI_arrayBufferViewUnsafe_Return::value_type {
-        .data = view->data ? std::optional { view->data } : std::nullopt,
-        .length = view->length,
-        .byte_length = view->byteLength,
-        .byte_offset = view->byteOffset,
-        .cell_type = static_cast<uint8_t>(view->cellType),
-        .shared = view->shared,
-        .resizable = view->resizable,
-    };
-}
-
-BunBindgenEngine_array_buffers_jsArrayBufferViewBuffer_Return bunBindgenEngine_array_buffers_jsArrayBufferViewBuffer(
-    EngineCallContext& context,
-    const BunBindgenEngine_array_buffers_jsArrayBufferViewBuffer_Arguments& args)
-{
-    auto scope = DECLARE_THROW_SCOPE(context.globalObject.vm());
-    auto* view = dynamicDowncast<JSC::JSArrayBufferView>(args.value);
-    RELEASE_ASSERT(view);
-    auto* buffer = view->possiblySharedJSBuffer(&context.globalObject);
-    RETURN_IF_EXCEPTION(scope, {});
-    BunBindgenEngine_array_buffers_jsArrayBufferViewBuffer_Return result;
-    if (view->isShared())
-        result.set_shared_array_buffer(buffer);
-    else
-        result.set_array_buffer(buffer);
-    return result;
 }
 
 bool bunBindgenEngine_errors_globalObjectHasException(

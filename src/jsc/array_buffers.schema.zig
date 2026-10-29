@@ -57,12 +57,6 @@ const engine_shims = .{
         .current_realm_unchecked,
     ),
     b.engineShim(
-        "jsArrayBufferViewBuffer",
-        .{b.argument("value", b.brandCast(b.js_array_buffer_view, .{ .failure = .assert, .input = .engine_value }), .{})},
-        archetypes.array_buffer_object,
-        .current_realm_throwing,
-    ),
-    b.engineShim(
         "bufferAdoptOwnedBytes",
         .{b.argument("owner", engine_types.external_bytes_owner, .{ .ownership = .transfer })},
         b.js_uint8_array,
