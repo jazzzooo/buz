@@ -82,7 +82,7 @@ pub fn ParseFn(
 
                     // Balance the fake block scope introduced above
                     if (hasIfScope) {
-                        p.popScope();
+                        p.popAndDiscardScope(ifStmtScopeIndex);
                     }
 
                     if (opts.is_typescript_declare and opts.is_namespace_scope and opts.is_export) {

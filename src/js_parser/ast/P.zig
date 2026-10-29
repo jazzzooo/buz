@@ -2505,23 +2505,8 @@ pub fn NewParser_(
         }
 
         pub fn popAndDiscardScope(noalias p: *P, scope_index: usize) void {
-            // Move up to the parent scope
-            const to_discard = p.current_scope;
-            const parent = to_discard.parent orelse unreachable;
-
-            p.current_scope = parent;
-
-            // Truncate the scope order where we started to pretend we never saw this scope
-            p.scopes_in_order.shrinkRetainingCapacity(scope_index);
-
-            var children = parent.children;
-            // Remove the last child from the parent scope
-            const last = children.len - 1;
-            if (children.slice()[last] != to_discard) {
-                p.panic("Internal error", .{});
-            }
-
-            _ = children.pop();
+            p.current_scope = p.current_scope.parent orelse unreachable;
+            p.discardScopesUpTo(scope_index);
         }
 
         pub fn processImportStatement(p: *P, stmt_: S.Import, path: ParsedPath, loc: logger.Loc, was_originally_bare_import: bool) anyerror!Stmt {

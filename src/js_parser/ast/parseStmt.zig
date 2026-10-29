@@ -1246,13 +1246,16 @@ pub fn ParseStmt(
                             .ts_stmt_global => {
                                 // "declare module 'fs' { global { namespace NodeJS {} } }"
                                 if (opts.is_namespace_scope and opts.is_typescript_declare and p.lexer.token == .t_open_brace) {
+                                    const scope_index = p.scopes_in_order.items.len;
                                     try p.lexer.next();
                                     _ = try p.parseStmtsUpTo(.t_close_brace, opts);
                                     try p.lexer.next();
+                                    p.discardScopesUpTo(scope_index);
                                     return p.s(S.TypeScript{}, loc);
                                 }
                             },
                             .ts_stmt_declare => {
+                                const scope_index = if (opts.ts_decorators) |decs| decs.scope_index else p.scopes_in_order.items.len;
                                 opts.lexical_decl = .allow_all;
                                 opts.is_typescript_declare = true;
 
@@ -1268,14 +1271,13 @@ pub fn ParseStmt(
                                     try p.lexer.expect(.t_open_brace);
                                     _ = try p.parseStmtsUpTo(.t_close_brace, opts);
                                     try p.lexer.next();
+                                    p.discardScopesUpTo(scope_index);
                                     return p.s(S.TypeScript{}, loc);
                                 }
 
                                 // "declare const x: any"
                                 const stmt = try p.parseStmt(opts);
-                                if (opts.ts_decorators) |decs| {
-                                    p.discardScopesUpTo(decs.scope_index);
-                                }
+                                p.discardScopesUpTo(scope_index);
 
                                 // Unlike almost all uses of "declare", statements that use
                                 // "export declare" with "var/let/const" inside a namespace affect

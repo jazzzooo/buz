@@ -270,7 +270,6 @@ pub fn ParseProperty(
                                             // skip declare keyword entirely
                                             // https://github.com/oven-sh/bun/issues/1907
                                             if (opts.is_class and is_typescript_enabled and strings.eqlComptime(raw, "declare")) {
-                                                const scope_index = p.scopes_in_order.items.len;
                                                 if (try p.parseProperty(kind, opts, null)) |_prop| {
                                                     var prop = _prop;
                                                     if (prop.kind == .normal and prop.value == null and opts.ts_decorators.len > 0) {
@@ -279,14 +278,12 @@ pub fn ParseProperty(
                                                     }
                                                 }
 
-                                                p.discardScopesUpTo(scope_index);
                                                 return null;
                                             }
                                         },
                                         .p_abstract => {
                                             if (opts.is_class and is_typescript_enabled and !opts.is_ts_abstract and strings.eqlComptime(raw, "abstract")) {
                                                 opts.is_ts_abstract = true;
-                                                const scope_index = p.scopes_in_order.items.len;
                                                 if (try p.parseProperty(kind, opts, null)) |*prop| {
                                                     if (prop.kind == .normal and prop.value == null and opts.ts_decorators.len > 0) {
                                                         var prop_ = prop.*;
@@ -294,7 +291,6 @@ pub fn ParseProperty(
                                                         return prop_;
                                                     }
                                                 }
-                                                p.discardScopesUpTo(scope_index);
                                                 return null;
                                             }
                                         },

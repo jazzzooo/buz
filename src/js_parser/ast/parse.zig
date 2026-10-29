@@ -163,11 +163,11 @@ pub fn Parse(
                 opts = PropertyOpts{ .is_class = true, .allow_ts_decorators = class_opts.allow_ts_decorators, .class_has_extends = extends != null, .has_argument_decorators = false };
 
                 // Parse decorators for this property
+                const property_scope_index = p.scopes_in_order.items.len;
                 const first_decorator_loc = p.lexer.loc();
                 if (opts.allow_ts_decorators) {
                     opts.ts_decorators = try p.parseTypeScriptDecorators();
                     opts.has_class_decorators = class_opts.ts_decorators.len > 0;
-                    has_decorators = has_decorators or opts.ts_decorators.len > 0;
                 } else {
                     opts.ts_decorators = &[_]Expr{};
                 }
@@ -189,7 +189,9 @@ pub fn Parse(
                         }
                     }
 
-                    has_decorators = has_decorators or opts.has_argument_decorators;
+                    has_decorators = has_decorators or opts.ts_decorators.len > 0 or opts.has_argument_decorators;
+                } else {
+                    p.discardScopesUpTo(property_scope_index);
                 }
             }
 
