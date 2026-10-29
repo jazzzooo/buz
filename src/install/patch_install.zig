@@ -545,31 +545,34 @@ pub const PatchTask = struct {
         patch_hash: u64,
         name_and_version_hash: u64,
     ) bun.OOM!*PatchTask {
+        const string_buf = pkg_manager.lockfile.buffers.string_bytes.items;
         const pkg_name = pkg_manager.lockfile.packages.items(.name)[pkg_id];
 
         const resolution = &pkg_manager.lockfile.packages.items(.resolution)[pkg_id];
 
         var folder_path_buf: bun.PathBuffer = undefined;
         const stuff = pkg_manager.computeCacheDirAndSubpath(
-            pkg_name.slice(pkg_manager.lockfile.buffers.string_bytes.items),
+            pkg_name.slice(string_buf),
             resolution,
+            string_buf,
             &folder_path_buf,
             patch_hash,
         );
 
-        const patchfilepath = try pkg_manager.allocator.dupe(u8, pkg_manager.lockfile.patched_dependencies.get(name_and_version_hash).?.path.slice(pkg_manager.lockfile.buffers.string_bytes.items));
+        const patchfilepath = try pkg_manager.allocator.dupe(u8, pkg_manager.lockfile.patched_dependencies.get(name_and_version_hash).?.path.slice(string_buf));
         errdefer pkg_manager.allocator.free(patchfilepath);
         const cache_dir_subpath = try pkg_manager.allocator.dupeSentinel(u8, stuff.cache_dir_subpath, 0);
         errdefer pkg_manager.allocator.free(cache_dir_subpath);
         const unpatched = pkg_manager.computeCacheDirAndSubpath(
-            pkg_name.slice(pkg_manager.lockfile.buffers.string_bytes.items),
+            pkg_name.slice(string_buf),
             resolution,
+            string_buf,
             &folder_path_buf,
             null,
         );
         const cache_dir_subpath_without_patch_hash = try pkg_manager.allocator.dupeSentinel(u8, unpatched.cache_dir_subpath, 0);
         errdefer pkg_manager.allocator.free(cache_dir_subpath_without_patch_hash);
-        const resolution_label = try std.fmt.allocPrint(pkg_manager.allocator, "{f}", .{resolution.fmt(pkg_manager.lockfile.buffers.string_bytes.items, .posix)});
+        const resolution_label = try pkg_manager.allocator.print("{f}", .{resolution.fmt(string_buf, .posix)});
         errdefer pkg_manager.allocator.free(resolution_label);
 
         const pt = try bun.tryNew(PatchTask, .{

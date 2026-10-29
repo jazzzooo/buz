@@ -448,37 +448,34 @@ pub fn pathForResolution(
 /// it's not great to do this
 pub fn computeCacheDirAndSubpath(
     manager: *PackageManager,
-    pkg_name: string,
+    name: string,
     resolution: *const Resolution,
+    string_buf: []const u8,
     folder_path_buf: *bun.PathBuffer,
     patch_hash: ?u64,
 ) struct { cache_dir: std.Io.Dir, cache_dir_subpath: stringZ } {
-    const name = pkg_name;
-    const buf = manager.lockfile.buffers.string_bytes.items;
     var cache_dir = std.Io.Dir.cwd();
     var cache_dir_subpath: stringZ = "";
 
     switch (resolution.tag) {
         .npm => {
-            cache_dir_subpath = manager.cachedNPMPackageFolderName(name, resolution.value.npm.version, patch_hash);
+            cache_dir_subpath = manager.cachedNPMPackageFolderNamePrint(folder_path_buf, name, resolution.value.npm.version, patch_hash);
             cache_dir = manager.getCacheDirectory();
         },
         .git => {
-            cache_dir_subpath = manager.cachedGitFolderName(
-                &resolution.value.git,
+            cache_dir_subpath = cachedGitFolderNamePrint(
+                folder_path_buf,
+                resolution.value.git.resolved.slice(string_buf),
                 patch_hash,
             );
             cache_dir = manager.getCacheDirectory();
         },
         .github => {
-            cache_dir_subpath = manager.cachedGitHubFolderName(&resolution.value.github, patch_hash);
+            cache_dir_subpath = cachedGitHubFolderNamePrint(folder_path_buf, resolution.value.github.resolved.slice(string_buf), patch_hash);
             cache_dir = manager.getCacheDirectory();
         },
-        .folder => {
-            const folder = resolution.value.folder.slice(buf);
-            // Handle when a package depends on itself via file:
-            // example:
-            //   "mineflayer": "file:."
+        inline .folder, .workspace => |tag| {
+            const folder = @field(resolution.value, @tagName(tag)).slice(string_buf);
             if (folder.len == 0 or (folder.len == 1 and folder[0] == '.')) {
                 cache_dir_subpath = ".";
             } else {
@@ -488,30 +485,15 @@ pub fn computeCacheDirAndSubpath(
             }
             cache_dir = std.Io.Dir.cwd();
         },
-        .local_tarball => {
-            cache_dir_subpath = manager.cachedTarballFolderName(resolution.value.local_tarball, patch_hash);
+        inline .local_tarball, .remote_tarball => |tag| {
+            const url = @field(resolution.value, @tagName(tag)).slice(string_buf);
+            cache_dir_subpath = cachedTarballFolderNamePrint(folder_path_buf, url, patch_hash);
             cache_dir = manager.getCacheDirectory();
-        },
-        .remote_tarball => {
-            cache_dir_subpath = manager.cachedTarballFolderName(resolution.value.remote_tarball, patch_hash);
-            cache_dir = manager.getCacheDirectory();
-        },
-        .workspace => {
-            const folder = resolution.value.workspace.slice(buf);
-            // Handle when a package depends on itself
-            if (folder.len == 0 or (folder.len == 1 and folder[0] == '.')) {
-                cache_dir_subpath = ".";
-            } else {
-                @memcpy(folder_path_buf[0..folder.len], folder);
-                folder_path_buf[folder.len] = 0;
-                cache_dir_subpath = folder_path_buf[0..folder.len :0];
-            }
-            cache_dir = std.Io.Dir.cwd();
         },
         .symlink => {
             const directory = manager.globalLinkDir();
 
-            const folder = resolution.value.symlink.slice(buf);
+            const folder = resolution.value.symlink.slice(string_buf);
 
             if (folder.len == 0 or (folder.len == 1 and folder[0] == '.')) {
                 cache_dir_subpath = ".";

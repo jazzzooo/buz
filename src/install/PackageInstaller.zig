@@ -806,24 +806,28 @@ pub const PackageInstaller = struct {
         const pkg_name_hash = this.pkg_name_hashes[package_id];
 
         var resolution_buf: [512]u8 = undefined;
-        const package_version = if (resolution.tag == .workspace) brk: {
-            if (this.manager.lockfile.workspace_versions.get(pkg_name_hash)) |workspace_version| {
-                break :brk std.fmt.bufPrint(&resolution_buf, "{f}", .{workspace_version.fmt(this.lockfile.buffers.string_bytes.items)}) catch unreachable;
-            }
+        var resolution_allocator: std.heap.BufferFirstAllocator = .init(&resolution_buf, this.lockfile.allocator);
+        var resolution_writer = bun.handleOom(std.Io.Writer.Allocating.initCapacity(resolution_allocator.allocator(), resolution_buf.len));
+        defer resolution_writer.deinit();
 
-            // no version
-            break :brk "";
-        } else std.fmt.bufPrint(&resolution_buf, "{f}", .{resolution.fmt(this.lockfile.buffers.string_bytes.items, .posix)}) catch unreachable;
+        if (resolution.tag == .workspace) {
+            if (this.manager.lockfile.workspace_versions.get(pkg_name_hash)) |workspace_version| {
+                resolution_writer.writer.print("{f}", .{workspace_version.fmt(this.lockfile.buffers.string_bytes.items)}) catch bun.outOfMemory();
+            }
+        } else {
+            resolution_writer.writer.print("{f}", .{resolution.fmt(this.lockfile.buffers.string_bytes.items, .posix)}) catch bun.outOfMemory();
+        }
+        const package_version = resolution_writer.written();
 
         const patch_patch, const patch_contents_hash, const patch_name_and_version_hash, const remove_patch = brk: {
             if (this.manager.lockfile.patched_dependencies.entries.len == 0 and this.manager.patched_dependencies_to_remove.entries.len == 0) break :brk .{ null, null, null, false };
             var sfa_buffer: [1024]u8 = undefined;
             var sfa: std.heap.BufferFirstAllocator = .init(&sfa_buffer, this.lockfile.allocator);
             const alloc = sfa.allocator();
-            const name_and_version = std.fmt.allocPrint(alloc, "{s}@{s}", .{
+            const name_and_version = bun.handleOom(alloc.print("{s}@{s}", .{
                 pkg_name.slice(this.lockfile.buffers.string_bytes.items),
                 package_version,
-            }) catch unreachable;
+            }));
             defer alloc.free(name_and_version);
 
             const name_and_version_hash = String.Builder.stringHash(name_and_version);

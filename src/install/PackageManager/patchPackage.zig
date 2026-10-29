@@ -84,7 +84,11 @@ pub fn doPatchCommit(
 
     var iterator = Lockfile.Tree.Iterator(.node_modules).init(lockfile);
     var resolution_buf: [1024]u8 = undefined;
-    const _cache_dir: std.Io.Dir, const _cache_dir_subpath: stringZ, const _changes_dir: []const u8, const _pkg: Package = switch (arg_kind) {
+    var resolution_allocator: std.heap.BufferFirstAllocator = .init(&resolution_buf, manager.allocator);
+    var resolution_writer = try std.Io.Writer.Allocating.initCapacity(resolution_allocator.allocator(), resolution_buf.len);
+    defer resolution_writer.deinit();
+
+    const cache_dir: std.Io.Dir, const cache_dir_subpath: stringZ, const changes_dir: []const u8, const pkg: Package = switch (arg_kind) {
         .path => result: {
             const package_json_source: *const logger.Source = &brk: {
                 var package_json_path_buf: bun.PathBuffer = undefined;
@@ -142,8 +146,9 @@ pub fn doPatchCommit(
                 .ids => |ids| brk: {
                     for (ids.items) |id| {
                         const pkg = lockfile.packages.get(id);
-                        const resolution_label = std.fmt.bufPrint(&resolution_buf, "{f}", .{pkg.resolution.fmt(lockfile.buffers.string_bytes.items, .posix)}) catch unreachable;
-                        if (std.mem.eql(u8, resolution_label, version)) {
+                        resolution_writer.clearRetainingCapacity();
+                        resolution_writer.writer.print("{f}", .{pkg.resolution.fmt(lockfile.buffers.string_bytes.items, .posix)}) catch return error.OutOfMemory;
+                        if (std.mem.eql(u8, resolution_writer.written(), version)) {
                             break :brk pkg;
                         }
                     }
@@ -157,19 +162,15 @@ pub fn doPatchCommit(
             const cache_result = manager.computeCacheDirAndSubpath(
                 name,
                 &actual_package.resolution,
+                lockfile.buffers.string_bytes.items,
                 &folder_path_buf,
                 null,
             );
-            const cache_dir = cache_result.cache_dir;
-            const cache_dir_subpath = cache_result.cache_dir_subpath;
-
-            const changes_dir = argument;
-
-            break :result .{ cache_dir, cache_dir_subpath, changes_dir, actual_package };
+            break :result .{ cache_result.cache_dir, cache_result.cache_dir_subpath, argument, actual_package };
         },
         .name_and_version => brk: {
             const name, const version = Dependency.splitNameAndMaybeVersion(argument);
-            const pkg_id, const node_modules = pkgInfoForNameAndVersion(lockfile, &iterator, argument, name, version);
+            const pkg_id, const node_modules = pkgInfoForNameAndVersion(lockfile, &iterator, argument, name, version, &resolution_writer);
 
             const changes_dir = std.mem.printSentinel(
                 pathbuf,
@@ -185,23 +186,19 @@ pub fn doPatchCommit(
             const cache_result = manager.computeCacheDirAndSubpath(
                 pkg.name.slice(lockfile.buffers.string_bytes.items),
                 &pkg.resolution,
+                lockfile.buffers.string_bytes.items,
                 &folder_path_buf,
                 null,
             );
-            const cache_dir = cache_result.cache_dir;
-            const cache_dir_subpath = cache_result.cache_dir_subpath;
-            break :brk .{ cache_dir, cache_dir_subpath, changes_dir, pkg };
+            break :brk .{ cache_result.cache_dir, cache_result.cache_dir_subpath, changes_dir, pkg };
         },
     };
 
-    // zls
-    const cache_dir: std.Io.Dir = _cache_dir;
-    const cache_dir_subpath: stringZ = _cache_dir_subpath;
-    const changes_dir: []const u8 = _changes_dir;
-    const pkg: Package = _pkg;
-
     const name = pkg.name.slice(lockfile.buffers.string_bytes.items);
-    const resolution_label = std.fmt.bufPrint(&resolution_buf, "{s}@{f}", .{ name, pkg.resolution.fmt(lockfile.buffers.string_bytes.items, .posix) }) catch unreachable;
+    resolution_writer.clearRetainingCapacity();
+    resolution_writer.writer.print("{s}@{f}.patch", .{ name, pkg.resolution.fmt(lockfile.buffers.string_bytes.items, .posix) }) catch return error.OutOfMemory;
+    const patch_filename = resolution_writer.written();
+    const resolution_label = patch_filename[0 .. patch_filename.len - ".patch".len];
 
     const patchfile_contents = brk: {
         const new_folder = changes_dir;
@@ -445,20 +442,14 @@ pub fn doPatchCommit(
         Global.crash();
     }
 
-    @memcpy(resolution_buf[resolution_label.len .. resolution_label.len + ".patch".len], ".patch");
-    var patch_filename: []const u8 = resolution_buf[0 .. resolution_label.len + ".patch".len];
-    var deinit = false;
-    if (escapePatchFilename(manager.allocator, patch_filename)) |escaped| {
-        deinit = true;
-        patch_filename = escaped;
-    }
-    defer if (deinit) manager.allocator.free(patch_filename);
+    const escaped_filename = escapePatchFilename(manager.allocator, patch_filename);
+    defer if (escaped_filename) |filename| manager.allocator.free(filename);
 
     const path_in_patches_dir = bun.handleOom(std.fs.path.joinZ(
         manager.allocator,
         &[_][]const u8{
             manager.options.patch_features.commit.patches_dir,
-            patch_filename,
+            escaped_filename orelse patch_filename,
         },
     ));
     defer manager.allocator.free(path_in_patches_dir);
@@ -486,7 +477,7 @@ pub fn doPatchCommit(
         Global.crash();
     }
 
-    const patch_key = bun.handleOom(std.fmt.allocPrint(manager.allocator, "{s}", .{resolution_label}));
+    const patch_key = bun.handleOom(manager.allocator.dupe(u8, resolution_label));
     const patchfile_path = bun.handleOom(manager.allocator.dupe(u8, path_in_patches_dir));
     var patch_tag_path_buf: bun.PathBuffer = undefined;
     if (std.mem.printSentinel(&patch_tag_path_buf, "{f}", .{std.fs.path.fmtJoin(&.{ changes_dir, ".bun-patch-tag" })}, 0) catch null) |patch_tag_path| {
@@ -555,7 +546,6 @@ fn escapePatchFilename(allocator: std.mem.Allocator, name: []const u8) ?[]const 
 /// 3. Overwrite the input package with the one from the cache (cuz it could be hardlinked)
 /// 4. Print to user
 pub fn preparePatch(manager: *PackageManager) !void {
-    const strbuf = manager.lockfile.buffers.string_bytes.items;
     var argument = manager.options.positionals[1];
 
     const arg_kind: PatchArgKind = PatchArgKind.fromArg(argument);
@@ -563,6 +553,10 @@ pub fn preparePatch(manager: *PackageManager) !void {
     var folder_path_buf: bun.PathBuffer = undefined;
     var iterator = Lockfile.Tree.Iterator(.node_modules).init(manager.lockfile);
     var resolution_buf: [1024]u8 = undefined;
+    var resolution_allocator: std.heap.BufferFirstAllocator = .init(&resolution_buf, manager.allocator);
+    var resolution_writer = try std.Io.Writer.Allocating.initCapacity(resolution_allocator.allocator(), resolution_buf.len);
+    defer resolution_writer.deinit();
+
     var module_folder_owned: ?[]u8 = null;
     defer if (module_folder_owned) |path| manager.allocator.free(path);
 
@@ -630,6 +624,7 @@ pub fn preparePatch(manager: *PackageManager) !void {
             var package = Lockfile.Package{};
             try package.parseWithJSON(lockfile, manager, manager.allocator, manager.log, package_json_source, json, void, &resolver, Features.folder);
 
+            const strbuf = lockfile.buffers.string_bytes.items;
             const name = lockfile.str(&package.name);
             const actual_package = switch (lockfile.package_index.get(package.name_hash) orelse {
                 Output.prettyError(
@@ -642,8 +637,9 @@ pub fn preparePatch(manager: *PackageManager) !void {
                 .ids => |ids| id: {
                     for (ids.items) |id| {
                         const pkg = lockfile.packages.get(id);
-                        const resolution_label = std.fmt.bufPrint(&resolution_buf, "{f}", .{pkg.resolution.fmt(lockfile.buffers.string_bytes.items, .posix)}) catch unreachable;
-                        if (std.mem.eql(u8, resolution_label, version)) {
+                        resolution_writer.clearRetainingCapacity();
+                        resolution_writer.writer.print("{f}", .{pkg.resolution.fmt(lockfile.buffers.string_bytes.items, .posix)}) catch return error.OutOfMemory;
+                        if (std.mem.eql(u8, resolution_writer.written(), version)) {
                             break :id pkg;
                         }
                     }
@@ -655,12 +651,9 @@ pub fn preparePatch(manager: *PackageManager) !void {
             };
 
             const existing_patchfile_hash = existing_patchfile_hash: {
-                var sfb_buffer: [1024]u8 = undefined;
-                var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, manager.allocator);
-                const allocator = sfb.allocator();
-                const name_and_version = std.fmt.allocPrint(allocator, "{s}@{f}", .{ name, actual_package.resolution.fmt(strbuf, .posix) }) catch unreachable;
-                defer allocator.free(name_and_version);
-                const name_and_version_hash = String.Builder.stringHash(name_and_version);
+                resolution_writer.clearRetainingCapacity();
+                resolution_writer.writer.print("{s}@{f}", .{ name, actual_package.resolution.fmt(strbuf, .posix) }) catch return error.OutOfMemory;
+                const name_and_version_hash = String.Builder.stringHash(resolution_writer.written());
                 if (lockfile.patched_dependencies.get(name_and_version_hash)) |patched_dep| {
                     if (patched_dep.patchfileHash()) |hash| break :existing_patchfile_hash hash;
                 }
@@ -670,36 +663,31 @@ pub fn preparePatch(manager: *PackageManager) !void {
             const cache_result = manager.computeCacheDirAndSubpath(
                 name,
                 &actual_package.resolution,
+                lockfile.buffers.string_bytes.items,
                 &folder_path_buf,
                 existing_patchfile_hash,
             );
-            const cache_dir = cache_result.cache_dir;
-            const cache_dir_subpath = cache_result.cache_dir_subpath;
-
             const buf = if (comptime bun.Environment.isWindows) bun.path.pathToPosixBuf(u8, argument, win_normalizer[0..]) else argument;
 
             break :brk .{
-                cache_dir,
-                cache_dir_subpath,
+                cache_result.cache_dir,
+                cache_result.cache_dir_subpath,
                 buf,
                 name,
             };
         },
         .name_and_version => brk: {
-            const pkg_maybe_version_to_patch = argument;
-            const name, const version = Dependency.splitNameAndMaybeVersion(pkg_maybe_version_to_patch);
-            const pkg_id, const folder = pkgInfoForNameAndVersion(manager.lockfile, &iterator, pkg_maybe_version_to_patch, name, version);
+            const name, const version = Dependency.splitNameAndMaybeVersion(argument);
+            const pkg_id, const folder = pkgInfoForNameAndVersion(manager.lockfile, &iterator, argument, name, version, &resolution_writer);
 
+            const strbuf = manager.lockfile.buffers.string_bytes.items;
             const pkg = manager.lockfile.packages.get(pkg_id);
             const pkg_name = pkg.name.slice(strbuf);
 
             const existing_patchfile_hash = existing_patchfile_hash: {
-                var sfb_buffer: [1024]u8 = undefined;
-                var sfb: std.heap.BufferFirstAllocator = .init(&sfb_buffer, manager.allocator);
-                const allocator = sfb.allocator();
-                const name_and_version = std.fmt.allocPrint(allocator, "{s}@{f}", .{ name, pkg.resolution.fmt(strbuf, .posix) }) catch unreachable;
-                defer allocator.free(name_and_version);
-                const name_and_version_hash = String.Builder.stringHash(name_and_version);
+                resolution_writer.clearRetainingCapacity();
+                resolution_writer.writer.print("{s}@{f}", .{ name, pkg.resolution.fmt(strbuf, .posix) }) catch return error.OutOfMemory;
+                const name_and_version_hash = String.Builder.stringHash(resolution_writer.written());
                 if (manager.lockfile.patched_dependencies.get(name_and_version_hash)) |patched_dep| {
                     if (patched_dep.patchfileHash()) |hash| break :existing_patchfile_hash hash;
                 }
@@ -709,20 +697,18 @@ pub fn preparePatch(manager: *PackageManager) !void {
             const cache_result = manager.computeCacheDirAndSubpath(
                 pkg_name,
                 &pkg.resolution,
+                strbuf,
                 &folder_path_buf,
                 existing_patchfile_hash,
             );
-
-            const cache_dir = cache_result.cache_dir;
-            const cache_dir_subpath = cache_result.cache_dir_subpath;
 
             const module_folder_ = bun.handleOom(std.fs.path.join(manager.allocator, &.{ folder.relative_path, name }));
             module_folder_owned = module_folder_;
             const buf = if (comptime bun.Environment.isWindows) bun.path.pathToPosixBuf(u8, module_folder_, win_normalizer[0..]) else module_folder_;
 
             break :brk .{
-                cache_dir,
-                cache_dir_subpath,
+                cache_result.cache_dir,
+                cache_result.cache_dir_subpath,
                 buf,
                 pkg_name,
             };
@@ -898,17 +884,17 @@ fn pkgInfoForNameAndVersion(
     pkg_maybe_version_to_patch: []const u8,
     name: []const u8,
     version: ?[]const u8,
+    resolution_writer: *std.Io.Writer.Allocating,
 ) struct { PackageID, Lockfile.Tree.Iterator(.node_modules).Next } {
     var sfb_buffer: [4]IdPair = undefined;
     var sfb: std.heap.BufferFirstAllocator = .init(@ptrCast(&sfb_buffer), lockfile.allocator);
-    var pairs = bun.handleOom(std.array_list.Managed(IdPair).initCapacity(sfb.allocator(), 8));
+    var pairs = bun.handleOom(std.array_list.Managed(IdPair).initCapacity(sfb.allocator(), sfb_buffer.len));
     defer pairs.deinit();
 
     const name_hash = String.Builder.stringHash(name);
 
     const strbuf = lockfile.buffers.string_bytes.items;
 
-    var buf: [1024]u8 = undefined;
     const dependencies = lockfile.buffers.dependencies.items;
 
     for (dependencies, 0..) |dep, dep_id| {
@@ -917,8 +903,9 @@ fn pkgInfoForNameAndVersion(
         if (pkg_id == invalid_package_id) continue;
         const pkg = lockfile.packages.get(pkg_id);
         if (version) |v| {
-            const label = std.fmt.bufPrint(buf[0..], "{f}", .{pkg.resolution.fmt(strbuf, .posix)}) catch @panic("Resolution name too long");
-            if (std.mem.eql(u8, label, v)) {
+            resolution_writer.clearRetainingCapacity();
+            resolution_writer.writer.print("{f}", .{pkg.resolution.fmt(strbuf, .posix)}) catch bun.outOfMemory();
+            if (std.mem.eql(u8, resolution_writer.written(), v)) {
                 bun.handleOom(pairs.append(.{ @intCast(dep_id), pkg_id }));
             }
         } else {
