@@ -2102,11 +2102,73 @@ pub const PathTemplate = struct {
     data: string = "",
     placeholder: Placeholder = .{},
 
-    pub fn needs(this: *const PathTemplate, comptime field: std.meta.FieldEnum(Placeholder)) bool {
-        return strings.containsComptime(this.data, "[" ++ @tagName(field) ++ "]");
+    const Field = std.meta.FieldEnum(Placeholder);
+
+    const Iterator = struct {
+        remaining: []const u8,
+
+        const Part = union(enum) {
+            literal: []const u8,
+            placeholder: Field,
+            unterminated: []const u8,
+        };
+
+        fn next(this: *Iterator) ?Part {
+            const remaining = this.remaining;
+            if (remaining.len == 0) return null;
+
+            const start = std.mem.findScalar(u8, remaining, '[') orelse remaining.len;
+            if (start > 0) {
+                this.remaining = remaining[start..];
+                return .{ .literal = remaining[0..start] };
+            }
+
+            var depth: usize = 1;
+            for (remaining[1..], 1..) |c, i| {
+                switch (c) {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if (depth == 0) {
+                            this.remaining = remaining[i + 1 ..];
+                            return if (std.meta.stringToEnum(Field, remaining[1..i])) |field|
+                                .{ .placeholder = field }
+                            else
+                                .{ .literal = remaining[0 .. i + 1] };
+                        }
+                    },
+                    else => {},
+                }
+            }
+
+            this.remaining = "";
+            return .{ .unterminated = remaining };
+        }
+    };
+
+    pub fn findUnterminatedPlaceholder(data: []const u8) ?[]const u8 {
+        var iterator: Iterator = .{ .remaining = data };
+        while (iterator.next()) |part| {
+            switch (part) {
+                .unterminated => |text| return text,
+                else => {},
+            }
+        }
+        return null;
     }
 
-    inline fn writeReplacingSlashesOnWindows(w: anytype, slice: []const u8) !void {
+    pub fn needs(this: *const PathTemplate, comptime field: Field) bool {
+        var iterator: Iterator = .{ .remaining = this.data };
+        while (iterator.next()) |part| {
+            switch (part) {
+                .placeholder => |found| if (found == field) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    inline fn writeReplacingSlashesOnWindows(w: *std.Io.Writer, slice: []const u8) !void {
         if (Environment.isWindows) {
             var remain = slice;
             while (strings.indexOfChar(remain, '/')) |i| {
@@ -2121,55 +2183,22 @@ pub const PathTemplate = struct {
     }
 
     pub fn format(self: PathTemplate, writer: *std.Io.Writer) !void {
-        var remain = self.data;
-        while (strings.indexOfChar(remain, '[')) |j| {
-            try writeReplacingSlashesOnWindows(writer, remain[0..j]);
-            remain = remain[j + 1 ..];
-            if (remain.len == 0) {
-                // TODO: throw error
-                try writer.writeAll("[");
-                break;
-            }
-
-            var count: isize = 1;
-            var end_len: usize = remain.len;
-            for (remain) |*c| {
-                count += switch (c.*) {
-                    '[' => 1,
-                    ']' => -1,
-                    else => 0,
-                };
-
-                if (count == 0) {
-                    end_len = @intFromPtr(c) - @intFromPtr(remain.ptr);
-                    bun.assert(end_len <= remain.len);
-                    break;
-                }
-            }
-
-            const placeholder = remain[0..end_len];
-
-            const field = PathTemplate.Placeholder.map.get(placeholder) orelse {
-                try writeReplacingSlashesOnWindows(writer, placeholder);
-                remain = remain[end_len..];
-                continue;
-            };
-
-            switch (field) {
-                .dir => try writeReplacingSlashesOnWindows(writer, if (self.placeholder.dir.len > 0) self.placeholder.dir else "."),
-                .name => try writeReplacingSlashesOnWindows(writer, self.placeholder.name),
-                .ext => try writeReplacingSlashesOnWindows(writer, self.placeholder.ext),
-                .hash => {
-                    if (self.placeholder.hash) |hash| {
-                        try writer.print("{f}", .{bun.fmt.truncatedHash32(hash)});
-                    }
+        var iterator: Iterator = .{ .remaining = self.data };
+        while (iterator.next()) |part| {
+            switch (part) {
+                // Literal output filenames can contain unmatched brackets.
+                .literal, .unterminated => |text| try writeReplacingSlashesOnWindows(writer, text),
+                .placeholder => |field| switch (field) {
+                    .dir => try writeReplacingSlashesOnWindows(writer, if (self.placeholder.dir.len > 0) self.placeholder.dir else "."),
+                    .hash => {
+                        if (self.placeholder.hash) |hash| {
+                            try writer.print("{f}", .{bun.fmt.truncatedHash32(hash)});
+                        }
+                    },
+                    inline else => |key| try writeReplacingSlashesOnWindows(writer, @field(self.placeholder, @tagName(key))),
                 },
-                .target => try writeReplacingSlashesOnWindows(writer, self.placeholder.target),
             }
-            remain = remain[end_len + 1 ..];
         }
-
-        try writeReplacingSlashesOnWindows(writer, remain);
     }
 
     pub const Placeholder = struct {
@@ -2178,14 +2207,6 @@ pub const PathTemplate = struct {
         ext: []const u8 = "",
         hash: ?u64 = null,
         target: []const u8 = "",
-
-        pub const map = bun.ComptimeStringMap(std.meta.FieldEnum(Placeholder), .{
-            .{ "dir", .dir },
-            .{ "name", .name },
-            .{ "ext", .ext },
-            .{ "hash", .hash },
-            .{ "target", .target },
-        });
     };
 
     pub const chunk = PathTemplate{

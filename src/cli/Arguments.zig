@@ -1458,16 +1458,14 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
             ctx.bundler_options.code_splitting = true;
         }
 
-        if (args.option("--entry-naming")) |entry_naming| {
-            ctx.bundler_options.entry_naming = try strings.concat(allocator, &.{ "./", bun.strings.removeLeadingDotSlash(entry_naming) });
-        }
-
-        if (args.option("--chunk-naming")) |chunk_naming| {
-            ctx.bundler_options.chunk_naming = try strings.concat(allocator, &.{ "./", bun.strings.removeLeadingDotSlash(chunk_naming) });
-        }
-
-        if (args.option("--asset-naming")) |asset_naming| {
-            ctx.bundler_options.asset_naming = try strings.concat(allocator, &.{ "./", bun.strings.removeLeadingDotSlash(asset_naming) });
+        inline for (.{ "entry", "chunk", "asset" }) |kind| {
+            if (args.option("--" ++ kind ++ "-naming")) |naming| {
+                if (options.PathTemplate.findUnterminatedPlaceholder(naming)) |unterminated| {
+                    Output.errGeneric("--" ++ kind ++ "-naming: unterminated \"{s}\" (missing \"]\")", .{unterminated});
+                    Global.exit(1);
+                }
+                @field(ctx.bundler_options, kind ++ "_naming") = try allocator.print("./{s}", .{strings.removeLeadingDotSlash(naming)});
+            }
         }
 
         if (args.flag("--server-components")) {

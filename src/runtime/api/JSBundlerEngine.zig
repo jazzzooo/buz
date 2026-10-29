@@ -222,11 +222,19 @@ pub const JSBundler = struct {
 
         pub const List = bun.StringArrayHashMap(Config);
 
-        fn appendPrefixedName(target: *OwnedString, text: []const u8) bun.OOM!void {
-            if (!strings.hasPrefixComptime(text, "./")) {
+        fn parseNamingTemplate(context: anytype, option: []const u8, text: bun.bindgen.DOMStringView, target: *OwnedString) ![]const u8 {
+            const utf8 = try text.toUTF8(bun.default_allocator);
+            defer utf8.deinit();
+            if (options.PathTemplate.findUnterminatedPlaceholder(utf8.slice())) |unterminated| {
+                const message = try bun.default_allocator.print("{s}: unterminated \"{s}\" (missing \"]\")", .{ option, unterminated });
+                defer bun.default_allocator.free(message);
+                return context.fail(.unterminated_naming, try bun.bindgen.ThreadSafeDOMString.fromUTF8(message));
+            }
+            if (!strings.hasPrefixComptime(utf8.slice(), "./")) {
                 try target.appendSliceExact("./");
             }
-            try target.appendSliceExact(text);
+            try target.appendSliceExact(utf8.slice());
+            return target.list.items;
         }
 
         fn appendStringSet(
@@ -536,37 +544,15 @@ pub const JSBundler = struct {
             }
 
             if (generated.naming) |*field| switch (field.*) {
-                .text => |*text| {
-                    const utf8 = try text.toUTF8(bun.default_allocator);
-                    defer utf8.deinit();
-                    if (utf8.slice().len > 0) {
-                        try appendPrefixedName(&this.names.owned_entry_point, utf8.slice());
-                        this.names.entry_point.data = this.names.owned_entry_point.list.items;
+                .text => |text| {
+                    if (text.length() > 0) {
+                        this.names.entry_point.data = try parseNamingTemplate(context, "naming", text, &this.names.owned_entry_point);
                     }
                 },
                 .parts => |*parts| {
-                    if (parts.entry) |*entry_field| {
-                        if (entry_field.*) |*text| {
-                            const utf8 = try text.toUTF8(bun.default_allocator);
-                            defer utf8.deinit();
-                            try appendPrefixedName(&this.names.owned_entry_point, utf8.slice());
-                            this.names.entry_point.data = this.names.owned_entry_point.list.items;
-                        }
-                    }
-                    if (parts.chunk) |*chunk_field| {
-                        if (chunk_field.*) |*text| {
-                            const utf8 = try text.toUTF8(bun.default_allocator);
-                            defer utf8.deinit();
-                            try appendPrefixedName(&this.names.owned_chunk, utf8.slice());
-                            this.names.chunk.data = this.names.owned_chunk.list.items;
-                        }
-                    }
-                    if (parts.asset) |*asset_field| {
-                        if (asset_field.*) |*text| {
-                            const utf8 = try text.toUTF8(bun.default_allocator);
-                            defer utf8.deinit();
-                            try appendPrefixedName(&this.names.owned_asset, utf8.slice());
-                            this.names.asset.data = this.names.owned_asset.list.items;
+                    inline for (.{ .{ "entry", "entry_point" }, .{ "chunk", "chunk" }, .{ "asset", "asset" } }) |names| {
+                        if (@field(parts, names[0]) orelse null) |text| {
+                            @field(this.names, names[1]).data = try parseNamingTemplate(context, "naming." ++ names[0], text, &@field(this.names, "owned_" ++ names[1]));
                         }
                     }
                 },

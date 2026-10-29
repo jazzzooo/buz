@@ -796,6 +796,10 @@ const build_errors = b.domainErrors(.{
         .class = .generic_error,
         .message = .{ .literal = "Expected naming to be a string or an object" },
     }),
+    b.domainError("unterminated_naming", b.thread_safe_dom_string, .{
+        .class = .type_error,
+        .message = .payload,
+    }),
     b.domainError("invalid_loader_extension", b.none, .{
         .class = .generic_error,
         .message = .{ .literal = "loader property names must be file extensions, such as '.txt'" },
