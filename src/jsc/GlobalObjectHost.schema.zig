@@ -46,8 +46,8 @@ const abort_algorithm_removal_result = b.unionType("AbortAlgorithmRemoval", .{
     b.unionMember("removed", b.undefined_literal),
 }, .{ .ordered = true, .cpp_name = "AbortAlgorithmRemoval" });
 
-fn contextSurfaceGetter(comptime name: []const u8) b.Function {
-    return b.function(name, .{}, b.engine_value, .{ .backend = .cpp, .length = 0, .profile = .exact });
+fn contextSurfaceGetter(comptime name: []const u8, comptime result: b.Type) b.Function {
+    return b.function(name, .{}, result, .{ .backend = .cpp, .length = 0, .profile = .exact });
 }
 
 fn eventHandlerSurfaceGetter(comptime name: []const u8) b.Function {
@@ -65,17 +65,17 @@ fn contextSurfaceSetter(comptime name: []const u8) b.Function {
 pub const schema = b.module("GlobalObjectHost", .{
     archetypes.lazySurfaceFunction("GlobalObject_getGlobalThis", b.js_object),
     archetypes.lazySurfaceFunction("GlobalObject_getPerformanceObject", b.js_object),
-    archetypes.lazySurfaceFunction("arrayBufferConstructorValue", archetypes.constructor_value),
-    archetypes.lazySurfaceFunction("internalModuleRegistryValue", b.js_object),
-    archetypes.lazySurfaceFunction("processBindingConstantsValue", b.js_object),
-    archetypes.lazySurfaceFunction("requireMapValue", b.js_map),
-    archetypes.lazySurfaceFunction("textEncoderStreamEncoderConstructorValue", archetypes.constructor_value),
-    archetypes.lazySurfaceFunction("readableStreamNativeMapValue", b.js_map),
+    contextSurfaceGetter("arrayBufferConstructorValue", archetypes.constructor_value),
+    contextSurfaceGetter("internalModuleRegistryValue", b.js_object),
+    contextSurfaceGetter("processBindingConstantsValue", b.js_object),
+    contextSurfaceGetter("requireMapValue", b.js_map),
+    contextSurfaceGetter("textEncoderStreamEncoderConstructorValue", archetypes.constructor_value),
+    contextSurfaceGetter("readableStreamNativeMapValue", b.js_map),
     eventHandlerSurfaceGetter("globalOnMessageValue"),
     eventHandlerSurfaceSetter("setGlobalOnMessageValue"),
     eventHandlerSurfaceGetter("globalOnErrorValue"),
     eventHandlerSurfaceSetter("setGlobalOnErrorValue"),
-    contextSurfaceGetter("errorPrepareStackTraceValue"),
+    contextSurfaceGetter("errorPrepareStackTraceValue", b.engine_value),
     contextSurfaceSetter("setErrorPrepareStackTraceValue"),
     archetypes.lazySurfaceFunction("consoleConstructorValue", archetypes.constructor_value),
     archetypes.lazySurfaceFunction("consoleStdoutValue", b.engine_value),

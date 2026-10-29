@@ -476,7 +476,6 @@ pub const WireScalar = enum {
             .double => f64,
         };
     }
-
 };
 
 pub const WireField = struct {
@@ -1517,7 +1516,6 @@ pub fn ZigLeaf(comptime role: Role) type {
             destroy: ZigApiDestroy(role) = .none,
             release: ZigWireRelease(role) = .none,
         },
-
     };
 }
 
@@ -2048,6 +2046,13 @@ pub const ClassMemberFacts = struct {
     native_reference_symbol: ?[]const u8,
 };
 
+/// Call receivers normalize internal JSC scopes using strict JavaScript `this` semantics.
+pub const CppReceiverSource = enum {
+    frame,
+    encoded,
+    /// Native factories receive an explicit object whose identity must be preserved.
+    surface,
+};
 pub const CppReceiverValue = enum { frame, encoded, surface, cpp, object };
 
 pub const CppArgumentRead = union(enum) {
@@ -2142,7 +2147,6 @@ pub const CppInboundArgument = struct {
 pub const CppReceiverCheck = struct {
     class: union(enum) { native: ClassId, engine: ClassId, constructor: ClassId },
     brand: ?CppBrandMatchId,
-    value: enum { frame, encoded },
     invalid_this: union(enum) { no_op: CppReturn, throw, failure: ConversionFailure },
     failure_return: CppReturn,
 };
@@ -2276,6 +2280,7 @@ pub fn CppInboundCall(comptime role: Role) type {
         .inbound_argument => struct {
             pub const argument_role = role;
 
+            prepare_receiver: ?CppReceiverSource = null,
             inputs: []const CppInboundInput(role) = &.{},
             status: CppCallStatus,
             codec_failure: CppCodecFailureId,
@@ -2343,6 +2348,7 @@ pub const CppSurfaceEvaluator = struct {
 pub const CppOverloadDispatch = struct {
     host: CppHost,
     name: []const u8,
+    prepare_receiver: ?CppReceiverSource,
     receiver: ?CppReceiverCheck,
     input_slot_count: u32,
     argument_count: OverloadArgumentCount,

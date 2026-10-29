@@ -633,7 +633,7 @@ fn function(n: *Normalizer, f: *const ir.Function) PlanError!ir.CppFunction {
     };
     return if (f.backend == .builtin) .builtin else if (f.isOverloaded()) .{ .overload = try overload(n, f, checks) } else body: {
         const host = try hostEntry(n, f);
-        const entry = try lowerFunction(n, f, checks, null);
+        const entry = try lowerFunction(n, f, checks, receiverSource(host));
         const surface: ?ir.FunctionId = switch (f.id) {
             .function => |id| if (n.surface_factories.contains(id)) id else null,
             .overload => null,
@@ -715,6 +715,7 @@ fn overload(n: *Normalizer, function_: *const ir.Function, checks: FunctionCheck
     return .{
         .host = host,
         .name = if (function_.class_member != null) function_.js_name else function_.function_name,
+        .prepare_receiver = if (checks.receiver != null) receiverSource(host) else null,
         .receiver = checks.receiver,
         .input_slot_count = dispatch.input_slot_count,
         .argument_count = dispatch.argument_count,
@@ -734,11 +735,22 @@ fn receiverHandle(n: *const Normalizer, function_: *const ir.Function) ir.CppRec
     return if (function_.callback_data_type != null) .callback_data else .none;
 }
 
-fn lowerFunction(n: *Normalizer, f: *const ir.Function, checks: FunctionChecks, invocation_this: ?ir.CppReceiverValue) PlanError!*const ir.CppInboundCall(.inbound_argument) {
+fn receiverSource(host: ir.CppHost) ir.CppReceiverSource {
+    return switch (host.signature) {
+        .frame => .frame,
+        .getter, .setter => .encoded,
+    };
+}
+
+fn lowerFunction(n: *Normalizer, f: *const ir.Function, checks: FunctionChecks, this_source: ir.CppReceiverSource) PlanError!*const ir.CppInboundCall(.inbound_argument) {
     const planned = n.declaration(f.id).inputs;
     const member = n.declaration(f.id).member;
     const is_setter = if (member) |m| m.raw.kind.isSetter() else false;
-    const this_value: ir.CppReceiverValue = invocation_this orelse if (member) |m| if (m.raw.kind.isGetter() or is_setter) .encoded else .frame else .frame;
+    const this_value: ir.CppReceiverValue = switch (this_source) {
+        .frame => .frame,
+        .encoded => .encoded,
+        .surface => .surface,
+    };
     const constructor: ?ir.ClassId = if (member) |m| if (m.raw.kind == .constructor) m.owner else null else null;
     const illegal: ?ir.ClassId = if (member) |m| if (m.raw.options.illegal) m.owner else null else null;
     const cache = try cacheAccess(n, f);
@@ -770,6 +782,7 @@ fn lowerFunction(n: *Normalizer, f: *const ir.Function, checks: FunctionChecks, 
         .wire => |wire| if (wire.lazy_storage) |storage| storage.receiver else false,
         .cpp, .builtin_constructor, .predicate, .reject, .load_cache, .store_cache => false,
     };
+    const uses_receiver = checks.receiver != null or cache != null or f.this_argument != null;
     var frame: ?ir.CppArgumentFrameId = null;
     var inputs: std.ArrayList(ir.CppInboundInput(.inbound_argument)) = .empty;
     if (illegal == null) {
@@ -808,6 +821,7 @@ fn lowerFunction(n: *Normalizer, f: *const ir.Function, checks: FunctionChecks, 
         }
     }
     return n.create(ir.CppInboundCall(.inbound_argument){
+        .prepare_receiver = if (illegal == null and f.predicate == null and uses_receiver) this_source else null,
         .codec_failure = try failures.inbound(n, f.call_plan.realm, f.call_plan.throws, .empty),
         .inputs = inputs.items,
         .status = .{ .realm = f.call_plan.realm, .throws = f.call_plan.throws, .non_returning = f.call_plan.non_returning },
@@ -920,7 +934,6 @@ fn receiverCheck(n: *Normalizer, f: *const ir.Function, no_op_return: ir.CppRetu
             .engine => |id| .{ .engine = id },
         },
         .brand = if (n.get(member.owner).brand) |brand| brand.cpp_match else null,
-        .value = if (member.raw.kind.isGetter() or member.raw.kind.isSetter()) .encoded else .frame,
         .invalid_this = switch (member.raw.options.invalid_this) {
             .no_op => .{ .no_op = no_op_return },
             .throw => .throw,
@@ -951,6 +964,7 @@ fn writableCall(n: *Normalizer, f: *const ir.Function, cache: ir.CppCacheAccess)
     const check = (try receiverCheck(n, f, .false_value, .false_value)) orelse
         return n.unsupported("writable cached members require a class receiver: {s}", .{f.js_name});
     return n.create(ir.CppInboundCall(.inbound_argument){
+        .prepare_receiver = .encoded,
         .inputs = try n.arena.dupe(ir.CppInboundInput(.inbound_argument), &.{.{ .check_receiver = check }}),
         .codec_failure = try failures.inbound(n, .current, .js_exception, .false_value),
         .status = ir.CppCallStatus.javascript,
@@ -966,6 +980,7 @@ fn cachedSlotAccessors(n: *Normalizer, class: ir.Class, slot: ir.CachedSlot) Pla
         .getter = .{
             .host = .{ .symbol = symbols.getter, .signature = .{ .getter = null } },
             .entry = try n.create(ir.CppInboundCall(.inbound_argument){
+                .prepare_receiver = .encoded,
                 .inputs = try n.arena.dupe(ir.CppInboundInput(.inbound_argument), &.{.{ .check_receiver = try slotReceiverCheck(n, class, slot, .empty) }}),
                 .codec_failure = try failures.inbound(n, .current, .js_exception, .empty),
                 .status = ir.CppCallStatus.javascript,
@@ -976,6 +991,7 @@ fn cachedSlotAccessors(n: *Normalizer, class: ir.Class, slot: ir.CachedSlot) Pla
         .setter = if (symbols.setter) |symbol| .{
             .host = .{ .symbol = symbol, .signature = .setter },
             .entry = try n.create(ir.CppInboundCall(.inbound_argument){
+                .prepare_receiver = .encoded,
                 .inputs = try n.arena.dupe(ir.CppInboundInput(.inbound_argument), &.{.{ .check_receiver = try slotReceiverCheck(n, class, slot, .false_value) }}),
                 .codec_failure = try failures.inbound(n, .current, .js_exception, .false_value),
                 .status = ir.CppCallStatus.javascript,
@@ -998,7 +1014,6 @@ fn slotReceiverCheck(n: *Normalizer, class: ir.Class, slot: ir.CachedSlot, failu
             },
         },
         .brand = null,
-        .value = .encoded,
         .invalid_this = .{ .failure = .{
             .kind = .type_error,
             .message = try n.print("Expected a {s} {s}", .{ class.class_name, switch (slot.storage) {

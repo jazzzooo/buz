@@ -4765,6 +4765,7 @@ fn emitCppHostFunction(e: *Emitter, writer: *Writer, function: *const ir.CppFunc
         .overload => |dispatch| {
             for (dispatch.cases) |case| try emitCppHostFunction(e, writer, &e.ir.cpp_overload_cases[case.declaration.index].?);
             try emitCppHostPreamble(writer, dispatch.host);
+            if (dispatch.prepare_receiver) |source| try emitCppReceiverPreparation(writer, source);
             if (dispatch.receiver) |check| try emitCppReceiverCheck(e, writer, check);
             try emitCppOverloadArgumentCountDeclaration(writer, dispatch);
             try emitCppOverloadUnderflow(e, writer, dispatch);
@@ -4831,11 +4832,18 @@ fn emitCppOverloadMatch(e: *Emitter, writer: *Writer, dispatch: ir.CppOverloadDi
     }
 }
 
+fn emitCppReceiverPreparation(writer: *Writer, source: ir.CppReceiverSource) Error!void {
+    const value = switch (source) {
+        .frame => "callFrame->thisValue().toThis(global, JSC::ECMAMode::strict())",
+        .encoded => "JSC::JSValue::decode(encodedThis).toThis(global, JSC::ECMAMode::strict())",
+        .surface => "bindingSurfaceReceiver",
+    };
+    try writer.print("    JSC::EnsureStillAliveScope bindingThisValue = {s};\n", .{value});
+}
+
 fn cppReceiverValue(value: ir.CppReceiverValue) []const u8 {
     return switch (value) {
-        .frame => "callFrame->thisValue()",
-        .encoded => "JSC::JSValue::decode(encodedThis)",
-        .surface => "bindingSurfaceReceiver",
+        .frame, .encoded, .surface => "bindingThisValue.value()",
         .cpp => "cppArgs.bindingThis",
         .object => "JSC::JSValue(thisObject)",
     };
@@ -4914,16 +4922,13 @@ fn emitCppReceiverCheck(e: *Emitter, writer: *Writer, check: ir.CppReceiverCheck
     const class = e.class(switch (check.class) {
         .native, .engine, .constructor => |id| id,
     });
-    try writer.print("    JSC::JSValue thisValue = {s};\n    auto* thisObject = dynamicDowncast<{s}>(thisValue);\n", .{ switch (check.value) {
-        .frame => "callFrame->thisValue()",
-        .encoded => "JSC::JSValue::decode(encodedThis)",
-    }, switch (check.class) {
+    try writer.print("    auto* thisObject = dynamicDowncast<{s}>(bindingThisValue.value());\n", .{switch (check.class) {
         .native, .engine => class.cpp_class_name,
         .constructor => class.cpp_constructor_name,
-    } });
+    }});
     if (check.brand) |brand| {
         try writer.writeAll("    if (!(");
-        try emitCppBrandMatchExpression(e, writer, brand, "thisValue");
+        try emitCppBrandMatchExpression(e, writer, brand, "bindingThisValue.value()");
         try writer.writeAll(")) thisObject = nullptr;\n");
         try emitCppExceptionReturn(writer, 4, cppReturn(check.failure_return));
     }
@@ -4931,7 +4936,7 @@ fn emitCppReceiverCheck(e: *Emitter, writer: *Writer, check: ir.CppReceiverCheck
     switch (check.invalid_this) {
         .no_op => |value| try writer.print("        {s}\n", .{cppReturn(value)}),
         .throw => {
-            try writer.writeAll("        auto* error = Bun::createInvalidThisError(global, thisValue, ");
+            try writer.writeAll("        auto* error = Bun::createInvalidThisError(global, bindingThisValue.value(), ");
             try emitCppAsciiLiteral(writer, class.display_name);
             try writer.writeAll(");\n");
             try emitCppExceptionReturn(writer, 8, cppReturn(check.failure_return));
@@ -4960,7 +4965,7 @@ fn cppCachedSlotReadExpression(e: *Emitter, read: ir.CppCachedSlotRead, value: [
 fn emitCppCacheRead(e: *Emitter, writer: *Writer, cache: ir.CppCacheAccess) Error!void {
     const class = e.class(cache.owner);
     const slot = class.slots[cache.slot];
-    if (cache.nullable_receiver) try writer.print("    auto* thisObject = dynamicDowncast<{s}>(JSC::JSValue::decode(encodedThis));\n    if (thisObject) {{\n", .{class.cpp_constructor_name});
+    if (cache.nullable_receiver) try writer.print("    auto* thisObject = dynamicDowncast<{s}>(bindingThisValue.value());\n    if (thisObject) {{\n", .{class.cpp_constructor_name});
     try writer.print("    if (auto cached = thisObject->raw_slot_{s}()) return JSC::JSValue::encode({s});\n", .{ slot.slot_name, try cppCachedSlotReadExpression(e, cache.read, "cached") });
     if (cache.nullable_receiver) try writer.writeAll("    }\n");
 }
@@ -5024,6 +5029,7 @@ fn emitCppInboundCall(e: *Emitter, writer: *Writer, call: anytype) Error!void {
     const deferred_conversions = if (frame) |value| value.deferred_conversions else false;
     const environment = cppInboundCodecBindings(e, call);
     if (comptime @TypeOf(call.*).argument_role == .inbound_argument) {
+        if (call.prepare_receiver) |source| try emitCppReceiverPreparation(writer, source);
         for (call.inputs) |*step| switch (step.*) {
             .prepare_arguments => |id| try emitCppInboundArgumentFrame(e, writer, call, id),
             .retain_lazy_receiver => |receiver| try writer.print("    lazyStorage.receiver.set(vm, {s});\n", .{cppReceiverValue(receiver)}),
