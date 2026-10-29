@@ -36,14 +36,15 @@ using Bindgen::SQLResultLayoutFlags;
 using Bindgen::SQLResultMode;
 using Bindgen::SQLTypedArrayKind;
 
+// Empty wire spans represent a non-null empty string.
 static WTF::String sqlLatin1String(std::span<const uint8_t> units)
 {
-    return WTF::String(std::span<const Latin1Character> { reinterpret_cast<const Latin1Character*>(units.data()), units.size() });
+    return WTF::StringImpl::create(units);
 }
 
 static WTF::String sqlUTF16String(std::span<const uint16_t> units)
 {
-    return WTF::String(std::span<const char16_t> { reinterpret_cast<const char16_t*>(units.data()), units.size() });
+    return WTF::StringImpl::create(WTF::spanReinterpretCast<const char16_t>(units));
 }
 
 class SQLDataCellCursor {
