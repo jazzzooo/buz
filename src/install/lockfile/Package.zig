@@ -1073,19 +1073,22 @@ pub fn Package(comptime SemverIntType: type) type {
 
             switch (dependency_version.tag) {
                 .folder => {
-                    const relative = try std.fs.path.relative(
+                    var path_buf: bun.PathBuffer = undefined;
+                    const abs_path = Path.joinAbsStringBufZChecked(
+                        FileSystem.instance.top_level_dir,
+                        &path_buf,
+                        &.{ source_dir, dependency_version.value.folder.slice(buf) },
+                        .auto,
+                    ) orelse {
+                        try log.addErrorFmt(source, value_loc, allocator, "unsafe folder path for dependency \"{s}\": ENAMETOOLONG", .{external_alias.slice(buf)});
+                        return error.InstallFailed;
+                    };
+                    const relative = try std.fs.path.relativeAlloc(
                         allocator,
                         FileSystem.instance.top_level_dir,
                         null,
                         FileSystem.instance.top_level_dir,
-                        Path.joinAbsString(
-                            FileSystem.instance.top_level_dir,
-                            &[_]string{
-                                source_dir,
-                                dependency_version.value.folder.slice(buf),
-                            },
-                            .auto,
-                        ),
+                        abs_path,
                     );
                     defer allocator.free(relative);
                     // if relative is empty, we are linking the package to itself

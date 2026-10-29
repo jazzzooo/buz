@@ -488,11 +488,11 @@ pub fn chdir(path: anytype, destination: anytype) Maybe(void) {
         if (comptime Type == []u8 or Type == []const u8) {
             return chdirOSPath(
                 &(std.posix.toPosixPath(path) catch return .{ .err = .{
-                    .errno = @backingInt(SystemErrno.EINVAL),
+                    .errno = @backingInt(SystemErrno.ENAMETOOLONG),
                     .syscall = .chdir,
                 } }),
                 &(std.posix.toPosixPath(destination) catch return .{ .err = .{
-                    .errno = @backingInt(SystemErrno.EINVAL),
+                    .errno = @backingInt(SystemErrno.ENAMETOOLONG),
                     .syscall = .chdir,
                 } }),
             );

@@ -436,6 +436,10 @@ pub const FileSystem = struct {
         return path_handler.joinAbsStringBufZ(f.top_level_dir, buf, parts, .auto);
     }
 
+    pub fn absBufZChecked(f: *@This(), parts: []const string, buf: []u8) ?stringZ {
+        return path_handler.joinAbsStringBufZChecked(f.top_level_dir, buf, parts, .auto);
+    }
+
     pub const RealFS = struct {
         io: std.Io,
         entries_mutex: std.Io.Mutex = .init,
@@ -1171,7 +1175,7 @@ pub const FileSystem = struct {
 
         pub fn kind(
             fs: *RealFS,
-            _dir: string,
+            dir: string,
             base: string,
             existing_fd: FD,
             store_fd: bool,
@@ -1181,15 +1185,9 @@ pub const FileSystem = struct {
                 .symlink = PathString.empty,
             };
 
-            const dir = _dir;
-            var combo = [2]string{ dir, base };
             var outpath: bun.PathBuffer = undefined;
-            const entry_path = path_handler.joinAbsStringBuf(fs.cwd, &outpath, &combo, .auto);
-
-            outpath[entry_path.len + 1] = 0;
-            outpath[entry_path.len] = 0;
-
-            const absolute_path_c: [:0]const u8 = outpath[0..entry_path.len :0];
+            const absolute_path_c = path_handler.joinAbsStringBufZChecked(fs.cwd, &outpath, &.{ dir, base }, .auto) orelse
+                return error.ENAMETOOLONG;
 
             if (comptime bun.Environment.isWindows) {
                 const file = bun.sys.getFileAttributes(absolute_path_c) orelse return error.FileNotFound;

@@ -61,8 +61,7 @@ pub fn takeFoundTestFiles(this: *Scanner) Allocator.Error![]bun.PathString {
 }
 
 pub fn scan(this: *Scanner, path_literal: []const u8) Error!void {
-    const parts = &[_][]const u8{ this.fs.top_level_dir, path_literal };
-    const path = this.fs.absBuf(parts, &this.scan_dir_buf);
+    const path = this.fs.absBufZChecked(&.{path_literal}, &this.scan_dir_buf) orelse return error.DoesNotExist;
 
     var root = try this.readDirWithName(path, null);
 
@@ -93,26 +92,16 @@ pub fn scan(this: *Scanner, path_literal: []const u8) Error!void {
 
     while (this.dirs_to_scan.readItem()) |entry| {
         bun.assert(entry.relative_dir.isValid());
-        if (!bun.Environment.isWindows) {
-            const dir = entry.relative_dir.stdDir();
-
-            const parts2 = &[_][]const u8{ entry.dir_path, entry.name.slice() };
-            var path2 = this.fs.absBuf(parts2, &this.open_dir_buf);
-            this.open_dir_buf[path2.len] = 0;
-            const pathZ = this.open_dir_buf[path2.len - entry.name.slice().len .. path2.len :0];
-            const child_dir = bun.openDir(dir, pathZ) catch continue;
-            path2 = try this.fs.dirname_store.append([]const u8, path2);
-            FileSystem.setMaxFd(child_dir.handle);
-            _ = this.readDirWithName(path2, child_dir) catch return error.OutOfMemory;
-        } else {
-            const parts2 = &[_][]const u8{ entry.dir_path, entry.name.slice() };
-            const path2 = this.fs.absBufZ(parts2, &this.open_dir_buf);
-            const child_dir = bun.openDirNoRenamingOrDeletingWindows(bun.invalid_fd, path2) catch continue;
-            _ = this.readDirWithName(
-                try this.fs.dirname_store.append([]const u8, path2),
-                child_dir,
-            ) catch return error.OutOfMemory;
-        }
+        const child_path = this.fs.absBufZChecked(&.{ entry.dir_path, entry.name.slice() }, &this.open_dir_buf) orelse continue;
+        const child_dir = (if (bun.Environment.isWindows)
+            bun.openDirNoRenamingOrDeletingWindows(bun.invalid_fd, child_path)
+        else
+            bun.openDir(entry.relative_dir.stdDir(), child_path[child_path.len - entry.name.slice().len .. :0])) catch continue;
+        FileSystem.setMaxFd(child_dir.handle);
+        _ = this.readDirWithName(
+            try this.fs.dirname_store.append([]const u8, child_path),
+            child_dir,
+        ) catch return error.OutOfMemory;
     }
 }
 
@@ -220,9 +209,8 @@ pub fn next(this: *Scanner, entry: *FileSystem.Entry, fd: bun.FD) void {
 
             // Prune ignored directory trees early so we never traverse them.
             if (this.path_ignore_patterns.len > 0) {
-                const parts = &[_][]const u8{ entry.dir, entry.base() };
-                const dir_path = this.fs.absBuf(parts, &this.open_dir_buf);
-                if (this.matchesPathIgnorePattern(dir_path)) return;
+                const path = this.fs.absBufZChecked(&.{ entry.dir, entry.base() }, &this.open_dir_buf) orelse return;
+                if (this.matchesPathIgnorePattern(path)) return;
             }
 
             this.search_count += 1;
@@ -240,9 +228,7 @@ pub fn next(this: *Scanner, entry: *FileSystem.Entry, fd: bun.FD) void {
             this.search_count += 1;
             if (!this.couldBeTestFile(name, true)) return;
 
-            const parts = &[_][]const u8{ entry.dir, entry.base() };
-            const path = this.fs.absBuf(parts, &this.open_dir_buf);
-
+            const path = this.fs.absBufZChecked(&.{ entry.dir, entry.base() }, &this.open_dir_buf) orelse return;
             if (!this.doesAbsolutePathMatchFilter(path)) {
                 const rel_path = bun.handleOom(std.fs.path.relative(
                     this.allocator(),

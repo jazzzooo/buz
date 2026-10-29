@@ -112,9 +112,8 @@ pub fn processNamesArray(
 
     var workspace_globs = std.array_list.Managed(string).init(allocator);
     defer workspace_globs.deinit();
-    const filepath_bufOS = allocator.create(bun.PathBuffer) catch unreachable;
-    const filepath_buf = std.mem.asBytes(filepath_bufOS);
-    defer allocator.destroy(filepath_bufOS);
+    const filepath_buf = try allocator.create(bun.PathBuffer);
+    defer allocator.destroy(filepath_buf);
 
     for (arr.slice()) |item| {
         // TODO: when does this get deallocated?
@@ -135,22 +134,20 @@ pub fn processNamesArray(
             continue;
         }
 
-        const abs_package_json_path: stringZ = Path.joinAbsStringBufZ(
-            source_dir,
-            filepath_buf,
-            &.{ input_path, "package.json" },
-            .auto,
-        );
+        var abs_package_json_path: stringZ = undefined;
+        const workspace_entry = read: {
+            abs_package_json_path = Path.joinAbsStringBufZChecked(
+                source_dir,
+                filepath_buf,
+                &.{ input_path, "package.json" },
+                .auto,
+            ) orelse break :read error.ENAMETOOLONG;
 
-        // skip root package.json
-        if (strings.eqlLong(std.fs.path.dirname(abs_package_json_path) orelse "", source_dir, true)) continue;
+            // skip root package.json
+            if (strings.eqlLong(std.fs.path.dirname(abs_package_json_path) orelse "", source_dir, true)) continue;
 
-        const workspace_entry = processWorkspaceName(
-            allocator,
-            json_cache,
-            abs_package_json_path,
-            log,
-        ) catch |err| {
+            break :read processWorkspaceName(allocator, json_cache, abs_package_json_path, log);
+        } catch |err| {
             bun.handleErrorReturnTrace(err, @errorReturnTrace());
             switch (err) {
                 error.EISNOTDIR, error.EISDIR, error.EACCESS, error.EPERM, error.ENOENT, error.FileNotFound => {
@@ -177,7 +174,7 @@ pub fn processNamesArray(
                         item.loc,
                         allocator,
                         "{s} reading package.json for workspace package \"{s}\" from \"{s}\"",
-                        .{ @errorName(err), input_path, bun.getcwd(allocator.alloc(u8, bun.MAX_PATH_BYTES) catch unreachable) catch unreachable },
+                        .{ @errorName(err), input_path, source_dir },
                     ) catch {};
                 },
             }
@@ -293,20 +290,17 @@ pub fn processNamesArray(
 
                 debug("matched path: {s}, dirname: {s}\n", .{ matched_path, entry_dir });
 
-                const abs_package_json_path = Path.joinAbsStringBufZ(
-                    source_dir,
-                    filepath_buf,
-                    &.{ entry_dir, "package.json" },
-                    .auto,
-                );
-                const abs_workspace_dir_path: string = strings.withoutSuffixComptime(abs_package_json_path, "package.json");
+                var abs_package_json_path: stringZ = undefined;
+                const workspace_entry = read: {
+                    abs_package_json_path = Path.joinAbsStringBufZChecked(
+                        source_dir,
+                        filepath_buf,
+                        &.{ entry_dir, "package.json" },
+                        .auto,
+                    ) orelse break :read error.ENAMETOOLONG;
 
-                const workspace_entry = processWorkspaceName(
-                    allocator,
-                    json_cache,
-                    abs_package_json_path,
-                    log,
-                ) catch |err| {
+                    break :read processWorkspaceName(allocator, json_cache, abs_package_json_path, log);
+                } catch |err| {
                     bun.handleErrorReturnTrace(err, @errorReturnTrace());
 
                     const entry_base: []const u8 = std.fs.path.basename(matched_path);
@@ -337,6 +331,7 @@ pub fn processNamesArray(
 
                 if (workspace_entry.name.len == 0) continue;
 
+                const abs_workspace_dir_path = strings.withoutSuffixComptime(abs_package_json_path, "package.json");
                 const workspace_path = try std.fs.path.relative(
                     allocator,
                     source_dir,

@@ -261,8 +261,8 @@ fn resolveBuf(
     var output_allocator: std.heap.BufferFirstAllocator = .init(buf, bun.default_allocator);
     const output_alloc = output_allocator.allocator();
     const resolved = bun.handleOom(switch (platform) {
-        .posix => std.fs.path.resolvePosix(output_alloc, paths),
-        .windows => std.fs.path.resolveWindows(output_alloc, paths),
+        .posix => std.fs.path.resolveAllocPosix(output_alloc, paths),
+        .windows => std.fs.path.resolveAllocWindows(output_alloc, paths),
         .nt => unreachable,
     });
     defer if (!output_allocator.fixed_buffer_allocator.ownsPtr(resolved.ptr)) output_alloc.free(resolved);

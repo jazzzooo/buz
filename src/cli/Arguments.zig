@@ -447,7 +447,8 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
     if (args.option("--cwd")) |cwd_arg| {
         cwd = brk: {
             var outbuf: bun.PathBuffer = undefined;
-            const out = bun.path.joinAbsString(try bun.getcwd(&outbuf), &.{cwd_arg}, .auto);
+            const out = try std.fs.path.resolveAlloc(allocator, &.{ try bun.getcwd(&outbuf), cwd_arg });
+            defer allocator.free(out);
             bun.sys.chdir("", out).unwrap() catch |err| {
                 Output.err(err, "Could not change directory to \"{s}\"\n", .{cwd_arg});
                 Global.exit(1);
