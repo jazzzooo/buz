@@ -69,4 +69,8 @@ const engine_shims = .{
     ),
 };
 
-pub const schema = b.moduleWithEngineShims("NAPI", .{}, engine_shims);
+const native_exports = .{
+    b.nativeExportWithOptions("pollCleanupHooks", .{}, b.none, .current_realm_throwing),
+};
+
+pub const schema = b.moduleWithDeclarations("NAPI", .{}, .{}, engine_shims, native_exports);

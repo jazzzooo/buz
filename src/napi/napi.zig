@@ -1387,10 +1387,10 @@ pub export fn napi_get_uv_event_loop(env_: napi_env, loop_: ?*napi_event_loop) n
 }
 pub extern fn napi_fatal_exception(env: napi_env, err: napi_value) napi_status;
 pub extern fn napi_add_async_cleanup_hook(env: napi_env, function: napi_async_cleanup_hook, data: ?*anyopaque, handle_out: ?*napi_async_cleanup_hook_handle) napi_status;
-pub extern fn napi_add_env_cleanup_hook(env: napi_env, function: ?*const fn (?*anyopaque) void, data: ?*anyopaque) napi_status;
+pub extern fn napi_add_env_cleanup_hook(env: napi_env, function: ?*const fn (?*anyopaque) callconv(.c) void, data: ?*anyopaque) napi_status;
 pub extern fn napi_create_typedarray(env: napi_env, napi_typedarray_type, length: usize, arraybuffer: napi_value, byte_offset: usize, result: ?*napi_value) napi_status;
 pub extern fn napi_remove_async_cleanup_hook(handle: napi_async_cleanup_hook_handle) napi_status;
-pub extern fn napi_remove_env_cleanup_hook(env: napi_env, function: ?*const fn (?*anyopaque) void, data: ?*anyopaque) napi_status;
+pub extern fn napi_remove_env_cleanup_hook(env: napi_env, function: ?*const fn (?*anyopaque) callconv(.c) void, data: ?*anyopaque) napi_status;
 
 extern fn napi_internal_cleanup_env_cpp(env: napi_env) callconv(.c) void;
 extern fn napi_internal_check_gc(env: napi_env) callconv(.c) void;
@@ -1402,6 +1402,15 @@ pub export fn napi_internal_register_cleanup_zig(env_: napi_env) void {
             napi_internal_cleanup_env_cpp(@ptrCast(data));
         }
     }.callback);
+}
+
+fn pollCleanupHooks(
+    _: bun.bindgen.CallContext(PollCleanupHooksSchema),
+    _: bun.bindgen.Args(PollCleanupHooksSchema),
+) bun.JSError!void {
+    const event_loop = jsc.VirtualMachine.get().eventLoop();
+    event_loop.autoTickActive();
+    event_loop.tick();
 }
 
 pub export fn napi_internal_suppress_crash_on_abort_if_desired() void {
@@ -1459,332 +1468,236 @@ pub const Finalizer = struct {
     }
 };
 
-// TODO: generate comptime version of this instead of runtime checking
 pub const ThreadSafeFunction = struct {
-    pub const Callback = union(enum) {
-        js: bun.bindgen.Root.Optional,
-        c: struct {
-            js: bun.bindgen.Root.Optional,
-            napi_threadsafe_function_call_js: napi_threadsafe_function_call_js,
-        },
-
-        pub fn deinit(this: *Callback) void {
-            if (this.* == .js) {
-                this.js.deinit();
-            } else if (this.* == .c) {
-                this.c.js.deinit();
-            }
-        }
-    };
-    /// thread-safe functions can be "referenced" and "unreferenced". A
-    /// "referenced" thread-safe function will cause the event loop on the thread
-    /// on which it is created to remain alive until the thread-safe function is
-    /// destroyed. In contrast, an "unreferenced" thread-safe function will not
-    /// prevent the event loop from exiting. The APIs napi_ref_threadsafe_function
-    /// and napi_unref_threadsafe_function exist for this purpose.
-    ///
-    /// Neither does napi_unref_threadsafe_function mark the thread-safe
-    /// functions as able to be destroyed nor does napi_ref_threadsafe_function
-    /// prevent it from being destroyed.
-    poll_ref: Async.KeepAlive,
-
-    // User implementation error can cause this number to go negative.
-    thread_count: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
     io: std.Io,
     lock: std.Io.Mutex = .init,
+    condition: std.Io.Condition = .init,
+    thread_count: usize,
+    state: enum { open, closing, closed } = .open,
+    queue: bun.LinearFifo(?*anyopaque, .Dynamic) = .init(bun.default_allocator),
+    max_queue_size: usize,
+    ctx: ?*anyopaque,
+    call_js: ?napi_threadsafe_function_call_js,
+    vm: ?VMState,
+    task: jsc.ConcurrentTask = .{},
+    scheduled: bool = false,
+    dispatching: bool = false,
 
-    event_loop: *jsc.EventLoop,
-    tracker: jsc.Debugger.AsyncTaskTracker,
-
-    env: NapiEnv.Ref,
-    finalizer_fun: napi_finalize = null,
-    finalizer_data: ?*anyopaque = null,
-
-    has_queued_finalizer: bool = false,
-    queue: Queue = .{
-        .data = bun.LinearFifo(?*anyopaque, .Dynamic).init(bun.default_allocator),
-        .max_queue_size = 0,
-    },
-
-    ctx: ?*anyopaque = null,
-
-    callback: Callback = undefined,
-    dispatch_state: DispatchState.Atomic = DispatchState.Atomic.init(.idle),
-    blocking_condvar: std.Io.Condition = .init,
-    closing: std.atomic.Value(ClosingState) = std.atomic.Value(ClosingState).init(.not_closing),
-    aborted: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    const VMState = struct {
+        env: NapiEnv.Ref,
+        event_loop: *jsc.EventLoop,
+        callback: bun.bindgen.Root.Optional,
+        tracker: jsc.Debugger.AsyncTaskTracker,
+        poll_ref: Async.KeepAlive = .{},
+        finalizer: napi_finalize,
+        finalizer_data: ?*anyopaque,
+    };
 
     pub const new = bun.TrivialNew(ThreadSafeFunction);
 
-    const ClosingState = enum(u8) {
-        not_closing,
-        closing,
-        closed,
-    };
-
-    pub const DispatchState = enum(u8) {
-        idle,
-        running,
-        pending,
-
-        pub const Atomic = std.atomic.Value(DispatchState);
-    };
-
-    pub const Queue = struct {
-        data: bun.LinearFifo(?*anyopaque, .Dynamic),
-
-        /// This value will never change after initialization. Zero means the size is unlimited.
-        max_queue_size: usize,
-
-        count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-
-        pub fn init(max_queue_size: usize, allocator: std.mem.Allocator) Queue {
-            return .{ .data = bun.LinearFifo(?*anyopaque, .Dynamic).init(allocator), .max_queue_size = max_queue_size };
-        }
-
-        pub fn deinit(this: *Queue) void {
-            this.data.deinit();
-        }
-
-        pub fn isBlocked(this: *const Queue) bool {
-            return this.max_queue_size > 0 and this.count.load(.seq_cst) >= this.max_queue_size;
-        }
-    };
-
-    // This has two states:
-    // 1. We need to run potentially multiple tasks.
-    // 2. We need to finalize the ThreadSafeFunction.
-    pub fn onDispatch(this: *ThreadSafeFunction) void {
-        if (this.closing.load(.seq_cst) == .closed) {
-            // Finalize the ThreadSafeFunction.
-            this.deinit();
-            return;
-        }
-
-        var is_first = true;
-
-        // Run the tasks.
-        while (true) {
-            this.dispatch_state.store(.running, .seq_cst);
-            if (this.dispatchOne(is_first)) {
-                is_first = false;
-                this.dispatch_state.store(.pending, .seq_cst);
-            } else {
-                // We're done running tasks, for now.
-                this.dispatch_state.store(.idle, .seq_cst);
-                break;
-            }
-        }
-
-        // Node sets a maximum number of runs per ThreadSafeFunction to 1,000.
-        // We don't set a max. I would like to see an issue caused by not
-        // setting a max before we do set a max. It is better for performance to
-        // not add unnecessary event loop ticks.
+    fn isFull(this: *const ThreadSafeFunction) bool {
+        return this.max_queue_size != 0 and this.queue.count >= this.max_queue_size;
     }
 
-    pub fn isClosing(this: *const ThreadSafeFunction) bool {
-        return this.closing.load(.seq_cst) != .not_closing;
+    // The mutex protects scheduling as well as the queue: an empty dispatch
+    // cannot lose a producer's wakeup while relinquishing the dispatcher.
+    fn scheduleDispatch(this: *ThreadSafeFunction) void {
+        if (this.scheduled or this.dispatching) return;
+        const vm = if (this.vm) |*vm| vm else return;
+        this.scheduled = true;
+        vm.event_loop.enqueueTaskConcurrent(this.task.from(this, .manual_deinit));
     }
 
-    fn maybeQueueFinalizer(this: *ThreadSafeFunction) void {
-        switch (this.closing.swap(.closed, .seq_cst)) {
-            .closing, .not_closing => {
-                // TODO: is this boolean necessary? Can we rely just on the closing value?
-                if (!this.has_queued_finalizer) {
-                    this.has_queued_finalizer = true;
-                    this.callback.deinit();
-                    this.poll_ref.disable();
-                    this.event_loop.enqueueTask(jsc.Task.init(this));
-                }
-            },
-            .closed => {
-                // already scheduled.
-            },
+    fn close(this: *ThreadSafeFunction) void {
+        if (this.state != .open) return;
+        this.state = .closing;
+        this.condition.broadcast(this.io);
+    }
+
+    // Finalization releases VM resources, but native producers may outlive
+    // the VM. Only their last release (or napi_closing result) frees the handle.
+    fn unlock(this: *ThreadSafeFunction) void {
+        const destroy = this.state == .closed and this.thread_count == 0 and !this.dispatching;
+        this.lock.unlock(this.io);
+        if (destroy) bun.destroy(this);
+    }
+
+    fn cleanup(data: ?*anyopaque) callconv(.c) void {
+        const this: *ThreadSafeFunction = @ptrCast(@alignCast(data.?));
+        this.lock.lockUncancelable(this.io);
+        defer this.unlock();
+        this.close();
+        this.finalize();
+    }
+
+    /// Called with the mutex held; addon callbacks run without it.
+    fn finalize(this: *ThreadSafeFunction) void {
+        var vm = this.vm orelse return;
+        bun.assert(this.state == .closing);
+        if (this.scheduled) {
+            const removed = vm.event_loop.cancelTask(&this.task);
+            bun.assert(removed);
+            this.scheduled = false;
         }
-    }
+        this.vm = null;
+        var queue = this.queue;
+        this.queue = .init(bun.default_allocator);
+        this.lock.unlock(this.io);
 
-    pub fn dispatchOne(this: *ThreadSafeFunction, is_first: bool) bool {
-        var queue_finalizer_after_call = false;
-        const has_more, const task = brk: {
-            this.lock.lockUncancelable(this.io);
-            defer this.lock.unlock(this.io);
-            const was_blocked = this.queue.isBlocked();
-            const t = this.queue.data.readItem() orelse {
-                // When there are no tasks and the number of threads that have
-                // references reaches zero, we prepare to finalize the
-                // ThreadSafeFunction.
-                if (this.thread_count.load(.seq_cst) == 0) {
-                    if (this.queue.max_queue_size > 0) {
-                        this.blocking_condvar.signal(this.io);
-                    }
-                    this.maybeQueueFinalizer();
-                }
-                return false;
+        const env = vm.env.get();
+        _ = napi_remove_env_cleanup_hook(env, cleanup, this);
+        vm.poll_ref.disable();
+        if (this.call_js) |call_js| {
+            while (queue.readItem()) |data| call_js(null, .empty, this.ctx, data);
+        }
+        queue.deinit();
+        vm.callback.deinit();
+        if (vm.finalizer) |fun| {
+            var finalizer: Finalizer = .{
+                .env = vm.env,
+                .fun = fun,
+                .data = vm.finalizer_data,
+                .hint = this.ctx,
             };
-
-            if (this.queue.count.fetchSub(1, .seq_cst) == 1 and this.thread_count.load(.seq_cst) == 0) {
-                this.closing.store(.closing, .seq_cst);
-                if (this.queue.max_queue_size > 0) {
-                    this.blocking_condvar.signal(this.io);
-                }
-                queue_finalizer_after_call = true;
-            } else if (was_blocked and !this.queue.isBlocked()) {
-                this.blocking_condvar.signal(this.io);
-            }
-
-            break :brk .{ !this.isClosing(), t };
-        };
-
-        this.call(task, !is_first) catch return false;
-
-        if (queue_finalizer_after_call) {
-            this.maybeQueueFinalizer();
+            finalizer.run();
+            finalizer.deinit();
+        } else {
+            vm.env.deinit();
         }
 
-        return has_more;
+        this.lock.lockUncancelable(this.io);
+        this.state = .closed;
     }
 
-    /// This function can be called multiple times in one tick of the event loop.
-    /// See: https://github.com/nodejs/node/pull/38506
-    /// In that case, we need to drain microtasks.
-    fn call(this: *ThreadSafeFunction, task: ?*anyopaque, is_first: bool) bun.JSTerminated!void {
-        const env = this.env.get();
-        if (!is_first) {
-            try this.event_loop.drainMicrotasks();
+    pub fn onDispatch(this: *ThreadSafeFunction) void {
+        this.lock.lockUncancelable(this.io);
+        bun.assert(this.scheduled and !this.dispatching);
+        this.scheduled = false;
+        this.dispatching = true;
+        defer {
+            this.dispatching = false;
+            this.unlock();
         }
-        const globalObject = env.toJS();
 
-        this.tracker.willDispatch(globalObject);
-        defer this.tracker.didDispatch(globalObject);
+        var first = true;
+        while (true) {
+            if (this.state != .open or (this.queue.count == 0 and this.thread_count == 0)) {
+                this.close();
+                if (first) {
+                    this.finalize();
+                } else {
+                    this.scheduleFinalizer();
+                }
+                return;
+            }
+            if (this.queue.count == 0) return;
 
-        switch (this.callback) {
-            .js => |*strong| {
-                const js: JSValue = BindingEscape.optionalRootValue(globalObject, strong) orelse .js_undefined;
-                if (js.isEmptyOrUndefinedOrNull()) {
+            // A checkpoint can abort the function or terminate the worker, so
+            // leave the next payload in the queue until it has completed.
+            if (!first) {
+                const event_loop = this.vm.?.event_loop;
+                this.lock.unlock(this.io);
+                const terminated = if (event_loop.drainMicrotasks()) |_| false else |_| true;
+                this.lock.lockUncancelable(this.io);
+                if (terminated) {
+                    this.scheduleFinalizer();
                     return;
                 }
+                if (this.state != .open) continue;
+            }
+            first = false;
 
-                var scope: bun.bindgen.FocusedEngineScope = undefined;
-                scope.init(globalObject);
-                defer scope.deinit();
-                const function = BindingEscape.borrowEngineValue(&scope, js);
-                _ = function.call(bun.bindgen.AnyResult.initUndefined(&scope).operand(&scope), &.{}) catch |err|
-                    globalObject.reportActiveExceptionAsUnhandled(err);
-            },
-            .c => |*cb| {
-                const js: JSValue = BindingEscape.optionalRootValue(globalObject, &cb.js) orelse .js_undefined;
-
-                const handle_scope = NapiHandleScope.open(env, false);
-                defer if (handle_scope) |scope| scope.close(env);
-                cb.napi_threadsafe_function_call_js(env, napi_value.create(env, js), this.ctx, task);
-            },
+            const data = this.queue.readItem().?;
+            if (this.max_queue_size != 0) this.condition.signal(this.io);
+            this.lock.unlock(this.io);
+            const terminated = if (this.call(data)) |_| false else |_| true;
+            this.lock.lockUncancelable(this.io);
+            if (terminated) {
+                this.scheduleFinalizer();
+                return;
+            }
         }
     }
 
-    pub fn enqueue(this: *ThreadSafeFunction, ctx: ?*anyopaque, block: bool) napi_status {
-        this.lock.lockUncancelable(this.io);
-        defer this.lock.unlock(this.io);
-        if (block) {
-            while (this.queue.isBlocked()) {
-                this.blocking_condvar.waitUncancelable(this.io, &this.lock);
-            }
+    fn scheduleFinalizer(this: *ThreadSafeFunction) void {
+        this.close();
+        // Finish the callback's microtasks before finalizing. On termination,
+        // worker cleanup cancels this task and finalizes after clearing the trap.
+        this.dispatching = false;
+        this.scheduleDispatch();
+    }
+
+    fn call(this: *ThreadSafeFunction, data: ?*anyopaque) bun.JSTerminated!void {
+        const vm = &this.vm.?;
+        const env = vm.env.get();
+        const global = env.toJS();
+        const tracker = vm.tracker;
+        tracker.willDispatch(global);
+        defer tracker.didDispatch(global);
+
+        var scope: bun.bindgen.FocusedEngineScope = undefined;
+        scope.init(global);
+        defer scope.deinit();
+        const callback = BindingEscape.optionalRootValue(global, &vm.callback);
+        if (this.call_js) |call_js| {
+            const handle_scope = NapiHandleScope.open(env, false);
+            defer if (handle_scope) |handle| handle.close(env);
+            call_js(env, if (callback) |js| napi_value.create(env, js) else .empty, this.ctx, data);
+            _ = env.reportAndClearPendingException();
         } else {
-            if (this.queue.isBlocked()) {
-                // don't set the error on the env as this is run from another thread
-                return @backingInt(NapiStatus.queue_full);
+            const function = BindingEscape.borrowEngineValue(&scope, callback.?);
+            if (function.call(bun.bindgen.AnyResult.initUndefined(&scope).operand(&scope), &.{})) |_| {} else |err| {
+                _ = try scope.reportPendingException(err);
             }
         }
+        switch (global.pendingExceptionKind()) {
+            .none => {},
+            .other => _ = try scope.reportPendingException(error.JSError),
+            .termination => return error.JSTerminated,
+        }
+    }
 
-        if (this.isClosing()) {
-            if (this.thread_count.load(.seq_cst) <= 0) {
-                return @backingInt(NapiStatus.invalid_arg);
-            }
-            _ = this.release(.release, true);
+    pub fn enqueue(this: *ThreadSafeFunction, data: ?*anyopaque, block: bool) napi_status {
+        this.lock.lockUncancelable(this.io);
+        defer this.unlock();
+        while (this.state == .open and this.isFull()) {
+            if (!block) return @backingInt(NapiStatus.queue_full);
+            this.condition.waitUncancelable(this.io, &this.lock);
+        }
+        if (this.state != .open) {
+            if (this.thread_count == 0) return @backingInt(NapiStatus.invalid_arg);
+            this.thread_count -= 1;
             return @backingInt(NapiStatus.closing);
         }
-
-        _ = this.queue.count.fetchAdd(1, .seq_cst);
-        bun.handleOom(this.queue.data.writeItem(ctx));
+        bun.handleOom(this.queue.writeItem(data));
         this.scheduleDispatch();
         return @backingInt(NapiStatus.ok);
     }
 
-    fn scheduleDispatch(this: *ThreadSafeFunction) void {
-        switch (this.dispatch_state.swap(.pending, .seq_cst)) {
-            .idle => {
-                this.event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(this));
-            },
-            .running => {
-                // it will check if it has more work to do
-            },
-            .pending => {
-                // we've already scheduled it to run
-            },
-        }
+    pub fn acquire(this: *ThreadSafeFunction) napi_status {
+        this.lock.lockUncancelable(this.io);
+        defer this.unlock();
+        if (this.state != .open) return @backingInt(NapiStatus.closing);
+        this.thread_count += 1;
+        return @backingInt(NapiStatus.ok);
     }
 
-    pub fn deinit(this: *ThreadSafeFunction) void {
-        this.unref();
-
-        if (this.finalizer_fun) |fun| {
-            var finalizer: Finalizer = .{
-                .env = this.env,
-                .fun = fun,
-                .data = this.finalizer_data,
-                .hint = this.ctx,
-            };
-            finalizer.enqueue();
-        } else {
-            this.env.deinit();
-        }
-
-        this.callback.deinit();
-        this.queue.deinit();
-        bun.destroy(this);
+    pub fn release(this: *ThreadSafeFunction, mode: napi_threadsafe_function_release_mode) napi_status {
+        this.lock.lockUncancelable(this.io);
+        defer this.unlock();
+        if (this.thread_count == 0) return @backingInt(NapiStatus.invalid_arg);
+        this.thread_count -= 1;
+        if (mode == .abort) this.close();
+        if (mode == .abort or this.thread_count == 0) this.scheduleDispatch();
+        return @backingInt(NapiStatus.ok);
     }
 
     pub fn ref(this: *ThreadSafeFunction) void {
-        this.poll_ref.refConcurrentlyFromEventLoop(this.event_loop);
+        if (this.vm) |*vm| vm.poll_ref.ref(vm.event_loop.virtual_machine);
     }
 
     pub fn unref(this: *ThreadSafeFunction) void {
-        this.poll_ref.unrefConcurrentlyFromEventLoop(this.event_loop);
-    }
-
-    pub fn acquire(this: *ThreadSafeFunction) napi_status {
-        this.lock.lockUncancelable(this.io);
-        defer this.lock.unlock(this.io);
-        if (this.isClosing()) {
-            return @backingInt(NapiStatus.closing);
-        }
-        _ = this.thread_count.fetchAdd(1, .seq_cst);
-        return @backingInt(NapiStatus.ok);
-    }
-
-    pub fn release(this: *ThreadSafeFunction, mode: napi_threadsafe_function_release_mode, already_locked: bool) napi_status {
-        if (!already_locked) this.lock.lockUncancelable(this.io);
-        defer if (!already_locked) this.lock.unlock(this.io);
-
-        if (this.thread_count.load(.seq_cst) < 0) {
-            return @backingInt(NapiStatus.invalid_arg);
-        }
-
-        const prev_remaining = this.thread_count.fetchSub(1, .seq_cst);
-
-        if (mode == .abort or prev_remaining == 1) {
-            if (!this.isClosing()) {
-                if (mode == .abort) {
-                    this.closing.store(.closing, .seq_cst);
-                    this.aborted.store(true, .seq_cst);
-                    if (this.queue.max_queue_size > 0) {
-                        this.blocking_condvar.signal(this.io);
-                    }
-                }
-                this.scheduleDispatch();
-            }
-        }
-
-        return @backingInt(NapiStatus.ok);
+        if (this.vm) |*vm| vm.poll_ref.unref(vm.event_loop.virtual_machine);
     }
 };
 
@@ -1808,6 +1721,9 @@ pub export fn napi_create_threadsafe_function(
     const result = result_ orelse {
         return env.invalidArg();
     };
+    if (initial_thread_count == 0) return env.invalidArg();
+    const vm = env.toJS().bunVM();
+    if (vm.isShuttingDown()) return env.genericFailure();
     var scope: bun.bindgen.FocusedEngineScope = undefined;
     scope.init(env.toJS());
     defer scope.deinit();
@@ -1817,7 +1733,6 @@ pub export fn napi_create_threadsafe_function(
         if (!callback.isCallable() and !callback.isAsyncContextFrame()) return env.setLastError(.function_expected);
     }
 
-    const vm = env.toJS().bunVM();
     var retained_callback: bun.bindgen.Root.Optional = .empty;
     if (callback_value) |callback| {
         const captured = scope.engineIn("AsyncHooks", "asyncContextFrameWithAsyncContextIfNeeded").call(.{
@@ -1838,30 +1753,24 @@ pub export fn napi_create_threadsafe_function(
         };
         retained_callback = root.takeOptional();
     }
-    var function = ThreadSafeFunction.new(.{
+    const function = ThreadSafeFunction.new(.{
         .io = vm.io,
-        .event_loop = vm.eventLoop(),
-        .env = .cloneFromRaw(env),
-        .callback = if (call_js_cb) |c| .{
-            .c = .{
-                .napi_threadsafe_function_call_js = c,
-                .js = retained_callback,
-            },
-        } else .{
-            .js = retained_callback,
-        },
+        .thread_count = initial_thread_count,
+        .max_queue_size = max_queue_size,
         .ctx = context,
-        .queue = ThreadSafeFunction.Queue.init(max_queue_size, bun.default_allocator),
-        .thread_count = .{ .raw = @intCast(initial_thread_count) },
-        .poll_ref = Async.KeepAlive.init(),
-        .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
-        .finalizer_fun = thread_finalize_cb,
-        .finalizer_data = thread_finalize_data,
+        .call_js = call_js_cb,
+        .vm = .{
+            .env = .cloneFromRaw(env),
+            .event_loop = vm.eventLoop(),
+            .callback = retained_callback,
+            .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
+            .finalizer = thread_finalize_cb,
+            .finalizer_data = thread_finalize_data,
+        },
     });
-
-    // nodejs by default keeps the event loop alive until the thread-safe function is unref'd
+    _ = napi_add_env_cleanup_hook(env, ThreadSafeFunction.cleanup, function);
     function.ref();
-    function.tracker.didSchedule(vm.global);
+    function.vm.?.tracker.didSchedule(vm.global);
 
     result.* = function;
     return env.ok();
@@ -1881,14 +1790,14 @@ pub export fn napi_acquire_threadsafe_function(func: napi_threadsafe_function) n
 }
 pub export fn napi_release_threadsafe_function(func: napi_threadsafe_function, mode: napi_threadsafe_function_release_mode) napi_status {
     log("napi_release_threadsafe_function", .{});
-    return func.release(mode, false);
+    return func.release(mode);
 }
 pub export fn napi_unref_threadsafe_function(env_: napi_env, func: napi_threadsafe_function) napi_status {
     log("napi_unref_threadsafe_function", .{});
     const env = env_ orelse {
         return envIsNull();
     };
-    bun.assert(func.event_loop.global == env.toJS());
+    if (func.vm) |*vm| bun.assert(vm.event_loop.global == env.toJS());
     func.unref();
     return env.ok();
 }
@@ -1897,7 +1806,7 @@ pub export fn napi_ref_threadsafe_function(env_: napi_env, func: napi_threadsafe
     const env = env_ orelse {
         return envIsNull();
     };
-    bun.assert(func.event_loop.global == env.toJS());
+    if (func.vm) |*vm| bun.assert(vm.event_loop.global == env.toJS());
     func.ref();
     return env.ok();
 }
@@ -2621,3 +2530,8 @@ const NapiHandleScopeEscapeSchema = NapiBindings.engineShim("napiHandleScopeEsca
 const NapiHandleScopeHandle = bun.bindgen.EngineArgumentType(NapiHandleScopeEscapeSchema, "scope");
 const NapiBindings = bun.bindgen.Module("NAPI");
 const NapiArrayBufferViewUnsafeSchema = NapiBindings.engineShim("arrayBufferViewUnsafe");
+const PollCleanupHooksSchema = NapiBindings.nativeExport("pollCleanupHooks");
+
+comptime {
+    _ = bun.bindgen.Fn(PollCleanupHooksSchema, pollCleanupHooks);
+}

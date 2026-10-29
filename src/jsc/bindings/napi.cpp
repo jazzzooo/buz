@@ -86,6 +86,11 @@
 using namespace JSC;
 using namespace Zig;
 
+void NapiEnv::pollCleanupHooks()
+{
+    Bun::Bindgen::ZigExports::bunBindgenZig_NAPI_pollCleanupHooks(m_globalObject);
+}
+
 class NapiCallScope {
     WTF_MAKE_NONCOPYABLE(NapiCallScope);
 

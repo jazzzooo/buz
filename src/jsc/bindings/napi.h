@@ -28,8 +28,6 @@
 extern "C" void napi_internal_register_cleanup_zig(napi_env env);
 extern "C" void napi_internal_suppress_crash_on_abort_if_desired();
 
-static bool equal(napi_async_cleanup_hook_handle, napi_async_cleanup_hook_handle);
-
 namespace Napi {
 
 static constexpr int DEFAULT_NAPI_VERSION = 10;
@@ -78,15 +76,7 @@ struct AsyncCleanupHook : CleanupHook {
 
     bool operator==(const AsyncCleanupHook& other) const
     {
-        if (this == &other || (function == other.function && data == other.data)) {
-            if (handle && other.handle) {
-                return equal(handle, other.handle);
-            }
-
-            return !handle && !other.handle;
-        }
-
-        return false;
+        return function == other.function && data == other.data && handle == other.handle;
     }
 };
 
@@ -127,24 +117,8 @@ using HookSet = std::unordered_set<EitherCleanupHook, EitherCleanupHook::Hash>;
 
 struct napi_async_cleanup_hook_handle__ {
     napi_env env;
-    Napi::HookSet::iterator iter;
-
-    napi_async_cleanup_hook_handle__(napi_env env, decltype(iter) iter)
-        : env(env)
-        , iter(iter)
-    {
-    }
-
-    bool operator==(const napi_async_cleanup_hook_handle__& other) const
-    {
-        return this == &other || (env == other.env && iter == other.iter);
-    }
+    bool started = false;
 };
-
-static bool equal(napi_async_cleanup_hook_handle one, napi_async_cleanup_hook_handle two)
-{
-    return one == two || *one == *two;
-}
 
 #define NAPI_ABORT(message)                                                               \
     do {                                                                                  \
@@ -195,7 +169,8 @@ public:
     void cleanup()
     {
         while (!m_cleanupHooks.empty()) {
-            drain();
+            if (!drain())
+                pollCleanupHooks();
         }
 
         // Defer GC during entire finalizer cleanup to prevent iterator invalidation.
@@ -279,11 +254,10 @@ public:
             }
         }
 
-        auto handle = std::make_unique<napi_async_cleanup_hook_handle__>(this, m_cleanupHooks.end());
+        auto handle = std::make_unique<napi_async_cleanup_hook_handle__>(this);
 
-        auto [iter, inserted] = m_cleanupHooks.emplace(Napi::AsyncCleanupHook(function, handle.get(), data, ++m_cleanupHookCounter));
+        bool inserted = m_cleanupHooks.emplace(Napi::AsyncCleanupHook(function, handle.get(), data, ++m_cleanupHookCounter)).second;
         NAPI_RELEASE_ASSERT(inserted, "Attempted to add a duplicate async NAPI environment cleanup hook");
-        handle->iter = iter;
         return handle.release();
     }
 
@@ -293,10 +267,10 @@ public:
             return false; // Invalid handle
         }
 
-        for (const auto& hook : m_cleanupHooks) {
-            if (auto* async = std::get_if<Napi::AsyncCleanupHook>(&hook)) {
+        for (auto iter = m_cleanupHooks.begin(); iter != m_cleanupHooks.end(); ++iter) {
+            if (auto* async = std::get_if<Napi::AsyncCleanupHook>(&*iter)) {
                 if (async->handle == handle) {
-                    m_cleanupHooks.erase(handle->iter);
+                    m_cleanupHooks.erase(iter);
                     delete handle;
                     return true;
                 }
@@ -502,38 +476,48 @@ private:
     JSC::Strong<JSC::Unknown> m_pendingException;
     size_t m_cleanupHookCounter = 0;
 
+    void pollCleanupHooks();
+
     // Returns a vector of hooks in reverse order of insertion.
     std::vector<Napi::EitherCleanupHook> getHooks() const
     {
-        std::vector<Napi::EitherCleanupHook> hooks(m_cleanupHooks.begin(), m_cleanupHooks.end());
+        std::vector<Napi::EitherCleanupHook> hooks;
+        for (const auto& hook : m_cleanupHooks) {
+            if (auto* async = std::get_if<Napi::AsyncCleanupHook>(&hook); async && async->handle->started)
+                continue;
+            hooks.push_back(hook);
+        }
         std::sort(hooks.begin(), hooks.end(), [](const Napi::EitherCleanupHook& left, const Napi::EitherCleanupHook& right) {
             return left.get().insertionCounter > right.get().insertionCounter;
         });
         return hooks;
     }
 
-    void drain()
+    bool drain()
     {
         std::vector<Napi::EitherCleanupHook> hooks = getHooks();
 
         for (const Napi::EitherCleanupHook& hook : hooks) {
-            if (auto set_iter = m_cleanupHooks.find(hook); set_iter != m_cleanupHooks.end()) {
-                m_cleanupHooks.erase(set_iter);
-            } else {
+            auto set_iter = m_cleanupHooks.find(hook);
+            if (set_iter == m_cleanupHooks.end()) {
                 // Already removed during removal of a different cleanup hook
                 continue;
             }
 
             if (auto* sync = std::get_if<Napi::SyncCleanupHook>(&hook)) {
+                m_cleanupHooks.erase(set_iter);
                 ASSERT(sync->function != nullptr);
                 sync->function(sync->data);
             } else {
                 auto& async = std::get<Napi::AsyncCleanupHook>(hook);
+                if (async.handle->started)
+                    continue;
                 ASSERT(async.function != nullptr);
+                async.handle->started = true;
                 async.function(async.handle, async.data);
-                delete async.handle;
             }
         }
+        return !hooks.empty();
     }
 };
 
