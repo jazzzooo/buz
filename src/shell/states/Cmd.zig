@@ -351,11 +351,10 @@ pub fn childDone(this: *Cmd, child: ChildPtr, exit_code: ExitCode) Yield {
     if (child.ptr.is(Assigns)) {
         if (exit_code != 0) {
             const err = this.state.expanding_assigns.state.err;
-            this.state.expanding_assigns.state.err = .{ .custom = "" };
-            defer err.deinit(bun.default_allocator);
-
+            const message = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "{f}\n", .{err}));
+            defer bun.default_allocator.free(message);
             this.state.expanding_assigns.deinit();
-            return this.writeFailingError("{f}\n", .{err});
+            return this.writeFailingError("{s}", .{message});
         }
 
         this.state.expanding_assigns.deinit();
@@ -375,8 +374,11 @@ pub fn childDone(this: *Cmd, child: ChildPtr, exit_code: ExitCode) Yield {
                 .expanding_args => this.state.expanding_args.expansion.state.err,
                 else => @panic("Invalid state"),
             };
-            defer err.deinit(this.base.allocator());
-            return this.writeFailingError("{f}\n", .{err});
+            const message = bun.handleOom(std.fmt.allocPrint(bun.default_allocator, "{f}\n", .{err}));
+            defer bun.default_allocator.free(message);
+            // Reporting the error can synchronously destroy the command and its allocation scope.
+            err.deinit(this.base.allocator());
+            return this.writeFailingError("{s}", .{message});
         }
         // Handling this case from the shell spec:
         // "If there is no command name, but the command contained a

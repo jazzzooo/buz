@@ -239,45 +239,39 @@ pub fn next(this: *Expansion) Yield {
                 } else lexer_output: {
                     break :lexer_output bun.handleOom(Braces.NewLexer(.wtf8).tokenize(arena_allocator, brace_str));
                 };
-                const expansion_count = Braces.calculateExpandedAmount(lexer_output.tokens.items[0..]);
-
-                const stack_max = comptime 16;
-                comptime {
-                    assert(@sizeOf([]std.array_list.Managed(u8)) * stack_max <= 256);
+                const expansion_count = Braces.calculateExpandedAmount(lexer_output.tokens.items) catch |err| return this.failBraces(err);
+                if (expansion_count == 0) {
+                    if (this.node.has_glob_expansion()) {
+                        this.state = .glob;
+                    } else {
+                        this.pushCurrentOut();
+                        this.state = .done;
+                    }
+                    continue;
                 }
-                var maybe_stack_alloc_buffer: [stack_max][]std.array_list.Managed(u8) = undefined;
-                var maybe_stack_alloc: std.heap.BufferFirstAllocator = .init(@ptrCast(&maybe_stack_alloc_buffer), arena_allocator);
-                const stack_alloc = maybe_stack_alloc.allocator();
-                const expanded_strings = bun.handleOom(stack_alloc.alloc(std.array_list.Managed(u8), expansion_count));
+
+                var stack_buffer: [256]u8 = undefined;
+                var stack_allocator: std.heap.BufferFirstAllocator = .init(&stack_buffer, arena_allocator);
+                const expanded_strings = bun.handleOom(stack_allocator.allocator().alloc(std.array_list.Managed(u8), expansion_count));
 
                 for (0..expansion_count) |i| {
                     expanded_strings[i] = std.array_list.Managed(u8).init(this.base.allocator());
                 }
+                defer for (expanded_strings) |*str| str.deinit();
 
                 Braces.expand(
                     arena_allocator,
                     lexer_output.tokens.items[0..],
                     expanded_strings,
                     lexer_output.contains_nested,
-                ) catch |err| switch (err) {
-                    error.OutOfMemory => bun.outOfMemory(),
-                    error.UnexpectedToken => std.debug.panic(
-                        "unexpected error from Braces.expand: UnexpectedToken",
-                        .{},
-                    ),
-                };
+                ) catch |err| return this.failBraces(err);
 
                 this.outEnsureUnusedCapacity(expansion_count);
 
                 // Add sentinel values
-                for (0..expansion_count) |i| {
-                    bun.handleOom(expanded_strings[i].append(0));
-                    switch (this.out.pushResult(&expanded_strings[i])) {
-                        .copied => {
-                            expanded_strings[i].deinit();
-                        },
-                        .moved => {},
-                    }
+                for (expanded_strings) |*str| {
+                    bun.handleOom(str.append(0));
+                    _ = this.out.pushResult(str);
                 }
 
                 if (this.node.has_glob_expansion()) {
@@ -303,6 +297,12 @@ pub fn next(this: *Expansion) Yield {
     }
 
     unreachable;
+}
+
+fn failBraces(this: *Expansion, err: Braces.Error) Yield {
+    if (err == error.OutOfMemory) bun.outOfMemory();
+    this.state = .{ .err = .{ .invalid_arguments = .{ .val = Braces.errorMessage(err) } } };
+    return .{ .expansion = this };
 }
 
 fn transitionToGlobState(this: *Expansion) Yield {

@@ -79,6 +79,13 @@ pub fn braces(
     context: bun.bindgen.CallContext(BracesSchema),
     args: bun.bindgen.Args(BracesSchema),
 ) bun.bindgen.CallError(BracesSchema)!bun.bindgen.Return(BracesSchema) {
+    return expandBraces(args) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return context.fail(.processing_failed, try bun.bindgen.DOMString.fromUTF8(Braces.errorMessage(err)));
+    };
+}
+
+fn expandBraces(args: bun.bindgen.Args(BracesSchema)) Braces.Error!bun.bindgen.Return(BracesSchema) {
     var owned_input = args.input.toOwned();
     defer owned_input.deinit();
     const brace_str = if (owned_input.impl) |impl| bun.String.init(impl) else bun.String.empty;
@@ -89,19 +96,10 @@ pub fn braces(
     var arena = std.heap.ArenaAllocator.init(bun.default_allocator);
     defer arena.deinit();
 
-    var lexer_output = lexer_output: {
-        if (bun.strings.isAllASCII(brace_slice.slice())) {
-            break :lexer_output Braces.Lexer.tokenize(arena.allocator(), brace_slice.slice()) catch |err| {
-                return context.fail(.processing_failed, try bun.bindgen.DOMString.fromUTF8(@errorName(err)));
-            };
-        }
-
-        break :lexer_output Braces.NewLexer(.wtf8).tokenize(arena.allocator(), brace_slice.slice()) catch |err| {
-            return context.fail(.processing_failed, try bun.bindgen.DOMString.fromUTF8(@errorName(err)));
-        };
-    };
-
-    const expansion_count = Braces.calculateExpandedAmount(lexer_output.tokens.items[0..]);
+    const lexer_output = if (bun.strings.isAllASCII(brace_slice.slice()))
+        try Braces.Lexer.tokenize(arena.allocator(), brace_slice.slice())
+    else
+        try Braces.NewLexer(.wtf8).tokenize(arena.allocator(), brace_slice.slice());
 
     if (opts.tokenize) {
         const str = try std.fmt.allocPrint(bun.default_allocator, "{f}", .{std.json.fmt(lexer_output.tokens.items[0..], .{})});
@@ -110,14 +108,13 @@ pub fn braces(
     }
     if (opts.parse) {
         var parser = Braces.Parser.init(lexer_output.tokens.items[0..], arena.allocator());
-        const ast_node = parser.parse() catch |err| {
-            return context.fail(.processing_failed, try bun.bindgen.DOMString.fromUTF8(@errorName(err)));
-        };
+        const ast_node = try parser.parse();
         const str = try std.fmt.allocPrint(bun.default_allocator, "{f}", .{std.json.fmt(ast_node, .{})});
         defer bun.default_allocator.free(str);
         return .{ .text = try bun.bindgen.DOMString.fromUTF8(str) };
     }
 
+    const expansion_count = try Braces.calculateExpandedAmount(lexer_output.tokens.items);
     if (expansion_count == 0) {
         return .{ .values = try @FieldType(bun.bindgen.Return(BracesSchema), "values").fromBunStrings(&.{brace_str}) };
     }
@@ -128,18 +125,12 @@ pub fn braces(
         expanded_strings[i] = std.array_list.Managed(u8).init(arena.allocator());
     }
 
-    Braces.expand(
+    try Braces.expand(
         arena.allocator(),
         lexer_output.tokens.items[0..],
         expanded_strings,
         lexer_output.contains_nested,
-    ) catch |err| switch (err) {
-        error.OutOfMemory => |e| return e,
-        error.UnexpectedToken => return context.fail(
-            .processing_failed,
-            try bun.bindgen.DOMString.fromUTF8("Unexpected token while expanding braces"),
-        ),
-    };
+    );
 
     var out_strings = try arena.allocator().alloc(bun.String, expansion_count);
     for (0..expansion_count) |i| {

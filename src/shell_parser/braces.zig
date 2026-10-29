@@ -1,10 +1,6 @@
-const log = bun.Output.scoped(.BRACES, .visible);
-
-/// Using u16 because anymore tokens than that results in an unreasonably high
-/// amount of brace expansion (like around 32k variants to expand)
-const ExpansionVariant = packed struct(u32) {
-    start: u16 = 0,
-    end: u16 = 0, // must be >= start
+const ExpansionVariant = struct {
+    start: usize = 0,
+    end: usize = 0,
 };
 
 const Token = union(enum) {
@@ -16,8 +12,8 @@ const Token = union(enum) {
     const Tag = @typeInfo(Token).@"union".tag_type.?;
 
     const ExpansionVariants = struct {
-        idx: u16 = 0,
-        end: u16 = 0,
+        idx: usize = 0,
+        end: usize = 0,
     };
 
     pub fn toText(self: *Token) SmolStr {
@@ -39,7 +35,7 @@ pub const AST = struct {
 
     const Group = struct {
         bubble_up: ?*Group = null,
-        bubble_up_next: ?u16 = null,
+        bubble_up_next: usize = 0,
         atoms: union(enum) { single: Atom, many: []Atom },
     };
 
@@ -48,9 +44,23 @@ pub const AST = struct {
     };
 };
 
-const MAX_NESTED_BRACES = 10;
+const inline_brace_capacity = 10;
+const max_expansions = 65_536;
 
-const ExpandError = ParserError;
+pub const Error = bun.OOM || error{
+    UnexpectedToken,
+    TooManyBraces,
+    TooManyExpansions,
+};
+
+pub fn errorMessage(err: Error) []const u8 {
+    return switch (err) {
+        error.OutOfMemory => "Out of memory while expanding braces",
+        error.UnexpectedToken => "Unexpected token while expanding braces",
+        error.TooManyBraces => "Too many braces in brace expansion",
+        error.TooManyExpansions => "Too many brace expansions",
+    };
+}
 
 /// `out` is preallocated by using the result from `calculateExpandedAmount`
 pub fn expand(
@@ -58,177 +68,114 @@ pub fn expand(
     tokens: []Token,
     out: []std.array_list.Managed(u8),
     contains_nested: bool,
-) ExpandError!void {
-    var out_key_counter: u16 = 1;
+) Error!void {
+    var expander: Expander = .{ .out = out, .stack_check = bun.StackCheck.init() };
     if (!contains_nested) {
-        var expansions_table = try buildExpansionTableAlloc(allocator, tokens);
-
-        return try expandFlat(tokens, expansions_table.items[0..], out, 0, &out_key_counter, 0, 0, tokens.len);
+        var expansions_table = std.array_list.Managed(ExpansionVariant).init(allocator);
+        defer expansions_table.deinit();
+        try buildExpansionTable(tokens, &expansions_table);
+        return expander.expandFlat(tokens, expansions_table.items, 0, 0, tokens.len);
     }
 
     var parser = Parser.init(tokens, allocator);
     var root_node = try parser.parse();
-    try expandNested(&root_node, out, 0, &out_key_counter, 0);
+    try expander.expandNested(&root_node, 0, 0);
 }
 
-fn expandNested(
-    root: *AST.Group,
+const Expander = struct {
     out: []std.array_list.Managed(u8),
-    out_key: u16,
-    out_key_counter: *u16,
-    start: u32,
-) ExpandError!void {
-    if (root.atoms == .single) {
-        if (start > 0) {
-            if (root.bubble_up) |bubble_up| {
-                return expandNested(bubble_up, out, out_key, out_key_counter, root.bubble_up_next.?);
-            }
-            return;
-        }
+    next_key: usize = 1,
+    stack_check: bun.StackCheck,
 
-        return switch (root.atoms.single) {
-            .text => |txt| try {
-                try out[out_key].appendSlice(txt.slice());
-                if (root.bubble_up) |bubble_up| {
-                    return expandNested(bubble_up, out, out_key, out_key_counter, root.bubble_up_next.?);
-                }
-                return;
-            },
-            .expansion => |expansion| {
-                const length = out[out_key].items.len;
-                for (expansion.variants, 0..) |*group, j| {
-                    group.bubble_up = root;
-                    group.bubble_up_next = 1;
-                    const new_key = if (j == 0) out_key else brk: {
-                        const new_key = out_key_counter.*;
-                        try out[new_key].appendSlice(out[out_key].items[0..length]);
-                        out_key_counter.* += 1;
-                        break :brk new_key;
-                    };
+    fn copyPrefix(this: *Expander, key: usize, length: usize) bun.OOM!usize {
+        const next = this.next_key;
+        try this.out[next].appendSlice(this.out[key].items[0..length]);
+        this.next_key += 1;
+        return next;
+    }
 
-                    try expandNested(group, out, new_key, out_key_counter, 0);
-                }
-                return;
-            },
+    fn expandNested(this: *Expander, root: *AST.Group, out_key: usize, start: usize) Error!void {
+        if (!this.stack_check.isSafeToRecurse()) return error.TooManyBraces;
+
+        const atoms = switch (root.atoms) {
+            .single => |*atom| atom[0..1],
+            .many => |atoms| atoms,
         };
-    }
-
-    if (start >= root.atoms.many.len) {
-        if (root.bubble_up) |bubble_up| {
-            return expandNested(bubble_up, out, out_key, out_key_counter, root.bubble_up_next.?);
+        for (atoms[start..], start..) |atom, i| {
+            switch (atom) {
+                .text => |txt| try this.out[out_key].appendSlice(txt.slice()),
+                .expansion => |expansion| {
+                    const length = this.out[out_key].items.len;
+                    for (expansion.variants, 0..) |*group, j| {
+                        group.bubble_up = root;
+                        group.bubble_up_next = i + 1;
+                        const new_key = if (j == 0) out_key else try this.copyPrefix(out_key, length);
+                        try this.expandNested(group, new_key, 0);
+                    }
+                    return;
+                },
+            }
         }
-        return;
-    }
 
-    for (root.atoms.many[start..], start..) |atom, i_| {
-        const i: u16 = @intCast(i_);
-        switch (atom) {
-            .text => |txt| {
-                try out[out_key].appendSlice(txt.slice());
-            },
-            .expansion => |expansion| {
-                const length = out[out_key].items.len;
-                for (expansion.variants, 0..) |*group, j| {
-                    group.bubble_up = root;
-                    group.bubble_up_next = i + 1;
-                    const new_key = if (j == 0) out_key else brk: {
-                        const new_key = out_key_counter.*;
-                        try out[new_key].appendSlice(out[out_key].items[0..length]);
-                        out_key_counter.* += 1;
-                        break :brk new_key;
-                    };
-
-                    try expandNested(group, out, new_key, out_key_counter, 0);
-                }
-                return;
-            },
+        if (root.bubble_up) |parent| {
+            return this.expandNested(parent, out_key, root.bubble_up_next);
         }
     }
 
-    // After execution we need to go up a level
-    if (root.bubble_up) |bubble_up| {
-        return try expandNested(bubble_up, out, out_key, out_key_counter, root.bubble_up_next.?);
-    }
-}
+    fn expandFlat(
+        this: *Expander,
+        tokens: []const Token,
+        expansion_table: []const ExpansionVariant,
+        out_key: usize,
+        start: usize,
+        end: usize,
+    ) Error!void {
+        if (!this.stack_check.isSafeToRecurse()) return error.TooManyBraces;
 
-/// This function is fast but does not work for nested brace expansions
-/// TODO optimization: allocate into one buffer of chars
-fn expandFlat(
-    tokens: []const Token,
-    expansion_table: []const ExpansionVariant,
-    out: []std.array_list.Managed(u8),
-    out_key: u16,
-    out_key_counter: *u16,
-    depth_: u8,
-    start: usize,
-    end: usize,
-) !void {
-    log("expandFlat [{d}, {d}]", .{ start, end });
-    if (start >= tokens.len or end > tokens.len) return;
-
-    var depth = depth_;
-    for (tokens[start..end], start..) |atom, j| {
-        _ = j;
-        switch (atom) {
-            .text => |txt| {
-                try out[out_key].appendSlice(txt.slice());
-            },
-            .close => {
-                depth -= 1;
-            },
-            .open => |expansion_variants| {
-                depth += 1;
-                if (bun.Environment.allow_assert) {
-                    assert(expansion_variants.end - expansion_variants.idx >= 1);
-                }
-
-                var variants = expansion_table[expansion_variants.idx..expansion_variants.end];
-                const skip_over_idx = variants[variants.len - 1].end;
-
-                const starting_len = out[out_key].items.len;
-                for (variants[0..], 0..) |*variant, i| {
-                    const new_key = if (i == 0) out_key else brk: {
-                        const new_key = out_key_counter.*;
-                        try out[new_key].appendSlice(out[out_key].items[0..starting_len]);
-                        out_key_counter.* += 1;
-                        break :brk new_key;
-                    };
-                    try expandFlat(tokens, expansion_table, out, new_key, out_key_counter, depth, variant.start, variant.end);
-                    try expandFlat(tokens, expansion_table, out, new_key, out_key_counter, depth, skip_over_idx, end);
-                }
-                return;
-            },
-            else => {},
+        var key = out_key;
+        var index = start;
+        while (index < end) : (index += 1) {
+            switch (tokens[index]) {
+                .text => |txt| try this.out[key].appendSlice(txt.slice()),
+                .open => |range| {
+                    const variants = expansion_table[range.idx..range.end];
+                    const close = variants[variants.len - 1].end;
+                    const length = this.out[key].items.len;
+                    for (variants, 0..) |variant, i| {
+                        const new_key = if (i == 0) key else try this.copyPrefix(key, length);
+                        for (tokens[variant.start..variant.end]) |token| {
+                            try this.out[new_key].appendSlice(token.text.slice());
+                        }
+                        if (i + 1 == variants.len) {
+                            key = new_key;
+                            index = close;
+                        } else {
+                            try this.expandFlat(tokens, expansion_table, new_key, close + 1, end);
+                        }
+                    }
+                },
+                else => {},
+            }
         }
     }
-}
-
-const ParserError = bun.OOM || error{
-    UnexpectedToken,
 };
 
 pub const Parser = struct {
     current: usize = 0,
     tokens: []const Token,
     alloc: Allocator,
-    errors: std.array_list.Managed(Error),
-
-    // FIXME error location
-    const Error = struct { msg: []const u8 };
+    stack_check: bun.StackCheck,
 
     pub fn init(tokens: []const Token, alloc: Allocator) Parser {
         return .{
             .tokens = tokens,
             .alloc = alloc,
-            .errors = std.array_list.Managed(Error).init(alloc),
+            .stack_check = bun.StackCheck.init(),
         };
     }
 
-    pub fn parse(self: *Parser) !AST.Group {
-        var group_buffer: [1]AST.Atom = undefined;
-        var group_allocator_state: std.heap.BufferFirstAllocator = .init(@ptrCast(&group_buffer), self.alloc);
-        const group_alloc = group_allocator_state.allocator();
-        var nodes = std.array_list.Managed(AST.Atom).init(group_alloc);
+    pub fn parse(self: *Parser) Error!AST.Group {
+        var nodes = std.array_list.Managed(AST.Atom).init(self.alloc);
         while (!self.match(.eof)) {
             try nodes.append(try self.parseAtom() orelse break);
         }
@@ -240,7 +187,8 @@ pub const Parser = struct {
         }
     }
 
-    fn parseAtom(self: *Parser) ParserError!?AST.Atom {
+    fn parseAtom(self: *Parser) Error!?AST.Atom {
+        if (!self.stack_check.isSafeToRecurse()) return error.TooManyBraces;
         switch (self.advance()) {
             .open => {
                 const expansion_ptr = try self.parseExpansion();
@@ -248,18 +196,15 @@ pub const Parser = struct {
             },
             .text => |txt| return .{ .text = txt },
             .eof => return null,
-            .close, .comma => return ParserError.UnexpectedToken,
+            .close, .comma => return error.UnexpectedToken,
         }
     }
 
-    fn parseExpansion(self: *Parser) !AST.Expansion {
+    fn parseExpansion(self: *Parser) Error!AST.Expansion {
         var variants = std.array_list.Managed(AST.Group).init(self.alloc);
         while (!self.match_any(&.{ .close, .eof })) {
             if (self.match(.eof)) break;
-            var group_buffer: [1]AST.Atom = undefined;
-            var group_allocator_state: std.heap.BufferFirstAllocator = .init(@ptrCast(&group_buffer), self.alloc);
-            const group_alloc = group_allocator_state.allocator();
-            var group = std.array_list.Managed(AST.Atom).init(group_alloc);
+            var group = std.array_list.Managed(AST.Atom).init(self.alloc);
             var close = false;
             while (!self.match(.eof)) {
                 if (self.match(.close)) {
@@ -292,14 +237,6 @@ pub const Parser = struct {
         return self.peek() == .eof;
     }
 
-    fn expect(self: *Parser, toktag: Token.Tag) Token {
-        assert(toktag == @as(Token.Tag, self.peek()));
-        if (self.check(toktag)) {
-            return self.advance();
-        }
-        unreachable;
-    }
-
     /// Consumes token if it matches
     fn match(self: *Parser, toktag: Token.Tag) bool {
         if (@as(Token.Tag, self.peek()) == toktag) {
@@ -320,109 +257,73 @@ pub const Parser = struct {
         return false;
     }
 
-    fn check(self: *Parser, toktag: Token.Tag) bool {
-        return @as(Token.Tag, self.peek()) == @as(Token.Tag, toktag);
-    }
-
     fn peek(self: *Parser) Token {
         return self.tokens[self.current];
-    }
-
-    fn peek_n(self: *Parser, n: u32) Token {
-        if (self.current + n >= self.tokens.len) {
-            return self.tokens[self.tokens.len - 1];
-        }
-
-        return self.tokens[self.current + n];
     }
 
     fn prev(self: *Parser) Token {
         return self.tokens[self.current - 1];
     }
-
-    fn add_error(self: *Parser, comptime fmt: []const u8, args: anytype) !void {
-        const error_msg = try std.fmt.allocPrint(self.alloc, fmt, args);
-        try self.errors.append(.{ .msg = error_msg });
-    }
 };
 
-pub fn calculateExpandedAmount(tokens: []const Token) u32 {
+pub fn calculateExpandedAmount(tokens: []const Token) error{TooManyExpansions}!usize {
     const StackEntry = struct {
-        segment_product: u32 = 1,
-        accumulator: u32 = 0,
+        segment_product: usize = 1,
+        accumulator: usize = 0,
     };
-    var nested_brace_stack = bun.SmallList(StackEntry, MAX_NESTED_BRACES){};
+    var nested_brace_stack = bun.SmallList(StackEntry, inline_brace_capacity){};
     defer nested_brace_stack.deinit(bun.default_allocator);
-    var variant_count: u32 = 0;
+    var current: StackEntry = .{};
+    var has_expansion = false;
 
     for (tokens) |tok| {
         switch (tok) {
-            .open => nested_brace_stack.append(bun.default_allocator, .{}),
+            .open => {
+                nested_brace_stack.append(bun.default_allocator, current);
+                current = .{};
+                has_expansion = true;
+            },
             .comma => {
-                const top = nested_brace_stack.lastMut().?;
-                top.accumulator +|= top.segment_product;
-                top.segment_product = 1;
+                current.accumulator +|= current.segment_product;
+                current.segment_product = 1;
             },
             .close => {
-                const entry = nested_brace_stack.pop().?;
-                const total = entry.accumulator +| entry.segment_product;
-                if (nested_brace_stack.len() > 0) {
-                    const parent = nested_brace_stack.lastMut().?;
-                    parent.segment_product *|= total;
-                } else if (variant_count == 0) {
-                    variant_count = total;
-                } else {
-                    variant_count *|= total;
-                }
+                const total = current.accumulator +| current.segment_product;
+                current = nested_brace_stack.pop().?;
+                current.segment_product *|= total;
             },
-            else => {},
+            else => continue,
         }
+        if (current.accumulator +| current.segment_product > max_expansions) return error.TooManyExpansions;
     }
 
-    return variant_count;
-}
-
-fn buildExpansionTableAlloc(alloc: Allocator, tokens: []Token) !std.array_list.Managed(ExpansionVariant) {
-    var table = std.array_list.Managed(ExpansionVariant).init(alloc);
-    try buildExpansionTable(tokens, &table);
-    return table;
+    return if (has_expansion) current.segment_product else 0;
 }
 
 fn buildExpansionTable(tokens: []Token, table: *std.array_list.Managed(ExpansionVariant)) !void {
     const BraceState = struct {
-        tok_idx: u16,
-        variants: u16,
-        prev_tok_end: u16,
+        tok_idx: usize,
+        prev_tok_end: usize,
     };
-    var brace_stack = bun.SmallList(BraceState, MAX_NESTED_BRACES){};
+    var brace_stack = bun.SmallList(BraceState, inline_brace_capacity){};
     defer brace_stack.deinit(bun.default_allocator);
 
-    var i: u16 = 0;
-    var prev_close = false;
-    while (i < tokens.len) : (i += 1) {
-        switch (tokens[i]) {
+    for (tokens, 0..) |*token, i| {
+        switch (token.*) {
             .open => {
-                const table_idx: u16 = @intCast(table.items.len);
-                tokens[i].open.idx = table_idx;
+                token.open.idx = table.items.len;
                 brace_stack.append(bun.default_allocator, .{
                     .tok_idx = i,
-                    .variants = 0,
                     .prev_tok_end = i,
                 });
             },
             .close => {
-                var top = brace_stack.pop().?;
-
+                const top = brace_stack.pop().?;
                 try table.append(.{
                     .end = i,
                     .start = top.prev_tok_end + 1,
                 });
-
-                top.prev_tok_end = i;
-                top.variants += 1;
-
-                tokens[top.tok_idx].open.end = @intCast(table.items.len);
-                prev_close = true;
+                tokens[top.tok_idx].open.end = table.items.len;
             },
             .comma => {
                 var top = brace_stack.lastMut().?;
@@ -432,20 +333,14 @@ fn buildExpansionTable(tokens: []Token, table: *std.array_list.Managed(Expansion
                     .start = top.prev_tok_end + 1,
                 });
 
-                prev_close = false;
-
                 top.prev_tok_end = i;
-                top.variants += 1;
             },
-            else => {
-                prev_close = false;
-            },
+            else => {},
         }
     }
 
     if (bun.Environment.allow_assert) {
-        for (table.items[0..], 0..) |variant, kdjsd| {
-            _ = kdjsd;
+        for (table.items) |variant| {
             assert(variant.start != 0 and variant.end != 0);
         }
     }
@@ -504,7 +399,7 @@ pub fn NewLexer(comptime encoding: Encoding) type {
             // - If unclosed or encounter bad token:
             //   - Start at beginning of brace, replacing special tokens back with
             //     chars, skipping over actual closed braces
-            var brace_stack = bun.SmallList(u32, MAX_NESTED_BRACES){};
+            var brace_stack = bun.SmallList(usize, inline_brace_capacity){};
             defer brace_stack.deinit(bun.default_allocator);
 
             while (true) {
@@ -515,7 +410,7 @@ pub fn NewLexer(comptime encoding: Encoding) type {
                 if (!escaped) {
                     switch (char) {
                         '{' => {
-                            brace_stack.append(bun.default_allocator, @intCast(self.tokens.items.len));
+                            brace_stack.append(bun.default_allocator, self.tokens.items.len);
                             try self.tokens.append(.{ .open = .{} });
                             continue;
                         },
@@ -556,9 +451,9 @@ pub fn NewLexer(comptime encoding: Encoding) type {
 
         fn flattenTokens(self: *@This()) Allocator.Error!void {
             if (self.tokens.items.len == 0) return;
-            var brace_count: u32 = if (self.tokens.items[0] == .open) 1 else 0;
-            var i: u32 = 0;
-            var j: u32 = 1;
+            var brace_count: usize = if (self.tokens.items[0] == .open) 1 else 0;
+            var i: usize = 0;
+            var j: usize = 1;
             while (i < self.tokens.items.len and j < self.tokens.items.len) {
                 var itok = &self.tokens.items[i];
                 var jtok = &self.tokens.items[j];
@@ -581,16 +476,16 @@ pub fn NewLexer(comptime encoding: Encoding) type {
             }
         }
 
-        fn rollbackBraces(self: *@This(), starting_idx: u32) void {
+        fn rollbackBraces(self: *@This(), starting_idx: usize) void {
             if (bun.Environment.allow_assert) {
                 const first = &self.tokens.items[starting_idx];
                 assert(first.* == .open);
             }
 
-            var braces: u8 = 0;
+            var braces: usize = 0;
 
             self.replaceTokenWithString(starting_idx);
-            var i: u32 = starting_idx + 1;
+            var i = starting_idx + 1;
             while (i < self.tokens.items.len) : (i += 1) {
                 if (braces > 0) {
                     switch (self.tokens.items[i]) {
@@ -618,7 +513,7 @@ pub fn NewLexer(comptime encoding: Encoding) type {
             }
         }
 
-        fn replaceTokenWithString(self: *@This(), token_idx: u32) void {
+        fn replaceTokenWithString(self: *@This(), token_idx: usize) void {
             var tok = &self.tokens.items[token_idx];
             const tok_text = tok.toText();
             tok.* = .{ .text = tok_text };

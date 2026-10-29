@@ -33,7 +33,7 @@ pub const ChildPtr = StatePtrUnion(.{
 pub inline fn deinit(this: *Assigns) void {
     switch (this.state) {
         .expanding => |*e| e.current_expansion_result.deinit(),
-        .err => |*e| e.deinit(bun.default_allocator),
+        .err => |*e| e.deinit(this.base.allocator()),
         .idle, .done => {},
     }
     this.io.deinit();
@@ -135,7 +135,7 @@ pub fn childDone(this: *Assigns, child: ChildPtr, exit_code: ExitCode) Yield {
             this.state.expanding.current_expansion_result.clearAndFree();
             expansion.deinit();
             this.state = .{ .err = err };
-            return .failed;
+            return .{ .assigns = this };
         }
         var expanding = &this.state.expanding;
 
