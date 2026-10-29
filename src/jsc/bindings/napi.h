@@ -148,9 +148,21 @@ struct NapiEnv : public WTF::RefCounted<NapiEnv> {
     WTF_MAKE_STRUCT_TZONE_ALLOCATED(NapiEnv);
 
 public:
+    struct ExternalStringFinalizerContext : WTF::RefCounted<ExternalStringFinalizerContext> {
+        explicit ExternalStringFinalizerContext(NapiEnv* env)
+            : env(env)
+        {
+        }
+
+        NapiEnv* env;
+    };
+
+    Ref<ExternalStringFinalizerContext> externalStringFinalizerContext() const { return m_externalStringFinalizerContext.copyRef(); }
+
     NapiEnv(Zig::GlobalObject* globalObject, const napi_module& napiModule)
         : m_globalObject(globalObject)
         , m_napiModule(napiModule)
+        , m_externalStringFinalizerContext(adoptRef(*new ExternalStringFinalizerContext(this)))
         , m_vm(JSC::getVM(globalObject))
     {
         napi_internal_register_cleanup_zig(this);
@@ -163,6 +175,7 @@ public:
 
     ~NapiEnv()
     {
+        m_externalStringFinalizerContext->env = nullptr;
         delete[] filename;
     }
 
@@ -177,6 +190,8 @@ public:
         // This prevents any GC-triggered finalizer execution while m_finalizers is being iterated.
         JSC::DeferGCForAWhile deferGC(m_vm);
 
+        // External character storage may outlive cleanup, including strings created by finalizers.
+        m_externalStringFinalizerContext->env = nullptr;
         m_isFinishingFinalizers = true;
         // Reverse insertion order so children are torn down before parents (Node.js LIFO).
         // ListHashSet iteration is safe against concurrent inserts, and m_isFinishingFinalizers
@@ -471,6 +486,7 @@ private:
     // (LIFO), matching Node.js teardown semantics for napi_wrap references.
     WTF::ListHashSet<BoundFinalizer, BoundFinalizer::Hash> m_finalizers;
     bool m_isFinishingFinalizers = false;
+    Ref<ExternalStringFinalizerContext> m_externalStringFinalizerContext;
     JSC::VM& m_vm;
     Napi::HookSet m_cleanupHooks;
     JSC::Strong<JSC::Unknown> m_pendingException;
