@@ -633,6 +633,7 @@ fn NewPrinter(
         prev_reg_exp_end: i32 = -1,
         call_target: ?Expr.Data = null,
         writer: Writer,
+        stack_check: bun.StackCheck,
 
         has_printed_bundled_import_statement: bool = false,
 
@@ -1989,7 +1990,17 @@ fn NewPrinter(
             }
         }
 
+        fn canRecurse(p: *Printer) bool {
+            p.writer.getError() catch return false;
+            if (!p.stack_check.isSafeToRecurse()) {
+                p.writer.err = error.StackOverflow;
+                return false;
+            }
+            return true;
+        }
+
         pub fn printExpr(p: *Printer, expr: Expr, level: Level, in_flags: ExprFlag.Set) void {
+            if (!p.canRecurse()) return;
             var flags = in_flags;
 
             switch (expr.data) {
@@ -3543,6 +3554,7 @@ fn NewPrinter(
         }
 
         pub fn printBinding(p: *Printer, binding: Binding, is_export: bool) void {
+            if (!p.canRecurse()) return;
             switch (binding.data) {
                 .b_missing => {},
                 .b_identifier => |b| {
@@ -3730,6 +3742,7 @@ fn NewPrinter(
         }
 
         pub fn printStmt(p: *Printer, stmt: Stmt) !void {
+            if (!p.canRecurse()) return;
             const prev_stmt_tag = p.prev_stmt_tag;
 
             defer {
@@ -4776,6 +4789,7 @@ fn NewPrinter(
             }
         }
         pub fn printIf(p: *Printer, s: *const S.If, loc: logger.Loc) void {
+            if (!p.canRecurse()) return;
             p.printSpaceBeforeIdentifier();
             p.addSourceMapping(loc);
             p.print("if");
@@ -5178,6 +5192,7 @@ fn NewPrinter(
                 .import_records = import_records,
                 .options = opts,
                 .writer = writer,
+                .stack_check = bun.StackCheck.init(),
                 .renamer = renamer,
                 .source_map_builder = source_map_builder,
             };
@@ -6006,6 +6021,7 @@ pub fn printWithWriterAndPlatform(
         }
     }
 
+    printer.writer.getError() catch |err| return .{ .err = err };
     printer.writer.done() catch |err| {
         return .{ .err = err };
     };

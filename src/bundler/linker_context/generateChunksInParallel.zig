@@ -201,9 +201,31 @@ pub fn generateChunksInParallel(
             c.source_maps.quoted_contents_tasks.len = 0;
         }
         if (c.source_maps.out_of_memory.load(.acquire)) return error.OutOfMemory;
+        var failed_sources: std.AutoHashMapUnmanaged(Index.Int, void) = .empty;
+        defer failed_sources.deinit(c.allocator());
         for (chunks) |*chunk| {
-            for (chunk.compile_results_for_chunk) |*compiled| try compiled.checkForError();
+            for (chunk.compile_results_for_chunk) |*compiled| {
+                compiled.checkForError() catch |err| {
+                    if (err == error.OutOfMemory) return err;
+                    const entry = try failed_sources.getOrPut(c.allocator(), compiled.sourceIndex());
+                    if (entry.found_existing) continue;
+                    const source = c.getSource(compiled.sourceIndex());
+                    if (err == error.StackOverflow) {
+                        try c.log.addError(source, Logger.Loc.Empty, "Maximum call stack size exceeded while generating code for this file");
+                    } else {
+                        try c.log.addErrorFmt(source, Logger.Loc.Empty, bun.default_allocator, "Failed to generate {s} for this file: {s}", .{
+                            switch (compiled.*) {
+                                .javascript => "JavaScript",
+                                .css => "CSS",
+                                .html => "HTML",
+                            },
+                            @errorName(err),
+                        });
+                    }
+                };
+            }
         }
+        if (failed_sources.count() > 0) return error.BuildFailed;
 
         // DevServer consumes JavaScript and HTML compile results directly.
         const chunks_to_do = if (is_dev_server) css_chunks: {

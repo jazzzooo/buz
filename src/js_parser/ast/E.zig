@@ -501,13 +501,12 @@ pub const Object = struct {
         head: Expr,
         next: ?*Rope = null,
         pub fn append(this: *Rope, expr: Expr, allocator: std.mem.Allocator) OOM!*Rope {
-            if (this.next) |next| {
-                return try next.append(expr, allocator);
-            }
+            var tail = this;
+            while (tail.next) |next| tail = next;
 
             const rope = try allocator.create(Rope);
             rope.* = .{ .head = expr };
-            this.next = rope;
+            tail.next = rope;
             return rope;
         }
     };
@@ -541,152 +540,69 @@ pub const Object = struct {
         });
     }
 
-    // this is terribly, shamefully slow
     pub fn setRope(self: *Object, rope: *const Rope, allocator: std.mem.Allocator, value: Expr) SetError!void {
-        if (self.get(rope.head.data.e_string.data)) |existing| {
-            switch (existing.data) {
-                .e_array => |array| {
-                    if (rope.next == null) {
-                        try array.push(allocator, value);
-                        return;
-                    }
-
-                    if (array.items.last()) |last| {
-                        if (last.data != .e_object) {
-                            return error.Clobber;
+        var object = self;
+        var key = rope;
+        while (true) {
+            if (object.get(key.head.data.e_string.data)) |existing| {
+                switch (existing.data) {
+                    .e_array => |array| {
+                        if (key.next == null or array.items.len == 0) {
+                            try array.push(allocator, value);
+                            return;
                         }
-
-                        try last.data.e_object.setRope(rope.next.?, allocator, value);
-                        return;
-                    }
-
-                    try array.push(allocator, value);
-                    return;
-                },
-                .e_object => |object| {
-                    if (rope.next != null) {
-                        try object.setRope(rope.next.?, allocator, value);
-                        return;
-                    }
-
-                    return error.Clobber;
-                },
-                else => {
-                    return error.Clobber;
-                },
+                        const last = array.items.last().?;
+                        if (last.data != .e_object) return error.Clobber;
+                        object = last.data.e_object;
+                    },
+                    .e_object => |child| {
+                        if (key.next == null) return error.Clobber;
+                        object = child;
+                    },
+                    else => return error.Clobber,
+                }
+            } else {
+                const child = if (key.next != null) Expr.init(E.Object, .{}, key.head.loc) else value;
+                try object.properties.append(allocator, .{ .key = key.head, .value = child });
+                if (key.next == null) return;
+                object = child.data.e_object;
             }
+            key = key.next.?;
         }
-
-        var value_ = value;
-        if (rope.next) |next| {
-            var obj = Expr.init(E.Object, E.Object{ .properties = .{} }, rope.head.loc);
-            try obj.data.e_object.setRope(next, allocator, value);
-            value_ = obj;
-        }
-
-        try self.properties.append(allocator, .{
-            .key = rope.head,
-            .value = value_,
-        });
     }
 
     pub fn getOrPutObject(self: *Object, rope: *const Rope, allocator: std.mem.Allocator) SetError!Expr {
-        if (self.get(rope.head.data.e_string.data)) |existing| {
-            switch (existing.data) {
-                .e_array => |array| {
-                    if (rope.next == null) {
-                        return error.Clobber;
-                    }
-
-                    if (array.items.last()) |last| {
-                        if (last.data != .e_object) {
-                            return error.Clobber;
-                        }
-
-                        return try last.data.e_object.getOrPutObject(rope.next.?, allocator);
-                    }
-
-                    return error.Clobber;
-                },
-                .e_object => |object| {
-                    if (rope.next != null) {
-                        return try object.getOrPutObject(rope.next.?, allocator);
-                    }
-
-                    // success
-                    return existing;
-                },
-                else => {
-                    return error.Clobber;
-                },
-            }
-        }
-
-        if (rope.next) |next| {
-            var obj = Expr.init(E.Object, E.Object{ .properties = .{} }, rope.head.loc);
-            const out = try obj.data.e_object.getOrPutObject(next, allocator);
-            try self.properties.append(allocator, .{
-                .key = rope.head,
-                .value = obj,
-            });
-            return out;
-        }
-
-        const out = Expr.init(E.Object, E.Object{}, rope.head.loc);
-        try self.properties.append(allocator, .{
-            .key = rope.head,
-            .value = out,
-        });
-        return out;
+        return self.getOrPutRope(rope, allocator, E.Object);
     }
 
     pub fn getOrPutArray(self: *Object, rope: *const Rope, allocator: std.mem.Allocator) SetError!Expr {
-        if (self.get(rope.head.data.e_string.data)) |existing| {
-            switch (existing.data) {
-                .e_array => |array| {
-                    if (rope.next == null) {
-                        return existing;
-                    }
+        return self.getOrPutRope(rope, allocator, E.Array);
+    }
 
-                    if (array.items.last()) |last| {
-                        if (last.data != .e_object) {
-                            return error.Clobber;
-                        }
-
-                        return try last.data.e_object.getOrPutArray(rope.next.?, allocator);
-                    }
-
-                    return error.Clobber;
-                },
-                .e_object => |object| {
-                    if (rope.next == null) {
-                        return error.Clobber;
-                    }
-
-                    return try object.getOrPutArray(rope.next.?, allocator);
-                },
-                else => {
-                    return error.Clobber;
-                },
+    fn getOrPutRope(self: *Object, rope: *const Rope, allocator: std.mem.Allocator, comptime T: type) SetError!Expr {
+        var object = self;
+        var key = rope;
+        while (true) {
+            const child = object.get(key.head.data.e_string.data) orelse child: {
+                const value = if (key.next != null) Expr.init(E.Object, .{}, key.head.loc) else Expr.init(T, .{}, key.head.loc);
+                try object.properties.append(allocator, .{ .key = key.head, .value = value });
+                break :child value;
+            };
+            if (key.next == null) {
+                if (child.data != (if (T == E.Object) .e_object else .e_array)) return error.Clobber;
+                return child;
             }
+            object = switch (child.data) {
+                .e_object => |value| value,
+                .e_array => |array| array: {
+                    const last = array.items.last() orelse return error.Clobber;
+                    if (last.data != .e_object) return error.Clobber;
+                    break :array last.data.e_object;
+                },
+                else => return error.Clobber,
+            };
+            key = key.next.?;
         }
-
-        if (rope.next) |next| {
-            var obj = Expr.init(E.Object, E.Object{ .properties = .{} }, rope.head.loc);
-            const out = try obj.data.e_object.getOrPutArray(next, allocator);
-            try self.properties.append(allocator, .{
-                .key = rope.head,
-                .value = obj,
-            });
-            return out;
-        }
-
-        const out = Expr.init(E.Array, E.Array{}, rope.head.loc);
-        try self.properties.append(allocator, .{
-            .key = rope.head,
-            .value = out,
-        });
-        return out;
     }
 
     pub fn hasProperty(obj: *const Object, name: string) bool {

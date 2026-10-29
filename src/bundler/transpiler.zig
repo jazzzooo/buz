@@ -468,19 +468,30 @@ pub const Transpiler = struct {
                 const buffer_writer = js_printer.BufferWriter.init(transpiler.allocator);
                 var writer = js_printer.BufferPrinter.init(buffer_writer);
 
-                output_file.size = switch (transpiler.options.target) {
-                    .browser, .node => try transpiler.print(
+                errdefer writer.ctx.buffer.deinit();
+                output_file.size = (switch (transpiler.options.target) {
+                    .browser, .node => transpiler.print(
                         result,
                         *js_printer.BufferPrinter,
                         &writer,
                         .esm,
                     ),
-                    .bun, .bun_macro, .bake_server_components_ssr => try transpiler.print(
+                    .bun, .bun_macro, .bake_server_components_ssr => transpiler.print(
                         result,
                         *js_printer.BufferPrinter,
                         &writer,
                         .esm_ascii,
                     ),
+                }) catch |err| {
+                    if (err == error.OutOfMemory) return err;
+                    try transpiler.log.addErrorFmt(
+                        null,
+                        logger.Loc.Empty,
+                        transpiler.allocator,
+                        "{s} while generating code for \"{s}\"",
+                        .{ if (err == error.StackOverflow) "Maximum call stack size exceeded" else @errorName(err), file_path.pretty },
+                    );
+                    return err;
                 };
                 output_file.value = .{
                     .buffer = .{
