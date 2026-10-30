@@ -6442,34 +6442,42 @@ pub const serializer = struct {
         return writer.writeAll("\"");
     }
 
-    pub fn serializeDimension(value: f32, unit: []const u8, dest: *Printer) PrintErr!void {
-        // Check if the value is an integer - use Rust-compatible conversion
-        const int_value: ?i32 = if (fract(value) == 0.0)
-            bun.intFromFloat(i32, value)
-        else
-            null;
-        const token = Token{ .dimension = .{
-            .num = .{
-                .has_sign = value < 0.0,
-                .value = value,
-                .int_value = int_value,
-            },
-            .unit = unit,
-        } };
-        if (value != 0.0 and @abs(value) < 1.0) {
-            // TODO: calculate the actual number of chars here
-            var buf: [64]u8 = undefined;
-            var fbs = std.Io.Writer.fixed(&buf);
-            token.toCssGeneric(&fbs) catch return dest.addFmtError();
-            const s = fbs.buffered();
-            if (value < 0.0) {
-                try dest.writeStr("-");
-                return dest.writeStr(bun.strings.trimLeadingPattern2(s, '-', '0'));
-            } else {
-                return dest.writeStr(bun.strings.trimLeadingChar(s, '0'));
+    pub fn serializeNumericValue(value: f32, unit: []const u8, dest: *Printer) PrintErr!void {
+        // Non-finite values must retain their meaning inside a calculation.
+        // NaN becomes zero only when it escapes the top-level calculation.
+        if (dest.in_calc and !std.math.isFinite(value)) {
+            try dest.writeStr(if (std.math.isNan(value)) "NaN" else if (value < 0) "-infinity" else "infinity");
+            if (unit.len > 0) {
+                try dest.delim('*', true);
+                try dest.writeChar('1');
             }
         } else {
-            return token.toCssGeneric(dest) catch return dest.addFmtError();
+            const number = if (std.math.isNan(value)) 0 else value;
+            var buf: [129]u8 = undefined;
+            const str, _ = try dtoa_short(&buf, number, 6);
+            if (number != 0.0 and @abs(number) < 1.0) {
+                if (number < 0.0) {
+                    try dest.writeChar('-');
+                    try dest.writeStr(bun.strings.trimLeadingPattern2(str, '-', '0'));
+                } else {
+                    try dest.writeStr(bun.strings.trimLeadingChar(str, '0'));
+                }
+            } else {
+                try dest.writeStr(str);
+            }
+        }
+
+        if (unit.len == 0) return;
+        if (bun.strings.eql(unit, "%")) {
+            try dest.writeChar('%');
+        } else if (bun.strings.eql(unit, "e") or bun.strings.eql(unit, "E") or
+            bun.strings.startsWith(unit, "e-") or bun.strings.startsWith(unit, "E-"))
+        {
+            // Disambiguate dimension units from scientific notation.
+            try dest.writeStr("\\65 ");
+            serializeName(unit[1..], dest) catch return dest.addFmtError();
+        } else {
+            serializeIdentifier(unit, dest) catch return dest.addFmtError();
         }
     }
 
@@ -6711,12 +6719,6 @@ pub const to_css = struct {
         return dest.writeStr(str);
     }
 
-    pub fn float32(this: f32, writer: *Printer) !void {
-        var scratch: [129]u8 = undefined;
-        const str, _ = try dtoa_short(&scratch, this, 6);
-        return writer.writeAll(str);
-    }
-
     fn maxDigits(comptime T: type) usize {
         const max_val = std.math.maxInt(T);
         return std.fmt.count("{d}", .{max_val});
@@ -6824,9 +6826,7 @@ pub fn dtoa_short(buf: *[129]u8, value: f32, comptime precision: u8) !struct { [
         buf[0.."-3.40282e38".len].* = "-3.40282e38".*;
         return .{ buf[0.."-3.40282e38".len], null };
     }
-    // We shouldn't receive NaN here.
-    // NaN is not a valid CSS token and any inlined calculations from `calc()` we ensure
-    // are not NaN.
+    // NaN must be handled before formatting a numeric token.
     bun.debugAssert(!std.math.isNan(value));
     const str, const notation = dtoa_short_impl(buf, value, precision);
     return .{ str, notation };
@@ -6975,6 +6975,7 @@ pub inline fn fract(val: f32) f32 {
 
 pub fn f32_length_with_5_digits(n_input: f32) usize {
     var n = std.math.round(n_input * 100000.0);
+    if (!std.math.isFinite(n)) return std.math.maxInt(usize);
     var count: usize = 0;
     var i: usize = 0;
 

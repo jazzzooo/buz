@@ -25,31 +25,7 @@ pub const Percentage = struct {
     }
 
     pub fn toCss(this: *const @This(), dest: *Printer) PrintErr!void {
-        const x = this.v * 100.0;
-        const int_value: ?i32 = if ((x - @trunc(x)) == 0.0)
-            bun.intFromFloat(i32, this.v)
-        else
-            null;
-
-        const percent = css.Token{ .percentage = .{
-            .has_sign = this.v < 0.0,
-            .unit_value = this.v,
-            .int_value = int_value,
-        } };
-
-        if (this.v != 0.0 and @abs(this.v) < 0.01) {
-            var buf: [32]u8 = undefined;
-            var writer = std.Io.Writer.fixed(&buf);
-            percent.toCssGeneric(&writer) catch return dest.addFmtError();
-            if (this.v < 0.0) {
-                try dest.writeChar('-');
-                try dest.writeStr(bun.strings.trimLeadingPattern2(writer.buffered(), '-', '0'));
-            } else {
-                try dest.writeStr(bun.strings.trimLeadingChar(writer.buffered(), '0'));
-            }
-        } else {
-            try percent.toCss(dest);
-        }
+        return css.serializer.serializeNumericValue(this.v * 100.0, "%", dest);
     }
 
     pub inline fn eql(this: *const Percentage, other: *const Percentage) bool {

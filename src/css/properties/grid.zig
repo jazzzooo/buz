@@ -280,8 +280,7 @@ pub const TrackBreadth = union(enum) {
             .min_content => try dest.writeStr("min-content"),
             .max_content => try dest.writeStr("max-content"),
             .length => |len| try len.toCss(dest),
-            // .flex => |flex| try css.CSSNumberFns.serializeDimension(&flex, "fr", dest),
-            .flex => |flex| css.serializer.serializeDimension(flex, "fr", dest),
+            .flex => |flex| css.serializer.serializeNumericValue(flex, "fr", dest),
         }
     }
 };

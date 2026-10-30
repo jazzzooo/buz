@@ -87,7 +87,7 @@ pub const TokenList = struct {
                 .length => |v| {
                     // Do not serialize unitless zero lengths in custom properties as it may break calc().
                     const value, const unit = v.toUnitValue();
-                    try css.serializer.serializeDimension(value, unit, dest);
+                    try css.serializer.serializeNumericValue(value, unit, dest);
                     has_whitespace = false;
                 },
                 .angle => |v| {
@@ -133,7 +133,7 @@ pub const TokenList = struct {
                         has_whitespace = try this.writeWhitespaceIfNeeded(i, dest);
                     },
                     .dimension => {
-                        try css.serializer.serializeDimension(token.dimension.num.value, token.dimension.unit, dest);
+                        try css.serializer.serializeNumericValue(token.dimension.num.value, token.dimension.unit, dest);
                         has_whitespace = false;
                     },
                     .number => |v| {

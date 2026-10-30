@@ -1335,14 +1335,8 @@ pub fn Calc(comptime V: type) type {
         pub fn toCss(this: *const @This(), dest: *css.Printer) css.PrintErr!void {
             const was_in_calc = dest.in_calc;
             dest.in_calc = true;
+            defer dest.in_calc = was_in_calc;
 
-            const res = toCssImpl(this, dest);
-
-            dest.in_calc = was_in_calc;
-            return res;
-        }
-
-        pub fn toCssImpl(this: *const @This(), dest: *css.Printer) css.PrintErr!void {
             return switch (this.*) {
                 .value => |v| v.toCss(dest),
                 .number => |n| CSSNumberFns.toCss(&n, dest),

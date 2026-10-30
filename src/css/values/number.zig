@@ -20,21 +20,7 @@ pub const CSSNumberFns = struct {
     }
 
     pub fn toCss(this: *const CSSNumber, dest: *Printer) PrintErr!void {
-        const number: f32 = this.*;
-        if (number != 0.0 and @abs(number) < 1.0) {
-            var dtoa_buf: [129]u8 = undefined;
-            const str, _ = try css.dtoa_short(&dtoa_buf, number, 6);
-            if (number < 0.0) {
-                try dest.writeChar('-');
-                try dest.writeStr(bun.strings.trimLeadingPattern2(str, '-', '0'));
-            } else {
-                try dest.writeStr(bun.strings.trimLeadingChar(str, '0'));
-            }
-        } else {
-            return css.to_css.float32(number, dest) catch {
-                return dest.addFmtError();
-            };
-        }
+        return css.serializer.serializeNumericValue(this.*, "", dest);
     }
 
     pub fn tryFromAngle(_: css.css_values.angle.Angle) ?CSSNumber {
@@ -58,5 +44,3 @@ pub const CSSIntegerFns = struct {
         try css.to_css.integer(i32, this.*, dest);
     }
 };
-
-const bun = @import("bun");

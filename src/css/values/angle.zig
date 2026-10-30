@@ -92,7 +92,7 @@ pub const Angle = union(Tag) {
             },
             .turn => |val| .{ val, "turn" },
         };
-        css.serializer.serializeDimension(value, unit, dest) catch return dest.addFmtError();
+        return css.serializer.serializeNumericValue(value, unit, dest);
     }
 
     pub fn toCssWithUnitlessZero(this: *const This, dest: *Printer) PrintErr!void {

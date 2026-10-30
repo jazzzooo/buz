@@ -75,7 +75,7 @@ pub const Resolution = union(enum) {
                 .{ dppx, "dppx" },
         };
 
-        return try css.serializer.serializeDimension(value, unit, dest);
+        return css.serializer.serializeNumericValue(value, unit, dest);
     }
 
     pub fn addF32(this: This, _: std.mem.Allocator, other: f32) Resolution {

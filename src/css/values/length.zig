@@ -293,7 +293,7 @@ pub const LengthValue = union(enum) {
             return dest.writeChar('0');
         }
 
-        return css.serializer.serializeDimension(value, unit, dest);
+        return css.serializer.serializeNumericValue(value, unit, dest);
     }
 
     pub fn isZero(this: *const LengthValue) bool {
